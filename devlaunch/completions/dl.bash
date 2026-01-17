@@ -14,18 +14,30 @@ _dl_completion() {
         return 0
     fi
 
-    # Cache file location
-    local cache_file="$HOME/.cache/dl/completions.json"
+    # Cache file location (honor XDG_CACHE_HOME)
+    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dl"
+    local cache_file="$cache_dir/completions.json"
 
-    # Read from cache (fast path)
+    # Read from cache (fast path) or fall back to CLI
     local workspaces=""
     local known_repos=""
     local owners=""
 
-    if [[ -f "$cache_file" ]]; then
+    if command -v jq >/dev/null 2>&1 && [[ -f "$cache_file" ]]; then
+        # Fast path: use cached JSON if jq is available
         workspaces=$(jq -r '.workspaces[]?' "$cache_file" 2>/dev/null | tr '\n' ' ')
         known_repos=$(jq -r '.repos[]?' "$cache_file" 2>/dev/null | tr '\n' ' ')
         owners=$(jq -r '.owners[]?' "$cache_file" 2>/dev/null | tr '\n' ' ')
+    elif command -v dl >/dev/null 2>&1; then
+        # Fallback: use dl CLI directly (slower but works without jq)
+        local _dl_repos
+        _dl_repos=$(dl --repos 2>/dev/null || true)
+        if [[ -n "$_dl_repos" ]]; then
+            known_repos=$(printf '%s\n' "$_dl_repos" | tr '\n' ' ')
+            owners=$(printf '%s\n' "$_dl_repos" | cut -d'/' -f1 | sort -u | tr '\n' ' ')
+        fi
+        # For workspaces, fall back to dl --ls parsing (basic)
+        workspaces=$(dl --ls 2>/dev/null | tail -n +3 | awk '{print $1}' | tr '\n' ' ' || true)
     fi
 
     # Commands that need workspace completion

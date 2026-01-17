@@ -22,6 +22,7 @@ import sys
 import subprocess
 import json
 import logging
+import os
 import pathlib
 import re
 from typing import List, Optional, Dict, Any
@@ -31,8 +32,17 @@ from .completion import install_completions
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-# Cache configuration
-CACHE_DIR = pathlib.Path.home() / ".cache" / "dl"
+
+def _get_cache_dir() -> pathlib.Path:
+    """Get the cache directory, honoring XDG_CACHE_HOME."""
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return pathlib.Path(xdg_cache) / "dl"
+    return pathlib.Path.home() / ".cache" / "dl"
+
+
+# Cache configuration (honors XDG_CACHE_HOME)
+CACHE_DIR = _get_cache_dir()
 CACHE_FILE = CACHE_DIR / "completions.json"
 
 
@@ -289,7 +299,12 @@ def get_known_repos() -> List[str]:
 
 
 def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedProcess:
-    """Run a devpod command."""
+    """Run a devpod command.
+
+    Security note: Using list form of subprocess.run (not shell=True) prevents
+    command injection. Each list element is passed as a separate argument to
+    the executable, so special characters are not interpreted by a shell.
+    """
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
     if capture:
@@ -581,7 +596,12 @@ def main() -> int:
         logging.error(error)
         return 1
 
-    workspace = expand_workspace_spec(raw_spec)
+    # Use raw spec as-is if it's an existing workspace ID, otherwise expand
+    # This prevents owner/repo-style workspace IDs from being rewritten
+    if raw_spec in existing_ids:
+        workspace = raw_spec
+    else:
+        workspace = expand_workspace_spec(raw_spec)
 
     # Start the workspace
     result = workspace_up(workspace)
