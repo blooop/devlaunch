@@ -563,6 +563,7 @@ class TestRemoteBranchFunctions:
     def test_get_remote_branches_timeout(self, mock_run):
         """Test timeout returns empty list."""
         import subprocess
+
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=5)
         branches = get_remote_branches("owner/repo")
         assert branches == []
@@ -802,7 +803,9 @@ class TestCacheFunctions:
     @patch("devlaunch.dl.get_remote_branches")
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
-    def test_update_completion_cache_fetches_branches(self, mock_list, mock_discover, mock_branches):
+    def test_update_completion_cache_fetches_branches(
+        self, mock_list, mock_discover, mock_branches
+    ):
         """Test update_completion_cache fetches branches for all repos."""
         mock_list.return_value = [
             Workspace("ws1", "git", "github.com/owner/repo1", "", "docker", "vscode"),
@@ -815,7 +818,9 @@ class TestCacheFunctions:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
-                with patch("devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
                     data = update_completion_cache()
 
         assert "branches" in data
@@ -828,7 +833,9 @@ class TestCacheFunctions:
     @patch("devlaunch.dl.get_remote_branches")
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
-    def test_update_completion_cache_handles_branch_fetch_failure(self, mock_list, mock_discover, mock_branches):
+    def test_update_completion_cache_handles_branch_fetch_failure(
+        self, mock_list, mock_discover, mock_branches
+    ):
         """Test update_completion_cache handles repos where branch fetch fails."""
         mock_list.return_value = []
         mock_discover.return_value = {"owner": ["repo1"]}
@@ -836,7 +843,9 @@ class TestCacheFunctions:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
-                with patch("devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
                     data = update_completion_cache()
 
         assert data["branches"] == []
@@ -1200,9 +1209,7 @@ class TestMainCLI:
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_feature_branch_with_slash(
-        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids
-    ):
+    def test_main_feature_branch_with_slash(self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids):
         """Test creating workspace with feature/branch style branch name."""
         mock_ids.return_value = []
         mock_ensure.return_value = True
@@ -1218,9 +1225,7 @@ class TestMainCLI:
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_existing_workspace_no_branch_check(
-        self, _cache, mock_ssh, mock_up, mock_ids
-    ):
+    def test_main_existing_workspace_no_branch_check(self, _cache, mock_ssh, mock_up, mock_ids):
         """Test existing workspace doesn't trigger branch check."""
         mock_ids.return_value = ["myworkspace"]  # Existing
         mock_up.return_value = MagicMock(returncode=0)
@@ -1236,9 +1241,7 @@ class TestMainCLI:
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_repo_without_branch_no_branch_check(
-        self, _cache, mock_ssh, mock_up, mock_ids
-    ):
+    def test_main_repo_without_branch_no_branch_check(self, _cache, mock_ssh, mock_up, mock_ids):
         """Test owner/repo without @branch doesn't trigger branch check."""
         mock_ids.return_value = []
         mock_up.return_value = MagicMock(returncode=0)

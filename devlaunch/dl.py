@@ -450,9 +450,8 @@ def create_remote_branch(owner_repo: str, branch: str) -> bool:
         if result.returncode == 0:
             logging.info(f"Created branch '{branch}' on {owner_repo}")
             return True
-        else:
-            logging.error(f"Failed to create branch: {result.stderr.strip()}")
-            return False
+        logging.error(f"Failed to create branch: {result.stderr.strip()}")
+        return False
     except (OSError, subprocess.SubprocessError) as e:
         logging.error(f"Failed to create branch: {e}")
         return False
