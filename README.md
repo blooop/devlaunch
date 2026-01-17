@@ -1,17 +1,6 @@
 # devlaunch
-A template repo for python projects that is set up using [pixi](https://pixi.sh). 
 
-This has basic setup for
-
-* pylint
-* ruff (formatting and linting)
-* pytest
-* git-lfs
-* basic github actions ci
-* pulling updates from this template
-* codecov
-* pypi upload
-* dependabot
+A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete and fzf fuzzy selection.
 
 ## Continuous Integration Status
 
@@ -24,93 +13,101 @@ This has basic setup for
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
+## Installation
 
-# Install
-
-There are two methods of using this project.  
-
-1. Use github to use this project as a template
-2. Clone the project and run, `scripts/update_from_template.sh` and then run the `scripts/rename_project.sh` to rename the project.
-
-If you want to use docker you may want to run the `scripts/setup_host.sh` script.  It will set up docker and nvidia-docker (assuming you are on ubuntu22.04).
-
-If you are using pixi, look at the available tasks in pyproject.toml  If you are new to pixi follow the instructions on the pixi [website](https://prefix.dev/)
-
-# Claude Code Online Support
-
-This template includes built-in support for [Claude Code](https://docs.claude.com/claude-code) online environment! The `.claude/hooks/SessionStart` script automatically:
-
-- Installs pixi package manager
-- Sets up all project dependencies
-- Configures prek hooks
-- Prepares the development environment
-
-**Quick Start with Claude Code:**
-1. Open this repository in Claude Code online
-2. The environment sets up automatically via the SessionStart hook
-3. Claude can immediately run commands like `pixi run test`, `pixi run lint`, etc.
-
-**Manual activation (if needed):**
 ```bash
-source .claude/activate.sh
+# Using pixi (recommended)
+pixi global install devlaunch
+
+# Using pip
+pip install devlaunch
 ```
 
-See [.claude/README.md](.claude/README.md) for detailed information about the Claude Code configuration.
-
-# Github setup
-
-There are github workflows for CI, codecov and automated pypi publishing in `ci.yml` and `publish.yml`.
-
-ci.yml uses pixi tasks to set up the environment matrix and run the various CI tasks. To set up codecov on github, you need to get a `CODECOV_TOKEN` and add it to your actions secrets.
-
-publish.yml uses [pypy-auto-publish](https://github.com/marketplace/actions/python-auto-release-pypi-github) to automatically publish to pypi if the package version number changes. You need to add a `PYPI_API_TOKEN` to your github secrets to enable this.     
-
-
-# Usage
-
-There are currently two ways of running code.  The preferred way is to use pixi to manage your environment and dependencies. 
+After installation, set up shell completions:
 
 ```bash
-cd project
-
-$pixi run ci
-pixi run arbitrary_task
+dl --install
+source ~/.bashrc  # or restart your terminal
 ```
 
-If you have dependencies or configuration that cannot be managed by pixi, you can use alternative tools:
-
-- [rockerc](https://github.com/blooop/rockerc): A command-line tool for dynamically creating docker containers with access to host resources such as GPU and 
-- [rockervsc](https://github.com/blooop/rockervsc): A Visual Studio Code extension that integrates rockerc functionality into [vscode remote containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
-
-These tools help you create isolated environments with specific dependencies, ensuring consistent setups across different machines.
+## Usage
 
 ```bash
-cd project_name
+dl                           # Interactive workspace selector (fzf)
+dl <workspace>               # Start workspace and attach shell
+dl <workspace> <command>     # Run command in workspace
+dl owner/repo                # Create workspace from GitHub repo
+dl owner/repo@branch         # Create workspace from specific branch
+dl ./path                    # Create workspace from local path
+```
 
-rockerc # build and launch container with dependencies set up
-# OR
-rockervsc # build container, launch and attach vscode to that container.
+## Commands
 
-#once you are inside the container you can use the pixi workflows.
+| Command | Description |
+|---------|-------------|
+| `dl --ls` | List all workspaces |
+| `dl --stop <workspace>` | Stop a workspace |
+| `dl --rm <workspace>` | Delete a workspace |
+| `dl --code <workspace>` | Open workspace in VS Code |
+| `dl --status <workspace>` | Show workspace status |
+| `dl --recreate <workspace>` | Recreate workspace container |
+| `dl --reset <workspace>` | Reset workspace (clean slate) |
+| `dl --install` | Install shell completions |
+| `dl --help` | Show help |
+
+## Examples
+
+```bash
+# Select workspace interactively with fzf
+dl
+
+# Open an existing workspace
+dl myproject
+
+# Create workspace from GitHub repository
+dl loft-sh/devpod
+
+# Create workspace from specific branch
+dl blooop/devlaunch@main
+
+# Create workspace from local folder
+dl ./my-project
+
+# Open workspace in VS Code
+dl --code myproject
+
+# Run a command in workspace
+dl myproject 'make test'
+```
+
+## Features
+
+- **Fuzzy Selection**: When called without arguments, uses fzf for interactive workspace selection
+- **Smart Completion**: Tab completion for workspaces, GitHub repos (owner/repo format), and paths
+- **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
+- **Branch Support**: Specify branches with `owner/repo@branch` syntax
+- **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
+
+## Shell Completion
+
+After running `dl --install`, you get intelligent tab completion:
+
+- Workspace names from your devpod list
+- Known GitHub owners and repositories from your workspaces
+- File/directory paths when starting with `./`, `/`, or `~`
+- All command flags (`--ls`, `--stop`, etc.)
+
+## Development
+
+This project uses [pixi](https://pixi.sh) for environment management.
+
+```bash
+# Run tests
+pixi run test
+
+# Run full CI suite
 pixi run ci
+
+# Format and lint
+pixi run style
 ```
-
-## Legacy
-
-If you don't want to install rocker on your system but want to use vscode, you can run the `scripts/launch_vscode.sh` script to build and connect to a docker container. It will install rocker in a venv.  The docker container is dynamically generated using [rocker](https://github.com/osrf/rocker) and the configuration in `rockerc.yaml`. 
-
-## Troubleshooting
-
-The main pixi tasks are related to CI.  Github actions runs the pixi task "ci".  The CI is mostly likely to fail from a lockfile mismatch.  Use `pixi run fix` to fix any lockfile related problems. 
-
-## vscode tasks
-
-There are two core tasks.  
-
-1. set \<cfg\> from active file
-
-    This sets \<cfg\> to the currently opened file in the editor
-
-2. run \<cfg\>
-
-    This runs python with the file set in \<cfg\>
