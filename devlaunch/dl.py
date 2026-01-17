@@ -538,6 +538,8 @@ def main() -> int:
         rc_path = None
         if len(args) > 1:
             rc_path = pathlib.Path(args[1])
+        # Generate cache so completions work immediately
+        update_completion_cache()
         return install_completions(rc_path)
 
     if args[0] == "--stop":
