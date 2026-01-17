@@ -509,9 +509,9 @@ Workspace commands:
     dl <ws> stop                 Stop the workspace
     dl <ws> rm                   Delete the workspace
     dl <ws> code                 Open in VS Code
-    dl <ws> status               Show workspace status
-    dl <ws> restart              Reset workspace (clean slate)
-    dl <ws> recreate             Recreate workspace container
+    dl <ws> restart              Stop and start (no rebuild)
+    dl <ws> recreate             Recreate container
+    dl <ws> reset                Clean slate (remove all, recreate)
     dl <ws> -- <command>         Run shell command in workspace
 
 Global commands:
@@ -620,9 +620,6 @@ def main() -> int:
     if subcommand in ("rm", "prune"):
         return workspace_delete(workspace_id)
 
-    if subcommand == "status":
-        return workspace_status(workspace_id)
-
     if subcommand == "code":
         result = workspace_up(workspace_spec, ide="vscode")
         return result.returncode
@@ -634,6 +631,15 @@ def main() -> int:
         return workspace_ssh(workspace_id)
 
     if subcommand == "restart":
+        # Stop and start without rebuilding
+        workspace_stop(workspace_id)
+        result = workspace_up(workspace_spec)
+        if result.returncode != 0:
+            return result.returncode
+        return workspace_ssh(workspace_id)
+
+    if subcommand == "reset":
+        # Clean slate - remove everything and recreate
         result = workspace_up(workspace_spec, reset=True)
         if result.returncode != 0:
             return result.returncode
