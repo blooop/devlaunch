@@ -1,0 +1,57 @@
+{% set name = "devlaunch" %}
+{% set version = "0.0.3" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/devlaunch-{{ version }}.tar.gz
+  sha256: # This will be filled in when submitting to conda-forge
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  entry_points:
+    - dl = devlaunch.dl:main
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - hatchling
+  run:
+    - python >=3.10
+    - iterfzf >=1.0.0
+
+test:
+  imports:
+    - devlaunch
+    - devlaunch.dl
+    - devlaunch.completion
+    - devlaunch.completion_loader
+  commands:
+    - dl --help
+    - dl --version
+
+about:
+  home: https://github.com/blooop/devlaunch
+  summary: DevLaunch - A streamlined CLI for devpod workspaces
+  description: |
+    A streamlined CLI for devpod with intuitive autocomplete and fzf fuzzy selection.
+
+    Features:
+    - Fuzzy Selection: Interactive workspace selection using fzf
+    - Smart Completion: Tab completion for workspaces, GitHub repos, and paths
+    - GitHub Shorthand: Use owner/repo instead of full URLs
+    - Branch Support: Specify branches with owner/repo@branch syntax
+    - Fast Autocomplete: Completion cache for ~3ms response time
+  license: MIT
+  license_file: LICENSE
+  doc_url: https://github.com/blooop/devlaunch
+  dev_url: https://github.com/blooop/devlaunch
+
+extra:
+  recipe-maintainers:
+    - blooop

@@ -10,6 +10,7 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
+[![Conda Version](https://img.shields.io/conda/vn/conda-forge/devlaunch.svg)](https://anaconda.org/conda-forge/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -17,7 +18,12 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 ## Installation
 
 ```bash
-# Using pixi (recommended)
+# Using conda/mamba (recommended)
+conda install -c conda-forge devlaunch
+# or
+mamba install devlaunch
+
+# Using pixi
 pixi global install devlaunch
 
 # Using pip
