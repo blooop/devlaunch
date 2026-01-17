@@ -512,6 +512,7 @@ Workspace commands:
     dl <ws> status               Show workspace status
     dl <ws> restart              Reset workspace (clean slate)
     dl <ws> recreate             Recreate workspace container
+    dl <ws> nocache              Alias for recreate
     dl <ws> -- <command>         Run shell command in workspace
 
 Global commands:
@@ -627,7 +628,7 @@ def main() -> int:
         result = workspace_up(workspace_spec, ide="vscode")
         return result.returncode
 
-    if subcommand == "recreate":
+    if subcommand in ("recreate", "nocache"):
         result = workspace_up(workspace_spec, recreate=True)
         if result.returncode != 0:
             return result.returncode
