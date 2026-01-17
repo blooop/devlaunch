@@ -797,6 +797,7 @@ class TestCacheFunctions:
                 }
                 write_completion_cache(data)
                 result = read_completion_cache()
+                assert result is not None
                 assert result == data
                 assert result["branches"] == ["owner/repo@main", "owner/repo@feature/test"]
 
