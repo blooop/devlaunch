@@ -19,6 +19,7 @@ _dl_completion() {
     local DL_WORKSPACES=""
     local DL_REPOS=""
     local DL_OWNERS=""
+    local DL_BRANCHES=""
 
     # Source the bash cache file (fast, no jq needed)
     if [[ -f "$cache_file" ]]; then
@@ -33,18 +34,25 @@ _dl_completion() {
             return 0
         fi
 
-        # Don't add space after completion to allow @branch suffix
-        compopt -o nospace
-
         # If typing a path, complete files/directories
         if [[ "$cur" == ./* || "$cur" == /* || "$cur" == ~/* ]]; then
-            compopt +o nospace
             COMPREPLY=( $(compgen -d -- ${cur}) )
+            return 0
+        fi
+
+        # Check if completing branch (contains @)
+        if [[ "$cur" == *@* ]]; then
+            # Use cached branches (format: owner/repo@branch)
+            if [[ -n "$DL_BRANCHES" ]]; then
+                COMPREPLY=( $(compgen -W "${DL_BRANCHES}" -- ${cur}) )
+            fi
             return 0
         fi
 
         # Check if completing owner/repo format (contains /)
         if [[ "$cur" == */* ]]; then
+            # Don't add space - allow @branch suffix
+            compopt -o nospace
             # Complete from known repos
             if [[ -n "$DL_REPOS" ]]; then
                 COMPREPLY=( $(compgen -W "${DL_REPOS}" -- ${cur}) )
@@ -53,6 +61,7 @@ _dl_completion() {
         fi
 
         # Default: complete workspace names and offer owner/ completion
+        compopt -o nospace  # For owner/ completions
         local completions="$DL_WORKSPACES"
 
         # Add owners with trailing slash
@@ -82,5 +91,6 @@ _dl_completion() {
     return 0
 }
 
-complete -F _dl_completion dl
+# Use -o default for better completion behavior
+complete -o default -F _dl_completion dl
 # end dl completion
