@@ -383,7 +383,7 @@ packages:
 - pypi: ./
   name: devlaunch
   version: 0.0.2
-  sha256: 7602a22b553067716c5a94bbc39c69941e5d7842a91be6658afb2fb93cb9ab6d
+  sha256: 93ade45ee736ac6d8740aad89fdf34015b108de4c3e8bba8f6bc186cfc770af3
   requires_dist:
   - iterfzf>=1.0.0
   - pylint>=3.2.5,<=4.0.4 ; extra == 'test'
