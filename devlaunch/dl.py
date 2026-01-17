@@ -495,41 +495,41 @@ def print_help():
     help_text = """dl - DevLaunch CLI
 
 Usage:
-    dl                           Interactive workspace selector (fzf)
-    dl <workspace>               Start workspace and attach shell
-    dl <workspace> <cmd>         Run workspace command (stop, code, etc.)
-    dl <workspace> -- <shell>    Run shell command in workspace
+    dl                               Interactive workspace selector (fzf)
+    dl <user/repo>                   Start workspace and attach shell
+    dl <user/repo> <cmd>             Run workspace command (stop, code, etc.)
+    dl <user/repo> -- <shell>        Run shell command in workspace
 
 Workspace sources:
-    dl myproject                 Existing workspace by name
-    dl owner/repo                Create from GitHub repo
-    dl owner/repo@branch         Create from specific branch
-    dl ./path                    Create from local path
+    dl myproject                     Existing workspace by name
+    dl user/repo                     Create from GitHub repo
+    dl user/repo@branch              Create from specific branch
+    dl ./path                        Create from local path
 
 Workspace commands:
-    dl <ws> stop                 Stop the workspace
-    dl <ws> rm, prune            Delete the workspace
-    dl <ws> code                 Open in VS Code
-    dl <ws> restart              Stop and start (no rebuild)
-    dl <ws> recreate             Recreate container
-    dl <ws> reset                Clean slate (remove all, recreate)
-    dl <ws> -- <command>         Run shell command in workspace
+    dl <user/repo> stop              Stop the workspace
+    dl <user/repo> rm, prune         Delete the workspace
+    dl <user/repo> code              Open in VS Code
+    dl <user/repo> restart           Stop and start (no rebuild)
+    dl <user/repo> recreate          Recreate container
+    dl <user/repo> reset             Clean slate (remove all, recreate)
+    dl <user/repo> -- <command>      Run shell command in workspace
 
 Global commands:
-    dl --ls                      List all workspaces
-    dl --install                 Install shell completions
-    dl --help, -h                Show this help
-    dl --version                 Show version
+    dl --ls                          List all workspaces
+    dl --install                     Install shell completions
+    dl --help, -h                    Show this help
+    dl --version                     Show version
 
 Examples:
-    dl                           # Select workspace with fzf
-    dl myproject                 # Open existing workspace
-    dl loft-sh/devpod            # Create from GitHub
-    dl blooop/devlaunch@main     # Create from specific branch
-    dl ./my-project              # Create from local folder
-    dl myproject code            # Open in VS Code
-    dl myproject -- make test    # Run command in workspace
-    dl myproject stop            # Stop workspace
+    dl                               # Select workspace with fzf
+    dl devpod                        # Open existing workspace
+    dl loft-sh/devpod                # Create from GitHub
+    dl blooop/devlaunch@main         # Create from specific branch
+    dl ./my-project                  # Create from local folder
+    dl blooop/devlaunch code         # Open in VS Code
+    dl blooop/devlaunch -- make test # Run command in workspace
+    dl blooop/devlaunch stop         # Stop workspace
 """
     print(help_text)
 

@@ -1,6 +1,9 @@
 """Tests for dl (DevLaunch CLI) functionality."""
 
 import json
+import sys
+import tempfile
+import pathlib
 from unittest.mock import patch, MagicMock
 
 from devlaunch.dl import (
@@ -15,6 +18,17 @@ from devlaunch.dl import (
     list_workspaces,
     get_workspace_ids,
     OWNER_REPO_PATTERN,
+    spec_to_workspace_id,
+    get_version,
+    read_completion_cache,
+    write_completion_cache,
+    write_bash_completion_cache,
+    main,
+    print_help,
+    print_workspaces,
+    workspace_stop,
+    workspace_delete,
+    run_devpod,
 )
 
 
@@ -457,3 +471,394 @@ class TestGetKnownRepos:
         mock_list.return_value = []
         repos = get_known_repos()
         assert repos == []
+
+
+class TestGetVersion:
+    """Tests for get_version function."""
+
+    def test_get_version_returns_string(self):
+        """Test that get_version returns a string."""
+        version = get_version()
+        assert isinstance(version, str)
+        assert len(version) > 0
+
+    @patch("devlaunch.dl.pkg_version")
+    def test_get_version_package_not_found(self, mock_pkg_version):
+        """Test get_version returns 'unknown' when package not found."""
+        from importlib.metadata import PackageNotFoundError
+
+        mock_pkg_version.side_effect = PackageNotFoundError("devlaunch")
+        version = get_version()
+        assert version == "unknown"
+
+
+class TestSpecToWorkspaceId:
+    """Tests for spec_to_workspace_id function."""
+
+    def test_owner_repo_extracts_repo(self):
+        """Test owner/repo extracts repo name."""
+        assert spec_to_workspace_id("blooop/devlaunch") == "devlaunch"
+
+    def test_owner_repo_with_branch(self):
+        """Test owner/repo@branch extracts repo name."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch"
+
+    def test_github_url(self):
+        """Test github.com/owner/repo extracts repo name."""
+        assert spec_to_workspace_id("github.com/loft-sh/devpod") == "devpod"
+
+    def test_https_url(self):
+        """Test https URL extracts repo name."""
+        assert spec_to_workspace_id("https://github.com/owner/repo") == "repo"
+
+    def test_url_with_git_suffix(self):
+        """Test URL with .git suffix strips it."""
+        assert spec_to_workspace_id("github.com/owner/repo.git") == "repo"
+
+    def test_path_extracts_directory_name(self):
+        """Test path extracts directory name."""
+        result = spec_to_workspace_id("./my-project")
+        assert result == "my-project"
+
+    def test_existing_workspace_id(self):
+        """Test existing workspace ID is returned as-is."""
+        assert spec_to_workspace_id("myworkspace") == "myworkspace"
+
+
+class TestCacheFunctions:
+    """Tests for cache read/write functions."""
+
+    def test_write_and_read_completion_cache(self):
+        """Test writing and reading completion cache."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                data = {"workspaces": ["ws1", "ws2"], "repos": ["a/b"], "owners": ["a"]}
+                write_completion_cache(data)
+                result = read_completion_cache()
+                assert result == data
+
+    def test_read_nonexistent_cache(self):
+        """Test reading nonexistent cache returns None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(
+                "devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "nonexistent.json"
+            ):
+                result = read_completion_cache()
+                assert result is None
+
+    def test_write_bash_completion_cache(self):
+        """Test writing bash completion cache."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bash_file = pathlib.Path(tmpdir) / "completions.bash"
+            with patch("devlaunch.dl.BASH_CACHE_FILE", bash_file):
+                data = {"workspaces": ["ws1", "ws2"], "repos": ["a/b"], "owners": ["a"]}
+                write_bash_completion_cache(data)
+                content = bash_file.read_text()
+                assert 'DL_WORKSPACES="ws1 ws2"' in content
+                assert 'DL_REPOS="a/b"' in content
+                assert 'DL_OWNERS="a"' in content
+
+
+class TestRunDevpod:
+    """Tests for run_devpod function."""
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_run_devpod_basic(self, mock_run):
+        """Test basic devpod command execution."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = run_devpod(["list"])
+        mock_run.assert_called_once()
+        assert result.returncode == 0
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_run_devpod_capture(self, mock_run):
+        """Test devpod command with capture."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="output")
+        run_devpod(["list"], capture=True)
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["capture_output"] is True
+
+
+class TestWorkspaceOperations:
+    """Tests for workspace operation functions."""
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_stop(self, mock_run):
+        """Test workspace_stop calls devpod stop."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_stop("myworkspace")
+        mock_run.assert_called_once_with(["stop", "myworkspace"])
+        assert result == 0
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_delete(self, mock_run):
+        """Test workspace_delete calls devpod delete."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_delete("myworkspace")
+        mock_run.assert_called_once_with(["delete", "myworkspace"])
+        assert result == 0
+
+
+class TestPrintFunctions:
+    """Tests for print functions."""
+
+    def test_print_help(self, capsys):
+        """Test print_help outputs help text."""
+        print_help()
+        captured = capsys.readouterr()
+        assert "dl - DevLaunch CLI" in captured.out
+        assert "Usage:" in captured.out
+        assert "--ls" in captured.out
+
+    @patch("devlaunch.dl.list_workspaces")
+    def test_print_workspaces(self, mock_list, capsys):
+        """Test print_workspaces outputs workspace table."""
+        mock_list.return_value = [
+            Workspace("ws1", "local", "/path/to/ws1", "2024-01-01", "docker", "vscode"),
+        ]
+        print_workspaces()
+        captured = capsys.readouterr()
+        assert "ws1" in captured.out
+
+    @patch("devlaunch.dl.list_workspaces")
+    def test_print_workspaces_empty(self, mock_list, capsys):
+        """Test print_workspaces with no workspaces."""
+        mock_list.return_value = []
+        print_workspaces()
+        captured = capsys.readouterr()
+        assert "No workspaces found" in captured.out
+
+
+class TestMainCLI:
+    """Tests for main() CLI entry point."""
+
+    def test_main_help_flag(self, capsys):
+        """Test --help flag shows help."""
+        with patch.object(sys, "argv", ["dl", "--help"]):
+            result = main()
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "dl - DevLaunch CLI" in captured.out
+
+    def test_main_h_flag(self, capsys):
+        """Test -h flag shows help."""
+        with patch.object(sys, "argv", ["dl", "-h"]):
+            result = main()
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "dl - DevLaunch CLI" in captured.out
+
+    def test_main_version_flag(self, capsys):
+        """Test --version flag shows version."""
+        with patch.object(sys, "argv", ["dl", "--version"]):
+            result = main()
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "dl " in captured.out
+
+    @patch("devlaunch.dl.list_workspaces")
+    def test_main_ls_flag(self, mock_list, capsys):
+        """Test --ls flag lists workspaces."""
+        mock_list.return_value = []
+        with patch.object(sys, "argv", ["dl", "--ls"]):
+            result = main()
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No workspaces found" in captured.out
+
+    @patch("devlaunch.dl.read_completion_cache")
+    def test_main_repos_flag(self, mock_cache, capsys):
+        """Test --repos flag outputs repos."""
+        mock_cache.return_value = {"repos": ["owner/repo1", "owner/repo2"]}
+        with patch.object(sys, "argv", ["dl", "--repos"]):
+            result = main()
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "owner/repo1" in captured.out
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_main_update_cache_flag(self, mock_update):
+        """Test --update-cache flag updates cache."""
+        mock_update.return_value = {}
+        with patch.object(sys, "argv", ["dl", "--update-cache"]):
+            result = main()
+        assert result == 0
+        mock_update.assert_called_once()
+
+    @patch("devlaunch.dl.read_completion_cache")
+    def test_main_completion_data_flag(self, mock_cache, capsys):
+        """Test --completion-data flag outputs JSON."""
+        mock_cache.return_value = {"workspaces": ["ws1"], "repos": [], "owners": []}
+        with patch.object(sys, "argv", ["dl", "--completion-data"]):
+            result = main()
+        assert result == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "workspaces" in data
+
+    @patch("devlaunch.dl.update_completion_cache")
+    @patch("devlaunch.dl.install_completions")
+    def test_main_install_flag(self, mock_install, mock_update):
+        """Test --install flag installs completions."""
+        mock_install.return_value = 0
+        mock_update.return_value = {}
+        with patch.object(sys, "argv", ["dl", "--install"]):
+            result = main()
+        assert result == 0
+        mock_install.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_stop")
+    def test_main_workspace_stop(self, mock_stop, mock_ids):
+        """Test workspace stop command."""
+        mock_ids.return_value = ["myws"]
+        mock_stop.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "stop"]):
+            result = main()
+        assert result == 0
+        mock_stop.assert_called_once_with("myws")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_delete")
+    def test_main_workspace_rm(self, mock_delete, mock_ids):
+        """Test workspace rm command."""
+        mock_ids.return_value = ["myws"]
+        mock_delete.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "rm"]):
+            result = main()
+        assert result == 0
+        mock_delete.assert_called_once_with("myws")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_delete")
+    def test_main_workspace_prune(self, mock_delete, mock_ids):
+        """Test workspace prune command (alias for rm)."""
+        mock_ids.return_value = ["myws"]
+        mock_delete.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "prune"]):
+            result = main()
+        assert result == 0
+        mock_delete.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    def test_main_workspace_code(self, mock_up, mock_ids):
+        """Test workspace code command."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "code"]):
+            result = main()
+        assert result == 0
+        mock_up.assert_called_once_with("myws", ide="vscode")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_main_workspace_recreate(self, mock_ssh, mock_up, mock_ids):
+        """Test workspace recreate command."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
+            result = main()
+        assert result == 0
+        mock_up.assert_called_once_with("myws", recreate=True)
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_stop")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_main_workspace_restart(self, mock_ssh, mock_up, mock_stop, mock_ids):
+        """Test workspace restart command."""
+        mock_ids.return_value = ["myws"]
+        mock_stop.return_value = 0
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "restart"]):
+            result = main()
+        assert result == 0
+        mock_stop.assert_called_once()
+        mock_up.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_main_workspace_reset(self, mock_ssh, mock_up, mock_ids):
+        """Test workspace reset command."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "reset"]):
+            result = main()
+        assert result == 0
+        mock_up.assert_called_once_with("myws", reset=True)
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_main_unknown_command_error(self, mock_ids, caplog):
+        """Test unknown subcommand returns error."""
+        mock_ids.return_value = ["myws"]
+        with patch.object(sys, "argv", ["dl", "myws", "badcmd"]):
+            result = main()
+        assert result == 1
+        assert "Unknown command" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_main_invalid_workspace_error(self, mock_ids, caplog):
+        """Test invalid workspace spec returns error."""
+        mock_ids.return_value = []
+        with patch.object(sys, "argv", ["dl", "nonexistent"]):
+            result = main()
+        assert result == 1
+        assert "Unknown workspace" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_workspace_shell_command(self, _cache, mock_ssh, mock_up, mock_ids):
+        """Test running shell command with -- separator."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "--", "echo", "hello"]):
+            result = main()
+        assert result == 0
+        mock_ssh.assert_called_once_with("myws", "echo hello")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_workspace_default(self, _cache, mock_ssh, mock_up, mock_ids):
+        """Test default workspace start and attach."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            result = main()
+        assert result == 0
+        mock_up.assert_called_once()
+        mock_ssh.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.expand_workspace_spec")
+    @patch("devlaunch.dl.spec_to_workspace_id")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_new_workspace_from_repo(
+        self, _cache, mock_ssh, mock_up, mock_spec_id, mock_expand, mock_ids
+    ):
+        """Test creating workspace from owner/repo."""
+        mock_ids.return_value = []  # Not existing
+        mock_expand.return_value = "github.com/owner/repo"
+        mock_spec_id.return_value = "repo"
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 0
+        mock_expand.assert_called()
+        mock_up.assert_called_once_with("github.com/owner/repo")
+        mock_ssh.assert_called_once_with("repo", None)
