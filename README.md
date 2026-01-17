@@ -33,51 +33,53 @@ source ~/.bashrc  # or restart your terminal
 ## Usage
 
 ```bash
-dl                           # Interactive workspace selector (fzf)
-dl <workspace>               # Start workspace and attach shell
-dl <workspace> <command>     # Run command in workspace
-dl owner/repo                # Create workspace from GitHub repo
-dl owner/repo@branch         # Create workspace from specific branch
-dl ./path                    # Create workspace from local path
+dl                               # Interactive workspace selector (fzf)
+dl <user/repo>                   # Start workspace and attach shell
+dl <user/repo> <cmd>             # Run workspace command (stop, code, etc.)
+dl <user/repo> -- <command>      # Run shell command in workspace
 ```
 
-## Commands
+## Workspace Sources
+
+```bash
+dl myproject                     # Existing workspace by name
+dl user/repo                     # Create from GitHub repo
+dl user/repo@branch              # Create from specific branch
+dl ./path                        # Create from local path
+```
+
+## Workspace Commands
+
+| Command | Description |
+|---------|-------------|
+| `dl <user/repo> stop` | Stop the workspace |
+| `dl <user/repo> rm, prune` | Delete the workspace |
+| `dl <user/repo> code` | Open in VS Code |
+| `dl <user/repo> restart` | Stop and start (no rebuild) |
+| `dl <user/repo> recreate` | Recreate container |
+| `dl <user/repo> reset` | Clean slate (remove all, recreate) |
+| `dl <user/repo> -- <command>` | Run shell command in workspace |
+
+## Global Commands
 
 | Command | Description |
 |---------|-------------|
 | `dl --ls` | List all workspaces |
-| `dl --stop <workspace>` | Stop a workspace |
-| `dl --rm <workspace>` | Delete a workspace |
-| `dl --code <workspace>` | Open workspace in VS Code |
-| `dl --status <workspace>` | Show workspace status |
-| `dl --recreate <workspace>` | Recreate workspace container |
-| `dl --reset <workspace>` | Reset workspace (clean slate) |
 | `dl --install` | Install shell completions |
-| `dl --help` | Show help |
+| `dl --help, -h` | Show this help |
+| `dl --version` | Show version |
 
 ## Examples
 
 ```bash
-# Select workspace interactively with fzf
-dl
-
-# Open an existing workspace
-dl myproject
-
-# Create workspace from GitHub repository
-dl loft-sh/devpod
-
-# Create workspace from specific branch
-dl blooop/devlaunch@main
-
-# Create workspace from local folder
-dl ./my-project
-
-# Open workspace in VS Code
-dl --code myproject
-
-# Run a command in workspace
-dl myproject 'make test'
+dl                               # Select workspace with fzf
+dl devpod                        # Open existing workspace
+dl loft-sh/devpod                # Create from GitHub
+dl blooop/devlaunch@main         # Create from specific branch
+dl ./my-project                  # Create from local folder
+dl blooop/devlaunch code         # Open in VS Code
+dl blooop/devlaunch -- make test # Run command in workspace
+dl blooop/devlaunch stop         # Stop workspace
 ```
 
 ## Features
@@ -95,7 +97,7 @@ After running `dl --install`, you get intelligent tab completion:
 - Workspace names from your devpod list
 - Known GitHub owners and repositories from your workspaces
 - File/directory paths when starting with `./`, `/`, or `~`
-- All command flags (`--ls`, `--stop`, etc.)
+- All global flags (`--ls`, `--install`, etc.) and workspace commands
 
 ## Development
 
