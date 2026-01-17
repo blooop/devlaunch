@@ -6,7 +6,7 @@ _dl_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Global command options (only valid as first arg)
-    local global_opts="--ls --install --help"
+    local global_opts="--ls --install --help -h --version"
 
     # Workspace subcommands
     local ws_cmds="stop rm code restart recreate reset --"

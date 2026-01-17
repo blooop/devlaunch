@@ -25,7 +25,7 @@ import logging
 import os
 import pathlib
 import re
-from importlib.metadata import version as pkg_version
+from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
@@ -36,8 +36,9 @@ def get_version() -> str:
     """Get the package version."""
     try:
         return pkg_version("devlaunch")
-    except Exception:
+    except PackageNotFoundError:
         return "unknown"
+
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -507,7 +508,7 @@ Workspace sources:
 
 Workspace commands:
     dl <ws> stop                 Stop the workspace
-    dl <ws> rm                   Delete the workspace
+    dl <ws> rm, prune            Delete the workspace
     dl <ws> code                 Open in VS Code
     dl <ws> restart              Stop and start (no rebuild)
     dl <ws> recreate             Recreate container
@@ -632,7 +633,9 @@ def main() -> int:
 
     if subcommand == "restart":
         # Stop and start without rebuilding
-        workspace_stop(workspace_id)
+        stop_ret = workspace_stop(workspace_id)
+        if stop_ret != 0:
+            return stop_ret
         result = workspace_up(workspace_spec)
         if result.returncode != 0:
             return result.returncode
