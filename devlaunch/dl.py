@@ -170,6 +170,35 @@ def expand_workspace_spec(spec: str) -> str:
     return spec
 
 
+def spec_to_workspace_id(spec: str) -> str:
+    """Derive the workspace ID that devpod will use for a given spec.
+
+    Devpod uses:
+    - For git repos: the repo name (e.g., owner/repo -> repo)
+    - For paths: the directory name (e.g., ./my-project -> my-project)
+    - For existing IDs: the ID as-is
+    """
+    # Strip @branch suffix if present
+    base_spec = spec.split("@")[0]
+
+    # For paths, use the directory name
+    if is_path_spec(base_spec):
+        return pathlib.Path(base_spec).expanduser().resolve().name
+
+    # For git URLs or owner/repo, extract repo name
+    if is_git_spec(base_spec):
+        # Handle various formats: github.com/owner/repo, owner/repo, https://...
+        parts = base_spec.rstrip("/").split("/")
+        repo_name = parts[-1]
+        # Remove .git suffix if present
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        return repo_name
+
+    # Otherwise assume it's already a workspace ID
+    return spec
+
+
 def validate_workspace_spec(spec: str, existing_ids: List[str]) -> Optional[str]:
     """Validate workspace spec and return error message if invalid."""
     # Valid if it's an existing workspace
@@ -592,10 +621,12 @@ def main() -> int:
                 return 1
         else:
             workspace = args[1]
-        result = workspace_up(workspace, recreate=True)
+        workspace_spec = expand_workspace_spec(workspace)
+        workspace_id = spec_to_workspace_id(workspace)
+        result = workspace_up(workspace_spec, recreate=True)
         if result.returncode != 0:
             return result.returncode
-        return workspace_ssh(workspace)
+        return workspace_ssh(workspace_id)
 
     if args[0] == "--reset":
         if len(args) < 2:
@@ -605,10 +636,12 @@ def main() -> int:
                 return 1
         else:
             workspace = args[1]
-        result = workspace_up(workspace, reset=True)
+        workspace_spec = expand_workspace_spec(workspace)
+        workspace_id = spec_to_workspace_id(workspace)
+        result = workspace_up(workspace_spec, reset=True)
         if result.returncode != 0:
             return result.returncode
-        return workspace_ssh(workspace)
+        return workspace_ssh(workspace_id)
 
     # Default: workspace name and optional command
     raw_spec = args[0]
@@ -624,17 +657,19 @@ def main() -> int:
     # Use raw spec as-is if it's an existing workspace ID, otherwise expand
     # This prevents owner/repo-style workspace IDs from being rewritten
     if raw_spec in existing_ids:
-        workspace = raw_spec
+        workspace_spec = raw_spec
+        workspace_id = raw_spec
     else:
-        workspace = expand_workspace_spec(raw_spec)
+        workspace_spec = expand_workspace_spec(raw_spec)
+        workspace_id = spec_to_workspace_id(raw_spec)
 
     # Start the workspace
-    result = workspace_up(workspace)
+    result = workspace_up(workspace_spec)
     if result.returncode != 0:
         return result.returncode
 
-    # Attach to workspace
-    ret = workspace_ssh(workspace, command)
+    # Attach to workspace using the ID (not the full spec)
+    ret = workspace_ssh(workspace_id, command)
 
     # Update cache in background after workspace operations
     update_cache_background()

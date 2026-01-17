@@ -173,3 +173,4 @@ test_suite_analysis/metadata.json
 
 .devpod/
 .devpod-internal/
+.*.swp
