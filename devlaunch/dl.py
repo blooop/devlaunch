@@ -25,10 +25,19 @@ import logging
 import os
 import pathlib
 import re
+from importlib.metadata import version as pkg_version
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
 from .completion import install_completions
+
+
+def get_version() -> str:
+    """Get the package version."""
+    try:
+        return pkg_version("devlaunch")
+    except Exception:
+        return "unknown"
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -509,6 +518,7 @@ Global commands:
     dl --ls                      List all workspaces
     dl --install                 Install shell completions
     dl --help, -h                Show this help
+    dl --version                 Show version
 
 Examples:
     dl                           # Select workspace with fzf
@@ -539,6 +549,10 @@ def main() -> int:
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
         print_help()
+        return 0
+
+    if args[0] == "--version":
+        print(f"dl {get_version()}")
         return 0
 
     if args[0] == "--ls":
