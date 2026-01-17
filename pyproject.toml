@@ -1,12 +1,14 @@
 [project]
 name = "devlaunch"
-version = "0.2.0"
+version = "0.0.1"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
-description = "A python package template"
+description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
 license = "MIT"
 
-dependencies = []
+dependencies = [
+  "iterfzf>=1.0.0",
+]
 
 [project.urls]
 Source = "https://github.com/blooop/devlaunch"
@@ -52,6 +54,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["devlaunch"]
+
+[project.scripts]
+dl = "devlaunch.dl:main"
 
 # Environments
 [tool.pixi.environments]
@@ -104,7 +109,7 @@ extension-pkg-whitelist = ["numpy"]
 jobs = 16                           #detect number of cores
 
 [tool.pylint.'MESSAGES CONTROL']
-disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-locals,too-many-branches,too-many-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
+disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-return-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
 enable = "no-else-return,consider-using-in"
 
 [tool.coverage.run]
