@@ -9,7 +9,7 @@ _dl_completion() {
     local global_opts="--ls --install --help"
 
     # Workspace subcommands
-    local ws_cmds="stop rm code status restart recreate nocache --"
+    local ws_cmds="stop rm code status restart recreate --"
 
     # Cache file location (honors XDG_CACHE_HOME)
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dl"
