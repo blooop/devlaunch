@@ -308,7 +308,9 @@ def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedPr
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
     if capture:
+        # nosec B603 - using list form, not shell=True; no command injection risk
         return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # nosec B603 - using list form, not shell=True; no command injection risk
     return subprocess.run(cmd, check=False)
 
 
