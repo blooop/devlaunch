@@ -1,6 +1,6 @@
 [project]
 name = "devlaunch"
-version = "0.0.1"
+version = "0.0.2"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
@@ -109,7 +109,7 @@ extension-pkg-whitelist = ["numpy"]
 jobs = 16                           #detect number of cores
 
 [tool.pylint.'MESSAGES CONTROL']
-disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-return-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
+disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-return-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
 enable = "no-else-return,consider-using-in"
 
 [tool.coverage.run]

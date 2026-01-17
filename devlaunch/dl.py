@@ -25,10 +25,20 @@ import logging
 import os
 import pathlib
 import re
+from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
 from .completion import install_completions
+
+
+def get_version() -> str:
+    """Get the package version."""
+    try:
+        return pkg_version("devlaunch")
+    except PackageNotFoundError:
+        return "unknown"
+
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -485,32 +495,41 @@ def print_help():
     help_text = """dl - DevLaunch CLI
 
 Usage:
-    dl                           Interactive workspace selector (fzf)
-    dl <workspace>               Start workspace and attach shell
-    dl <workspace> <command>     Run command in workspace
-    dl owner/repo                Create workspace from GitHub repo
-    dl owner/repo@branch         Create workspace from specific branch
-    dl ./path                    Create workspace from local path
+    dl                               Interactive workspace selector (fzf)
+    dl <user/repo>                   Start workspace and attach shell
+    dl <user/repo> <cmd>             Run workspace command (stop, code, etc.)
+    dl <user/repo> -- <shell>        Run shell command in workspace
 
-Commands:
-    --ls                         List all workspaces
-    --stop <workspace>           Stop a workspace
-    --rm <workspace>             Delete a workspace
-    --code <workspace>           Open workspace in VS Code
-    --status <workspace>         Show workspace status
-    --recreate <workspace>       Recreate workspace container
-    --reset <workspace>          Reset workspace (clean slate)
-    --install                    Install shell completions
-    --help, -h                   Show this help
+Workspace sources:
+    dl myproject                     Existing workspace by name
+    dl user/repo                     Create from GitHub repo
+    dl user/repo@branch              Create from specific branch
+    dl ./path                        Create from local path
+
+Workspace commands:
+    dl <user/repo> stop              Stop the workspace
+    dl <user/repo> rm, prune         Delete the workspace
+    dl <user/repo> code              Open in VS Code
+    dl <user/repo> restart           Stop and start (no rebuild)
+    dl <user/repo> recreate          Recreate container
+    dl <user/repo> reset             Clean slate (remove all, recreate)
+    dl <user/repo> -- <command>      Run shell command in workspace
+
+Global commands:
+    dl --ls                          List all workspaces
+    dl --install                     Install shell completions
+    dl --help, -h                    Show this help
+    dl --version                     Show version
 
 Examples:
-    dl                           # Select workspace with fzf
-    dl myproject                 # Open existing workspace
-    dl loft-sh/devpod            # Create from GitHub
-    dl blooop/devlaunch@main     # Create from specific branch
-    dl ./my-project              # Create from local folder
-    dl --code myproject          # Open in VS Code
-    dl myproject 'make test'     # Run command in workspace
+    dl                               # Select workspace with fzf
+    dl devpod                        # Open existing workspace
+    dl loft-sh/devpod                # Create from GitHub
+    dl blooop/devlaunch@main         # Create from specific branch
+    dl ./my-project                  # Create from local folder
+    dl blooop/devlaunch code         # Open in VS Code
+    dl blooop/devlaunch -- make test # Run command in workspace
+    dl blooop/devlaunch stop         # Stop workspace
 """
     print(help_text)
 
@@ -519,20 +538,24 @@ def main() -> int:
     """Main entry point for dl CLI."""
     args = sys.argv[1:]
 
-    # Handle help
-    if not args or (len(args) == 1 and args[0] in ("--help", "-h")):
-        if not args:
-            # No args - try fzf selection
-            selected = fuzzy_select_workspace()
-            if not selected:
-                print_help()
-                return 1
-            workspace_up(selected)
-            return workspace_ssh(selected)
+    # No args - try fzf selection
+    if not args:
+        selected = fuzzy_select_workspace()
+        if not selected:
+            print_help()
+            return 1
+        workspace_up(selected)
+        return workspace_ssh(selected)
+
+    # Global commands (no workspace required)
+    if args[0] in ("--help", "-h"):
         print_help()
         return 0
 
-    # Handle flags
+    if args[0] == "--version":
+        print(f"dl {get_version()}")
+        return 0
+
     if args[0] == "--ls":
         print_workspaces()
         return 0
@@ -572,80 +595,9 @@ def main() -> int:
         update_completion_cache()
         return install_completions(rc_path)
 
-    if args[0] == "--stop":
-        if len(args) < 2:
-            workspace = fuzzy_select_workspace()
-            if not workspace:
-                logging.error("Usage: dl --stop <workspace>")
-                return 1
-        else:
-            workspace = args[1]
-        return workspace_stop(workspace)
-
-    if args[0] == "--rm":
-        if len(args) < 2:
-            workspace = fuzzy_select_workspace()
-            if not workspace:
-                logging.error("Usage: dl --rm <workspace>")
-                return 1
-        else:
-            workspace = args[1]
-        return workspace_delete(workspace)
-
-    if args[0] == "--status":
-        if len(args) < 2:
-            workspace = fuzzy_select_workspace()
-            if not workspace:
-                logging.error("Usage: dl --status <workspace>")
-                return 1
-        else:
-            workspace = args[1]
-        return workspace_status(workspace)
-
-    if args[0] == "--code":
-        if len(args) < 2:
-            workspace = fuzzy_select_workspace()
-            if not workspace:
-                logging.error("Usage: dl --code <workspace>")
-                return 1
-        else:
-            workspace = args[1]
-        result = workspace_up(workspace, ide="vscode")
-        return result.returncode
-
-    if args[0] == "--recreate":
-        if len(args) < 2:
-            workspace = fuzzy_select_workspace()
-            if not workspace:
-                logging.error("Usage: dl --recreate <workspace>")
-                return 1
-        else:
-            workspace = args[1]
-        workspace_spec = expand_workspace_spec(workspace)
-        workspace_id = spec_to_workspace_id(workspace)
-        result = workspace_up(workspace_spec, recreate=True)
-        if result.returncode != 0:
-            return result.returncode
-        return workspace_ssh(workspace_id)
-
-    if args[0] == "--reset":
-        if len(args) < 2:
-            workspace = fuzzy_select_workspace()
-            if not workspace:
-                logging.error("Usage: dl --reset <workspace>")
-                return 1
-        else:
-            workspace = args[1]
-        workspace_spec = expand_workspace_spec(workspace)
-        workspace_id = spec_to_workspace_id(workspace)
-        result = workspace_up(workspace_spec, reset=True)
-        if result.returncode != 0:
-            return result.returncode
-        return workspace_ssh(workspace_id)
-
-    # Default: workspace name and optional command
+    # Workspace commands: dl <workspace> [subcommand] [-- command]
     raw_spec = args[0]
-    command = " ".join(args[1:]) if len(args) > 1 else None
+    subcommand = args[1] if len(args) > 1 else None
 
     # Validate the workspace spec
     existing_ids = get_workspace_ids()
@@ -654,8 +606,7 @@ def main() -> int:
         logging.error(error)
         return 1
 
-    # Use raw spec as-is if it's an existing workspace ID, otherwise expand
-    # This prevents owner/repo-style workspace IDs from being rewritten
+    # Resolve workspace spec and ID
     if raw_spec in existing_ids:
         workspace_spec = raw_spec
         workspace_id = raw_spec
@@ -663,13 +614,58 @@ def main() -> int:
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
 
-    # Start the workspace
+    # Handle workspace subcommands
+    if subcommand == "stop":
+        return workspace_stop(workspace_id)
+
+    if subcommand in ("rm", "prune"):
+        return workspace_delete(workspace_id)
+
+    if subcommand == "code":
+        result = workspace_up(workspace_spec, ide="vscode")
+        return result.returncode
+
+    if subcommand == "recreate":
+        result = workspace_up(workspace_spec, recreate=True)
+        if result.returncode != 0:
+            return result.returncode
+        return workspace_ssh(workspace_id)
+
+    if subcommand == "restart":
+        # Stop and start without rebuilding
+        stop_ret = workspace_stop(workspace_id)
+        if stop_ret != 0:
+            return stop_ret
+        result = workspace_up(workspace_spec)
+        if result.returncode != 0:
+            return result.returncode
+        return workspace_ssh(workspace_id)
+
+    if subcommand == "reset":
+        # Clean slate - remove everything and recreate
+        result = workspace_up(workspace_spec, reset=True)
+        if result.returncode != 0:
+            return result.returncode
+        return workspace_ssh(workspace_id)
+
+    # Check for shell command (after --)
+    shell_command = None
+    if subcommand == "--" and len(args) > 2:
+        shell_command = " ".join(args[2:])
+    elif subcommand is not None and subcommand != "--":
+        # Unknown subcommand - treat as error
+        logging.error(
+            f"Unknown command '{subcommand}'. Use 'dl {raw_spec} -- {subcommand}' to run a shell command."
+        )
+        return 1
+
+    # Default: start workspace and attach shell
     result = workspace_up(workspace_spec)
     if result.returncode != 0:
         return result.returncode
 
-    # Attach to workspace using the ID (not the full spec)
-    ret = workspace_ssh(workspace_id, command)
+    # Attach to workspace
+    ret = workspace_ssh(workspace_id, shell_command)
 
     # Update cache in background after workspace operations
     update_cache_background()
