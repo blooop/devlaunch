@@ -375,6 +375,19 @@ packages:
   requires_dist:
   - tomli ; python_full_version <= '3.11' and extra == 'toml'
   requires_python: '>=3.10'
+- pypi: ./
+  name: devlaunch
+  version: 0.2.0
+  sha256: d8086b0d9b08f568899eb59e6fb81bcd7c77bc8114277cf35b426c1ccb5e7697
+  requires_dist:
+  - pylint>=3.2.5,<=4.0.4 ; extra == 'test'
+  - pytest-cov>=4.1,<=7.0.0 ; extra == 'test'
+  - pytest>=7.4,<=9.0.2 ; extra == 'test'
+  - hypothesis>=6.104.2,<=6.150.2 ; extra == 'test'
+  - ruff>=0.5.0,<=0.14.13 ; extra == 'test'
+  - coverage>=7.5.4,<=7.13.1 ; extra == 'test'
+  - prek>=0.2.28,<0.3.0 ; extra == 'test'
+  - ty>=0.0.12,<=0.0.12 ; extra == 'test'
 - conda: https://prefix.dev/blooop/linux-64/devpod-0.8.12-hb0f4dca_0.conda
   sha256: bb6fd40fda5500c6b29ba56c0b2108e12aa1a8e63b106c084a95123a511e8564
   license: MPL-2.0
@@ -899,19 +912,6 @@ packages:
   size: 36790521
   timestamp: 1765021515427
   python_site_packages_path: lib/python3.14/site-packages
-- pypi: ./
-  name: python-template
-  version: 0.2.0
-  sha256: dffb058f1ddf6e7b2b10273bab1901be9fc152ac4cb4958bf00d8f20c38191c5
-  requires_dist:
-  - pylint>=3.2.5,<=4.0.4 ; extra == 'test'
-  - pytest-cov>=4.1,<=7.0.0 ; extra == 'test'
-  - pytest>=7.4,<=9.0.2 ; extra == 'test'
-  - hypothesis>=6.104.2,<=6.150.2 ; extra == 'test'
-  - ruff>=0.5.0,<=0.14.13 ; extra == 'test'
-  - coverage>=7.5.4,<=7.13.1 ; extra == 'test'
-  - prek>=0.2.28,<0.3.0 ; extra == 'test'
-  - ty>=0.0.12,<=0.0.12 ; extra == 'test'
 - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.13-8_cp313.conda
   build_number: 8
   sha256: 210bffe7b121e651419cb196a2a63687b087497595c9be9d20ebe97dd06060a7
