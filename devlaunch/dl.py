@@ -388,37 +388,40 @@ def get_git_branches(path: str) -> List[str]:
     return []
 
 
-def remote_branch_exists(owner_repo: str, branch: str) -> bool:
-    """Check if a branch exists on a remote GitHub repository."""
+def _git_ls_remote(owner_repo: str, *args: str) -> Optional[str]:
+    """Run git ls-remote and return stdout, or None on error.
+
+    Includes timeout to prevent hanging on slow/unreachable remotes.
+    """
     url = f"https://github.com/{owner_repo}"
     try:
         result = subprocess.run(
-            ["git", "ls-remote", "--heads", url, branch],
+            ["git", "ls-remote", url, *args],
             capture_output=True,
             text=True,
             check=False,
+            timeout=5,
         )
-        return result.returncode == 0 and result.stdout.strip() != ""
-    except (OSError, subprocess.SubprocessError):
-        return False
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def remote_branch_exists(owner_repo: str, branch: str) -> bool:
+    """Check if a branch exists on a remote GitHub repository."""
+    output = _git_ls_remote(owner_repo, "--heads", branch)
+    return bool(output)
 
 
 def get_remote_head_sha(owner_repo: str) -> Optional[str]:
     """Get the SHA of the default branch (HEAD) of a remote repository."""
-    url = f"https://github.com/{owner_repo}"
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", url, "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Output format: "<sha>\tHEAD"
-            return result.stdout.strip().split()[0]
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return None
+    output = _git_ls_remote(owner_repo, "HEAD")
+    if not output:
+        return None
+    # Output format: "<sha>\tHEAD"
+    return output.strip().split()[0]
 
 
 def create_remote_branch(owner_repo: str, branch: str) -> bool:

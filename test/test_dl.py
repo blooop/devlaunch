@@ -435,10 +435,21 @@ class TestParseOwnerRepoBranch:
         assert parse_owner_repo_branch("/home/user/project") is None
         assert parse_owner_repo_branch("~/projects/test") is None
 
+    def test_path_with_at_returns_none(self):
+        """Test path spec with @ is still treated as path, not branch."""
+        assert parse_owner_repo_branch("./my-project@foo") is None
+        assert parse_owner_repo_branch("/home/user/project@branch") is None
+        assert parse_owner_repo_branch("~/projects/test@main") is None
+
     def test_url_returns_none(self):
         """Test full URL returns None."""
         assert parse_owner_repo_branch("https://github.com/owner/repo") is None
         assert parse_owner_repo_branch("github.com/owner/repo") is None
+
+    def test_url_with_at_returns_none(self):
+        """Test full URL with @ is still treated as URL, not owner/repo+branch."""
+        assert parse_owner_repo_branch("https://github.com/owner/repo@main") is None
+        assert parse_owner_repo_branch("github.com/owner/repo@branch") is None
 
     def test_simple_name_returns_none(self):
         """Test simple workspace name returns None."""
