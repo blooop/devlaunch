@@ -5,14 +5,11 @@ _dl_completion() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    # Command options
-    opts="--ls --repos --stop --rm --code --status --recreate --reset --install --help"
+    # Global command options (only valid as first arg)
+    local global_opts="--ls --install --help"
 
-    # Flag completion
-    if [[ ${cur} == -* ]]; then
-        COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
-        return 0
-    fi
+    # Workspace subcommands
+    local ws_cmds="stop rm code status restart recreate --"
 
     # Cache file location (honors XDG_CACHE_HOME)
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dl"
@@ -28,16 +25,14 @@ _dl_completion() {
         source "$cache_file"
     fi
 
-    # Commands that need workspace completion
-    if [[ "$prev" == "--stop" || "$prev" == "--rm" || "$prev" == "--code" || "$prev" == "--status" || "$prev" == "--recreate" || "$prev" == "--reset" ]]; then
-        if [[ -n "$DL_WORKSPACES" ]]; then
-            COMPREPLY=( $(compgen -W "${DL_WORKSPACES}" -- ${cur}) )
-        fi
-        return 0
-    fi
-
-    # First positional argument: workspace, owner/repo, or path
+    # First argument: global flags, workspaces, repos, owners, or paths
     if [[ ${COMP_CWORD} -eq 1 ]]; then
+        # Global flags
+        if [[ ${cur} == -* ]]; then
+            COMPREPLY=( $(compgen -W "${global_opts}" -- ${cur}) )
+            return 0
+        fi
+
         # Don't add space after completion to allow @branch suffix
         compopt -o nospace
 
@@ -71,6 +66,19 @@ _dl_completion() {
         return 0
     fi
 
+    # Second argument (after workspace): subcommands
+    if [[ ${COMP_CWORD} -eq 2 ]]; then
+        # Don't complete after global flags
+        local first="${COMP_WORDS[1]}"
+        if [[ "$first" == --* ]]; then
+            return 0
+        fi
+
+        COMPREPLY=( $(compgen -W "${ws_cmds}" -- ${cur}) )
+        return 0
+    fi
+
+    # After "--": no completion (user types shell command)
     return 0
 }
 
