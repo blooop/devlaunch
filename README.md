@@ -47,7 +47,8 @@ dl ./path                        # Create workspace from local path
 | Command | Description |
 |---------|-------------|
 | `dl <workspace> stop` | Stop the workspace |
-| `dl <workspace> rm` | Delete the workspace (alias: `prune`) |
+| `dl <workspace> rm` | Delete the workspace |
+| `dl <workspace> prune` | Delete the workspace (alias for `rm`) |
 | `dl <workspace> code` | Open workspace in VS Code |
 | `dl <workspace> restart` | Stop and start (no rebuild) |
 | `dl <workspace> recreate` | Recreate container |
@@ -69,26 +70,25 @@ dl ./path                        # Create workspace from local path
 # Select workspace interactively with fzf
 dl
 
-# Open an existing workspace
-dl myproject
+# Open an existing workspace by name
+dl myworkspace
 
 # Create workspace from GitHub repository
-dl loft-sh/devpod
+dl user/repo
 
 # Create workspace from specific branch
-dl blooop/devlaunch@main
+dl user/repo@main
 
 # Create workspace from local folder
 dl ./my-project
 
-# Open workspace in VS Code
-dl blooop/devlaunch code
+# Workspace commands (stop, code, rm, prune, restart, recreate, reset)
+dl myworkspace stop
+dl myworkspace code
+dl myworkspace prune
 
-# Run a command in workspace
-dl blooop/devlaunch -- make test
-
-# Stop a workspace
-dl blooop/devlaunch stop
+# Run a shell command in workspace
+dl myworkspace -- make test
 ```
 
 ## Features
@@ -106,7 +106,7 @@ After running `dl --install`, you get intelligent tab completion:
 - Workspace names from your devpod list
 - Known GitHub owners and repositories from your workspaces
 - File/directory paths when starting with `./`, `/`, or `~`
-- All command flags (`--ls`, `--stop`, etc.)
+- All global flags (`--ls`, `--install`, etc.) and workspace commands
 
 ## Development
 
