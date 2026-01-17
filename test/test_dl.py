@@ -540,9 +540,7 @@ class TestCacheFunctions:
     def test_read_nonexistent_cache(self):
         """Test reading nonexistent cache returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch(
-                "devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "nonexistent.json"
-            ):
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "nonexistent.json"):
                 result = read_completion_cache()
                 assert result is None
 
