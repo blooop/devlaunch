@@ -33,27 +33,35 @@ source ~/.bashrc  # or restart your terminal
 ## Usage
 
 ```bash
-dl                           # Interactive workspace selector (fzf)
-dl <workspace>               # Start workspace and attach shell
-dl <workspace> <command>     # Run command in workspace
-dl owner/repo                # Create workspace from GitHub repo
-dl owner/repo@branch         # Create workspace from specific branch
-dl ./path                    # Create workspace from local path
+dl                               # Interactive workspace selector (fzf)
+dl <workspace>                   # Start workspace and attach shell
+dl <workspace> <cmd>             # Run workspace command (stop, code, etc.)
+dl <workspace> -- <command>      # Run shell command in workspace
+dl owner/repo                    # Create workspace from GitHub repo
+dl owner/repo@branch             # Create workspace from specific branch
+dl ./path                        # Create workspace from local path
 ```
 
-## Commands
+## Workspace Commands
+
+| Command | Description |
+|---------|-------------|
+| `dl <workspace> stop` | Stop the workspace |
+| `dl <workspace> rm` | Delete the workspace (alias: `prune`) |
+| `dl <workspace> code` | Open workspace in VS Code |
+| `dl <workspace> restart` | Stop and start (no rebuild) |
+| `dl <workspace> recreate` | Recreate container |
+| `dl <workspace> reset` | Reset workspace (clean slate) |
+| `dl <workspace> -- <cmd>` | Run shell command in workspace |
+
+## Global Commands
 
 | Command | Description |
 |---------|-------------|
 | `dl --ls` | List all workspaces |
-| `dl --stop <workspace>` | Stop a workspace |
-| `dl --rm <workspace>` | Delete a workspace |
-| `dl --code <workspace>` | Open workspace in VS Code |
-| `dl --status <workspace>` | Show workspace status |
-| `dl --recreate <workspace>` | Recreate workspace container |
-| `dl --reset <workspace>` | Reset workspace (clean slate) |
 | `dl --install` | Install shell completions |
-| `dl --help` | Show help |
+| `dl --help, -h` | Show help |
+| `dl --version` | Show version |
 
 ## Examples
 
@@ -74,10 +82,13 @@ dl blooop/devlaunch@main
 dl ./my-project
 
 # Open workspace in VS Code
-dl --code myproject
+dl blooop/devlaunch code
 
 # Run a command in workspace
-dl myproject 'make test'
+dl blooop/devlaunch -- make test
+
+# Stop a workspace
+dl blooop/devlaunch stop
 ```
 
 ## Features
