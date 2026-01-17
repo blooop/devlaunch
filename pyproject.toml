@@ -1,0 +1,123 @@
+[project]
+name = "python_template"
+version = "0.2.0"
+authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
+description = "A python package template"
+readme = "README.md"
+license = "MIT"
+
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/blooop/python_template"
+Home = "https://github.com/blooop/python_template"
+
+[tool.pixi.workspace]
+channels = ["conda-forge", "https://prefix.dev/blooop"]
+platforms = ["linux-64"]
+
+[tool.pixi.dependencies]
+python = ">=3.10"
+shellcheck = ">=0.10.0,<0.11"
+devpod = ">=0.8.0,<0.9"
+gh = ">=2.63.0"
+
+[tool.pixi.feature.py310.dependencies]
+python = "3.10.*"
+[tool.pixi.feature.py311.dependencies]
+python = "3.11.*"
+[tool.pixi.feature.py312.dependencies]
+python = "3.12.*"
+[tool.pixi.feature.py313.dependencies]
+python = "3.13.*"
+
+[tool.pixi.pypi-dependencies]
+python_template = { path = ".", editable = true }
+
+[project.optional-dependencies]
+test = [
+  "pylint>=3.2.5,<=4.0.4",
+  "pytest-cov>=4.1,<=7.0.0",
+  "pytest>=7.4,<=9.0.2",
+  "hypothesis>=6.104.2,<=6.150.2",
+  "ruff>=0.5.0,<=0.14.13",
+  "coverage>=7.5.4,<=7.13.1",
+  "prek>=0.2.28,<0.3.0",
+  "ty>=0.0.12,<=0.0.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["python_template"]
+
+# Environments
+[tool.pixi.environments]
+default = { features = ["test"], solve-group = "default" }
+py310 = ["py310", "test"]
+py311 = ["py311", "test"]
+py312 = ["py312", "test"]
+py313 = ["py313", "test"]
+
+[tool.pixi.tasks]
+dev-add-docker = "devpod provider list | grep -qw docker || devpod provider add docker"
+dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
+dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
+dev-restart = { cmd = "devpod up . --recreate --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
+dev-restart-vs = { cmd = "devpod up . --recreate --ide vscode", depends-on = ["dev-add-docker"] }
+prek = "prek run -a"
+prek-update = "prek autoupdate"
+format = "ruff format ."
+check-clean-workspace = "git diff --exit-code"
+ruff-lint = "ruff check . --fix"
+pylint = "pylint --version && echo 'running pylint...' && pylint $(git ls-files '*.py')"
+ty = "ty check --respect-ignore-files ."
+lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
+style = { depends-on = ["format", "lint"] }
+commit-format = "git commit -a -m'autoformat code' || true"
+test = "pytest"
+coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
+coverage-report = "coverage report -m"
+update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
+push = "git push"
+update-lock-push = { depends-on = ["update-lock", "push"] }
+fix = { depends-on = ["update-lock", "format", "ruff-lint", "prek"] }
+fix-commit-push = { depends-on = ["fix", "commit-format", "update-lock-push"] }
+ci-no-cover = { depends-on = ["style", "test"] }
+ci = { depends-on = [
+  "format",
+  "ruff-lint",
+  "pylint",
+  "ty",
+  "coverage",
+  "coverage-report",
+] }
+ci-push = { depends-on = ["format", "ruff-lint", "update-lock", "ci", "push"] }
+clear-pixi = "rm -rf .pixi pixi.lock"
+setup-git-merge-driver = "git config merge.ourslock.driver true"
+update-from-template-repo = "./scripts/update_from_template.sh"
+
+[tool.pylint]
+extension-pkg-whitelist = ["numpy"]
+jobs = 16                           #detect number of cores
+
+[tool.pylint.'MESSAGES CONTROL']
+disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-locals,too-many-branches,too-many-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
+enable = "no-else-return,consider-using-in"
+
+[tool.coverage.run]
+omit = ["*/test/*", "__init__.py"]
+
+[tool.coverage.report]
+exclude_also = [
+  "def __repr__",
+  "if False:",
+  "if 0:",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "pass",
+  "(_):",
+]
