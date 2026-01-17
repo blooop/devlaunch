@@ -1,5 +1,5 @@
 {
-    "name": "python_template",
+    "name": "devlaunch",
     "build": {
         "dockerfile": "Dockerfile",
         "context": ".."
