@@ -8,8 +8,8 @@ package:
   version: ${{ version }}
 
 source:
-  url: https://pypi.io/packages/source/d/devlaunch/devlaunch-${{ version }}.tar.gz
-  sha256: 1c68e48cfcd9441977b6ed2d0b5252cc8fa71c0ea1924e99764621fb3d6d1b9b
+  git: https://github.com/blooop/devlaunch.git
+  tag: v${{ version }}
 
 build:
   number: 0
