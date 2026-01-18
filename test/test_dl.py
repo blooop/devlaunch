@@ -12,6 +12,7 @@ from devlaunch.dl import (
     is_git_spec,
     validate_workspace_spec,
     parse_owner_repo_from_url,
+    parse_owner_repo_branch,
     discover_repos_from_workspaces,
     get_known_repos,
     Workspace,
@@ -23,6 +24,12 @@ from devlaunch.dl import (
     read_completion_cache,
     write_completion_cache,
     write_bash_completion_cache,
+    update_completion_cache,
+    remote_branch_exists,
+    get_remote_head_sha,
+    get_remote_branches,
+    create_remote_branch,
+    ensure_remote_branch,
     main,
     print_help,
     print_workspaces,
@@ -404,6 +411,299 @@ class TestParseOwnerRepoFromUrl:
         assert result is None
 
 
+class TestParseOwnerRepoBranch:
+    """Tests for parse_owner_repo_branch function."""
+
+    def test_simple_owner_repo(self):
+        """Test owner/repo without branch."""
+        result = parse_owner_repo_branch("blooop/devlaunch")
+        assert result == ("blooop/devlaunch", None)
+
+    def test_owner_repo_with_branch(self):
+        """Test owner/repo@branch."""
+        result = parse_owner_repo_branch("blooop/devlaunch@main")
+        assert result == ("blooop/devlaunch", "main")
+
+    def test_owner_repo_with_feature_branch(self):
+        """Test owner/repo@feature/branch."""
+        result = parse_owner_repo_branch("owner/repo@feature/my-branch")
+        assert result == ("owner/repo", "feature/my-branch")
+
+    def test_path_returns_none(self):
+        """Test path spec returns None."""
+        assert parse_owner_repo_branch("./my-project") is None
+        assert parse_owner_repo_branch("/home/user/project") is None
+        assert parse_owner_repo_branch("~/projects/test") is None
+
+    def test_path_with_at_returns_none(self):
+        """Test path spec with @ is still treated as path, not branch."""
+        assert parse_owner_repo_branch("./my-project@foo") is None
+        assert parse_owner_repo_branch("/home/user/project@branch") is None
+        assert parse_owner_repo_branch("~/projects/test@main") is None
+
+    def test_url_returns_none(self):
+        """Test full URL returns None."""
+        assert parse_owner_repo_branch("https://github.com/owner/repo") is None
+        assert parse_owner_repo_branch("github.com/owner/repo") is None
+
+    def test_url_with_at_returns_none(self):
+        """Test full URL with @ is still treated as URL, not owner/repo+branch."""
+        assert parse_owner_repo_branch("https://github.com/owner/repo@main") is None
+        assert parse_owner_repo_branch("github.com/owner/repo@branch") is None
+
+    def test_simple_name_returns_none(self):
+        """Test simple workspace name returns None."""
+        assert parse_owner_repo_branch("myworkspace") is None
+
+
+class TestRemoteBranchFunctions:
+    """Tests for remote branch functions."""
+
+    @patch("subprocess.run")
+    def test_remote_branch_exists_true(self, mock_run):
+        """Test branch exists returns True."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="abc123\trefs/heads/main\n",
+        )
+        assert remote_branch_exists("owner/repo", "main") is True
+
+    @patch("subprocess.run")
+    def test_remote_branch_exists_false(self, mock_run):
+        """Test branch doesn't exist returns False."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="",
+        )
+        assert remote_branch_exists("owner/repo", "nonexistent") is False
+
+    @patch("subprocess.run")
+    def test_remote_branch_exists_error(self, mock_run):
+        """Test git error returns False."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert remote_branch_exists("owner/repo", "main") is False
+
+    @patch("subprocess.run")
+    def test_get_remote_head_sha(self, mock_run):
+        """Test getting HEAD SHA."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="abc123def456\tHEAD\n",
+        )
+        assert get_remote_head_sha("owner/repo") == "abc123def456"
+
+    @patch("subprocess.run")
+    def test_get_remote_head_sha_error(self, mock_run):
+        """Test git error returns None."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert get_remote_head_sha("owner/repo") is None
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_success(self, mock_run, mock_git_dir):
+        """Test successful branch creation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            mock_run.return_value = MagicMock(returncode=0)
+            assert create_remote_branch("owner/repo", "newbranch") is True
+            # Should call: git init (no .git exists), git fetch, git push
+            assert mock_run.call_count == 3
+
+    @patch("devlaunch.dl.remote_branch_exists")
+    def test_ensure_branch_exists_already(self, mock_exists):
+        """Test ensure returns True if branch exists."""
+        mock_exists.return_value = True
+        assert ensure_remote_branch("owner/repo", "main") is True
+
+    @patch("devlaunch.dl.create_remote_branch")
+    @patch("devlaunch.dl.remote_branch_exists")
+    def test_ensure_branch_creates_new(self, mock_exists, mock_create):
+        """Test ensure creates branch if doesn't exist."""
+        mock_exists.return_value = False
+        mock_create.return_value = True
+        assert ensure_remote_branch("owner/repo", "newbranch") is True
+        mock_create.assert_called_once_with("owner/repo", "newbranch")
+
+    @patch("devlaunch.dl.create_remote_branch")
+    @patch("devlaunch.dl.remote_branch_exists")
+    def test_ensure_branch_create_fails(self, mock_exists, mock_create):
+        """Test ensure returns False if branch creation fails."""
+        mock_exists.return_value = False
+        mock_create.return_value = False
+        assert ensure_remote_branch("owner/repo", "newbranch") is False
+
+    @patch("subprocess.run")
+    def test_get_remote_branches_success(self, mock_run):
+        """Test getting list of branches from remote."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="abc123\trefs/heads/main\ndef456\trefs/heads/feature/test\n",
+        )
+        branches = get_remote_branches("owner/repo")
+        assert branches == ["main", "feature/test"]
+
+    @patch("subprocess.run")
+    def test_get_remote_branches_empty(self, mock_run):
+        """Test getting branches from repo with no branches."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        branches = get_remote_branches("owner/repo")
+        assert branches == []
+
+    @patch("subprocess.run")
+    def test_get_remote_branches_error(self, mock_run):
+        """Test git error returns empty list."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        branches = get_remote_branches("owner/repo")
+        assert branches == []
+
+    @patch("subprocess.run")
+    def test_get_remote_branches_timeout(self, mock_run):
+        """Test timeout returns empty list."""
+        import subprocess
+
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=5)
+        branches = get_remote_branches("owner/repo")
+        assert branches == []
+
+    @patch("subprocess.run")
+    def test_get_remote_branches_os_error(self, mock_run):
+        """Test OSError returns empty list."""
+        mock_run.side_effect = OSError("git not found")
+        branches = get_remote_branches("owner/repo")
+        assert branches == []
+
+    @patch("subprocess.run")
+    def test_remote_branch_exists_os_error(self, mock_run):
+        """Test OSError returns False."""
+        mock_run.side_effect = OSError("git not found")
+        assert remote_branch_exists("owner/repo", "main") is False
+
+    @patch("subprocess.run")
+    def test_get_remote_head_sha_os_error(self, mock_run):
+        """Test OSError returns None."""
+        mock_run.side_effect = OSError("git not found")
+        assert get_remote_head_sha("owner/repo") is None
+
+    @patch("subprocess.run")
+    def test_get_remote_head_sha_empty_output(self, mock_run):
+        """Test empty output returns None."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        assert get_remote_head_sha("owner/repo") is None
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_push_fails(self, mock_run, mock_git_dir):
+        """Test branch creation returns False on push failure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            # git init succeeds, git fetch succeeds, git push fails
+            mock_run.side_effect = [
+                MagicMock(returncode=0),  # git init
+                MagicMock(returncode=0),  # git fetch
+                MagicMock(returncode=1, stderr="error: failed to push"),  # git push
+            ]
+            assert create_remote_branch("owner/repo", "newbranch") is False
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_os_error(self, mock_run, mock_git_dir):
+        """Test branch creation handles OSError."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            mock_run.side_effect = OSError("git not found")
+            assert create_remote_branch("owner/repo", "newbranch") is False
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_uses_cache_dir(self, mock_run, mock_git_dir):
+        """Test branch creation uses cache directory for git operations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = pathlib.Path(tmpdir)
+            mock_git_dir.return_value = cache_dir
+            mock_run.return_value = MagicMock(returncode=0)
+            result = create_remote_branch("owner/repo", "newbranch")
+            assert result is True
+            # Should have called git init, git fetch, git push
+            assert mock_run.call_count == 3
+            # All calls should use the cache directory
+            for call in mock_run.call_args_list:
+                assert call[1]["cwd"] == cache_dir
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_skips_init_if_exists(self, mock_run, mock_git_dir):
+        """Test branch creation skips git init if .git already exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = pathlib.Path(tmpdir)
+            # Create .git directory to simulate existing repo
+            (cache_dir / ".git").mkdir()
+            mock_git_dir.return_value = cache_dir
+            mock_run.return_value = MagicMock(returncode=0)
+            result = create_remote_branch("owner/repo", "newbranch")
+            assert result is True
+            # Should only call git fetch, git push (no init)
+            assert mock_run.call_count == 2
+            assert mock_run.call_args_list[0][0][0][0:2] == ["git", "fetch"]
+            assert mock_run.call_args_list[1][0][0][0:2] == ["git", "push"]
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_git_init_fails(self, mock_run, mock_git_dir):
+        """Test branch creation fails gracefully if git init fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            mock_run.return_value = MagicMock(returncode=1, stderr="init failed")
+            result = create_remote_branch("owner/repo", "newbranch")
+            assert result is False
+            # Should only call git init
+            assert mock_run.call_count == 1
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_fetch_fails(self, mock_run, mock_git_dir, caplog):
+        """Test branch creation fails gracefully if git fetch fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            mock_run.side_effect = [
+                MagicMock(returncode=0),  # git init
+                MagicMock(returncode=1, stderr="fetch failed"),  # git fetch
+            ]
+            result = create_remote_branch("owner/repo", "newbranch")
+            assert result is False
+            assert mock_run.call_count == 2
+            assert "Failed to fetch" in caplog.text
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_ssh_auth_fails(self, mock_run, mock_git_dir, caplog):
+        """Test branch creation gives helpful error when SSH auth fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            # git init succeeds, git fetch succeeds, git push fails with SSH error
+            mock_run.side_effect = [
+                MagicMock(returncode=0),  # git init
+                MagicMock(returncode=0),  # git fetch
+                MagicMock(returncode=128, stderr="git@github.com: Permission denied (publickey)."),
+            ]
+            result = create_remote_branch("owner/repo", "newbranch")
+            assert result is False
+            assert "SSH authentication failed" in caplog.text
+            assert "configure SSH keys" in caplog.text
+
+    @patch("devlaunch.dl._get_git_work_dir")
+    @patch("subprocess.run")
+    def test_create_remote_branch_uses_ssh_url(self, mock_run, mock_git_dir):
+        """Test branch creation uses SSH URL for push."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_git_dir.return_value = pathlib.Path(tmpdir)
+            mock_run.return_value = MagicMock(returncode=0)
+            create_remote_branch("owner/repo", "newbranch")
+            # Check that git push (3rd call) was called with SSH URL
+            push_call = mock_run.call_args_list[2]
+            push_args = push_call[0][0]
+            assert "git@github.com:owner/repo.git" in push_args
+
+
 class TestDiscoverReposFromWorkspaces:
     """Tests for discover_repos_from_workspaces function."""
 
@@ -495,25 +795,43 @@ class TestGetVersion:
 class TestSpecToWorkspaceId:
     """Tests for spec_to_workspace_id function."""
 
-    def test_owner_repo_extracts_repo(self):
-        """Test owner/repo extracts repo name."""
-        assert spec_to_workspace_id("blooop/devlaunch") == "devlaunch"
+    def test_owner_repo_full_url_sanitized(self):
+        """Test owner/repo generates full sanitized URL as workspace ID."""
+        assert spec_to_workspace_id("blooop/devlaunch") == "github-com-blooop-devlaunch"
 
-    def test_owner_repo_with_branch(self):
-        """Test owner/repo@branch extracts repo name."""
-        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch"
+    def test_owner_repo_with_branch_uses_branch(self):
+        """Test owner/repo@branch uses sanitized branch as workspace ID."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") == "main"
 
-    def test_github_url(self):
-        """Test github.com/owner/repo extracts repo name."""
-        assert spec_to_workspace_id("github.com/loft-sh/devpod") == "devpod"
+    def test_owner_repo_with_feature_branch(self):
+        """Test owner/repo@feature/branch sanitizes branch name."""
+        assert spec_to_workspace_id("owner/repo@feature/my-branch") == "feature-my-branch"
 
-    def test_https_url(self):
-        """Test https URL extracts repo name."""
-        assert spec_to_workspace_id("https://github.com/owner/repo") == "repo"
+    def test_owner_repo_with_uppercase_branch(self):
+        """Test branch name is lowercased."""
+        assert spec_to_workspace_id("Owner/Repo@Feature/MyBranch") == "feature-mybranch"
 
-    def test_url_with_git_suffix(self):
+    def test_github_url_sanitized(self):
+        """Test github.com/owner/repo generates sanitized ID."""
+        assert spec_to_workspace_id("github.com/loft-sh/devpod") == "github-com-loft-sh-devpod"
+
+    def test_https_url_strips_protocol(self):
+        """Test https URL strips protocol and sanitizes."""
+        assert spec_to_workspace_id("https://github.com/owner/repo") == "github-com-owner-repo"
+
+    def test_url_with_git_suffix_strips_it(self):
         """Test URL with .git suffix strips it."""
-        assert spec_to_workspace_id("github.com/owner/repo.git") == "repo"
+        assert spec_to_workspace_id("github.com/owner/repo.git") == "github-com-owner-repo"
+
+    def test_underscore_removed_from_repo(self):
+        """Test underscores are removed from repo-based workspace ID."""
+        assert spec_to_workspace_id("blooop/test_renv") == "github-com-blooop-testrenv"
+
+    def test_branch_allows_multiple_workspaces(self):
+        """Test different branches get different workspace IDs."""
+        assert spec_to_workspace_id("blooop/test_renv@nb12") == "nb12"
+        assert spec_to_workspace_id("blooop/test_renv@nb14") == "nb14"
+        # Different branches = different IDs = can be open simultaneously
 
     def test_path_extracts_directory_name(self):
         """Test path extracts directory name."""
@@ -555,6 +873,87 @@ class TestCacheFunctions:
                 assert 'DL_WORKSPACES="ws1 ws2"' in content
                 assert 'DL_REPOS="a/b"' in content
                 assert 'DL_OWNERS="a"' in content
+
+    def test_write_bash_completion_cache_with_branches(self):
+        """Test writing bash completion cache includes branches."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bash_file = pathlib.Path(tmpdir) / "completions.bash"
+            with patch("devlaunch.dl.BASH_CACHE_FILE", bash_file):
+                data = {
+                    "workspaces": ["ws1"],
+                    "repos": ["owner/repo"],
+                    "owners": ["owner"],
+                    "branches": ["owner/repo@main", "owner/repo@develop"],
+                }
+                write_bash_completion_cache(data)
+                content = bash_file.read_text()
+                assert 'DL_BRANCHES="owner/repo@main owner/repo@develop"' in content
+
+    def test_write_and_read_cache_with_branches(self):
+        """Test cache roundtrip includes branches."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                data = {
+                    "workspaces": ["ws1"],
+                    "repos": ["owner/repo"],
+                    "owners": ["owner"],
+                    "branches": ["owner/repo@main", "owner/repo@feature/test"],
+                }
+                write_completion_cache(data)
+                result = read_completion_cache()
+                assert result is not None
+                assert result == data
+                assert result["branches"] == ["owner/repo@main", "owner/repo@feature/test"]
+
+    @patch("devlaunch.dl.get_remote_branches")
+    @patch("devlaunch.dl.discover_repos_from_workspaces")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_update_completion_cache_fetches_branches(
+        self, mock_list, mock_discover, mock_branches
+    ):
+        """Test update_completion_cache fetches branches for all repos."""
+        mock_list.return_value = [
+            Workspace("ws1", "git", "github.com/owner/repo1", "", "docker", "vscode"),
+        ]
+        mock_discover.return_value = {"owner": ["repo1", "repo2"]}
+        mock_branches.side_effect = [
+            ["main", "develop"],  # branches for owner/repo1
+            ["main", "feature/x"],  # branches for owner/repo2
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
+                    data = update_completion_cache()
+
+        assert "branches" in data
+        assert "owner/repo1@main" in data["branches"]
+        assert "owner/repo1@develop" in data["branches"]
+        assert "owner/repo2@main" in data["branches"]
+        assert "owner/repo2@feature/x" in data["branches"]
+        assert len(data["branches"]) == 4
+
+    @patch("devlaunch.dl.get_remote_branches")
+    @patch("devlaunch.dl.discover_repos_from_workspaces")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_update_completion_cache_handles_branch_fetch_failure(
+        self, mock_list, mock_discover, mock_branches
+    ):
+        """Test update_completion_cache handles repos where branch fetch fails."""
+        mock_list.return_value = []
+        mock_discover.return_value = {"owner": ["repo1"]}
+        mock_branches.return_value = []  # Branch fetch failed
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
+                    data = update_completion_cache()
+
+        assert data["branches"] == []
 
 
 class TestRunDevpod:
@@ -748,7 +1147,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "code"]):
             result = main()
         assert result == 0
-        mock_up.assert_called_once_with("myws", ide="vscode")
+        mock_up.assert_called_once_with("myws", ide="vscode", workspace_id=None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -761,7 +1160,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
             result = main()
         assert result == 0
-        mock_up.assert_called_once_with("myws", recreate=True)
+        mock_up.assert_called_once_with("myws", recreate=True, workspace_id=None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_stop")
@@ -777,7 +1176,7 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_stop.assert_called_once()
-        mock_up.assert_called_once()
+        mock_up.assert_called_once_with("myws", workspace_id=None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -790,7 +1189,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "reset"]):
             result = main()
         assert result == 0
-        mock_up.assert_called_once_with("myws", reset=True)
+        mock_up.assert_called_once_with("myws", reset=True, workspace_id=None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     def test_main_unknown_command_error(self, mock_ids, caplog):
@@ -851,12 +1250,115 @@ class TestMainCLI:
         """Test creating workspace from owner/repo."""
         mock_ids.return_value = []  # Not existing
         mock_expand.return_value = "github.com/owner/repo"
-        mock_spec_id.return_value = "repo"
+        mock_spec_id.return_value = "github-com-owner-repo"
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo"]):
             result = main()
         assert result == 0
         mock_expand.assert_called()
-        mock_up.assert_called_once_with("github.com/owner/repo")
-        mock_ssh.assert_called_once_with("repo", None)
+        mock_up.assert_called_once_with(
+            "github.com/owner/repo", workspace_id="github-com-owner-repo"
+        )
+        mock_ssh.assert_called_once_with("github-com-owner-repo", None)
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.ensure_remote_branch")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_new_workspace_from_repo_with_existing_branch(
+        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids
+    ):
+        """Test creating workspace from owner/repo@branch when branch exists."""
+        mock_ids.return_value = []  # Not existing
+        mock_ensure.return_value = True  # Branch exists
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 0
+        mock_ensure.assert_called_once_with("owner/repo", "main")
+        # workspace_id is the branch name when branch is specified
+        mock_up.assert_called_once_with("github.com/owner/repo@main", workspace_id="main")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.ensure_remote_branch")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_new_workspace_creates_branch(
+        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids
+    ):
+        """Test creating workspace from owner/repo@newbranch creates the branch."""
+        mock_ids.return_value = []  # Not existing
+        mock_ensure.return_value = True  # Branch created successfully
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
+            result = main()
+        assert result == 0
+        mock_ensure.assert_called_once_with("owner/repo", "newbranch")
+        mock_up.assert_called_once_with("github.com/owner/repo@newbranch", workspace_id="newbranch")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.ensure_remote_branch")
+    def test_main_branch_creation_fails(self, mock_ensure, mock_ids):
+        """Test error when branch creation fails."""
+        mock_ids.return_value = []  # Not existing
+        mock_ensure.return_value = False  # Branch creation failed
+        with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
+            result = main()
+        assert result == 1
+        mock_ensure.assert_called_once_with("owner/repo", "newbranch")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.ensure_remote_branch")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_feature_branch_with_slash(self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids):
+        """Test creating workspace with feature/branch style branch name."""
+        mock_ids.return_value = []
+        mock_ensure.return_value = True
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo@feature/my-feature"]):
+            result = main()
+        assert result == 0
+        mock_ensure.assert_called_once_with("owner/repo", "feature/my-feature")
+        # Branch name is sanitized: feature/my-feature -> feature-my-feature
+        mock_up.assert_called_once_with(
+            "github.com/owner/repo@feature/my-feature", workspace_id="feature-my-feature"
+        )
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_existing_workspace_no_branch_check(self, _cache, mock_ssh, mock_up, mock_ids):
+        """Test existing workspace doesn't trigger branch check."""
+        mock_ids.return_value = ["myworkspace"]  # Existing
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        # Use existing workspace name (not owner/repo format)
+        with patch.object(sys, "argv", ["dl", "myworkspace"]):
+            with patch("devlaunch.dl.ensure_remote_branch") as mock_ensure:
+                result = main()
+        assert result == 0
+        mock_ensure.assert_not_called()  # No branch check for existing workspace
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_main_repo_without_branch_no_branch_check(self, _cache, mock_ssh, mock_up, mock_ids):
+        """Test owner/repo without @branch doesn't trigger branch check."""
+        mock_ids.return_value = []
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            with patch("devlaunch.dl.ensure_remote_branch") as mock_ensure:
+                result = main()
+        assert result == 0
+        mock_ensure.assert_not_called()  # No branch specified
