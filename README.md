@@ -72,6 +72,28 @@ dl ./path                        # Create from local path
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
 | `dl <user/repo> -- <command>` | Run shell command in workspace |
 
+## Devcontainer Lifecycle Scripts
+
+When using devcontainers, lifecycle scripts run at specific points. Here's when each script executes relative to `dl` commands:
+
+| `dl` Command | `initializeCommand` | `onCreateCommand` | `postCreateCommand` | `postStartCommand` |
+|--------------|:-------------------:|:-----------------:|:-------------------:|:------------------:|
+| `dl user/repo` (first time) | ✅ | ✅ | ✅ | ✅ |
+| `dl user/repo` (subsequent) | ❌ | ❌ | ❌ | ✅ |
+| `dl user/repo stop` | ❌ | ❌ | ❌ | ❌ |
+| `dl user/repo restart` | ❌ | ❌ | ❌ | ✅ |
+| `dl user/repo recreate` | ✅ | ✅ | ✅ | ✅ |
+| `dl user/repo reset` | ✅ | ✅ | ✅ | ✅ |
+
+**Key points:**
+- **First launch**: All lifecycle scripts run in sequence
+- **Subsequent attaches**: Only `postStartCommand` runs (container already exists)
+- **restart**: Stops and starts the existing container—only `postStartCommand` runs
+- **recreate**: Destroys and recreates the container—all scripts run again
+- **reset**: Removes everything and starts fresh—all scripts run again
+
+This means `postCreateCommand` (often the slow build step) only runs when the container is *created*, not on every start.
+
 ## Global Commands
 
 | Command | Description |
