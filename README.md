@@ -16,13 +16,23 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 
 ## Installation
 
-```bash
-# Using pixi (recommended)
-pixi global install devlaunch
+### Pixi (Recommended)
 
-# Using pip
+```bash
+pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
+```
+
+This installs `devlaunch` along with `devpod` and all dependencies automatically.
+
+### Pip
+
+```bash
 pip install devlaunch
 ```
+
+Note: When using pip, you must install [devpod](https://devpod.sh/docs/getting-started/install) separately.
+
+### Shell Completions
 
 After installation, set up shell completions:
 
