@@ -1,0 +1,52 @@
+schema_version: 1
+
+context:
+  version: "0.0.4"
+
+package:
+  name: devlaunch
+  version: ${{ version }}
+
+source:
+  url: https://pypi.io/packages/source/d/devlaunch/devlaunch-${{ version }}.tar.gz
+  sha256: 1c68e48cfcd9441977b6ed2d0b5252cc8fa71c0ea1924e99764621fb3d6d1b9b
+
+build:
+  number: 0
+  noarch: python
+  script:
+    - python -m pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - hatchling
+  run:
+    - python >=3.10
+    - iterfzf >=1.0.0
+    - devpod >=0.8.0
+
+tests:
+  - python:
+      imports:
+        - devlaunch
+        - devlaunch.dl
+  - script:
+      - dl --help
+
+about:
+  homepage: https://github.com/blooop/devlaunch
+  license: MIT
+  license_file: LICENSE
+  summary: DevLaunch - A streamlined CLI for devpod workspaces
+  description: |
+    DevLaunch provides a streamlined interface for devpod workspaces with
+    interactive workspace selection using fzf fuzzy finder, intuitive
+    autocomplete functionality, and GitHub integration.
+  documentation: https://github.com/blooop/devlaunch#readme
+  repository: https://github.com/blooop/devlaunch
+
+extra:
+  recipe-maintainers:
+    - blooop

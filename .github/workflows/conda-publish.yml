@@ -1,0 +1,65 @@
+name: Conda Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build even if version exists'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  build:
+    name: Build conda package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build conda package
+        uses: prefix-dev/rattler-build-action@v0.2.34
+        with:
+          recipe-path: conda.recipe/recipe.yaml
+          channels: conda-forge,https://prefix.dev/blooop
+          build-args: --no-include-recipe
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: conda-packages
+          path: output/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to prefix.dev
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: conda-packages
+          path: output/
+
+      - name: Setup pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          run-install: false
+
+      - name: Upload to prefix.dev
+        env:
+          PIXI_TOKEN: ${{ secrets.PIXI_TOKEN }}
+        run: |
+          for pkg in $(find output -type f \( -name "*.conda" -o -name "*.tar.bz2" \)); do
+            echo "Uploading ${pkg}"
+            if pixi exec rattler-build upload prefix \
+              -c blooop \
+              --api-key "$PIXI_TOKEN" \
+              "${pkg}"; then
+              echo "Successfully uploaded ${pkg}"
+            else
+              echo "Failed to upload ${pkg} (may already exist)"
+            fi
+          done
