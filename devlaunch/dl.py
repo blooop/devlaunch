@@ -108,7 +108,7 @@ def write_bash_completion_cache(data: Dict[str, Any]) -> None:
 
 def get_remote_branches(owner_repo: str) -> List[str]:
     """Get list of branches from a remote GitHub repository."""
-    url = f"https://github.com/{owner_repo}"
+    url = f"git@github.com:{owner_repo}.git"
     try:
         result = subprocess.run(
             ["git", "ls-remote", "--heads", url],
@@ -243,11 +243,14 @@ def sanitize_workspace_id(name: str) -> str:
 
 
 def spec_to_workspace_id(spec: str) -> str:
-    """Derive the workspace ID that devpod will use for a given spec.
+    """Derive the workspace ID for a given spec.
 
-    Devpod uses:
-    - For git repos with branch: the branch name (sanitized)
-    - For git repos without branch: the repo name
+    When a branch is specified, we use the branch name as the workspace ID
+    to allow multiple branches of the same repo to be open simultaneously.
+    This requires passing --id to devpod.
+
+    - For git repos with branch: sanitized branch name
+    - For git repos without branch: sanitized full URL
     - For paths: the directory name (e.g., ./my-project -> my-project)
     - For existing IDs: the ID as-is
     """
@@ -264,17 +267,26 @@ def spec_to_workspace_id(spec: str) -> str:
 
     # For git URLs or owner/repo
     if is_git_spec(base_spec):
-        # If branch is specified, devpod uses the branch name as workspace ID
+        # If branch specified, use branch name as workspace ID
+        # This allows multiple branches of same repo open simultaneously
         if branch:
             return sanitize_workspace_id(branch)
 
-        # Otherwise use the repo name
-        parts = base_spec.rstrip("/").split("/")
-        repo_name = parts[-1]
-        # Remove .git suffix if present
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-        return repo_name
+        # Otherwise derive from full source URL
+        full_source = expand_workspace_spec(base_spec)
+        # Strip protocol prefix if present
+        if "://" in full_source:
+            full_source = full_source.split("://", 1)[1]
+        # Strip .git suffix if present
+        if full_source.endswith(".git"):
+            full_source = full_source[:-4]
+        # Devpod sanitizes: lowercase, replace . and / with -, remove _
+        workspace_id = full_source.lower()
+        workspace_id = workspace_id.replace(".", "-").replace("/", "-")
+        workspace_id = workspace_id.replace("_", "")
+        # Remove trailing - if any
+        workspace_id = workspace_id.rstrip("-")
+        return workspace_id
 
     # Otherwise assume it's already a workspace ID
     return spec
@@ -391,9 +403,10 @@ def get_git_branches(path: str) -> List[str]:
 def _git_ls_remote(owner_repo: str, *args: str) -> Optional[str]:
     """Run git ls-remote and return stdout, or None on error.
 
+    Uses SSH URL for consistency with other git operations.
     Includes timeout to prevent hanging on slow/unreachable remotes.
     """
-    url = f"https://github.com/{owner_repo}"
+    url = f"git@github.com:{owner_repo}.git"
     try:
         result = subprocess.run(
             ["git", "ls-remote", url, *args],
@@ -424,25 +437,64 @@ def get_remote_head_sha(owner_repo: str) -> Optional[str]:
     return output.strip().split()[0]
 
 
+def _get_git_work_dir() -> pathlib.Path:
+    """Get a persistent git working directory in the cache."""
+    git_dir = CACHE_DIR / "git"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    return git_dir
+
+
 def create_remote_branch(owner_repo: str, branch: str) -> bool:
     """Create a new branch on a remote GitHub repository.
 
     Creates the branch pointing to the current HEAD (default branch).
-    Requires push access to the repository.
+    Requires push access to the repository and configured SSH keys.
     """
-    url = f"https://github.com/{owner_repo}"
+    # Use SSH URL - requires configured SSH keys
+    ssh_url = f"git@github.com:{owner_repo}.git"
 
-    # Get the SHA of the default branch
-    sha = get_remote_head_sha(owner_repo)
-    if not sha:
-        logging.error(f"Failed to get default branch SHA for {owner_repo}")
-        return False
-
-    # Push to create the new branch
-    # Format: git push <url> <sha>:refs/heads/<branch>
     try:
+        # Use persistent cache directory for git operations
+        git_dir = _get_git_work_dir()
+
+        # Initialize git repo if not already done
+        git_init_marker = git_dir / ".git"
+        if not git_init_marker.exists():
+            init_result = subprocess.run(
+                ["git", "init"],
+                cwd=git_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if init_result.returncode != 0:
+                logging.error(f"Failed to init git repo: {init_result.stderr.strip()}")
+                return False
+
+        # Fetch the default branch HEAD from remote via SSH
+        fetch_result = subprocess.run(
+            ["git", "fetch", "--depth=1", ssh_url, "HEAD"],
+            cwd=git_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if fetch_result.returncode != 0:
+            stderr = fetch_result.stderr.strip()
+            if "permission denied" in stderr.lower() or "host key verification" in stderr.lower():
+                logging.error(
+                    f"SSH authentication failed for {owner_repo}.\n"
+                    f"Please create the branch manually on GitHub, or configure SSH keys."
+                )
+            else:
+                logging.error(f"Failed to fetch from {owner_repo}: {stderr}")
+            return False
+
+        # Push FETCH_HEAD to create the new branch
         result = subprocess.run(
-            ["git", "push", url, f"{sha}:refs/heads/{branch}"],
+            ["git", "push", ssh_url, f"FETCH_HEAD:refs/heads/{branch}"],
+            cwd=git_dir,
             capture_output=True,
             text=True,
             check=False,
@@ -450,7 +502,18 @@ def create_remote_branch(owner_repo: str, branch: str) -> bool:
         if result.returncode == 0:
             logging.info(f"Created branch '{branch}' on {owner_repo}")
             return True
-        logging.error(f"Failed to create branch: {result.stderr.strip()}")
+
+        stderr = result.stderr.strip()
+        if "permission denied" in stderr.lower() or "host key verification" in stderr.lower():
+            logging.error(
+                f"SSH authentication failed for {owner_repo}.\n"
+                f"Please create the branch manually on GitHub, or configure SSH keys."
+            )
+        else:
+            logging.error(f"Failed to create branch: {stderr}")
+        return False
+    except subprocess.TimeoutExpired:
+        logging.error(f"Timeout connecting to {owner_repo}")
         return False
     except (OSError, subprocess.SubprocessError) as e:
         logging.error(f"Failed to create branch: {e}")
@@ -602,10 +665,16 @@ def fuzzy_select_workspace() -> Optional[str]:
 
 
 def workspace_up(
-    workspace: str, ide: Optional[str] = None, recreate: bool = False, reset: bool = False
+    workspace: str,
+    ide: Optional[str] = None,
+    recreate: bool = False,
+    reset: bool = False,
+    workspace_id: Optional[str] = None,
 ):
     """Start or create a workspace."""
     args = ["up", workspace]
+    if workspace_id:
+        args.extend(["--id", workspace_id])
     if ide:
         args.extend(["--ide", ide])
     if recreate:
@@ -759,12 +828,15 @@ def main() -> int:
         return 1
 
     # Resolve workspace spec and ID
-    if raw_spec in existing_ids:
+    is_existing = raw_spec in existing_ids
+    if is_existing:
         workspace_spec = raw_spec
         workspace_id = raw_spec
+        custom_id = None  # Don't pass --id for existing workspaces
     else:
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
+        custom_id = workspace_id  # Pass --id to create with our desired ID
 
     # For new git repos with a branch, ensure the branch exists (create if needed)
     parsed = parse_owner_repo_branch(raw_spec)
@@ -781,11 +853,11 @@ def main() -> int:
         return workspace_delete(workspace_id)
 
     if subcommand == "code":
-        result = workspace_up(workspace_spec, ide="vscode")
+        result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
         return result.returncode
 
     if subcommand == "recreate":
-        result = workspace_up(workspace_spec, recreate=True)
+        result = workspace_up(workspace_spec, recreate=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
         return workspace_ssh(workspace_id)
@@ -795,14 +867,14 @@ def main() -> int:
         stop_ret = workspace_stop(workspace_id)
         if stop_ret != 0:
             return stop_ret
-        result = workspace_up(workspace_spec)
+        result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
         return workspace_ssh(workspace_id)
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
-        result = workspace_up(workspace_spec, reset=True)
+        result = workspace_up(workspace_spec, reset=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
         return workspace_ssh(workspace_id)
@@ -819,7 +891,7 @@ def main() -> int:
         return 1
 
     # Default: start workspace and attach shell
-    result = workspace_up(workspace_spec)
+    result = workspace_up(workspace_spec, workspace_id=custom_id)
     if result.returncode != 0:
         return result.returncode
 
