@@ -22,8 +22,7 @@ jobs:
         uses: prefix-dev/rattler-build-action@v0.2.34
         with:
           recipe-path: conda.recipe/recipe.yaml
-          channels: conda-forge,https://prefix.dev/blooop
-          build-args: --no-include-recipe
+          build-args: --channel conda-forge --channel https://prefix.dev/blooop --no-include-recipe
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
