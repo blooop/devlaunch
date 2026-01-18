@@ -1257,7 +1257,9 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_expand.assert_called()
-        mock_up.assert_called_once_with("github.com/owner/repo", workspace_id="github-com-owner-repo")
+        mock_up.assert_called_once_with(
+            "github.com/owner/repo", workspace_id="github-com-owner-repo"
+        )
         mock_ssh.assert_called_once_with("github-com-owner-repo", None)
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1326,7 +1328,9 @@ class TestMainCLI:
         assert result == 0
         mock_ensure.assert_called_once_with("owner/repo", "feature/my-feature")
         # Branch name is sanitized: feature/my-feature -> feature-my-feature
-        mock_up.assert_called_once_with("github.com/owner/repo@feature/my-feature", workspace_id="feature-my-feature")
+        mock_up.assert_called_once_with(
+            "github.com/owner/repo@feature/my-feature", workspace_id="feature-my-feature"
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
