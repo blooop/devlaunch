@@ -5,6 +5,7 @@ import sys
 import tempfile
 import pathlib
 from unittest.mock import patch, MagicMock
+import pytest
 
 from devlaunch.dl import (
     expand_workspace_spec,
@@ -148,9 +149,23 @@ class TestExpandWorkspaceSpec:
             == "git@github.com:owner/repo.git@feature/my-branch"
         )
 
-    def test_no_expand_ssh_url(self):
-        """Test git@github.com: URLs are not double-expanded."""
-        assert expand_workspace_spec("git@github.com:owner/repo.git") == "git@github.com:owner/repo.git"
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            # GitHub SSH URL without branch
+            "git@github.com:owner/repo.git",
+            # GitHub SSH URL with explicit branch suffix
+            "git@github.com:owner/repo.git@feature/my-branch",
+            # Other common SSH hosts to guard against accidental expansion
+            "git@gitlab.com:owner/repo.git",
+            "git@bitbucket.org:owner/repo.git",
+            # Enterprise git hosts
+            "git@enterprise.example.com:owner/repo.git",
+        ],
+    )
+    def test_no_expand_ssh_url(self, spec):
+        """Test SSH-style git@host: URLs (with/without branch) are not double-expanded."""
+        assert expand_workspace_spec(spec) == spec
 
     def test_no_expand_local_path_dot(self):
         """Test ./path is not expanded."""
