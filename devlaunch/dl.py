@@ -224,6 +224,10 @@ def expand_workspace_spec(spec: str) -> str:
     # Don't expand if it's a path
     if is_path_spec(spec):
         return spec
+    # Don't expand SSH URLs (pattern: user@host:path)
+    # Uses specific pattern to avoid silently exempting non-git specs that happen to start with "git@"
+    if re.match(r"^[^@]+@[^:]+:.+", spec):
+        return spec
     # Don't expand if it already looks like a URL
     if "://" in spec or spec.startswith("github.com/") or spec.startswith("gitlab.com/"):
         return spec

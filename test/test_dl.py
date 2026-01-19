@@ -6,6 +6,8 @@ import tempfile
 import pathlib
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
@@ -182,6 +184,19 @@ class TestExpandWorkspaceSpec:
     def test_no_expand_workspace_with_dashes(self):
         """Test workspace names with dashes are not expanded."""
         assert expand_workspace_spec("my-workspace") == "my-workspace"
+
+    @pytest.mark.parametrize(
+        "ssh_url",
+        [
+            "git@github.com:owner/repo.git",
+            "git@github.com:owner/repo.git@feature/my-branch",
+            "git@gitlab.com:owner/repo.git",
+            "git@bitbucket.org:owner/repo.git",
+        ],
+    )
+    def test_no_expand_ssh_url(self, ssh_url):
+        """Test SSH URLs from various hosts are not expanded."""
+        assert expand_workspace_spec(ssh_url) == ssh_url
 
 
 class TestOwnerRepoPattern:
