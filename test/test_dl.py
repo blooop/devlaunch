@@ -140,7 +140,10 @@ class TestExpandWorkspaceSpec:
 
     def test_expand_owner_repo_with_branch(self):
         """Test owner/repo@branch expands correctly to SSH URL."""
-        assert expand_workspace_spec("blooop/devlaunch@main") == "git@github.com:blooop/devlaunch.git@main"
+        assert (
+            expand_workspace_spec("blooop/devlaunch@main")
+            == "git@github.com:blooop/devlaunch.git@main"
+        )
 
     def test_expand_owner_repo_with_feature_branch(self):
         """Test owner/repo@feature/branch expands correctly to SSH URL."""
@@ -1318,7 +1321,9 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_ensure.assert_called_once_with("owner/repo", "newbranch")
-        mock_up.assert_called_once_with("git@github.com:owner/repo.git@newbranch", workspace_id="newbranch")
+        mock_up.assert_called_once_with(
+            "git@github.com:owner/repo.git@newbranch", workspace_id="newbranch"
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.ensure_remote_branch")
