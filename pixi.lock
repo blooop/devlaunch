@@ -477,8 +477,8 @@ packages:
   requires_python: '>=3.10'
 - pypi: ./
   name: devlaunch
-  version: 0.0.4
-  sha256: 9ea7fffe2ab45b7041f637a098f6c4e755938a49f3e206fccee8f2ebfe777b1e
+  version: 0.0.5
+  sha256: cca4ad129b6a8fa867ac50d4f98b7fdd8bcb90f2026bb3507876d6170a8cc095
   requires_dist:
   - iterfzf>=1.0.0
   - pylint>=3.2.5,<=4.0.4 ; extra == 'test'

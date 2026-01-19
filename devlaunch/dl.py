@@ -220,16 +220,23 @@ def is_git_spec(spec: str) -> bool:
 
 
 def expand_workspace_spec(spec: str) -> str:
-    """Expand owner/repo[@branch] to github.com/owner/repo[@branch] for devpod."""
+    """Expand owner/repo[@branch] to git@github.com:owner/repo.git[@branch] for devpod."""
     # Don't expand if it's a path
     if is_path_spec(spec):
         return spec
     # Don't expand if it already looks like a URL
     if "://" in spec or spec.startswith("github.com/") or spec.startswith("gitlab.com/"):
         return spec
-    # Check if it matches owner/repo[@branch] pattern
+    # Don't expand if it's already an SSH URL (more specific pattern: user@host:path)
+    # Matches patterns like git@github.com:, git@gitlab.com:, etc.
+    if re.match(r"^[^@]+@[^:]+:", spec):
+        return spec
+    # Check if it matches owner/repo[@branch] pattern - use SSH URL format for GitHub
     if OWNER_REPO_PATTERN.match(spec):
-        return f"github.com/{spec}"
+        if "@" in spec:
+            owner_repo, branch = spec.split("@", 1)
+            return f"git@github.com:{owner_repo}.git@{branch}"
+        return f"git@github.com:{spec}.git"
     # Otherwise return as-is (existing workspace name)
     return spec
 
@@ -277,12 +284,16 @@ def spec_to_workspace_id(spec: str) -> str:
         # Strip protocol prefix if present
         if "://" in full_source:
             full_source = full_source.split("://", 1)[1]
+        # Strip SSH URL prefix (user@host:) if present
+        ssh_match = re.match(r"^[^@]+@([^:]+):(.*)", full_source)
+        if ssh_match:
+            full_source = f"{ssh_match.group(1)}/{ssh_match.group(2)}"
         # Strip .git suffix if present
         if full_source.endswith(".git"):
             full_source = full_source[:-4]
-        # Devpod sanitizes: lowercase, replace . and / with -, remove _
+        # Devpod sanitizes: lowercase, replace . and / and : with -, remove _
         workspace_id = full_source.lower()
-        workspace_id = workspace_id.replace(".", "-").replace("/", "-")
+        workspace_id = workspace_id.replace(".", "-").replace("/", "-").replace(":", "-")
         workspace_id = workspace_id.replace("_", "")
         # Remove trailing - if any
         workspace_id = workspace_id.rstrip("-")
