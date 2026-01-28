@@ -2,8 +2,37 @@
 _dl_completion() {
     local cur prev opts
     COMPREPLY=()
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # Extract current word from COMP_LINE instead of COMP_WORDS
+    # This avoids issues with COMP_WORDBREAKS treating dashes as word boundaries
+    local line="${COMP_LINE:0:COMP_POINT}"
+    # Get current word: everything after the last space (or the whole line if no space)
+    if [[ "$line" =~ [[:space:]]([^[:space:]]*)$ ]]; then
+        cur="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^([^[:space:]]*)$ ]]; then
+        cur="${BASH_REMATCH[1]}"
+    else
+        cur=""
+    fi
+
+    # Get previous word similarly
+    local before_cur="${line% *}"
+    if [[ "$before_cur" == "$line" ]]; then
+        prev=""
+    elif [[ "$before_cur" =~ [[:space:]]([^[:space:]]*)$ ]]; then
+        prev="${BASH_REMATCH[1]}"
+    else
+        prev="${before_cur##* }"
+    fi
+
+    # Count actual words (space-separated) for position detection
+    local word_count
+    word_count=$(echo "$line" | awk '{print NF}')
+    # If line ends with space, we're starting a new word
+    if [[ "$line" =~ [[:space:]]$ ]]; then
+        ((word_count++))
+        cur=""
+    fi
 
     # Global command options (only valid as first arg)
     local global_opts="--ls --install --help -h --version"
@@ -27,7 +56,7 @@ _dl_completion() {
     fi
 
     # First argument: global flags, workspaces, repos, owners, or paths
-    if [[ ${COMP_CWORD} -eq 1 ]]; then
+    if [[ ${word_count} -eq 2 ]]; then
         # Global flags
         if [[ ${cur} == -* ]]; then
             COMPREPLY=( $(compgen -W "${global_opts}" -- ${cur}) )
@@ -76,9 +105,11 @@ _dl_completion() {
     fi
 
     # Second argument (after workspace): subcommands
-    if [[ ${COMP_CWORD} -eq 2 ]]; then
+    if [[ ${word_count} -eq 3 ]]; then
         # Don't complete after global flags
-        local first="${COMP_WORDS[1]}"
+        # Extract the first argument (word after "dl")
+        local first
+        first=$(echo "$line" | awk '{print $2}')
         if [[ "$first" == --* ]]; then
             return 0
         fi
