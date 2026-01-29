@@ -1,6 +1,6 @@
 [project]
 name = "devlaunch"
-version = "0.0.5"
+version = "0.0.6"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
