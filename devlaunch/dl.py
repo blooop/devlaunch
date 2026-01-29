@@ -202,6 +202,7 @@ def purge_all_data() -> int:
     # First, delete DevPod workspaces tracked in our metadata
     try:
         from .worktree import MetadataStorage
+
         storage = MetadataStorage()
         worktrees = storage.list_worktrees()
 
@@ -1247,8 +1248,12 @@ def main() -> int:
             owner, repo = owner_repo.split("/")
             branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
             result = workspace_up_worktree(
-                owner, repo, branch, workspace_id=custom_id, ide="vscode",
-                share_container=share_container
+                owner,
+                repo,
+                branch,
+                workspace_id=custom_id,
+                ide="vscode",
+                share_container=share_container,
             )
         else:
             result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
@@ -1271,8 +1276,7 @@ def main() -> int:
             owner, repo = owner_repo.split("/")
             branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
             result = workspace_up_worktree(
-                owner, repo, branch, workspace_id=custom_id,
-                share_container=share_container
+                owner, repo, branch, workspace_id=custom_id, share_container=share_container
             )
             if result.returncode != 0:
                 return result.returncode
@@ -1309,8 +1313,7 @@ def main() -> int:
             owner, repo = owner_repo.split("/")
             branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
             result = workspace_up_worktree(
-                owner, repo, branch, workspace_id=custom_id,
-                share_container=share_container
+                owner, repo, branch, workspace_id=custom_id, share_container=share_container
             )
         else:
             result = workspace_up(workspace_spec, workspace_id=custom_id)
@@ -1330,8 +1333,10 @@ def main() -> int:
     # Attach to workspace
     # For worktree backend, set workdir to the worktree path inside the mounted base repo
     if use_worktree and parsed:
-        branch = parsed[1] if parsed[1] else get_default_branch_for_repo(
-            parsed[0].split("/")[0], parsed[0].split("/")[1]
+        branch = (
+            parsed[1]
+            if parsed[1]
+            else get_default_branch_for_repo(parsed[0].split("/")[0], parsed[0].split("/")[1])
         )
         workdir = get_worktree_container_path(workspace_id, branch)
         ret = workspace_ssh(workspace_id, shell_command, workdir=workdir)

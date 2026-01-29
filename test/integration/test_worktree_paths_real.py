@@ -95,7 +95,7 @@ class TestWorktreeGitdirFile:
 
         # Clone and create worktree
         repo_manager.clone_repo("test", "repo", remote_url)
-        worktree = worktree_manager.create_worktree("test", "repo", "main")
+        _worktree = worktree_manager.create_worktree("test", "repo", "main")  # noqa: F841
 
         # Find the gitdir file in base repo
         base_repo = repo_manager.get_repo_path("test", "repo")
@@ -155,7 +155,7 @@ class TestWorktreeContainerSimulation:
 
         # Clone and create worktree
         repo_manager.clone_repo("test", "repo", remote_url)
-        worktree = worktree_manager.create_worktree("test", "repo", "main")
+        _worktree = worktree_manager.create_worktree("test", "repo", "main")  # noqa: F841
 
         # Get the base repo path (we need to copy the whole repo, not just worktree)
         base_repo = repo_manager.get_repo_path("test", "repo")

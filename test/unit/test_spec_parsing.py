@@ -58,7 +58,7 @@ class TestWorkspaceIdGeneration:
         # Create a mock manager
         manager = WorktreeManager.__new__(WorktreeManager)
 
-        workspace_id = manager._generate_workspace_id("owner", "repo", "main")
+        workspace_id = manager._generate_workspace_id("owner", "repo", "main")  # pylint: disable=protected-access
         assert workspace_id == "owner-repo-main"
 
     def test_workspace_id_with_slash_branch(self):
@@ -67,7 +67,7 @@ class TestWorkspaceIdGeneration:
 
         manager = WorktreeManager.__new__(WorktreeManager)
 
-        workspace_id = manager._generate_workspace_id("owner", "repo", "feature/test")
+        workspace_id = manager._generate_workspace_id("owner", "repo", "feature/test")  # pylint: disable=protected-access
         assert workspace_id == "owner-repo-feature-test"
 
     def test_workspace_id_truncation(self):
@@ -77,7 +77,7 @@ class TestWorkspaceIdGeneration:
         manager = WorktreeManager.__new__(WorktreeManager)
 
         long_branch = "feature/" + "x" * 100
-        workspace_id = manager._generate_workspace_id("owner", "repo", long_branch)
+        workspace_id = manager._generate_workspace_id("owner", "repo", long_branch)  # pylint: disable=protected-access
 
         # Should be truncated to 50 chars max
         assert len(workspace_id) <= 50
@@ -133,6 +133,7 @@ class TestDataModels:
         assert repo.owner == "owner"
         assert repo.repo == "repo"
         assert repo.local_path == Path("/tmp/repos/owner/repo")
+        assert repo.last_fetched is not None
         assert repo.last_fetched.year == 2024
 
     def test_worktree_info_to_dict(self):

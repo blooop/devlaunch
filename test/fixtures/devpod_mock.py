@@ -6,6 +6,7 @@ avoiding the overhead of real container operations.
 """
 
 import subprocess
+from collections.abc import Generator
 from typing import Dict, List, Optional
 from unittest.mock import patch
 
@@ -233,7 +234,7 @@ class DevPodMock:
 
 
 @pytest.fixture
-def mock_devpod() -> DevPodMock:
+def mock_devpod() -> Generator[DevPodMock, None, None]:
     """Pytest fixture that provides a DevPodMock instance.
 
     The mock is automatically reset before each test.

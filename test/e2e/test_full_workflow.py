@@ -32,7 +32,7 @@ class TestWorkspaceCreationE2E:
         3. Verifies the workspace exists in DevPod
         """
         env = isolated_devlaunch_env
-        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        _remote_url = local_git_repo_with_devcontainer["remote_url"]  # noqa: F841
 
         # Run dl command to create workspace
         # Using the default command (no 'code' subcommand) - does NOT launch IDE
@@ -55,6 +55,7 @@ class TestWorkspaceCreationE2E:
                 ["devpod", "list", "--output", "json"],
                 capture_output=True,
                 text=True,
+                check=False,
             )
 
             if list_result.returncode == 0 and list_result.stdout:
@@ -103,6 +104,7 @@ class TestWorkspaceCreationE2E:
                 ["devpod", "stop", workspace_id],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             assert stop_result.returncode == 0
 
@@ -111,6 +113,7 @@ class TestWorkspaceCreationE2E:
                 ["devpod", "delete", workspace_id, "--force"],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             assert delete_result.returncode == 0
 
@@ -157,6 +160,7 @@ class TestGitOperationsInContainerE2E:
                 ["devpod", "ssh", workspace_id, "--", "git", "status"],
                 capture_output=True,
                 text=True,
+                check=False,
             )
 
             # Git should work inside the container
@@ -204,7 +208,7 @@ class TestWorktreePathsInContainerE2E:
         # Clone and create worktree
         remote_url = local_git_repo_with_devcontainer["remote_url"]
         repo_manager.clone_repo("test", "repo", remote_url)
-        worktree = worktree_manager.create_worktree("test", "repo", "main")
+        _worktree = worktree_manager.create_worktree("test", "repo", "main")  # noqa: F841
 
         # The base repo path (which we mount)
         base_repo = repo_manager.get_repo_path("test", "repo")
@@ -243,6 +247,7 @@ class TestWorktreePathsInContainerE2E:
                 ],
                 capture_output=True,
                 text=True,
+                check=False,
             )
 
             # This is the critical assertion: git must work in the worktree
@@ -264,7 +269,10 @@ class TestDLCommandSafetyE2E:
         with pytest.raises(ValueError, match="code"):
             dl_no_ide.run("owner/repo@main", "code")
 
-    def test_dl_default_command_does_not_launch_ide(self, isolated_devlaunch_env):
+    def test_dl_default_command_does_not_launch_ide(
+        self,
+        isolated_devlaunch_env,  # noqa: ARG002  # pylint: disable=unused-argument
+    ):
         """Verify default dl command doesn't attempt IDE launch.
 
         This test checks that when we run `dl owner/repo@main` (without 'code'),

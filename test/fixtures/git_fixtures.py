@@ -7,7 +7,7 @@ real git operations without mocking subprocess calls.
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, Generator
+from typing import Any, Dict, Generator, cast
 
 import pytest
 
@@ -62,7 +62,7 @@ def isolated_devlaunch_env(tmp_path: Path) -> Generator[Dict[str, Path], None, N
 
 
 @pytest.fixture
-def local_git_repo(tmp_path: Path) -> Dict[str, object]:
+def local_git_repo(tmp_path: Path) -> Dict[str, Any]:
     """Create a real local git repository as a 'remote'.
 
     Creates a bare git repository that can be used as a remote, along with
@@ -164,14 +164,13 @@ def local_git_repo(tmp_path: Path) -> Dict[str, object]:
 
 
 @pytest.fixture
-def local_git_repo_with_devcontainer(local_git_repo: Dict[str, object]) -> Dict[str, object]:
+def local_git_repo_with_devcontainer(local_git_repo: Dict[str, Any]) -> Dict[str, Any]:  # pylint: disable=redefined-outer-name
     """Extend local_git_repo with a devcontainer.json file.
 
     This creates a repository that has devcontainer configuration,
     which is needed for DevPod to work without --fallback-image.
     """
-    work_dir = local_git_repo["work_dir"]
-    remote_url = local_git_repo["remote_url"]
+    work_dir = cast(Path, local_git_repo["work_dir"])
 
     # Create devcontainer.json
     devcontainer_dir = work_dir / ".devcontainer"
@@ -213,8 +212,8 @@ def local_git_repo_with_devcontainer(local_git_repo: Dict[str, object]) -> Dict[
 
 @pytest.fixture
 def real_managers(
-    isolated_devlaunch_env: Dict[str, Path],
-) -> Dict[str, object]:
+    isolated_devlaunch_env: Dict[str, Path],  # pylint: disable=redefined-outer-name
+) -> Dict[str, Any]:
     """Create actual manager instances using isolated directories.
 
     This fixture creates real RepositoryManager, WorktreeManager, and

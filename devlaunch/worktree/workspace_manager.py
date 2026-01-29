@@ -109,8 +109,15 @@ class WorkspaceManager:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
                 return self._create_workspace_locked(
-                    owner, repo, branch, workspace_id, remote_url, devcontainer_path, ide,
-                    fallback_image, share_container
+                    owner,
+                    repo,
+                    branch,
+                    workspace_id,
+                    remote_url,
+                    devcontainer_path,
+                    ide,
+                    fallback_image,
+                    share_container,
                 )
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)

@@ -45,7 +45,7 @@ def pytest_configure(config):
     )
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config, items):  # noqa: ARG001  # pylint: disable=unused-argument
     """Automatically mark tests based on their location."""
     for item in items:
         # Get the test file path relative to the test directory
