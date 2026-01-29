@@ -5,6 +5,7 @@ import sys
 import tempfile
 import pathlib
 from unittest.mock import patch, MagicMock
+import pytest
 
 from devlaunch.dl import (
     expand_workspace_spec,
@@ -134,19 +135,40 @@ class TestExpandWorkspaceSpec:
     """Tests for expand_workspace_spec function."""
 
     def test_expand_owner_repo(self):
-        """Test owner/repo expands to github.com/owner/repo."""
-        assert expand_workspace_spec("loft-sh/devpod") == "github.com/loft-sh/devpod"
+        """Test owner/repo expands to SSH URL."""
+        assert expand_workspace_spec("loft-sh/devpod") == "git@github.com:loft-sh/devpod.git"
 
     def test_expand_owner_repo_with_branch(self):
-        """Test owner/repo@branch expands correctly."""
-        assert expand_workspace_spec("blooop/devlaunch@main") == "github.com/blooop/devlaunch@main"
+        """Test owner/repo@branch expands correctly to SSH URL."""
+        assert (
+            expand_workspace_spec("blooop/devlaunch@main")
+            == "git@github.com:blooop/devlaunch.git@main"
+        )
 
     def test_expand_owner_repo_with_feature_branch(self):
-        """Test owner/repo@feature/branch expands correctly."""
+        """Test owner/repo@feature/branch expands correctly to SSH URL."""
         assert (
             expand_workspace_spec("owner/repo@feature/my-branch")
-            == "github.com/owner/repo@feature/my-branch"
+            == "git@github.com:owner/repo.git@feature/my-branch"
         )
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            # GitHub SSH URL without branch
+            "git@github.com:owner/repo.git",
+            # GitHub SSH URL with explicit branch suffix
+            "git@github.com:owner/repo.git@feature/my-branch",
+            # Other common SSH hosts to guard against accidental expansion
+            "git@gitlab.com:owner/repo.git",
+            "git@bitbucket.org:owner/repo.git",
+            # Enterprise git hosts
+            "git@enterprise.example.com:owner/repo.git",
+        ],
+    )
+    def test_no_expand_ssh_url(self, spec):
+        """Test SSH-style git@host: URLs (with/without branch) are not double-expanded."""
+        assert expand_workspace_spec(spec) == spec
 
     def test_no_expand_local_path_dot(self):
         """Test ./path is not expanded."""
@@ -1284,7 +1306,7 @@ class TestMainCLI:
         assert result == 0
         mock_ensure.assert_called_once_with("owner/repo", "main")
         # workspace_id is the branch name when branch is specified
-        mock_up.assert_called_once_with("github.com/owner/repo@main", workspace_id="main")
+        mock_up.assert_called_once_with("git@github.com:owner/repo.git@main", workspace_id="main")
 
     @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1305,7 +1327,9 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_ensure.assert_called_once_with("owner/repo", "newbranch")
-        mock_up.assert_called_once_with("github.com/owner/repo@newbranch", workspace_id="newbranch")
+        mock_up.assert_called_once_with(
+            "git@github.com:owner/repo.git@newbranch", workspace_id="newbranch"
+        )
 
     @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1341,7 +1365,7 @@ class TestMainCLI:
         mock_ensure.assert_called_once_with("owner/repo", "feature/my-feature")
         # Branch name is sanitized: feature/my-feature -> feature-my-feature
         mock_up.assert_called_once_with(
-            "github.com/owner/repo@feature/my-feature", workspace_id="feature-my-feature"
+            "git@github.com:owner/repo.git@feature/my-feature", workspace_id="feature-my-feature"
         )
 
     @patch("devlaunch.dl.get_workspace_ids")

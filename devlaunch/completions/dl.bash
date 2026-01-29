@@ -1,9 +1,48 @@
 # dl completion
+# Note: This completion function does not support quoted arguments or escaped spaces.
+# All arguments are treated as literal strings separated by whitespace.
+# This is acceptable because GitHub usernames, repo names, and workspace names
+# do not contain spaces or special characters that would require quoting.
+#
+# Implementation note: We parse COMP_LINE directly instead of adjusting COMP_WORDBREAKS
+# because temporary COMP_WORDBREAKS modification can have side effects with bash's
+# internal completion state and doesn't reliably prevent word splitting in all
+# bash versions. Direct parsing gives us full control over word boundaries.
 _dl_completion() {
     local cur prev opts
     COMPREPLY=()
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # Extract current line from COMP_LINE instead of COMP_WORDS
+    # This avoids issues with COMP_WORDBREAKS treating dashes as word boundaries
+    local line="${COMP_LINE:0:COMP_POINT}"
+
+    # Parse the line into an array of words (pure bash, no external processes)
+    local words
+    read -r -a words <<< "$line"
+    local word_count=${#words[@]}
+
+    # Extract current and previous words from the parsed array
+    if (( word_count > 0 )); then
+        cur="${words[word_count-1]}"
+    else
+        cur=""
+    fi
+
+    if (( word_count > 1 )); then
+        prev="${words[word_count-2]}"
+    else
+        prev=""
+    fi
+
+    # If line ends with whitespace, we're starting a new word
+    if [[ "$line" =~ [[:space:]]$ ]]; then
+        ((word_count++))
+        cur=""
+        # Update prev when starting a new word
+        if (( ${#words[@]} > 0 )); then
+            prev="${words[-1]}"
+        fi
+    fi
 
     # Global command options (only valid as first arg)
     local global_opts="--ls --install --help -h --version"
@@ -27,7 +66,7 @@ _dl_completion() {
     fi
 
     # First argument: global flags, workspaces, repos, owners, or paths
-    if [[ ${COMP_CWORD} -eq 1 ]]; then
+    if [[ ${word_count} -eq 2 ]]; then
         # Global flags
         if [[ ${cur} == -* ]]; then
             COMPREPLY=( $(compgen -W "${global_opts}" -- ${cur}) )
@@ -76,9 +115,13 @@ _dl_completion() {
     fi
 
     # Second argument (after workspace): subcommands
-    if [[ ${COMP_CWORD} -eq 2 ]]; then
+    if [[ ${word_count} -eq 3 ]]; then
         # Don't complete after global flags
-        local first="${COMP_WORDS[1]}"
+        # Extract the first argument (word after "dl") from the words array
+        local first=""
+        if (( ${#words[@]} > 1 )); then
+            first="${words[1]}"
+        fi
         if [[ "$first" == --* ]]; then
             return 0
         fi
