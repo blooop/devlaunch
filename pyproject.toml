@@ -8,6 +8,8 @@ license = "MIT"
 
 dependencies = [
   "iterfzf>=1.0.0",
+  "tomli>=2.0.0",
+  "tomli_w>=1.0.0",
 ]
 
 [project.urls]

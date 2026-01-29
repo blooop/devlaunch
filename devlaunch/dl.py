@@ -589,6 +589,150 @@ def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedPr
     return subprocess.run(cmd, check=False)
 
 
+def run_devpod_command(cmd: List[str], capture_output: bool = False) -> subprocess.CompletedProcess:
+    """Run a devpod command (alternative interface for worktree backend).
+
+    Args:
+        cmd: Full command list including 'devpod' as first element
+        capture_output: Whether to capture stdout/stderr
+
+    Returns:
+        CompletedProcess result
+    """
+    logging.debug("Running: %s", " ".join(cmd))
+    if capture_output:
+        return subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return subprocess.run(cmd, check=True)
+
+
+def should_use_worktree_backend(spec: str, backend: Optional[str] = None) -> bool:
+    """Determine whether to use the worktree backend for a given spec.
+
+    Args:
+        spec: The workspace spec (e.g., "owner/repo", "./path", etc.)
+        backend: Optional explicit backend override ("worktree" or "devpod")
+
+    Returns:
+        True if worktree backend should be used, False otherwise
+    """
+    # Explicit backend flag takes highest priority
+    if backend == "worktree":
+        return True
+    if backend == "devpod":
+        return False
+
+    # Check environment variable
+    env_backend = os.environ.get("DEVLAUNCH_BACKEND", "").lower()
+    if env_backend == "worktree":
+        return True
+    if env_backend == "devpod":
+        return False
+
+    # Auto-detect based on spec type
+    # Paths don't use worktree backend
+    if is_path_spec(spec):
+        return False
+
+    # Git repos use worktree backend by default
+    if is_git_spec(spec):
+        return True
+
+    # Existing workspace names use devpod backend
+    return False
+
+
+def get_worktree_managers():
+    """Get initialized worktree managers."""
+    from .worktree import (
+        WorkspaceManager,
+        WorktreeManager,
+        RepositoryManager,
+        MetadataStorage,
+        get_worktree_config,
+    )
+
+    config = get_worktree_config()
+    storage = MetadataStorage()
+    repos_dir = pathlib.Path(config.repos_dir)
+    worktrees_dir = pathlib.Path(config.worktrees_dir)
+    repo_manager = RepositoryManager(repos_dir, storage)
+    worktree_manager = WorktreeManager(worktrees_dir, repo_manager, storage)
+    workspace_manager = WorkspaceManager(worktree_manager, storage)
+
+    return repo_manager, worktree_manager, workspace_manager, storage
+
+
+def get_default_branch_for_repo(owner: str, repo: str) -> str:
+    """Get the default branch for a repository.
+
+    Checks local repo first, then remote. Falls back to 'main'.
+    """
+    repo_manager, _, _, _ = get_worktree_managers()
+
+    # Check if repo exists locally
+    existing_repo = repo_manager.get_repo(owner, repo)
+    if existing_repo and existing_repo.default_branch:
+        return existing_repo.default_branch
+
+    # Try to get from remote
+    remote_url = f"git@github.com:{owner}/{repo}.git"
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", remote_url, "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            # Parse output like: ref: refs/heads/main\tHEAD
+            for line in result.stdout.strip().split("\n"):
+                if line.startswith("ref:") and "HEAD" in line:
+                    # Extract branch name from "ref: refs/heads/main\tHEAD"
+                    ref_part = line.split()[1]
+                    if ref_part.startswith("refs/heads/"):
+                        return ref_part[len("refs/heads/") :]
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        pass
+
+    return "main"
+
+
+def workspace_up_worktree(
+    owner: str,
+    repo: str,
+    branch: str,
+    workspace_id: Optional[str] = None,
+    ide: Optional[str] = None,
+) -> subprocess.CompletedProcess:
+    """Start or create a workspace using the worktree backend.
+
+    This is more efficient for git repos as it:
+    - Clones the repo once, then creates worktrees for each branch
+    - Shares git objects across all branches
+    - Allows faster workspace creation for subsequent branches
+
+    The workspace is backed by a local worktree directory.
+    """
+    _, _, workspace_manager, _ = get_worktree_managers()
+
+    # Build remote URL (use SSH for easier auth)
+    remote_url = f"git@github.com:{owner}/{repo}.git"
+
+    # Create workspace (this handles repo cloning, worktree creation, and DevPod launch)
+    worktree_info, output = workspace_manager.create_workspace(
+        owner=owner,
+        repo=repo,
+        branch=branch,
+        workspace_id=workspace_id,
+        remote_url=remote_url,
+        ide=ide,
+    )
+
+    logging.info(f"Workspace at {worktree_info.local_path}")
+    return subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+
+
 def list_workspaces() -> List[Workspace]:
     """List all devpod workspaces."""
     result = run_devpod(["list", "--output", "json"], capture=True)
@@ -742,6 +886,14 @@ Global commands:
     dl --help, -h                    Show this help
     dl --version                     Show version
 
+Worktree backend (default for git repos):
+    Git repos are cloned once to ~/.devlaunch/repos/, then worktrees are
+    created for each branch in ~/.devlaunch/worktrees/. This is faster and
+    more efficient as git objects are shared across branches.
+
+    dl --backend devpod <repo>       Force legacy DevPod backend (clone per workspace)
+    Set DEVLAUNCH_BACKEND=devpod to globally disable worktree backend.
+
 Examples:
     dl                               # Select workspace with fzf
     dl devpod                        # Open existing workspace
@@ -816,6 +968,18 @@ def main() -> int:
         update_completion_cache()
         return install_completions(rc_path)
 
+    # Parse --backend flag
+    backend_override = None
+    if args[0] == "--backend":
+        if len(args) < 3:
+            logging.error("Usage: dl --backend <worktree|devpod> <workspace>")
+            return 1
+        backend_override = args[1].lower()
+        if backend_override not in ("worktree", "devpod"):
+            logging.error(f"Invalid backend '{backend_override}'. Use 'worktree' or 'devpod'.")
+            return 1
+        args = args[2:]  # Remove --backend and value from args
+
     # Workspace commands: dl <workspace> [subcommand] [-- command]
     raw_spec = args[0]
     subcommand = args[1] if len(args) > 1 else None
@@ -829,18 +993,31 @@ def main() -> int:
 
     # Resolve workspace spec and ID
     is_existing = raw_spec in existing_ids
+    parsed = parse_owner_repo_branch(raw_spec)
+
+    # Determine if we should use worktree backend
+    use_worktree = should_use_worktree_backend(raw_spec, backend_override)
+
     if is_existing:
         workspace_spec = raw_spec
         workspace_id = raw_spec
         custom_id = None  # Don't pass --id for existing workspaces
+    elif use_worktree and parsed:
+        # For worktree backend, workspace ID is always the branch name
+        owner_repo = parsed[0]
+        owner, repo = owner_repo.split("/")
+        branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+        workspace_spec = expand_workspace_spec(raw_spec)
+        workspace_id = sanitize_workspace_id(branch)  # Branch name as workspace ID
+        custom_id = workspace_id
     else:
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
         custom_id = workspace_id  # Pass --id to create with our desired ID
 
     # For new git repos with a branch, ensure the branch exists (create if needed)
-    parsed = parse_owner_repo_branch(raw_spec)
-    if parsed and parsed[1]:  # Has owner/repo and branch
+    # Skip for worktree backend as it handles this internally
+    if parsed and parsed[1] and not use_worktree:  # Has owner/repo and branch
         owner_repo, branch = parsed
         if not ensure_remote_branch(owner_repo, branch):
             return 1
@@ -853,10 +1030,19 @@ def main() -> int:
         return workspace_delete(workspace_id)
 
     if subcommand == "code":
-        result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
+        if use_worktree and parsed:
+            owner_repo = parsed[0]
+            owner, repo = owner_repo.split("/")
+            branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+            result = workspace_up_worktree(
+                owner, repo, branch, workspace_id=custom_id, ide="vscode"
+            )
+        else:
+            result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
         return result.returncode
 
     if subcommand == "recreate":
+        # Recreate doesn't use worktree - it's a DevPod operation on existing workspace
         result = workspace_up(workspace_spec, recreate=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
@@ -867,7 +1053,13 @@ def main() -> int:
         stop_ret = workspace_stop(workspace_id)
         if stop_ret != 0:
             return stop_ret
-        result = workspace_up(workspace_spec, workspace_id=custom_id)
+        if use_worktree and parsed:
+            owner_repo = parsed[0]
+            owner, repo = owner_repo.split("/")
+            branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+            result = workspace_up_worktree(owner, repo, branch, workspace_id=custom_id)
+        else:
+            result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
         return workspace_ssh(workspace_id)
@@ -891,7 +1083,14 @@ def main() -> int:
         return 1
 
     # Default: start workspace and attach shell
-    result = workspace_up(workspace_spec, workspace_id=custom_id)
+    if use_worktree and parsed:
+        owner_repo = parsed[0]
+        owner, repo = owner_repo.split("/")
+        branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+        result = workspace_up_worktree(owner, repo, branch, workspace_id=custom_id)
+    else:
+        result = workspace_up(workspace_spec, workspace_id=custom_id)
+
     if result.returncode != 0:
         return result.returncode
 
