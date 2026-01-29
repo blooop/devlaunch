@@ -106,9 +106,9 @@ class TestWorktreeGitdirFile:
             content = gitdir_file.read_text().strip()
 
             # Should be relative path
-            assert not content.startswith("/"), (
-                f"gitdir file should use relative path, got: {content}"
-            )
+            assert not content.startswith(
+                "/"
+            ), f"gitdir file should use relative path, got: {content}"
 
             # Should point to .worktrees directory
             assert ".worktrees" in content, f"gitdir should point to .worktrees, got: {content}"
