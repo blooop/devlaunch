@@ -3,6 +3,11 @@
 # All arguments are treated as literal strings separated by whitespace.
 # This is acceptable because GitHub usernames, repo names, and workspace names
 # do not contain spaces or special characters that would require quoting.
+#
+# Implementation note: We parse COMP_LINE directly instead of adjusting COMP_WORDBREAKS
+# because temporary COMP_WORDBREAKS modification can have side effects with bash's
+# internal completion state and doesn't reliably prevent word splitting in all
+# bash versions. Direct parsing gives us full control over word boundaries.
 _dl_completion() {
     local cur prev opts
     COMPREPLY=()

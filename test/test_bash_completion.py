@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import os
 import pathlib
+import shlex
 import pytest
 from unittest.mock import patch
 
@@ -10,7 +11,7 @@ from unittest.mock import patch
 class TestBashCompletion:
     """Test bash completion functionality."""
 
-    def setup_method(self):
+    def setup_method(self):  # pylint: disable=attribute-defined-outside-init
         """Set up test environment."""
         self.test_dir = tempfile.mkdtemp()
         self.completion_script = (
@@ -25,7 +26,7 @@ class TestBashCompletion:
         self.cache_file = self.cache_dir / "completions.bash"
 
         # Write test completion data
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my-workspace another-ws test-project"\n')
             f.write('DL_REPOS="my-org/my-repo another-org/another-repo github-org/test-repo"\n')
             f.write('DL_OWNERS="my-org another-org github-org"\n')
@@ -55,13 +56,14 @@ class TestBashCompletion:
             comp_point = len(comp_line)
 
         # Create a bash script that sources the completion and runs it
+        # Use shlex.quote to properly escape shell arguments
         script = f"""
 #!/bin/bash
-export XDG_CACHE_HOME="{self.cache_base}"
-source {self.completion_script}
+export XDG_CACHE_HOME={shlex.quote(str(self.cache_base))}
+source {shlex.quote(str(self.completion_script))}
 
 # Set completion environment variables
-export COMP_LINE="{comp_line}"
+export COMP_LINE={shlex.quote(comp_line)}
 export COMP_POINT={comp_point}
 
 # Call the completion function
@@ -84,8 +86,13 @@ done
         """Test completion works with workspace names containing dashes."""
         # Complete after typing "dl my-"
         completions = self.run_completion("dl my-")
+        # Positive assertions: dashed names are suggested
         assert "my-workspace" in completions
         assert "my-org/" in completions
+        # Negative assertions: dashes are not treated as word breaks
+        # (These would appear if dashes were splitting the words)
+        assert "workspace" not in completions
+        assert "org/" not in completions
 
     def test_completion_with_dashed_org_name(self):
         """Test completion works with organization names containing dashes."""
@@ -169,12 +176,15 @@ done
         # Complete after typing "dl ./"
         with patch.dict(os.environ, {"PWD": self.test_dir}):
             completions = self.run_completion("dl ./")
-            # Path completion behavior may vary by system
+            # Basic invariants that should hold across environments:
+            # - completion runs without error (implicit if we reach here)
+            # - we get some completions back
+            assert completions is not None
 
     def test_completion_multiple_dashes_in_name(self):
         """Test completion with names containing multiple dashes."""
         # Add test data with multiple dashes
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my-test-workspace feature-dev-branch"\n')
             f.write('DL_REPOS="my-test-org/my-test-repo"\n')
             f.write('DL_OWNERS="my-test-org"\n')
@@ -191,7 +201,7 @@ done
     def test_completion_consecutive_dashes(self):
         """Test completion with consecutive dashes (edge case)."""
         # Add test data with consecutive dashes
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my--workspace"\n')
             f.write('DL_REPOS="org--name/repo--name"\n')
             f.write('DL_OWNERS="org--name"\n')
@@ -204,7 +214,7 @@ done
     def test_completion_underscore_in_names(self):
         """Test completion with underscores in names."""
         # Add test data with underscores
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my_workspace test_project_2"\n')
             f.write('DL_REPOS="my_org/my_repo"\n')
             f.write('DL_OWNERS="my_org"\n')
@@ -217,7 +227,7 @@ done
     def test_completion_numeric_in_names(self):
         """Test completion with numeric characters in names."""
         # Add test data with numbers
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="project-123 test-456"\n')
             f.write('DL_REPOS="user123/repo456"\n')
             f.write('DL_OWNERS="user123"\n')
@@ -233,32 +243,33 @@ done
 
     def test_word_count_accuracy(self):
         """Test that word counting is accurate with various inputs."""
-        # Test empty line
+        # Test empty line - should complete first argument position
         completions = self.run_completion("dl ")
-        # Should complete first argument position
+        assert completions is not None
 
-        # Test single word
+        # Test single word - should complete command name
         completions = self.run_completion("dl")
-        # Should complete command name
+        assert completions is not None
 
-        # Test two words
+        # Test two words - should complete workspace
         completions = self.run_completion("dl my-workspace")
-        # Should complete workspace
+        assert "my-workspace" in completions
 
-        # Test three words
+        # Test three words - should complete subcommands
         completions = self.run_completion("dl my-workspace ")
-        # Should complete subcommands
+        assert "stop" in completions
 
     def test_completion_cursor_position(self):
         """Test completion at different cursor positions."""
         # Cursor in middle of word
         completions = self.run_completion("dl my-work", 7)  # Cursor after "my-"
-        # Should still complete the current word
+        # Should still complete words that match the prefix "my-"
+        assert "my-workspace" in completions or "my-org/" in completions
 
     def test_empty_cache_file(self):
         """Test completion with empty cache file."""
         # Create empty cache file
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write("")
 
         # Should still complete global flags
@@ -277,7 +288,7 @@ done
     def test_malformed_cache_data(self):
         """Test completion with malformed cache data."""
         # Write malformed cache
-        with open(self.cache_file, "w") as f:
+        with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write("DL_WORKSPACES=\n")  # Missing quotes
             f.write('DL_REPOS=""\n')
 
