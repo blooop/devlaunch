@@ -707,12 +707,16 @@ def workspace_ssh(workspace: str, command: Optional[str] = None) -> int:
 def workspace_stop(workspace: str) -> int:
     """Stop a workspace."""
     result = run_devpod(["stop", workspace])
+    # Update cache after stopping workspace
+    update_cache_background()
     return result.returncode
 
 
 def workspace_delete(workspace: str) -> int:
     """Delete a workspace."""
     result = run_devpod(["delete", workspace])
+    # Update cache after deleting workspace
+    update_cache_background()
     return result.returncode
 
 
@@ -922,6 +926,10 @@ def main() -> int:
 
     # Attach to workspace
     ret = workspace_ssh(workspace_id, shell_command)
+
+    # Update cache after workspace operations
+    update_cache_background()
+
     return ret
 
 
