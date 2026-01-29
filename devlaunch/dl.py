@@ -79,8 +79,12 @@ def write_completion_cache(data: Dict[str, Any]) -> None:
     cache_path = get_cache_path()
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
+        # Write to temp file first, then atomic rename
+        temp_path = cache_path.with_suffix('.tmp')
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
+        # Atomic rename (on POSIX systems)
+        temp_path.replace(cache_path)
     except OSError:
         pass
 
@@ -100,8 +104,12 @@ def write_bash_completion_cache(data: Dict[str, Any]) -> None:
             f'DL_OWNERS="{owners}"',
             f'DL_BRANCHES="{branches}"',
         ]
-        with open(BASH_CACHE_FILE, "w", encoding="utf-8") as f:
+        # Write to temp file first, then atomic rename
+        temp_path = BASH_CACHE_FILE.with_suffix('.tmp')
+        with open(temp_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+        # Atomic rename (on POSIX systems)
+        temp_path.replace(BASH_CACHE_FILE)
     except OSError:
         pass
 
