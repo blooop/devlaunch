@@ -138,9 +138,9 @@ class TestRepoManagerRealFetch:
         count_after = int(after_result.stdout.strip())
 
         # Should have at least one more commit after fetch
-        assert (
-            count_after > count_before
-        ), f"Expected more commits after fetch. Before: {count_before}, After: {count_after}"
+        assert count_after > count_before, (
+            f"Expected more commits after fetch. Before: {count_before}, After: {count_after}"
+        )
 
     def test_fetch_nonexistent_repo_fails(self, real_managers):
         """Test that fetching non-existent repo raises error."""
