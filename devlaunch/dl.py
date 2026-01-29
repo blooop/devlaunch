@@ -25,7 +25,6 @@ import logging
 import os
 import pathlib
 import re
-import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
@@ -69,18 +68,8 @@ def read_completion_cache() -> Optional[Dict[str, Any]]:
     if not cache_path.exists():
         return None
     try:
-        # Check cache age - refresh if older than 30 minutes
-        # (Increased from 5 minutes since validation is expensive)
-        cache_age = time.time() - cache_path.stat().st_mtime
-        if cache_age > 1800:  # 30 minutes in seconds
-            return None
-
         with open(cache_path, encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Don't validate here - too expensive to call list_workspaces()
-        # Let stale entries exist, they'll be cleaned up on next cache update
-        return data
+            return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -174,15 +163,8 @@ def update_completion_cache() -> Dict[str, Any]:
 
 
 def update_cache_background() -> None:
-    """Update completion cache in background if stale."""
+    """Update completion cache in background."""
     try:
-        # Only update if cache is older than 5 minutes
-        cache_path = get_cache_path()
-        if cache_path.exists():
-            cache_age = time.time() - cache_path.stat().st_mtime
-            if cache_age < 300:  # 5 minutes
-                return  # Cache is fresh enough
-
         # pylint: disable=consider-using-with
         subprocess.Popen(
             [sys.executable, "-m", "devlaunch.dl", "--update-cache"],
@@ -789,8 +771,10 @@ def main() -> int:
     """Main entry point for dl CLI."""
     args = sys.argv[1:]
 
-    # Update cache in background if stale (unless we're already updating)
-    if not args or (args and args[0] not in ["--update-cache", "--refresh"]):
+    # Always update cache in background (unless we're the update process)
+    if args and args[0] in ["--update-cache"]:
+        pass  # Don't recursively update
+    else:
         update_cache_background()
 
     # No args - try fzf selection
@@ -826,8 +810,13 @@ def main() -> int:
                 print(repo)
         return 0
 
-    if args[0] == "--update-cache" or args[0] == "--refresh":
-        # Update completion cache
+    if args[0] == "--update-cache":
+        # Silent background update
+        update_completion_cache()
+        return 0
+
+    if args[0] == "--refresh":
+        # Manual refresh with feedback
         print("Refreshing completion cache...")
         data = update_completion_cache()
         print(f"Cache updated: {len(data.get('workspaces', []))} workspaces found")
@@ -933,10 +922,6 @@ def main() -> int:
 
     # Attach to workspace
     ret = workspace_ssh(workspace_id, shell_command)
-
-    # Update cache in background after workspace operations
-    update_cache_background()
-
     return ret
 
 
