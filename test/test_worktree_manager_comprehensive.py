@@ -51,9 +51,9 @@ def mock_storage():
 
 
 @pytest.fixture
-def worktree_manager(temp_dir, mock_repo_manager, mock_storage):
+def worktree_manager(mock_repo_manager, mock_storage):
     """Create a worktree manager with mocks."""
-    return WorktreeManager(temp_dir, mock_repo_manager, mock_storage)
+    return WorktreeManager(mock_repo_manager, mock_storage)
 
 
 class TestSanitizeBranchName:

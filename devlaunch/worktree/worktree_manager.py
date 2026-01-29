@@ -26,17 +26,18 @@ def sanitize_branch_name(branch: str) -> str:
 
 
 class WorktreeManager:
-    """Manages git worktrees."""
+    """Manages git worktrees.
+
+    Worktrees are created inside each repo's .worktrees/ directory:
+    - repos/owner/repo/.worktrees/branch-name/
+    """
 
     def __init__(
         self,
-        worktrees_dir: Path,
         repo_manager: RepositoryManager,
         storage: Optional[MetadataStorage] = None,
     ):
         """Initialize worktree manager."""
-        self.worktrees_dir = worktrees_dir
-        self.worktrees_dir.mkdir(parents=True, exist_ok=True)
         self.repo_manager = repo_manager
         self.storage = storage or MetadataStorage()
 

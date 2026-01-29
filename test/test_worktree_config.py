@@ -15,7 +15,6 @@ class TestWorktreeConfig:
 
         assert config.enabled is True
         assert config.repos_dir == Path.home() / ".cache" / "devlaunch" / "repos"
-        assert config.worktrees_dir == Path.home() / ".cache" / "devlaunch" / "worktrees"
         assert config.auto_fetch is True
         assert config.fetch_interval == 3600
         assert config.auto_prune is True
@@ -26,7 +25,6 @@ class TestWorktreeConfig:
         config = WorktreeConfig(
             enabled=False,
             repos_dir=Path("/custom/repos"),
-            worktrees_dir=Path("/custom/worktrees"),
             auto_fetch=False,
             fetch_interval=7200,
             auto_prune=False,
@@ -35,7 +33,6 @@ class TestWorktreeConfig:
 
         assert config.enabled is False
         assert config.repos_dir == Path("/custom/repos")
-        assert config.worktrees_dir == Path("/custom/worktrees")
         assert config.auto_fetch is False
         assert config.fetch_interval == 7200
         assert config.auto_prune is False
@@ -43,19 +40,16 @@ class TestWorktreeConfig:
 
     def test_string_paths(self):
         """Test that string paths are converted to Path objects."""
-        config = WorktreeConfig(repos_dir="~/custom/repos", worktrees_dir="~/custom/worktrees")
+        config = WorktreeConfig(repos_dir="~/custom/repos")
 
         assert isinstance(config.repos_dir, Path)
-        assert isinstance(config.worktrees_dir, Path)
         assert config.repos_dir == Path("~/custom/repos").expanduser()
-        assert config.worktrees_dir == Path("~/custom/worktrees").expanduser()
 
     def test_to_dict(self):
         """Test converting config to dict."""
         config = WorktreeConfig(
             enabled=False,
             repos_dir=Path("/custom/repos"),
-            worktrees_dir=Path("/custom/worktrees"),
             auto_fetch=False,
             fetch_interval=7200,
             auto_prune=False,
@@ -67,7 +61,6 @@ class TestWorktreeConfig:
             "worktree": {
                 "enabled": False,
                 "repos_dir": "/custom/repos",
-                "worktrees_dir": "/custom/worktrees",
                 "auto_fetch": False,
                 "fetch_interval": 7200,
                 "cleanup": {
@@ -83,7 +76,6 @@ class TestWorktreeConfig:
             "worktree": {
                 "enabled": False,
                 "repos_dir": "/custom/repos",
-                "worktrees_dir": "/custom/worktrees",
                 "auto_fetch": False,
                 "fetch_interval": 7200,
                 "cleanup": {
@@ -96,7 +88,6 @@ class TestWorktreeConfig:
         config = WorktreeConfig.from_dict(data)
         assert config.enabled is False
         assert config.repos_dir == Path("/custom/repos")
-        assert config.worktrees_dir == Path("/custom/worktrees")
         assert config.auto_fetch is False
         assert config.fetch_interval == 7200
         assert config.auto_prune is False
@@ -108,7 +99,6 @@ class TestWorktreeConfig:
 
         assert config.enabled is True
         assert config.repos_dir == Path.home() / ".cache" / "devlaunch" / "repos"
-        assert config.worktrees_dir == Path.home() / ".cache" / "devlaunch" / "worktrees"
         assert config.auto_fetch is True
         assert config.fetch_interval == 3600
         assert config.auto_prune is True
@@ -126,7 +116,6 @@ class TestWorktreeConfig:
         config = WorktreeConfig.from_dict(data)
         assert config.enabled is False
         assert config.repos_dir == Path.home() / ".cache" / "devlaunch" / "repos"
-        assert config.worktrees_dir == Path.home() / ".cache" / "devlaunch" / "worktrees"
         assert config.auto_fetch is False
         assert config.fetch_interval == 3600
         assert config.auto_prune is True

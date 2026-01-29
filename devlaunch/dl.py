@@ -698,9 +698,8 @@ def get_worktree_managers():
     config = get_worktree_config()
     storage = MetadataStorage()
     repos_dir = pathlib.Path(config.repos_dir)
-    worktrees_dir = pathlib.Path(config.worktrees_dir)
     repo_manager = RepositoryManager(repos_dir, storage)
-    worktree_manager = WorktreeManager(worktrees_dir, repo_manager, storage)
+    worktree_manager = WorktreeManager(repo_manager, storage)
     workspace_manager = WorkspaceManager(worktree_manager, storage)
 
     return repo_manager, worktree_manager, workspace_manager, storage
@@ -937,9 +936,9 @@ Global commands:
     dl --version                     Show version
 
 Worktree backend (default for git repos):
-    Git repos are cloned once to ~/.cache/devlaunch/repos/, then worktrees
-    are created for each branch in ~/.cache/devlaunch/worktrees/. This is
-    faster and more efficient as git objects are shared across branches.
+    Git repos are cloned once to ~/.cache/devlaunch/repos/owner/repo/, then
+    worktrees are created for each branch in .worktrees/ inside the repo.
+    This is faster as git objects are shared across branches.
 
     dl --backend devpod <repo>       Force legacy DevPod backend (clone per workspace)
     Set DEVLAUNCH_BACKEND=devpod to globally disable worktree backend.

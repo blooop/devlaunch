@@ -19,11 +19,15 @@ def _get_cache_base() -> Path:
 
 @dataclass
 class WorktreeConfig:
-    """Configuration for worktree backend."""
+    """Configuration for worktree backend.
+
+    All data is stored under repos_dir:
+    - repos_dir/owner/repo/            - cloned repository
+    - repos_dir/owner/repo/.worktrees/ - git worktrees for branches
+    """
 
     enabled: bool = True  # Enabled by default
     repos_dir: Union[Path, str] = field(default_factory=lambda: _get_cache_base() / "repos")
-    worktrees_dir: Union[Path, str] = field(default_factory=lambda: _get_cache_base() / "worktrees")
     auto_fetch: bool = True
     fetch_interval: int = 3600  # Seconds between auto-fetches
     auto_prune: bool = True
@@ -33,8 +37,6 @@ class WorktreeConfig:
         """Ensure paths are Path objects and expand user."""
         if isinstance(self.repos_dir, str):
             self.repos_dir = Path(self.repos_dir).expanduser()
-        if isinstance(self.worktrees_dir, str):
-            self.worktrees_dir = Path(self.worktrees_dir).expanduser()
 
         # Ensure directories exist (only if they're under home or temp)
         # This avoids permission errors in tests
@@ -43,10 +45,6 @@ class WorktreeConfig:
                 "/tmp"
             ):
                 self.repos_dir.mkdir(parents=True, exist_ok=True)
-            if str(self.worktrees_dir).startswith(str(Path.home())) or str(
-                self.worktrees_dir
-            ).startswith("/tmp"):
-                self.worktrees_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, PermissionError):
             # Ignore permission errors (e.g., in tests)
             pass
@@ -57,7 +55,6 @@ class WorktreeConfig:
             "worktree": {
                 "enabled": self.enabled,
                 "repos_dir": str(self.repos_dir),
-                "worktrees_dir": str(self.worktrees_dir),
                 "auto_fetch": self.auto_fetch,
                 "fetch_interval": self.fetch_interval,
                 "cleanup": {
@@ -76,7 +73,6 @@ class WorktreeConfig:
         return cls(
             enabled=worktree_data.get("enabled", True),
             repos_dir=Path(worktree_data.get("repos_dir", _get_cache_base() / "repos")),
-            worktrees_dir=Path(worktree_data.get("worktrees_dir", _get_cache_base() / "worktrees")),
             auto_fetch=worktree_data.get("auto_fetch", True),
             fetch_interval=worktree_data.get("fetch_interval", 3600),
             auto_prune=cleanup_data.get("auto_prune", True),
