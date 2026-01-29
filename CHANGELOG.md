@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Worktree backend for efficient multi-branch workspace management
+  - Clones repositories once, then creates git worktrees for each branch
+  - Shares git objects across all branches for faster workspace creation
+  - Automatic backend selection based on workspace spec (owner/repo format uses worktree)
+  - Backend override via `--backend worktree|devpod` flag or `DEVLAUNCH_BACKEND` env var
+- New worktree module with:
+  - `RepositoryManager` for cloning and managing base repositories
+  - `WorktreeManager` for creating and managing git worktrees
+  - `WorkspaceManager` for DevPod workspace lifecycle with worktree backing
+  - `BranchManager` for branch operations (create, track, push)
+  - `MetadataStorage` for persistent worktree tracking
+- Configurable worktree directories via `~/.config/devlaunch/config.json`
+
+### Fixed
+- Proper exception handling for workspace creation failures
+- Pylint compliance for all worktree module code
+
 ## [0.0.4] - 2026-01-18
 
 ### Added
