@@ -140,7 +140,13 @@ class TestWorktreeManagerRemoval:
             worktree_manager.remove_worktree("owner", "repo", "feature")
 
             mock_run.assert_called_with(
-                ["git", "worktree", "remove", "--force", str(worktree_manager.get_worktree_path("owner", "repo", "feature"))],
+                [
+                    "git",
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree_manager.get_worktree_path("owner", "repo", "feature")),
+                ],
                 cwd=Path("/repos/owner/repo"),
                 capture_output=True,
                 text=True,
@@ -177,7 +183,7 @@ class TestWorktreeManagerListing:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="/repos/owner/repo/.worktrees/main abcd123 [main]\n"
-                       "/repos/owner/repo/.worktrees/feature ef45678 [feature]\n",
+                "/repos/owner/repo/.worktrees/feature ef45678 [feature]\n",
             )
 
             worktrees = worktree_manager.list_worktrees("owner", "repo")
@@ -210,12 +216,16 @@ class TestWorktreeManagerListing:
         """Test listing all worktrees from storage."""
         mock_worktrees = [
             WorktreeInfo(
-                owner="owner1", repo="repo1", branch="main",
+                owner="owner1",
+                repo="repo1",
+                branch="main",
                 local_path=Path("/repos/owner1/repo1/.worktrees/main"),
                 workspace_id="ws1",
             ),
             WorktreeInfo(
-                owner="owner2", repo="repo2", branch="feature",
+                owner="owner2",
+                repo="repo2",
+                branch="feature",
                 local_path=Path("/repos/owner2/repo2/.worktrees/feature"),
                 workspace_id="ws2",
             ),
@@ -234,7 +244,9 @@ class TestWorktreeManagerEnsure:
     def test_ensure_worktree_exists(self, worktree_manager):
         """Test ensuring worktree when it already exists."""
         existing = WorktreeInfo(
-            owner="owner", repo="repo", branch="main",
+            owner="owner",
+            repo="repo",
+            branch="main",
             local_path=Path("/repos/owner/repo/.worktrees/main"),
             workspace_id="existing",
         )
@@ -248,7 +260,9 @@ class TestWorktreeManagerEnsure:
         """Test ensuring worktree creates new when doesn't exist."""
         worktree_manager.get_worktree = Mock(return_value=None)
         new_worktree = WorktreeInfo(
-            owner="owner", repo="repo", branch="feature",
+            owner="owner",
+            repo="repo",
+            branch="feature",
             local_path=Path("/repos/owner/repo/.worktrees/feature"),
             workspace_id="new",
         )
@@ -269,11 +283,15 @@ class TestWorktreeManagerHelpers:
 
     def test_worktree_exists_true(self, worktree_manager):
         """Test checking if worktree exists."""
-        worktree_manager.get_worktree = Mock(return_value=WorktreeInfo(
-            owner="owner", repo="repo", branch="main",
-            local_path=Path("/repos/owner/repo/.worktrees/main"),
-            workspace_id="ws",
-        ))
+        worktree_manager.get_worktree = Mock(
+            return_value=WorktreeInfo(
+                owner="owner",
+                repo="repo",
+                branch="main",
+                local_path=Path("/repos/owner/repo/.worktrees/main"),
+                workspace_id="ws",
+            )
+        )
 
         assert worktree_manager.worktree_exists("owner", "repo", "main") is True
 
@@ -286,7 +304,9 @@ class TestWorktreeManagerHelpers:
     def test_get_worktree_from_storage(self, worktree_manager, mock_storage):
         """Test getting worktree from storage."""
         expected = WorktreeInfo(
-            owner="owner", repo="repo", branch="main",
+            owner="owner",
+            repo="repo",
+            branch="main",
             local_path=Path("/repos/owner/repo/.worktrees/main"),
             workspace_id="ws",
         )
@@ -322,7 +342,7 @@ class TestWorktreeManagerHelpers:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="/repos/owner/repo/.worktrees/main abc123 [main]\n"
-                       "/repos/owner/repo/.worktrees/feature def456 [feature]\n",
+                "/repos/owner/repo/.worktrees/feature def456 [feature]\n",
             )
             worktree_manager.storage.sync_worktrees = Mock()
 
@@ -527,7 +547,9 @@ class TestWorktreeManagerIntegration:
         repo_dir.mkdir()
 
         subprocess.run(["git", "init"], cwd=repo_dir, check=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True
+        )
         subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
 
         # Create initial commit
@@ -542,11 +564,14 @@ class TestWorktreeManagerIntegration:
 
         # Mock the repo manager to return our test repo
         repo_manager.get_repo_path = Mock(return_value=repo_dir)
-        repo_manager.get_repo = Mock(return_value=BaseRepository(
-            owner="test", repo="repo",
-            local_path=repo_dir,
-            remote_url="file://" + str(repo_dir),
-        ))
+        repo_manager.get_repo = Mock(
+            return_value=BaseRepository(
+                owner="test",
+                repo="repo",
+                local_path=repo_dir,
+                remote_url="file://" + str(repo_dir),
+            )
+        )
 
         # Test creating a worktree
         worktree = manager.create_worktree("test", "repo", "feature-branch")

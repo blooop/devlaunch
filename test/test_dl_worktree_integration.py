@@ -215,13 +215,13 @@ class TestWorktreeBackendEdgeCases:
 
     def test_workspace_up_worktree_missing_branch(self):
         """Test workspace_up_worktree with missing branch."""
-        result = workspace_up_worktree("owner/repo", workspace_id="test")
+        result = workspace_up_worktree("owner", "repo", "", workspace_id="test")
         # Should fail when branch is missing
         assert result is None or result.returncode != 0
 
     def test_workspace_up_worktree_invalid_repo_format(self):
         """Test workspace_up_worktree with invalid repo format."""
-        result = workspace_up_worktree("invalid-format", workspace_id="test")
+        result = workspace_up_worktree("", "", "", workspace_id="test")
         assert result is None or result.returncode != 0
 
     def test_workspace_up_worktree_with_url(self):
@@ -239,7 +239,7 @@ class TestWorktreeBackendEdgeCases:
             )
             mock_instance.activate_workspace.return_value = MagicMock(returncode=0)
 
-            result = workspace_up_worktree("git@github.com:owner/repo.git@main")
+            result = workspace_up_worktree("owner", "repo", "main")
 
             assert result.returncode == 0
             mock_instance.create_workspace.assert_called_once()
@@ -279,9 +279,7 @@ class TestWorktreeBackendEdgeCases:
 
     @patch("devlaunch.dl.WorkspaceManager")
     @patch("devlaunch.dl.should_use_worktree_backend")
-    def test_main_worktree_cleanup_on_error(
-        self, mock_use_worktree, mock_workspace_manager
-    ):
+    def test_main_worktree_cleanup_on_error(self, mock_use_worktree, mock_workspace_manager):
         """Test cleanup when workspace creation fails."""
         mock_use_worktree.return_value = True
 
@@ -305,9 +303,7 @@ class TestWorktreeLongBranchNames:
     @patch("devlaunch.dl.WorkspaceManager")
     @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.update_cache_background")
-    def test_very_long_branch_name(
-        self, mock_cache, mock_use_worktree, mock_workspace_manager
-    ):
+    def test_very_long_branch_name(self, mock_cache, mock_use_worktree, mock_workspace_manager):
         """Test handling very long branch names."""
         mock_use_worktree.return_value = True
 
@@ -379,9 +375,7 @@ class TestWorktreeBackendDeleteCommand:
     @patch("devlaunch.dl.WorkspaceManager")
     @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    def test_delete_worktree_workspace(
-        self, mock_ids, mock_use_worktree, mock_workspace_manager
-    ):
+    def test_delete_worktree_workspace(self, mock_ids, mock_use_worktree, mock_workspace_manager):
         """Test deleting workspace with worktree backend."""
         mock_use_worktree.return_value = True
         mock_ids.return_value = ["feature-ws"]
@@ -427,9 +421,7 @@ class TestWorktreeBackendStopCommand:
     @patch("devlaunch.dl.WorkspaceManager")
     @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    def test_stop_worktree_workspace(
-        self, mock_ids, mock_use_worktree, mock_workspace_manager
-    ):
+    def test_stop_worktree_workspace(self, mock_ids, mock_use_worktree, mock_workspace_manager):
         """Test stopping workspace with worktree backend."""
         mock_use_worktree.return_value = True
         mock_ids.return_value = ["feature-ws"]
@@ -510,8 +502,9 @@ class TestWorktreeBackendErrorMessages:
         assert result == 1
         # Should print helpful error message
         print_calls = [str(call) for call in mock_print.call_args_list]
-        assert any("network" in call.lower() or "connection" in call.lower()
-                  for call in print_calls)
+        assert any(
+            "network" in call.lower() or "connection" in call.lower() for call in print_calls
+        )
 
     @patch("devlaunch.dl.WorkspaceManager")
     @patch("devlaunch.dl.should_use_worktree_backend")

@@ -57,8 +57,7 @@ class TestWorkspaceManagerLocking:
         def create_workspace():
             try:
                 workspace = workspace_manager.create_workspace(
-                    "owner", "repo", "concurrent-test",
-                    "https://github.com/owner/repo.git"
+                    "owner", "repo", "concurrent-test", "https://github.com/owner/repo.git"
                 )
                 results.append(workspace)
             except Exception as e:
@@ -110,7 +109,9 @@ class TestWorkspaceManagerLocking:
             # Lock should be released (no deadlock on next attempt)
             mock_ensure.side_effect = None
             mock_ensure.return_value = WorktreeInfo(
-                owner="owner", repo="repo", branch="test",
+                owner="owner",
+                repo="repo",
+                branch="test",
                 local_path=Path("/worktrees/test"),
                 workspace_id="test-ws",
             )
@@ -140,9 +141,7 @@ class TestWorkspaceManagerDevPodIntegration:
         """Test handling timeout during devpod up."""
         with patch("subprocess.run") as mock_run:
             # Simulate timeout
-            mock_run.side_effect = subprocess.TimeoutExpired(
-                ["devpod", "up"], timeout=300
-            )
+            mock_run.side_effect = subprocess.TimeoutExpired(["devpod", "up"], timeout=300)
 
             with pytest.raises(subprocess.TimeoutExpired):
                 workspace_manager.activate_workspace("test-ws")
@@ -156,12 +155,16 @@ class TestWorkspaceManagerDevPodIntegration:
 
     def test_devpod_delete_in_use_workspace(self, workspace_manager):
         """Test deleting workspace that's currently in use."""
-        workspace_manager.get_workspace_by_id = Mock(return_value=WorktreeInfo(
-            owner="owner", repo="repo", branch="main",
-            local_path=Path("/worktrees/main"),
-            workspace_id="main-ws",
-            devpod_workspace_id="main",
-        ))
+        workspace_manager.get_workspace_by_id = Mock(
+            return_value=WorktreeInfo(
+                owner="owner",
+                repo="repo",
+                branch="main",
+                local_path=Path("/worktrees/main"),
+                workspace_id="main-ws",
+                devpod_workspace_id="main",
+            )
+        )
 
         with patch("subprocess.run") as mock_run:
             # First attempt fails because workspace is in use
@@ -184,7 +187,7 @@ class TestWorkspaceManagerDevPodIntegration:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
-                stdout="MALFORMED JSON {]}"  # Invalid JSON
+                stdout="MALFORMED JSON {]}",  # Invalid JSON
             )
 
             # Should handle gracefully
@@ -208,8 +211,7 @@ class TestWorkspaceManagerPathHandling:
         workspace_manager.worktree_manager.ensure_worktree = Mock(return_value=worktree)
 
         workspace = workspace_manager.create_workspace(
-            "my owner", "my repo", "my branch",
-            "https://github.com/my%20owner/my%20repo.git"
+            "my owner", "my repo", "my branch", "https://github.com/my%20owner/my%20repo.git"
         )
 
         assert workspace.workspace_id == worktree.workspace_id
@@ -227,8 +229,7 @@ class TestWorkspaceManagerPathHandling:
         workspace_manager.worktree_manager.ensure_worktree = Mock(return_value=worktree)
 
         workspace = workspace_manager.create_workspace(
-            "owner", "repo", "分支-テスト",
-            "https://github.com/owner/repo.git"
+            "owner", "repo", "分支-テスト", "https://github.com/owner/repo.git"
         )
 
         assert workspace is not None
@@ -249,8 +250,7 @@ class TestWorkspaceManagerPathHandling:
         workspace_manager.worktree_manager.ensure_worktree = Mock(return_value=worktree)
 
         workspace = workspace_manager.create_workspace(
-            "owner", "repo", long_branch,
-            "https://github.com/owner/repo.git"
+            "owner", "repo", long_branch, "https://github.com/owner/repo.git"
         )
 
         assert workspace is not None
@@ -267,9 +267,7 @@ class TestWorkspaceManagerConfigHandling:
         config_file.write_text("{ CORRUPTED JSON }")
 
         # Should handle gracefully and recreate config
-        workspace_manager._update_devpod_config(
-            "test-ws", Path("/worktrees/test")
-        )
+        workspace_manager._update_devpod_config("test-ws", Path("/worktrees/test"))
 
         # Config should be valid JSON now
         config_data = json.loads(config_file.read_text())
@@ -281,9 +279,7 @@ class TestWorkspaceManagerConfigHandling:
             mock_open_builtin.side_effect = PermissionError("Permission denied")
 
             # Should log error but not crash
-            workspace_manager._update_devpod_config(
-                "test-ws", Path("/worktrees/test")
-            )
+            workspace_manager._update_devpod_config("test-ws", Path("/worktrees/test"))
 
     def test_config_file_disk_full(self, workspace_manager):
         """Test handling disk full error when writing config."""
@@ -291,9 +287,7 @@ class TestWorkspaceManagerConfigHandling:
             mock_open_builtin.side_effect = OSError("No space left on device")
 
             with pytest.raises(OSError, match="No space left"):
-                workspace_manager._update_devpod_config(
-                    "test-ws", Path("/worktrees/test")
-                )
+                workspace_manager._update_devpod_config("test-ws", Path("/worktrees/test"))
 
 
 class TestWorkspaceManagerRecovery:
@@ -304,7 +298,9 @@ class TestWorkspaceManagerRecovery:
         # First attempt fails after worktree creation
         with patch.object(workspace_manager.worktree_manager, "ensure_worktree") as mock_ensure:
             mock_ensure.return_value = WorktreeInfo(
-                owner="owner", repo="repo", branch="test",
+                owner="owner",
+                repo="repo",
+                branch="test",
                 local_path=Path("/worktrees/test"),
                 workspace_id="test-ws",
             )
@@ -328,7 +324,9 @@ class TestWorkspaceManagerRecovery:
         """Test cleanup of orphaned workspaces."""
         # Create orphaned workspace in storage
         orphaned = WorktreeInfo(
-            owner="owner", repo="repo", branch="orphaned",
+            owner="owner",
+            repo="repo",
+            branch="orphaned",
             local_path=Path("/nonexistent/path"),
             workspace_id="orphaned-ws",
             devpod_workspace_id="orphaned",
@@ -351,12 +349,16 @@ class TestWorkspaceManagerBranchOperations:
 
     def test_switch_branch_with_uncommitted_changes(self, workspace_manager):
         """Test switching branches with uncommitted changes."""
-        workspace_manager.get_workspace_by_id = Mock(return_value=WorktreeInfo(
-            owner="owner", repo="repo", branch="feature",
-            local_path=Path("/worktrees/feature"),
-            workspace_id="feature-ws",
-            devpod_workspace_id="feature",
-        ))
+        workspace_manager.get_workspace_by_id = Mock(
+            return_value=WorktreeInfo(
+                owner="owner",
+                repo="repo",
+                branch="feature",
+                local_path=Path("/worktrees/feature"),
+                workspace_id="feature-ws",
+                devpod_workspace_id="feature",
+            )
+        )
 
         with patch("subprocess.run") as mock_run:
             # Git status shows uncommitted changes
@@ -375,7 +377,9 @@ class TestWorkspaceManagerBranchOperations:
     def test_create_workspace_from_tag(self, workspace_manager):
         """Test creating workspace from a git tag."""
         tag_worktree = WorktreeInfo(
-            owner="owner", repo="repo", branch="v1.0.0",
+            owner="owner",
+            repo="repo",
+            branch="v1.0.0",
             local_path=Path("/worktrees/v1.0.0"),
             workspace_id="tag-ws",
         )
@@ -383,8 +387,7 @@ class TestWorkspaceManagerBranchOperations:
         workspace_manager.worktree_manager.ensure_worktree = Mock(return_value=tag_worktree)
 
         workspace = workspace_manager.create_workspace(
-            "owner", "repo", "v1.0.0",
-            "https://github.com/owner/repo.git"
+            "owner", "repo", "v1.0.0", "https://github.com/owner/repo.git"
         )
 
         assert workspace.branch == "v1.0.0"
@@ -392,7 +395,8 @@ class TestWorkspaceManagerBranchOperations:
     def test_create_workspace_from_commit_sha(self, workspace_manager):
         """Test creating workspace from a commit SHA."""
         sha_worktree = WorktreeInfo(
-            owner="owner", repo="repo",
+            owner="owner",
+            repo="repo",
             branch="abc123def456",  # Commit SHA
             local_path=Path("/worktrees/abc123def456"),
             workspace_id="sha-ws",
@@ -401,8 +405,7 @@ class TestWorkspaceManagerBranchOperations:
         workspace_manager.worktree_manager.ensure_worktree = Mock(return_value=sha_worktree)
 
         workspace = workspace_manager.create_workspace(
-            "owner", "repo", "abc123def456",
-            "https://github.com/owner/repo.git"
+            "owner", "repo", "abc123def456", "https://github.com/owner/repo.git"
         )
 
         assert workspace.branch == "abc123def456"
@@ -415,19 +418,22 @@ class TestWorkspaceManagerResourceLimits:
         """Test enforcing maximum number of workspaces."""
         # Create max workspaces
         for i in range(20):  # Assuming max is 20
-            workspace_manager.storage.save_worktree(WorktreeInfo(
-                owner="owner", repo=f"repo{i}", branch="main",
-                local_path=Path(f"/worktrees/repo{i}"),
-                workspace_id=f"ws-{i}",
-            ))
+            workspace_manager.storage.save_worktree(
+                WorktreeInfo(
+                    owner="owner",
+                    repo=f"repo{i}",
+                    branch="main",
+                    local_path=Path(f"/worktrees/repo{i}"),
+                    workspace_id=f"ws-{i}",
+                )
+            )
 
         # Try to create one more
         with patch.object(workspace_manager, "MAX_WORKSPACES", 20):
             # Should either succeed with cleanup or fail gracefully
             try:
                 workspace_manager.create_workspace(
-                    "owner", "repo21", "main",
-                    "https://github.com/owner/repo21.git"
+                    "owner", "repo21", "main", "https://github.com/owner/repo21.git"
                 )
             except RuntimeError as e:
                 assert "maximum" in str(e).lower() or "limit" in str(e).lower()
@@ -443,8 +449,9 @@ class TestWorkspaceManagerResourceLimits:
                 workspace_manager.check_disk_space()
 
                 print_calls = [str(call) for call in mock_print.call_args_list]
-                assert any("disk" in call.lower() or "space" in call.lower()
-                          for call in print_calls)
+                assert any(
+                    "disk" in call.lower() or "space" in call.lower() for call in print_calls
+                )
 
 
 class TestWorkspaceManagerMigration:
