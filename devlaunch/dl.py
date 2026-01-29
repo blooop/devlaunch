@@ -184,6 +184,54 @@ def update_cache_background() -> None:
         pass
 
 
+def purge_all_data() -> int:
+    """Purge all devlaunch data including worktrees, repos, and caches.
+
+    This removes:
+    - ~/.devlaunch/ (repos, worktrees, metadata)
+    - Completion caches
+    """
+    import shutil
+
+    removed = []
+    errors = []
+
+    # Remove worktree data directory
+    devlaunch_dir = pathlib.Path.home() / ".devlaunch"
+    if devlaunch_dir.exists():
+        try:
+            shutil.rmtree(devlaunch_dir)
+            removed.append(str(devlaunch_dir))
+        except OSError as e:
+            errors.append(f"{devlaunch_dir}: {e}")
+
+    # Remove completion caches
+    cache_dir = _get_cache_dir()
+    if cache_dir.exists():
+        try:
+            shutil.rmtree(cache_dir)
+            removed.append(str(cache_dir))
+        except OSError as e:
+            errors.append(f"{cache_dir}: {e}")
+
+    # Report results
+    if removed:
+        print("Removed:")
+        for path in removed:
+            print(f"  {path}")
+
+    if errors:
+        print("Errors:")
+        for error in errors:
+            print(f"  {error}")
+        return 1
+
+    if not removed:
+        print("Nothing to purge.")
+
+    return 0
+
+
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)
 
 OWNER_REPO_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(@[a-zA-Z0-9_./%-]+)?$")
@@ -907,6 +955,7 @@ Global commands:
     dl --ls                          List all workspaces
     dl --install                     Install shell completions
     dl --refresh                     Refresh completion cache
+    dl --purge                       Remove all devlaunch data (repos, worktrees, caches)
     dl --help, -h                    Show this help
     dl --version                     Show version
 
@@ -1004,6 +1053,17 @@ def main() -> int:
         # Generate cache so completions work immediately
         update_completion_cache()
         return install_completions(rc_path)
+
+    if args[0] == "--purge":
+        print("This will remove all devlaunch data:")
+        print("  - ~/.devlaunch/ (cloned repos, worktrees, metadata)")
+        print("  - Completion caches")
+        print()
+        confirm = input("Are you sure? [y/N] ").strip().lower()
+        if confirm in ("y", "yes"):
+            return purge_all_data()
+        print("Aborted.")
+        return 0
 
     # Parse --backend flag
     backend_override = None
