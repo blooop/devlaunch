@@ -80,7 +80,7 @@ def write_completion_cache(data: Dict[str, Any]) -> None:
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         # Write to temp file first, then atomic rename
-        temp_path = cache_path.with_suffix('.tmp')
+        temp_path = cache_path.with_suffix(".tmp")
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
         # Atomic rename (on POSIX systems)
@@ -105,7 +105,7 @@ def write_bash_completion_cache(data: Dict[str, Any]) -> None:
             f'DL_BRANCHES="{branches}"',
         ]
         # Write to temp file first, then atomic rename
-        temp_path = BASH_CACHE_FILE.with_suffix('.tmp')
+        temp_path = BASH_CACHE_FILE.with_suffix(".tmp")
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         # Atomic rename (on POSIX systems)
