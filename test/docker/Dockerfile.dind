@@ -1,0 +1,54 @@
+# Docker-in-Docker test container for E2E tests
+#
+# This container runs with its own Docker daemon, allowing full DevPod
+# testing without affecting the host system.
+#
+# Build: docker build -f test/docker/Dockerfile.dind -t devlaunch-test .
+# Run: docker compose -f test/docker/docker-compose.test.yml up --build
+
+FROM docker:dind
+
+# Install Python, git, and other dependencies
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    git \
+    bash \
+    curl \
+    openssh-client
+
+# Install DevPod CLI
+RUN curl -L -o /usr/local/bin/devpod \
+    "https://github.com/loft-sh/devpod/releases/latest/download/devpod-linux-amd64" \
+    && chmod +x /usr/local/bin/devpod
+
+# Create app directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY pyproject.toml ./
+
+# Install pip packages in a virtual environment
+RUN python3 -m venv /venv
+ENV PATH="/venv/bin:$PATH"
+
+# Install the project in editable mode with test dependencies
+COPY . .
+RUN pip install --upgrade pip \
+    && pip install -e ".[test]"
+
+# Configure git for tests
+RUN git config --global user.email "test@example.com" \
+    && git config --global user.name "Test User" \
+    && git config --global init.defaultBranch main
+
+# Copy entrypoint script
+COPY test/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV DOCKER_TLS_CERTDIR=""
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["-v", "--tb=short", "-m", "e2e"]

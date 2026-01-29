@@ -392,7 +392,7 @@ packages:
 - pypi: ./
   name: devlaunch
   version: 0.0.6
-  sha256: 3df0a8732e46ffb94aaec11838545b0194b757a7d3d6948e0f7c40bb5d04357b
+  sha256: 415669eb99c4be31b4000838004528b3cb64bb30d6948036ade31461d0032679
   requires_dist:
   - iterfzf>=1.0.0
   - tomli>=2.0.0

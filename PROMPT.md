@@ -285,10 +285,53 @@ This is a **Python project template** with the following structure:
 - **CI/CD**: GitHub Actions
 - **Dev environment**: devcontainer support
 
-## Current Task
-1. Review @fix_plan.md for current priorities
-2. If no tasks exist, the project is ready (EXIT_SIGNAL: true)
-3. When tasks exist, implement the highest priority item
-4. Always run `pixi run ci` to verify changes pass all checks
+## Current Task: Verify Test Architecture
+
+A three-tier test architecture has been implemented. Verify it works correctly:
+
+### Step 1: Run Unit Tests
+```bash
+pixi run pytest test/unit/ -v
+```
+Expected: 16 tests pass
+
+### Step 2: Run Integration Tests
+```bash
+pixi run pytest test/integration/ -v
+```
+Expected: 33 tests pass
+
+### Step 3: Verify Critical Path Test
+```bash
+pixi run pytest test/integration/test_worktree_paths_real.py::TestWorktreeGitFile::test_worktree_git_file_uses_relative_path -v
+```
+This test catches the container mount bug by verifying .git files use relative paths.
+
+### Step 4: Verify E2E Tests Are Skipped by Default
+```bash
+pixi run pytest --collect-only 2>&1 | tail -5
+```
+Expected: Shows "6 deselected" (E2E tests skipped)
+
+### Step 5: Run Linting
+```bash
+pixi run ruff check test/
+```
+Expected: All checks passed
+
+### Step 6: Run Full CI
+```bash
+pixi run ci
+```
+Expected: All checks pass
+
+### Success Criteria
+- All unit tests pass (16)
+- All integration tests pass (33)
+- E2E tests are deselected by default (6)
+- Linting passes
+- Full CI passes
+
+If all criteria met, set EXIT_SIGNAL: true with RECOMMENDATION: "Test architecture verified and working"
 
 Remember: Quality over speed. Build it right the first time. Know when you're done.

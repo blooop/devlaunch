@@ -21,6 +21,7 @@ from devlaunch.dl import (
     get_workspace_ids,
     OWNER_REPO_PATTERN,
     spec_to_workspace_id,
+    make_worktree_workspace_id,
     get_version,
     read_completion_cache,
     write_completion_cache,
@@ -863,6 +864,42 @@ class TestSpecToWorkspaceId:
     def test_existing_workspace_id(self):
         """Test existing workspace ID is returned as-is."""
         assert spec_to_workspace_id("myworkspace") == "myworkspace"
+
+
+class TestMakeWorktreeWorkspaceId:
+    """Tests for make_worktree_workspace_id function."""
+
+    def test_basic_format(self):
+        """Test basic owner-repo-branch format."""
+        result = make_worktree_workspace_id("blooop", "bencher", "main")
+        assert result == "blooop-bencher-main"
+
+    def test_feature_branch_sanitized(self):
+        """Test feature/branch is sanitized."""
+        result = make_worktree_workspace_id("owner", "repo", "feature/my-branch")
+        assert result == "owner-repo-feature-my-branch"
+
+    def test_long_branch_truncated(self):
+        """Test long branch names are truncated to fit max_len."""
+        long_branch = "feature/very-long-branch-name-that-exceeds-the-limit"
+        result = make_worktree_workspace_id("owner", "repo", long_branch, max_len=30)
+        assert len(result) <= 30
+        assert result.startswith("owner-repo-")
+
+    def test_max_len_respected(self):
+        """Test max_len is respected."""
+        result = make_worktree_workspace_id("owner", "repo", "main", max_len=20)
+        assert len(result) <= 20
+
+    def test_default_max_len(self):
+        """Test default max_len is 50."""
+        result = make_worktree_workspace_id("owner", "repo", "main")
+        assert len(result) <= 50
+
+    def test_preserves_owner_repo(self):
+        """Test owner and repo are always preserved."""
+        result = make_worktree_workspace_id("blooop", "devlaunch", "feature/test")
+        assert result.startswith("blooop-devlaunch-")
 
 
 class TestCacheFunctions:

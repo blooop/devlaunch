@@ -3,7 +3,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 
 import tomli
 import tomli_w
@@ -32,6 +32,7 @@ class WorktreeConfig:
     fetch_interval: int = 3600  # Seconds between auto-fetches
     auto_prune: bool = True
     prune_after_days: int = 30
+    fallback_image: Optional[str] = None  # Docker image to use for repos without devcontainer.json
 
     def __post_init__(self):
         """Ensure paths are Path objects and expand user."""
@@ -51,7 +52,7 @@ class WorktreeConfig:
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for TOML serialization."""
-        return {
+        result = {
             "worktree": {
                 "enabled": self.enabled,
                 "repos_dir": str(self.repos_dir),
@@ -63,6 +64,9 @@ class WorktreeConfig:
                 },
             }
         }
+        if self.fallback_image:
+            result["worktree"]["fallback_image"] = self.fallback_image
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict) -> "WorktreeConfig":
@@ -77,6 +81,7 @@ class WorktreeConfig:
             fetch_interval=worktree_data.get("fetch_interval", 3600),
             auto_prune=cleanup_data.get("auto_prune", True),
             prune_after_days=cleanup_data.get("prune_after_days", 30),
+            fallback_image=worktree_data.get("fallback_image"),
         )
 
 

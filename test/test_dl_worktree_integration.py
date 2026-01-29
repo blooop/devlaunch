@@ -35,7 +35,15 @@ def mock_managers(mock_workspace_manager):
     mock_repo_manager = Mock()
     mock_worktree_manager = Mock()
     mock_storage = Mock()
-    return (mock_repo_manager, mock_worktree_manager, mock_workspace_manager, mock_storage)
+    mock_config = Mock()
+    mock_config.prune_after_days = 30
+    return (
+        mock_repo_manager,
+        mock_worktree_manager,
+        mock_workspace_manager,
+        mock_storage,
+        mock_config,
+    )
 
 
 class TestShouldUseWorktreeBackend:
@@ -74,7 +82,7 @@ class TestWorkspaceUpWorktree:
     def test_creates_workspace(self, mock_get_managers, mock_managers):
         """Test that workspace_up_worktree creates a workspace."""
         mock_get_managers.return_value = mock_managers
-        _, _, mock_ws_manager, _ = mock_managers
+        _, _, mock_ws_manager, _, _ = mock_managers
 
         result = workspace_up_worktree("owner", "repo", "main")
 
@@ -89,7 +97,7 @@ class TestWorkspaceUpWorktree:
     def test_with_custom_workspace_id(self, mock_get_managers, mock_managers):
         """Test workspace creation with custom ID."""
         mock_get_managers.return_value = mock_managers
-        _, _, mock_ws_manager, _ = mock_managers
+        _, _, mock_ws_manager, _, _ = mock_managers
 
         workspace_up_worktree("owner", "repo", "main", workspace_id="custom-id")
 
@@ -100,7 +108,7 @@ class TestWorkspaceUpWorktree:
     def test_with_ide(self, mock_get_managers, mock_managers):
         """Test workspace creation with IDE specification."""
         mock_get_managers.return_value = mock_managers
-        _, _, mock_ws_manager, _ = mock_managers
+        _, _, mock_ws_manager, _, _ = mock_managers
 
         workspace_up_worktree("owner", "repo", "main", ide="vscode")
 
@@ -136,7 +144,7 @@ class TestMainWithWorktreeBackend:
     ):
         """Test main handles worktree backend failures."""
         mock_use_worktree.return_value = True
-        _, _, mock_ws_manager, _ = mock_managers
+        _, _, mock_ws_manager, _, _ = mock_managers
         mock_ws_manager.create_workspace.side_effect = RuntimeError("Clone failed")
         mock_get_managers.return_value = mock_managers
 
