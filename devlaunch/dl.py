@@ -47,8 +47,8 @@ def _get_cache_dir() -> pathlib.Path:
     """Get the cache directory, honoring XDG_CACHE_HOME."""
     xdg_cache = os.environ.get("XDG_CACHE_HOME")
     if xdg_cache:
-        return pathlib.Path(xdg_cache) / "dl"
-    return pathlib.Path.home() / ".cache" / "dl"
+        return pathlib.Path(xdg_cache) / "devlaunch"
+    return pathlib.Path.home() / ".cache" / "devlaunch"
 
 
 # Cache configuration (honors XDG_CACHE_HOME)
@@ -187,49 +187,26 @@ def update_cache_background() -> None:
 def purge_all_data() -> int:
     """Purge all devlaunch data including worktrees, repos, and caches.
 
-    This removes:
-    - ~/.devlaunch/ (repos, worktrees, metadata)
-    - Completion caches
+    This removes ~/.cache/devlaunch/ which contains:
+    - repos/ (cloned repositories)
+    - worktrees/ (git worktrees)
+    - metadata.json (worktree tracking)
+    - completions.json, completions.bash (completion caches)
     """
     import shutil
 
-    removed = []
-    errors = []
-
-    # Remove worktree data directory
-    devlaunch_dir = pathlib.Path.home() / ".devlaunch"
-    if devlaunch_dir.exists():
-        try:
-            shutil.rmtree(devlaunch_dir)
-            removed.append(str(devlaunch_dir))
-        except OSError as e:
-            errors.append(f"{devlaunch_dir}: {e}")
-
-    # Remove completion caches
     cache_dir = _get_cache_dir()
-    if cache_dir.exists():
-        try:
-            shutil.rmtree(cache_dir)
-            removed.append(str(cache_dir))
-        except OSError as e:
-            errors.append(f"{cache_dir}: {e}")
-
-    # Report results
-    if removed:
-        print("Removed:")
-        for path in removed:
-            print(f"  {path}")
-
-    if errors:
-        print("Errors:")
-        for error in errors:
-            print(f"  {error}")
-        return 1
-
-    if not removed:
+    if not cache_dir.exists():
         print("Nothing to purge.")
+        return 0
 
-    return 0
+    try:
+        shutil.rmtree(cache_dir)
+        print(f"Removed: {cache_dir}")
+        return 0
+    except OSError as e:
+        print(f"Error removing {cache_dir}: {e}")
+        return 1
 
 
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)
@@ -960,9 +937,9 @@ Global commands:
     dl --version                     Show version
 
 Worktree backend (default for git repos):
-    Git repos are cloned once to ~/.devlaunch/repos/, then worktrees are
-    created for each branch in ~/.devlaunch/worktrees/. This is faster and
-    more efficient as git objects are shared across branches.
+    Git repos are cloned once to ~/.cache/devlaunch/repos/, then worktrees
+    are created for each branch in ~/.cache/devlaunch/worktrees/. This is
+    faster and more efficient as git objects are shared across branches.
 
     dl --backend devpod <repo>       Force legacy DevPod backend (clone per workspace)
     Set DEVLAUNCH_BACKEND=devpod to globally disable worktree backend.
@@ -1055,9 +1032,13 @@ def main() -> int:
         return install_completions(rc_path)
 
     if args[0] == "--purge":
+        cache_dir = _get_cache_dir()
         print("This will remove all devlaunch data:")
-        print("  - ~/.devlaunch/ (cloned repos, worktrees, metadata)")
-        print("  - Completion caches")
+        print(f"  {cache_dir}/")
+        print("    - repos/ (cloned repositories)")
+        print("    - worktrees/ (git worktrees)")
+        print("    - metadata.json (worktree tracking)")
+        print("    - completions.* (completion caches)")
         print()
         confirm = input("Are you sure? [y/N] ").strip().lower()
         if confirm in ("y", "yes"):

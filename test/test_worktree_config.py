@@ -14,8 +14,8 @@ class TestWorktreeConfig:
         config = WorktreeConfig()
 
         assert config.enabled is True
-        assert config.repos_dir == Path.home() / ".devlaunch" / "repos"
-        assert config.worktrees_dir == Path.home() / ".devlaunch" / "worktrees"
+        assert config.repos_dir == Path.home() / ".cache" / "devlaunch" / "repos"
+        assert config.worktrees_dir == Path.home() / ".cache" / "devlaunch" / "worktrees"
         assert config.auto_fetch is True
         assert config.fetch_interval == 3600
         assert config.auto_prune is True
@@ -107,8 +107,8 @@ class TestWorktreeConfig:
         config = WorktreeConfig.from_dict({})
 
         assert config.enabled is True
-        assert config.repos_dir == Path.home() / ".devlaunch" / "repos"
-        assert config.worktrees_dir == Path.home() / ".devlaunch" / "worktrees"
+        assert config.repos_dir == Path.home() / ".cache" / "devlaunch" / "repos"
+        assert config.worktrees_dir == Path.home() / ".cache" / "devlaunch" / "worktrees"
         assert config.auto_fetch is True
         assert config.fetch_interval == 3600
         assert config.auto_prune is True
@@ -125,8 +125,8 @@ class TestWorktreeConfig:
 
         config = WorktreeConfig.from_dict(data)
         assert config.enabled is False
-        assert config.repos_dir == Path.home() / ".devlaunch" / "repos"
-        assert config.worktrees_dir == Path.home() / ".devlaunch" / "worktrees"
+        assert config.repos_dir == Path.home() / ".cache" / "devlaunch" / "repos"
+        assert config.worktrees_dir == Path.home() / ".cache" / "devlaunch" / "worktrees"
         assert config.auto_fetch is False
         assert config.fetch_interval == 3600
         assert config.auto_prune is True

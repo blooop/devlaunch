@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `WorkspaceManager` for DevPod workspace lifecycle with worktree backing
   - `BranchManager` for branch operations (create, track, push)
   - `MetadataStorage` for persistent worktree tracking
-- Configurable worktree directories via `~/.config/devlaunch/config.json`
+- Configurable worktree directories via `~/.config/devlaunch/config.toml`
+- `--purge` command to remove all devlaunch data (repos, worktrees, caches)
+- All data now stored in `~/.cache/devlaunch/` (XDG compliant)
 
 ### Fixed
 - Proper exception handling for workspace creation failures

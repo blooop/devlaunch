@@ -9,17 +9,21 @@ import tomli
 import tomli_w
 
 
+def _get_cache_base() -> Path:
+    """Get the base cache directory, honoring XDG_CACHE_HOME."""
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "devlaunch"
+    return Path.home() / ".cache" / "devlaunch"
+
+
 @dataclass
 class WorktreeConfig:
     """Configuration for worktree backend."""
 
     enabled: bool = True  # Enabled by default
-    repos_dir: Union[Path, str] = field(
-        default_factory=lambda: Path.home() / ".devlaunch" / "repos"
-    )
-    worktrees_dir: Union[Path, str] = field(
-        default_factory=lambda: Path.home() / ".devlaunch" / "worktrees"
-    )
+    repos_dir: Union[Path, str] = field(default_factory=lambda: _get_cache_base() / "repos")
+    worktrees_dir: Union[Path, str] = field(default_factory=lambda: _get_cache_base() / "worktrees")
     auto_fetch: bool = True
     fetch_interval: int = 3600  # Seconds between auto-fetches
     auto_prune: bool = True
@@ -71,10 +75,8 @@ class WorktreeConfig:
 
         return cls(
             enabled=worktree_data.get("enabled", True),
-            repos_dir=Path(worktree_data.get("repos_dir", Path.home() / ".devlaunch" / "repos")),
-            worktrees_dir=Path(
-                worktree_data.get("worktrees_dir", Path.home() / ".devlaunch" / "worktrees")
-            ),
+            repos_dir=Path(worktree_data.get("repos_dir", _get_cache_base() / "repos")),
+            worktrees_dir=Path(worktree_data.get("worktrees_dir", _get_cache_base() / "worktrees")),
             auto_fetch=worktree_data.get("auto_fetch", True),
             fetch_interval=worktree_data.get("fetch_interval", 3600),
             auto_prune=cleanup_data.get("auto_prune", True),
