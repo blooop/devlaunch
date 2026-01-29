@@ -94,18 +94,9 @@ class WorkspaceManager:
             f"Creating DevPod workspace {workspace_id} from worktree at {worktree.local_path}"
         )
 
-        # Get the base repo path - DevPod will mount this so git works inside container
-        base_repo_path = self.worktree_manager.repo_manager.get_repo_path(owner, repo)
-
-        # Calculate relative path from base repo to worktree for workdir
-        # worktree.local_path is base_repo_path/.worktrees/branch
-        relative_worktree = worktree.local_path.relative_to(base_repo_path)
-
-        # Build DevPod command - mount the base repo, workdir is the worktree
-        args = ["up", str(base_repo_path), "--id", workspace_id]
-
-        # Set the working directory inside the container to the worktree
-        args.extend(["--workdir", f"/workspaces/{workspace_id}/{relative_worktree}"])
+        # Mount the worktree directory directly - it has a .git file that links
+        # to the main repo, so git commands work inside the container
+        args = ["up", str(worktree.local_path), "--id", workspace_id]
 
         if devcontainer_path:
             args.extend(["--devcontainer-path", devcontainer_path])

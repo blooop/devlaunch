@@ -106,12 +106,11 @@ class TestWorkspaceManagerCreate:
             with patch.object(Path, "home", return_value=Path(tmpdir)):
                 workspace_manager.create_workspace("owner", "repo", "feature")
 
-        # Check that devpod was called with the base repo path
+        # Check that devpod was called with the worktree path
         call_args = mock_run_devpod.call_args[0][0]
-        assert "/tmp/repos/owner/repo" in call_args
+        assert "/tmp/repos/owner/repo/.worktrees/feature" in call_args
         assert "--id" in call_args
         assert "feature" in call_args
-        assert "--workdir" in call_args
 
     @patch("devlaunch.worktree.workspace_manager.run_devpod")
     @patch("devlaunch.worktree.workspace_manager.fcntl.flock")
