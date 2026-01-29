@@ -78,7 +78,7 @@ def local_git_repo(tmp_path: Path) -> Dict[str, Any]:
     # Create bare repository (acts as "remote")
     remote_dir = tmp_path / "remote_repo.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote_dir)],
+        ["git", "init", "--bare", "--initial-branch=main", str(remote_dir)],
         check=True,
         capture_output=True,
     )
@@ -88,6 +88,14 @@ def local_git_repo(tmp_path: Path) -> Dict[str, Any]:
     subprocess.run(
         ["git", "clone", str(remote_dir), str(work_dir)],
         check=True,
+        capture_output=True,
+    )
+
+    # Ensure we're on main branch (needed for older git versions)
+    subprocess.run(
+        ["git", "checkout", "-b", "main"],
+        cwd=work_dir,
+        check=False,  # May fail if already on main
         capture_output=True,
     )
 
