@@ -1,6 +1,6 @@
 [project]
 name = "devlaunch"
-version = "0.0.5"
+version = "0.0.6"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
@@ -23,7 +23,6 @@ python = ">=3.10"
 shellcheck = ">=0.10.0,<0.11"
 devpod = ">=0.8.0,<0.9"
 gh = ">=2.83.0,<3.0"
-ralph-claude-code = ">=0.1.0"
 
 [tool.pixi.feature.py310.dependencies]
 python = "3.10.*"

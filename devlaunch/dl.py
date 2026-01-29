@@ -79,8 +79,12 @@ def write_completion_cache(data: Dict[str, Any]) -> None:
     cache_path = get_cache_path()
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
+        # Write to temp file first, then atomic rename
+        temp_path = cache_path.with_suffix(".tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
+        # Atomic rename (on POSIX systems)
+        temp_path.replace(cache_path)
     except OSError:
         pass
 
@@ -100,8 +104,12 @@ def write_bash_completion_cache(data: Dict[str, Any]) -> None:
             f'DL_OWNERS="{owners}"',
             f'DL_BRANCHES="{branches}"',
         ]
-        with open(BASH_CACHE_FILE, "w", encoding="utf-8") as f:
+        # Write to temp file first, then atomic rename
+        temp_path = BASH_CACHE_FILE.with_suffix(".tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+        # Atomic rename (on POSIX systems)
+        temp_path.replace(BASH_CACHE_FILE)
     except OSError:
         pass
 
@@ -707,12 +715,16 @@ def workspace_ssh(workspace: str, command: Optional[str] = None) -> int:
 def workspace_stop(workspace: str) -> int:
     """Stop a workspace."""
     result = run_devpod(["stop", workspace])
+    # Update cache after stopping workspace
+    update_cache_background()
     return result.returncode
 
 
 def workspace_delete(workspace: str) -> int:
     """Delete a workspace."""
     result = run_devpod(["delete", workspace])
+    # Update cache after deleting workspace
+    update_cache_background()
     return result.returncode
 
 
@@ -750,6 +762,7 @@ Workspace commands:
 Global commands:
     dl --ls                          List all workspaces
     dl --install                     Install shell completions
+    dl --refresh                     Refresh completion cache
     dl --help, -h                    Show this help
     dl --version                     Show version
 
@@ -769,6 +782,12 @@ Examples:
 def main() -> int:
     """Main entry point for dl CLI."""
     args = sys.argv[1:]
+
+    # Always update cache in background (unless we're the update process)
+    if args and args[0] in ["--update-cache"]:
+        pass  # Don't recursively update
+    else:
+        update_cache_background()
 
     # No args - try fzf selection
     if not args:
@@ -804,8 +823,15 @@ def main() -> int:
         return 0
 
     if args[0] == "--update-cache":
-        # Update completion cache (called in background)
+        # Silent background update
         update_completion_cache()
+        return 0
+
+    if args[0] == "--refresh":
+        # Manual refresh with feedback
+        print("Refreshing completion cache...")
+        data = update_completion_cache()
+        print(f"Cache updated: {len(data.get('workspaces', []))} workspaces found")
         return 0
 
     if args[0] == "--completion-data":
@@ -909,7 +935,7 @@ def main() -> int:
     # Attach to workspace
     ret = workspace_ssh(workspace_id, shell_command)
 
-    # Update cache in background after workspace operations
+    # Update cache after workspace operations
     update_cache_background()
 
     return ret
