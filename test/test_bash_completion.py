@@ -11,7 +11,14 @@ from unittest.mock import patch
 class TestBashCompletion:
     """Test bash completion functionality."""
 
-    def setup_method(self):  # pylint: disable=attribute-defined-outside-init
+    # Declare class attributes for type checking
+    test_dir: str
+    completion_script: pathlib.Path
+    cache_base: pathlib.Path
+    cache_dir: pathlib.Path
+    cache_file: pathlib.Path
+
+    def setup_method(self):
         """Set up test environment."""
         self.test_dir = tempfile.mkdtemp()
         self.completion_script = (
@@ -38,7 +45,7 @@ class TestBashCompletion:
         """Clean up test environment."""
         import shutil
 
-        if os.path.exists(self.test_dir):
+        if self.test_dir and os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
 
     def run_completion(self, comp_line, comp_point=None):
@@ -170,6 +177,7 @@ done
     def test_completion_path_with_dot_slash(self):
         """Test path completion with ./"""
         # Create a test directory
+        assert self.test_dir is not None
         test_subdir = pathlib.Path(self.test_dir) / "test-dir"
         test_subdir.mkdir()
 
@@ -184,6 +192,7 @@ done
     def test_completion_multiple_dashes_in_name(self):
         """Test completion with names containing multiple dashes."""
         # Add test data with multiple dashes
+        assert self.cache_file is not None
         with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my-test-workspace feature-dev-branch"\n')
             f.write('DL_REPOS="my-test-org/my-test-repo"\n')
@@ -201,6 +210,7 @@ done
     def test_completion_consecutive_dashes(self):
         """Test completion with consecutive dashes (edge case)."""
         # Add test data with consecutive dashes
+        assert self.cache_file is not None
         with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my--workspace"\n')
             f.write('DL_REPOS="org--name/repo--name"\n')
@@ -214,6 +224,7 @@ done
     def test_completion_underscore_in_names(self):
         """Test completion with underscores in names."""
         # Add test data with underscores
+        assert self.cache_file is not None
         with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="my_workspace test_project_2"\n')
             f.write('DL_REPOS="my_org/my_repo"\n')
@@ -227,6 +238,7 @@ done
     def test_completion_numeric_in_names(self):
         """Test completion with numeric characters in names."""
         # Add test data with numbers
+        assert self.cache_file is not None
         with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write('DL_WORKSPACES="project-123 test-456"\n')
             f.write('DL_REPOS="user123/repo456"\n')
@@ -269,6 +281,7 @@ done
     def test_empty_cache_file(self):
         """Test completion with empty cache file."""
         # Create empty cache file
+        assert self.cache_file is not None
         with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write("")
 
@@ -279,6 +292,7 @@ done
     def test_missing_cache_file(self):
         """Test completion with missing cache file."""
         # Remove cache file
+        assert self.cache_file is not None
         os.unlink(self.cache_file)
 
         # Should still complete global flags
@@ -288,6 +302,7 @@ done
     def test_malformed_cache_data(self):
         """Test completion with malformed cache data."""
         # Write malformed cache
+        assert self.cache_file is not None
         with open(self.cache_file, "w", encoding="utf-8") as f:
             f.write("DL_WORKSPACES=\n")  # Missing quotes
             f.write('DL_REPOS=""\n')
