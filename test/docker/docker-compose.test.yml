@@ -1,0 +1,45 @@
+# Docker Compose configuration for E2E tests
+#
+# Runs devlaunch E2E tests in a Docker-in-Docker environment.
+#
+# Usage:
+#   # Run E2E tests
+#   docker compose -f test/docker/docker-compose.test.yml up --build --abort-on-container-exit
+#
+#   # Run with specific pytest options
+#   docker compose -f test/docker/docker-compose.test.yml run --rm test-dind -v -k test_workspace
+#
+#   # Cleanup
+#   docker compose -f test/docker/docker-compose.test.yml down -v
+
+services:
+  test-dind:
+    build:
+      context: ../..
+      dockerfile: test/docker/Dockerfile.dind
+    privileged: true  # Required for Docker-in-Docker
+    environment:
+      # Disable TLS for simpler Docker daemon setup
+      - DOCKER_TLS_CERTDIR=
+      # Use isolated cache directory
+      - XDG_CACHE_HOME=/tmp/cache
+      # Enable verbose pytest output
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persist Docker storage between runs for faster iterations
+      - dind-storage:/var/lib/docker
+      # Mount test results
+      - ./results:/app/test-results
+    # Default pytest arguments (can be overridden)
+    command: ["-v", "--tb=short", "--junitxml=/app/test-results/e2e.xml"]
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+volumes:
+  dind-storage:
+    # Named volume for Docker layer cache

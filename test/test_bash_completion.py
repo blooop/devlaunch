@@ -25,9 +25,9 @@ class TestBashCompletion:
         )
 
         # Create a test cache file with sample data
-        # The cache structure should be XDG_CACHE_HOME/dl/completions.bash
+        # The cache structure should be XDG_CACHE_HOME/devlaunch/completions.bash
         self.cache_base = pathlib.Path(self.test_dir) / "cache"
-        self.cache_dir = self.cache_base / "dl"
+        self.cache_dir = self.cache_base / "devlaunch"
         self.cache_dir.mkdir(parents=True)
         self.cache_file = self.cache_dir / "completions.bash"
 

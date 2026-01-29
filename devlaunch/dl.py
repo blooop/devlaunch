@@ -47,8 +47,8 @@ def _get_cache_dir() -> pathlib.Path:
     """Get the cache directory, honoring XDG_CACHE_HOME."""
     xdg_cache = os.environ.get("XDG_CACHE_HOME")
     if xdg_cache:
-        return pathlib.Path(xdg_cache) / "dl"
-    return pathlib.Path.home() / ".cache" / "dl"
+        return pathlib.Path(xdg_cache) / "devlaunch"
+    return pathlib.Path.home() / ".cache" / "devlaunch"
 
 
 # Cache configuration (honors XDG_CACHE_HOME)
@@ -184,6 +184,55 @@ def update_cache_background() -> None:
         pass
 
 
+def purge_all_data() -> int:
+    """Purge all devlaunch data including DevPod workspaces, worktrees, repos, and caches.
+
+    This:
+    1. Deletes all DevPod workspaces tracked by devlaunch
+    2. Removes ~/.cache/devlaunch/ which contains:
+       - repos/ (cloned repositories)
+       - worktrees/ (git worktrees)
+       - metadata.json (worktree tracking)
+       - completions.json, completions.bash (completion caches)
+    """
+    import shutil
+
+    cache_dir = _get_cache_dir()
+
+    # First, delete DevPod workspaces tracked in our metadata
+    try:
+        from .worktree import MetadataStorage
+
+        storage = MetadataStorage()
+        worktrees = storage.list_worktrees()
+
+        deleted_workspaces = set()
+        for worktree in worktrees:
+            # Get the workspace ID (either devpod_workspace_id or workspace_id)
+            ws_id = worktree.devpod_workspace_id or worktree.workspace_id
+            if ws_id and ws_id not in deleted_workspaces:
+                print(f"Deleting DevPod workspace: {ws_id}")
+                result = run_devpod(["delete", ws_id, "--force"], capture=True)
+                if result.returncode != 0:
+                    logging.warning(f"Failed to delete workspace {ws_id}: {result.stderr}")
+                deleted_workspaces.add(ws_id)
+    except Exception as e:
+        logging.warning(f"Could not clean up DevPod workspaces: {e}")
+
+    # Then remove local cache
+    if not cache_dir.exists():
+        print("No local cache to purge.")
+        return 0
+
+    try:
+        shutil.rmtree(cache_dir)
+        print(f"Removed: {cache_dir}")
+        return 0
+    except OSError as e:
+        print(f"Error removing {cache_dir}: {e}")
+        return 1
+
+
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)
 
 OWNER_REPO_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(@[a-zA-Z0-9_./%-]+)?$")
@@ -255,6 +304,62 @@ def sanitize_workspace_id(name: str) -> str:
     Devpod converts names to lowercase and replaces / with -.
     """
     return name.lower().replace("/", "-")
+
+
+def get_worktree_container_path(workspace_id: str, branch: str) -> str:
+    """Get the container path for a worktree.
+
+    Container Mount Layout:
+    - DevPod mounts base repo to: /workspaces/{workspace_id}/
+    - Worktree is at: /workspaces/{workspace_id}/.worktrees/{branch}/
+    - Git directory: /workspaces/{workspace_id}/.git/
+
+    We mount the base repo (not just the worktree) so that:
+    1. The .git directory is accessible for git commands
+    2. The worktree's .git file can resolve its relative gitdir path
+
+    Example for 'blooop/bencher@main' with workspace_id 'blooop-bencher-main':
+    - Container base: /workspaces/blooop-bencher-main/
+    - Container worktree: /workspaces/blooop-bencher-main/.worktrees/main/
+    """
+    sanitized_branch = sanitize_workspace_id(branch)
+    return f"/workspaces/{workspace_id}/.worktrees/{sanitized_branch}"
+
+
+def make_worktree_workspace_id(owner: str, repo: str, branch: str, max_len: int = 50) -> str:
+    """Create a workspace ID for worktree backend.
+
+    Format: owner-repo-branch (e.g., blooop-bencher-main)
+    Truncates branch name if necessary to fit within max_len.
+    """
+    # Sanitize branch name (replace / with -)
+    sanitized_branch = sanitize_workspace_id(branch)
+    base = f"{owner}-{repo}"
+
+    # Calculate space for branch
+    separator_len = 1  # The dash between base and branch
+    available_for_branch = max_len - len(base) - separator_len
+
+    if available_for_branch <= 0:
+        # Base is already too long, just truncate everything
+        return sanitize_workspace_id(f"{owner}-{repo}-{branch}")[:max_len]
+
+    if len(sanitized_branch) > available_for_branch:
+        sanitized_branch = sanitized_branch[:available_for_branch]
+
+    return f"{base}-{sanitized_branch}"
+
+
+def make_shared_workspace_id(owner: str, repo: str, max_len: int = 50) -> str:
+    """Create a shared workspace ID (no branch) for container reuse.
+
+    Format: owner-repo (e.g., blooop-bencher)
+    Used with --shared flag to share a container across multiple branches.
+    """
+    workspace_id = f"{owner}-{repo}"
+    if len(workspace_id) > max_len:
+        workspace_id = workspace_id[:max_len]
+    return workspace_id
 
 
 def spec_to_workspace_id(spec: str) -> str:
@@ -608,6 +713,111 @@ def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedPr
     return subprocess.run(cmd, check=False)
 
 
+def should_use_worktree_backend(spec: str, backend: Optional[str] = None) -> bool:
+    """Determine whether to use the worktree backend for a given spec.
+
+    Args:
+        spec: The workspace spec (e.g., "owner/repo", "./path", etc.)
+        backend: Optional explicit backend override ("worktree" or "devpod")
+
+    Returns:
+        True if worktree backend should be used, False otherwise
+    """
+    # Explicit backend flag takes highest priority
+    if backend == "worktree":
+        return True
+    if backend == "devpod":
+        return False
+
+    # Check environment variable
+    env_backend = os.environ.get("DEVLAUNCH_BACKEND", "").lower()
+    if env_backend == "worktree":
+        return True
+    if env_backend == "devpod":
+        return False
+
+    # Auto-detect based on spec type
+    # Paths don't use worktree backend
+    if is_path_spec(spec):
+        return False
+
+    # Git repos use worktree backend by default
+    if is_git_spec(spec):
+        return True
+
+    # Existing workspace names use devpod backend
+    return False
+
+
+def get_worktree_managers():
+    """Get initialized worktree managers."""
+    from .worktree import (
+        WorkspaceManager,
+        WorktreeManager,
+        RepositoryManager,
+        MetadataStorage,
+        get_worktree_config,
+    )
+
+    config = get_worktree_config()
+    storage = MetadataStorage()
+    repos_dir = pathlib.Path(config.repos_dir)
+    repo_manager = RepositoryManager(repos_dir, storage, config)
+    worktree_manager = WorktreeManager(repo_manager, storage)
+    workspace_manager = WorkspaceManager(worktree_manager, storage, config.fallback_image)
+
+    return repo_manager, worktree_manager, workspace_manager, storage, config
+
+
+def get_default_branch_for_repo(owner: str, repo: str) -> str:
+    """Get the default branch for a repository.
+
+    Checks local repo first, then remote. Falls back to 'main'.
+    """
+    repo_manager, _, _, _, _ = get_worktree_managers()
+    return repo_manager.get_default_branch(owner, repo)
+
+
+def workspace_up_worktree(
+    owner: str,
+    repo: str,
+    branch: str,
+    workspace_id: Optional[str] = None,
+    ide: Optional[str] = None,
+    share_container: bool = False,
+) -> subprocess.CompletedProcess:
+    """Start or create a workspace using the worktree backend.
+
+    This is more efficient for git repos as it:
+    - Clones the repo once, then creates worktrees for each branch
+    - Shares git objects across all branches
+    - Allows faster workspace creation for subsequent branches
+
+    The workspace is backed by a local worktree directory.
+
+    Args:
+        share_container: If True, reuse existing container for this repo (no new DevPod).
+    """
+    _, _, workspace_manager, _, _ = get_worktree_managers()
+
+    # Build remote URL (use SSH for easier auth)
+    remote_url = f"git@github.com:{owner}/{repo}.git"
+
+    # Create workspace (this handles repo cloning, worktree creation, and DevPod launch)
+    worktree_info, output = workspace_manager.create_workspace(
+        owner=owner,
+        repo=repo,
+        branch=branch,
+        workspace_id=workspace_id,
+        remote_url=remote_url,
+        ide=ide,
+        share_container=share_container,
+    )
+
+    logging.info(f"Workspace at {worktree_info.local_path}")
+    return subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+
+
 def list_workspaces() -> List[Workspace]:
     """List all devpod workspaces."""
     result = run_devpod(["list", "--output", "json"], capture=True)
@@ -703,11 +913,16 @@ def workspace_up(
     return run_devpod(args)
 
 
-def workspace_ssh(workspace: str, command: Optional[str] = None) -> int:
+def workspace_ssh(
+    workspace: str, command: Optional[str] = None, workdir: Optional[str] = None
+) -> int:
     """SSH into a workspace, optionally running a command."""
     args = ["ssh", workspace]
+    if workdir:
+        args.extend(["--workdir", workdir])
     if command:
         args.extend(["--command", command])
+    logging.info(f"SSH command: devpod {' '.join(args)}")
     result = run_devpod(args)
     return result.returncode
 
@@ -763,8 +978,20 @@ Global commands:
     dl --ls                          List all workspaces
     dl --install                     Install shell completions
     dl --refresh                     Refresh completion cache
+    dl --purge [-y]                  Remove all devlaunch data (repos, worktrees, caches)
+    dl --prune-worktrees [days]      Remove worktrees unused for N days (default: 30)
     dl --help, -h                    Show this help
     dl --version                     Show version
+
+Worktree backend (default for git repos):
+    Git repos are cloned once to ~/.cache/devlaunch/repos/owner/repo/, then
+    worktrees are created for each branch in .worktrees/ inside the repo.
+    This is faster as git objects are shared across branches.
+
+    dl --backend devpod <repo>       Force legacy DevPod backend (clone per workspace)
+    dl --shared <owner/repo@branch>  Share container across branches (faster swaps)
+    dl --warm <owner/repo@branch>    Pre-warm container in background (no shell)
+    Set DEVLAUNCH_BACKEND=devpod to globally disable worktree backend.
 
 Examples:
     dl                               # Select workspace with fzf
@@ -853,6 +1080,73 @@ def main() -> int:
         update_completion_cache()
         return install_completions(rc_path)
 
+    if args[0] == "--purge":
+        # Check for -y flag to skip confirmation
+        skip_confirm = len(args) > 1 and args[1] in ("-y", "--yes")
+        cache_dir = _get_cache_dir()
+        print("This will remove all devlaunch data:")
+        print("  - All DevPod workspaces created by devlaunch")
+        print(f"  - {cache_dir}/")
+        print("      - repos/ (cloned repositories)")
+        print("      - worktrees/ (git worktrees)")
+        print("      - metadata.json (worktree tracking)")
+        print("      - completions.* (completion caches)")
+        print()
+        if skip_confirm:
+            return purge_all_data()
+        confirm = input("Are you sure? [y/N] ").strip().lower()
+        if confirm in ("y", "yes"):
+            return purge_all_data()
+        print("Aborted.")
+        return 0
+
+    if args[0] == "--prune-worktrees":
+        # Prune stale worktrees that haven't been used in X days
+        days = 30  # Default
+        if len(args) > 1:
+            try:
+                days = int(args[1])
+            except ValueError:
+                logging.error(f"Invalid number of days: {args[1]}")
+                return 1
+        _, worktree_manager, _, _, config = get_worktree_managers()
+        # Use config default if available
+        if config and config.prune_after_days:
+            days = config.prune_after_days if len(args) <= 1 else days
+        pruned = worktree_manager.prune_stale_worktrees(days)
+        print(f"Pruned {len(pruned)} stale worktree(s) (>= {days} days unused)")
+        return 0
+
+    # Parse --backend flag
+    backend_override = None
+    if args[0] == "--backend":
+        if len(args) < 3:
+            logging.error("Usage: dl --backend <worktree|devpod> <workspace>")
+            return 1
+        backend_override = args[1].lower()
+        if backend_override not in ("worktree", "devpod"):
+            logging.error(f"Invalid backend '{backend_override}'. Use 'worktree' or 'devpod'.")
+            return 1
+        args = args[2:]  # Remove --backend and value from args
+
+    # Parse --shared flag for container reuse
+    share_container = False
+    if args and args[0] == "--shared":
+        share_container = True
+        args = args[1:]  # Remove --shared from args
+        if not args:
+            logging.error("Usage: dl --shared <owner/repo@branch>")
+            return 1
+
+    # Parse --warm flag for pre-warming (create container without shell)
+    warm_only = False
+    if args and args[0] == "--warm":
+        warm_only = True
+        args = args[1:]  # Remove --warm from args
+        if not args:
+            logging.error("Usage: dl --warm <owner/repo@branch>")
+            return 1
+
     # Workspace commands: dl <workspace> [subcommand] [-- command]
     raw_spec = args[0]
     subcommand = args[1] if len(args) > 1 else None
@@ -866,18 +1160,34 @@ def main() -> int:
 
     # Resolve workspace spec and ID
     is_existing = raw_spec in existing_ids
+    parsed = parse_owner_repo_branch(raw_spec)
+
+    # Determine if we should use worktree backend
+    use_worktree = should_use_worktree_backend(raw_spec, backend_override)
+
     if is_existing:
         workspace_spec = raw_spec
         workspace_id = raw_spec
         custom_id = None  # Don't pass --id for existing workspaces
+    elif use_worktree and parsed:
+        # For worktree backend, workspace ID includes owner-repo-branch (or just owner-repo if shared)
+        owner_repo = parsed[0]
+        owner, repo = owner_repo.split("/")
+        branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+        workspace_spec = expand_workspace_spec(raw_spec)
+        if share_container:
+            workspace_id = make_shared_workspace_id(owner, repo)
+        else:
+            workspace_id = make_worktree_workspace_id(owner, repo, branch)
+        custom_id = workspace_id
     else:
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
         custom_id = workspace_id  # Pass --id to create with our desired ID
 
     # For new git repos with a branch, ensure the branch exists (create if needed)
-    parsed = parse_owner_repo_branch(raw_spec)
-    if parsed and parsed[1]:  # Has owner/repo and branch
+    # Skip for worktree backend as it handles this internally
+    if parsed and parsed[1] and not use_worktree:  # Has owner/repo and branch
         owner_repo, branch = parsed
         if not ensure_remote_branch(owner_repo, branch):
             return 1
@@ -890,10 +1200,24 @@ def main() -> int:
         return workspace_delete(workspace_id)
 
     if subcommand == "code":
-        result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
+        if use_worktree and parsed:
+            owner_repo = parsed[0]
+            owner, repo = owner_repo.split("/")
+            branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+            result = workspace_up_worktree(
+                owner,
+                repo,
+                branch,
+                workspace_id=custom_id,
+                ide="vscode",
+                share_container=share_container,
+            )
+        else:
+            result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
         return result.returncode
 
     if subcommand == "recreate":
+        # Recreate doesn't use worktree - it's a DevPod operation on existing workspace
         result = workspace_up(workspace_spec, recreate=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
@@ -904,6 +1228,18 @@ def main() -> int:
         stop_ret = workspace_stop(workspace_id)
         if stop_ret != 0:
             return stop_ret
+        if use_worktree and parsed:
+            owner_repo = parsed[0]
+            owner, repo = owner_repo.split("/")
+            branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+            result = workspace_up_worktree(
+                owner, repo, branch, workspace_id=custom_id, share_container=share_container
+            )
+            if result.returncode != 0:
+                return result.returncode
+            workdir = get_worktree_container_path(workspace_id, branch)
+            return workspace_ssh(workspace_id, workdir=workdir)
+
         result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
@@ -928,12 +1264,41 @@ def main() -> int:
         return 1
 
     # Default: start workspace and attach shell
-    result = workspace_up(workspace_spec, workspace_id=custom_id)
+    try:
+        if use_worktree and parsed:
+            owner_repo = parsed[0]
+            owner, repo = owner_repo.split("/")
+            branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+            result = workspace_up_worktree(
+                owner, repo, branch, workspace_id=custom_id, share_container=share_container
+            )
+        else:
+            result = workspace_up(workspace_spec, workspace_id=custom_id)
+    except (RuntimeError, OSError) as e:
+        logging.error(f"Failed to create workspace: {e}")
+        return 1
+
     if result.returncode != 0:
         return result.returncode
 
+    # If --warm flag is set, don't attach shell (just pre-warm the container)
+    if warm_only:
+        logging.info(f"Workspace {workspace_id} is ready (pre-warmed)")
+        update_cache_background()
+        return 0
+
     # Attach to workspace
-    ret = workspace_ssh(workspace_id, shell_command)
+    # For worktree backend, set workdir to the worktree path inside the mounted base repo
+    if use_worktree and parsed:
+        branch = (
+            parsed[1]
+            if parsed[1]
+            else get_default_branch_for_repo(parsed[0].split("/")[0], parsed[0].split("/")[1])
+        )
+        workdir = get_worktree_container_path(workspace_id, branch)
+        ret = workspace_ssh(workspace_id, shell_command, workdir=workdir)
+    else:
+        ret = workspace_ssh(workspace_id, shell_command)
 
     # Update cache after workspace operations
     update_cache_background()

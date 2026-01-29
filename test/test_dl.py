@@ -21,6 +21,7 @@ from devlaunch.dl import (
     get_workspace_ids,
     OWNER_REPO_PATTERN,
     spec_to_workspace_id,
+    make_worktree_workspace_id,
     get_version,
     read_completion_cache,
     write_completion_cache,
@@ -865,6 +866,42 @@ class TestSpecToWorkspaceId:
         assert spec_to_workspace_id("myworkspace") == "myworkspace"
 
 
+class TestMakeWorktreeWorkspaceId:
+    """Tests for make_worktree_workspace_id function."""
+
+    def test_basic_format(self):
+        """Test basic owner-repo-branch format."""
+        result = make_worktree_workspace_id("blooop", "bencher", "main")
+        assert result == "blooop-bencher-main"
+
+    def test_feature_branch_sanitized(self):
+        """Test feature/branch is sanitized."""
+        result = make_worktree_workspace_id("owner", "repo", "feature/my-branch")
+        assert result == "owner-repo-feature-my-branch"
+
+    def test_long_branch_truncated(self):
+        """Test long branch names are truncated to fit max_len."""
+        long_branch = "feature/very-long-branch-name-that-exceeds-the-limit"
+        result = make_worktree_workspace_id("owner", "repo", long_branch, max_len=30)
+        assert len(result) <= 30
+        assert result.startswith("owner-repo-")
+
+    def test_max_len_respected(self):
+        """Test max_len is respected."""
+        result = make_worktree_workspace_id("owner", "repo", "main", max_len=20)
+        assert len(result) <= 20
+
+    def test_default_max_len(self):
+        """Test default max_len is 50."""
+        result = make_worktree_workspace_id("owner", "repo", "main")
+        assert len(result) <= 50
+
+    def test_preserves_owner_repo(self):
+        """Test owner and repo are always preserved."""
+        result = make_worktree_workspace_id("blooop", "devlaunch", "feature/test")
+        assert result.startswith("blooop-devlaunch-")
+
+
 class TestCacheFunctions:
     """Tests for cache read/write functions."""
 
@@ -1260,6 +1297,7 @@ class TestMainCLI:
         mock_up.assert_called_once()
         mock_ssh.assert_called_once()
 
+    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.expand_workspace_spec")
     @patch("devlaunch.dl.spec_to_workspace_id")
@@ -1267,9 +1305,10 @@ class TestMainCLI:
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_from_repo(
-        self, _cache, mock_ssh, mock_up, mock_spec_id, mock_expand, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_spec_id, mock_expand, mock_ids, mock_use_worktree
     ):
-        """Test creating workspace from owner/repo."""
+        """Test creating workspace from owner/repo (DevPod backend)."""
+        mock_use_worktree.return_value = False  # Use DevPod backend for this test
         mock_ids.return_value = []  # Not existing
         mock_expand.return_value = "github.com/owner/repo"
         mock_spec_id.return_value = "github-com-owner-repo"
@@ -1284,15 +1323,17 @@ class TestMainCLI:
         )
         mock_ssh.assert_called_once_with("github-com-owner-repo", None)
 
+    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.ensure_remote_branch")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_from_repo_with_existing_branch(
-        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids, mock_use_worktree
     ):
         """Test creating workspace from owner/repo@branch when branch exists."""
+        mock_use_worktree.return_value = False  # Use DevPod backend
         mock_ids.return_value = []  # Not existing
         mock_ensure.return_value = True  # Branch exists
         mock_up.return_value = MagicMock(returncode=0)
@@ -1304,15 +1345,17 @@ class TestMainCLI:
         # workspace_id is the branch name when branch is specified
         mock_up.assert_called_once_with("git@github.com:owner/repo.git@main", workspace_id="main")
 
+    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.ensure_remote_branch")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_creates_branch(
-        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids, mock_use_worktree
     ):
         """Test creating workspace from owner/repo@newbranch creates the branch."""
+        mock_use_worktree.return_value = False  # Use DevPod backend
         mock_ids.return_value = []  # Not existing
         mock_ensure.return_value = True  # Branch created successfully
         mock_up.return_value = MagicMock(returncode=0)
@@ -1325,10 +1368,12 @@ class TestMainCLI:
             "git@github.com:owner/repo.git@newbranch", workspace_id="newbranch"
         )
 
+    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.ensure_remote_branch")
-    def test_main_branch_creation_fails(self, mock_ensure, mock_ids):
+    def test_main_branch_creation_fails(self, mock_ensure, mock_ids, mock_use_worktree):
         """Test error when branch creation fails."""
+        mock_use_worktree.return_value = False  # Use DevPod backend
         mock_ids.return_value = []  # Not existing
         mock_ensure.return_value = False  # Branch creation failed
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
@@ -1336,13 +1381,17 @@ class TestMainCLI:
         assert result == 1
         mock_ensure.assert_called_once_with("owner/repo", "newbranch")
 
+    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.ensure_remote_branch")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_feature_branch_with_slash(self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids):
+    def test_main_feature_branch_with_slash(
+        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids, mock_use_worktree
+    ):
         """Test creating workspace with feature/branch style branch name."""
+        mock_use_worktree.return_value = False  # Use DevPod backend
         mock_ids.return_value = []
         mock_ensure.return_value = True
         mock_up.return_value = MagicMock(returncode=0)
@@ -1372,12 +1421,16 @@ class TestMainCLI:
         assert result == 0
         mock_ensure.assert_not_called()  # No branch check for existing workspace
 
+    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_repo_without_branch_no_branch_check(self, _cache, mock_ssh, mock_up, mock_ids):
+    def test_main_repo_without_branch_no_branch_check(
+        self, _cache, mock_ssh, mock_up, mock_ids, mock_use_worktree
+    ):
         """Test owner/repo without @branch doesn't trigger branch check."""
+        mock_use_worktree.return_value = False  # Use DevPod backend for this test
         mock_ids.return_value = []
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0

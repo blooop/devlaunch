@@ -78,6 +78,9 @@ dl ./path                        # Create from local path
 |---------|-------------|
 | `dl --ls` | List all workspaces |
 | `dl --install` | Install shell completions |
+| `dl --purge [-y]` | Remove all devlaunch data |
+| `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
+| `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
 | `dl --version` | Show version |
 
@@ -101,6 +104,38 @@ dl blooop/devlaunch stop         # Stop workspace
 - **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
+
+## Worktree Backend
+
+For git repositories, devlaunch uses an efficient worktree backend by default:
+
+- **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
+- **Shared Git Objects**: All branches share git objects, saving disk space
+- **Lazy Fetch**: Remote updates are only fetched if the configured interval has elapsed (default: 1 hour)
+
+### Container Sharing Mode
+
+Use `--shared` to share a single container across multiple branches of the same repo:
+
+```bash
+dl --shared owner/repo@branch1  # Creates container "owner-repo"
+dl --shared owner/repo@branch2  # Reuses "owner-repo" container
+```
+
+### Pre-warming
+
+Use `--warm` to prepare a workspace without attaching a shell:
+
+```bash
+dl --warm owner/repo@branch  # Creates container in background
+```
+
+### Backend Selection
+
+```bash
+dl --backend devpod owner/repo  # Force legacy DevPod backend
+DEVLAUNCH_BACKEND=devpod dl owner/repo  # Use environment variable
+```
 
 ## Shell Completion
 

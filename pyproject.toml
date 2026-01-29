@@ -8,6 +8,8 @@ license = "MIT"
 
 dependencies = [
   "iterfzf>=1.0.0",
+  "tomli>=2.0.0",
+  "tomli_w>=1.0.0",
 ]
 
 [project.urls]
@@ -111,6 +113,16 @@ jobs = 16                           #detect number of cores
 [tool.pylint.'MESSAGES CONTROL']
 disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-return-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
 enable = "no-else-return,consider-using-in"
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
+    "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
+    "e2e: Full E2E with Docker-in-Docker. Real DevPod creating real containers.",
+]
+testpaths = ["test"]
+# Default: run unit and integration tests, skip e2e (requires Docker-in-Docker)
+addopts = "-m 'not e2e'"
 
 [tool.coverage.run]
 omit = ["*/test/*", "__init__.py"]

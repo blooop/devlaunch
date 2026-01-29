@@ -51,7 +51,7 @@ _dl_completion() {
     local ws_cmds="stop rm code restart recreate reset --"
 
     # Cache file location (honors XDG_CACHE_HOME)
-    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dl"
+    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/devlaunch"
     local cache_file="$cache_dir/completions.bash"
 
     # Initialize completion variables
