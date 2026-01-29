@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import subprocess
 import tempfile
 import os
