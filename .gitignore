@@ -191,5 +191,4 @@ test_suite_analysis/metadata.json
 progress.json
 status.json
 logs/
-.ralph/loops.json
-.ralph/agent/handoff.md
+.ralph/
