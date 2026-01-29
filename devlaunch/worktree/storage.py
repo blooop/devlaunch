@@ -1,10 +1,19 @@
 """Storage utilities for worktree metadata."""
 
 import json
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .models import BaseRepository, WorktreeInfo
+
+
+def _get_default_metadata_path() -> Path:
+    """Get the default metadata path, honoring XDG_CACHE_HOME."""
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "devlaunch" / "metadata.json"
+    return Path.home() / ".cache" / "devlaunch" / "metadata.json"
 
 
 class MetadataStorage:
@@ -13,7 +22,7 @@ class MetadataStorage:
     def __init__(self, metadata_path: Optional[Path] = None):
         """Initialize metadata storage."""
         if metadata_path is None:
-            metadata_path = Path.home() / ".devlaunch" / "metadata.json"
+            metadata_path = _get_default_metadata_path()
         self.metadata_path = metadata_path
         self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         self._load()
