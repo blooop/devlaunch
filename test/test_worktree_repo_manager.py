@@ -1,4 +1,5 @@
 """Tests for worktree repository manager."""
+# pylint: disable=redefined-outer-name,unused-argument,protected-access,unused-variable
 
 import subprocess
 import tempfile

@@ -1120,13 +1120,17 @@ def main() -> int:
         return 1
 
     # Default: start workspace and attach shell
-    if use_worktree and parsed:
-        owner_repo = parsed[0]
-        owner, repo = owner_repo.split("/")
-        branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
-        result = workspace_up_worktree(owner, repo, branch, workspace_id=custom_id)
-    else:
-        result = workspace_up(workspace_spec, workspace_id=custom_id)
+    try:
+        if use_worktree and parsed:
+            owner_repo = parsed[0]
+            owner, repo = owner_repo.split("/")
+            branch = parsed[1] if parsed[1] else get_default_branch_for_repo(owner, repo)
+            result = workspace_up_worktree(owner, repo, branch, workspace_id=custom_id)
+        else:
+            result = workspace_up(workspace_spec, workspace_id=custom_id)
+    except (RuntimeError, OSError) as e:
+        logging.error(f"Failed to create workspace: {e}")
+        return 1
 
     if result.returncode != 0:
         return result.returncode

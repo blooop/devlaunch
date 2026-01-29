@@ -1,4 +1,5 @@
 """Tests for worktree metadata storage."""
+# pylint: disable=redefined-outer-name
 
 import json
 import tempfile
@@ -318,7 +319,7 @@ class TestMetadataStorage:
         temp_storage.add_repository(repo)
 
         # Read the file directly and verify it's valid JSON
-        with open(temp_storage.metadata_path, "r") as f:
+        with open(temp_storage.metadata_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         assert "repositories" in data

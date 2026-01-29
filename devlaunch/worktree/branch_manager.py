@@ -69,7 +69,7 @@ class BranchManager:
                 logger.debug(f"Branch {branch} already exists")
             else:
                 logger.error(f"Failed to create branch: {e.stderr}")
-                raise RuntimeError(f"Failed to create branch: {e.stderr}")
+                raise RuntimeError(f"Failed to create branch: {e.stderr}") from e
 
     def track_remote_branch(
         self, base_repo_path: Path, branch: str, remote: str = "origin"
@@ -170,7 +170,7 @@ class BranchManager:
             logger.debug(f"Push output: {result.stdout}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to push branch: {e.stderr}")
-            raise RuntimeError(f"Failed to push branch to remote: {e.stderr}")
+            raise RuntimeError(f"Failed to push branch to remote: {e.stderr}") from e
 
     def create_remote_branch_via_ssh(
         self, owner: str, repo: str, branch: str, ssh_key_path: Optional[str] = None
@@ -185,19 +185,19 @@ class BranchManager:
         ssh_command.extend(["git@github.com", "create", f"{owner}/{repo}", branch])
 
         try:
-            result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ssh_command, capture_output=True, text=True, timeout=10, check=False
+            )
 
             if result.returncode == 0:
                 logger.info(f"Successfully created remote branch {branch}")
                 return True
-            else:
-                # Check if branch already exists
-                if "branch already exists" in result.stderr.lower():
-                    logger.info(f"Branch {branch} already exists on remote")
-                    return True
-                else:
-                    logger.warning(f"Failed to create remote branch: {result.stderr}")
-                    return False
+            # Check if branch already exists
+            if "branch already exists" in result.stderr.lower():
+                logger.info(f"Branch {branch} already exists on remote")
+                return True
+            logger.warning(f"Failed to create remote branch: {result.stderr}")
+            return False
 
         except subprocess.TimeoutExpired:
             logger.warning("SSH command timed out")
@@ -219,4 +219,4 @@ class BranchManager:
             logger.debug(f"Checkout output: {result.stdout}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to checkout branch: {e.stderr}")
-            raise RuntimeError(f"Failed to checkout branch: {e.stderr}")
+            raise RuntimeError(f"Failed to checkout branch: {e.stderr}") from e

@@ -63,7 +63,7 @@ class WorkspaceManager:
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_file = lock_dir / f"{owner}-{repo}.lock"
 
-        with open(lock_file, "w") as f:
+        with open(lock_file, "w", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
                 return self._create_workspace_locked(
@@ -167,10 +167,7 @@ class WorkspaceManager:
         worktree_to_remove = None
         if remove_worktree:
             for worktree in self.storage.list_worktrees():
-                if (
-                    worktree.devpod_workspace_id == workspace_id
-                    or worktree.workspace_id == workspace_id
-                ):
+                if workspace_id in (worktree.devpod_workspace_id, worktree.workspace_id):
                     worktree_to_remove = worktree
                     break
 

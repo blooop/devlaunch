@@ -1,4 +1,5 @@
 """Tests for worktree branch manager."""
+# pylint: disable=redefined-outer-name
 
 import subprocess
 import tempfile

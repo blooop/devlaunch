@@ -78,7 +78,7 @@ class RepositoryManager:
                 import shutil
 
                 shutil.rmtree(repo_path)
-            raise RuntimeError(f"Failed to clone repository: {e.stderr}")
+            raise RuntimeError(f"Failed to clone repository: {e.stderr}") from e
 
     def fetch_repo(self, owner: str, repo: str) -> None:
         """Fetch latest changes from remote."""
@@ -110,7 +110,7 @@ class RepositoryManager:
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to fetch repository: {e.stderr}")
-            raise RuntimeError(f"Failed to fetch repository: {e.stderr}")
+            raise RuntimeError(f"Failed to fetch repository: {e.stderr}") from e
 
     def ensure_repo(
         self, owner: str, repo: str, remote_url: str, auto_fetch: bool = True
@@ -171,7 +171,7 @@ class RepositoryManager:
                 branches = result.stdout.strip()
                 if "origin/main" in branches:
                     return "main"
-                elif "origin/master" in branches:
+                if "origin/master" in branches:
                     return "master"
             except subprocess.CalledProcessError:
                 pass

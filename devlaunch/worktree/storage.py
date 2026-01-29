@@ -21,7 +21,7 @@ class MetadataStorage:
     def _load(self) -> None:
         """Load metadata from disk."""
         if self.metadata_path.exists():
-            with open(self.metadata_path, "r") as f:
+            with open(self.metadata_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         else:
             data = {"repositories": {}, "worktrees": {}}
@@ -44,7 +44,7 @@ class MetadataStorage:
             "worktrees": {key: worktree.to_dict() for key, worktree in self.worktrees.items()},
         }
 
-        with open(self.metadata_path, "w") as f:
+        with open(self.metadata_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     def add_repository(self, repo: BaseRepository) -> None:

@@ -141,7 +141,7 @@ class WorktreeManager:
                 import shutil
 
                 shutil.rmtree(worktree_path)
-            raise RuntimeError(f"Failed to create worktree: {e.stderr}")
+            raise RuntimeError(f"Failed to create worktree: {e.stderr}") from e
 
     def remove_worktree(self, owner: str, repo: str, branch: str) -> None:
         """Remove a git worktree."""
@@ -230,7 +230,7 @@ class WorktreeManager:
 
         return worktree
 
-    def _generate_workspace_id(self, owner: str, repo: str, branch: str) -> str:
+    def _generate_workspace_id(self, owner: str, repo: str, branch: str) -> str:  # noqa: ARG002  # pylint: disable=unused-argument
         """Generate a workspace ID for a worktree."""
         # Use branch name as workspace ID for simplicity
         # Could be made more sophisticated if needed

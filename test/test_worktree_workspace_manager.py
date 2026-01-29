@@ -1,4 +1,5 @@
 """Tests for worktree workspace manager."""
+# pylint: disable=redefined-outer-name,unused-argument,unused-variable
 
 import tempfile
 from pathlib import Path
