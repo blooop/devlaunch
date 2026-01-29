@@ -7,6 +7,9 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Constants for git paths
+REFS_HEADS_PREFIX = "refs/heads/"
+
 
 class BranchManager:
     """Manages git branch operations."""
@@ -92,7 +95,7 @@ class BranchManager:
         """Check if a branch exists locally."""
         try:
             result = subprocess.run(
-                ["git", "show-ref", "--verify", f"refs/heads/{branch}"],
+                ["git", "show-ref", "--verify", f"{REFS_HEADS_PREFIX}{branch}"],
                 cwd=base_repo_path,
                 capture_output=True,
                 text=True,
@@ -136,8 +139,8 @@ class BranchManager:
                     parts = line.split("\t")
                     if len(parts) == 2:
                         branch_ref = parts[1]
-                        if branch_ref.startswith("refs/heads/"):
-                            branches.append(branch_ref[11:])  # Remove refs/heads/
+                        if branch_ref.startswith(REFS_HEADS_PREFIX):
+                            branches.append(branch_ref[len(REFS_HEADS_PREFIX) :])
 
             return branches
         except subprocess.CalledProcessError as e:

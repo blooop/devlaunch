@@ -1,6 +1,7 @@
 """Repository manager for worktree backend."""
 
 import logging
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -90,8 +91,6 @@ class RepositoryManager:
             logger.error(f"Failed to clone repository: {e.stderr}")
             # Clean up partial clone
             if repo_path.exists():
-                import shutil
-
                 shutil.rmtree(repo_path)
             raise RuntimeError(f"Failed to clone repository: {e.stderr}") from e
 
@@ -234,6 +233,38 @@ class RepositoryManager:
 
         return "main"  # Default fallback
 
+    def get_default_branch(self, owner: str, repo: str) -> str:
+        """Get the default branch for a repository.
+
+        Checks local repo first, then queries remote. Falls back to 'main'.
+        """
+        # Check if repo exists locally
+        existing_repo = self.get_repo(owner, repo)
+        if existing_repo and existing_repo.default_branch:
+            return existing_repo.default_branch
+
+        # Try to get from remote
+        remote_url = f"git@github.com:{owner}/{repo}.git"
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", "--symref", remote_url, "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                # Parse output like: ref: refs/heads/main\tHEAD
+                for line in result.stdout.strip().split("\n"):
+                    if line.startswith("ref:") and "HEAD" in line:
+                        ref_part = line.split()[1]
+                        if ref_part.startswith("refs/heads/"):
+                            return ref_part[len("refs/heads/") :]
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+            pass
+
+        return "main"
+
     def list_repositories(self):
         """List all managed repositories."""
         return self.storage.list_repositories()
@@ -247,7 +278,5 @@ class RepositoryManager:
         if remove_directory:
             repo_path = self.get_repo_path(owner, repo)
             if repo_path.exists():
-                import shutil
-
                 shutil.rmtree(repo_path)
                 logger.info(f"Removed repository directory {repo_path}")

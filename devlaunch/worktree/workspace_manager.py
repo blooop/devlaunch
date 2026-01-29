@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedProcess:
     """Run a devpod command.
 
+    Note: This is duplicated in devlaunch/dl.py to avoid circular imports.
+    If refactoring, consider moving to a shared utils module.
+
     Args:
         args: Arguments to pass to devpod (not including 'devpod' itself)
         capture: Whether to capture stdout/stderr (hides output if True)

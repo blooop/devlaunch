@@ -713,22 +713,6 @@ def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedPr
     return subprocess.run(cmd, check=False)
 
 
-def run_devpod_command(cmd: List[str], capture_output: bool = False) -> subprocess.CompletedProcess:
-    """Run a devpod command (alternative interface for worktree backend).
-
-    Args:
-        cmd: Full command list including 'devpod' as first element
-        capture_output: Whether to capture stdout/stderr
-
-    Returns:
-        CompletedProcess result
-    """
-    logging.debug("Running: %s", " ".join(cmd))
-    if capture_output:
-        return subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return subprocess.run(cmd, check=True)
-
-
 def should_use_worktree_backend(spec: str, backend: Optional[str] = None) -> bool:
     """Determine whether to use the worktree backend for a given spec.
 
@@ -791,34 +775,7 @@ def get_default_branch_for_repo(owner: str, repo: str) -> str:
     Checks local repo first, then remote. Falls back to 'main'.
     """
     repo_manager, _, _, _, _ = get_worktree_managers()
-
-    # Check if repo exists locally
-    existing_repo = repo_manager.get_repo(owner, repo)
-    if existing_repo and existing_repo.default_branch:
-        return existing_repo.default_branch
-
-    # Try to get from remote
-    remote_url = f"git@github.com:{owner}/{repo}.git"
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--symref", remote_url, "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            # Parse output like: ref: refs/heads/main\tHEAD
-            for line in result.stdout.strip().split("\n"):
-                if line.startswith("ref:") and "HEAD" in line:
-                    # Extract branch name from "ref: refs/heads/main\tHEAD"
-                    ref_part = line.split()[1]
-                    if ref_part.startswith("refs/heads/"):
-                        return ref_part[len("refs/heads/") :]
-    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-        pass
-
-    return "main"
+    return repo_manager.get_default_branch(owner, repo)
 
 
 def workspace_up_worktree(

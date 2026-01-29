@@ -35,6 +35,7 @@ This allows the worktree to work regardless of where it's mounted.
 
 import logging
 import re
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,6 +46,10 @@ from .repo_manager import RepositoryManager
 from .storage import MetadataStorage
 
 logger = logging.getLogger(__name__)
+
+# Constants for git paths
+WORKTREES_DIR = ".worktrees"
+REFS_HEADS_PREFIX = "refs/heads/"
 
 
 def sanitize_branch_name(branch: str) -> str:
@@ -83,7 +88,7 @@ class WorktreeManager:
         """
         sanitized_branch = sanitize_branch_name(branch)
         base_repo_path = self.repo_manager.get_repo_path(owner, repo)
-        return base_repo_path / ".worktrees" / sanitized_branch
+        return base_repo_path / WORKTREES_DIR / sanitized_branch
 
     def create_worktree(
         self, owner: str, repo: str, branch: str, remote_url: Optional[str] = None
@@ -187,8 +192,6 @@ class WorktreeManager:
             logger.error(f"Failed to create worktree: {e.stderr}")
             # Clean up partial worktree
             if worktree_path.exists():
-                import shutil
-
                 shutil.rmtree(worktree_path)
             raise RuntimeError(f"Failed to create worktree: {e.stderr}") from e
 
@@ -229,8 +232,6 @@ class WorktreeManager:
             logger.error(f"Failed to remove worktree: {e.stderr}")
             # Force remove directory
             if worktree_path.exists():
-                import shutil
-
                 shutil.rmtree(worktree_path)
                 logger.info(f"Force removed worktree directory {worktree_path}")
 
@@ -333,7 +334,7 @@ class WorktreeManager:
                 rel_gitdir = f"../../worktrees/{worktree_name}"
                 gitdir_file = base_repo_path / "worktrees" / worktree_name / "gitdir"
                 # Reverse path from base_repo/worktrees/<name> to base_repo/.worktrees/<branch>
-                rel_worktree = f"../../.worktrees/{worktree_path.name}"
+                rel_worktree = f"../../{WORKTREES_DIR}/{worktree_path.name}"
             else:
                 # Regular repo: worktree metadata is in <repo>/.git/worktrees/<name>
                 # worktree is at: base_repo/.worktrees/<branch>
@@ -342,7 +343,7 @@ class WorktreeManager:
                 rel_gitdir = f"../../.git/worktrees/{worktree_name}"
                 gitdir_file = base_repo_path / ".git" / "worktrees" / worktree_name / "gitdir"
                 # Reverse path from base_repo/.git/worktrees/<name> to base_repo/.worktrees/<branch>
-                rel_worktree = f"../../../.worktrees/{worktree_path.name}"
+                rel_worktree = f"../../../{WORKTREES_DIR}/{worktree_path.name}"
 
             # Write relative path to .git file
             git_file.write_text(f"gitdir: {rel_gitdir}\n")
@@ -363,7 +364,7 @@ class WorktreeManager:
         """
         try:
             result = subprocess.run(
-                ["git", "show-ref", "--verify", f"refs/heads/{branch}"],
+                ["git", "show-ref", "--verify", f"{REFS_HEADS_PREFIX}{branch}"],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
@@ -413,7 +414,7 @@ class WorktreeManager:
                 if line.startswith("worktree "):
                     current_worktree = Path(line[9:])
                 elif line.startswith("branch ") and current_worktree:
-                    branch = line[7:].replace("refs/heads/", "")
+                    branch = line[7:].replace(REFS_HEADS_PREFIX, "")
                     if current_worktree != base_repo_path:  # Skip main worktree
                         git_worktrees[branch] = current_worktree
 
