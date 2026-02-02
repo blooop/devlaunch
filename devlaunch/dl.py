@@ -944,14 +944,40 @@ def workspace_up(
 
 
 def workspace_ssh(
-    workspace: str, command: Optional[str] = None, workdir: Optional[str] = None
+    workspace: str,
+    command: Optional[str] = None,
+    workdir: Optional[str] = None,
+    preserve_symlink: bool = False,
 ) -> int:
-    """SSH into a workspace, optionally running a command."""
+    """SSH into a workspace, optionally running a command.
+
+    Args:
+        workspace: The workspace ID to SSH into
+        command: Optional command to run (if None, starts interactive shell)
+        workdir: Working directory to start in
+        preserve_symlink: If True and workdir is set, use 'cd' instead of --workdir
+                         to preserve symlink paths in $PWD (for shorter prompts)
+    """
     args = ["ssh", workspace]
-    if workdir:
-        args.extend(["--workdir", workdir])
-    if command:
-        args.extend(["--command", command])
+
+    # If preserve_symlink is True, we use 'cd' instead of --workdir
+    # because DevPod's --workdir resolves symlinks, but 'cd' preserves them in $PWD
+    if workdir and preserve_symlink:
+        if command:
+            # Wrap the command with cd
+            wrapped_cmd = f"cd {workdir} && {command}"
+            args.extend(["--command", wrapped_cmd])
+        else:
+            # For interactive shell, cd and exec a login shell
+            wrapped_cmd = f"cd {workdir} && exec $SHELL -l"
+            args.extend(["--command", wrapped_cmd])
+    else:
+        # Standard behavior: use --workdir (resolves symlinks)
+        if workdir:
+            args.extend(["--workdir", workdir])
+        if command:
+            args.extend(["--command", command])
+
     logging.info(f"SSH command: devpod {' '.join(args)}")
     result = run_devpod(args)
     return result.returncode
@@ -1272,9 +1298,13 @@ def main() -> int:
             if result.returncode != 0:
                 return result.returncode
             # Create ~/work symlink for shorter prompt, then SSH to it
+            # Use preserve_symlink=True so 'cd' is used instead of --workdir
+            # (DevPod's --workdir resolves symlinks, breaking the short prompt)
             worktree_path = get_worktree_container_path(workspace_id, branch)
             setup_worktree_symlink(workspace_id, worktree_path)
-            return workspace_ssh(workspace_id, workdir=get_worktree_symlink_path())
+            return workspace_ssh(
+                workspace_id, workdir=get_worktree_symlink_path(), preserve_symlink=True
+            )
 
         result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
@@ -1325,6 +1355,8 @@ def main() -> int:
 
     # Attach to workspace
     # For worktree backend, create ~/work symlink for shorter prompt, then SSH to it
+    # Use preserve_symlink=True so 'cd' is used instead of --workdir
+    # (DevPod's --workdir resolves symlinks, breaking the short prompt)
     if use_worktree and parsed:
         branch = (
             parsed[1]
@@ -1333,7 +1365,9 @@ def main() -> int:
         )
         worktree_path = get_worktree_container_path(workspace_id, branch)
         setup_worktree_symlink(workspace_id, worktree_path)
-        ret = workspace_ssh(workspace_id, shell_command, workdir=get_worktree_symlink_path())
+        ret = workspace_ssh(
+            workspace_id, shell_command, workdir=get_worktree_symlink_path(), preserve_symlink=True
+        )
     else:
         ret = workspace_ssh(workspace_id, shell_command)
 

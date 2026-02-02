@@ -10,6 +10,7 @@ from devlaunch.dl import (
     get_worktree_symlink_path,
     setup_worktree_symlink,
     get_worktree_container_path,
+    workspace_ssh,
 )
 
 
@@ -30,6 +31,74 @@ class TestGetWorktreeSymlinkPath:
         """Symlink path should be absolute."""
         path = get_worktree_symlink_path()
         assert path.startswith("/")
+
+
+class TestWorkspaceSshPreserveSymlink:
+    """Tests for workspace_ssh preserve_symlink behavior.
+
+    When preserve_symlink=True, workspace_ssh should use 'cd' instead of --workdir
+    because DevPod's --workdir resolves symlinks, but 'cd' preserves them in $PWD.
+    This ensures users see ~/work in their terminal prompt, not the resolved path.
+    """
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_preserve_symlink_uses_cd_for_interactive_shell(self, mock_run_devpod):
+        """With preserve_symlink=True and no command, should use 'cd && exec $SHELL'."""
+        mock_run_devpod.return_value = MagicMock(returncode=0)
+
+        workspace_ssh("test-ws", workdir="/home/vscode/work", preserve_symlink=True)
+
+        call_args = mock_run_devpod.call_args[0][0]
+        assert "ssh" in call_args
+        assert "--command" in call_args
+        # Should use cd to preserve symlink path in $PWD
+        cmd_idx = call_args.index("--command") + 1
+        assert "cd /home/vscode/work" in call_args[cmd_idx]
+        assert "exec $SHELL" in call_args[cmd_idx]
+        # Should NOT use --workdir
+        assert "--workdir" not in call_args
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_preserve_symlink_uses_cd_for_command(self, mock_run_devpod):
+        """With preserve_symlink=True and a command, should wrap with 'cd &&'."""
+        mock_run_devpod.return_value = MagicMock(returncode=0)
+
+        workspace_ssh(
+            "test-ws",
+            command="git status",
+            workdir="/home/vscode/work",
+            preserve_symlink=True,
+        )
+
+        call_args = mock_run_devpod.call_args[0][0]
+        assert "--command" in call_args
+        cmd_idx = call_args.index("--command") + 1
+        assert "cd /home/vscode/work" in call_args[cmd_idx]
+        assert "git status" in call_args[cmd_idx]
+        assert "--workdir" not in call_args
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_without_preserve_symlink_uses_workdir(self, mock_run_devpod):
+        """Without preserve_symlink, should use --workdir (default behavior)."""
+        mock_run_devpod.return_value = MagicMock(returncode=0)
+
+        workspace_ssh("test-ws", workdir="/home/vscode/work", preserve_symlink=False)
+
+        call_args = mock_run_devpod.call_args[0][0]
+        assert "--workdir" in call_args
+        workdir_idx = call_args.index("--workdir") + 1
+        assert call_args[workdir_idx] == "/home/vscode/work"
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_default_preserve_symlink_is_false(self, mock_run_devpod):
+        """Default preserve_symlink should be False (backward compatible)."""
+        mock_run_devpod.return_value = MagicMock(returncode=0)
+
+        workspace_ssh("test-ws", workdir="/some/path")
+
+        call_args = mock_run_devpod.call_args[0][0]
+        # Default behavior uses --workdir
+        assert "--workdir" in call_args
 
 
 class TestSetupWorktreeSymlink:
@@ -183,9 +252,11 @@ class TestSymlinkIntegrationWithMainFlow:
 
         # Verify symlink was set up
         mock_setup_symlink.assert_called_once()
-        # Verify SSH uses symlink path
+        # Verify SSH uses symlink path with preserve_symlink=True
+        # (preserve_symlink=True uses 'cd' instead of --workdir to keep symlink in $PWD)
         ssh_call = mock_ssh.call_args
         assert ssh_call[1]["workdir"] == "/home/vscode/work"
+        assert ssh_call[1]["preserve_symlink"] is True
 
     @patch("devlaunch.dl.workspace_up_worktree")
     @patch("devlaunch.dl.setup_worktree_symlink")
@@ -218,9 +289,10 @@ class TestSymlinkIntegrationWithMainFlow:
 
         # Verify symlink was set up
         mock_setup_symlink.assert_called_once()
-        # Verify SSH uses symlink path
+        # Verify SSH uses symlink path with preserve_symlink=True
         ssh_call = mock_ssh.call_args
         assert ssh_call[1]["workdir"] == "/home/vscode/work"
+        assert ssh_call[1]["preserve_symlink"] is True
 
     @patch("devlaunch.dl.workspace_up_worktree")
     @patch("devlaunch.dl.setup_worktree_symlink")
