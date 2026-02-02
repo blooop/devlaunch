@@ -294,6 +294,36 @@ Always returns `/home/vscode/work`.
 Creates the `~/work` symlink inside the container pointing to the worktree.
 Called before SSH'ing to ensure the symlink exists.
 
+## Expected Behavior and Limitations
+
+### Branch Checkout Restriction
+
+**A branch can only be checked out in one worktree at a time.** This is fundamental git worktree behavior, not a devlaunch limitation.
+
+Example:
+```bash
+$ dl blooop/bencher@main     # Creates worktree for 'main'
+$ dl blooop/bencher@feature  # Creates worktree for 'feature'
+
+# Inside the 'feature' worktree:
+vscode ➜ ~/work (feature) $ git checkout main
+fatal: 'main' is already used by worktree at '/workspaces/blooop-bencher-main/.worktrees/main'
+```
+
+**This is intentional** - it prevents conflicting changes to the same branch from multiple working directories.
+
+**Workaround options:**
+1. Use `dl blooop/bencher@main` to open a separate workspace for `main`
+2. Create a new branch: `git checkout -b my-new-branch`
+3. Cherry-pick or merge changes between branches instead of switching
+
+### ~/work Symlink
+
+The `~/work` symlink provides a short path for terminal prompts:
+- Prompt shows `~/work` instead of `/workspaces/blooop-bencher-main/.worktrees/main`
+- Git commands work normally from `~/work`
+- The symlink is recreated on each workspace attach
+
 ## Success Criteria
 
 A successful worktree backend implementation should:
@@ -305,3 +335,4 @@ A successful worktree backend implementation should:
 5. ✅ Start shell in correct worktree directory
 6. ✅ Clean up DevPod workspaces on purge
 7. ❌ Have local branch tracking remote (NOT IMPLEMENTED)
+8. ✅ Short terminal prompt via ~/work symlink

@@ -198,6 +198,7 @@ git worktree prune
 
 ## Limitations
 
+- **Branch Checkout Restriction**: A branch can only be checked out in one worktree at a time. If you have `main` open in one workspace, you cannot `git checkout main` from another workspace. This is fundamental git worktree behavior. Use `dl owner/repo@main` to open a separate workspace for that branch instead.
 - **Git Submodules**: Limited support for repos with submodules
 - **Large Files**: No git-lfs optimization yet
 - **Windows**: Worktree paths may have issues on Windows
