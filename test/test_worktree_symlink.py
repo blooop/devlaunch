@@ -222,14 +222,18 @@ class TestWorktreeContainerPath:
 
 
 class TestSymlinkIntegrationWithMainFlow:
-    """Integration tests for symlink setup in the main workspace flows."""
+    """Integration tests for symlink setup in the main workspace flows.
+
+    Note: Worktree backend is opt-in (--backend worktree), so these tests
+    explicitly request it.
+    """
 
     @patch("devlaunch.dl.workspace_up_worktree")
     @patch("devlaunch.dl.setup_worktree_symlink")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.get_default_branch_for_repo")
-    def test_default_flow_creates_symlink_before_ssh(
+    def test_worktree_flow_creates_symlink_before_ssh(
         self,
         mock_get_default_branch,
         mock_get_ids,
@@ -237,7 +241,7 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_setup_symlink,
         mock_up_worktree,
     ):
-        """Default workspace flow should create symlink before SSH."""
+        """Worktree workspace flow should create symlink before SSH."""
         from devlaunch.dl import main
         import sys
 
@@ -247,7 +251,8 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_setup_symlink.return_value = True
         mock_ssh.return_value = 0
 
-        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+        # Must use --backend worktree since devpod is now the default
+        with patch.object(sys, "argv", ["dl", "--backend", "worktree", "owner/repo@main"]):
             main()
 
         # Verify symlink was set up
@@ -273,7 +278,7 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_setup_symlink,
         mock_up_worktree,
     ):
-        """Restart subcommand should create symlink before SSH."""
+        """Restart subcommand should create symlink before SSH (worktree backend)."""
         from devlaunch.dl import main
         import sys
 
@@ -284,7 +289,10 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_setup_symlink.return_value = True
         mock_ssh.return_value = 0
 
-        with patch.object(sys, "argv", ["dl", "owner/repo@main", "restart"]):
+        # Must use --backend worktree since devpod is now the default
+        with patch.object(
+            sys, "argv", ["dl", "--backend", "worktree", "owner/repo@main", "restart"]
+        ):
             main()
 
         # Verify symlink was set up
@@ -305,7 +313,7 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_setup_symlink,
         mock_up_worktree,
     ):
-        """Code subcommand should create symlink after workspace_up_worktree."""
+        """Code subcommand should create symlink after workspace_up_worktree (worktree backend)."""
         from devlaunch.dl import main
         import sys
 
@@ -314,7 +322,10 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_up_worktree.return_value = MagicMock(returncode=0)
         mock_setup_symlink.return_value = True
 
-        with patch.object(sys, "argv", ["dl", "owner/repo@main", "code"]):
+        # Must use --backend worktree since devpod is now the default
+        with patch.object(
+            sys, "argv", ["dl", "--backend", "worktree", "owner/repo@main", "code"]
+        ):
             result = main()
 
         # Verify symlink was set up
@@ -332,7 +343,7 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_setup_symlink,
         mock_up_worktree,
     ):
-        """Code subcommand should skip symlink if workspace_up fails."""
+        """Code subcommand should skip symlink if workspace_up fails (worktree backend)."""
         from devlaunch.dl import main
         import sys
 
@@ -340,7 +351,10 @@ class TestSymlinkIntegrationWithMainFlow:
         mock_get_default_branch.return_value = "main"
         mock_up_worktree.return_value = MagicMock(returncode=1)
 
-        with patch.object(sys, "argv", ["dl", "owner/repo@main", "code"]):
+        # Must use --backend worktree since devpod is now the default
+        with patch.object(
+            sys, "argv", ["dl", "--backend", "worktree", "owner/repo@main", "code"]
+        ):
             result = main()
 
         # Verify symlink was NOT set up because workspace_up failed

@@ -105,23 +105,22 @@ dl blooop/devlaunch stop         # Stop workspace
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
 
-## Worktree Backend
+## Worktree Backend (Opt-in)
 
-For git repositories, devlaunch uses an efficient worktree backend by default:
-
-- **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
-- **Shared Git Objects**: All branches share git objects, saving disk space
-- **Lazy Fetch**: Remote updates are only fetched if the configured interval has elapsed (default: 1 hour)
-- **Short Prompts**: Your terminal prompt shows `~/work` instead of long worktree paths
-
-### Container Sharing Mode
-
-Use `--shared` to share a single container across multiple branches of the same repo:
+For disk efficiency, you can opt-in to the worktree backend:
 
 ```bash
-dl --shared owner/repo@branch1  # Creates container "owner-repo"
-dl --shared owner/repo@branch2  # Reuses "owner-repo" container
+dl --backend worktree owner/repo@branch
 ```
+
+**Benefits:**
+- Repos cloned once, git objects shared across branches
+- Faster workspace creation for additional branches
+- Terminal prompt shows `~/work` instead of long paths
+
+**Tradeoff:**
+- All worktrees share the repo, so all branches are visible in every container
+- Git error messages can be confusing (references paths from other workspaces)
 
 ### Pre-warming
 
@@ -134,8 +133,9 @@ dl --warm owner/repo@branch  # Creates container in background
 ### Backend Selection
 
 ```bash
-dl --backend devpod owner/repo  # Force legacy DevPod backend
-DEVLAUNCH_BACKEND=devpod dl owner/repo  # Use environment variable
+dl owner/repo                        # Default: separate clone per workspace
+dl --backend worktree owner/repo     # Opt-in: shared git objects
+DEVLAUNCH_BACKEND=worktree dl owner/repo  # Use environment variable
 ```
 
 ## Shell Completion

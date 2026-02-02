@@ -10,15 +10,15 @@ from devlaunch.dl import main, should_use_worktree_backend
 class TestWorktreeBackendSelection:
     """Tests for backend selection logic."""
 
-    def test_git_repos_use_worktree_by_default(self):
-        """Test that git repos use worktree backend by default."""
+    def test_devpod_is_default_for_git_repos(self):
+        """Test that git repos use devpod backend by default (for isolation)."""
         # Clear any environment variable
         with patch.dict(os.environ, {}, clear=True):
-            # GitHub repos should use worktree
-            assert should_use_worktree_backend("owner/repo") is True
-            assert should_use_worktree_backend("owner/repo@main") is True
-            assert should_use_worktree_backend("github.com/owner/repo") is True
-            assert should_use_worktree_backend("github.com/owner/repo@branch") is True
+            # GitHub repos should use devpod by default (not worktree)
+            assert should_use_worktree_backend("owner/repo") is False
+            assert should_use_worktree_backend("owner/repo@main") is False
+            assert should_use_worktree_backend("github.com/owner/repo") is False
+            assert should_use_worktree_backend("github.com/owner/repo@branch") is False
 
     def test_paths_dont_use_worktree(self):
         """Test that paths don't use worktree backend."""

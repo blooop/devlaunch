@@ -47,12 +47,15 @@ def mock_managers(mock_workspace_manager):
 
 
 class TestShouldUseWorktreeBackend:
-    """Test the should_use_worktree_backend function."""
+    """Test the should_use_worktree_backend function.
 
-    def test_git_repo_format_returns_true(self):
-        """Test that owner/repo format returns True."""
-        assert should_use_worktree_backend("owner/repo") is True
-        assert should_use_worktree_backend("owner/repo@main") is True
+    Note: DevPod backend is the default for isolation. Worktree is opt-in.
+    """
+
+    def test_git_repo_format_returns_false_by_default(self):
+        """Test that owner/repo format returns False (devpod is default for isolation)."""
+        assert should_use_worktree_backend("owner/repo") is False
+        assert should_use_worktree_backend("owner/repo@main") is False
 
     def test_local_path_returns_false(self):
         """Test that local paths return False."""
@@ -69,10 +72,10 @@ class TestShouldUseWorktreeBackend:
         assert should_use_worktree_backend("owner/repo", "devpod") is False
         assert should_use_worktree_backend("./local/path", "devpod") is False
 
-    def test_url_format_returns_true(self):
-        """Test URL formats return True."""
-        assert should_use_worktree_backend("github.com/owner/repo") is True
-        assert should_use_worktree_backend("https://github.com/owner/repo.git") is True
+    def test_url_format_returns_false_by_default(self):
+        """Test URL formats return False (devpod is default for isolation)."""
+        assert should_use_worktree_backend("github.com/owner/repo") is False
+        assert should_use_worktree_backend("https://github.com/owner/repo.git") is False
 
 
 class TestWorkspaceUpWorktree:
@@ -155,14 +158,26 @@ class TestMainWithWorktreeBackend:
 
 
 class TestWorktreeBackendEdgeCases:
-    """Test edge cases for worktree backend."""
+    """Test edge cases for worktree backend.
 
-    def test_should_use_worktree_with_branch_at_symbol(self):
-        """Test parsing spec with @ symbol for branch."""
-        assert should_use_worktree_backend("owner/repo@feature/test") is True
-        assert should_use_worktree_backend("owner/repo@v1.0.0") is True
+    Note: DevPod backend is the default. These tests verify worktree
+    can be enabled with --backend worktree flag.
+    """
 
-    def test_should_use_worktree_with_special_characters(self):
-        """Test parsing spec with special characters."""
-        assert should_use_worktree_backend("owner-name/repo-name@branch-name") is True
-        assert should_use_worktree_backend("owner_name/repo_name") is True
+    def test_worktree_with_branch_at_symbol_requires_flag(self):
+        """Test parsing spec with @ symbol - requires explicit worktree flag."""
+        # Default is devpod (False)
+        assert should_use_worktree_backend("owner/repo@feature/test") is False
+        assert should_use_worktree_backend("owner/repo@v1.0.0") is False
+        # But can be enabled with explicit flag
+        assert should_use_worktree_backend("owner/repo@feature/test", "worktree") is True
+        assert should_use_worktree_backend("owner/repo@v1.0.0", "worktree") is True
+
+    def test_worktree_with_special_characters_requires_flag(self):
+        """Test parsing spec with special characters - requires explicit worktree flag."""
+        # Default is devpod (False)
+        assert should_use_worktree_backend("owner-name/repo-name@branch-name") is False
+        assert should_use_worktree_backend("owner_name/repo_name") is False
+        # But can be enabled with explicit flag
+        assert should_use_worktree_backend("owner-name/repo-name@branch-name", "worktree") is True
+        assert should_use_worktree_backend("owner_name/repo_name", "worktree") is True

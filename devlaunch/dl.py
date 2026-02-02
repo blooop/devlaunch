@@ -766,16 +766,10 @@ def should_use_worktree_backend(spec: str, backend: Optional[str] = None) -> boo
     if env_backend == "devpod":
         return False
 
-    # Auto-detect based on spec type
-    # Paths don't use worktree backend
-    if is_path_spec(spec):
-        return False
-
-    # Git repos use worktree backend by default
-    if is_git_spec(spec):
-        return True
-
-    # Existing workspace names use devpod backend
+    # Default: use devpod backend (separate clones) for isolation
+    # Worktree backend is opt-in via --backend worktree or DEVLAUNCH_BACKEND=worktree
+    # Worktrees share the repo, so all branches are visible in every container,
+    # which leads to confusing git error messages.
     return False
 
 
@@ -1039,15 +1033,16 @@ Global commands:
     dl --help, -h                    Show this help
     dl --version                     Show version
 
-Worktree backend (default for git repos):
-    Git repos are cloned once to ~/.cache/devlaunch/repos/owner/repo/, then
-    worktrees are created for each branch in .worktrees/ inside the repo.
-    This is faster as git objects are shared across branches.
+Worktree backend (opt-in, for disk efficiency):
+    Use --backend worktree to share git objects across branches.
+    Note: Worktrees share the repo, so all branches are visible in every
+    container, which can lead to confusing git error messages.
 
-    dl --backend devpod <repo>       Force legacy DevPod backend (clone per workspace)
-    dl --shared <owner/repo@branch>  Share container across branches (faster swaps)
+    dl --backend worktree <repo>     Use worktree backend (shared git objects)
+    dl --backend devpod <repo>       Use devpod backend (default, separate clones)
+    dl --shared <owner/repo@branch>  Share container across branches (worktree only)
     dl --warm <owner/repo@branch>    Pre-warm container in background (no shell)
-    Set DEVLAUNCH_BACKEND=devpod to globally disable worktree backend.
+    Set DEVLAUNCH_BACKEND=worktree to globally enable worktree backend.
 
 Examples:
     dl                               # Select workspace with fzf
