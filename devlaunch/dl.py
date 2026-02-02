@@ -326,6 +326,36 @@ def get_worktree_container_path(workspace_id: str, branch: str) -> str:
     return f"/workspaces/{workspace_id}/.worktrees/{sanitized_branch}"
 
 
+def get_worktree_symlink_path() -> str:
+    """Get the symlink path used for shorter terminal prompts.
+
+    Returns ~/work which is a symlink to the actual worktree directory.
+    This gives users a short, consistent path in their terminal prompt.
+    """
+    return "/home/vscode/work"
+
+
+def setup_worktree_symlink(workspace_id: str, worktree_container_path: str) -> bool:
+    """Create ~/work symlink pointing to the worktree directory.
+
+    This provides a shorter path for terminal prompts. Instead of seeing
+    /workspaces/blooop-bencher-main/.worktrees/main in the prompt,
+    users see ~/work.
+
+    Args:
+        workspace_id: The DevPod workspace ID to SSH into
+        worktree_container_path: The full container path to the worktree
+
+    Returns:
+        True if symlink was created successfully, False otherwise
+    """
+    symlink_path = get_worktree_symlink_path()
+    # Use ln -sfn: -s for symlink, -f to force overwrite, -n to not dereference
+    symlink_cmd = f"ln -sfn {worktree_container_path} {symlink_path}"
+    result = workspace_ssh(workspace_id, command=symlink_cmd)
+    return result == 0
+
+
 def make_worktree_workspace_id(owner: str, repo: str, branch: str, max_len: int = 50) -> str:
     """Create a workspace ID for worktree backend.
 
@@ -1212,6 +1242,10 @@ def main() -> int:
                 ide="vscode",
                 share_container=share_container,
             )
+            if result.returncode == 0:
+                # Create ~/work symlink for shorter terminal prompt in VS Code
+                worktree_path = get_worktree_container_path(workspace_id, branch)
+                setup_worktree_symlink(workspace_id, worktree_path)
         else:
             result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
         return result.returncode
@@ -1237,8 +1271,10 @@ def main() -> int:
             )
             if result.returncode != 0:
                 return result.returncode
-            workdir = get_worktree_container_path(workspace_id, branch)
-            return workspace_ssh(workspace_id, workdir=workdir)
+            # Create ~/work symlink for shorter prompt, then SSH to it
+            worktree_path = get_worktree_container_path(workspace_id, branch)
+            setup_worktree_symlink(workspace_id, worktree_path)
+            return workspace_ssh(workspace_id, workdir=get_worktree_symlink_path())
 
         result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
@@ -1288,15 +1324,16 @@ def main() -> int:
         return 0
 
     # Attach to workspace
-    # For worktree backend, set workdir to the worktree path inside the mounted base repo
+    # For worktree backend, create ~/work symlink for shorter prompt, then SSH to it
     if use_worktree and parsed:
         branch = (
             parsed[1]
             if parsed[1]
             else get_default_branch_for_repo(parsed[0].split("/")[0], parsed[0].split("/")[1])
         )
-        workdir = get_worktree_container_path(workspace_id, branch)
-        ret = workspace_ssh(workspace_id, shell_command, workdir=workdir)
+        worktree_path = get_worktree_container_path(workspace_id, branch)
+        setup_worktree_symlink(workspace_id, worktree_path)
+        ret = workspace_ssh(workspace_id, shell_command, workdir=get_worktree_symlink_path())
     else:
         ret = workspace_ssh(workspace_id, shell_command)
 

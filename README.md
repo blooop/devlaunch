@@ -112,6 +112,7 @@ For git repositories, devlaunch uses an efficient worktree backend by default:
 - **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
 - **Shared Git Objects**: All branches share git objects, saving disk space
 - **Lazy Fetch**: Remote updates are only fetched if the configured interval has elapsed (default: 1 hour)
+- **Short Prompts**: Your terminal prompt shows `~/work` instead of long worktree paths
 
 ### Container Sharing Mode
 

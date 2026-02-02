@@ -65,7 +65,18 @@ When you run `dl owner/repo@branch` with the worktree backend:
 1. **Base Repository**: The first time you access a repo, it's cloned to `~/.devlaunch/repos/owner/repo`
 2. **Worktree Creation**: For each branch, a lightweight worktree is created at `~/.devlaunch/worktrees/owner/repo/branch`
 3. **DevPod Integration**: DevPod launches a container using the worktree directory as the source
-4. **Metadata Tracking**: Worktree metadata is stored in `~/.devlaunch/metadata.json`
+4. **Symlink Setup**: A symlink is created at `~/work` pointing to the worktree for shorter terminal prompts
+5. **Metadata Tracking**: Worktree metadata is stored in `~/.devlaunch/metadata.json`
+
+### Terminal Prompt
+
+Instead of seeing a long path like `/workspaces/blooop-bencher-main/.worktrees/main` in your terminal prompt, you'll see `~/work`. This is achieved by creating a symlink:
+
+```
+/home/vscode/work -> /workspaces/{workspace_id}/.worktrees/{branch}
+```
+
+Git commands work normally from `~/work` since it's just a path alias.
 
 ### Directory Structure
 

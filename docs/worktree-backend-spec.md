@@ -137,13 +137,22 @@ Container layout:
     └── {branch}/                     # User wants to be HERE
 ```
 
-**Solution**: Use `--workdir` when SSH'ing to set the correct starting directory.
+**Solution**: Create a symlink at `~/work` pointing to the worktree, then SSH with `--workdir ~/work`.
 
 ```bash
-devpod ssh {workspace_id} --workdir /workspaces/{workspace_id}/.worktrees/{branch}
+# First, create the symlink inside the container
+devpod ssh {workspace_id} --command "ln -sfn /workspaces/{workspace_id}/.worktrees/{branch} /home/vscode/work"
+
+# Then SSH to the symlink path
+devpod ssh {workspace_id} --workdir /home/vscode/work
 ```
 
-**Implementation**: `dl.py:get_worktree_container_path()` and `workspace_ssh()`
+This provides:
+- Short, consistent path: `~/work` in terminal prompt instead of long worktree path
+- Git commands still work (symlink resolves to actual worktree)
+- Works with any repo's existing devcontainer configuration
+
+**Implementation**: `dl.py:setup_worktree_symlink()`, `get_worktree_symlink_path()`, and `workspace_ssh()`
 
 ### Challenge 4: Git Detached HEAD State
 
@@ -263,13 +272,27 @@ The current tests mock DevPod commands and don't verify:
 
 | File | Purpose |
 |------|---------|
-| `dl.py` | CLI entry point, workspace ID generation, SSH handling |
+| `dl.py` | CLI entry point, workspace ID generation, SSH handling, symlink setup |
 | `worktree/workspace_manager.py` | DevPod integration, container lifecycle |
 | `worktree/worktree_manager.py` | Git worktree creation and management |
 | `worktree/repo_manager.py` | Repository cloning and management |
 | `worktree/storage.py` | Metadata persistence |
 | `worktree/models.py` | Data classes for repos and worktrees |
 | `worktree/config.py` | Configuration and paths |
+
+## Key Functions
+
+### `get_worktree_container_path(workspace_id, branch)`
+Returns the full container path to the worktree directory.
+Example: `/workspaces/blooop-bencher-main/.worktrees/main`
+
+### `get_worktree_symlink_path()`
+Returns the symlink path used for shorter terminal prompts.
+Always returns `/home/vscode/work`.
+
+### `setup_worktree_symlink(workspace_id, worktree_container_path)`
+Creates the `~/work` symlink inside the container pointing to the worktree.
+Called before SSH'ing to ensure the symlink exists.
 
 ## Success Criteria
 
