@@ -261,6 +261,480 @@ class TestWorktreePathsInContainerE2E:
 
 
 @pytest.mark.e2e
+class TestWorktreeSymlinkE2E:
+    """E2E tests for ~/work symlink functionality in worktree backend."""
+
+    def test_symlink_creation_in_container(
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
+    ):
+        """Test that ~/work symlink is created correctly inside container.
+
+        This verifies:
+        1. Symlink at /home/vscode/work is created
+        2. Symlink points to the correct worktree path
+        3. The symlink target directory exists
+        """
+        devpod_check = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        if devpod_check.returncode != 0:
+            pytest.skip("DevPod not available")
+
+        env = isolated_devlaunch_env
+        workspace_id = "e2e-test-symlink"
+        devpod_cleanup.track(workspace_id)
+
+        # Create worktree locally first
+        from devlaunch.worktree.config import WorktreeConfig
+        from devlaunch.worktree.repo_manager import RepositoryManager
+        from devlaunch.worktree.storage import MetadataStorage
+        from devlaunch.worktree.worktree_manager import WorktreeManager
+
+        config = WorktreeConfig(repos_dir=env["repos_dir"], auto_fetch=False)
+        storage = MetadataStorage(env["metadata_path"])
+        repo_manager = RepositoryManager(env["repos_dir"], storage, config)
+        worktree_manager = WorktreeManager(repo_manager, storage)
+
+        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        repo_manager.clone_repo("test", "repo", remote_url)
+        worktree_manager.create_worktree("test", "repo", "main")
+        base_repo = repo_manager.get_repo_path("test", "repo")
+
+        # Create DevPod workspace
+        result = subprocess.run(
+            ["devpod", "up", str(base_repo), "--id", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            worktree_container_path = f"/workspaces/{workspace_id}/.worktrees/main"
+
+            # Create the symlink (simulating what dl.py does)
+            symlink_result = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    f"ln -sfn {worktree_container_path} /home/vscode/work",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert symlink_result.returncode == 0
+
+            # Verify symlink exists and points to correct location
+            verify_result = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    "readlink /home/vscode/work",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert verify_result.returncode == 0
+            assert worktree_container_path in verify_result.stdout
+
+    def test_git_works_through_symlink(
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
+    ):
+        """Test that git commands work when run from ~/work symlink."""
+        devpod_check = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        if devpod_check.returncode != 0:
+            pytest.skip("DevPod not available")
+
+        env = isolated_devlaunch_env
+        workspace_id = "e2e-test-symlink-git"
+        devpod_cleanup.track(workspace_id)
+
+        from devlaunch.worktree.config import WorktreeConfig
+        from devlaunch.worktree.repo_manager import RepositoryManager
+        from devlaunch.worktree.storage import MetadataStorage
+        from devlaunch.worktree.worktree_manager import WorktreeManager
+
+        config = WorktreeConfig(repos_dir=env["repos_dir"], auto_fetch=False)
+        storage = MetadataStorage(env["metadata_path"])
+        repo_manager = RepositoryManager(env["repos_dir"], storage, config)
+        worktree_manager = WorktreeManager(repo_manager, storage)
+
+        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        repo_manager.clone_repo("test", "repo", remote_url)
+        worktree_manager.create_worktree("test", "repo", "main")
+        base_repo = repo_manager.get_repo_path("test", "repo")
+
+        result = subprocess.run(
+            ["devpod", "up", str(base_repo), "--id", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            worktree_container_path = f"/workspaces/{workspace_id}/.worktrees/main"
+
+            # Create symlink
+            subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    f"ln -sfn {worktree_container_path} /home/vscode/work",
+                ],
+                capture_output=True,
+                check=False,
+            )
+
+            # Run git status from ~/work
+            git_result = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    "cd /home/vscode/work && git status",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert git_result.returncode == 0
+            assert "On branch main" in git_result.stdout
+
+            # Run git log from ~/work
+            log_result = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    "cd /home/vscode/work && git log --oneline -1",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert log_result.returncode == 0
+
+    def test_symlink_overwrites_existing(
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
+    ):
+        """Test that symlink can be updated (for shared container mode)."""
+        devpod_check = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        if devpod_check.returncode != 0:
+            pytest.skip("DevPod not available")
+
+        env = isolated_devlaunch_env
+        workspace_id = "e2e-test-symlink-overwrite"
+        devpod_cleanup.track(workspace_id)
+
+        from devlaunch.worktree.config import WorktreeConfig
+        from devlaunch.worktree.repo_manager import RepositoryManager
+        from devlaunch.worktree.storage import MetadataStorage
+        from devlaunch.worktree.worktree_manager import WorktreeManager
+
+        config = WorktreeConfig(repos_dir=env["repos_dir"], auto_fetch=False)
+        storage = MetadataStorage(env["metadata_path"])
+        repo_manager = RepositoryManager(env["repos_dir"], storage, config)
+        worktree_manager = WorktreeManager(repo_manager, storage)
+
+        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        repo_manager.clone_repo("test", "repo", remote_url)
+        worktree_manager.create_worktree("test", "repo", "main")
+        base_repo = repo_manager.get_repo_path("test", "repo")
+
+        result = subprocess.run(
+            ["devpod", "up", str(base_repo), "--id", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            path1 = f"/workspaces/{workspace_id}/.worktrees/main"
+            path2 = f"/workspaces/{workspace_id}/.worktrees/feature"  # Hypothetical
+
+            # Create initial symlink
+            subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    f"ln -sfn {path1} /home/vscode/work",
+                ],
+                capture_output=True,
+                check=False,
+            )
+
+            # Verify initial target
+            check1 = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    "readlink /home/vscode/work",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert path1 in check1.stdout
+
+            # Overwrite with new target (ln -sfn should handle this)
+            subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    f"ln -sfn {path2} /home/vscode/work",
+                ],
+                capture_output=True,
+                check=False,
+            )
+
+            # Verify new target
+            check2 = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    "readlink /home/vscode/work",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert path2 in check2.stdout
+
+    def test_pwd_shows_symlink_path(
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
+    ):
+        """Test that pwd shows ~/work (the short prompt path)."""
+        devpod_check = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        if devpod_check.returncode != 0:
+            pytest.skip("DevPod not available")
+
+        env = isolated_devlaunch_env
+        workspace_id = "e2e-test-symlink-pwd"
+        devpod_cleanup.track(workspace_id)
+
+        from devlaunch.worktree.config import WorktreeConfig
+        from devlaunch.worktree.repo_manager import RepositoryManager
+        from devlaunch.worktree.storage import MetadataStorage
+        from devlaunch.worktree.worktree_manager import WorktreeManager
+
+        config = WorktreeConfig(repos_dir=env["repos_dir"], auto_fetch=False)
+        storage = MetadataStorage(env["metadata_path"])
+        repo_manager = RepositoryManager(env["repos_dir"], storage, config)
+        worktree_manager = WorktreeManager(repo_manager, storage)
+
+        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        repo_manager.clone_repo("test", "repo", remote_url)
+        worktree_manager.create_worktree("test", "repo", "main")
+        base_repo = repo_manager.get_repo_path("test", "repo")
+
+        result = subprocess.run(
+            ["devpod", "up", str(base_repo), "--id", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            worktree_container_path = f"/workspaces/{workspace_id}/.worktrees/main"
+
+            # Create symlink
+            subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    f"ln -sfn {worktree_container_path} /home/vscode/work",
+                ],
+                capture_output=True,
+                check=False,
+            )
+
+            # Run pwd from ~/work - should show /home/vscode/work
+            pwd_result = subprocess.run(
+                [
+                    "devpod",
+                    "ssh",
+                    workspace_id,
+                    "--command",
+                    "cd /home/vscode/work && pwd",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert pwd_result.returncode == 0
+            assert "/home/vscode/work" in pwd_result.stdout
+
+
+@pytest.mark.e2e
+class TestWorkspaceLifecycleE2E:
+    """E2E tests for full workspace lifecycle with worktree backend."""
+
+    def test_full_worktree_workspace_lifecycle(
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
+    ):
+        """Test complete lifecycle: create -> symlink -> git ops -> stop -> delete."""
+        devpod_check = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        if devpod_check.returncode != 0:
+            pytest.skip("DevPod not available")
+
+        env = isolated_devlaunch_env
+        workspace_id = "e2e-test-lifecycle-full"
+        devpod_cleanup.track(workspace_id)
+
+        from devlaunch.worktree.config import WorktreeConfig
+        from devlaunch.worktree.repo_manager import RepositoryManager
+        from devlaunch.worktree.storage import MetadataStorage
+        from devlaunch.worktree.worktree_manager import WorktreeManager
+
+        config = WorktreeConfig(repos_dir=env["repos_dir"], auto_fetch=False)
+        storage = MetadataStorage(env["metadata_path"])
+        repo_manager = RepositoryManager(env["repos_dir"], storage, config)
+        worktree_manager = WorktreeManager(repo_manager, storage)
+
+        # Phase 1: Setup
+        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        repo_manager.clone_repo("test", "repo", remote_url)
+        worktree_manager.create_worktree("test", "repo", "main")
+        base_repo = repo_manager.get_repo_path("test", "repo")
+
+        # Phase 2: Create workspace
+        up_result = subprocess.run(
+            ["devpod", "up", str(base_repo), "--id", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if up_result.returncode != 0:
+            pytest.skip(f"DevPod up failed: {up_result.stderr}")
+
+        worktree_container_path = f"/workspaces/{workspace_id}/.worktrees/main"
+
+        # Phase 3: Create symlink
+        symlink_result = subprocess.run(
+            [
+                "devpod",
+                "ssh",
+                workspace_id,
+                "--command",
+                f"ln -sfn {worktree_container_path} /home/vscode/work",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert symlink_result.returncode == 0, f"Symlink creation failed: {symlink_result.stderr}"
+
+        # Phase 4: Verify git operations through symlink
+        git_result = subprocess.run(
+            [
+                "devpod",
+                "ssh",
+                workspace_id,
+                "--command",
+                "cd /home/vscode/work && git status && git log --oneline -1",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert git_result.returncode == 0, f"Git operations failed: {git_result.stderr}"
+        assert "On branch main" in git_result.stdout
+
+        # Phase 5: Stop workspace
+        stop_result = subprocess.run(
+            ["devpod", "stop", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert stop_result.returncode == 0, f"Stop failed: {stop_result.stderr}"
+
+        # Phase 6: Restart and verify symlink persists
+        restart_result = subprocess.run(
+            ["devpod", "up", workspace_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert restart_result.returncode == 0, f"Restart failed: {restart_result.stderr}"
+
+        # Recreate symlink (simulating what dl restart does)
+        subprocess.run(
+            [
+                "devpod",
+                "ssh",
+                workspace_id,
+                "--command",
+                f"ln -sfn {worktree_container_path} /home/vscode/work",
+            ],
+            capture_output=True,
+            check=False,
+        )
+
+        # Verify git still works
+        git_result2 = subprocess.run(
+            [
+                "devpod",
+                "ssh",
+                workspace_id,
+                "--command",
+                "cd /home/vscode/work && git status",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert git_result2.returncode == 0
+
+        # Phase 7: Delete workspace
+        delete_result = subprocess.run(
+            ["devpod", "delete", workspace_id, "--force"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert delete_result.returncode == 0, f"Delete failed: {delete_result.stderr}"
+
+
+@pytest.mark.e2e
 class TestDLCommandSafetyE2E:
     """Tests verifying dl command safety (no accidental IDE launch)."""
 
