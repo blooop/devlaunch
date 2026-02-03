@@ -17,6 +17,19 @@ import subprocess
 import pytest
 
 
+def devpod_available() -> bool:
+    """Check if DevPod is available."""
+    try:
+        result = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 @pytest.mark.e2e
 class TestWorkspaceCreationE2E:
     """E2E tests for workspace creation with real DevPod."""
@@ -28,28 +41,27 @@ class TestWorkspaceCreationE2E:
 
         This test:
         1. Creates a local git repo as a "remote"
-        2. Uses dl to create a workspace (no IDE launched)
-        3. Verifies the workspace exists in DevPod
+        2. Uses devpod directly to create a workspace
+        3. Verifies the workspace exists
         """
-        env = isolated_devlaunch_env
-        _remote_url = local_git_repo_with_devcontainer["remote_url"]  # noqa: F841
+        if not devpod_available():
+            pytest.skip("DevPod not available")
 
-        # Run dl command to create workspace
-        # Using the default command (no 'code' subcommand) - does NOT launch IDE
+        env = isolated_devlaunch_env
+        remote_url = local_git_repo_with_devcontainer["remote_url"]
+        workspace_id = "e2e-test-create"
+        devpod_cleanup.track(workspace_id)
+
+        # Create workspace using devpod directly
         result = subprocess.run(
-            ["python", "-m", "devlaunch.dl", "local/test-repo@main"],
+            ["devpod", "up", remote_url, "--id", workspace_id],
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
             text=True,
             check=False,
-            cwd="/app",
         )
 
-        # The command might fail if devpod isn't properly configured
-        # That's ok for this test - we just want to verify the workflow
         if result.returncode == 0:
-            devpod_cleanup.track("main")
-
             # List DevPod workspaces to verify
             list_result = subprocess.run(
                 ["devpod", "list", "--output", "json"],
@@ -61,29 +73,20 @@ class TestWorkspaceCreationE2E:
             if list_result.returncode == 0 and list_result.stdout:
                 workspaces = json.loads(list_result.stdout)
                 workspace_ids = [ws.get("id", "") for ws in workspaces]
-                # Should have created a workspace
-                assert any("main" in ws_id for ws_id in workspace_ids)
+                assert workspace_id in workspace_ids
 
     def test_workspace_lifecycle_without_ide(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
         """Test workspace create -> status -> stop -> delete without IDE."""
-        env = isolated_devlaunch_env
-
-        # Skip if not in E2E environment
-        devpod_check = subprocess.run(
-            ["devpod", "version"],
-            capture_output=True,
-            check=False,
-        )
-        if devpod_check.returncode != 0:
+        if not devpod_available():
             pytest.skip("DevPod not available")
 
+        env = isolated_devlaunch_env
         workspace_id = "e2e-test-lifecycle"
         devpod_cleanup.track(workspace_id)
 
-        # Create a minimal workspace using devpod directly
-        # This tests that our environment is set up correctly
+        # Create a workspace
         result = subprocess.run(
             [
                 "devpod",
@@ -126,13 +129,7 @@ class TestGitOperationsInContainerE2E:
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
         """Test that git status works when SSH'd into workspace."""
-        # Skip if not in E2E environment
-        devpod_check = subprocess.run(
-            ["devpod", "version"],
-            capture_output=True,
-            check=False,
-        )
-        if devpod_check.returncode != 0:
+        if not devpod_available():
             pytest.skip("DevPod not available")
 
         env = isolated_devlaunch_env
@@ -157,7 +154,7 @@ class TestGitOperationsInContainerE2E:
         if result.returncode == 0:
             # Run git status via SSH
             ssh_result = subprocess.run(
-                ["devpod", "ssh", workspace_id, "--", "git", "status"],
+                ["devpod", "ssh", workspace_id, "--command", "git status"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -169,123 +166,147 @@ class TestGitOperationsInContainerE2E:
 
 
 @pytest.mark.e2e
-class TestWorktreePathsInContainerE2E:
-    """E2E tests verifying worktree paths work correctly in containers."""
+class TestDLCommandsE2E:
+    """E2E tests for dl CLI commands."""
 
-    def test_worktree_git_file_resolves_in_container(
-        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
-    ):
-        """Verify that worktree .git files resolve correctly in container.
+    def test_dl_list_command(self, isolated_devlaunch_env):
+        """Test dl --ls command works."""
+        env = isolated_devlaunch_env
 
-        This is the critical test for the relative path fixup: we create
-        a worktree on the host, mount it in a container, and verify that
-        git commands work because the .git file uses relative paths.
-        """
-        # Skip if not in E2E environment
-        devpod_check = subprocess.run(
-            ["devpod", "version"],
+        result = subprocess.run(
+            ["python", "-m", "devlaunch.dl", "--ls"],
+            env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
+            text=True,
             check=False,
+            cwd=os.getcwd(),
         )
-        if devpod_check.returncode != 0:
+
+        # Should succeed (may show "No workspaces found" if empty)
+        assert result.returncode == 0
+
+    def test_dl_help_command(self, isolated_devlaunch_env):
+        """Test dl --help command works."""
+        env = isolated_devlaunch_env
+
+        result = subprocess.run(
+            ["python", "-m", "devlaunch.dl", "--help"],
+            env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=os.getcwd(),
+        )
+
+        assert result.returncode == 0
+        assert "dl - DevLaunch CLI" in result.stdout
+
+    def test_dl_version_command(self, isolated_devlaunch_env):
+        """Test dl --version command works."""
+        env = isolated_devlaunch_env
+
+        result = subprocess.run(
+            ["python", "-m", "devlaunch.dl", "--version"],
+            env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=os.getcwd(),
+        )
+
+        assert result.returncode == 0
+        assert "dl " in result.stdout
+
+
+@pytest.mark.e2e
+class TestPurgeE2E:
+    """E2E tests for purge functionality."""
+
+    def test_purge_deletes_workspaces(
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer
+    ):
+        """Test that --purge -y deletes all DevPod workspaces."""
+        if not devpod_available():
             pytest.skip("DevPod not available")
 
         env = isolated_devlaunch_env
-        workspace_id = "e2e-test-worktree-paths"
-        devpod_cleanup.track(workspace_id)
 
-        # First, create a worktree locally
-        from devlaunch.worktree.config import WorktreeConfig
-        from devlaunch.worktree.repo_manager import RepositoryManager
-        from devlaunch.worktree.storage import MetadataStorage
-        from devlaunch.worktree.worktree_manager import WorktreeManager
-
-        config = WorktreeConfig(repos_dir=env["repos_dir"], auto_fetch=False)
-        storage = MetadataStorage(env["metadata_path"])
-        repo_manager = RepositoryManager(env["repos_dir"], storage, config)
-        worktree_manager = WorktreeManager(repo_manager, storage)
-
-        # Clone and create worktree
-        remote_url = local_git_repo_with_devcontainer["remote_url"]
-        repo_manager.clone_repo("test", "repo", remote_url)
-        _worktree = worktree_manager.create_worktree("test", "repo", "main")  # noqa: F841
-
-        # The base repo path (which we mount)
-        base_repo = repo_manager.get_repo_path("test", "repo")
-
-        # Create a DevPod workspace mounting the base repo
+        # Create a workspace first
+        workspace_id = "e2e-test-purge"
         result = subprocess.run(
             [
                 "devpod",
                 "up",
-                str(base_repo),
+                local_git_repo_with_devcontainer["remote_url"],
                 "--id",
                 workspace_id,
             ],
+            env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
             text=True,
             check=False,
         )
 
-        if result.returncode == 0:
-            # Determine the container path to the worktree
-            # DevPod mounts source to /workspaces/<workspace-id>/
-            # Worktree is at .worktrees/main relative to mount
-            worktree_container_path = f"/workspaces/{workspace_id}/.worktrees/main"
+        if result.returncode != 0:
+            pytest.skip("Could not create test workspace")
 
-            # Run git status in the worktree directory inside container
-            ssh_result = subprocess.run(
-                [
-                    "devpod",
-                    "ssh",
-                    workspace_id,
-                    "--",
-                    "git",
-                    "-C",
-                    worktree_container_path,
-                    "status",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        # Verify workspace exists
+        list_result = subprocess.run(
+            ["devpod", "list", "--output", "json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if list_result.returncode == 0:
+            workspaces = json.loads(list_result.stdout) if list_result.stdout.strip() else []
+            workspace_ids = [ws.get("id", "") for ws in workspaces]
+            assert workspace_id in workspace_ids
 
-            # This is the critical assertion: git must work in the worktree
-            # inside the container, which requires relative paths in .git file
-            assert ssh_result.returncode == 0, (
-                f"git status failed in container worktree. "
-                f"This likely means .git file paths aren't relative. "
-                f"stderr: {ssh_result.stderr}"
-            )
-            assert "On branch main" in ssh_result.stdout
+        # Run purge
+        purge_result = subprocess.run(
+            ["python", "-m", "devlaunch.dl", "--purge", "-y"],
+            env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=os.getcwd(),
+        )
 
+        assert purge_result.returncode == 0
+        assert "Deleting DevPod workspace" in purge_result.stdout
 
-@pytest.mark.e2e
-class TestDLCommandSafetyE2E:
-    """Tests verifying dl command safety (no accidental IDE launch)."""
+        # Verify workspace is gone
+        list_result = subprocess.run(
+            ["devpod", "list", "--output", "json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if list_result.returncode == 0:
+            workspaces = json.loads(list_result.stdout) if list_result.stdout.strip() else []
+            workspace_ids = [ws.get("id", "") for ws in workspaces]
+            assert workspace_id not in workspace_ids
 
-    def test_dl_no_ide_helper_rejects_code_subcommand(self, dl_no_ide):
-        """Test that dl_no_ide fixture rejects the 'code' subcommand."""
-        with pytest.raises(ValueError, match="code"):
-            dl_no_ide.run("owner/repo@main", "code")
+    def test_purge_cleans_cache(self, isolated_devlaunch_env):
+        """Test that --purge -y removes the cache directory."""
+        env = isolated_devlaunch_env
+        cache_dir = env["devlaunch_dir"]
 
-    def test_dl_default_command_does_not_launch_ide(
-        self,
-        isolated_devlaunch_env,  # noqa: ARG002  # pylint: disable=unused-argument
-    ):
-        """Verify default dl command doesn't attempt IDE launch.
+        # Create some cache data
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        test_file = cache_dir / "test.txt"
+        test_file.write_text("test data")
+        assert test_file.exists()
 
-        This test checks that when we run `dl owner/repo@main` (without 'code'),
-        no IDE-related arguments are passed to devpod.
-        """
-        # This is more of a unit test but validates E2E safety
-        # Read dl.py to verify the code path
-        from devlaunch import dl
+        # Run purge
+        purge_result = subprocess.run(
+            ["python", "-m", "devlaunch.dl", "--purge", "-y"],
+            env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=os.getcwd(),
+        )
 
-        # Check that workspace_up_worktree defaults to no IDE
-        import inspect
-
-        sig = inspect.signature(dl.workspace_up_worktree)
-        ide_param = sig.parameters.get("ide")
-        assert ide_param is not None
-        assert ide_param.default is None, "workspace_up_worktree should default ide=None (no IDE)"
+        assert purge_result.returncode == 0
+        assert not cache_dir.exists()
