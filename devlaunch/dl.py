@@ -292,6 +292,43 @@ def sanitize_workspace_id(name: str) -> str:
     return name.lower().replace("/", "-")
 
 
+def get_work_symlink_path() -> str:
+    """Get the symlink path used for shorter terminal prompts.
+
+    Returns ~/work which is a symlink to the actual workspace directory.
+    This gives users a short, consistent path in their terminal prompt.
+    """
+    return "/home/vscode/work"
+
+
+def get_container_workdir(workspace_id: str) -> str:
+    """Get the container working directory for a workspace.
+
+    DevPod mounts workspaces to /workspaces/{workspace_id}/
+    """
+    return f"/workspaces/{workspace_id}"
+
+
+def setup_work_symlink(workspace_id: str) -> bool:
+    """Create ~/work symlink pointing to the workspace directory.
+
+    This provides a shorter path for terminal prompts. Instead of seeing
+    /workspaces/blooop-bencher-main in the prompt, users see ~/work.
+
+    Args:
+        workspace_id: The DevPod workspace ID to SSH into
+
+    Returns:
+        True if symlink was created successfully, False otherwise
+    """
+    symlink_path = get_work_symlink_path()
+    workdir = get_container_workdir(workspace_id)
+    # Use ln -sfn: -s for symlink, -f to force overwrite, -n to not dereference
+    symlink_cmd = f"ln -sfn {workdir} {symlink_path}"
+    result = workspace_ssh(workspace_id, command=symlink_cmd)
+    return result == 0
+
+
 def spec_to_workspace_id(spec: str) -> str:
     """Derive the workspace ID for a given spec.
 
@@ -738,11 +775,41 @@ def workspace_up(
     return run_devpod(args)
 
 
-def workspace_ssh(workspace: str, command: Optional[str] = None) -> int:
-    """SSH into a workspace, optionally running a command."""
+def workspace_ssh(
+    workspace: str,
+    command: Optional[str] = None,
+    workdir: Optional[str] = None,
+    preserve_symlink: bool = False,
+) -> int:
+    """SSH into a workspace, optionally running a command.
+
+    Args:
+        workspace: The workspace ID to SSH into
+        command: Optional command to run (if None, starts interactive shell)
+        workdir: Working directory to start in
+        preserve_symlink: If True and workdir is set, use 'cd' instead of --workdir
+                         to preserve symlink paths in $PWD (for shorter prompts)
+    """
     args = ["ssh", workspace]
-    if command:
-        args.extend(["--command", command])
+
+    # If preserve_symlink is True, we use 'cd' instead of --workdir
+    # because DevPod's --workdir resolves symlinks, but 'cd' preserves them in $PWD
+    if workdir and preserve_symlink:
+        if command:
+            # Wrap the command with cd
+            wrapped_cmd = f"cd {workdir} && {command}"
+            args.extend(["--command", wrapped_cmd])
+        else:
+            # For interactive shell, cd and exec a login shell
+            wrapped_cmd = f"cd {workdir} && exec $SHELL -l"
+            args.extend(["--command", wrapped_cmd])
+    else:
+        # Standard behavior: use --workdir (resolves symlinks)
+        if workdir:
+            args.extend(["--workdir", workdir])
+        if command:
+            args.extend(["--command", command])
+
     logging.info(f"SSH command: devpod {' '.join(args)}")
     result = run_devpod(args)
     return result.returncode
@@ -833,7 +900,8 @@ def main() -> int:
             print_help()
             return 1
         workspace_up(selected)
-        return workspace_ssh(selected)
+        setup_work_symlink(selected)
+        return workspace_ssh(selected, workdir=get_work_symlink_path(), preserve_symlink=True)
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -952,7 +1020,8 @@ def main() -> int:
         result = workspace_up(workspace_spec, recreate=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
-        return workspace_ssh(workspace_id)
+        setup_work_symlink(workspace_id)
+        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(), preserve_symlink=True)
 
     if subcommand == "restart":
         # Stop and start without rebuilding
@@ -962,14 +1031,16 @@ def main() -> int:
         result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
-        return workspace_ssh(workspace_id)
+        setup_work_symlink(workspace_id)
+        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(), preserve_symlink=True)
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
         result = workspace_up(workspace_spec, reset=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
-        return workspace_ssh(workspace_id)
+        setup_work_symlink(workspace_id)
+        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(), preserve_symlink=True)
 
     # Check for shell command (after --)
     shell_command = None
@@ -992,8 +1063,16 @@ def main() -> int:
     if result.returncode != 0:
         return result.returncode
 
-    # Attach to workspace
-    ret = workspace_ssh(workspace_id, shell_command)
+    # Create ~/work symlink for shorter terminal prompt
+    setup_work_symlink(workspace_id)
+
+    # Attach to workspace via ~/work symlink (preserves short path in $PWD)
+    ret = workspace_ssh(
+        workspace_id,
+        shell_command,
+        workdir=get_work_symlink_path(),
+        preserve_symlink=True,
+    )
 
     # Update cache after workspace operations
     update_cache_background()

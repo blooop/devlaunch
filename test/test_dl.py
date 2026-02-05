@@ -36,7 +36,11 @@ from devlaunch.dl import (
     print_workspaces,
     workspace_stop,
     workspace_delete,
+    workspace_ssh,
     run_devpod,
+    get_work_symlink_path,
+    get_container_workdir,
+    setup_work_symlink,
 )
 
 
@@ -1243,7 +1247,12 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "--", "echo", "hello"]):
             result = main()
         assert result == 0
-        mock_ssh.assert_called_once_with("myws", "echo hello")
+        # First call creates ~/work symlink, second call runs the command
+        assert mock_ssh.call_count == 2
+        # Final SSH call with the shell command
+        mock_ssh.assert_called_with(
+            "myws", "echo hello", workdir="/home/vscode/work", preserve_symlink=True
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -1258,7 +1267,11 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_up.assert_called_once()
-        mock_ssh.assert_called_once()
+        # First call creates ~/work symlink, second call attaches shell
+        assert mock_ssh.call_count == 2
+        mock_ssh.assert_called_with(
+            "myws", None, workdir="/home/vscode/work", preserve_symlink=True
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.expand_workspace_spec")
@@ -1282,7 +1295,11 @@ class TestMainCLI:
         mock_up.assert_called_once_with(
             "github.com/owner/repo", workspace_id="github-com-owner-repo"
         )
-        mock_ssh.assert_called_once_with("github-com-owner-repo", None)
+        # First call creates ~/work symlink, second call attaches shell
+        assert mock_ssh.call_count == 2
+        mock_ssh.assert_called_with(
+            "github-com-owner-repo", None, workdir="/home/vscode/work", preserve_symlink=True
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.ensure_remote_branch")
@@ -1476,3 +1493,85 @@ class TestPurgeFunctionality:
         assert result == 0
         captured = capsys.readouterr()
         assert "No data to purge" in captured.out or "Removed" in captured.out
+
+
+class TestWorkSymlinkFunctions:
+    """Tests for ~/work symlink functionality."""
+
+    def test_get_work_symlink_path(self):
+        """Test get_work_symlink_path returns expected path."""
+        assert get_work_symlink_path() == "/home/vscode/work"
+
+    def test_get_container_workdir(self):
+        """Test get_container_workdir returns expected path."""
+        assert get_container_workdir("my-workspace") == "/workspaces/my-workspace"
+        assert get_container_workdir("blooop-bencher") == "/workspaces/blooop-bencher"
+
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_setup_work_symlink_success(self, mock_ssh):
+        """Test setup_work_symlink creates symlink via SSH."""
+        mock_ssh.return_value = 0
+        result = setup_work_symlink("my-workspace")
+        assert result is True
+        mock_ssh.assert_called_once_with(
+            "my-workspace",
+            command="ln -sfn /workspaces/my-workspace /home/vscode/work",
+        )
+
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_setup_work_symlink_failure(self, mock_ssh):
+        """Test setup_work_symlink returns False on SSH failure."""
+        mock_ssh.return_value = 1
+        result = setup_work_symlink("my-workspace")
+        assert result is False
+
+
+class TestWorkspaceSshWithSymlink:
+    """Tests for workspace_ssh with symlink preservation."""
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_basic(self, mock_run):
+        """Test basic SSH without symlink preservation."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws")
+        assert result == 0
+        mock_run.assert_called_once_with(["ssh", "myws"])
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_command(self, mock_run):
+        """Test SSH with command."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", command="echo hello")
+        assert result == 0
+        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"])
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_workdir(self, mock_run):
+        """Test SSH with workdir (no symlink preservation)."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", workdir="/some/path")
+        assert result == 0
+        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"])
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_preserve_symlink_interactive(self, mock_run):
+        """Test SSH with symlink preservation uses cd for interactive shell."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", workdir="/home/vscode/work", preserve_symlink=True)
+        assert result == 0
+        # Should use cd instead of --workdir to preserve symlink path in $PWD
+        mock_run.assert_called_once_with(
+            ["ssh", "myws", "--command", "cd /home/vscode/work && exec $SHELL -l"]
+        )
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_preserve_symlink_and_command(self, mock_run):
+        """Test SSH with symlink preservation wraps command with cd."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh(
+            "myws", command="make test", workdir="/home/vscode/work", preserve_symlink=True
+        )
+        assert result == 0
+        mock_run.assert_called_once_with(
+            ["ssh", "myws", "--command", "cd /home/vscode/work && make test"]
+        )
