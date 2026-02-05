@@ -14,8 +14,6 @@ import pytest
 from devlaunch.worktree.config import WorktreeConfig
 from devlaunch.worktree.repo_manager import RepositoryManager
 from devlaunch.worktree.storage import MetadataStorage
-from devlaunch.worktree.worktree_manager import WorktreeManager
-from devlaunch.worktree.workspace_manager import WorkspaceManager
 
 
 @pytest.fixture
@@ -224,18 +222,15 @@ def real_managers(
 ) -> Dict[str, Any]:
     """Create actual manager instances using isolated directories.
 
-    This fixture creates real RepositoryManager, WorktreeManager, and
-    WorkspaceManager instances that operate on isolated temp directories.
-    The managers will perform real git operations, but DevPod calls need
-    to be mocked separately for Tier 2 tests.
+    This fixture creates real RepositoryManager instances that operate on
+    isolated temp directories. The managers will perform real git operations,
+    but DevPod calls need to be mocked separately for Tier 2 tests.
 
     Returns:
         Dictionary containing:
         - config: WorktreeConfig instance
         - storage: MetadataStorage instance
         - repo_manager: RepositoryManager instance
-        - worktree_manager: WorktreeManager instance
-        - workspace_manager: WorkspaceManager instance
         - env: The isolated_devlaunch_env dict
     """
     env = isolated_devlaunch_env
@@ -257,21 +252,9 @@ def real_managers(
         config=config,
     )
 
-    worktree_manager = WorktreeManager(
-        repo_manager=repo_manager,
-        storage=storage,
-    )
-
-    workspace_manager = WorkspaceManager(
-        worktree_manager=worktree_manager,
-        storage=storage,
-    )
-
     return {
         "config": config,
         "storage": storage,
         "repo_manager": repo_manager,
-        "worktree_manager": worktree_manager,
-        "workspace_manager": workspace_manager,
         "env": env,
     }

@@ -206,7 +206,7 @@ class DevPodMock:
                 pass
         """
         return patch(
-            "devlaunch.worktree.workspace_manager.run_devpod",
+            "devlaunch.dl.run_devpod",
             side_effect=self,
         )
 
