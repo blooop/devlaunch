@@ -124,12 +124,14 @@ class TestEnsureBranch:
         """Test that ensure_branch fetches then delegates to BranchManager."""
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
         mock_repo_manager.fetch_repo.assert_called_once_with("owner", "repo")
+        mock_repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
-            bare_path, "newbranch", create_remote=False
+            bare_path, "newbranch", create_remote=False, start_point="main"
         )
 
     def test_continues_if_fetch_fails(
@@ -139,11 +141,13 @@ class TestEnsureBranch:
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
         mock_repo_manager.fetch_repo.side_effect = RuntimeError("network error")
+        mock_repo_manager.get_default_branch.return_value = "main"
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
+        mock_repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
-            bare_path, "newbranch", create_remote=False
+            bare_path, "newbranch", create_remote=False, start_point="main"
         )
 
 

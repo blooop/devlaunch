@@ -312,7 +312,7 @@ class TestEnsureBranchExists:
 
         branch_manager.ensure_branch_exists(temp_repo, "new-branch")
 
-        mock_create.assert_called_once_with(temp_repo, "new-branch")
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "HEAD")
         mock_push.assert_called_once()
         mock_track.assert_called_once()
 
@@ -328,7 +328,31 @@ class TestEnsureBranchExists:
 
         branch_manager.ensure_branch_exists(temp_repo, "new-branch", create_remote=False)
 
-        mock_create.assert_called_once()
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "HEAD")
+
+
+    @patch.object(BranchManager, "local_branch_exists")
+    @patch.object(BranchManager, "remote_branch_exists")
+    @patch.object(BranchManager, "create_local_branch")
+    @patch.object(BranchManager, "track_remote_branch")
+    def test_branch_custom_start_point(
+        self,
+        mock_track,
+        mock_create,
+        mock_remote_exists,
+        mock_local_exists,
+        branch_manager,
+        temp_repo,
+    ):
+        """Test ensure_branch_exists passes custom start_point to create_local_branch."""
+        mock_local_exists.return_value = False
+        mock_remote_exists.return_value = False
+
+        branch_manager.ensure_branch_exists(
+            temp_repo, "new-branch", create_remote=False, start_point="origin/main"
+        )
+
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "origin/main")
 
 
 class TestCreateRemoteBranchViaSSH:

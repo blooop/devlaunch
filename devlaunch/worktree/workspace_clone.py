@@ -88,7 +88,11 @@ class WorkspaceCloneManager:
             self.repo_manager.fetch_repo(owner, repo)
         except Exception as e:
             logger.warning(f"Failed to fetch before branch ensure: {e}")
-        self.branch_manager.ensure_branch_exists(bare_path, branch, create_remote=False)
+
+        default_branch = self.repo_manager.get_default_branch(owner, repo)
+        self.branch_manager.ensure_branch_exists(
+            bare_path, branch, create_remote=False, start_point=default_branch
+        )
 
     def ensure_workspace(
         self,

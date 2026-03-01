@@ -21,6 +21,7 @@ class BranchManager:
         remote: str = "origin",
         create_remote: bool = True,
         ssh_key_path: Optional[str] = None,
+        start_point: str = "HEAD",
     ) -> None:
         """Ensure branch exists locally and optionally remotely."""
         # Check if branch exists locally
@@ -42,7 +43,7 @@ class BranchManager:
 
         if not local_exists:
             # Create new local branch
-            self.create_local_branch(base_repo_path, branch)
+            self.create_local_branch(base_repo_path, branch, start_point)
             logger.info(f"Created local branch {branch}")
 
         if not remote_exists and create_remote:
