@@ -553,8 +553,6 @@ class TestRemoteBranchFunctions:
     @patch("subprocess.run")
     def test_get_remote_branches_timeout(self, mock_run):
         """Test timeout returns empty list."""
-        import subprocess
-
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=5)
         branches = get_remote_branches("owner/repo")
         assert branches == []
@@ -715,9 +713,7 @@ class TestGetLocalBranches:
         bare_path = tmp_path / "owner" / "repo" / ".bare"
         bare_path.mkdir(parents=True)
         mock_config.return_value.repos_dir = str(tmp_path)
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="main\nfeature/test\ndevelop\n"
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="main\nfeature/test\ndevelop\n")
 
         branches = get_local_branches("owner/repo")
 
@@ -960,7 +956,7 @@ class TestCacheFunctions:
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
     def test_update_completion_cache_fetches_branches(
-        self, mock_list, mock_discover, mock_remote, mock_local, mock_cache_dir
+        self, mock_list, mock_discover, mock_remote, _mock_local, _mock_cache_dir
     ):
         """Test update_completion_cache fetches branches for all repos."""
         mock_list.return_value = [
@@ -992,7 +988,7 @@ class TestCacheFunctions:
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
     def test_update_completion_cache_handles_branch_fetch_failure(
-        self, mock_list, mock_discover, mock_remote, mock_local, mock_cache_dir
+        self, mock_list, mock_discover, mock_remote, _mock_local, _mock_cache_dir
     ):
         """Test update_completion_cache handles repos where branch fetch fails."""
         mock_list.return_value = []
@@ -1014,7 +1010,7 @@ class TestCacheFunctions:
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
     def test_update_completion_cache_includes_local_branches(
-        self, mock_list, mock_discover, mock_remote, mock_local, mock_cache_dir
+        self, mock_list, mock_discover, mock_remote, mock_local, _mock_cache_dir
     ):
         """Test that locally-created branches appear in completion cache."""
         mock_list.return_value = [
@@ -1070,7 +1066,7 @@ class TestCacheFunctions:
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
     def test_update_completion_cache_merges_workspace_and_cache_repos(
-        self, mock_list, mock_ws_repos, mock_cache_repos, mock_remote, mock_local
+        self, mock_list, mock_ws_repos, mock_cache_repos, mock_remote, _mock_local
     ):
         """Test repos from both sources are merged without duplicates."""
         mock_list.return_value = []
