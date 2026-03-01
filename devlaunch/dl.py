@@ -30,6 +30,7 @@ from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
 from .completion import install_completions
+from .worktree.config import get_worktree_config
 from .worktree.workspace_clone import WorkspaceCloneManager
 
 
@@ -138,11 +139,47 @@ def get_remote_branches(owner_repo: str) -> List[str]:
     return []
 
 
+def get_local_branches(owner_repo: str) -> List[str]:
+    """Get list of local branches from the bare repo cache.
+
+    Discovers branches that exist locally but may not yet be on the remote
+    (e.g. branches created via ``dl owner/repo@new-branch``).
+    """
+    owner, repo = owner_repo.split("/", 1)
+    repos_dir = pathlib.Path(get_worktree_config().repos_dir)
+    bare_path = repos_dir / owner / repo / ".bare"
+    if not bare_path.is_dir():
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+            cwd=bare_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            return [b for b in result.stdout.strip().split("\n") if b]
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        pass
+    return []
+
+
 def update_completion_cache() -> Dict[str, Any]:
     """Update the completion cache with current data."""
     workspaces = list_workspaces()
     workspace_ids = [ws.id for ws in workspaces]
     repos = discover_repos_from_workspaces(workspaces)
+
+    # Merge repos discovered from the local cache directory so that repos
+    # cloned locally (even without a devpod workspace yet) appear in completions
+    for owner, repo_list in discover_repos_from_cache_dir().items():
+        if owner not in repos:
+            repos[owner] = []
+        for repo in repo_list:
+            if repo not in repos[owner]:
+                repos[owner].append(repo)
 
     # Flatten repos to list of owner/repo strings
     known_repos = []
@@ -154,10 +191,12 @@ def update_completion_cache() -> Dict[str, Any]:
     owners = sorted(repos.keys())
 
     # Fetch branches for all known repos (as owner/repo@branch strings)
+    # Merge remote and local branches so locally-created branches also complete
     all_branches = []
     for owner_repo in known_repos:
-        branches = get_remote_branches(owner_repo)
-        for branch in branches:
+        remote = set(get_remote_branches(owner_repo))
+        local = set(get_local_branches(owner_repo))
+        for branch in sorted(remote | local):
             all_branches.append(f"{owner_repo}@{branch}")
 
     data = {
@@ -563,6 +602,38 @@ def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, Lis
             if repo not in repos[owner]:
                 repos[owner].append(repo)
 
+    return repos
+
+
+def discover_repos_from_cache_dir() -> Dict[str, List[str]]:
+    """Discover owner/repo from bare repos in the local cache directory.
+
+    Scans <repos_dir>/<owner>/<repo>/.bare/ on the filesystem so that repos
+    cloned locally (even without a devpod workspace yet) are discovered.
+
+    Returns dict mapping owner -> list of repos (same shape as
+    ``discover_repos_from_workspaces``).
+    """
+    repos: Dict[str, List[str]] = {}
+    repos_dir = pathlib.Path(get_worktree_config().repos_dir)
+    if not repos_dir.is_dir():
+        return repos
+    try:
+        for owner_dir in repos_dir.iterdir():
+            if not owner_dir.is_dir():
+                continue
+            for repo_dir in owner_dir.iterdir():
+                if not repo_dir.is_dir():
+                    continue
+                if (repo_dir / ".bare").is_dir():
+                    owner = owner_dir.name
+                    repo = repo_dir.name
+                    if owner not in repos:
+                        repos[owner] = []
+                    if repo not in repos[owner]:
+                        repos[owner].append(repo)
+    except OSError:
+        pass
     return repos
 
 
