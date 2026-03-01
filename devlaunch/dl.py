@@ -343,9 +343,8 @@ def spec_to_workspace_id(spec: str) -> str:
     - For existing IDs: the ID as-is
     """
     # Check for @branch suffix
-    branch = None
     if "@" in spec:
-        base_spec, branch = spec.split("@", 1)
+        base_spec, _ = spec.split("@", 1)
     else:
         base_spec = spec
 
@@ -363,7 +362,7 @@ def spec_to_workspace_id(spec: str) -> str:
             if parsed_branch:
                 branch_sanitized = sanitize_workspace_id(parsed_branch).replace("_", "-")
                 max_branch = 48 - len(repo_name) - 1  # -1 for separator
-                if max_branch > 0 and len(branch_sanitized) > max_branch:
+                if 0 < max_branch < len(branch_sanitized):
                     branch_sanitized = branch_sanitized[:max_branch].rstrip("-")
                 return f"{repo_name}-{branch_sanitized}"
             return repo_name
@@ -804,15 +803,14 @@ Examples:
     print(help_text)
 
 
-_clone_manager: WorkspaceCloneManager | None = None
+_cache: dict[str, WorkspaceCloneManager] = {}
 
 
 def _get_clone_manager() -> WorkspaceCloneManager:
     """Lazy factory for WorkspaceCloneManager."""
-    global _clone_manager
-    if _clone_manager is None:
-        _clone_manager = WorkspaceCloneManager()
-    return _clone_manager
+    if "clone_manager" not in _cache:
+        _cache["clone_manager"] = WorkspaceCloneManager()
+    return _cache["clone_manager"]
 
 
 def main() -> int:
@@ -942,7 +940,7 @@ def main() -> int:
 
         # Ensure branch exists in bare repo (create on remote if needed)
         try:
-            clone_mgr.ensure_branch(owner, repo, branch, remote_url)
+            clone_mgr.ensure_branch(owner, repo, branch)
         except (RuntimeError, OSError) as e:
             logging.error(f"Failed to ensure branch '{branch}': {e}")
             return 1

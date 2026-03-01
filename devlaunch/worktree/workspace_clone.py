@@ -76,7 +76,7 @@ class WorkspaceCloneManager:
         ws_path = self.get_workspace_path(owner, repo, branch)
         return ws_path.exists() and (ws_path / ".git").exists()
 
-    def ensure_branch(self, owner: str, repo: str, branch: str, remote_url: str) -> None:
+    def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
         """Ensure a branch exists in the bare repo (and on the remote).
 
         Fetches latest refs, then uses BranchManager to create the branch

@@ -1,4 +1,5 @@
 """Tests for WorkspaceCloneManager."""
+# pylint: disable=redefined-outer-name
 
 from unittest.mock import patch, MagicMock
 
@@ -100,13 +101,13 @@ class TestWorkspaceExists:
         """Test returns False when workspace directory doesn't exist."""
         assert clone_manager.workspace_exists("owner", "repo", "main") is False
 
-    def test_returns_false_when_no_git(self, clone_manager, mock_repo_manager, tmp_repos_dir):
+    def test_returns_false_when_no_git(self, clone_manager, tmp_repos_dir):
         """Test returns False when directory exists but has no .git."""
         ws_dir = tmp_repos_dir / "owner" / "repo" / "main"
         ws_dir.mkdir(parents=True)
         assert clone_manager.workspace_exists("owner", "repo", "main") is False
 
-    def test_returns_true_when_valid(self, clone_manager, mock_repo_manager, tmp_repos_dir):
+    def test_returns_true_when_valid(self, clone_manager, tmp_repos_dir):
         """Test returns True when directory has .git."""
         ws_dir = tmp_repos_dir / "owner" / "repo" / "main"
         ws_dir.mkdir(parents=True)
@@ -124,7 +125,7 @@ class TestEnsureBranch:
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch", "git@github.com:owner/repo.git")
+        clone_manager.ensure_branch("owner", "repo", "newbranch")
 
         mock_repo_manager.fetch_repo.assert_called_once_with("owner", "repo")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(bare_path, "newbranch")
@@ -137,7 +138,7 @@ class TestEnsureBranch:
         mock_repo_manager.get_bare_path.return_value = bare_path
         mock_repo_manager.fetch_repo.side_effect = RuntimeError("network error")
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch", "git@github.com:owner/repo.git")
+        clone_manager.ensure_branch("owner", "repo", "newbranch")
 
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(bare_path, "newbranch")
 

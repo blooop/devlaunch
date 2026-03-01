@@ -1169,7 +1169,7 @@ class TestMainCLI:
         mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         # Should ensure branch exists
         mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git"
+            "owner", "repo", "main"
         )
         # Workspace ID includes resolved branch
         mock_mgr.ensure_workspace.assert_called_once_with(
@@ -1204,7 +1204,7 @@ class TestMainCLI:
         mock_mgr.repo_manager.get_default_branch.assert_not_called()
         # Should ensure branch exists via clone_mgr
         mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git"
+            "owner", "repo", "main"
         )
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
@@ -1230,7 +1230,7 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
+            "owner", "repo", "newbranch"
         )
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "newbranch", "git@github.com:owner/repo.git", "repo-newbranch"
@@ -1248,7 +1248,7 @@ class TestMainCLI:
             result = main()
         assert result == 1
         mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
+            "owner", "repo", "newbranch"
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1270,7 +1270,7 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "feature/my-feature", "git@github.com:owner/repo.git"
+            "owner", "repo", "feature/my-feature"
         )
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner",
@@ -1319,7 +1319,7 @@ class TestMainCLI:
         # Should resolve default branch and use it
         mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git"
+            "owner", "repo", "main"
         )
 
 
@@ -1345,7 +1345,7 @@ class TestPurgeFunctionality:
         assert result == 0
         # Should have called delete for each workspace
         assert mock_run.call_count == 2
-        delete_calls = [call for call in mock_run.call_args_list]
+        delete_calls = list(mock_run.call_args_list)
         assert delete_calls[0][0][0] == ["delete", "ws1", "--force"]
         assert delete_calls[1][0][0] == ["delete", "ws2", "--force"]
 
