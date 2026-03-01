@@ -757,6 +757,18 @@ def workspace_status(workspace: str) -> int:
     return result.returncode
 
 
+def get_workspace_state(workspace_id: str) -> Optional[str]:
+    """Get workspace state from devpod (e.g., 'Running', 'Stopped')."""
+    result = run_devpod(["status", workspace_id, "--output", "json"], capture=True)
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+        return data.get("state")
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
 def print_help():
     """Print usage help."""
     help_text = """dl - DevLaunch CLI
@@ -927,37 +939,47 @@ def main() -> int:
         workspace_id = raw_spec
         custom_id = None  # Don't pass --id for existing workspaces
     elif parsed:
-        # Git spec (owner/repo[@branch]) — clone locally and pass local path to DevPod
+        # Git spec (owner/repo[@branch]) — check if workspace already exists first
         owner_repo, branch = parsed
         owner, repo = owner_repo.split("/", 1)
         remote_url = f"git@github.com:{owner_repo}.git"
-        clone_mgr = _get_clone_manager()
 
-        # Ensure bare repo exists + resolve default branch if not specified
-        clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+        # Resolve branch early so we can compute workspace ID
         if not branch:
+            clone_mgr = _get_clone_manager()
+            clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
-
-        # Ensure branch exists in bare repo (create on remote if needed)
-        try:
-            clone_mgr.ensure_branch(owner, repo, branch)
-        except (RuntimeError, OSError) as e:
-            logging.error(f"Failed to ensure branch '{branch}': {e}")
-            return 1
 
         # Compute workspace ID with resolved branch
         workspace_id = spec_to_workspace_id(f"{owner_repo}@{branch}")
-        custom_id = workspace_id
 
-        # Create workspace clone
-        try:
-            workspace_path = clone_mgr.ensure_workspace(
-                owner, repo, branch, remote_url, workspace_id
-            )
-            workspace_spec = str(workspace_path)
-        except (RuntimeError, OSError) as e:
-            logging.error(f"Failed to prepare workspace: {e}")
-            return 1
+        # Fast path: if devpod already knows this workspace, skip clone manager
+        if workspace_id in existing_ids:
+            workspace_spec = workspace_id
+            custom_id = None
+        else:
+            # Full path: clone locally and pass local path to DevPod
+            clone_mgr = _get_clone_manager()
+            clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+
+            # Ensure branch exists in bare repo (create on remote if needed)
+            try:
+                clone_mgr.ensure_branch(owner, repo, branch)
+            except (RuntimeError, OSError) as e:
+                logging.error(f"Failed to ensure branch '{branch}': {e}")
+                return 1
+
+            custom_id = workspace_id
+
+            # Create workspace clone
+            try:
+                workspace_path = clone_mgr.ensure_workspace(
+                    owner, repo, branch, remote_url, workspace_id
+                )
+                workspace_spec = str(workspace_path)
+            except (RuntimeError, OSError) as e:
+                logging.error(f"Failed to prepare workspace: {e}")
+                return 1
     else:
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
@@ -1016,6 +1038,19 @@ def main() -> int:
             f"Unknown command '{subcommand}'. Use 'dl {raw_spec} -- {subcommand}' to run a shell command."
         )
         return 1
+
+    # Fast-attach: skip workspace_up() if workspace is already running
+    if custom_id is None and get_workspace_state(workspace_id) == "Running":
+        logging.info(f"Workspace {workspace_id} is already running, attaching...")
+        setup_work_symlink(workspace_id)
+        ret = workspace_ssh(
+            workspace_id,
+            shell_command,
+            workdir=get_work_symlink_path(workspace_id),
+            preserve_symlink=True,
+        )
+        update_cache_background()
+        return ret
 
     # Default: start workspace and attach shell
     try:

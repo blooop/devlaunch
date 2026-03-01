@@ -39,6 +39,7 @@ from devlaunch.dl import (
     get_work_symlink_path,
     get_container_workdir,
     setup_work_symlink,
+    get_workspace_state,
 )
 
 
@@ -1482,3 +1483,165 @@ class TestWorkspaceSshWithSymlink:
         mock_run.assert_called_once_with(
             ["ssh", "myws", "--command", "cd /home/vscode/work && make test"]
         )
+
+
+class TestGetWorkspaceState:
+    """Tests for get_workspace_state helper."""
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_running_state(self, mock_run):
+        """Test returns 'Running' for a running workspace."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps({"state": "Running"})
+        )
+        assert get_workspace_state("myws") == "Running"
+        mock_run.assert_called_once_with(
+            ["status", "myws", "--output", "json"], capture=True
+        )
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_stopped_state(self, mock_run):
+        """Test returns 'Stopped' for a stopped workspace."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps({"state": "Stopped"})
+        )
+        assert get_workspace_state("myws") == "Stopped"
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_command_failure(self, mock_run):
+        """Test returns None when devpod command fails."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert get_workspace_state("myws") is None
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_invalid_json(self, mock_run):
+        """Test returns None for invalid JSON output."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="not json")
+        assert get_workspace_state("myws") is None
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_missing_state_key(self, mock_run):
+        """Test returns None when state key is missing."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps({"id": "myws"})
+        )
+        assert get_workspace_state("myws") is None
+
+
+class TestFastAttach:
+    """Tests for fast-attach optimization (skipping clone manager and workspace_up)."""
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_git_spec_existing_workspace_skips_clone_manager(
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+    ):
+        """Test git spec with existing workspace skips clone manager."""
+        mock_ids.return_value = ["repo-main"]  # Workspace already exists
+        mock_state.return_value = "Stopped"  # Not running, so workspace_up still called
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 0
+        # Clone manager should NOT be called (fast path)
+        mock_clone_mgr.assert_not_called()
+        # workspace_up called with just the ID (no local path), no custom --id
+        mock_up.assert_called_once_with("repo-main", workspace_id=None)
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_git_spec_running_workspace_skips_workspace_up(
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+    ):
+        """Test git spec with Running workspace skips workspace_up()."""
+        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        mock_state.return_value = "Running"  # Already running
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 0
+        # Clone manager should NOT be called
+        mock_clone_mgr.assert_not_called()
+        # workspace_up should NOT be called (fast-attach)
+        mock_up.assert_not_called()
+        # Should still SSH in
+        assert mock_ssh.call_count == 2  # symlink + attach
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_git_spec_stopped_workspace_calls_workspace_up(
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+    ):
+        """Test git spec with Stopped workspace still calls workspace_up() with ID only."""
+        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        mock_state.return_value = "Stopped"  # Not running
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 0
+        # Clone manager NOT called (fast path)
+        mock_clone_mgr.assert_not_called()
+        # workspace_up IS called (need to start it)
+        mock_up.assert_called_once_with("repo-main", workspace_id=None)
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_existing_id_running_skips_workspace_up(
+        self, _cache, mock_ssh, mock_up, mock_state, mock_ids
+    ):
+        """Test existing raw workspace ID with Running state skips workspace_up()."""
+        mock_ids.return_value = ["python-template-ws3"]
+        mock_state.return_value = "Running"
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "python-template-ws3"]):
+            result = main()
+        assert result == 0
+        # workspace_up should NOT be called
+        mock_up.assert_not_called()
+        # Should SSH in (symlink + attach)
+        assert mock_ssh.call_count == 2
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.update_cache_background")
+    def test_git_spec_no_branch_existing_workspace_skips_clone_manager(
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+    ):
+        """Test owner/repo (no branch) with existing workspace skips full clone pipeline."""
+        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.get_default_branch.return_value = "main"
+        mock_clone_mgr.return_value = mock_mgr
+        mock_state.return_value = "Running"
+        mock_ssh.return_value = 0
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 0
+        # Clone manager called only for ensure_repo + get_default_branch (to resolve branch)
+        mock_mgr.repo_manager.ensure_repo.assert_called_once()
+        mock_mgr.repo_manager.get_default_branch.assert_called_once()
+        # But ensure_branch and ensure_workspace NOT called (fast path)
+        mock_mgr.ensure_branch.assert_not_called()
+        mock_mgr.ensure_workspace.assert_not_called()
+        # workspace_up NOT called (Running)
+        mock_up.assert_not_called()
