@@ -1273,8 +1273,11 @@ class TestMainCLI:
             "owner", "repo", "feature/my-feature", "git@github.com:owner/repo.git"
         )
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "feature/my-feature",
-            "git@github.com:owner/repo.git", "repo-feature-my-feature"
+            "owner",
+            "repo",
+            "feature/my-feature",
+            "git@github.com:owner/repo.git",
+            "repo-feature-my-feature",
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1282,7 +1285,9 @@ class TestMainCLI:
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_existing_workspace_no_clone_manager(self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids):
+    def test_main_existing_workspace_no_clone_manager(
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+    ):
         """Test existing workspace doesn't use clone manager."""
         mock_ids.return_value = ["myworkspace"]  # Existing
         mock_up.return_value = MagicMock(returncode=0)

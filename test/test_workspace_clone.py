@@ -1,8 +1,6 @@
 """Tests for WorkspaceCloneManager."""
 
-import tempfile
-from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -117,7 +115,9 @@ class TestWorkspaceExists:
 class TestEnsureBranch:
     """Tests for ensure_branch."""
 
-    def test_fetches_then_ensures(self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir):
+    def test_fetches_then_ensures(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
         """Test that ensure_branch fetches then delegates to BranchManager."""
         bare_path = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = bare_path
@@ -127,7 +127,9 @@ class TestEnsureBranch:
         mock_repo_manager.fetch_repo.assert_called_once_with("owner", "repo")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(bare_path, "newbranch")
 
-    def test_continues_if_fetch_fails(self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir):
+    def test_continues_if_fetch_fails(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
         """Test that ensure_branch continues even if fetch fails."""
         bare_path = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = bare_path
@@ -142,7 +144,9 @@ class TestEnsureWorkspace:
     """Tests for ensure_workspace."""
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
-    def test_clones_from_bare_repo(self, mock_run, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir):
+    def test_clones_from_bare_repo(
+        self, mock_run, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir
+    ):
         """Test that a new workspace is cloned from the bare repo."""
         mock_run.return_value = MagicMock(returncode=0)
         bare_path = tmp_repos_dir / "owner" / "repo"
@@ -164,7 +168,11 @@ class TestEnsureWorkspace:
         # Second call: fix remote URL
         remote_call = mock_run.call_args_list[1]
         assert remote_call[0][0] == [
-            "git", "remote", "set-url", "origin", "git@github.com:owner/repo.git"
+            "git",
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:owner/repo.git",
         ]
 
         # Third call: fetch origin
@@ -179,7 +187,9 @@ class TestEnsureWorkspace:
         mock_storage.add_worktree.assert_called_once()
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
-    def test_existing_workspace_skips_clone(self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir):
+    def test_existing_workspace_skips_clone(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
         """Test that existing workspace is not re-cloned."""
         bare_path = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = bare_path
@@ -228,7 +238,9 @@ class TestEnsureWorkspace:
             )
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
-    def test_returns_workspace_path(self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir):
+    def test_returns_workspace_path(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
         """Test that ensure_workspace returns the workspace path."""
         bare_path = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = bare_path
@@ -244,7 +256,9 @@ class TestEnsureWorkspace:
 class TestRemoveWorkspace:
     """Tests for remove_workspace."""
 
-    def test_removes_existing_workspace(self, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir):
+    def test_removes_existing_workspace(
+        self, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir
+    ):
         """Test that existing workspace is removed."""
         bare_path = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = bare_path
@@ -271,7 +285,6 @@ class TestRemoveWorkspaceById:
 
     def test_finds_and_removes(self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir):
         """Test that workspace is found by ID and removed."""
-        from devlaunch.worktree.models import WorktreeInfo
 
         bare_path = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = bare_path

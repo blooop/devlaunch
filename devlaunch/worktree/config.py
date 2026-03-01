@@ -42,7 +42,9 @@ class WorktreeConfig:
         # Ensure directories exist (only if they're under home or temp)
         # This avoids permission errors in tests
         try:
-            if str(self.repos_dir).startswith(str(Path.home())) or str(self.repos_dir).startswith("/tmp"):
+            if str(self.repos_dir).startswith(str(Path.home())) or str(self.repos_dir).startswith(
+                "/tmp"
+            ):
                 self.repos_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, PermissionError):
             # Ignore permission errors (e.g., in tests)

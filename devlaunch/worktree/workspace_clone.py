@@ -167,9 +167,7 @@ class WorkspaceCloneManager:
             )
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to checkout branch '{branch}': {e.stderr}")
-            raise RuntimeError(
-                f"Failed to checkout branch '{branch}': {e.stderr}"
-            ) from e
+            raise RuntimeError(f"Failed to checkout branch '{branch}': {e.stderr}") from e
 
         # Step 6: Track in metadata
         try:

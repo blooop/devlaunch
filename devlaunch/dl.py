@@ -537,7 +537,6 @@ def get_remote_head_sha(owner_repo: str) -> Optional[str]:
     return output.strip().split()[0]
 
 
-
 def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, List[str]]:
     """Discover owner/repo from workspace git remotes.
 
@@ -834,7 +833,9 @@ def main() -> int:
             return 1
         workspace_up(selected)
         setup_work_symlink(selected)
-        return workspace_ssh(selected, workdir=get_work_symlink_path(selected), preserve_symlink=True)
+        return workspace_ssh(
+            selected, workdir=get_work_symlink_path(selected), preserve_symlink=True
+        )
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -980,7 +981,9 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_work_symlink(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True)
+        return workspace_ssh(
+            workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True
+        )
 
     if subcommand == "restart":
         # Stop and start without rebuilding
@@ -991,7 +994,9 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_work_symlink(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True)
+        return workspace_ssh(
+            workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True
+        )
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
@@ -999,7 +1004,9 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_work_symlink(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True)
+        return workspace_ssh(
+            workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True
+        )
 
     # Check for shell command (after --)
     shell_command = None
