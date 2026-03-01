@@ -1548,8 +1548,10 @@ class TestFastAttach:
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
         assert result == 0
-        # Clone manager should NOT be called (fast path)
-        mock_clone_mgr.assert_not_called()
+        # Clone manager created but ensure_branch/ensure_workspace NOT called (fast path)
+        mock_mgr = mock_clone_mgr.return_value
+        mock_mgr.ensure_branch.assert_not_called()
+        mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up called with just the ID (no local path), no custom --id
         mock_up.assert_called_once_with("repo-main", workspace_id=None)
 
@@ -1569,12 +1571,25 @@ class TestFastAttach:
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
         assert result == 0
-        # Clone manager should NOT be called
-        mock_clone_mgr.assert_not_called()
+        # Clone manager created but ensure_branch/ensure_workspace NOT called
+        mock_mgr = mock_clone_mgr.return_value
+        mock_mgr.ensure_branch.assert_not_called()
+        mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up should NOT be called (fast-attach)
         mock_up.assert_not_called()
-        # Should still SSH in
-        assert mock_ssh.call_count == 2  # symlink + attach
+        # Should still SSH in (symlink setup + attach)
+        assert mock_ssh.call_count == 2
+        symlink_call, attach_call = mock_ssh.call_args_list
+        # First call: setup_work_symlink creates the symlink
+        assert symlink_call == (
+            ("repo-main",),
+            {"command": "ln -sfn /workspaces/repo-main /home/vscode/repo-main"},
+        )
+        # Second call: attach shell with preserve_symlink
+        assert attach_call == (
+            ("repo-main", None),
+            {"workdir": "/home/vscode/repo-main", "preserve_symlink": True},
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1593,8 +1608,10 @@ class TestFastAttach:
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
         assert result == 0
-        # Clone manager NOT called (fast path)
-        mock_clone_mgr.assert_not_called()
+        # Clone manager created but ensure_branch/ensure_workspace NOT called (fast path)
+        mock_mgr = mock_clone_mgr.return_value
+        mock_mgr.ensure_branch.assert_not_called()
+        mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up IS called (need to start it)
         mock_up.assert_called_once_with("repo-main", workspace_id=None)
 
@@ -1615,8 +1632,17 @@ class TestFastAttach:
         assert result == 0
         # workspace_up should NOT be called
         mock_up.assert_not_called()
-        # Should SSH in (symlink + attach)
+        # Should SSH in (symlink setup + attach)
         assert mock_ssh.call_count == 2
+        symlink_call, attach_call = mock_ssh.call_args_list
+        assert symlink_call == (
+            ("python-template-ws3",),
+            {"command": "ln -sfn /workspaces/python-template-ws3 /home/vscode/python-template-ws3"},
+        )
+        assert attach_call == (
+            ("python-template-ws3", None),
+            {"workdir": "/home/vscode/python-template-ws3", "preserve_symlink": True},
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")

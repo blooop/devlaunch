@@ -765,7 +765,8 @@ def get_workspace_state(workspace_id: str) -> Optional[str]:
     try:
         data = json.loads(result.stdout)
         return data.get("state")
-    except (json.JSONDecodeError, KeyError):
+    except json.JSONDecodeError:
+        logging.warning("Failed to parse devpod status JSON for workspace %s", workspace_id)
         return None
 
 
@@ -944,10 +945,13 @@ def main() -> int:
         owner, repo = owner_repo.split("/", 1)
         remote_url = f"git@github.com:{owner_repo}.git"
 
+        clone_mgr = _get_clone_manager()
+        repo_ensured = False
+
         # Resolve branch early so we can compute workspace ID
         if not branch:
-            clone_mgr = _get_clone_manager()
             clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+            repo_ensured = True
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
 
         # Compute workspace ID with resolved branch
@@ -959,8 +963,8 @@ def main() -> int:
             custom_id = None
         else:
             # Full path: clone locally and pass local path to DevPod
-            clone_mgr = _get_clone_manager()
-            clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+            if not repo_ensured:
+                clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
 
             # Ensure branch exists in bare repo (create on remote if needed)
             try:
