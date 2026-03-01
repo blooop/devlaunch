@@ -15,6 +15,7 @@ from devlaunch.dl import (
     parse_owner_repo_from_url,
     parse_owner_repo_branch,
     discover_repos_from_workspaces,
+    discover_repos_from_cache_dir,
     get_known_repos,
     Workspace,
     list_workspaces,
@@ -630,6 +631,61 @@ class TestDiscoverReposFromWorkspaces:
         assert repos == {}
 
 
+class TestDiscoverReposFromCacheDir:
+    """Tests for discover_repos_from_cache_dir function."""
+
+    def test_discovers_bare_repos(self):
+        """Test discovering repos from bare repo directories."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = pathlib.Path(tmpdir)
+            # Create owner/repo/.bare/ structures
+            (repos_dir / "owner1" / "repoA" / ".bare").mkdir(parents=True)
+            (repos_dir / "owner1" / "repoB" / ".bare").mkdir(parents=True)
+            (repos_dir / "owner2" / "repoC" / ".bare").mkdir(parents=True)
+
+            mock_config = MagicMock()
+            mock_config.repos_dir = str(repos_dir)
+            with patch("devlaunch.dl.get_worktree_config", return_value=mock_config):
+                repos = discover_repos_from_cache_dir()
+
+            assert sorted(repos.keys()) == ["owner1", "owner2"]
+            assert sorted(repos["owner1"]) == ["repoA", "repoB"]
+            assert repos["owner2"] == ["repoC"]
+
+    def test_ignores_dirs_without_bare(self):
+        """Test that directories without .bare/ are ignored."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = pathlib.Path(tmpdir)
+            (repos_dir / "owner" / "has-bare" / ".bare").mkdir(parents=True)
+            (repos_dir / "owner" / "no-bare").mkdir(parents=True)
+
+            mock_config = MagicMock()
+            mock_config.repos_dir = str(repos_dir)
+            with patch("devlaunch.dl.get_worktree_config", return_value=mock_config):
+                repos = discover_repos_from_cache_dir()
+
+            assert repos == {"owner": ["has-bare"]}
+
+    def test_empty_repos_dir(self):
+        """Test with an empty repos directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_config = MagicMock()
+            mock_config.repos_dir = tmpdir
+            with patch("devlaunch.dl.get_worktree_config", return_value=mock_config):
+                repos = discover_repos_from_cache_dir()
+
+            assert repos == {}
+
+    def test_nonexistent_repos_dir(self):
+        """Test with a repos directory that doesn't exist."""
+        mock_config = MagicMock()
+        mock_config.repos_dir = "/nonexistent/path"
+        with patch("devlaunch.dl.get_worktree_config", return_value=mock_config):
+            repos = discover_repos_from_cache_dir()
+
+        assert repos == {}
+
+
 class TestGetKnownRepos:
     """Tests for get_known_repos function."""
 
@@ -805,18 +861,20 @@ class TestCacheFunctions:
                 assert result == data
                 assert result["branches"] == ["owner/repo@main", "owner/repo@feature/test"]
 
+    @patch("devlaunch.dl.discover_repos_from_cache_dir", return_value={})
+    @patch("devlaunch.dl.get_local_branches", return_value=[])
     @patch("devlaunch.dl.get_remote_branches")
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
     def test_update_completion_cache_fetches_branches(
-        self, mock_list, mock_discover, mock_branches
+        self, mock_list, mock_discover, mock_remote, mock_local, mock_cache_dir
     ):
         """Test update_completion_cache fetches branches for all repos."""
         mock_list.return_value = [
             Workspace("ws1", "git", "github.com/owner/repo1", "", "docker", "vscode"),
         ]
         mock_discover.return_value = {"owner": ["repo1", "repo2"]}
-        mock_branches.side_effect = [
+        mock_remote.side_effect = [
             ["main", "develop"],  # branches for owner/repo1
             ["main", "feature/x"],  # branches for owner/repo2
         ]
@@ -835,16 +893,18 @@ class TestCacheFunctions:
         assert "owner/repo2@feature/x" in data["branches"]
         assert len(data["branches"]) == 4
 
+    @patch("devlaunch.dl.discover_repos_from_cache_dir", return_value={})
+    @patch("devlaunch.dl.get_local_branches", return_value=[])
     @patch("devlaunch.dl.get_remote_branches")
     @patch("devlaunch.dl.discover_repos_from_workspaces")
     @patch("devlaunch.dl.list_workspaces")
     def test_update_completion_cache_handles_branch_fetch_failure(
-        self, mock_list, mock_discover, mock_branches
+        self, mock_list, mock_discover, mock_remote, mock_local, mock_cache_dir
     ):
         """Test update_completion_cache handles repos where branch fetch fails."""
         mock_list.return_value = []
         mock_discover.return_value = {"owner": ["repo1"]}
-        mock_branches.return_value = []  # Branch fetch failed
+        mock_remote.return_value = []  # Branch fetch failed
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
@@ -854,6 +914,90 @@ class TestCacheFunctions:
                     data = update_completion_cache()
 
         assert data["branches"] == []
+
+    @patch("devlaunch.dl.discover_repos_from_cache_dir", return_value={})
+    @patch("devlaunch.dl.get_local_branches")
+    @patch("devlaunch.dl.get_remote_branches")
+    @patch("devlaunch.dl.discover_repos_from_workspaces")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_update_completion_cache_includes_local_branches(
+        self, mock_list, mock_discover, mock_remote, mock_local, mock_cache_dir
+    ):
+        """Test that locally-created branches appear in completion cache."""
+        mock_list.return_value = [
+            Workspace("ws1", "git", "github.com/owner/repo1", "", "docker", "vscode"),
+        ]
+        mock_discover.return_value = {"owner": ["repo1"]}
+        mock_remote.return_value = ["main", "develop"]
+        mock_local.return_value = ["main", "my-local-branch"]  # local-only branch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
+                    data = update_completion_cache()
+
+        assert "owner/repo1@main" in data["branches"]
+        assert "owner/repo1@develop" in data["branches"]
+        assert "owner/repo1@my-local-branch" in data["branches"]
+        assert len(data["branches"]) == 3  # deduplicated "main"
+
+    @patch("devlaunch.dl.get_local_branches")
+    @patch("devlaunch.dl.get_remote_branches")
+    @patch("devlaunch.dl.discover_repos_from_cache_dir")
+    @patch("devlaunch.dl.discover_repos_from_workspaces")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_update_completion_cache_includes_cache_dir_repos(
+        self, mock_list, mock_ws_repos, mock_cache_repos, mock_remote, mock_local
+    ):
+        """Test repos from cache dir appear in completions even when devpod list is empty."""
+        mock_list.return_value = []  # No devpod workspaces
+        mock_ws_repos.return_value = {}  # No workspace-discovered repos
+        mock_cache_repos.return_value = {"newowner": ["newrepo"]}
+        mock_remote.return_value = ["main"]
+        mock_local.return_value = ["main", "feature-x"]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
+                    data = update_completion_cache()
+
+        assert "newowner/newrepo" in data["repos"]
+        assert "newowner" in data["owners"]
+        assert "newowner/newrepo@main" in data["branches"]
+        assert "newowner/newrepo@feature-x" in data["branches"]
+        assert len(data["branches"]) == 2  # deduplicated "main"
+
+    @patch("devlaunch.dl.get_local_branches", return_value=[])
+    @patch("devlaunch.dl.get_remote_branches")
+    @patch("devlaunch.dl.discover_repos_from_cache_dir")
+    @patch("devlaunch.dl.discover_repos_from_workspaces")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_update_completion_cache_merges_workspace_and_cache_repos(
+        self, mock_list, mock_ws_repos, mock_cache_repos, mock_remote, mock_local
+    ):
+        """Test repos from both sources are merged without duplicates."""
+        mock_list.return_value = []
+        mock_ws_repos.return_value = {"owner": ["repo1"]}
+        mock_cache_repos.return_value = {"owner": ["repo1", "repo2"], "other": ["repo3"]}
+        mock_remote.side_effect = [
+            ["main"],  # owner/repo1
+            ["main"],  # owner/repo2
+            ["main"],  # other/repo3
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl.CACHE_FILE", pathlib.Path(tmpdir) / "cache.json"):
+                with patch(
+                    "devlaunch.dl.BASH_CACHE_FILE", pathlib.Path(tmpdir) / "completions.bash"
+                ):
+                    data = update_completion_cache()
+
+        assert sorted(data["repos"]) == ["other/repo3", "owner/repo1", "owner/repo2"]
+        assert sorted(data["owners"]) == ["other", "owner"]
 
 
 class TestRunDevpod:
