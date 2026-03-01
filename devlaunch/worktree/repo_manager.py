@@ -34,33 +34,41 @@ class RepositoryManager:
         self.fetch_interval = config.fetch_interval if config else 3600
 
     def get_repo_path(self, owner: str, repo: str) -> Path:
-        """Get local path for a repository."""
+        """Get root directory for a repository (contains .bare/ and branch clones)."""
         return self.repos_dir / owner / repo
+
+    def get_bare_path(self, owner: str, repo: str) -> Path:
+        """Get the bare git directory for a repository."""
+        return self.get_repo_path(owner, repo) / ".bare"
 
     def clone_repo(self, owner: str, repo: str, remote_url: str) -> BaseRepository:
         """Clone a new base repository as bare (no working directory).
 
         Using --bare ensures no branch is checked out, so all branches can have
         worktrees created without conflicts.
-        """
-        repo_path = self.get_repo_path(owner, repo)
 
-        if repo_path.exists():
-            logger.warning(f"Repository {owner}/{repo} already exists at {repo_path}")
+        Layout:
+            repos/<owner>/<repo>/.bare/   # bare git data
+            repos/<owner>/<repo>/<branch>/ # workspace clones (managed by WorkspaceCloneManager)
+        """
+        bare_path = self.get_bare_path(owner, repo)
+
+        if bare_path.exists():
+            logger.warning(f"Repository {owner}/{repo} already exists at {bare_path}")
             existing_repo = self.get_repo(owner, repo)
             if existing_repo:
                 return existing_repo
             # Repository path exists but metadata doesn't - continue to create metadata
 
         # Create parent directory
-        repo_path.parent.mkdir(parents=True, exist_ok=True)
+        bare_path.parent.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Cloning repository {remote_url} to {repo_path}")
+        logger.info(f"Cloning repository {remote_url} to {bare_path}")
 
         try:
             # Clone as bare repo - no working directory, all branches available for worktrees
             result = subprocess.run(
-                ["git", "clone", "--bare", remote_url, str(repo_path)],
+                ["git", "clone", "--bare", remote_url, str(bare_path)],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -68,14 +76,14 @@ class RepositoryManager:
             logger.debug(f"Clone output: {result.stdout}")
 
             # Get default branch
-            default_branch = self._get_default_branch(repo_path)
+            default_branch = self._get_default_branch(bare_path)
 
             # Create repository metadata
             base_repo = BaseRepository(
                 owner=owner,
                 repo=repo,
                 remote_url=remote_url,
-                local_path=repo_path,
+                local_path=bare_path,
                 default_branch=default_branch,
                 last_fetched=datetime.now(),
                 worktrees=[],
@@ -90,15 +98,15 @@ class RepositoryManager:
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to clone repository: {e.stderr}")
             # Clean up partial clone
-            if repo_path.exists():
-                shutil.rmtree(repo_path)
+            if bare_path.exists():
+                shutil.rmtree(bare_path)
             raise RuntimeError(f"Failed to clone repository: {e.stderr}") from e
 
     def fetch_repo(self, owner: str, repo: str) -> None:
         """Fetch latest changes from remote."""
-        repo_path = self.get_repo_path(owner, repo)
+        bare_path = self.get_bare_path(owner, repo)
 
-        if not repo_path.exists():
+        if not bare_path.exists():
             raise ValueError(f"Repository {owner}/{repo} does not exist locally")
 
         logger.info(f"Fetching updates for {owner}/{repo}")
@@ -107,7 +115,7 @@ class RepositoryManager:
             # Fetch all branches and tags
             result = subprocess.run(
                 ["git", "fetch", "--all", "--tags", "--prune"],
-                cwd=repo_path,
+                cwd=bare_path,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -160,16 +168,9 @@ class RepositoryManager:
         return self.clone_repo(owner, repo, remote_url)
 
     def repo_exists(self, owner: str, repo: str) -> bool:
-        """Check if repository exists locally.
-
-        Supports both bare repos (HEAD at root) and regular repos (.git subdir).
-        """
-        repo_path = self.get_repo_path(owner, repo)
-        if not repo_path.exists():
-            return False
-        # Bare repo has HEAD directly in the repo dir
-        # Regular repo has .git subdirectory
-        return (repo_path / "HEAD").exists() or (repo_path / ".git").exists()
+        """Check if repository exists locally."""
+        bare_path = self.get_bare_path(owner, repo)
+        return bare_path.exists() and (bare_path / "HEAD").exists()
 
     def get_repo(self, owner: str, repo: str) -> Optional[BaseRepository]:
         """Get repository metadata."""

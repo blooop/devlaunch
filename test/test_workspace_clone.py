@@ -26,7 +26,9 @@ def config(tmp_repos_dir):
 def mock_repo_manager(tmp_repos_dir):
     """Create a mock RepositoryManager."""
     mgr = MagicMock()
-    mgr.get_repo_path.return_value = tmp_repos_dir / "owner" / "repo"
+    repo_root = tmp_repos_dir / "owner" / "repo"
+    mgr.get_repo_path.return_value = repo_root
+    mgr.get_bare_path.return_value = repo_root / ".bare"
     mgr.ensure_repo.return_value = MagicMock()
     return mgr
 
@@ -81,14 +83,14 @@ class TestGetWorkspacePath:
     """Tests for get_workspace_path."""
 
     def test_returns_correct_path(self, clone_manager, tmp_repos_dir):
-        """Test workspace path is under bare repo's clones/ dir."""
+        """Test workspace path is a sibling of .bare."""
         path = clone_manager.get_workspace_path("owner", "repo", "nb4")
-        assert path == tmp_repos_dir / "owner" / "repo" / "clones" / "nb4"
+        assert path == tmp_repos_dir / "owner" / "repo" / "nb4"
 
     def test_sanitizes_branch(self, clone_manager, tmp_repos_dir):
         """Test workspace path sanitizes branch with slashes."""
         path = clone_manager.get_workspace_path("owner", "repo", "feature/my-branch")
-        assert path == tmp_repos_dir / "owner" / "repo" / "clones" / "feature-my-branch"
+        assert path == tmp_repos_dir / "owner" / "repo" / "feature-my-branch"
 
 
 class TestWorkspaceExists:
@@ -100,15 +102,15 @@ class TestWorkspaceExists:
 
     def test_returns_false_when_no_git(self, clone_manager, mock_repo_manager, tmp_repos_dir):
         """Test returns False when directory exists but has no .git."""
-        clones_dir = tmp_repos_dir / "owner" / "repo" / "clones" / "main"
-        clones_dir.mkdir(parents=True)
+        ws_dir = tmp_repos_dir / "owner" / "repo" / "main"
+        ws_dir.mkdir(parents=True)
         assert clone_manager.workspace_exists("owner", "repo", "main") is False
 
     def test_returns_true_when_valid(self, clone_manager, mock_repo_manager, tmp_repos_dir):
         """Test returns True when directory has .git."""
-        clones_dir = tmp_repos_dir / "owner" / "repo" / "clones" / "main"
-        clones_dir.mkdir(parents=True)
-        (clones_dir / ".git").mkdir()
+        ws_dir = tmp_repos_dir / "owner" / "repo" / "main"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / ".git").mkdir()
         assert clone_manager.workspace_exists("owner", "repo", "main") is True
 
 
@@ -119,8 +121,8 @@ class TestEnsureBranch:
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
     ):
         """Test that ensure_branch fetches then delegates to BranchManager."""
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
 
         clone_manager.ensure_branch("owner", "repo", "newbranch", "git@github.com:owner/repo.git")
 
@@ -131,8 +133,8 @@ class TestEnsureBranch:
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
     ):
         """Test that ensure_branch continues even if fetch fails."""
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
         mock_repo_manager.fetch_repo.side_effect = RuntimeError("network error")
 
         clone_manager.ensure_branch("owner", "repo", "newbranch", "git@github.com:owner/repo.git")
@@ -149,10 +151,12 @@ class TestEnsureWorkspace:
     ):
         """Test that a new workspace is cloned from the bare repo."""
         mock_run.return_value = MagicMock(returncode=0)
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
 
-        ws_path = bare_path / "clones" / "nb4"
+        ws_path = repo_root / "nb4"
 
         clone_manager.ensure_workspace(
             "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
@@ -191,11 +195,11 @@ class TestEnsureWorkspace:
         self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
         """Test that existing workspace is not re-cloned."""
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
 
         # Create existing workspace
-        ws_path = bare_path / "clones" / "nb4"
+        ws_path = repo_root / "nb4"
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
@@ -242,15 +246,16 @@ class TestEnsureWorkspace:
         self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
         """Test that ensure_workspace returns the workspace path."""
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
         mock_run.return_value = MagicMock(returncode=0)
 
         result = clone_manager.ensure_workspace(
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
         )
 
-        assert result == bare_path / "clones" / "main"
+        assert result == repo_root / "main"
 
 
 class TestRemoveWorkspace:
@@ -260,10 +265,10 @@ class TestRemoveWorkspace:
         self, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir
     ):
         """Test that existing workspace is removed."""
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
 
-        ws_path = bare_path / "clones" / "nb4"
+        ws_path = repo_root / "nb4"
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
         (ws_path / "file.txt").write_text("content")
@@ -286,10 +291,10 @@ class TestRemoveWorkspaceById:
     def test_finds_and_removes(self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir):
         """Test that workspace is found by ID and removed."""
 
-        bare_path = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = bare_path
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
 
-        ws_path = bare_path / "clones" / "nb4"
+        ws_path = repo_root / "nb4"
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 

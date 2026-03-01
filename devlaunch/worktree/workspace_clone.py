@@ -4,8 +4,11 @@ Orchestrates: bare repo caching → workspace clone → branch checkout.
 Clones from the local bare reference repo (fast, saves bandwidth),
 then fixes the remote URL so push/pull work against GitHub.
 
-Workspace clones live inside the bare repo tree:
-    repos/<owner>/<repo>/clones/<branch>/
+Directory layout:
+    repos/<owner>/<repo>/
+    ├── .bare/           # bare git repo (hidden)
+    ├── main/            # workspace clone
+    └── nb4/             # workspace clone
 """
 
 import logging
@@ -37,10 +40,9 @@ class WorkspaceCloneManager:
 
     Directory layout:
         ~/.cache/devlaunch/repos/<owner>/<repo>/
-        ├── HEAD, objects/, refs/, ...    # bare repo
-        └── clones/
-            ├── main/                     # workspace clone
-            └── nb4/                      # workspace clone
+        ├── .bare/                        # bare git repo
+        ├── main/                         # workspace clone
+        └── nb4/                          # workspace clone
     """
 
     def __init__(
@@ -66,8 +68,8 @@ class WorkspaceCloneManager:
 
     def get_workspace_path(self, owner: str, repo: str, branch: str) -> Path:
         """Get the path for a workspace clone."""
-        bare_path = self.repo_manager.get_repo_path(owner, repo)
-        return bare_path / "clones" / _sanitize_branch_dir(branch)
+        repo_root = self.repo_manager.get_repo_path(owner, repo)
+        return repo_root / _sanitize_branch_dir(branch)
 
     def workspace_exists(self, owner: str, repo: str, branch: str) -> bool:
         """Check if a workspace clone exists."""
@@ -80,7 +82,7 @@ class WorkspaceCloneManager:
         Fetches latest refs, then uses BranchManager to create the branch
         locally and on the remote if needed.
         """
-        bare_path = self.repo_manager.get_repo_path(owner, repo)
+        bare_path = self.repo_manager.get_bare_path(owner, repo)
         # Fetch first to have latest refs
         try:
             self.repo_manager.fetch_repo(owner, repo)
@@ -109,7 +111,7 @@ class WorkspaceCloneManager:
         """
         # Step 1: Ensure bare reference repo exists
         self.repo_manager.ensure_repo(owner, repo, remote_url)
-        bare_repo_path = self.repo_manager.get_repo_path(owner, repo)
+        bare_repo_path = self.repo_manager.get_bare_path(owner, repo)
 
         ws_path = self.get_workspace_path(owner, repo, branch)
 
