@@ -1,6 +1,7 @@
 """Tests for dl (DevLaunch CLI) functionality."""
 
 import json
+import subprocess
 import sys
 import tempfile
 import pathlib
@@ -30,6 +31,7 @@ from devlaunch.dl import (
     remote_branch_exists,
     get_remote_head_sha,
     get_remote_branches,
+    get_local_branches,
     main,
     print_help,
     print_workspaces,
@@ -684,6 +686,97 @@ class TestDiscoverReposFromCacheDir:
             repos = discover_repos_from_cache_dir()
 
         assert repos == {}
+
+    def test_handles_oserror_from_iterdir(self):
+        """discover_repos_from_cache_dir returns empty dict on OSError during iteration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = pathlib.Path(tmpdir)
+            # Create a valid-looking structure so is_dir() passes
+            (repos_dir / "owner" / "repo" / ".bare").mkdir(parents=True)
+
+            mock_config = MagicMock()
+            mock_config.repos_dir = str(repos_dir)
+            with (
+                patch("devlaunch.dl.get_worktree_config", return_value=mock_config),
+                patch("pathlib.Path.iterdir", side_effect=OSError("permission denied")),
+            ):
+                repos = discover_repos_from_cache_dir()
+
+            assert repos == {}
+
+
+class TestGetLocalBranches:
+    """Focused tests for get_local_branches behavior."""
+
+    @patch("devlaunch.dl.get_worktree_config")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_parses_branches_from_git_output(self, mock_run, mock_config, tmp_path):
+        """Branches are parsed from realistic git for-each-ref output."""
+        bare_path = tmp_path / "owner" / "repo" / ".bare"
+        bare_path.mkdir(parents=True)
+        mock_config.return_value.repos_dir = str(tmp_path)
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="main\nfeature/test\ndevelop\n"
+        )
+
+        branches = get_local_branches("owner/repo")
+
+        assert branches == ["main", "feature/test", "develop"]
+        mock_run.assert_called_once()
+
+    @patch("devlaunch.dl.get_worktree_config")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_returns_empty_on_nonzero_exit(self, mock_run, mock_config, tmp_path):
+        """Non-zero return code results in empty list."""
+        bare_path = tmp_path / "owner" / "repo" / ".bare"
+        bare_path.mkdir(parents=True)
+        mock_config.return_value.repos_dir = str(tmp_path)
+        mock_run.return_value = MagicMock(returncode=1, stdout="main\n")
+
+        assert get_local_branches("owner/repo") == []
+
+    @patch("devlaunch.dl.get_worktree_config")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_returns_empty_on_empty_stdout(self, mock_run, mock_config, tmp_path):
+        """Zero return code with empty stdout results in empty list."""
+        bare_path = tmp_path / "owner" / "repo" / ".bare"
+        bare_path.mkdir(parents=True)
+        mock_config.return_value.repos_dir = str(tmp_path)
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+
+        assert get_local_branches("owner/repo") == []
+
+    @patch("devlaunch.dl.get_worktree_config")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_handles_timeout(self, mock_run, mock_config, tmp_path):
+        """TimeoutExpired returns empty list."""
+        bare_path = tmp_path / "owner" / "repo" / ".bare"
+        bare_path.mkdir(parents=True)
+        mock_config.return_value.repos_dir = str(tmp_path)
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["git"], timeout=2)
+
+        assert get_local_branches("owner/repo") == []
+
+    @patch("devlaunch.dl.get_worktree_config")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_handles_oserror(self, mock_run, mock_config, tmp_path):
+        """OSError (e.g. git not installed) returns empty list."""
+        bare_path = tmp_path / "owner" / "repo" / ".bare"
+        bare_path.mkdir(parents=True)
+        mock_config.return_value.repos_dir = str(tmp_path)
+        mock_run.side_effect = OSError("git not found")
+
+        assert get_local_branches("owner/repo") == []
+
+    @patch("devlaunch.dl.get_worktree_config")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_missing_bare_dir_returns_empty(self, mock_run, mock_config, tmp_path):
+        """Missing .bare directory short-circuits without calling git."""
+        mock_config.return_value.repos_dir = str(tmp_path)
+        # Don't create any .bare directory
+
+        assert get_local_branches("owner/repo") == []
+        mock_run.assert_not_called()
 
 
 class TestGetKnownRepos:

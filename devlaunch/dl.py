@@ -148,7 +148,7 @@ def get_local_branches(owner_repo: str) -> List[str]:
     owner, repo = owner_repo.split("/", 1)
     repos_dir = pathlib.Path(get_worktree_config().repos_dir)
     bare_path = repos_dir / owner / repo / ".bare"
-    if not bare_path.exists():
+    if not bare_path.is_dir():
         return []
     try:
         result = subprocess.run(
