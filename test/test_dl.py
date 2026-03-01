@@ -21,7 +21,6 @@ from devlaunch.dl import (
     get_workspace_ids,
     OWNER_REPO_PATTERN,
     spec_to_workspace_id,
-    make_worktree_workspace_id,
     get_version,
     read_completion_cache,
     write_completion_cache,
@@ -30,14 +29,16 @@ from devlaunch.dl import (
     remote_branch_exists,
     get_remote_head_sha,
     get_remote_branches,
-    create_remote_branch,
-    ensure_remote_branch,
     main,
     print_help,
     print_workspaces,
     workspace_stop,
     workspace_delete,
+    workspace_ssh,
     run_devpod,
+    get_work_symlink_path,
+    get_container_workdir,
+    setup_work_symlink,
 )
 
 
@@ -521,40 +522,6 @@ class TestRemoteBranchFunctions:
         mock_run.return_value = MagicMock(returncode=1, stdout="")
         assert get_remote_head_sha("owner/repo") is None
 
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_success(self, mock_run, mock_git_dir):
-        """Test successful branch creation."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            mock_run.return_value = MagicMock(returncode=0)
-            assert create_remote_branch("owner/repo", "newbranch") is True
-            # Should call: git init (no .git exists), git fetch, git push
-            assert mock_run.call_count == 3
-
-    @patch("devlaunch.dl.remote_branch_exists")
-    def test_ensure_branch_exists_already(self, mock_exists):
-        """Test ensure returns True if branch exists."""
-        mock_exists.return_value = True
-        assert ensure_remote_branch("owner/repo", "main") is True
-
-    @patch("devlaunch.dl.create_remote_branch")
-    @patch("devlaunch.dl.remote_branch_exists")
-    def test_ensure_branch_creates_new(self, mock_exists, mock_create):
-        """Test ensure creates branch if doesn't exist."""
-        mock_exists.return_value = False
-        mock_create.return_value = True
-        assert ensure_remote_branch("owner/repo", "newbranch") is True
-        mock_create.assert_called_once_with("owner/repo", "newbranch")
-
-    @patch("devlaunch.dl.create_remote_branch")
-    @patch("devlaunch.dl.remote_branch_exists")
-    def test_ensure_branch_create_fails(self, mock_exists, mock_create):
-        """Test ensure returns False if branch creation fails."""
-        mock_exists.return_value = False
-        mock_create.return_value = False
-        assert ensure_remote_branch("owner/repo", "newbranch") is False
-
     @patch("subprocess.run")
     def test_get_remote_branches_success(self, mock_run):
         """Test getting list of branches from remote."""
@@ -612,119 +579,6 @@ class TestRemoteBranchFunctions:
         """Test empty output returns None."""
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         assert get_remote_head_sha("owner/repo") is None
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_push_fails(self, mock_run, mock_git_dir):
-        """Test branch creation returns False on push failure."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            # git init succeeds, git fetch succeeds, git push fails
-            mock_run.side_effect = [
-                MagicMock(returncode=0),  # git init
-                MagicMock(returncode=0),  # git fetch
-                MagicMock(returncode=1, stderr="error: failed to push"),  # git push
-            ]
-            assert create_remote_branch("owner/repo", "newbranch") is False
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_os_error(self, mock_run, mock_git_dir):
-        """Test branch creation handles OSError."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            mock_run.side_effect = OSError("git not found")
-            assert create_remote_branch("owner/repo", "newbranch") is False
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_uses_cache_dir(self, mock_run, mock_git_dir):
-        """Test branch creation uses cache directory for git operations."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_dir = pathlib.Path(tmpdir)
-            mock_git_dir.return_value = cache_dir
-            mock_run.return_value = MagicMock(returncode=0)
-            result = create_remote_branch("owner/repo", "newbranch")
-            assert result is True
-            # Should have called git init, git fetch, git push
-            assert mock_run.call_count == 3
-            # All calls should use the cache directory
-            for call in mock_run.call_args_list:
-                assert call[1]["cwd"] == cache_dir
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_skips_init_if_exists(self, mock_run, mock_git_dir):
-        """Test branch creation skips git init if .git already exists."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_dir = pathlib.Path(tmpdir)
-            # Create .git directory to simulate existing repo
-            (cache_dir / ".git").mkdir()
-            mock_git_dir.return_value = cache_dir
-            mock_run.return_value = MagicMock(returncode=0)
-            result = create_remote_branch("owner/repo", "newbranch")
-            assert result is True
-            # Should only call git fetch, git push (no init)
-            assert mock_run.call_count == 2
-            assert mock_run.call_args_list[0][0][0][0:2] == ["git", "fetch"]
-            assert mock_run.call_args_list[1][0][0][0:2] == ["git", "push"]
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_git_init_fails(self, mock_run, mock_git_dir):
-        """Test branch creation fails gracefully if git init fails."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            mock_run.return_value = MagicMock(returncode=1, stderr="init failed")
-            result = create_remote_branch("owner/repo", "newbranch")
-            assert result is False
-            # Should only call git init
-            assert mock_run.call_count == 1
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_fetch_fails(self, mock_run, mock_git_dir, caplog):
-        """Test branch creation fails gracefully if git fetch fails."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            mock_run.side_effect = [
-                MagicMock(returncode=0),  # git init
-                MagicMock(returncode=1, stderr="fetch failed"),  # git fetch
-            ]
-            result = create_remote_branch("owner/repo", "newbranch")
-            assert result is False
-            assert mock_run.call_count == 2
-            assert "Failed to fetch" in caplog.text
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_ssh_auth_fails(self, mock_run, mock_git_dir, caplog):
-        """Test branch creation gives helpful error when SSH auth fails."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            # git init succeeds, git fetch succeeds, git push fails with SSH error
-            mock_run.side_effect = [
-                MagicMock(returncode=0),  # git init
-                MagicMock(returncode=0),  # git fetch
-                MagicMock(returncode=128, stderr="git@github.com: Permission denied (publickey)."),
-            ]
-            result = create_remote_branch("owner/repo", "newbranch")
-            assert result is False
-            assert "SSH authentication failed" in caplog.text
-            assert "configure SSH keys" in caplog.text
-
-    @patch("devlaunch.dl._get_git_work_dir")
-    @patch("subprocess.run")
-    def test_create_remote_branch_uses_ssh_url(self, mock_run, mock_git_dir):
-        """Test branch creation uses SSH URL for push."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mock_git_dir.return_value = pathlib.Path(tmpdir)
-            mock_run.return_value = MagicMock(returncode=0)
-            create_remote_branch("owner/repo", "newbranch")
-            # Check that git push (3rd call) was called with SSH URL
-            push_call = mock_run.call_args_list[2]
-            push_args = push_call[0][0]
-            assert "git@github.com:owner/repo.git" in push_args
 
 
 class TestDiscoverReposFromWorkspaces:
@@ -818,43 +672,57 @@ class TestGetVersion:
 class TestSpecToWorkspaceId:
     """Tests for spec_to_workspace_id function."""
 
-    def test_owner_repo_full_url_sanitized(self):
-        """Test owner/repo generates full sanitized URL as workspace ID."""
-        assert spec_to_workspace_id("blooop/devlaunch") == "github-com-blooop-devlaunch"
+    def test_owner_repo_produces_repo_name(self):
+        """Test owner/repo generates sanitized repo name as workspace ID."""
+        assert spec_to_workspace_id("blooop/devlaunch") == "devlaunch"
 
-    def test_owner_repo_with_branch_uses_branch(self):
-        """Test owner/repo@branch uses sanitized branch as workspace ID."""
-        assert spec_to_workspace_id("blooop/devlaunch@main") == "main"
+    def test_owner_repo_with_branch_uses_repo_branch(self):
+        """Test owner/repo@branch uses <repo>-<branch> as workspace ID."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main"
 
     def test_owner_repo_with_feature_branch(self):
         """Test owner/repo@feature/branch sanitizes branch name."""
-        assert spec_to_workspace_id("owner/repo@feature/my-branch") == "feature-my-branch"
+        assert spec_to_workspace_id("owner/repo@feature/my-branch") == "repo-feature-my-branch"
 
     def test_owner_repo_with_uppercase_branch(self):
-        """Test branch name is lowercased."""
-        assert spec_to_workspace_id("Owner/Repo@Feature/MyBranch") == "feature-mybranch"
+        """Test branch name is lowercased and underscores replaced."""
+        assert spec_to_workspace_id("Owner/Repo@Feature/MyBranch") == "repo-feature-mybranch"
 
     def test_github_url_sanitized(self):
-        """Test github.com/owner/repo generates sanitized ID."""
+        """Test github.com/owner/repo generates sanitized ID (fallback path)."""
         assert spec_to_workspace_id("github.com/loft-sh/devpod") == "github-com-loft-sh-devpod"
 
     def test_https_url_strips_protocol(self):
-        """Test https URL strips protocol and sanitizes."""
+        """Test https URL strips protocol and sanitizes (fallback path)."""
         assert spec_to_workspace_id("https://github.com/owner/repo") == "github-com-owner-repo"
 
     def test_url_with_git_suffix_strips_it(self):
-        """Test URL with .git suffix strips it."""
+        """Test URL with .git suffix strips it (fallback path)."""
         assert spec_to_workspace_id("github.com/owner/repo.git") == "github-com-owner-repo"
 
-    def test_underscore_removed_from_repo(self):
-        """Test underscores are removed from repo-based workspace ID."""
-        assert spec_to_workspace_id("blooop/test_renv") == "github-com-blooop-testrenv"
+    def test_underscore_replaced_in_repo(self):
+        """Test underscores are replaced with hyphens in repo name."""
+        assert spec_to_workspace_id("blooop/test_renv") == "test-renv"
 
     def test_branch_allows_multiple_workspaces(self):
         """Test different branches get different workspace IDs."""
-        assert spec_to_workspace_id("blooop/test_renv@nb12") == "nb12"
-        assert spec_to_workspace_id("blooop/test_renv@nb14") == "nb14"
+        assert spec_to_workspace_id("blooop/test_renv@nb12") == "test-renv-nb12"
+        assert spec_to_workspace_id("blooop/test_renv@nb14") == "test-renv-nb14"
         # Different branches = different IDs = can be open simultaneously
+
+    def test_branch_truncation(self):
+        """Test branch name is truncated so total stays <= 48 chars."""
+        long_branch = "a" * 60
+        result = spec_to_workspace_id(f"owner/repo@{long_branch}")
+        assert len(result) <= 48
+        assert result.startswith("repo-")
+
+    def test_branch_truncation_strips_trailing_hyphen(self):
+        """Test truncated branch doesn't end with a hyphen."""
+        # Use a branch that after truncation would end with '-'
+        result = spec_to_workspace_id("owner/myrepo@feature/some-very-long-branch-name-here")
+        assert not result.endswith("-")
+        assert len(result) <= 48
 
     def test_path_extracts_directory_name(self):
         """Test path extracts directory name."""
@@ -865,41 +733,13 @@ class TestSpecToWorkspaceId:
         """Test existing workspace ID is returned as-is."""
         assert spec_to_workspace_id("myworkspace") == "myworkspace"
 
+    def test_python_template_example(self):
+        """Test the motivating example from the plan."""
+        assert spec_to_workspace_id("blooop/python_template@nb4") == "python-template-nb4"
 
-class TestMakeWorktreeWorkspaceId:
-    """Tests for make_worktree_workspace_id function."""
-
-    def test_basic_format(self):
-        """Test basic owner-repo-branch format."""
-        result = make_worktree_workspace_id("blooop", "bencher", "main")
-        assert result == "blooop-bencher-main"
-
-    def test_feature_branch_sanitized(self):
-        """Test feature/branch is sanitized."""
-        result = make_worktree_workspace_id("owner", "repo", "feature/my-branch")
-        assert result == "owner-repo-feature-my-branch"
-
-    def test_long_branch_truncated(self):
-        """Test long branch names are truncated to fit max_len."""
-        long_branch = "feature/very-long-branch-name-that-exceeds-the-limit"
-        result = make_worktree_workspace_id("owner", "repo", long_branch, max_len=30)
-        assert len(result) <= 30
-        assert result.startswith("owner-repo-")
-
-    def test_max_len_respected(self):
-        """Test max_len is respected."""
-        result = make_worktree_workspace_id("owner", "repo", "main", max_len=20)
-        assert len(result) <= 20
-
-    def test_default_max_len(self):
-        """Test default max_len is 50."""
-        result = make_worktree_workspace_id("owner", "repo", "main")
-        assert len(result) <= 50
-
-    def test_preserves_owner_repo(self):
-        """Test owner and repo are always preserved."""
-        result = make_worktree_workspace_id("blooop", "devlaunch", "feature/test")
-        assert result.startswith("blooop-devlaunch-")
+    def test_no_branch_no_suffix(self):
+        """Test owner/repo without branch produces just repo name."""
+        assert spec_to_workspace_id("blooop/python_template") == "python-template"
 
 
 class TestCacheFunctions:
@@ -1280,7 +1120,12 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "--", "echo", "hello"]):
             result = main()
         assert result == 0
-        mock_ssh.assert_called_once_with("myws", "echo hello")
+        # First call creates ~/work symlink, second call runs the command
+        assert mock_ssh.call_count == 2
+        # Final SSH call with the shell command
+        mock_ssh.assert_called_with(
+            "myws", "echo hello", workdir="/home/vscode/myws", preserve_symlink=True
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -1295,147 +1140,345 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_up.assert_called_once()
-        mock_ssh.assert_called_once()
+        # First call creates ~/work symlink, second call attaches shell
+        assert mock_ssh.call_count == 2
+        mock_ssh.assert_called_with(
+            "myws", None, workdir="/home/vscode/myws", preserve_symlink=True
+        )
 
-    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    @patch("devlaunch.dl.expand_workspace_spec")
-    @patch("devlaunch.dl.spec_to_workspace_id")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_from_repo(
-        self, _cache, mock_ssh, mock_up, mock_spec_id, mock_expand, mock_ids, mock_use_worktree
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
     ):
-        """Test creating workspace from owner/repo (DevPod backend)."""
-        mock_use_worktree.return_value = False  # Use DevPod backend for this test
+        """Test creating workspace from owner/repo resolves default branch."""
         mock_ids.return_value = []  # Not existing
-        mock_expand.return_value = "github.com/owner/repo"
-        mock_spec_id.return_value = "github-com-owner-repo"
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.get_default_branch.return_value = "main"
+        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
+        mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo"]):
             result = main()
         assert result == 0
-        mock_expand.assert_called()
-        mock_up.assert_called_once_with(
-            "github.com/owner/repo", workspace_id="github-com-owner-repo"
+        # Should resolve default branch
+        mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
+        # Should ensure branch exists
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
+        # Workspace ID includes resolved branch
+        mock_mgr.ensure_workspace.assert_called_once_with(
+            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
         )
-        mock_ssh.assert_called_once_with("github-com-owner-repo", None)
+        mock_up.assert_called_once_with("/tmp/ws/repo-main", workspace_id="repo-main")
+        # First call creates ~/work symlink, second call attaches shell
+        assert mock_ssh.call_count == 2
+        mock_ssh.assert_called_with(
+            "repo-main", None, workdir="/home/vscode/repo-main", preserve_symlink=True
+        )
 
-    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    @patch("devlaunch.dl.ensure_remote_branch")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_new_workspace_from_repo_with_existing_branch(
-        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids, mock_use_worktree
+    def test_main_new_workspace_from_repo_with_branch(
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
     ):
-        """Test creating workspace from owner/repo@branch when branch exists."""
-        mock_use_worktree.return_value = False  # Use DevPod backend
+        """Test creating workspace from owner/repo@branch uses ensure_branch."""
         mock_ids.return_value = []  # Not existing
-        mock_ensure.return_value = True  # Branch exists
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
+        mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
         assert result == 0
-        mock_ensure.assert_called_once_with("owner/repo", "main")
-        # workspace_id is the branch name when branch is specified
-        mock_up.assert_called_once_with("git@github.com:owner/repo.git@main", workspace_id="main")
+        # Should NOT resolve default branch (branch was specified)
+        mock_mgr.repo_manager.get_default_branch.assert_not_called()
+        # Should ensure branch exists via clone_mgr
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
+        mock_mgr.ensure_workspace.assert_called_once_with(
+            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
+        )
+        mock_up.assert_called_once_with("/tmp/ws/repo-main", workspace_id="repo-main")
 
-    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    @patch("devlaunch.dl.ensure_remote_branch")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_creates_branch(
-        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids, mock_use_worktree
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
     ):
         """Test creating workspace from owner/repo@newbranch creates the branch."""
-        mock_use_worktree.return_value = False  # Use DevPod backend
         mock_ids.return_value = []  # Not existing
-        mock_ensure.return_value = True  # Branch created successfully
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-newbranch")
+        mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 0
-        mock_ensure.assert_called_once_with("owner/repo", "newbranch")
-        mock_up.assert_called_once_with(
-            "git@github.com:owner/repo.git@newbranch", workspace_id="newbranch"
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
+        mock_mgr.ensure_workspace.assert_called_once_with(
+            "owner", "repo", "newbranch", "git@github.com:owner/repo.git", "repo-newbranch"
         )
 
-    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    @patch("devlaunch.dl.ensure_remote_branch")
-    def test_main_branch_creation_fails(self, mock_ensure, mock_ids, mock_use_worktree):
-        """Test error when branch creation fails."""
-        mock_use_worktree.return_value = False  # Use DevPod backend
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_main_branch_creation_fails(self, mock_clone_mgr, mock_ids):
+        """Test error when branch ensure fails."""
         mock_ids.return_value = []  # Not existing
-        mock_ensure.return_value = False  # Branch creation failed
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_branch.side_effect = RuntimeError("push failed")
+        mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 1
-        mock_ensure.assert_called_once_with("owner/repo", "newbranch")
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
 
-    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
-    @patch("devlaunch.dl.ensure_remote_branch")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_feature_branch_with_slash(
-        self, _cache, mock_ssh, mock_up, mock_ensure, mock_ids, mock_use_worktree
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
     ):
         """Test creating workspace with feature/branch style branch name."""
-        mock_use_worktree.return_value = False  # Use DevPod backend
         mock_ids.return_value = []
-        mock_ensure.return_value = True
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-feature-my-feature")
+        mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@feature/my-feature"]):
             result = main()
         assert result == 0
-        mock_ensure.assert_called_once_with("owner/repo", "feature/my-feature")
-        # Branch name is sanitized: feature/my-feature -> feature-my-feature
-        mock_up.assert_called_once_with(
-            "git@github.com:owner/repo.git@feature/my-feature", workspace_id="feature-my-feature"
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "feature/my-feature")
+        mock_mgr.ensure_workspace.assert_called_once_with(
+            "owner",
+            "repo",
+            "feature/my-feature",
+            "git@github.com:owner/repo.git",
+            "repo-feature-my-feature",
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_existing_workspace_no_branch_check(self, _cache, mock_ssh, mock_up, mock_ids):
-        """Test existing workspace doesn't trigger branch check."""
+    def test_main_existing_workspace_no_clone_manager(
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+    ):
+        """Test existing workspace doesn't use clone manager."""
         mock_ids.return_value = ["myworkspace"]  # Existing
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
-        # Use existing workspace name (not owner/repo format)
         with patch.object(sys, "argv", ["dl", "myworkspace"]):
-            with patch("devlaunch.dl.ensure_remote_branch") as mock_ensure:
-                result = main()
+            result = main()
         assert result == 0
-        mock_ensure.assert_not_called()  # No branch check for existing workspace
+        mock_clone_mgr.assert_not_called()
 
-    @patch("devlaunch.dl.should_use_worktree_backend")
     @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_repo_without_branch_no_branch_check(
-        self, _cache, mock_ssh, mock_up, mock_ids, mock_use_worktree
+    def test_main_repo_without_branch_resolves_default(
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
     ):
-        """Test owner/repo without @branch doesn't trigger branch check."""
-        mock_use_worktree.return_value = False  # Use DevPod backend for this test
+        """Test owner/repo without @branch resolves default branch."""
         mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.get_default_branch.return_value = "main"
+        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
+        mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo"]):
-            with patch("devlaunch.dl.ensure_remote_branch") as mock_ensure:
-                result = main()
+            result = main()
         assert result == 0
-        mock_ensure.assert_not_called()  # No branch specified
+        # Should resolve default branch and use it
+        mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
+
+
+class TestPurgeFunctionality:
+    """Tests for purge functionality."""
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_purge_deletes_all_workspaces(self, mock_list, mock_run):
+        """Test purge_all_data deletes all workspaces."""
+        from devlaunch.dl import purge_all_data
+
+        mock_list.return_value = [
+            Workspace("ws1", "local", "/path", "", "docker", "vscode"),
+            Workspace("ws2", "git", "github.com/o/r", "", "docker", "none"),
+        ]
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl._get_cache_dir", return_value=pathlib.Path(tmpdir)):
+                result = purge_all_data()
+
+        assert result == 0
+        # Should have called delete for each workspace
+        assert mock_run.call_count == 2
+        delete_calls = list(mock_run.call_args_list)
+        assert delete_calls[0][0][0] == ["delete", "ws1", "--force"]
+        assert delete_calls[1][0][0] == ["delete", "ws2", "--force"]
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_purge_removes_cache_dir(self, mock_list, mock_run):
+        """Test purge_all_data removes the cache directory."""
+        from devlaunch.dl import purge_all_data
+
+        mock_list.return_value = []
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = pathlib.Path(tmpdir) / "devlaunch"
+            cache_dir.mkdir()
+            test_file = cache_dir / "test.txt"
+            test_file.write_text("test")
+            assert test_file.exists()
+
+            with patch("devlaunch.dl._get_cache_dir", return_value=cache_dir):
+                result = purge_all_data()
+
+            assert result == 0
+            assert not cache_dir.exists()
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.list_workspaces")
+    def test_purge_handles_workspace_delete_failure(self, mock_list, mock_run, caplog):
+        """Test purge continues even if workspace delete fails."""
+        from devlaunch.dl import purge_all_data
+
+        mock_list.return_value = [
+            Workspace("ws1", "local", "/path", "", "docker", "vscode"),
+            Workspace("ws2", "git", "github.com/o/r", "", "docker", "none"),
+        ]
+        # First delete fails, second succeeds
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="error"),
+            MagicMock(returncode=0),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl._get_cache_dir", return_value=pathlib.Path(tmpdir)):
+                result = purge_all_data()
+
+        # Should still return 0 (cache cleanup succeeded)
+        assert result == 0
+        # Should have tried to delete both workspaces
+        assert mock_run.call_count == 2
+        # Should have logged warning for failed delete
+        assert "Failed to delete workspace ws1" in caplog.text
+
+    @patch("devlaunch.dl.list_workspaces")
+    def test_main_purge_with_yes_flag(self, mock_list, capsys):
+        """Test --purge -y skips confirmation."""
+        mock_list.return_value = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("devlaunch.dl._get_cache_dir", return_value=pathlib.Path(tmpdir)):
+                with patch.object(sys, "argv", ["dl", "--purge", "-y"]):
+                    result = main()
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No data to purge" in captured.out or "Removed" in captured.out
+
+
+class TestWorkSymlinkFunctions:
+    """Tests for ~/work symlink functionality."""
+
+    def test_get_work_symlink_path(self):
+        """Test get_work_symlink_path returns expected path with workspace ID."""
+        assert get_work_symlink_path("my-workspace") == "/home/vscode/my-workspace"
+        assert get_work_symlink_path("python-template-nb4") == "/home/vscode/python-template-nb4"
+
+    def test_get_container_workdir(self):
+        """Test get_container_workdir returns expected path."""
+        assert get_container_workdir("my-workspace") == "/workspaces/my-workspace"
+        assert get_container_workdir("blooop-bencher") == "/workspaces/blooop-bencher"
+
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_setup_work_symlink_success(self, mock_ssh):
+        """Test setup_work_symlink creates symlink via SSH."""
+        mock_ssh.return_value = 0
+        result = setup_work_symlink("my-workspace")
+        assert result is True
+        mock_ssh.assert_called_once_with(
+            "my-workspace",
+            command="ln -sfn /workspaces/my-workspace /home/vscode/my-workspace",
+        )
+
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_setup_work_symlink_failure(self, mock_ssh):
+        """Test setup_work_symlink returns False on SSH failure."""
+        mock_ssh.return_value = 1
+        result = setup_work_symlink("my-workspace")
+        assert result is False
+
+
+class TestWorkspaceSshWithSymlink:
+    """Tests for workspace_ssh with symlink preservation."""
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_basic(self, mock_run):
+        """Test basic SSH without symlink preservation."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws")
+        assert result == 0
+        mock_run.assert_called_once_with(["ssh", "myws"])
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_command(self, mock_run):
+        """Test SSH with command."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", command="echo hello")
+        assert result == 0
+        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"])
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_workdir(self, mock_run):
+        """Test SSH with workdir (no symlink preservation)."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", workdir="/some/path")
+        assert result == 0
+        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"])
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_preserve_symlink_interactive(self, mock_run):
+        """Test SSH with symlink preservation uses cd for interactive shell."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", workdir="/home/vscode/work", preserve_symlink=True)
+        assert result == 0
+        # Should use cd instead of --workdir to preserve symlink path in $PWD
+        mock_run.assert_called_once_with(
+            ["ssh", "myws", "--command", "cd /home/vscode/work && exec $SHELL -l"]
+        )
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_with_preserve_symlink_and_command(self, mock_run):
+        """Test SSH with symlink preservation wraps command with cd."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh(
+            "myws", command="make test", workdir="/home/vscode/work", preserve_symlink=True
+        )
+        assert result == 0
+        mock_run.assert_called_once_with(
+            ["ssh", "myws", "--command", "cd /home/vscode/work && make test"]
+        )

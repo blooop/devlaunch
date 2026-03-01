@@ -57,17 +57,14 @@ class TestWorktreeConfig:
         )
 
         data = config.to_dict()
-        assert data == {
-            "worktree": {
-                "enabled": False,
-                "repos_dir": "/custom/repos",
-                "auto_fetch": False,
-                "fetch_interval": 7200,
-                "cleanup": {
-                    "auto_prune": False,
-                    "prune_after_days": 60,
-                },
-            }
+        assert data["worktree"]["enabled"] is False
+        assert data["worktree"]["repos_dir"] == "/custom/repos"
+        assert "workspaces_dir" not in data["worktree"]
+        assert data["worktree"]["auto_fetch"] is False
+        assert data["worktree"]["fetch_interval"] == 7200
+        assert data["worktree"]["cleanup"] == {
+            "auto_prune": False,
+            "prune_after_days": 60,
         }
 
     def test_from_dict(self):

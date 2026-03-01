@@ -41,5 +41,5 @@ echo "Running E2E tests..."
 cd /app
 
 # Pass all arguments to pytest
-# Default: pytest -v --tb=short -m e2e test/e2e/
-exec pytest test/e2e/ "$@"
+# Override the default addopts which excludes e2e tests
+exec pytest -m e2e test/e2e/ "$@"

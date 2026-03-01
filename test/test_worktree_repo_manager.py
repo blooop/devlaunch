@@ -54,13 +54,13 @@ class TestRepositoryManager:
 
     def test_repo_exists_true(self, repo_manager):
         """Test repo_exists returns True for existing repo."""
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
         assert repo_manager.repo_exists("owner", "repo") is True
 
-    def test_repo_exists_no_git_dir(self, repo_manager):
-        """Test repo_exists returns False for directory without .git."""
+    def test_repo_exists_no_bare_dir(self, repo_manager):
+        """Test repo_exists returns False for directory without .bare."""
         repo_path = repo_manager.get_repo_path("owner", "repo")
         repo_path.mkdir(parents=True)
         assert repo_manager.repo_exists("owner", "repo") is False
@@ -70,14 +70,14 @@ class TestRepositoryManager:
         """Test successful repository clone."""
         mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
 
-        # Create .git directory to simulate clone
-        def create_git_dir(*args, **kwargs):
-            repo_path = repo_manager.get_repo_path("owner", "repo")
-            repo_path.mkdir(parents=True, exist_ok=True)
-            (repo_path / ".git").mkdir(exist_ok=True)
+        # Create .bare directory to simulate clone
+        def create_bare_dir(*args, **kwargs):
+            bare_path = repo_manager.get_bare_path("owner", "repo")
+            bare_path.mkdir(parents=True, exist_ok=True)
+            (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
             return MagicMock(stdout="main", stderr="", returncode=0)
 
-        mock_run.side_effect = create_git_dir
+        mock_run.side_effect = create_bare_dir
 
         result = repo_manager.clone_repo("owner", "repo", "https://github.com/owner/repo.git")
 
@@ -90,16 +90,16 @@ class TestRepositoryManager:
     def test_clone_repo_already_exists(self, mock_run, repo_manager):
         """Test clone returns existing repo if already exists."""
         # Create existing repo
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 
@@ -122,16 +122,16 @@ class TestRepositoryManager:
     def test_fetch_repo_success(self, mock_run, repo_manager):
         """Test successful repository fetch."""
         # Create repo directory
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 
@@ -153,9 +153,9 @@ class TestRepositoryManager:
     def test_fetch_repo_failure(self, mock_run, repo_manager):
         """Test fetch failure raises error."""
         # Create repo directory
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
         mock_run.side_effect = subprocess.CalledProcessError(1, "git fetch", stderr="Fetch failed")
 
@@ -166,14 +166,14 @@ class TestRepositoryManager:
     def test_ensure_repo_clones_if_not_exists(self, mock_run, repo_manager):
         """Test ensure_repo clones if repo doesn't exist."""
 
-        def create_git_dir(*args, **kwargs):
+        def create_bare_dir(*args, **kwargs):
             if "clone" in args[0]:
-                repo_path = repo_manager.get_repo_path("owner", "repo")
-                repo_path.mkdir(parents=True, exist_ok=True)
-                (repo_path / ".git").mkdir(exist_ok=True)
+                bare_path = repo_manager.get_bare_path("owner", "repo")
+                bare_path.mkdir(parents=True, exist_ok=True)
+                (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
             return MagicMock(stdout="main", stderr="", returncode=0)
 
-        mock_run.side_effect = create_git_dir
+        mock_run.side_effect = create_bare_dir
 
         result = repo_manager.ensure_repo("owner", "repo", "https://github.com/owner/repo.git")
 
@@ -184,16 +184,16 @@ class TestRepositoryManager:
     def test_ensure_repo_fetches_if_exists(self, mock_run, repo_manager):
         """Test ensure_repo fetches if repo exists."""
         # Create repo directory
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 
@@ -210,16 +210,16 @@ class TestRepositoryManager:
     def test_ensure_repo_no_auto_fetch(self, mock_run, repo_manager):
         """Test ensure_repo with auto_fetch=False skips fetch."""
         # Create repo directory
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 
@@ -247,16 +247,16 @@ class TestRepositoryManager:
     def test_get_repo_returns_repo_if_exists(self, repo_manager):
         """Test get_repo returns repo if exists."""
         # Create repo directory
-        repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 
@@ -267,26 +267,26 @@ class TestRepositoryManager:
     def test_list_repositories(self, repo_manager):
         """Test listing repositories."""
         # Create repo directories
-        repo_path1 = repo_manager.get_repo_path("owner1", "repo1")
-        repo_path1.mkdir(parents=True)
-        (repo_path1 / ".git").mkdir()
+        bare_path1 = repo_manager.get_bare_path("owner1", "repo1")
+        bare_path1.mkdir(parents=True)
+        (bare_path1 / "HEAD").write_text("ref: refs/heads/main\n")
 
-        repo_path2 = repo_manager.get_repo_path("owner2", "repo2")
-        repo_path2.mkdir(parents=True)
-        (repo_path2 / ".git").mkdir()
+        bare_path2 = repo_manager.get_bare_path("owner2", "repo2")
+        bare_path2.mkdir(parents=True)
+        (bare_path2 / "HEAD").write_text("ref: refs/heads/main\n")
 
         # Add to storage
         repo1 = BaseRepository(
             owner="owner1",
             repo="repo1",
             remote_url="https://github.com/owner1/repo1.git",
-            local_path=repo_path1,
+            local_path=bare_path1,
         )
         repo2 = BaseRepository(
             owner="owner2",
             repo="repo2",
             remote_url="https://github.com/owner2/repo2.git",
-            local_path=repo_path2,
+            local_path=bare_path2,
         )
         repo_manager.storage.add_repository(repo1)
         repo_manager.storage.add_repository(repo2)
@@ -297,37 +297,39 @@ class TestRepositoryManager:
     def test_remove_repository(self, repo_manager):
         """Test removing a repository."""
         # Create repo directory
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
         repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 
         repo_manager.remove_repository("owner", "repo")
 
         assert repo_manager.storage.get_repository("owner", "repo") is None
-        assert not repo_path.exists()  # Directory should be removed
+        assert not repo_path.exists()  # Entire repo dir should be removed
 
     def test_remove_repository_keep_directory(self, repo_manager):
         """Test removing a repository without deleting directory."""
         # Create repo directory
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
         repo_path = repo_manager.get_repo_path("owner", "repo")
-        repo_path.mkdir(parents=True)
-        (repo_path / ".git").mkdir()
 
         # Add to storage
         repo = BaseRepository(
             owner="owner",
             repo="repo",
             remote_url="https://github.com/owner/repo.git",
-            local_path=repo_path,
+            local_path=bare_path,
         )
         repo_manager.storage.add_repository(repo)
 

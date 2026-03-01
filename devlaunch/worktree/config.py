@@ -22,8 +22,8 @@ class WorktreeConfig:
     """Configuration for worktree backend.
 
     All data is stored under repos_dir:
-    - repos_dir/owner/repo/            - cloned repository
-    - repos_dir/owner/repo/.worktrees/ - git worktrees for branches
+    - repos_dir/owner/repo/            - bare git repository
+    - repos_dir/owner/repo/clones/     - workspace clones per branch
     """
 
     enabled: bool = True  # Enabled by default

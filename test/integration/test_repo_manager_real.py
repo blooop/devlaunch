@@ -26,13 +26,13 @@ class TestRepoManagerRealClone:
         assert result.repo == "repo"
         assert result.remote_url == remote_url
 
-        # Verify the clone is a bare repo
-        repo_path = repo_manager.get_repo_path("test", "repo")
-        assert repo_path.exists()
-        # Bare repos have HEAD directly in the repo directory
-        assert (repo_path / "HEAD").exists()
-        # Bare repos don't have a .git subdirectory
-        assert not (repo_path / ".git").exists()
+        # Verify the clone is a bare repo inside .bare/
+        bare_path = repo_manager.get_bare_path("test", "repo")
+        assert bare_path.exists()
+        # Bare repos have HEAD directly in the directory
+        assert (bare_path / "HEAD").exists()
+        # The parent repo dir should exist but .bare should not have .git
+        assert not (bare_path / ".git").exists()
 
     def test_clone_preserves_branches(self, real_managers, local_git_repo):
         """Test that cloning preserves all branches from remote."""
@@ -41,12 +41,12 @@ class TestRepoManagerRealClone:
 
         # Clone the repository
         repo_manager.clone_repo("test", "repo", remote_url)
-        repo_path = repo_manager.get_repo_path("test", "repo")
+        bare_path = repo_manager.get_bare_path("test", "repo")
 
         # List branches in the bare repo
         result = subprocess.run(
             ["git", "branch", "-a"],
-            cwd=repo_path,
+            cwd=bare_path,
             capture_output=True,
             text=True,
             check=True,
@@ -90,12 +90,12 @@ class TestRepoManagerRealFetch:
 
         # Clone the repository
         repo_manager.clone_repo("test", "repo", remote_url)
-        repo_path = repo_manager.get_repo_path("test", "repo")
+        bare_path = repo_manager.get_bare_path("test", "repo")
 
         # Get initial commit count
         before_result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD"],
-            cwd=repo_path,
+            cwd=bare_path,
             capture_output=True,
             text=True,
             check=True,
@@ -130,7 +130,7 @@ class TestRepoManagerRealFetch:
         # Check that we can see the new commit via rev-list
         after_result = subprocess.run(
             ["git", "rev-list", "--count", "--all"],
-            cwd=repo_path,
+            cwd=bare_path,
             capture_output=True,
             text=True,
             check=True,
@@ -206,12 +206,12 @@ class TestRepoManagerDefaultBranch:
 
         # Clone
         repo_manager.clone_repo("test", "repo", remote_url)
-        repo_path = repo_manager.get_repo_path("test", "repo")
+        bare_path = repo_manager.get_bare_path("test", "repo")
 
         # Verify HEAD points to main
         result = subprocess.run(
             ["git", "symbolic-ref", "HEAD"],
-            cwd=repo_path,
+            cwd=bare_path,
             capture_output=True,
             text=True,
             check=True,
