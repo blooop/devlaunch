@@ -1168,9 +1168,7 @@ class TestMainCLI:
         # Should resolve default branch
         mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         # Should ensure branch exists
-        mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "main"
-        )
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
         # Workspace ID includes resolved branch
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
@@ -1203,9 +1201,7 @@ class TestMainCLI:
         # Should NOT resolve default branch (branch was specified)
         mock_mgr.repo_manager.get_default_branch.assert_not_called()
         # Should ensure branch exists via clone_mgr
-        mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "main"
-        )
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
         )
@@ -1229,9 +1225,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 0
-        mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "newbranch"
-        )
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "newbranch", "git@github.com:owner/repo.git", "repo-newbranch"
         )
@@ -1247,9 +1241,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 1
-        mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "newbranch"
-        )
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1269,9 +1261,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "owner/repo@feature/my-feature"]):
             result = main()
         assert result == 0
-        mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "feature/my-feature"
-        )
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "feature/my-feature")
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner",
             "repo",
@@ -1318,9 +1308,7 @@ class TestMainCLI:
         assert result == 0
         # Should resolve default branch and use it
         mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
-        mock_mgr.ensure_branch.assert_called_once_with(
-            "owner", "repo", "main"
-        )
+        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
 
 
 class TestPurgeFunctionality:
