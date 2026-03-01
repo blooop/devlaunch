@@ -128,7 +128,9 @@ class TestEnsureBranch:
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
         mock_repo_manager.fetch_repo.assert_called_once_with("owner", "repo")
-        mock_branch_manager.ensure_branch_exists.assert_called_once_with(bare_path, "newbranch")
+        mock_branch_manager.ensure_branch_exists.assert_called_once_with(
+            bare_path, "newbranch", create_remote=False
+        )
 
     def test_continues_if_fetch_fails(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
@@ -140,7 +142,9 @@ class TestEnsureBranch:
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
-        mock_branch_manager.ensure_branch_exists.assert_called_once_with(bare_path, "newbranch")
+        mock_branch_manager.ensure_branch_exists.assert_called_once_with(
+            bare_path, "newbranch", create_remote=False
+        )
 
 
 class TestEnsureWorkspace:

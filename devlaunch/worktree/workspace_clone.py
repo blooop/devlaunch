@@ -77,10 +77,10 @@ class WorkspaceCloneManager:
         return ws_path.exists() and (ws_path / ".git").exists()
 
     def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
-        """Ensure a branch exists in the bare repo (and on the remote).
+        """Ensure a branch exists in the bare repo.
 
         Fetches latest refs, then uses BranchManager to create the branch
-        locally and on the remote if needed.
+        locally if needed. Does not push to the remote.
         """
         bare_path = self.repo_manager.get_bare_path(owner, repo)
         # Fetch first to have latest refs
@@ -88,7 +88,7 @@ class WorkspaceCloneManager:
             self.repo_manager.fetch_repo(owner, repo)
         except Exception as e:
             logger.warning(f"Failed to fetch before branch ensure: {e}")
-        self.branch_manager.ensure_branch_exists(bare_path, branch)
+        self.branch_manager.ensure_branch_exists(bare_path, branch, create_remote=False)
 
     def ensure_workspace(
         self,
