@@ -17,7 +17,7 @@ which dl || echo "Warning: 'dl' command not found in PATH"
 
 echo ""
 echo "Testing import..."
-python -c "from devlaunch.dl import get_version; print(f'DevLaunch version: {get_version()}')"
+python3 -c "from devlaunch.dl import get_version; print(f'DevLaunch version: {get_version()}')"
 
 echo ""
 echo "Development installation complete!"
