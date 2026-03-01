@@ -22,8 +22,8 @@ class WorktreeConfig:
     """Configuration for worktree backend.
 
     All data is stored under repos_dir:
-    - repos_dir/owner/repo/            - cloned repository
-    - repos_dir/owner/repo/.worktrees/ - git worktrees for branches
+    - repos_dir/owner/repo/            - bare git repository
+    - repos_dir/owner/repo/clones/     - workspace clones per branch
     """
 
     enabled: bool = True  # Enabled by default
@@ -42,9 +42,7 @@ class WorktreeConfig:
         # Ensure directories exist (only if they're under home or temp)
         # This avoids permission errors in tests
         try:
-            if str(self.repos_dir).startswith(str(Path.home())) or str(self.repos_dir).startswith(
-                "/tmp"
-            ):
+            if str(self.repos_dir).startswith(str(Path.home())) or str(self.repos_dir).startswith("/tmp"):
                 self.repos_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, PermissionError):
             # Ignore permission errors (e.g., in tests)

@@ -30,6 +30,7 @@ from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
 from .completion import install_completions
+from .worktree.workspace_clone import WorkspaceCloneManager
 
 
 def get_version() -> str:
@@ -292,13 +293,14 @@ def sanitize_workspace_id(name: str) -> str:
     return name.lower().replace("/", "-")
 
 
-def get_work_symlink_path() -> str:
+def get_work_symlink_path(workspace_id: str) -> str:
     """Get the symlink path used for shorter terminal prompts.
 
-    Returns ~/work which is a symlink to the actual workspace directory.
-    This gives users a short, consistent path in their terminal prompt.
+    Returns ~/<workspace_id> which is a symlink to the actual workspace directory.
+    This gives users a short path that includes the project name in their prompt.
+    e.g. ~/python-template (main) instead of ~/work (main)
     """
-    return "/home/vscode/work"
+    return f"/home/vscode/{workspace_id}"
 
 
 def get_container_workdir(workspace_id: str) -> str:
@@ -321,7 +323,7 @@ def setup_work_symlink(workspace_id: str) -> bool:
     Returns:
         True if symlink was created successfully, False otherwise
     """
-    symlink_path = get_work_symlink_path()
+    symlink_path = get_work_symlink_path(workspace_id)
     workdir = get_container_workdir(workspace_id)
     # Use ln -sfn: -s for symlink, -f to force overwrite, -n to not dereference
     symlink_cmd = f"ln -sfn {workdir} {symlink_path}"
@@ -332,12 +334,11 @@ def setup_work_symlink(workspace_id: str) -> bool:
 def spec_to_workspace_id(spec: str) -> str:
     """Derive the workspace ID for a given spec.
 
-    When a branch is specified, we use the branch name as the workspace ID
-    to allow multiple branches of the same repo to be open simultaneously.
-    This requires passing --id to devpod.
+    Uses <repo>-<branch> format so workspace names are meaningful in devpod list.
+    Branch is truncated so total stays ≤ 48 chars.
 
-    - For git repos with branch: sanitized branch name
-    - For git repos without branch: sanitized full URL
+    - For owner/repo with branch: <repo>-<branch> (e.g., python-template-nb4)
+    - For owner/repo without branch: <repo> (e.g., python-template)
     - For paths: the directory name (e.g., ./my-project -> my-project)
     - For existing IDs: the ID as-is
     """
@@ -354,12 +355,20 @@ def spec_to_workspace_id(spec: str) -> str:
 
     # For git URLs or owner/repo
     if is_git_spec(base_spec):
-        # If branch specified, use branch name as workspace ID
-        # This allows multiple branches of same repo open simultaneously
-        if branch:
-            return sanitize_workspace_id(branch)
+        parsed = parse_owner_repo_branch(spec)
+        if parsed:
+            owner_repo, parsed_branch = parsed
+            repo_name = owner_repo.split("/")[-1]
+            repo_name = sanitize_workspace_id(repo_name).replace("_", "-")
+            if parsed_branch:
+                branch_sanitized = sanitize_workspace_id(parsed_branch).replace("_", "-")
+                max_branch = 48 - len(repo_name) - 1  # -1 for separator
+                if max_branch > 0 and len(branch_sanitized) > max_branch:
+                    branch_sanitized = branch_sanitized[:max_branch].rstrip("-")
+                return f"{repo_name}-{branch_sanitized}"
+            return repo_name
 
-        # Otherwise derive from full source URL
+        # Fallback for non-owner/repo git URLs (github.com/..., https://...)
         full_source = expand_workspace_spec(base_spec)
         # Strip protocol prefix if present
         if "://" in full_source:
@@ -527,100 +536,6 @@ def get_remote_head_sha(owner_repo: str) -> Optional[str]:
     # Output format: "<sha>\tHEAD"
     return output.strip().split()[0]
 
-
-def _get_git_work_dir() -> pathlib.Path:
-    """Get a persistent git working directory in the cache."""
-    git_dir = CACHE_DIR / "git"
-    git_dir.mkdir(parents=True, exist_ok=True)
-    return git_dir
-
-
-def create_remote_branch(owner_repo: str, branch: str) -> bool:
-    """Create a new branch on a remote GitHub repository.
-
-    Creates the branch pointing to the current HEAD (default branch).
-    Requires push access to the repository and configured SSH keys.
-    """
-    # Use SSH URL - requires configured SSH keys
-    ssh_url = f"git@github.com:{owner_repo}.git"
-
-    try:
-        # Use persistent cache directory for git operations
-        git_dir = _get_git_work_dir()
-
-        # Initialize git repo if not already done
-        git_init_marker = git_dir / ".git"
-        if not git_init_marker.exists():
-            init_result = subprocess.run(
-                ["git", "init"],
-                cwd=git_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if init_result.returncode != 0:
-                logging.error(f"Failed to init git repo: {init_result.stderr.strip()}")
-                return False
-
-        # Fetch the default branch HEAD from remote via SSH
-        fetch_result = subprocess.run(
-            ["git", "fetch", "--depth=1", ssh_url, "HEAD"],
-            cwd=git_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-        if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
-            if "permission denied" in stderr.lower() or "host key verification" in stderr.lower():
-                logging.error(
-                    f"SSH authentication failed for {owner_repo}.\n"
-                    f"Please create the branch manually on GitHub, or configure SSH keys."
-                )
-            else:
-                logging.error(f"Failed to fetch from {owner_repo}: {stderr}")
-            return False
-
-        # Push FETCH_HEAD to create the new branch
-        result = subprocess.run(
-            ["git", "push", ssh_url, f"FETCH_HEAD:refs/heads/{branch}"],
-            cwd=git_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            logging.info(f"Created branch '{branch}' on {owner_repo}")
-            return True
-
-        stderr = result.stderr.strip()
-        if "permission denied" in stderr.lower() or "host key verification" in stderr.lower():
-            logging.error(
-                f"SSH authentication failed for {owner_repo}.\n"
-                f"Please create the branch manually on GitHub, or configure SSH keys."
-            )
-        else:
-            logging.error(f"Failed to create branch: {stderr}")
-        return False
-    except subprocess.TimeoutExpired:
-        logging.error(f"Timeout connecting to {owner_repo}")
-        return False
-    except (OSError, subprocess.SubprocessError) as e:
-        logging.error(f"Failed to create branch: {e}")
-        return False
-
-
-def ensure_remote_branch(owner_repo: str, branch: str) -> bool:
-    """Ensure a branch exists on the remote, creating it if necessary.
-
-    Returns True if branch exists or was created successfully.
-    """
-    if remote_branch_exists(owner_repo, branch):
-        return True
-
-    logging.info(f"Branch '{branch}' does not exist, creating it...")
-    return create_remote_branch(owner_repo, branch)
 
 
 def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, List[str]]:
@@ -824,8 +739,15 @@ def workspace_stop(workspace: str) -> int:
 
 
 def workspace_delete(workspace: str) -> int:
-    """Delete a workspace."""
+    """Delete a workspace and its local clone (if any)."""
     result = run_devpod(["delete", workspace])
+    # Clean up local workspace clone (look up by workspace ID in metadata)
+    try:
+        clone_mgr = _get_clone_manager()
+        if clone_mgr.remove_workspace_by_id(workspace):
+            logging.info(f"Removed local clone for {workspace}")
+    except Exception as e:
+        logging.warning(f"Failed to remove local clone: {e}")
     # Update cache after deleting workspace
     update_cache_background()
     return result.returncode
@@ -883,6 +805,17 @@ Examples:
     print(help_text)
 
 
+_clone_manager: WorkspaceCloneManager | None = None
+
+
+def _get_clone_manager() -> WorkspaceCloneManager:
+    """Lazy factory for WorkspaceCloneManager."""
+    global _clone_manager
+    if _clone_manager is None:
+        _clone_manager = WorkspaceCloneManager()
+    return _clone_manager
+
+
 def main() -> int:
     """Main entry point for dl CLI."""
     args = sys.argv[1:]
@@ -901,7 +834,7 @@ def main() -> int:
             return 1
         workspace_up(selected)
         setup_work_symlink(selected)
-        return workspace_ssh(selected, workdir=get_work_symlink_path(), preserve_symlink=True)
+        return workspace_ssh(selected, workdir=get_work_symlink_path(selected), preserve_symlink=True)
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -965,7 +898,7 @@ def main() -> int:
         workspaces = list_workspaces()
         print("This will remove all devlaunch data:")
         print(f"  - {len(workspaces)} DevPod workspace(s)")
-        print(f"  - {cache_dir}/ (completion caches)")
+        print(f"  - {cache_dir}/ (workspace clones, repo caches, completions)")
         print()
         if skip_confirm:
             return purge_all_data()
@@ -994,16 +927,42 @@ def main() -> int:
         workspace_spec = raw_spec
         workspace_id = raw_spec
         custom_id = None  # Don't pass --id for existing workspaces
+    elif parsed:
+        # Git spec (owner/repo[@branch]) — clone locally and pass local path to DevPod
+        owner_repo, branch = parsed
+        owner, repo = owner_repo.split("/", 1)
+        remote_url = f"git@github.com:{owner_repo}.git"
+        clone_mgr = _get_clone_manager()
+
+        # Ensure bare repo exists + resolve default branch if not specified
+        clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+        if not branch:
+            branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
+
+        # Ensure branch exists in bare repo (create on remote if needed)
+        try:
+            clone_mgr.ensure_branch(owner, repo, branch, remote_url)
+        except (RuntimeError, OSError) as e:
+            logging.error(f"Failed to ensure branch '{branch}': {e}")
+            return 1
+
+        # Compute workspace ID with resolved branch
+        workspace_id = spec_to_workspace_id(f"{owner_repo}@{branch}")
+        custom_id = workspace_id
+
+        # Create workspace clone
+        try:
+            workspace_path = clone_mgr.ensure_workspace(
+                owner, repo, branch, remote_url, workspace_id
+            )
+            workspace_spec = str(workspace_path)
+        except (RuntimeError, OSError) as e:
+            logging.error(f"Failed to prepare workspace: {e}")
+            return 1
     else:
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
         custom_id = workspace_id  # Pass --id to create with our desired ID
-
-    # For new git repos with a branch, ensure the branch exists (create if needed)
-    if parsed and parsed[1]:  # Has owner/repo and branch
-        owner_repo, branch = parsed
-        if not ensure_remote_branch(owner_repo, branch):
-            return 1
 
     # Handle workspace subcommands
     if subcommand == "stop":
@@ -1021,7 +980,7 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_work_symlink(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(), preserve_symlink=True)
+        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True)
 
     if subcommand == "restart":
         # Stop and start without rebuilding
@@ -1032,7 +991,7 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_work_symlink(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(), preserve_symlink=True)
+        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True)
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
@@ -1040,7 +999,7 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_work_symlink(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(), preserve_symlink=True)
+        return workspace_ssh(workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True)
 
     # Check for shell command (after --)
     shell_command = None
@@ -1070,7 +1029,7 @@ def main() -> int:
     ret = workspace_ssh(
         workspace_id,
         shell_command,
-        workdir=get_work_symlink_path(),
+        workdir=get_work_symlink_path(workspace_id),
         preserve_symlink=True,
     )
 

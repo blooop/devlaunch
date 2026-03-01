@@ -248,6 +248,27 @@ class TestMetadataStorage:
         assert len(worktrees) == 1
         assert worktrees[0].owner == "owner1"
 
+    def test_get_worktree_by_workspace_id(self, temp_storage):
+        """Test looking up a worktree by workspace ID."""
+        wt = WorktreeInfo(
+            owner="owner1",
+            repo="repo1",
+            branch="main",
+            local_path=Path("/tmp/worktrees/owner1/repo1/main"),
+            workspace_id="repo1-main",
+        )
+        temp_storage.add_worktree(wt)
+
+        result = temp_storage.get_worktree_by_workspace_id("repo1-main")
+        assert result is not None
+        assert result.owner == "owner1"
+        assert result.branch == "main"
+
+    def test_get_worktree_by_workspace_id_not_found(self, temp_storage):
+        """Test looking up a nonexistent workspace ID returns None."""
+        result = temp_storage.get_worktree_by_workspace_id("nonexistent")
+        assert result is None
+
     def test_remove_worktree(self, temp_storage):
         """Test removing a worktree."""
         repo = BaseRepository(

@@ -5,6 +5,7 @@ from .config import WorktreeConfig, get_worktree_config
 from .models import BaseRepository, WorktreeInfo
 from .repo_manager import RepositoryManager
 from .storage import MetadataStorage
+from .workspace_clone import WorkspaceCloneManager
 
 __all__ = [
     "BaseRepository",
@@ -14,4 +15,5 @@ __all__ = [
     "BranchManager",
     "MetadataStorage",
     "RepositoryManager",
+    "WorkspaceCloneManager",
 ]

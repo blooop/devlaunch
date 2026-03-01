@@ -109,6 +109,13 @@ class MetadataStorage:
 
         return worktrees
 
+    def get_worktree_by_workspace_id(self, workspace_id: str) -> Optional[WorktreeInfo]:
+        """Look up a worktree by its DevPod workspace ID."""
+        for worktree in self.worktrees.values():
+            if worktree.workspace_id == workspace_id:
+                return worktree
+        return None
+
     def remove_worktree(self, owner: str, repo: str, branch: str) -> None:
         """Remove a worktree."""
         key = f"{owner}/{repo}/{branch}"
