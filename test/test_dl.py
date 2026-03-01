@@ -1491,20 +1491,14 @@ class TestGetWorkspaceState:
     @patch("devlaunch.dl.run_devpod")
     def test_running_state(self, mock_run):
         """Test returns 'Running' for a running workspace."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=json.dumps({"state": "Running"})
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps({"state": "Running"}))
         assert get_workspace_state("myws") == "Running"
-        mock_run.assert_called_once_with(
-            ["status", "myws", "--output", "json"], capture=True
-        )
+        mock_run.assert_called_once_with(["status", "myws", "--output", "json"], capture=True)
 
     @patch("devlaunch.dl.run_devpod")
     def test_stopped_state(self, mock_run):
         """Test returns 'Stopped' for a stopped workspace."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=json.dumps({"state": "Stopped"})
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps({"state": "Stopped"}))
         assert get_workspace_state("myws") == "Stopped"
 
     @patch("devlaunch.dl.run_devpod")
@@ -1522,9 +1516,7 @@ class TestGetWorkspaceState:
     @patch("devlaunch.dl.run_devpod")
     def test_missing_state_key(self, mock_run):
         """Test returns None when state key is missing."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=json.dumps({"id": "myws"})
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps({"id": "myws"}))
         assert get_workspace_state("myws") is None
 
 
