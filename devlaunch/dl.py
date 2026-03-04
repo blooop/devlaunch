@@ -1117,15 +1117,19 @@ def main() -> int:
     # Fast-attach: skip workspace_up() if workspace is already running
     if custom_id is None and get_workspace_state(workspace_id) == "Running":
         logging.info(f"Workspace {workspace_id} is already running, attaching...")
-        setup_work_symlink(workspace_id)
-        ret = workspace_ssh(
-            workspace_id,
-            shell_command,
-            workdir=get_work_symlink_path(workspace_id),
-            preserve_symlink=True,
-        )
-        update_cache_background()
-        return ret
+        if not setup_work_symlink(workspace_id):
+            logging.warning(
+                "SSH tunnel not ready, falling back to workspace_up()..."
+            )
+        else:
+            ret = workspace_ssh(
+                workspace_id,
+                shell_command,
+                workdir=get_work_symlink_path(workspace_id),
+                preserve_symlink=True,
+            )
+            update_cache_background()
+            return ret
 
     # Default: start workspace and attach shell
     try:
