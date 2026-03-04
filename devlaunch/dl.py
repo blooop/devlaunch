@@ -1119,8 +1119,9 @@ def main() -> int:
         logging.info(f"Workspace {workspace_id} is already running, attaching...")
         if not setup_work_symlink(workspace_id):
             logging.warning(
-                "SSH tunnel not ready, falling back to workspace_up()..."
+                "SSH tunnel not ready, restarting workspace..."
             )
+            workspace_stop(workspace_id)
         else:
             ret = workspace_ssh(
                 workspace_id,
