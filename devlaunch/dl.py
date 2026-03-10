@@ -332,16 +332,6 @@ def sanitize_workspace_id(name: str) -> str:
     return name.lower().replace("/", "-")
 
 
-def get_work_symlink_path(workspace_id: str) -> str:
-    """Get the symlink path used for shorter terminal prompts.
-
-    Returns ~/<workspace_id> which is a symlink to the actual workspace directory.
-    This gives users a short path that includes the project name in their prompt.
-    e.g. ~/python-template (main) instead of ~/work (main)
-    """
-    return f"/home/vscode/{workspace_id}"
-
-
 def get_container_workdir(workspace_id: str) -> str:
     """Get the container working directory for a workspace.
 
@@ -350,24 +340,26 @@ def get_container_workdir(workspace_id: str) -> str:
     return f"/workspaces/{workspace_id}"
 
 
-def setup_work_symlink(workspace_id: str) -> bool:
-    """Create ~/work symlink pointing to the workspace directory.
+def setup_hostname(workspace_id: str) -> bool:
+    """Set the container hostname so the terminal prompt shows the project/branch.
 
-    This provides a shorter path for terminal prompts. Instead of seeing
-    /workspaces/blooop-bencher-main in the prompt, users see ~/work.
+    The hostname appears in the bash prompt (user@hostname:path$), giving users
+    a clear indicator of which project and branch they're in.
+
+    Best-effort: silently ignores failures (e.g. if sudo is unavailable via
+    devpod ssh). The workspace path already contains the workspace ID.
 
     Args:
-        workspace_id: The DevPod workspace ID to SSH into
+        workspace_id: The DevPod workspace ID (e.g. 'bencher-ws5')
 
     Returns:
-        True if symlink was created successfully, False otherwise
+        True if hostname was set successfully, False otherwise
     """
-    symlink_path = get_work_symlink_path(workspace_id)
-    workdir = get_container_workdir(workspace_id)
-    # Use ln -sfn: -s for symlink, -f to force overwrite, -n to not dereference
-    symlink_cmd = f"ln -sfn {workdir} {symlink_path}"
-    result = workspace_ssh(workspace_id, command=symlink_cmd)
-    return result == 0
+    result = run_devpod(
+        ["ssh", workspace_id, "--command", f"sudo hostname {workspace_id}"],
+        capture=True,
+    )
+    return result.returncode == 0
 
 
 def spec_to_workspace_id(spec: str) -> str:
@@ -763,7 +755,6 @@ def workspace_ssh(
     workspace: str,
     command: Optional[str] = None,
     workdir: Optional[str] = None,
-    preserve_symlink: bool = False,
 ) -> int:
     """SSH into a workspace, optionally running a command.
 
@@ -771,28 +762,13 @@ def workspace_ssh(
         workspace: The workspace ID to SSH into
         command: Optional command to run (if None, starts interactive shell)
         workdir: Working directory to start in
-        preserve_symlink: If True and workdir is set, use 'cd' instead of --workdir
-                         to preserve symlink paths in $PWD (for shorter prompts)
     """
     args = ["ssh", workspace]
 
-    # If preserve_symlink is True, we use 'cd' instead of --workdir
-    # because DevPod's --workdir resolves symlinks, but 'cd' preserves them in $PWD
-    if workdir and preserve_symlink:
-        if command:
-            # Wrap the command with cd
-            wrapped_cmd = f"cd {workdir} && {command}"
-            args.extend(["--command", wrapped_cmd])
-        else:
-            # For interactive shell, cd and exec a login shell
-            wrapped_cmd = f"cd {workdir} && exec $SHELL -l"
-            args.extend(["--command", wrapped_cmd])
-    else:
-        # Standard behavior: use --workdir (resolves symlinks)
-        if workdir:
-            args.extend(["--workdir", workdir])
-        if command:
-            args.extend(["--command", command])
+    if workdir:
+        args.extend(["--workdir", workdir])
+    if command:
+        args.extend(["--command", command])
 
     logging.info(f"SSH command: devpod {' '.join(args)}")
     result = run_devpod(args)
@@ -914,9 +890,9 @@ def main() -> int:
             print_help()
             return 1
         workspace_up(selected)
-        setup_work_symlink(selected)
+        setup_hostname(selected)
         return workspace_ssh(
-            selected, workdir=get_work_symlink_path(selected), preserve_symlink=True
+            selected, workdir=get_container_workdir(selected)
         )
 
     # Global commands (no workspace required)
@@ -1075,9 +1051,9 @@ def main() -> int:
         result = workspace_up(workspace_spec, recreate=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
-        setup_work_symlink(workspace_id)
+        setup_hostname(workspace_id)
         return workspace_ssh(
-            workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True
+            workspace_id, workdir=get_container_workdir(workspace_id)
         )
 
     if subcommand == "restart":
@@ -1088,9 +1064,9 @@ def main() -> int:
         result = workspace_up(workspace_spec, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
-        setup_work_symlink(workspace_id)
+        setup_hostname(workspace_id)
         return workspace_ssh(
-            workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True
+            workspace_id, workdir=get_container_workdir(workspace_id)
         )
 
     if subcommand == "reset":
@@ -1098,9 +1074,9 @@ def main() -> int:
         result = workspace_up(workspace_spec, reset=True, workspace_id=custom_id)
         if result.returncode != 0:
             return result.returncode
-        setup_work_symlink(workspace_id)
+        setup_hostname(workspace_id)
         return workspace_ssh(
-            workspace_id, workdir=get_work_symlink_path(workspace_id), preserve_symlink=True
+            workspace_id, workdir=get_container_workdir(workspace_id)
         )
 
     # Check for shell command (after --)
@@ -1117,12 +1093,11 @@ def main() -> int:
     # Fast-attach: skip workspace_up() if workspace is already running
     if custom_id is None and get_workspace_state(workspace_id) == "Running":
         logging.info(f"Workspace {workspace_id} is already running, attaching...")
-        setup_work_symlink(workspace_id)
+        setup_hostname(workspace_id)
         ret = workspace_ssh(
             workspace_id,
             shell_command,
-            workdir=get_work_symlink_path(workspace_id),
-            preserve_symlink=True,
+            workdir=get_container_workdir(workspace_id),
         )
         update_cache_background()
         return ret
@@ -1137,15 +1112,14 @@ def main() -> int:
     if result.returncode != 0:
         return result.returncode
 
-    # Create ~/work symlink for shorter terminal prompt
-    setup_work_symlink(workspace_id)
+    # Set hostname so terminal prompt shows project/branch
+    setup_hostname(workspace_id)
 
-    # Attach to workspace via ~/work symlink (preserves short path in $PWD)
+    # Attach to workspace
     ret = workspace_ssh(
         workspace_id,
         shell_command,
-        workdir=get_work_symlink_path(workspace_id),
-        preserve_symlink=True,
+        workdir=get_container_workdir(workspace_id),
     )
 
     # Update cache after workspace operations
