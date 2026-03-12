@@ -334,10 +334,12 @@ class TestEnsureBranchExists:
     @patch.object(BranchManager, "local_branch_exists")
     @patch.object(BranchManager, "remote_branch_exists")
     @patch.object(BranchManager, "create_local_branch")
+    @patch.object(BranchManager, "push_branch_to_remote")
     @patch.object(BranchManager, "track_remote_branch")
     def test_branch_custom_start_point(
         self,
         mock_track,
+        mock_push,
         mock_create,
         mock_remote_exists,
         mock_local_exists,
@@ -353,6 +355,7 @@ class TestEnsureBranchExists:
         )
 
         mock_create.assert_called_once_with(temp_repo, "new-branch", "origin/main")
+        mock_push.assert_not_called()
 
 
 class TestEnsureBranchExistsUseLocalRefs:
