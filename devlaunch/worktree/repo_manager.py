@@ -146,6 +146,20 @@ class RepositoryManager:
         elapsed = (datetime.now() - repo.last_fetched).total_seconds()
         return elapsed > self.fetch_interval
 
+    def lazy_fetch(self, owner: str, repo: str) -> bool:
+        """Fetch only if the fetch interval has elapsed since the last fetch.
+
+        Returns True if a fetch was performed, False if skipped.
+        Raises ValueError if the repository is not in metadata.
+        """
+        base_repo = self.storage.get_repository(owner, repo)
+        if not base_repo:
+            raise ValueError(f"Repository {owner}/{repo} not found in metadata")
+        if self._should_fetch(base_repo):
+            self.fetch_repo(owner, repo)
+            return True
+        return False
+
     def ensure_repo(
         self, owner: str, repo: str, remote_url: str, auto_fetch: bool = True
     ) -> BaseRepository:
