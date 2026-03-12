@@ -114,7 +114,7 @@ class RepositoryManager:
         try:
             # Fetch all branches and tags
             result = subprocess.run(
-                ["git", "fetch", "--all", "--tags", "--prune"],
+                ["git", "fetch", "origin", "+refs/heads/*:refs/heads/*", "--tags", "--prune"],
                 cwd=bare_path,
                 capture_output=True,
                 text=True,

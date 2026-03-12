@@ -142,7 +142,8 @@ class TestRepositoryManager:
         assert mock_run.called
         call_args = mock_run.call_args[0][0]
         assert "fetch" in call_args
-        assert "--all" in call_args
+        assert "origin" in call_args
+        assert "+refs/heads/*:refs/heads/*" in call_args
 
     def test_fetch_repo_not_exists(self, repo_manager):
         """Test fetch raises error for non-existent repo."""

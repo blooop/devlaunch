@@ -24,6 +24,8 @@ from .models import WorktreeInfo
 from .repo_manager import RepositoryManager
 from .storage import MetadataStorage
 
+_SAFE_REF_RE = re.compile(r"^[\w][\w./-]*$")
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +78,29 @@ class WorkspaceCloneManager:
         ws_path = self.get_workspace_path(owner, repo, branch)
         return ws_path.exists() and (ws_path / ".git").exists()
 
+    @staticmethod
+    def _validate_ref(name: str) -> str:
+        """Validate a git ref name to prevent malicious input in subprocess calls."""
+        if not _SAFE_REF_RE.match(name):
+            raise ValueError(f"Invalid git ref name: {name!r}")
+        return name
+
+    def _remote_ref_exists(self, ws_path: Path, branch: str, remote: str = "origin") -> bool:
+        """Check if a remote tracking ref exists in a workspace."""
+        result = subprocess.run(
+            [
+                "git",
+                "show-ref",
+                "--verify",
+                f"refs/remotes/{self._validate_ref(remote)}/{self._validate_ref(branch)}",
+            ],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+
     def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
         """Ensure a branch exists in the bare repo.
 
@@ -122,10 +147,11 @@ class WorkspaceCloneManager:
         bare_repo_path = self.repo_manager.get_bare_path(owner, repo)
 
         ws_path = self.get_workspace_path(owner, repo, branch)
+        is_new_workspace = False
 
-        newly_created = False
+        is_new_workspace = False
         if not self.workspace_exists(owner, repo, branch):
-            newly_created = True
+            is_new_workspace = True
             # Step 2: Clone from bare repo
             logger.info(f"Creating workspace clone at {ws_path}")
             ws_path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +184,7 @@ class WorkspaceCloneManager:
 
         # Step 4: Fetch from origin — skip for newly-created workspaces since
         # they were just cloned from a freshly-fetched bare repo.
-        if not newly_created:
+        if not is_new_workspace:
             try:
                 subprocess.run(
                     ["git", "fetch", "origin"],
@@ -172,8 +198,33 @@ class WorkspaceCloneManager:
 
         # Step 5: Checkout branch
         try:
+            if is_new_workspace:
+                # For new workspaces, reset the branch to the remote ref to
+                # ensure we start from the latest commit, not a stale clone.
+                self._validate_ref(branch)
+                if self._remote_ref_exists(ws_path, branch):
+                    checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
+                else:
+                    base_repo = self.repo_manager.get_repo(owner, repo)
+                    default_branch = base_repo.default_branch if base_repo else "main"
+                    if not self._remote_ref_exists(ws_path, default_branch):
+                        raise RuntimeError(
+                            f"Cannot create branch '{branch}': neither "
+                            f"'origin/{branch}' nor 'origin/{default_branch}' "
+                            f"exist on the remote"
+                        )
+                    checkout_cmd = [
+                        "git",
+                        "checkout",
+                        "-B",
+                        branch,
+                        f"origin/{default_branch}",
+                    ]
+            else:
+                # Existing workspace: plain checkout preserves local work
+                checkout_cmd = ["git", "checkout", branch]
             subprocess.run(
-                ["git", "checkout", branch],
+                checkout_cmd,
                 cwd=ws_path,
                 capture_output=True,
                 text=True,
