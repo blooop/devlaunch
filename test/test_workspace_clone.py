@@ -212,10 +212,13 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = bare_path
 
-        # show-ref returns non-zero (branch doesn't exist on remote)
+        # show-ref returns non-zero for the requested branch, zero for the default
         def run_side_effect(cmd, *args, **kwargs):
             if cmd[0:3] == ["git", "show-ref", "--verify"]:
-                return MagicMock(returncode=1)
+                if "new-feature" in cmd[3]:
+                    return MagicMock(returncode=1)
+                # default branch (main) exists on remote
+                return MagicMock(returncode=0)
             return MagicMock(returncode=0)
 
         mock_run.side_effect = run_side_effect
@@ -233,6 +236,33 @@ class TestEnsureWorkspace:
         assert checkout_call[0][0] == [
             "git", "checkout", "-B", "new-feature", "origin/main",
         ]
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_new_workspace_raises_when_no_remote_refs(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Test error when neither branch nor default branch exist on remote."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
+
+        # show-ref always returns non-zero (no remote refs exist)
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[0:3] == ["git", "show-ref", "--verify"]:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = run_side_effect
+
+        base_repo = MagicMock()
+        base_repo.default_branch = "main"
+        mock_repo_manager.get_repo.return_value = base_repo
+
+        with pytest.raises(RuntimeError, match="neither 'origin/new-feature' nor 'origin/main'"):
+            clone_manager.ensure_workspace(
+                "owner", "repo", "new-feature", "git@github.com:owner/repo.git", "repo-nf"
+            )
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_existing_workspace_uses_plain_checkout(
@@ -384,6 +414,28 @@ class TestRemoveWorkspaceById:
         result = clone_manager.remove_workspace_by_id("nonexistent")
 
         assert result is False
+
+
+class TestValidateRef:
+    """Tests for _validate_ref."""
+
+    def test_accepts_simple_branch(self, clone_manager):
+        assert clone_manager._validate_ref("main") == "main"
+
+    def test_accepts_slashes(self, clone_manager):
+        assert clone_manager._validate_ref("feature/my-branch") == "feature/my-branch"
+
+    def test_rejects_leading_dash(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref name"):
+            clone_manager._validate_ref("--evil")
+
+    def test_rejects_empty(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref name"):
+            clone_manager._validate_ref("")
+
+    def test_rejects_spaces(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref name"):
+            clone_manager._validate_ref("branch name")
 
 
 class TestRemoteRefExists:

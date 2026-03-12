@@ -24,6 +24,8 @@ from .models import WorktreeInfo
 from .repo_manager import RepositoryManager
 from .storage import MetadataStorage
 
+_SAFE_REF_RE = re.compile(r"^[\w][\w./-]*$")
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,10 +78,18 @@ class WorkspaceCloneManager:
         ws_path = self.get_workspace_path(owner, repo, branch)
         return ws_path.exists() and (ws_path / ".git").exists()
 
+    @staticmethod
+    def _validate_ref(name: str) -> str:
+        """Validate a git ref name to prevent malicious input in subprocess calls."""
+        if not _SAFE_REF_RE.match(name):
+            raise ValueError(f"Invalid git ref name: {name!r}")
+        return name
+
     def _remote_ref_exists(self, ws_path: Path, branch: str, remote: str = "origin") -> bool:
         """Check if a remote tracking ref exists in a workspace."""
         result = subprocess.run(
-            ["git", "show-ref", "--verify", f"refs/remotes/{remote}/{branch}"],
+            ["git", "show-ref", "--verify",
+             f"refs/remotes/{self._validate_ref(remote)}/{self._validate_ref(branch)}"],
             cwd=ws_path,
             capture_output=True,
             text=True,
@@ -176,11 +186,18 @@ class WorkspaceCloneManager:
             if is_new_workspace:
                 # For new workspaces, reset the branch to the remote ref to
                 # ensure we start from the latest commit, not a stale clone.
+                self._validate_ref(branch)
                 if self._remote_ref_exists(ws_path, branch):
                     checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
                 else:
                     base_repo = self.repo_manager.get_repo(owner, repo)
                     default_branch = base_repo.default_branch if base_repo else "main"
+                    if not self._remote_ref_exists(ws_path, default_branch):
+                        raise RuntimeError(
+                            f"Cannot create branch '{branch}': neither "
+                            f"'origin/{branch}' nor 'origin/{default_branch}' "
+                            f"exist on the remote"
+                        )
                     checkout_cmd = [
                         "git", "checkout", "-B", branch, f"origin/{default_branch}",
                     ]
