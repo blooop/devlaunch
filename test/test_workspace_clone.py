@@ -164,7 +164,7 @@ class TestEnsureBranch:
         """Test that ensure_branch falls back to HEAD when get_default_branch raises."""
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
-        mock_repo_manager.get_default_branch.side_effect = RuntimeError("no HEAD")
+        mock_repo_manager.get_default_branch.side_effect = OSError("no HEAD")
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
@@ -193,6 +193,35 @@ class TestEnsureBranch:
             start_point="HEAD",
             use_local_refs=True,
         )
+
+    def test_falls_back_to_head_if_get_default_branch_returns_none(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
+        """Test that ensure_branch falls back to HEAD when get_default_branch returns None."""
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = None
+
+        clone_manager.ensure_branch("owner", "repo", "newbranch")
+
+        mock_branch_manager.ensure_branch_exists.assert_called_once_with(
+            bare_path,
+            "newbranch",
+            create_remote=False,
+            start_point="HEAD",
+            use_local_refs=True,
+        )
+
+    def test_unexpected_exception_propagates_from_get_default_branch(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
+        """Test that non-subprocess exceptions from get_default_branch are not swallowed."""
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.side_effect = TypeError("unexpected bug")
+
+        with pytest.raises(TypeError, match="unexpected bug"):
+            clone_manager.ensure_branch("owner", "repo", "newbranch")
 
 
 class TestEnsureWorkspace:

@@ -116,8 +116,8 @@ class WorkspaceCloneManager:
 
         try:
             default_branch = self.repo_manager.get_default_branch(owner, repo)
-        except Exception as e:
-            logger.warning(f"Failed to resolve default branch: {e}")
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning(f"Failed to resolve default branch for {owner}/{repo}: {e}")
             default_branch = None
 
         self.branch_manager.ensure_branch_exists(
