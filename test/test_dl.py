@@ -1354,9 +1354,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "--", "echo", "hello"]):
             result = main()
         assert result == 0
-        mock_ssh.assert_called_once_with(
-            "myws", "echo hello", workdir="/workspaces/myws"
-        )
+        mock_ssh.assert_called_once_with("myws", "echo hello", workdir="/workspaces/myws")
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -1372,9 +1370,7 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_up.assert_called_once()
-        mock_ssh.assert_called_once_with(
-            "myws", None, workdir="/workspaces/myws"
-        )
+        mock_ssh.assert_called_once_with("myws", None, workdir="/workspaces/myws")
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1405,9 +1401,7 @@ class TestMainCLI:
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
         )
         mock_up.assert_called_once_with("/tmp/ws/repo-main", workspace_id="repo-main")
-        mock_ssh.assert_called_once_with(
-            "repo-main", None, workdir="/workspaces/repo-main"
-        )
+        mock_ssh.assert_called_once_with("repo-main", None, workdir="/workspaces/repo-main")
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1781,9 +1775,7 @@ class TestFastAttach:
         # workspace_up should NOT be called (fast-attach)
         mock_up.assert_not_called()
         # Should SSH in to attach
-        mock_ssh.assert_called_once_with(
-            "repo-main", None, workdir="/workspaces/repo-main"
-        )
+        mock_ssh.assert_called_once_with("repo-main", None, workdir="/workspaces/repo-main")
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")

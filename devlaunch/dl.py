@@ -891,9 +891,7 @@ def main() -> int:
             return 1
         workspace_up(selected)
         setup_hostname(selected)
-        return workspace_ssh(
-            selected, workdir=get_container_workdir(selected)
-        )
+        return workspace_ssh(selected, workdir=get_container_workdir(selected))
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -1052,9 +1050,7 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(
-            workspace_id, workdir=get_container_workdir(workspace_id)
-        )
+        return workspace_ssh(workspace_id, workdir=get_container_workdir(workspace_id))
 
     if subcommand == "restart":
         # Stop and start without rebuilding
@@ -1065,9 +1061,7 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(
-            workspace_id, workdir=get_container_workdir(workspace_id)
-        )
+        return workspace_ssh(workspace_id, workdir=get_container_workdir(workspace_id))
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
@@ -1075,9 +1069,7 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(
-            workspace_id, workdir=get_container_workdir(workspace_id)
-        )
+        return workspace_ssh(workspace_id, workdir=get_container_workdir(workspace_id))
 
     # Check for shell command (after --)
     shell_command = None
