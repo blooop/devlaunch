@@ -21,13 +21,25 @@ class BranchManager:
         remote: str = "origin",
         create_remote: bool = True,
         ssh_key_path: Optional[str] = None,
+        start_point: str = "HEAD",
+        use_local_refs: bool = False,
     ) -> None:
-        """Ensure branch exists locally and optionally remotely."""
+        """Ensure branch exists locally and optionally remotely.
+
+        Args:
+            use_local_refs: When True, infer remote branch existence from local
+                refs instead of calling ``git ls-remote``.  Safe in bare repos
+                whose refspec maps remote heads to local heads (the default
+                ``+refs/heads/*:refs/heads/*``).
+        """
         # Check if branch exists locally
         local_exists = self.local_branch_exists(base_repo_path, branch)
 
         # Check if branch exists remotely
-        remote_exists = self.remote_branch_exists(base_repo_path, branch, remote)
+        if use_local_refs:
+            remote_exists = local_exists
+        else:
+            remote_exists = self.remote_branch_exists(base_repo_path, branch, remote)
 
         if local_exists and remote_exists:
             logger.info(f"Branch {branch} already exists locally and remotely")
@@ -42,7 +54,7 @@ class BranchManager:
 
         if not local_exists:
             # Create new local branch
-            self.create_local_branch(base_repo_path, branch)
+            self.create_local_branch(base_repo_path, branch, start_point)
             logger.info(f"Created local branch {branch}")
 
         if not remote_exists and create_remote:

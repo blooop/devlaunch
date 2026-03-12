@@ -121,15 +121,21 @@ class TestEnsureBranch:
     def test_fetches_then_ensures(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
     ):
-        """Test that ensure_branch fetches then delegates to BranchManager."""
+        """Test that ensure_branch lazy-fetches then delegates to BranchManager."""
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
-        mock_repo_manager.fetch_repo.assert_called_once_with("owner", "repo")
+        mock_repo_manager.lazy_fetch.assert_called_once_with("owner", "repo")
+        mock_repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
-            bare_path, "newbranch", create_remote=False
+            bare_path,
+            "newbranch",
+            create_remote=False,
+            start_point="main",
+            use_local_refs=True,
         )
 
     def test_continues_if_fetch_fails(
@@ -138,12 +144,18 @@ class TestEnsureBranch:
         """Test that ensure_branch continues even if fetch fails."""
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
-        mock_repo_manager.fetch_repo.side_effect = RuntimeError("network error")
+        mock_repo_manager.lazy_fetch.side_effect = RuntimeError("network error")
+        mock_repo_manager.get_default_branch.return_value = "main"
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
+        mock_repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
-            bare_path, "newbranch", create_remote=False
+            bare_path,
+            "newbranch",
+            create_remote=False,
+            start_point="main",
+            use_local_refs=True,
         )
 
 
@@ -154,7 +166,11 @@ class TestEnsureWorkspace:
     def test_clones_from_bare_repo(
         self, mock_run, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir
     ):
-        """Test that a new workspace is cloned from the bare repo."""
+        """Test that a new workspace is cloned from the bare repo.
+
+        Newly-created workspaces skip ``git fetch origin`` because they were
+        just cloned from a freshly-fetched bare repo.
+        """
         mock_run.return_value = MagicMock(returncode=0)
         repo_root = tmp_repos_dir / "owner" / "repo"
         bare_path = repo_root / ".bare"
@@ -167,9 +183,9 @@ class TestEnsureWorkspace:
             "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
         )
 
-        # Should have called: git clone, git remote set-url, git fetch,
-        # git show-ref (remote ref check), git checkout -B
-        assert mock_run.call_count == 5
+        # Should have called: git clone, git remote set-url,
+        # git show-ref (remote ref check), git checkout -B (no fetch)
+        assert mock_run.call_count == 4
 
         # First call: git clone from bare repo
         clone_call = mock_run.call_args_list[0]
@@ -185,12 +201,8 @@ class TestEnsureWorkspace:
             "git@github.com:owner/repo.git",
         ]
 
-        # Third call: fetch origin
-        fetch_call = mock_run.call_args_list[2]
-        assert fetch_call[0][0] == ["git", "fetch", "origin"]
-
-        # Fourth call: show-ref to check remote branch (returns 0 = exists)
-        showref_call = mock_run.call_args_list[3]
+        # Third call: show-ref to check remote branch (returns 0 = exists)
+        showref_call = mock_run.call_args_list[2]
         assert showref_call[0][0] == [
             "git",
             "show-ref",
@@ -198,8 +210,8 @@ class TestEnsureWorkspace:
             "refs/remotes/origin/nb4",
         ]
 
-        # Fifth call: checkout -B from remote ref
-        checkout_call = mock_run.call_args_list[4]
+        # Fourth call: checkout -B from remote ref (no fetch for new workspaces)
+        checkout_call = mock_run.call_args_list[3]
         assert checkout_call[0][0] == ["git", "checkout", "-B", "nb4", "origin/nb4"]
 
         # Should track in metadata
@@ -361,6 +373,46 @@ class TestEnsureWorkspace:
         )
 
         assert result == repo_root / "main"
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_newly_created_workspace_skips_fetch(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Newly-created workspaces must not run ``git fetch origin``."""
+        mock_run.return_value = MagicMock(returncode=0)
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        clone_manager.ensure_workspace(
+            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
+        )
+
+        # No call should contain "git fetch origin"
+        fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
+        assert fetch_calls == []
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_existing_workspace_still_fetches(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Existing (stale) workspaces should still run ``git fetch origin``."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        # Create existing workspace
+        ws_path = repo_root / "nb4"
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        clone_manager.ensure_workspace(
+            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
+        )
+
+        fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
+        assert len(fetch_calls) == 1
 
 
 class TestRemoveWorkspace:

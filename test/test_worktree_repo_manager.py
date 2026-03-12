@@ -340,6 +340,80 @@ class TestRepositoryManager:
         assert repo_path.exists()  # Directory should still exist
 
 
+class TestLazyFetch:
+    """Tests for lazy_fetch method."""
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_lazy_fetch_performs_fetch_when_interval_elapsed(self, mock_run, repo_manager):
+        """Test lazy_fetch fetches when interval has elapsed."""
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
+
+        repo = BaseRepository(
+            owner="owner",
+            repo="repo",
+            remote_url="https://github.com/owner/repo.git",
+            local_path=bare_path,
+            last_fetched=None,  # Never fetched → should fetch
+        )
+        repo_manager.storage.add_repository(repo)
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        result = repo_manager.lazy_fetch("owner", "repo")
+
+        assert result is True
+        assert mock_run.called
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_lazy_fetch_skips_when_recent(self, mock_run, repo_manager):
+        """Test lazy_fetch skips fetch when recently fetched."""
+        from datetime import datetime
+
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
+
+        repo = BaseRepository(
+            owner="owner",
+            repo="repo",
+            remote_url="https://github.com/owner/repo.git",
+            local_path=bare_path,
+            last_fetched=datetime.now(),  # Just fetched
+        )
+        repo_manager.storage.add_repository(repo)
+
+        result = repo_manager.lazy_fetch("owner", "repo")
+
+        assert result is False
+        assert not mock_run.called
+
+    def test_lazy_fetch_raises_when_repo_missing(self, repo_manager):
+        """Test lazy_fetch raises ValueError when repo not in metadata."""
+        with pytest.raises(ValueError, match="not found in metadata"):
+            repo_manager.lazy_fetch("nonexistent", "repo")
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_lazy_fetch_propagates_fetch_error(self, mock_run, repo_manager):
+        """Test lazy_fetch propagates errors from fetch_repo."""
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
+
+        repo = BaseRepository(
+            owner="owner",
+            repo="repo",
+            remote_url="https://github.com/owner/repo.git",
+            local_path=bare_path,
+            last_fetched=None,
+        )
+        repo_manager.storage.add_repository(repo)
+        mock_run.side_effect = subprocess.CalledProcessError(1, "git fetch", stderr="fail")
+
+        with pytest.raises(RuntimeError, match="Failed to fetch"):
+            repo_manager.lazy_fetch("owner", "repo")
+
+
 class TestGetDefaultBranch:
     """Tests for _get_default_branch method."""
 

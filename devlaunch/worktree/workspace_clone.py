@@ -108,12 +108,20 @@ class WorkspaceCloneManager:
         locally if needed. Does not push to the remote.
         """
         bare_path = self.repo_manager.get_bare_path(owner, repo)
-        # Fetch first to have latest refs
+        # Lazy-fetch: only hits the network when the fetch interval has elapsed
         try:
-            self.repo_manager.fetch_repo(owner, repo)
+            self.repo_manager.lazy_fetch(owner, repo)
         except Exception as e:
             logger.warning(f"Failed to fetch before branch ensure: {e}")
-        self.branch_manager.ensure_branch_exists(bare_path, branch, create_remote=False)
+
+        default_branch = self.repo_manager.get_default_branch(owner, repo)
+        self.branch_manager.ensure_branch_exists(
+            bare_path,
+            branch,
+            create_remote=False,
+            start_point=default_branch,
+            use_local_refs=True,
+        )
 
     def ensure_workspace(
         self,
@@ -141,6 +149,7 @@ class WorkspaceCloneManager:
         ws_path = self.get_workspace_path(owner, repo, branch)
         is_new_workspace = False
 
+        is_new_workspace = False
         if not self.workspace_exists(owner, repo, branch):
             is_new_workspace = True
             # Step 2: Clone from bare repo
@@ -173,17 +182,19 @@ class WorkspaceCloneManager:
                 logger.error(f"Failed to set remote URL: {e.stderr}")
                 raise RuntimeError(f"Failed to set remote URL: {e.stderr}") from e
 
-        # Step 4: Fetch from origin to get all remote branches
-        try:
-            subprocess.run(
-                ["git", "fetch", "origin"],
-                cwd=ws_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"Failed to fetch in workspace: {e.stderr}")
+        # Step 4: Fetch from origin — skip for newly-created workspaces since
+        # they were just cloned from a freshly-fetched bare repo.
+        if not is_new_workspace:
+            try:
+                subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=ws_path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Failed to fetch in workspace: {e.stderr}")
 
         # Step 5: Checkout branch
         try:

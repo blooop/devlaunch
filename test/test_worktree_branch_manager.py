@@ -1,5 +1,5 @@
 """Tests for worktree branch manager."""
-# pylint: disable=redefined-outer-name
+# pylint: disable=redefined-outer-name,unused-argument
 
 import subprocess
 import tempfile
@@ -312,7 +312,7 @@ class TestEnsureBranchExists:
 
         branch_manager.ensure_branch_exists(temp_repo, "new-branch")
 
-        mock_create.assert_called_once_with(temp_repo, "new-branch")
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "HEAD")
         mock_push.assert_called_once()
         mock_track.assert_called_once()
 
@@ -328,7 +328,93 @@ class TestEnsureBranchExists:
 
         branch_manager.ensure_branch_exists(temp_repo, "new-branch", create_remote=False)
 
-        mock_create.assert_called_once()
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "HEAD")
+
+    @patch.object(BranchManager, "local_branch_exists")
+    @patch.object(BranchManager, "remote_branch_exists")
+    @patch.object(BranchManager, "create_local_branch")
+    @patch.object(BranchManager, "track_remote_branch")
+    def test_branch_custom_start_point(
+        self,
+        mock_track,
+        mock_create,
+        mock_remote_exists,
+        mock_local_exists,
+        branch_manager,
+        temp_repo,
+    ):
+        """Test ensure_branch_exists passes custom start_point to create_local_branch."""
+        mock_local_exists.return_value = False
+        mock_remote_exists.return_value = False
+
+        branch_manager.ensure_branch_exists(
+            temp_repo, "new-branch", create_remote=False, start_point="origin/main"
+        )
+
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "origin/main")
+
+
+class TestEnsureBranchExistsUseLocalRefs:
+    """Tests for ensure_branch_exists with use_local_refs=True."""
+
+    @patch.object(BranchManager, "local_branch_exists")
+    @patch.object(BranchManager, "remote_branch_exists")
+    def test_use_local_refs_skips_ls_remote_when_branch_exists(
+        self, mock_remote_exists, mock_local_exists, branch_manager, temp_repo
+    ):
+        """When use_local_refs=True and branch exists locally, remote_branch_exists is not called."""
+        mock_local_exists.return_value = True
+
+        branch_manager.ensure_branch_exists(temp_repo, "main", use_local_refs=True)
+
+        mock_local_exists.assert_called_once()
+        mock_remote_exists.assert_not_called()
+
+    @patch.object(BranchManager, "local_branch_exists")
+    @patch.object(BranchManager, "remote_branch_exists")
+    @patch.object(BranchManager, "create_local_branch")
+    @patch.object(BranchManager, "track_remote_branch")
+    def test_use_local_refs_creates_branch_when_missing(
+        self,
+        mock_track,
+        mock_create,
+        mock_remote_exists,
+        mock_local_exists,
+        branch_manager,
+        temp_repo,
+    ):
+        """When use_local_refs=True and branch missing locally, it is created without ls-remote."""
+        mock_local_exists.return_value = False
+
+        branch_manager.ensure_branch_exists(
+            temp_repo, "new-branch", create_remote=False, use_local_refs=True
+        )
+
+        mock_remote_exists.assert_not_called()
+        mock_create.assert_called_once_with(temp_repo, "new-branch", "HEAD")
+
+    @patch.object(BranchManager, "local_branch_exists")
+    @patch.object(BranchManager, "remote_branch_exists")
+    @patch.object(BranchManager, "create_local_branch")
+    @patch.object(BranchManager, "push_branch_to_remote")
+    @patch.object(BranchManager, "track_remote_branch")
+    def test_use_local_refs_false_still_calls_ls_remote(
+        self,
+        mock_track,
+        mock_push,
+        mock_create,
+        mock_remote_exists,
+        mock_local_exists,
+        branch_manager,
+        temp_repo,
+    ):
+        """Default use_local_refs=False still calls remote_branch_exists."""
+        mock_local_exists.return_value = False
+        mock_remote_exists.return_value = False
+
+        branch_manager.ensure_branch_exists(temp_repo, "new-branch")
+
+        mock_remote_exists.assert_called_once()
 
 
 class TestCreateRemoteBranchViaSSH:
