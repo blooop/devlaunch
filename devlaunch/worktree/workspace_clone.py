@@ -88,8 +88,12 @@ class WorkspaceCloneManager:
     def _remote_ref_exists(self, ws_path: Path, branch: str, remote: str = "origin") -> bool:
         """Check if a remote tracking ref exists in a workspace."""
         result = subprocess.run(
-            ["git", "show-ref", "--verify",
-             f"refs/remotes/{self._validate_ref(remote)}/{self._validate_ref(branch)}"],
+            [
+                "git",
+                "show-ref",
+                "--verify",
+                f"refs/remotes/{self._validate_ref(remote)}/{self._validate_ref(branch)}",
+            ],
             cwd=ws_path,
             capture_output=True,
             text=True,
@@ -199,7 +203,11 @@ class WorkspaceCloneManager:
                             f"exist on the remote"
                         )
                     checkout_cmd = [
-                        "git", "checkout", "-B", branch, f"origin/{default_branch}",
+                        "git",
+                        "checkout",
+                        "-B",
+                        branch,
+                        f"origin/{default_branch}",
                     ]
             else:
                 # Existing workspace: plain checkout preserves local work

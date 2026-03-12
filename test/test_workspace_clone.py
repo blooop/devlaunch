@@ -192,7 +192,10 @@ class TestEnsureWorkspace:
         # Fourth call: show-ref to check remote branch (returns 0 = exists)
         showref_call = mock_run.call_args_list[3]
         assert showref_call[0][0] == [
-            "git", "show-ref", "--verify", "refs/remotes/origin/nb4",
+            "git",
+            "show-ref",
+            "--verify",
+            "refs/remotes/origin/nb4",
         ]
 
         # Fifth call: checkout -B from remote ref
@@ -234,7 +237,11 @@ class TestEnsureWorkspace:
         # Last call should be checkout -B <branch> origin/main
         checkout_call = mock_run.call_args_list[-1]
         assert checkout_call[0][0] == [
-            "git", "checkout", "-B", "new-feature", "origin/main",
+            "git",
+            "checkout",
+            "-B",
+            "new-feature",
+            "origin/main",
         ]
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
