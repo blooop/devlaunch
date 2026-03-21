@@ -731,6 +731,21 @@ def fuzzy_select_workspace() -> Optional[str]:
     return None
 
 
+def get_context_option(name: str) -> Optional[str]:
+    """Read a devpod context option value (e.g. DOTFILES_URL)."""
+    result = run_devpod(
+        ["context", "options", "--output", "json"], capture=True
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        data = json.loads(result.stdout)
+        option = data.get(name, {})
+        return option.get("value") or None
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
 def workspace_up(
     workspace: str,
     ide: Optional[str] = None,
@@ -748,6 +763,12 @@ def workspace_up(
         args.append("--recreate")
     if reset:
         args.append("--reset")
+    dotfiles_url = get_context_option("DOTFILES_URL")
+    if dotfiles_url:
+        args.extend(["--dotfiles", dotfiles_url])
+    dotfiles_script = get_context_option("DOTFILES_SCRIPT")
+    if dotfiles_script:
+        args.extend(["--dotfiles-script", dotfiles_script])
     return run_devpod(args)
 
 
