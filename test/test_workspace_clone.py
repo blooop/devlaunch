@@ -1,5 +1,5 @@
 """Tests for WorkspaceCloneManager."""
-# pylint: disable=redefined-outer-name
+# pylint: disable=redefined-outer-name,protected-access,unused-argument
 
 from unittest.mock import patch, MagicMock
 
@@ -219,8 +219,9 @@ class TestEnsureWorkspace:
             "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
         )
 
-        # Should have called: git clone, git remote set-url, git checkout (no fetch)
-        assert mock_run.call_count == 3
+        # Should have called: git clone, git remote set-url,
+        # git show-ref (remote ref check), git checkout -B (no fetch)
+        assert mock_run.call_count == 4
 
         # First call: git clone from bare repo
         clone_call = mock_run.call_args_list[0]
@@ -236,12 +237,111 @@ class TestEnsureWorkspace:
             "git@github.com:owner/repo.git",
         ]
 
-        # Third call: checkout branch (no fetch for newly-created workspaces)
-        checkout_call = mock_run.call_args_list[2]
-        assert checkout_call[0][0] == ["git", "checkout", "nb4"]
+        # Third call: show-ref to check remote branch (returns 0 = exists)
+        showref_call = mock_run.call_args_list[2]
+        assert showref_call[0][0] == [
+            "git",
+            "show-ref",
+            "--verify",
+            "refs/remotes/origin/nb4",
+        ]
+
+        # Fourth call: checkout -B from remote ref (no fetch for new workspaces)
+        checkout_call = mock_run.call_args_list[3]
+        assert checkout_call[0][0] == ["git", "checkout", "-B", "nb4", "origin/nb4"]
 
         # Should track in metadata
         mock_storage.add_worktree.assert_called_once()
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_new_workspace_new_branch_bases_on_default(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Test that a new workspace for a new branch checks out from origin/<default>."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
+
+        # show-ref returns non-zero for the requested branch, zero for the default
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[0:3] == ["git", "show-ref", "--verify"]:
+                if "new-feature" in cmd[3]:
+                    return MagicMock(returncode=1)
+                # default branch (main) exists on remote
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = run_side_effect
+
+        base_repo = MagicMock()
+        base_repo.default_branch = "main"
+        mock_repo_manager.get_repo.return_value = base_repo
+
+        clone_manager.ensure_workspace(
+            "owner", "repo", "new-feature", "git@github.com:owner/repo.git", "repo-new-feature"
+        )
+
+        # Last call should be checkout -B <branch> origin/main
+        checkout_call = mock_run.call_args_list[-1]
+        assert checkout_call[0][0] == [
+            "git",
+            "checkout",
+            "-B",
+            "new-feature",
+            "origin/main",
+        ]
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_new_workspace_raises_when_no_remote_refs(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Test error when neither branch nor default branch exist on remote."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
+
+        # show-ref always returns non-zero (no remote refs exist)
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[0:3] == ["git", "show-ref", "--verify"]:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = run_side_effect
+
+        base_repo = MagicMock()
+        base_repo.default_branch = "main"
+        mock_repo_manager.get_repo.return_value = base_repo
+
+        with pytest.raises(RuntimeError, match="neither 'origin/new-feature' nor 'origin/main'"):
+            clone_manager.ensure_workspace(
+                "owner", "repo", "new-feature", "git@github.com:owner/repo.git", "repo-nf"
+            )
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_existing_workspace_uses_plain_checkout(
+        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Test that existing workspaces use plain checkout to preserve local work."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        # Create existing workspace
+        ws_path = repo_root / "nb4"
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        clone_manager.ensure_workspace(
+            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
+        )
+
+        # Should only call fetch + checkout (no clone, no remote set-url, no show-ref)
+        assert mock_run.call_count == 2
+        checkout_call = mock_run.call_args_list[1]
+        assert checkout_call[0][0] == ["git", "checkout", "nb4"]
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_existing_workspace_skips_clone(
@@ -310,7 +410,6 @@ class TestEnsureWorkspace:
 
         assert result == repo_root / "main"
 
-
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_newly_created_workspace_skips_fetch(
         self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
@@ -326,9 +425,7 @@ class TestEnsureWorkspace:
         )
 
         # No call should contain "git fetch origin"
-        fetch_calls = [
-            c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]
-        ]
+        fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
         assert fetch_calls == []
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
@@ -350,9 +447,7 @@ class TestEnsureWorkspace:
             "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
         )
 
-        fetch_calls = [
-            c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]
-        ]
+        fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
         assert len(fetch_calls) == 1
 
 
@@ -414,3 +509,73 @@ class TestRemoveWorkspaceById:
         result = clone_manager.remove_workspace_by_id("nonexistent")
 
         assert result is False
+
+
+class TestValidateRef:
+    """Tests for _validate_ref."""
+
+    def test_accepts_simple_branch(self, clone_manager):
+        assert clone_manager._validate_ref("main") == "main"
+
+    def test_accepts_slashes(self, clone_manager):
+        assert clone_manager._validate_ref("feature/my-branch") == "feature/my-branch"
+
+    def test_rejects_leading_dash(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref name"):
+            clone_manager._validate_ref("--evil")
+
+    def test_rejects_empty(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref name"):
+            clone_manager._validate_ref("")
+
+    def test_rejects_spaces(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref name"):
+            clone_manager._validate_ref("branch name")
+
+
+class TestRemoteRefExists:
+    """Tests for _remote_ref_exists."""
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_returns_true_when_ref_exists(self, mock_run, clone_manager, tmp_repos_dir):
+        """Test returns True when remote ref exists."""
+        mock_run.return_value = MagicMock(returncode=0)
+        ws_path = tmp_repos_dir / "ws"
+
+        result = clone_manager._remote_ref_exists(ws_path, "main")
+
+        assert result is True
+        mock_run.assert_called_once_with(
+            ["git", "show-ref", "--verify", "refs/remotes/origin/main"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_returns_false_when_ref_missing(self, mock_run, clone_manager, tmp_repos_dir):
+        """Test returns False when remote ref does not exist."""
+        mock_run.return_value = MagicMock(returncode=1)
+        ws_path = tmp_repos_dir / "ws"
+
+        result = clone_manager._remote_ref_exists(ws_path, "no-such-branch")
+
+        assert result is False
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_custom_remote(self, mock_run, clone_manager, tmp_repos_dir):
+        """Test with a custom remote name."""
+        mock_run.return_value = MagicMock(returncode=0)
+        ws_path = tmp_repos_dir / "ws"
+
+        result = clone_manager._remote_ref_exists(ws_path, "main", remote="upstream")
+
+        assert result is True
+        mock_run.assert_called_once_with(
+            ["git", "show-ref", "--verify", "refs/remotes/upstream/main"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )

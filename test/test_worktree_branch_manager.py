@@ -330,7 +330,6 @@ class TestEnsureBranchExists:
 
         mock_create.assert_called_once_with(temp_repo, "new-branch", "HEAD")
 
-
     @patch.object(BranchManager, "local_branch_exists")
     @patch.object(BranchManager, "remote_branch_exists")
     @patch.object(BranchManager, "create_local_branch")
