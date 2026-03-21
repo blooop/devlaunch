@@ -1483,9 +1483,7 @@ class TestMainCLI:
         """Test error when ensure_repo fails (no branch specified, triggers clone for default branch)."""
         mock_ids.return_value = []
         mock_mgr = MagicMock()
-        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
-            "repository not found"
-        )
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError("repository not found")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo"]):
             result = main()
@@ -2099,7 +2097,7 @@ class TestCLIErrorMessages:
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_workspace_up_exception(self, mock_ssh, mock_up, mock_ids, caplog):
+    def test_workspace_up_exception(self, _mock_ssh, mock_up, mock_ids, caplog):
         """workspace_up exception returns 1 with message."""
         mock_ids.return_value = ["myws"]
         mock_up.side_effect = RuntimeError("devpod crashed")
@@ -2218,7 +2216,7 @@ class TestCLIErrorMessages:
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_workspace_up_os_error(self, mock_ssh, mock_up, mock_ids, caplog):
+    def test_workspace_up_os_error(self, _mock_ssh, mock_up, mock_ids, caplog):
         """workspace_up OSError is caught and returns 1."""
         mock_ids.return_value = ["myws"]
         mock_up.side_effect = OSError("connection refused")

@@ -741,9 +741,7 @@ def fuzzy_select_workspace() -> Optional[str]:
 
 def get_context_option(name: str) -> Optional[str]:
     """Read a devpod context option value (e.g. DOTFILES_URL)."""
-    result = run_devpod(
-        ["context", "options", "--output", "json"], capture=True
-    )
+    result = run_devpod(["context", "options", "--output", "json"], capture=True)
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
