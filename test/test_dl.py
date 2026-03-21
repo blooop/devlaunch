@@ -38,10 +38,12 @@ from devlaunch.dl import (
     workspace_stop,
     workspace_delete,
     workspace_ssh,
+    workspace_up,
     run_devpod,
     get_container_workdir,
     setup_hostname,
     get_workspace_state,
+    get_context_options,
 )
 
 
@@ -1127,6 +1129,97 @@ class TestWorkspaceOperations:
         result = workspace_delete("myworkspace")
         mock_run.assert_called_once_with(["delete", "myworkspace"])
         assert result == 0
+
+
+class TestGetContextOptions:
+    """Tests for get_context_options function."""
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_options_with_values(self, mock_run):
+        """Options with a value are returned, empty ones are skipped."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "DOTFILES_URL": {
+                        "name": "DOTFILES_URL",
+                        "description": "desc",
+                        "value": "https://github.com/user/dots",
+                    },
+                    "DOTFILES_SCRIPT": {
+                        "name": "DOTFILES_SCRIPT",
+                        "description": "desc",
+                    },
+                    "TELEMETRY": {
+                        "name": "TELEMETRY",
+                        "description": "desc",
+                        "value": "",
+                    },
+                }
+            ),
+        )
+        result = get_context_options()
+        assert result == {"DOTFILES_URL": "https://github.com/user/dots"}
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_empty_on_failure(self, mock_run):
+        """Non-zero exit code returns empty dict."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert get_context_options() == {}
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_empty_on_bad_json(self, mock_run):
+        """Invalid JSON returns empty dict."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="not json")
+        assert get_context_options() == {}
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_empty_on_empty_stdout(self, mock_run):
+        """Empty stdout returns empty dict."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="  ")
+        assert get_context_options() == {}
+
+
+class TestWorkspaceUpDotfiles:
+    """Tests for dotfiles forwarding in workspace_up."""
+
+    @patch("devlaunch.dl.get_context_options")
+    @patch("devlaunch.dl.run_devpod")
+    def test_passes_dotfiles_url(self, mock_run, mock_ctx):
+        """workspace_up passes --dotfiles when DOTFILES_URL is set."""
+        mock_ctx.return_value = {"DOTFILES_URL": "https://github.com/u/dots"}
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("myws")
+        args = mock_run.call_args[0][0]
+        assert "--dotfiles" in args
+        idx = args.index("--dotfiles")
+        assert args[idx + 1] == "https://github.com/u/dots"
+
+    @patch("devlaunch.dl.get_context_options")
+    @patch("devlaunch.dl.run_devpod")
+    def test_passes_dotfiles_script(self, mock_run, mock_ctx):
+        """workspace_up passes --dotfiles-script when DOTFILES_SCRIPT is set."""
+        mock_ctx.return_value = {
+            "DOTFILES_URL": "https://github.com/u/dots",
+            "DOTFILES_SCRIPT": "install.sh",
+        }
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("myws")
+        args = mock_run.call_args[0][0]
+        assert "--dotfiles-script" in args
+        idx = args.index("--dotfiles-script")
+        assert args[idx + 1] == "install.sh"
+
+    @patch("devlaunch.dl.get_context_options")
+    @patch("devlaunch.dl.run_devpod")
+    def test_no_dotfiles_when_unset(self, mock_run, mock_ctx):
+        """workspace_up omits --dotfiles when no context options are set."""
+        mock_ctx.return_value = {}
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("myws")
+        args = mock_run.call_args[0][0]
+        assert "--dotfiles" not in args
+        assert "--dotfiles-script" not in args
 
 
 class TestPrintFunctions:
