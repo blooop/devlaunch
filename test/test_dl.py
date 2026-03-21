@@ -1880,6 +1880,88 @@ class TestFastAttach:
         mock_up.assert_not_called()
 
 
+class TestGetContextOptions:
+    """Tests for get_context_options()."""
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_option_values(self, mock_devpod):
+        """Returns dict of option name -> value."""
+        mock_devpod.return_value = MagicMock(
+            returncode=0,
+            stdout='{"DOTFILES_URL": {"value": "https://github.com/user/dots"}, "DOTFILES_SCRIPT": {"value": "install.sh"}}',
+        )
+        from devlaunch.dl import get_context_options
+
+        result = get_context_options()
+        assert result == {
+            "DOTFILES_URL": "https://github.com/user/dots",
+            "DOTFILES_SCRIPT": "install.sh",
+        }
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_skips_empty_values(self, mock_devpod):
+        """Options with empty or missing values are excluded."""
+        mock_devpod.return_value = MagicMock(
+            returncode=0,
+            stdout='{"DOTFILES_URL": {"value": ""}, "OTHER": {"value": "x"}}',
+        )
+        from devlaunch.dl import get_context_options
+
+        result = get_context_options()
+        assert result == {"OTHER": "x"}
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_empty_on_failure(self, mock_devpod):
+        """Returns empty dict when devpod command fails."""
+        mock_devpod.return_value = MagicMock(returncode=1, stdout="")
+        from devlaunch.dl import get_context_options
+
+        assert get_context_options() == {}
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_returns_empty_on_invalid_json(self, mock_devpod):
+        """Returns empty dict when output is not valid JSON."""
+        mock_devpod.return_value = MagicMock(returncode=0, stdout="not json")
+        from devlaunch.dl import get_context_options
+
+        assert get_context_options() == {}
+
+
+class TestWorkspaceUpDotfiles:
+    """Tests for dotfiles passthrough in workspace_up."""
+
+    @patch("devlaunch.dl.get_context_options")
+    @patch("devlaunch.dl.run_devpod")
+    def test_passes_dotfiles_args(self, mock_devpod, mock_ctx):
+        """workspace_up passes dotfiles URL and script from context."""
+        mock_ctx.return_value = {
+            "DOTFILES_URL": "https://github.com/user/dots",
+            "DOTFILES_SCRIPT": "install.sh",
+        }
+        mock_devpod.return_value = MagicMock(returncode=0)
+        from devlaunch.dl import workspace_up
+
+        workspace_up("myws")
+        args = mock_devpod.call_args[0][0]
+        assert "--dotfiles" in args
+        assert "https://github.com/user/dots" in args
+        assert "--dotfiles-script" in args
+        assert "install.sh" in args
+
+    @patch("devlaunch.dl.get_context_options")
+    @patch("devlaunch.dl.run_devpod")
+    def test_no_dotfiles_when_empty(self, mock_devpod, mock_ctx):
+        """workspace_up omits dotfiles args when context has none."""
+        mock_ctx.return_value = {}
+        mock_devpod.return_value = MagicMock(returncode=0)
+        from devlaunch.dl import workspace_up
+
+        workspace_up("myws")
+        args = mock_devpod.call_args[0][0]
+        assert "--dotfiles" not in args
+        assert "--dotfiles-script" not in args
+
+
 class TestCLIErrorMessages:
     """Comprehensive tests for CLI error messages and exit codes.
 

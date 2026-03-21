@@ -731,17 +731,16 @@ def fuzzy_select_workspace() -> Optional[str]:
     return None
 
 
-def get_context_option(name: str) -> Optional[str]:
-    """Read a devpod context option value (e.g. DOTFILES_URL)."""
+def get_context_options() -> dict:
+    """Fetch all devpod context options as a dict of {name: value}."""
     result = run_devpod(["context", "options", "--output", "json"], capture=True)
     if result.returncode != 0 or not result.stdout.strip():
-        return None
+        return {}
     try:
         data = json.loads(result.stdout)
-        option = data.get(name, {})
-        return option.get("value") or None
+        return {k: v.get("value") for k, v in data.items() if v.get("value")}
     except (json.JSONDecodeError, AttributeError):
-        return None
+        return {}
 
 
 def workspace_up(
@@ -761,12 +760,11 @@ def workspace_up(
         args.append("--recreate")
     if reset:
         args.append("--reset")
-    dotfiles_url = get_context_option("DOTFILES_URL")
-    if dotfiles_url:
-        args.extend(["--dotfiles", dotfiles_url])
-    dotfiles_script = get_context_option("DOTFILES_SCRIPT")
-    if dotfiles_script:
-        args.extend(["--dotfiles-script", dotfiles_script])
+    ctx = get_context_options()
+    if ctx.get("DOTFILES_URL"):
+        args.extend(["--dotfiles", ctx["DOTFILES_URL"]])
+    if ctx.get("DOTFILES_SCRIPT"):
+        args.extend(["--dotfiles-script", ctx["DOTFILES_SCRIPT"]])
     return run_devpod(args)
 
 
