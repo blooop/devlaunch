@@ -1479,6 +1479,34 @@ class TestMainCLI:
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
+    def test_main_clone_fails_no_branch(self, mock_clone_mgr, mock_ids):
+        """Test error when ensure_repo fails (no branch specified, triggers clone for default branch)."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
+            "repository not found"
+        )
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 1
+        mock_mgr.repo_manager.ensure_repo.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_main_clone_fails_with_branch(self, mock_clone_mgr, mock_ids):
+        """Test error when ensure_repo fails (branch specified, workspace not existing)."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = OSError("network unreachable")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
+            result = main()
+        assert result == 1
+        mock_mgr.repo_manager.ensure_repo.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
@@ -1896,3 +1924,319 @@ class TestFastAttach:
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up NOT called (Running)
         mock_up.assert_not_called()
+
+
+class TestCLIErrorMessages:
+    """Comprehensive tests for CLI error messages and exit codes.
+
+    Ensures every error path produces a single, clean error message
+    (no duplicates) and returns exit code 1.
+    """
+
+    # --- Invalid workspace spec errors ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_invalid_spec_bare_word(self, mock_ids, caplog):
+        """Bare word that isn't an existing workspace returns error."""
+        mock_ids.return_value = ["real-ws"]
+        with patch.object(sys, "argv", ["dl", "nonexistent"]):
+            result = main()
+        assert result == 1
+        assert "Unknown workspace 'nonexistent'" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_invalid_spec_partial_match(self, mock_ids, caplog):
+        """Partial workspace name doesn't match."""
+        mock_ids.return_value = ["my-workspace"]
+        with patch.object(sys, "argv", ["dl", "my-work"]):
+            result = main()
+        assert result == 1
+        assert "Unknown workspace" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_invalid_spec_suggests_alternatives(self, mock_ids, caplog):
+        """Error message suggests using --ls or owner/repo."""
+        mock_ids.return_value = []
+        with patch.object(sys, "argv", ["dl", "badname"]):
+            result = main()
+        assert result == 1
+        assert "dl --ls" in caplog.text
+        assert "owner/repo" in caplog.text
+
+    # --- Unknown subcommand errors ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_unknown_subcommand_message(self, mock_ids, caplog):
+        """Unknown subcommand produces helpful error with -- hint."""
+        mock_ids.return_value = ["myws"]
+        with patch.object(sys, "argv", ["dl", "myws", "badcmd"]):
+            result = main()
+        assert result == 1
+        assert "Unknown command 'badcmd'" in caplog.text
+        assert "dl myws -- badcmd" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    def test_unknown_subcommand_with_git_spec(self, mock_ids, caplog):
+        """Unknown subcommand with owner/repo spec returns error."""
+        mock_ids.return_value = ["repo-main"]
+        with patch.object(sys, "argv", ["dl", "repo-main", "deploy"]):
+            result = main()
+        assert result == 1
+        assert "Unknown command 'deploy'" in caplog.text
+
+    # --- Clone failure errors (no duplicate messages) ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_clone_fail_no_branch_single_error(self, mock_clone_mgr, mock_ids, caplog):
+        """Clone failure (no branch) produces exactly one error line."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
+            "Failed to clone repository: repository not found"
+        )
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 1
+        # Should contain the repo name for context
+        assert "owner/repo" in caplog.text
+        # Should NOT have "Failed to clone" repeated twice in the same message
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1
+        assert error_records[0].message.startswith("Repository 'owner/repo':")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_clone_fail_with_branch_single_error(self, mock_clone_mgr, mock_ids, caplog):
+        """Clone failure (with branch) produces exactly one error line."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = OSError("network unreachable")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@feature"]):
+            result = main()
+        assert result == 1
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1
+        assert "owner/repo" in error_records[0].message
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_clone_fail_runtime_error_message(self, mock_clone_mgr, mock_ids, caplog):
+        """RuntimeError from clone surfaces the original error text."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
+            "Failed to clone repository: ERROR: Repository not found."
+        )
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 1
+        assert "Repository not found" in caplog.text
+
+    # --- Branch ensure failure errors ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_branch_ensure_runtime_error(self, mock_clone_mgr, mock_ids, caplog):
+        """Branch ensure RuntimeError logged with branch name."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_branch.side_effect = RuntimeError("push failed: permission denied")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
+            result = main()
+        assert result == 1
+        assert "newbranch" in caplog.text
+        assert "push failed" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_branch_ensure_os_error(self, mock_clone_mgr, mock_ids, caplog):
+        """Branch ensure OSError returns 1."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_branch.side_effect = OSError("git not found")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@develop"]):
+            result = main()
+        assert result == 1
+        assert "develop" in caplog.text
+
+    # --- Workspace prepare failure errors ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_ensure_workspace_runtime_error(self, mock_clone_mgr, mock_ids, caplog):
+        """ensure_workspace RuntimeError returns 1 with message."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_workspace.side_effect = RuntimeError("worktree creation failed")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 1
+        assert "Failed to prepare workspace" in caplog.text
+        assert "worktree creation failed" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_ensure_workspace_os_error(self, mock_clone_mgr, mock_ids, caplog):
+        """ensure_workspace OSError returns 1."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.ensure_workspace.side_effect = OSError("disk full")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 1
+        assert "disk full" in caplog.text
+
+    # --- workspace_up failure errors ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_workspace_up_exception(self, mock_ssh, mock_up, mock_ids, caplog):
+        """workspace_up exception returns 1 with message."""
+        mock_ids.return_value = ["myws"]
+        mock_up.side_effect = RuntimeError("devpod crashed")
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            result = main()
+        assert result == 1
+        assert "Failed to create workspace" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_workspace_up_nonzero_exit(self, mock_ssh, mock_up, mock_ids):
+        """workspace_up returning non-zero propagates exit code."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=2)
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            result = main()
+        assert result == 2
+        mock_ssh.assert_not_called()
+
+    # --- Subcommand failure propagation ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    def test_recreate_up_failure_propagates(self, mock_up, mock_ids):
+        """recreate subcommand propagates workspace_up failure."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=3)
+        with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
+            result = main()
+        assert result == 3
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_stop")
+    def test_restart_stop_failure_propagates(self, mock_stop, mock_ids):
+        """restart subcommand propagates stop failure."""
+        mock_ids.return_value = ["myws"]
+        mock_stop.return_value = 1
+        with patch.object(sys, "argv", ["dl", "myws", "restart"]):
+            result = main()
+        assert result == 1
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_stop")
+    @patch("devlaunch.dl.workspace_up")
+    def test_restart_up_failure_propagates(self, mock_up, mock_stop, mock_ids):
+        """restart subcommand propagates workspace_up failure after successful stop."""
+        mock_ids.return_value = ["myws"]
+        mock_stop.return_value = 0
+        mock_up.return_value = MagicMock(returncode=4)
+        with patch.object(sys, "argv", ["dl", "myws", "restart"]):
+            result = main()
+        assert result == 4
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    def test_reset_up_failure_propagates(self, mock_up, mock_ids):
+        """reset subcommand propagates workspace_up failure."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=5)
+        with patch.object(sys, "argv", ["dl", "myws", "reset"]):
+            result = main()
+        assert result == 5
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    def test_code_up_failure_propagates(self, mock_up, mock_ids):
+        """code subcommand propagates workspace_up failure."""
+        mock_ids.return_value = ["myws"]
+        mock_up.return_value = MagicMock(returncode=1)
+        with patch.object(sys, "argv", ["dl", "myws", "code"]):
+            result = main()
+        assert result == 1
+
+    # --- No duplicate error messages ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_clone_fail_no_duplicate_failed_to_clone(self, mock_clone_mgr, mock_ids, caplog):
+        """Verify 'Failed to clone' doesn't appear twice in error output."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
+            "Failed to clone repository: Cloning into bare repository...\nERROR: Repository not found."
+        )
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 1
+        # Count ERROR-level records - should be exactly 1
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1
+        # The message should not wrap "Failed to clone" inside another "Failed to clone"
+        msg = error_records[0].message
+        assert not msg.startswith("Failed to clone")
+        assert msg.startswith("Repository 'owner/repo':")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_fetch_fail_no_duplicate_messages(self, mock_clone_mgr, mock_ids, caplog):
+        """Verify fetch failure doesn't produce duplicate error messages."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
+            "Failed to fetch repository: network timeout"
+        )
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
+            result = main()
+        assert result == 1
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1
+
+    # --- Edge cases ---
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.workspace_ssh")
+    def test_workspace_up_os_error(self, mock_ssh, mock_up, mock_ids, caplog):
+        """workspace_up OSError is caught and returns 1."""
+        mock_ids.return_value = ["myws"]
+        mock_up.side_effect = OSError("connection refused")
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            result = main()
+        assert result == 1
+        assert "connection refused" in caplog.text
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    def test_clone_fail_empty_error_message(self, mock_clone_mgr, mock_ids, caplog):
+        """Clone failure with empty error still returns 1."""
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError("")
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", "owner/repo"]):
+            result = main()
+        assert result == 1
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1

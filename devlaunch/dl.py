@@ -739,6 +739,21 @@ def fuzzy_select_workspace() -> Optional[str]:
     return None
 
 
+def get_context_option(name: str) -> Optional[str]:
+    """Read a devpod context option value (e.g. DOTFILES_URL)."""
+    result = run_devpod(
+        ["context", "options", "--output", "json"], capture=True
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        data = json.loads(result.stdout)
+        option = data.get(name, {})
+        return option.get("value") or None
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
 def workspace_up(
     workspace: str,
     ide: Optional[str] = None,
@@ -756,6 +771,12 @@ def workspace_up(
         args.append("--recreate")
     if reset:
         args.append("--reset")
+    dotfiles_url = get_context_option("DOTFILES_URL")
+    if dotfiles_url:
+        args.extend(["--dotfiles", dotfiles_url])
+    dotfiles_script = get_context_option("DOTFILES_SCRIPT")
+    if dotfiles_script:
+        args.extend(["--dotfiles-script", dotfiles_script])
     return run_devpod(args)
 
 
@@ -1021,7 +1042,11 @@ def main() -> int:
 
         # Resolve branch early so we can compute workspace ID
         if not branch:
-            clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+            try:
+                clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+            except (RuntimeError, OSError) as e:
+                logging.error(f"Repository '{owner_repo}': {e}")
+                return 1
             repo_ensured = True
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
 
@@ -1035,7 +1060,11 @@ def main() -> int:
         else:
             # Full path: clone locally and pass local path to DevPod
             if not repo_ensured:
-                clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+                try:
+                    clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+                except (RuntimeError, OSError) as e:
+                    logging.error(f"Repository '{owner_repo}': {e}")
+                    return 1
 
             # Ensure branch exists in bare repo (create on remote if needed)
             try:
