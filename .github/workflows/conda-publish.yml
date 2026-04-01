@@ -22,7 +22,7 @@ jobs:
           fetch-tags: true
 
       - name: Build conda package
-        uses: prefix-dev/rattler-build-action@v0.2.34
+        uses: prefix-dev/rattler-build-action@v0.2.36
         with:
           recipe-path: conda.recipe/recipe.yaml
           build-args: --channel conda-forge --channel https://prefix.dev/blooop --no-include-recipe
