@@ -96,7 +96,7 @@ class RepositoryManager:
             return base_repo
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to clone repository: {e.stderr}")
+            logger.debug(f"Failed to clone repository: {e.stderr}")
             # Clean up partial clone
             if bare_path.exists():
                 shutil.rmtree(bare_path)
@@ -131,7 +131,7 @@ class RepositoryManager:
             logger.info(f"Successfully fetched updates for {owner}/{repo}")
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to fetch repository: {e.stderr}")
+            logger.debug(f"Failed to fetch repository: {e.stderr}")
             raise RuntimeError(f"Failed to fetch repository: {e.stderr}") from e
 
     def _should_fetch(self, repo: BaseRepository) -> bool:

@@ -731,6 +731,18 @@ def fuzzy_select_workspace() -> Optional[str]:
     return None
 
 
+def get_context_options() -> dict:
+    """Fetch all devpod context options as a dict of {name: value}."""
+    result = run_devpod(["context", "options", "--output", "json"], capture=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    try:
+        data = json.loads(result.stdout)
+        return {k: v.get("value") for k, v in data.items() if v.get("value")}
+    except (json.JSONDecodeError, AttributeError):
+        return {}
+
+
 def workspace_up(
     workspace: str,
     ide: Optional[str] = None,
@@ -748,6 +760,11 @@ def workspace_up(
         args.append("--recreate")
     if reset:
         args.append("--reset")
+    ctx = get_context_options()
+    if ctx.get("DOTFILES_URL"):
+        args.extend(["--dotfiles", ctx["DOTFILES_URL"]])
+    if ctx.get("DOTFILES_SCRIPT"):
+        args.extend(["--dotfiles-script", ctx["DOTFILES_SCRIPT"]])
     return run_devpod(args)
 
 
@@ -995,7 +1012,11 @@ def main() -> int:
 
         # Resolve branch early so we can compute workspace ID
         if not branch:
-            clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+            try:
+                clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+            except (RuntimeError, OSError) as e:
+                logging.error(f"Repository '{owner_repo}': {e}")
+                return 1
             repo_ensured = True
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
 
@@ -1009,7 +1030,11 @@ def main() -> int:
         else:
             # Full path: clone locally and pass local path to DevPod
             if not repo_ensured:
-                clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+                try:
+                    clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
+                except (RuntimeError, OSError) as e:
+                    logging.error(f"Repository '{owner_repo}': {e}")
+                    return 1
 
             # Ensure branch exists in bare repo (create on remote if needed)
             try:

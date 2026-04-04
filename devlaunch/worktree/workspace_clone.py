@@ -111,15 +111,20 @@ class WorkspaceCloneManager:
         # Lazy-fetch: only hits the network when the fetch interval has elapsed
         try:
             self.repo_manager.lazy_fetch(owner, repo)
-        except Exception as e:
+        except (RuntimeError, ValueError, OSError) as e:
             logger.warning(f"Failed to fetch before branch ensure: {e}")
 
-        default_branch = self.repo_manager.get_default_branch(owner, repo)
+        try:
+            default_branch = self.repo_manager.get_default_branch(owner, repo)
+        except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
+            logger.warning(f"Failed to resolve default branch: {e}")
+            default_branch = None
+
         self.branch_manager.ensure_branch_exists(
             bare_path,
             branch,
             create_remote=False,
-            start_point=default_branch,
+            start_point=default_branch or "HEAD",
             use_local_refs=True,
         )
 

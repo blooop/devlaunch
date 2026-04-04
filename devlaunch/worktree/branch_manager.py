@@ -83,7 +83,7 @@ class BranchManager:
             if "already exists" in e.stderr:
                 logger.debug(f"Branch {branch} already exists")
             else:
-                logger.error(f"Failed to create branch: {e.stderr}")
+                logger.debug(f"Failed to create branch: {e.stderr}")
                 raise RuntimeError(f"Failed to create branch: {e.stderr}") from e
 
     def track_remote_branch(
@@ -184,7 +184,7 @@ class BranchManager:
             )
             logger.debug(f"Push output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to push branch: {e.stderr}")
+            logger.debug(f"Failed to push branch: {e.stderr}")
             raise RuntimeError(f"Failed to push branch to remote: {e.stderr}") from e
 
     def create_remote_branch_via_ssh(
@@ -233,5 +233,5 @@ class BranchManager:
             )
             logger.debug(f"Checkout output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to checkout branch: {e.stderr}")
+            logger.debug(f"Failed to checkout branch: {e.stderr}")
             raise RuntimeError(f"Failed to checkout branch: {e.stderr}") from e
