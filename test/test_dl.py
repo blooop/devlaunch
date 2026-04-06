@@ -46,6 +46,7 @@ from devlaunch.dl import (
     workspace_stop,
     workspace_delete,
     workspace_ssh,
+    dotfiles_update,
     run_devpod,
     extract_devcontainer_flag,
     workspace_up,
@@ -3412,3 +3413,87 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
         with patch.object(sys, "argv", ["dl", "nonexistent"]):
             assert main() == 1
         mock_popen.assert_not_called()
+
+
+class TestDotfilesUpdate:
+    """Tests for dotfiles_update()."""
+
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.get_context_options")
+    def test_runs_chezmoi_update_command(self, mock_ctx, mock_ssh):
+        """dotfiles_update runs chezmoi update + pixi global sync via SSH."""
+        mock_ctx.return_value = {"DOTFILES_URL": "https://github.com/user/dots"}
+        mock_ssh.return_value = 0
+        result = dotfiles_update("myws")
+        assert result == 0
+        mock_ssh.assert_called_once()
+        cmd = mock_ssh.call_args[1]["command"]
+        assert "chezmoi update --force" in cmd
+        assert "pixi global sync" in cmd
+
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.get_context_options")
+    def test_fallback_includes_dotfiles_url(self, mock_ctx, mock_ssh):
+        """Fallback clone uses DOTFILES_URL from context."""
+        mock_ctx.return_value = {"DOTFILES_URL": "https://github.com/user/dots"}
+        mock_ssh.return_value = 0
+        dotfiles_update("myws")
+        cmd = mock_ssh.call_args[1]["command"]
+        assert "https://github.com/user/dots" in cmd
+
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.get_context_options")
+    def test_no_dotfiles_url_fallback_exits(self, mock_ctx, mock_ssh):
+        """Without DOTFILES_URL, fallback reports error."""
+        mock_ctx.return_value = {}
+        mock_ssh.return_value = 0
+        dotfiles_update("myws")
+        cmd = mock_ssh.call_args[1]["command"]
+        assert "no DOTFILES_URL configured" in cmd
+
+
+class TestMainDotfilesSubcommand:
+    """Tests for dotfiles subcommand in main()."""
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.dotfiles_update")
+    def test_dotfiles_running_workspace(self, mock_dotfiles, mock_state, mock_ids):
+        """dotfiles subcommand on running workspace skips workspace_up."""
+        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Running"
+        mock_dotfiles.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "dotfiles"]):
+            result = main()
+        assert result == 0
+        mock_dotfiles.assert_called_once_with("myws")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.dotfiles_update")
+    def test_dotfiles_stopped_workspace_starts_first(
+        self, mock_dotfiles, mock_up, mock_state, mock_ids
+    ):
+        """dotfiles subcommand on stopped workspace starts it first."""
+        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
+        mock_up.return_value = MagicMock(returncode=0)
+        mock_dotfiles.return_value = 0
+        with patch.object(sys, "argv", ["dl", "myws", "dotfiles"]):
+            result = main()
+        assert result == 0
+        mock_up.assert_called_once()
+        mock_dotfiles.assert_called_once_with("myws")
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
+    @patch("devlaunch.dl.workspace_up")
+    def test_dotfiles_start_failure_propagates(self, mock_up, mock_state, mock_ids):
+        """dotfiles subcommand propagates workspace_up failure."""
+        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
+        mock_up.return_value = MagicMock(returncode=3)
+        with patch.object(sys, "argv", ["dl", "myws", "dotfiles"]):
+            result = main()
+        assert result == 3

@@ -220,6 +220,7 @@ than the filesystem has actually done.
 | `dl <user/repo> restart` | Stop and start (no rebuild) |
 | `dl <user/repo> recreate` | Recreate container |
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
+| `dl <user/repo> dotfiles` | Refresh dotfiles in the running workspace (`chezmoi update`) |
 | `dl <user/repo> -- <command>` | Run shell command in workspace (with a terminal, when `dl` has one) |
 
 ## Options

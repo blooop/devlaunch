@@ -61,7 +61,7 @@ _dl_completion() {
     fi
 
     # Workspace subcommands
-    local ws_cmds="up stop rm code restart recreate reset --"
+    local ws_cmds="up stop rm code restart recreate reset dotfiles --"
 
     # Options that take a value; a variant name or a path follows them.
     local value_opts="--devcontainer"
