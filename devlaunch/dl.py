@@ -2148,15 +2148,13 @@ def dotfiles_update(workspace_id: str) -> int:
         fallback = (
             f'echo "chezmoi not found, running full install..." && '
             f"DOTFILES_DIR=$(mktemp -d) && "
-            f"git clone {dotfiles_url} \"$DOTFILES_DIR\" && "
+            f'git clone {shlex.quote(dotfiles_url)} "$DOTFILES_DIR" && '
             f'cd "$DOTFILES_DIR" && bash install.sh && '
             f'rm -rf "$DOTFILES_DIR" && '
             f'echo "Dotfiles installed successfully"'
         )
     else:
-        fallback = (
-            'echo "chezmoi not found and no DOTFILES_URL configured" && exit 1'
-        )
+        fallback = 'echo "chezmoi not found and no DOTFILES_URL configured" && exit 1'
 
     update_cmd = (
         "if command -v chezmoi >/dev/null 2>&1; then "

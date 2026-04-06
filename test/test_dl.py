@@ -3443,6 +3443,21 @@ class TestDotfilesUpdate:
 
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.get_context_options")
+    def test_fallback_quotes_the_url(self, mock_ctx, mock_ssh):
+        """The URL is interpolated into a shell command, so it is quoted.
+
+        DOTFILES_URL comes from local devpod config rather than anywhere
+        hostile, but a URL containing a space would otherwise split into two
+        `git clone` arguments and fail with a message about the wrong thing.
+        """
+        mock_ctx.return_value = {"DOTFILES_URL": "https://example.com/a repo"}
+        mock_ssh.return_value = 0
+        dotfiles_update("myws")
+        cmd = mock_ssh.call_args[1]["command"]
+        assert "git clone 'https://example.com/a repo'" in cmd
+
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.get_context_options")
     def test_no_dotfiles_url_fallback_exits(self, mock_ctx, mock_ssh):
         """Without DOTFILES_URL, fallback reports error."""
         mock_ctx.return_value = {}
