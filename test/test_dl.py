@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import pathlib
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
 import pytest
 
 from devlaunch.dl import (
@@ -39,7 +39,8 @@ from devlaunch.dl import (
     workspace_delete,
     workspace_ssh,
     run_devpod,
-    get_container_workdir,
+    extract_devcontainer_flag,
+    workspace_up,
     setup_hostname,
     get_workspace_state,
 )
@@ -1109,6 +1110,83 @@ class TestRunDevpod:
         assert call_kwargs["capture_output"] is True
 
 
+class TestWorkspaceIdentityEnv:
+    """Tests for the workspace identity handed to devpod (and its lifecycle hooks)."""
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_run_devpod_exports_workspace_id(self, mock_run):
+        """A known workspace id is exported so initializeCommand can identify itself.
+
+        devpod runs initializeCommand on the host with dl's environment, and
+        gives it no workspace identity of its own.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        run_devpod(["up", "/path"], workspace_id="repo-nb4")
+        env = mock_run.call_args[1]["env"]
+        assert env["DEVLAUNCH_WORKSPACE_ID"] == "repo-nb4"
+        # Inherits the rest of the environment rather than replacing it.
+        assert "PATH" in env
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_run_devpod_without_workspace_id_passes_no_env(self, mock_run):
+        """Commands with no workspace identity inherit the environment untouched."""
+        mock_run.return_value = MagicMock(returncode=0)
+        run_devpod(["list"])
+        assert mock_run.call_args[1].get("env") is None
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_up_exports_workspace_id(self, mock_run, _mock_ctx):
+        """workspace_up tags the devpod call with the workspace id.
+
+        This is the call that runs initializeCommand, so the id must reach it
+        even when --id isn't passed (an already-registered workspace).
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path/to/clone", workspace_id=None, workspace_identity="repo-nb4")
+        assert mock_run.call_args[1]["workspace_id"] == "repo-nb4"
+
+
+class TestDevcontainerPath:
+    """Tests for selecting a non-default devcontainer.json."""
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_up_passes_devcontainer_path(self, mock_run, _mock_ctx):
+        """A repo with several devcontainer variants can pick one."""
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path", devcontainer_path=".devcontainer/devcontainer-sim.json")
+        args = mock_run.call_args[0][0]
+        assert "--devcontainer-path" in args
+        assert args[args.index("--devcontainer-path") + 1] == (
+            ".devcontainer/devcontainer-sim.json"
+        )
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_up_omits_devcontainer_path_by_default(self, mock_run, _mock_ctx):
+        """No flag means devpod uses the repo's default devcontainer.json."""
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        assert "--devcontainer-path" not in mock_run.call_args[0][0]
+
+    def test_parse_devcontainer_flag_strips_it_from_args(self):
+        """--devcontainer <path> is consumed before subcommand parsing."""
+        args, path = extract_devcontainer_flag(["repo", "--devcontainer", "x.json", "stop"])
+        assert args == ["repo", "stop"]
+        assert path == "x.json"
+
+    def test_parse_devcontainer_flag_absent(self):
+        args, path = extract_devcontainer_flag(["repo", "stop"])
+        assert args == ["repo", "stop"]
+        assert path is None
+
+    def test_parse_devcontainer_flag_requires_value(self):
+        """A dangling --devcontainer is an error, not a silently ignored flag."""
+        with pytest.raises(ValueError):
+            extract_devcontainer_flag(["repo", "--devcontainer"])
+
+
 class TestWorkspaceOperations:
     """Tests for workspace operation functions."""
 
@@ -1279,7 +1357,9 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "code"]):
             result = main()
         assert result == 0
-        mock_up.assert_called_once_with("myws", ide="vscode", workspace_id=None)
+        mock_up.assert_called_once_with(
+            "myws", ide="vscode", workspace_id=None, workspace_identity=ANY, devcontainer_path=None
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -1292,7 +1372,9 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
             result = main()
         assert result == 0
-        mock_up.assert_called_once_with("myws", recreate=True, workspace_id=None)
+        mock_up.assert_called_once_with(
+            "myws", recreate=True, workspace_id=None, workspace_identity=ANY, devcontainer_path=None
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_stop")
@@ -1308,7 +1390,9 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_stop.assert_called_once()
-        mock_up.assert_called_once_with("myws", workspace_id=None)
+        mock_up.assert_called_once_with(
+            "myws", workspace_id=None, workspace_identity=ANY, devcontainer_path=None
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -1321,7 +1405,9 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "reset"]):
             result = main()
         assert result == 0
-        mock_up.assert_called_once_with("myws", reset=True, workspace_id=None)
+        mock_up.assert_called_once_with(
+            "myws", reset=True, workspace_id=None, workspace_identity=ANY, devcontainer_path=None
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     def test_main_unknown_command_error(self, mock_ids, caplog):
@@ -1354,7 +1440,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "--", "echo", "hello"]):
             result = main()
         assert result == 0
-        mock_ssh.assert_called_once_with("myws", "echo hello", workdir="/workspaces/myws")
+        mock_ssh.assert_called_once_with("myws", "echo hello")
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.workspace_up")
@@ -1370,7 +1456,7 @@ class TestMainCLI:
             result = main()
         assert result == 0
         mock_up.assert_called_once()
-        mock_ssh.assert_called_once_with("myws", None, workdir="/workspaces/myws")
+        mock_ssh.assert_called_once_with("myws", None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1400,8 +1486,13 @@ class TestMainCLI:
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
         )
-        mock_up.assert_called_once_with("/tmp/ws/repo-main", workspace_id="repo-main")
-        mock_ssh.assert_called_once_with("repo-main", None, workdir="/workspaces/repo-main")
+        mock_up.assert_called_once_with(
+            "/tmp/ws/repo-main",
+            workspace_id="repo-main",
+            workspace_identity=ANY,
+            devcontainer_path=None,
+        )
+        mock_ssh.assert_called_once_with("repo-main", None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1428,7 +1519,12 @@ class TestMainCLI:
         mock_mgr.ensure_workspace.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
         )
-        mock_up.assert_called_once_with("/tmp/ws/repo-main", workspace_id="repo-main")
+        mock_up.assert_called_once_with(
+            "/tmp/ws/repo-main",
+            workspace_id="repo-main",
+            workspace_identity=ANY,
+            devcontainer_path=None,
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1653,10 +1749,16 @@ class TestPurgeFunctionality:
 class TestHostnameAndWorkdir:
     """Tests for hostname setup and container workdir."""
 
-    def test_get_container_workdir(self):
-        """Test get_container_workdir returns expected path."""
-        assert get_container_workdir("my-workspace") == "/workspaces/my-workspace"
-        assert get_container_workdir("blooop-bencher") == "/workspaces/blooop-bencher"
+    def test_ssh_does_not_override_workdir(self):
+        """devpod ssh already starts in devcontainer.json's workspaceFolder.
+
+        A guessed /workspaces/<id> silently drops the session in $HOME for any
+        project that sets a custom workspaceFolder.
+        """
+        with patch("devlaunch.dl.run_devpod") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            workspace_ssh("myws")
+        assert "--workdir" not in mock_run.call_args[0][0]
 
     @patch("devlaunch.dl.run_devpod")
     def test_setup_hostname_success(self, mock_run):
@@ -1775,7 +1877,9 @@ class TestFastAttach:
         mock_mgr.ensure_branch.assert_not_called()
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up called with just the ID (no local path), no custom --id
-        mock_up.assert_called_once_with("repo-main", workspace_id=None)
+        mock_up.assert_called_once_with(
+            "repo-main", workspace_id=None, workspace_identity=ANY, devcontainer_path=None
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1801,7 +1905,7 @@ class TestFastAttach:
         # workspace_up should NOT be called (fast-attach)
         mock_up.assert_not_called()
         # Should SSH in to attach
-        mock_ssh.assert_called_once_with("repo-main", None, workdir="/workspaces/repo-main")
+        mock_ssh.assert_called_once_with("repo-main", None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1825,7 +1929,9 @@ class TestFastAttach:
         mock_mgr.ensure_branch.assert_not_called()
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up IS called (need to start it)
-        mock_up.assert_called_once_with("repo-main", workspace_id=None)
+        mock_up.assert_called_once_with(
+            "repo-main", workspace_id=None, workspace_identity=ANY, devcontainer_path=None
+        )
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.get_workspace_state")
@@ -1846,9 +1952,7 @@ class TestFastAttach:
         # workspace_up should NOT be called
         mock_up.assert_not_called()
         # Should SSH in to attach
-        mock_ssh.assert_called_once_with(
-            "python-template-ws3", None, workdir="/workspaces/python-template-ws3"
-        )
+        mock_ssh.assert_called_once_with("python-template-ws3", None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")

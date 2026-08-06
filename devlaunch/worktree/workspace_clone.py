@@ -12,6 +12,7 @@ Directory layout:
 """
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -101,6 +102,42 @@ class WorkspaceCloneManager:
         )
         return result.returncode == 0
 
+    @staticmethod
+    def _uses_lfs(ws_path: Path) -> bool:
+        """Check whether the checked-out tree tracks any files with git-lfs."""
+        if shutil.which("git-lfs") is None:
+            return False
+        result = subprocess.run(
+            ["git", "lfs", "ls-files", "--name-only"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    def _materialize_lfs(self, ws_path: Path) -> None:
+        """Replace LFS pointer files with real content from the origin remote.
+
+        The workspace is cloned from the local bare cache with
+        GIT_LFS_SKIP_SMUDGE=1 (the cache has no LFS objects), so after the
+        origin URL is fixed to point at the real remote the pointers must be
+        materialized explicitly — a same-commit checkout won't rewrite them.
+        """
+        if not self._uses_lfs(ws_path):
+            return
+        logger.info("Fetching git-lfs objects from origin")
+        try:
+            subprocess.run(
+                ["git", "lfs", "pull", "origin"],
+                cwd=ws_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to pull git-lfs objects: {e.stderr}") from e
+
     def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
         """Ensure a branch exists in the bare repo.
 
@@ -162,11 +199,18 @@ class WorkspaceCloneManager:
             ws_path.parent.mkdir(parents=True, exist_ok=True)
 
             try:
+                # Skip LFS smudge during clone: the clone source is the local
+                # bare cache, which has no LFS objects, so smudging here fails
+                # with "remote missing object". LFS content is pulled from the
+                # real remote after the origin URL is fixed (see below).
+                clone_env = os.environ.copy()
+                clone_env["GIT_LFS_SKIP_SMUDGE"] = "1"
                 subprocess.run(
                     ["git", "clone", str(bare_repo_path), str(ws_path)],
                     capture_output=True,
                     text=True,
                     check=True,
+                    env=clone_env,
                 )
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to clone workspace: {e.stderr}")
@@ -238,6 +282,11 @@ class WorkspaceCloneManager:
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to checkout branch '{branch}': {e.stderr}")
             raise RuntimeError(f"Failed to checkout branch '{branch}': {e.stderr}") from e
+
+        # Materialize LFS content for freshly-created workspaces (cloned with
+        # GIT_LFS_SKIP_SMUDGE=1, so the tree holds pointer files until now).
+        if is_new_workspace:
+            self._materialize_lfs(ws_path)
 
         # Step 6: Track in metadata
         try:
