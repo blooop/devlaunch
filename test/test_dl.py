@@ -1186,6 +1186,22 @@ class TestDevcontainerPath:
         with pytest.raises(ValueError):
             extract_devcontainer_flag(["repo", "--devcontainer"])
 
+    def test_bare_variant_name_expands_to_spec_location(self):
+        """`--devcontainer sim` is the spec's one-level-deep variant location."""
+        _, path = extract_devcontainer_flag(["repo", "--devcontainer", "sim"])
+        assert path == ".devcontainer/sim/devcontainer.json"
+
+    def test_explicit_path_is_left_alone(self):
+        """An explicit path wins, including a non-standard location."""
+        for given in (
+            ".devcontainer/sim/devcontainer.json",
+            "sub/dir/devcontainer.json",
+            ".devcontainer.json",
+            "./weird.json",
+        ):
+            _, path = extract_devcontainer_flag(["repo", "--devcontainer", given])
+            assert path == given
+
 
 class TestWorkspaceOperations:
     """Tests for workspace operation functions."""
@@ -1205,6 +1221,28 @@ class TestWorkspaceOperations:
         result = workspace_delete("myworkspace")
         mock_run.assert_called_once_with(["delete", "myworkspace"])
         assert result == 0
+
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_delete_keeps_clone_when_devpod_fails(self, mock_run, mock_mgr):
+        """A failed `devpod delete` must leave the clone alone.
+
+        devpod re-parses the workspace's devcontainer.json to tear the container
+        down, so deletion fails if that file moved. Removing the clone anyway
+        strands the workspace: devpod can then never find the config to retry.
+        """
+        mock_run.return_value = MagicMock(returncode=1)
+        result = workspace_delete("myworkspace")
+        assert result == 1
+        mock_mgr.return_value.remove_workspace_by_id.assert_not_called()
+
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_delete_removes_clone_on_success(self, mock_run, mock_mgr):
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_mgr.return_value.remove_workspace_by_id.return_value = True
+        assert workspace_delete("myworkspace") == 0
+        mock_mgr.return_value.remove_workspace_by_id.assert_called_once_with("myworkspace")
 
 
 class TestPrintFunctions:

@@ -35,24 +35,44 @@ INSTANCE_ID="${DEVLAUNCH_WORKSPACE_ID:-$(basename "$(dirname "$PWD")")}"
 
 Repos that build for more than one target — a second architecture, or a GPU/
 simulator mode on a different compose file — keep several variants. The spec
-layout puts each in its own directory (`.devcontainer/<variant>/devcontainer.json`),
-because both the reference CLI and VS Code's picker require the file itself be
-named `devcontainer.json`. Pass one explicitly:
+discovers them at `.devcontainer/<name>/devcontainer.json`, one level deep, so a
+bare name is enough:
 
 ```bash
-dl org/repo --devcontainer .devcontainer/sim/devcontainer.json
+dl org/repo --devcontainer sim     # .devcontainer/sim/devcontainer.json
+dl org/repo --devcontainer ./somewhere-else.json
 ```
 
-The path is relative to the repo root and forwarded to devpod as
-`--devcontainer-path`. devpod stores it with the workspace, so switching an
-existing workspace to a different variant needs a rebuild:
+**This is a one-time argument.** devpod stores the chosen config with the
+workspace, so later `dl org/repo` calls reuse it — including after a `stop`. Only
+switching an existing workspace to a *different* variant needs a rebuild:
 
 ```bash
-dl org/repo recreate --devcontainer .devcontainer/thor/devcontainer.json
+dl org/repo recreate --devcontainer robot
 ```
+
+Note that the spec gives exactly one zero-argument config,
+`.devcontainer/devcontainer.json` — every other location needs an explicit path.
+A project whose primary workflow is one particular variant should put that
+variant in the root file, not in a subfolder.
 
 Workspace ids do **not** encode the variant, so one branch holds one variant at
 a time. Use a second branch-workspace if you want both at once.
+
+### Moving a devcontainer.json strands existing workspaces
+
+devpod re-parses a workspace's `devcontainer.json` when *deleting* it, to tear the
+container down. So if a project moves or renames the config an existing workspace
+points at, `dl <ws> rm` fails — the file it recorded is gone. Recover with:
+
+```bash
+devpod delete <ws> --force          # drops devpod's record
+docker rm -f <container>            # then clean up by hand
+```
+
+`dl` keeps the local clone whenever devpod's delete fails, so the workspace stays
+retryable: restore the old path and the normal delete works again. Projects
+restructuring their variants should expect existing workspaces to need this.
 
 ## Compose projects: what devpod owns
 

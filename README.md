@@ -76,7 +76,7 @@ dl ./path                        # Create from local path
 
 | Option | Description |
 |--------|-------------|
-| `--devcontainer <path>` | Use a non-default `devcontainer.json`, for repos carrying several variants (e.g. `.devcontainer/sim/devcontainer.json`) |
+| `--devcontainer <variant\|path>` | Use a non-default `devcontainer.json`. A bare name means `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so pass it once. |
 
 Projects with demanding devcontainers — several variants, compose sidecars, or a
 host-side `initializeCommand` that has to tell branch workspaces apart — are

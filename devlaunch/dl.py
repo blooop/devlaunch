@@ -285,8 +285,20 @@ def parse_owner_repo_branch(spec: str) -> Optional[tuple]:
     return (spec, None)
 
 
+def _resolve_devcontainer_ref(ref: str) -> str:
+    """Expand a bare variant name to its spec location.
+
+    The spec discovers variants at `.devcontainer/<name>/devcontainer.json`, one
+    level deep, so `--devcontainer sim` means that file. Anything that already
+    looks like a path or a .json file is used as given.
+    """
+    if "/" in ref or ref.endswith(".json"):
+        return ref
+    return f".devcontainer/{ref}/devcontainer.json"
+
+
 def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[str]]:
-    """Pull `--devcontainer <path>` out of the argument list.
+    """Pull `--devcontainer <name-or-path>` out of the argument list.
 
     Returns (remaining_args, path). Repos with several devcontainer variants
     (per-platform, or a GPU/simulator mode on a different compose file) need one
@@ -300,8 +312,8 @@ def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[str]
     while i < len(args):
         if args[i] == "--devcontainer":
             if i + 1 >= len(args):
-                raise ValueError("--devcontainer requires a path argument")
-            path = args[i + 1]
+                raise ValueError("--devcontainer requires a variant name or path")
+            path = _resolve_devcontainer_ref(args[i + 1])
             i += 2
             continue
         remaining.append(args[i])
@@ -846,8 +858,24 @@ def workspace_stop(workspace: str) -> int:
 
 
 def workspace_delete(workspace: str) -> int:
-    """Delete a workspace and its local clone (if any)."""
+    """Delete a workspace and its local clone (if any).
+
+    The clone is removed only once devpod has actually let go of the workspace.
+    devpod re-parses the workspace's devcontainer.json to tear the container
+    down, so a config that has since moved or been renamed makes deletion fail —
+    and removing the clone regardless strands the workspace for good, because
+    devpod can then never find the config to retry with.
+    """
     result = run_devpod(["delete", workspace])
+    if result.returncode != 0:
+        logging.error(
+            f"devpod could not delete {workspace}; keeping the local clone so it "
+            f"stays retryable. If its devcontainer.json moved, restore the path or "
+            f"run: devpod delete {workspace} --force"
+        )
+        update_cache_background()
+        return result.returncode
+
     # Clean up local workspace clone (look up by workspace ID in metadata)
     try:
         clone_mgr = _get_clone_manager()
@@ -890,8 +918,9 @@ Usage:
     dl <user/repo> -- <shell>        Run shell command in workspace
 
 Options:
-    --devcontainer <path>            Use a non-default devcontainer.json
-                                     (e.g. .devcontainer/sim/devcontainer.json)
+    --devcontainer <variant|path>    Use a non-default devcontainer.json. A bare
+                                     name means .devcontainer/<name>/devcontainer.json.
+                                     Stored with the workspace, so pass it once.
 
 Workspace sources:
     dl myproject                     Existing workspace by name
@@ -925,7 +954,7 @@ Examples:
     dl blooop/devlaunch code         # Open in VS Code
     dl blooop/devlaunch -- make test # Run command in workspace
     dl blooop/devlaunch stop         # Stop workspace
-    dl org/repo --devcontainer .devcontainer/sim/devcontainer.json
+    dl org/repo --devcontainer robot # Pick a devcontainer variant
 """
     print(help_text)
 
