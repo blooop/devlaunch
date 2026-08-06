@@ -72,6 +72,16 @@ dl ./path                        # Create from local path
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
 | `dl <user/repo> -- <command>` | Run shell command in workspace |
 
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--devcontainer <path>` | Use a non-default `devcontainer.json`, for repos carrying several variants (e.g. `.devcontainer/sim/devcontainer.json`) |
+
+Projects with demanding devcontainers — several variants, compose sidecars, or a
+host-side `initializeCommand` that has to tell branch workspaces apart — are
+covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
+
 ## Global Commands
 
 | Command | Description |
