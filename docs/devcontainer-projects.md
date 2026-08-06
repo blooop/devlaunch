@@ -22,7 +22,7 @@ exports one into the environment that the hook inherits:
 
 | Variable | Value |
 |----------|-------|
-| `DEVLAUNCH_WORKSPACE_ID` | The workspace id, e.g. `kinisi-ros-nb4` |
+| `DEVLAUNCH_WORKSPACE_ID` | The workspace id, e.g. `myrepo-nb4` |
 
 A project's hook should prefer it over any path-derived guess, and fall back to
 the guess when it is unset (a plain `git clone` opened in VS Code):
