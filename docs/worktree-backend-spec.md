@@ -69,7 +69,6 @@ User runs: dl owner/repo@branch
 ┌─────────────────────────────────────────────────────────────────┐
 │ dl.py (SSH)                                                     │
 │  - Calls: devpod ssh {workspace_id}                             │
-│           --workdir /workspaces/{workspace_id}/.worktrees/{branch}
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -137,13 +136,13 @@ Container layout:
     └── {branch}/                     # User wants to be HERE
 ```
 
-**Solution**: Use `--workdir` when SSH'ing to set the correct starting directory.
+**Solution**: None needed — `devpod ssh` already starts in the `workspaceFolder`
+from `devcontainer.json`.
 
-```bash
-devpod ssh {workspace_id} --workdir /workspaces/{workspace_id}/.worktrees/{branch}
-```
-
-**Implementation**: `dl.py:get_worktree_container_path()` and `workspace_ssh()`
+An earlier design passed `--workdir /workspaces/{workspace_id}/...`. That is a
+guess about where the project mounts its source, and devpod silently falls back to
+`$HOME` when the path does not exist in the container, so any project with a custom
+`workspaceFolder` landed in the wrong directory. No `--workdir` is passed.
 
 ### Challenge 4: Git Detached HEAD State
 

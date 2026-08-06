@@ -259,6 +259,70 @@ class TestEnsureWorkspace:
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_existing_workspace_retries_unmaterialized_lfs(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """A workspace left holding pointer files must retry on the next run.
+
+        Materialization used to be gated on "did we just clone this", so one
+        failed `git lfs pull` left the workspace existing-but-incomplete and every
+        later run took the existing-workspace path — building against pointers
+        forever, silently.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        # An existing workspace whose LFS file is still a pointer.
+        ws_path = repo_root / "nb4"
+        (ws_path / ".git").mkdir(parents=True)
+        big = ws_path / "big.bin"
+        big.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
+
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "lfs", "ls-files"]:
+                return MagicMock(returncode=0, stdout="big.bin\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        clone_manager.ensure_workspace(
+            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
+        )
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] in issued
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_materialized_workspace_does_not_refetch_lfs(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Real content present means no pull, so attaching stays fast."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        ws_path = repo_root / "nb4"
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(b"\x00\x01real binary content")
+
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "lfs", "ls-files"]:
+                return MagicMock(returncode=0, stdout="big.bin\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        clone_manager.ensure_workspace(
+            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
+        )
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] not in issued
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_new_workspace_materializes_lfs(
         self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
@@ -272,10 +336,16 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = bare_path
 
+        # git clone is mocked, so stand in for what it would have left behind:
+        # a tree whose LFS file is still a pointer (cloned with skip-smudge).
+        pointer = repo_root / "nb4" / "assets" / "big.bin"
+        pointer.parent.mkdir(parents=True)
+        pointer.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
+
         def run_side_effect(cmd, *args, **kwargs):
             if cmd[:3] == ["git", "lfs", "ls-files"]:
-                return MagicMock(returncode=0, stdout="assets/big.bin\n")
-            return MagicMock(returncode=0, stdout="")
+                return MagicMock(returncode=0, stdout="assets/big.bin\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         mock_run.side_effect = run_side_effect
 
@@ -354,9 +424,10 @@ class TestEnsureWorkspace:
                 "owner", "repo", "new-feature", "git@github.com:owner/repo.git", "repo-nf"
             )
 
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_existing_workspace_uses_plain_checkout(
-        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
         """Test that existing workspaces use plain checkout to preserve local work."""
         repo_root = tmp_repos_dir / "owner" / "repo"
@@ -378,9 +449,10 @@ class TestEnsureWorkspace:
         checkout_call = mock_run.call_args_list[1]
         assert checkout_call[0][0] == ["git", "checkout", "nb4"]
 
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_existing_workspace_skips_clone(
-        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
         """Test that existing workspace is not re-cloned."""
         repo_root = tmp_repos_dir / "owner" / "repo"

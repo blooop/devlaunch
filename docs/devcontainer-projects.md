@@ -18,7 +18,7 @@ clones every branch to `<repo>/<branch>`, so sibling branches share every path
 component that a heuristic would key on.
 
 devpod passes `initializeCommand` no workspace identity of its own, so devlaunch
-exports one into the environment that the hook inherits:
+injects one with devpod's `--init-env`, which reaches the hook:
 
 | Variable | Value |
 |----------|-------|
@@ -39,9 +39,13 @@ discovers them at `.devcontainer/<name>/devcontainer.json`, one level deep, so a
 bare name is enough:
 
 ```bash
-dl org/repo --devcontainer sim     # .devcontainer/sim/devcontainer.json
-dl org/repo --devcontainer ./somewhere-else.json
+dl org/repo --devcontainer sim     # -> devpod --devcontainer-id sim
+dl org/repo --devcontainer ./somewhere-else.json   # -> devpod --devcontainer-path
 ```
+
+A bare name becomes a devpod `--devcontainer-id`, so devpod resolves the
+`.devcontainer/<name>/` location itself rather than devlaunch hand-building the
+path. Anything containing `/` or ending in `.json` is passed as a path instead.
 
 **This is a one-time argument.** devpod stores the chosen config with the
 workspace, so later `dl org/repo` calls reuse it — including after a `stop`. Only

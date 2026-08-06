@@ -11,14 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `--devcontainer <variant|path>` to select a non-default `devcontainer.json`, for
-  repos carrying several variants. A bare name expands to the spec's
-  `.devcontainer/<name>/devcontainer.json`. devpod stores the choice with the
-  workspace, so it only has to be passed once.
-- `DEVLAUNCH_WORKSPACE_ID` is exported to devpod, so a project's host-side
-  `initializeCommand` can tell branch workspaces apart. devpod passes the hook no
-  workspace identity of its own, and devlaunch clones every branch to
-  `<repo>/<branch>`, so a project deriving per-checkout names from the path cannot
-  distinguish them. See `docs/devcontainer-projects.md`.
+  repos carrying several variants. A bare name is passed to devpod as a
+  `--devcontainer-id`, which resolves the spec's
+  `.devcontainer/<name>/devcontainer.json` location; a path is passed as
+  `--devcontainer-path`. Accepts `--devcontainer=x` too, and tab-completes the
+  repo's variant directories. devpod stores the choice with the workspace, so it
+  only has to be passed once.
+- `DEVLAUNCH_WORKSPACE_ID` is injected into workspace initialization (via devpod's
+  `--init-env`), so a project's host-side `initializeCommand` can tell branch
+  workspaces apart. devpod passes the hook no workspace identity of its own, and
+  devlaunch clones every branch to `<repo>/<branch>`, so a project deriving
+  per-checkout names from the path cannot distinguish them. See
+  `docs/devcontainer-projects.md`.
 - Worktree backend for efficient multi-branch workspace management
   - Clones repositories once, then creates git worktrees for each branch
   - Shares git objects across all branches for faster workspace creation
@@ -38,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cloning a git-lfs repository no longer fails during checkout. Workspaces are
   cloned from the local bare cache, which holds no LFS objects, so the smudge
   filter aborted; LFS content is now pulled from the real remote after the origin
-  URL is set.
+  URL is set. A failed or interrupted pull is retried on the next run — whether
+  content is missing is decided by looking for pointer files, so a workspace
+  cannot get stuck holding pointers.
 - `dl <ws>` no longer starts the session in `$HOME` for projects that set a custom
   `workspaceFolder`. It passed a guessed `--workdir /workspaces/<id>`, and devpod
   falls back to `$HOME` when that path does not exist in the container.
@@ -50,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no config to retry from. The clone is now kept unless devpod succeeded.
 - Proper exception handling for workspace creation failures
 - Pylint compliance for all worktree module code
+
+### Removed
+- `devlaunch.dl.get_container_workdir()`. It built a guessed container path that
+  is no longer passed to `devpod ssh` (see the `workspaceFolder` fix above), so it
+  had no correct use. `workspace_ssh(workdir=...)` still accepts an explicit
+  override.
 
 ## [0.0.4] - 2026-01-18
 

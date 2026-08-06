@@ -27,6 +27,9 @@ from .storage import MetadataStorage
 
 _SAFE_REF_RE = re.compile(r"^[\w][\w./-]*$")
 
+# Every git-lfs pointer file starts with this; see the git-lfs pointer spec.
+_LFS_POINTER_PREFIX = b"version https://git-lfs"
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,10 +106,10 @@ class WorkspaceCloneManager:
         return result.returncode == 0
 
     @staticmethod
-    def _uses_lfs(ws_path: Path) -> bool:
-        """Check whether the checked-out tree tracks any files with git-lfs."""
+    def _lfs_tracked_files(ws_path: Path) -> list[str]:
+        """Paths in the tree that git-lfs tracks, empty if lfs is absent."""
         if shutil.which("git-lfs") is None:
-            return False
+            return []
         result = subprocess.run(
             ["git", "lfs", "ls-files", "--name-only"],
             cwd=ws_path,
@@ -114,29 +117,51 @@ class WorkspaceCloneManager:
             text=True,
             check=False,
         )
-        return result.returncode == 0 and bool(result.stdout.strip())
+        if result.returncode != 0:
+            # Don't degrade silently to "no LFS here" — that would ship a tree of
+            # pointer files as though it were complete.
+            logger.warning(f"Could not list git-lfs files: {result.stderr.strip()}")
+            return []
+        return [line for line in result.stdout.splitlines() if line]
+
+    @classmethod
+    def _has_lfs_pointers(cls, ws_path: Path) -> bool:
+        """True if any LFS-tracked file is still an unmaterialized pointer.
+
+        Checked by content rather than by "did we just clone this", so an
+        interrupted or failed materialization is retried on the next run instead
+        of leaving the workspace on pointer files for good.
+        """
+        for name in cls._lfs_tracked_files(ws_path):
+            try:
+                with open(ws_path / name, "rb") as f:
+                    if f.read(len(_LFS_POINTER_PREFIX)) == _LFS_POINTER_PREFIX:
+                        return True
+            except OSError:
+                continue
+        return False
 
     def _materialize_lfs(self, ws_path: Path) -> None:
         """Replace LFS pointer files with real content from the origin remote.
 
         The workspace is cloned from the local bare cache with
-        GIT_LFS_SKIP_SMUDGE=1 (the cache has no LFS objects), so after the
-        origin URL is fixed to point at the real remote the pointers must be
-        materialized explicitly — a same-commit checkout won't rewrite them.
+        GIT_LFS_SKIP_SMUDGE=1 (the cache has no LFS objects), so after the origin
+        URL is fixed to point at the real remote the pointers must be materialized
+        explicitly — a same-commit checkout won't rewrite them.
+
+        Output is not captured: a multi-gigabyte fetch has to be able to show
+        progress rather than look like a hang.
         """
-        if not self._uses_lfs(ws_path):
+        if not self._has_lfs_pointers(ws_path):
             return
         logger.info("Fetching git-lfs objects from origin")
         try:
-            subprocess.run(
-                ["git", "lfs", "pull", "origin"],
-                cwd=ws_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+            subprocess.run(["git", "lfs", "pull", "origin"], cwd=ws_path, check=True)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to pull git-lfs objects: {e.stderr}") from e
+            raise RuntimeError(
+                f"Failed to pull git-lfs objects (exit {e.returncode}). The workspace "
+                f"still holds pointer files; re-run to retry."
+            ) from e
 
     def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
         """Ensure a branch exists in the bare repo.
@@ -283,10 +308,10 @@ class WorkspaceCloneManager:
             logger.error(f"Failed to checkout branch '{branch}': {e.stderr}")
             raise RuntimeError(f"Failed to checkout branch '{branch}': {e.stderr}") from e
 
-        # Materialize LFS content for freshly-created workspaces (cloned with
-        # GIT_LFS_SKIP_SMUDGE=1, so the tree holds pointer files until now).
-        if is_new_workspace:
-            self._materialize_lfs(ws_path)
+        # Materialize LFS content. Not gated on is_new_workspace: a failed pull
+        # leaves a workspace that already "exists", and gating here would take the
+        # existing-workspace path forever after, silently building against pointers.
+        self._materialize_lfs(ws_path)
 
         # Step 6: Track in metadata
         try:
