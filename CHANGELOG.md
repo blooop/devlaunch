@@ -11,12 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `--devcontainer <variant|path>` to select a non-default `devcontainer.json`, for
-  repos carrying several variants. A bare name is passed to devpod as a
-  `--devcontainer-id`, which resolves the spec's
-  `.devcontainer/<name>/devcontainer.json` location; a path is passed as
-  `--devcontainer-path`. Accepts `--devcontainer=x` too, and tab-completes the
-  repo's variant directories. devpod stores the choice with the workspace, so it
-  only has to be passed once.
+  repos carrying several variants. A bare name expands to the spec's
+  `.devcontainer/<name>/devcontainer.json`; a path is used as given. Accepts
+  `--devcontainer=x` too, and tab-completes the repo's variant directories. devpod
+  stores the choice with the workspace, so it only has to be passed once.
 - `DEVLAUNCH_WORKSPACE_ID` is injected into workspace initialization (via devpod's
   `--init-env`), so a project's host-side `initializeCommand` can tell branch
   workspaces apart. devpod passes the hook no workspace identity of its own, and

@@ -39,13 +39,15 @@ discovers them at `.devcontainer/<name>/devcontainer.json`, one level deep, so a
 bare name is enough:
 
 ```bash
-dl org/repo --devcontainer sim     # -> devpod --devcontainer-id sim
-dl org/repo --devcontainer ./somewhere-else.json   # -> devpod --devcontainer-path
+dl org/repo --devcontainer sim     # .devcontainer/sim/devcontainer.json
+dl org/repo --devcontainer ./somewhere-else.json
 ```
 
-A bare name becomes a devpod `--devcontainer-id`, so devpod resolves the
-`.devcontainer/<name>/` location itself rather than devlaunch hand-building the
-path. Anything containing `/` or ending in `.json` is passed as a path instead.
+A bare name expands to the spec's variant location; anything containing `/` or
+ending in `.json` is used as given. Both are handed to devpod as
+`--devcontainer-path`. (devpod's own `--devcontainer-id` takes a bare variant name
+and looks like the same thing, but is silently ignored in devpod 0.26.1 — it parses
+the default config and stores no id.)
 
 **This is a one-time argument.** devpod stores the chosen config with the
 workspace, so later `dl org/repo` calls reuse it — including after a `stop`. Only

@@ -285,15 +285,20 @@ def parse_owner_repo_branch(spec: str) -> Optional[tuple]:
     return (spec, None)
 
 
-def _resolve_devcontainer_ref(ref: str) -> tuple[str, str]:
-    """Classify a --devcontainer value as either a variant id or a path.
+def _resolve_devcontainer_ref(ref: str) -> str:
+    """Turn a --devcontainer value into a devcontainer.json path for devpod.
 
-    Returns (devpod_flag, value). A bare name is handed to devpod as
-    --devcontainer-id, which resolves it against the spec's one-level-deep
-    `.devcontainer/<name>/devcontainer.json` location itself rather than us
-    hand-building that path. Anything path-shaped goes to --devcontainer-path.
+    A bare name expands to the spec's one-level-deep variant location,
+    `.devcontainer/<name>/devcontainer.json`. Anything containing a separator or
+    ending in .json is used as given.
 
-    Raises ValueError on a value that cannot be either, so a missing argument
+    devpod's own --devcontainer-id takes a bare variant name and looks like the same
+    job, but it is silently ignored in devpod 0.26.1: a fresh `devpod up --id x
+    --devcontainer-id alt` parses .devcontainer/devcontainer.json and stores no
+    devContainerID, while --devcontainer-path selects the variant correctly. Build
+    the path here until that is fixed upstream.
+
+    Raises ValueError on a value that cannot be a path, so a missing argument
     (`dl --devcontainer --help`) is an error instead of a nonsense path.
     """
     if not ref or ref.isspace():
@@ -301,16 +306,15 @@ def _resolve_devcontainer_ref(ref: str) -> tuple[str, str]:
     if ref.startswith("-"):
         raise ValueError(f"--devcontainer needs a value, got the flag {ref!r}")
     if "/" in ref or ref.endswith(".json"):
-        return ("--devcontainer-path", ref)
-    return ("--devcontainer-id", ref)
+        return ref
+    return f".devcontainer/{ref}/devcontainer.json"
 
 
-def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[tuple[str, str]]]:
+def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[str]]:
     """Pull `--devcontainer <name-or-path>` out of the argument list.
 
-    Returns (remaining_args, selection), where selection is the
-    (devpod_flag, value) pair from _resolve_devcontainer_ref, or None.
-    Accepts both `--devcontainer x` and `--devcontainer=x`.
+    Returns (remaining_args, devcontainer_path). Accepts both
+    `--devcontainer x` and `--devcontainer=x`.
 
     Scanning stops at the first bare `--`: everything after it is the shell
     command `dl <ws> -- <command>` runs inside the workspace, and must reach it
@@ -319,7 +323,7 @@ def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[tupl
     Raises ValueError if the flag is given without a usable value.
     """
     remaining: List[str] = []
-    selection: Optional[tuple[str, str]] = None
+    selection: Optional[str] = None
     i = 0
     while i < len(args):
         arg = args[i]
@@ -798,7 +802,7 @@ def workspace_up(
     reset: bool = False,
     workspace_id: Optional[str] = None,
     workspace_identity: Optional[str] = None,
-    devcontainer: Optional[tuple[str, str]] = None,
+    devcontainer: Optional[str] = None,
 ):
     """Start or create a workspace.
 
@@ -808,7 +812,7 @@ def workspace_up(
     initializeCommand can tell branch workspaces apart — devpod gives the hook no
     workspace identity of its own (see docs/devcontainer-projects.md).
 
-    devcontainer is a (flag, value) pair from _resolve_devcontainer_ref.
+    devcontainer is a devcontainer.json path from _resolve_devcontainer_ref.
     """
     args = ["up", workspace]
     if workspace_id:
@@ -818,7 +822,7 @@ def workspace_up(
     # `dl <ws> code` passes ide="vscode" explicitly.
     args.extend(["--ide", ide if ide else "none"])
     if devcontainer:
-        args.extend(devcontainer)
+        args.extend(["--devcontainer-path", devcontainer])
     identity = workspace_identity or workspace_id
     if identity:
         args.extend(["--init-env", f"DEVLAUNCH_WORKSPACE_ID={identity}"])

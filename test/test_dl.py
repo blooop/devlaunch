@@ -1199,9 +1199,11 @@ class TestDevcontainerPath:
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_up_passes_the_selection(self, mock_run, _mock_ctx):
         mock_run.return_value = MagicMock(returncode=0)
-        workspace_up("/path", devcontainer=("--devcontainer-id", "sim"))
+        workspace_up("/path", devcontainer=".devcontainer/sim/devcontainer.json")
         args = mock_run.call_args[0][0]
-        assert args[args.index("--devcontainer-id") + 1] == "sim"
+        assert args[args.index("--devcontainer-path") + 1] == (
+            ".devcontainer/sim/devcontainer.json"
+        )
 
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
@@ -1209,14 +1211,12 @@ class TestDevcontainerPath:
         """No flag means devpod uses the repo's default devcontainer.json."""
         mock_run.return_value = MagicMock(returncode=0)
         workspace_up("/path")
-        args = mock_run.call_args[0][0]
-        assert "--devcontainer-id" not in args
-        assert "--devcontainer-path" not in args
+        assert "--devcontainer-path" not in mock_run.call_args[0][0]
 
     def test_flag_is_stripped_from_args(self):
         args, selection = extract_devcontainer_flag(["repo", "--devcontainer", "x.json", "stop"])
         assert args == ["repo", "stop"]
-        assert selection == ("--devcontainer-path", "x.json")
+        assert selection == "x.json"
 
     def test_flag_absent(self):
         args, selection = extract_devcontainer_flag(["repo", "stop"])
@@ -1226,12 +1226,12 @@ class TestDevcontainerPath:
     def test_equals_form_is_accepted(self):
         args, selection = extract_devcontainer_flag(["repo", "--devcontainer=sim"])
         assert args == ["repo"]
-        assert selection == ("--devcontainer-id", "sim")
+        assert selection == ".devcontainer/sim/devcontainer.json"
 
-    def test_bare_name_becomes_a_devcontainer_id(self):
-        """devpod resolves the spec's .devcontainer/<name>/ location itself."""
+    def test_bare_name_expands_to_the_spec_location(self):
+        """devpod's --devcontainer-id is ignored in 0.26.1, so build the path."""
         _, selection = extract_devcontainer_flag(["repo", "--devcontainer", "sim"])
-        assert selection == ("--devcontainer-id", "sim")
+        assert selection == ".devcontainer/sim/devcontainer.json"
 
     def test_path_shaped_values_become_a_path(self):
         for given in (
@@ -1241,7 +1241,7 @@ class TestDevcontainerPath:
             "./weird.json",
         ):
             _, selection = extract_devcontainer_flag(["repo", "--devcontainer", given])
-            assert selection == ("--devcontainer-path", given)
+            assert selection == given
 
     def test_dangling_flag_is_an_error(self):
         """A dangling --devcontainer is an error, not a silently ignored flag."""
@@ -1271,7 +1271,7 @@ class TestDevcontainerPath:
             ["ws", "--devcontainer", "robot", "--", "echo", "--devcontainer", "hi"]
         )
         assert args == ["ws", "--", "echo", "--devcontainer", "hi"]
-        assert selection == ("--devcontainer-id", "robot")
+        assert selection == ".devcontainer/robot/devcontainer.json"
 
     @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
@@ -1288,7 +1288,9 @@ class TestDevcontainerPath:
         up_calls = [c for c in mock_run.call_args_list if c[0][0][:1] == ["up"]]
         assert up_calls, "expected a devpod up call"
         up_args = up_calls[0][0][0]
-        assert up_args[up_args.index("--devcontainer-id") + 1] == "sim"
+        assert up_args[up_args.index("--devcontainer-path") + 1] == (
+            ".devcontainer/sim/devcontainer.json"
+        )
 
     @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
