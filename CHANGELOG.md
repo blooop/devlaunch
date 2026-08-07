@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-08-07
+
+### Added
+- `aid`, a second entry point that opens a workspace and starts a coding agent in
+  it: `aid owner/repo@branch fix the flaky test`. It is a shortcut, not a second
+  launcher — it rewrites its command line into `dl owner/repo@branch -- claude
+  'fix the flaky test'` and hands that to `dl`, so an `aid` workspace is the `dl`
+  workspace: same clone, same workspace id, same container, reused rather than
+  rebuilt. Pick the agent with `--claude` (default), `--codex` or `--gemini`, or
+  set `DEVLAUNCH_AID_AGENT`; `--devcontainer` passes through, and everything after
+  the workspace is the prompt. This replaces the `aid` in `blooop/rockerc`, which
+  ran on rocker and built an image per launch instead of reusing the workspace.
+- `dl` and `aid` share one completion function, so `aid` tab-completes the same
+  workspaces, repos, owners and branches. Reinstall with `dl --install`.
+
+### Changed
+- `dl.main()` takes an optional argv list, so a sibling entry point can hand `dl`
+  a command line and get `dl`'s own behaviour rather than a copy of it. Calling it
+  with no arguments is unchanged.
+
 ## [0.0.8] - 2026-08-07
 
 ### Added

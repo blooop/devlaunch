@@ -337,6 +337,12 @@ def _resolve_devcontainer_ref(ref: str) -> str:
     return f".devcontainer/{ref}/devcontainer.json"
 
 
+# dl options whose value is a separate argument. aid splits its own command line
+# before handing it to dl and has to tell such a value from the workspace spec,
+# so the list lives here, next to the parsing it describes.
+DL_VALUE_OPTIONS = frozenset({"--devcontainer"})
+
+
 def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[str]]:
     """Pull `--devcontainer <name-or-path>` out of the argument list.
 
@@ -1003,24 +1009,31 @@ def _get_clone_manager() -> WorkspaceCloneManager:
     return _cache["clone_manager"]
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     """Main entry point for dl CLI.
 
     Thin wrapper so there is exactly one handler for a missing devpod, however
     deep in the command it was noticed. The message goes to stderr because
     stdout is parsed by the completion machinery (--repos, --completion-data).
+
+    argv is the argument list without the program name, defaulting to the real
+    one. It is a parameter so that a sibling entry point can hand dl a command
+    line it built and get dl's behaviour itself rather than a second copy of it
+    (see aid.py) — a copy is what left aid rebuilding containers dl reuses.
     """
     try:
-        return _run_cli()
+        return _run_cli(argv)
     except DevpodNotInstalled as e:
         print(e, file=sys.stderr)
         return DEVPOD_MISSING_EXIT_CODE
 
 
-def _run_cli() -> int:
+def _run_cli(argv: Optional[List[str]] = None) -> int:
     """Dispatch a dl command line. See main() for the error handling around it."""
+    if argv is None:
+        argv = sys.argv[1:]
     try:
-        args, devcontainer = extract_devcontainer_flag(sys.argv[1:])
+        args, devcontainer = extract_devcontainer_flag(argv)
     except ValueError as e:
         logging.error(str(e))
         return 1

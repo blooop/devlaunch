@@ -10,7 +10,7 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.0.8-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -37,7 +37,7 @@ If `devpod` is not on `PATH`, every command that needs it prints a single instal
 
 ### Shell Completions
 
-After installation, set up shell completions:
+After installation, set up shell completions for `dl` and `aid`:
 
 ```bash
 dl --install
@@ -52,6 +52,44 @@ dl <user/repo>                   # Start workspace and attach shell
 dl <user/repo> <cmd>             # Run workspace command (stop, code, etc.)
 dl <user/repo> -- <command>      # Run shell command in workspace
 ```
+
+## aid: start a coding agent in a workspace
+
+`aid` is `dl` with a coding agent started for you:
+
+```bash
+aid <user/repo>[@branch] [prompt...]   # Open the workspace, start the agent
+```
+
+It is a shortcut, not a second launcher. `aid` rewrites its command line into a
+`dl` one and hands it to `dl` itself, so
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test
+```
+
+is exactly
+
+```bash
+dl blooop/devlaunch@fix/42 -- claude 'fix the flaky test'
+```
+
+That means an `aid` workspace *is* the `dl` workspace: same clone, same workspace
+id, same container — started if stopped, attached to if already running, and never
+rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
+
+| Option | Description |
+|--------|-------------|
+| `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
+| `--devcontainer <variant\|path>` | Passed through to `dl` |
+| `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
+
+Everything after the workspace is the prompt, flags and all, so it never needs
+quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
+deleting, VS Code — stays with `dl`.
+
+The agent's CLI has to be installed in the container; `aid` runs it there, it does
+not install it.
 
 ## Workspace Sources
 
