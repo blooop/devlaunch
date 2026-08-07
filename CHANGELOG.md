@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-08-07
+
+### Fixed
+- `dl <repo> -- <cmd>` runs its command in a login shell, so it gets the same
+  `PATH` an interactive `dl <repo>` attach gets. devpod runs a `--command` payload
+  under a non-login, non-interactive `bash -c`, which sources neither `~/.profile`
+  nor `~/.bashrc` — so `PATH` entries an image adds there (notably
+  `$HOME/.pixi/bin`) were missing and the payload died with `command not found`
+  and exit 127. This is what made `aid` unable to find `claude` in a workspace
+  where `dl` could. dl launches arbitrary repos, so the parity comes from the
+  invocation rather than from any particular `devcontainer.json`.
+
+### Changed
+- Workspace ids are derived at a single parse boundary, with a wider id suffix, so
+  two specs can no longer collide onto one workspace.
+- Fewer devpod shell-outs per invocation: the same devpod answer is no longer
+  fetched twice, and the completion cache refreshes on a TTL once per invocation
+  rather than on every completion. Both cut startup latency.
+- A development install from the working tree installs as `dl-next`, leaving a
+  released `dl` in place, and reads its entry points from `pyproject.toml`.
+
 ## [0.0.9] - 2026-08-07
 
 ### Added
