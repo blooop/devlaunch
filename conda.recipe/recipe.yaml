@@ -1,15 +1,14 @@
 schema_version: 1
 
 context:
-  version: "0.0.7"
+  version: ${{ load_from_file("../pyproject.toml").project.version }}
 
 package:
   name: devlaunch
   version: ${{ version }}
 
 source:
-  git: https://github.com/blooop/devlaunch.git
-  tag: v${{ version }}
+  path: ..
 
 build:
   number: 0
@@ -25,6 +24,8 @@ requirements:
   run:
     - python >=3.10
     - iterfzf >=1.0.0
+    - tomli >=2.0.0
+    - tomli-w >=1.0.0
     - devpod >=0.8.0
 
 tests:
