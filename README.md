@@ -198,6 +198,7 @@ dl blooop/devlaunch stop         # Stop workspace
 - **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
+- **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and `dl <ws> -- <cmd>` skips the extra round-trip that names an interactive prompt, since a one-shot command has none
 
 ## Worktree Backend
 

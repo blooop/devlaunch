@@ -328,13 +328,17 @@ def purge_all_data() -> int:
 
     cache_dir = _get_cache_dir()
 
-    # First, delete all DevPod workspaces
+    # First, delete all DevPod workspaces. The list is the same snapshot the
+    # caller printed the count from, so the confirmation the user answered and
+    # the set actually deleted cannot disagree.
     workspaces = list_workspaces()
     for ws in workspaces:
         print(f"Deleting DevPod workspace: {ws.id}")
         result = run_devpod(["delete", ws.id, "--force"], capture=True)
         if result.returncode != 0:
             logging.warning(f"Failed to delete workspace {ws.id}: {result.stderr}")
+    if workspaces:
+        invalidate_workspace_list_cache()
 
     # Then remove local cache
     if not cache_dir.exists():
@@ -789,17 +793,60 @@ def run_devpod(
         raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
 
-def list_workspaces() -> List[Workspace]:
-    """List all devpod workspaces."""
+# The memoized `devpod list` snapshot. A dict rather than a module-level
+# Optional so the accessors below need no `global`, and so "nothing read yet"
+# (no key at all) stays distinguishable from "devpod has no workspaces" (an
+# empty list) — the two must not be confused, or a real empty answer would be
+# re-read on every call.
+_WORKSPACE_LIST_KEY = "workspaces"
+_workspace_list_cache: Dict[str, List[Workspace]] = {}
+
+
+def invalidate_workspace_list_cache() -> None:
+    """Forget the memoized `devpod list` snapshot.
+
+    Every dl code path that changes what devpod would list calls this, so a
+    later read in the same process re-reads devpod instead of answering from a
+    snapshot taken before the change.
+    """
+    _workspace_list_cache.pop(_WORKSPACE_LIST_KEY, None)
+
+
+def list_workspaces(refresh: bool = False) -> List[Workspace]:
+    """List all devpod workspaces, reading devpod at most once per command.
+
+    `devpod list --output json` costs ~0.45s — five times the entire Python
+    startup dl pays — and six call sites read it, so `dl --purge` used to spend
+    ~0.9s asking the same question twice. dl is a short-lived single-command
+    process, so one snapshot per command is enough; the only reader that could
+    see a stale one is a reader that runs after dl itself changed a workspace,
+    and every such mutation calls invalidate_workspace_list_cache().
+
+    refresh=True bypasses the snapshot for a caller that must have the
+    post-mutation truth even if nothing announced the mutation.
+
+    Only an answer devpod actually gave is remembered. A failed or unparsable
+    read returns an empty list without caching it, so a transient failure — and
+    a missing devpod, which raises out of here — can never be served again as
+    "this machine has no workspaces".
+    """
+    if not refresh:
+        cached = _workspace_list_cache.get(_WORKSPACE_LIST_KEY)
+        if cached is not None:
+            # A copy: a caller that sorts or filters its list in place must not
+            # be rewriting what the next caller sees.
+            return list(cached)
     result = run_devpod(["list", "--output", "json"], capture=True)
     if result.returncode != 0 or not result.stdout.strip():
         return []
     try:
         data = json.loads(result.stdout)
-        return [Workspace.from_json(ws) for ws in data]
     except json.JSONDecodeError:
         logging.error("Failed to parse devpod output")
         return []
+    workspaces = [Workspace.from_json(ws) for ws in data]
+    _workspace_list_cache[_WORKSPACE_LIST_KEY] = workspaces
+    return list(workspaces)
 
 
 def get_workspace_ids() -> List[str]:
@@ -920,7 +967,11 @@ def workspace_up(
     # does or doesn't set up for itself.
     with gh_auth.up_args() as token_args:
         args.extend(token_args)
-        return run_devpod(args)
+        result = run_devpod(args)
+    # `up` creates and starts workspaces, so any snapshot of `devpod list`
+    # taken before it is now out of date.
+    invalidate_workspace_list_cache()
+    return result
 
 
 def workspace_ssh(
@@ -956,9 +1007,30 @@ def workspace_ssh(
     return result.returncode
 
 
+def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
+    """Hand the workspace to the user: name its prompt, then ssh in.
+
+    Setting the hostname is a whole extra `devpod ssh` (~0.5s) in front of every
+    attach, and it cannot be folded into the attach itself: bash reads the
+    hostname once when the shell starts, so it has to be set before the session
+    dl hands over begins, and `devpod ssh` exposes no hook inside that session.
+
+    It is skipped for a one-shot `dl <ws> -- cmd`, which renders no prompt for
+    the hostname to appear in — the round-trip would buy that command nothing.
+    An interactive attach later still names the container, so nothing the user
+    can see depends on having paid for it here.
+    """
+    if shell_command is None:
+        setup_hostname(workspace_id)
+    return workspace_ssh(workspace_id, shell_command)
+
+
 def workspace_stop(workspace: str) -> int:
     """Stop a workspace."""
     result = run_devpod(["stop", workspace])
+    # A stopped workspace still appears in `devpod list`, but with different
+    # details, and `restart` calls straight into `up` after this.
+    invalidate_workspace_list_cache()
     # The workspace list just changed, so the cache is wrong regardless of age.
     update_cache_background(force=True)
     return result.returncode
@@ -974,6 +1046,9 @@ def workspace_delete(workspace: str) -> int:
     devpod can then never find the config to retry with.
     """
     result = run_devpod(["delete", workspace])
+    # Unconditionally: a delete that reports failure may still have got far
+    # enough to change what devpod lists.
+    invalidate_workspace_list_cache()
     if result.returncode != 0:
         logging.error(
             f"devpod could not delete {workspace}; keeping the local clone so it "
@@ -1106,6 +1181,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     line it built and get dl's behaviour itself rather than a second copy of it
     (see aid.py) — a copy is what left aid rebuilding containers dl reuses.
     """
+    # The workspace-list snapshot is scoped to one command, not to the process:
+    # a caller that drives main() twice (a test, a shell wrapper) must not have
+    # the first command's view of devpod answer the second command's questions.
+    invalidate_workspace_list_cache()
     try:
         return _run_cli(argv)
     except DevpodNotInstalled as e:
@@ -1139,8 +1218,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             workspace_identity=selected,
             devcontainer=devcontainer,
         )
-        setup_hostname(selected)
-        return workspace_ssh(selected)
+        return attach_workspace(selected)
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -1330,8 +1408,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         )
         if result.returncode != 0:
             return result.returncode
-        setup_hostname(workspace_id)
-        ret = workspace_ssh(workspace_id)
+        ret = attach_workspace(workspace_id)
         update_cache_background(force=True)
         return ret
 
@@ -1348,8 +1425,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         )
         if result.returncode != 0:
             return result.returncode
-        setup_hostname(workspace_id)
-        ret = workspace_ssh(workspace_id)
+        ret = attach_workspace(workspace_id)
         # workspace_stop already asked for a refresh on the way through; the
         # once-per-process latch is what keeps this from being a second one.
         update_cache_background(force=True)
@@ -1366,8 +1442,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         )
         if result.returncode != 0:
             return result.returncode
-        setup_hostname(workspace_id)
-        ret = workspace_ssh(workspace_id)
+        ret = attach_workspace(workspace_id)
         update_cache_background(force=True)
         return ret
 
@@ -1390,11 +1465,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
                 f"Ignoring --devcontainer: {workspace_id} is already running. "
                 f"Use 'dl {raw_spec} recreate --devcontainer ...' to switch config."
             )
-        setup_hostname(workspace_id)
-        ret = workspace_ssh(
-            workspace_id,
-            shell_command,
-        )
+        ret = attach_workspace(workspace_id, shell_command)
         update_cache_background(force=True)
         return ret
 
@@ -1413,14 +1484,8 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
     if result.returncode != 0:
         return result.returncode
 
-    # Set hostname so terminal prompt shows project/branch
-    setup_hostname(workspace_id)
-
-    # Attach to workspace
-    ret = workspace_ssh(
-        workspace_id,
-        shell_command,
-    )
+    # Attach to workspace (naming its prompt first, for an interactive shell)
+    ret = attach_workspace(workspace_id, shell_command)
 
     # Update cache after workspace operations: this path may have created the
     # workspace, so the refresh has to happen now that it exists.
