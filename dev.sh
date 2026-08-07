@@ -51,9 +51,44 @@ mkdir -p "${BIN_DIR}"
 # Symlink every entry point under a -next name. Console scripts do not care what
 # they are called -- the shebang points at the venv's python either way -- so the
 # only thing the name decides is which build you get when you type it.
-for cmd in dl aid; do
+#
+# The names are read out of pyproject.toml rather than listed here, because a
+# list here is one somebody has to remember: `aid` was added as a second entry
+# point and this script knew nothing about it. A missing -next does not announce
+# itself -- `aid` would keep resolving to the released build while its change sat
+# in the tree untested.
+mapfile -t COMMANDS < <(
+    "${VENV_DIR}/bin/python" - "${SCRIPT_DIR}/pyproject.toml" <<'PY'
+import pathlib
+import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # python 3.10, where tomllib is not yet stdlib
+    import tomli as tomllib
+
+data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+# .get, so a pyproject.toml declaring no entry points is reported by the check
+# below rather than as a KeyError traceback from in here.
+print("\n".join(data.get("project", {}).get("scripts", {})))
+PY
+)
+
+if [ ${#COMMANDS[@]} -eq 0 ]; then
+    echo "Error: no [project.scripts] entry points found in pyproject.toml" >&2
+    exit 1
+fi
+
+for cmd in "${COMMANDS[@]}"; do
     target="${VENV_DIR}/bin/${cmd}"
     link="${BIN_DIR}/${cmd}-next"
+
+    # A declared script that did not make it into the venv would otherwise get a
+    # dangling symlink on PATH, which fails at the point of use rather than here.
+    if [ ! -x "${target}" ]; then
+        echo "Warning: ${target} was not installed. Skipping ${link}."
+        continue
+    fi
 
     if [ -L "${link}" ]; then
         rm "${link}"
