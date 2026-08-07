@@ -4,28 +4,30 @@ Orchestrates: bare repo caching → workspace clone → branch checkout.
 Clones from the local bare reference repo (fast, saves bandwidth),
 then fixes the remote URL so push/pull work against GitHub.
 
-Directory layout:
-    repos/<owner>/<repo>/
-    ├── .bare/           # bare git repo (hidden)
-    ├── main/            # workspace clone
-    └── nb4/             # workspace clone
+Directory layout, for repos/blooop/devlaunch/:
+    ├── .bare/                          # bare git repo (hidden)
+    ├── devlaunch-main-zovomo/          # workspace clone
+    └── devlaunch-feature-auth-polise/  # workspace clone
+
+The leaf names are ``WorkspaceId.value`` — the same string that names the devpod
+workspace. A bare branch name would be unique only *within* its parent, which is
+what let a downstream consumer reading one path component collapse every branch of
+a repo onto a single identity (kinisi-robotics/kinisi_ros#9766).
 """
 
 import logging
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
 
+from ..workspace_id import WorkspaceId, validate_ref_name
 from .branch_manager import BranchManager
 from .config import WorktreeConfig, get_worktree_config
 from .models import WorktreeInfo
 from .repo_manager import RepositoryManager
 from .storage import MetadataStorage
-
-_SAFE_REF_RE = re.compile(r"^[\w][\w./-]*$")
 
 # Every git-lfs pointer file starts with this; see the git-lfs pointer spec.
 _LFS_POINTER_PREFIX = b"version https://git-lfs"
@@ -33,22 +35,14 @@ _LFS_POINTER_PREFIX = b"version https://git-lfs"
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_branch_dir(branch: str) -> str:
-    """Sanitize a branch name for use as a directory name.
-
-    Converts e.g. 'feature/my-branch' → 'feature-my-branch'.
-    """
-    return re.sub(r"[^\w.-]", "-", branch).strip("-")
-
-
 class WorkspaceCloneManager:
     """Manages local workspace clones for DevPod.
 
     Directory layout:
-        ~/.cache/devlaunch/repos/<owner>/<repo>/
-        ├── .bare/                        # bare git repo
-        ├── main/                         # workspace clone
-        └── nb4/                          # workspace clone
+        ~/.cache/devlaunch/repos/blooop/devlaunch/
+        ├── .bare/                          # bare git repo
+        ├── devlaunch-main-zovomo/          # workspace clone
+        └── devlaunch-feature-auth-polise/  # workspace clone
     """
 
     def __init__(
@@ -73,30 +67,41 @@ class WorkspaceCloneManager:
         self.branch_manager = branch_manager or BranchManager()
 
     def get_workspace_path(self, owner: str, repo: str, branch: str) -> Path:
-        """Get the path for a workspace clone."""
-        repo_root = self.repo_manager.get_repo_path(owner, repo)
-        return repo_root / _sanitize_branch_dir(branch)
+        """Get the path for a workspace clone.
+
+        Goes through :class:`WorkspaceId`, so this path cannot be built from an
+        unvalidated ref: there is no other way to name the leaf. That closes the
+        gap where this method was the one of three ref-consuming paths with no
+        guard, because the old validator returned a naked ``str`` that carried no
+        evidence of having been checked.
+
+        Raises:
+            ValueError: if owner, repo or branch is not a safe git name.
+        """
+        workspace = WorkspaceId(owner, repo, branch)
+        repo_root = self.repo_manager.get_repo_path(workspace.owner, workspace.repo)
+        return repo_root / workspace.value
 
     def workspace_exists(self, owner: str, repo: str, branch: str) -> bool:
         """Check if a workspace clone exists."""
         ws_path = self.get_workspace_path(owner, repo, branch)
         return ws_path.exists() and (ws_path / ".git").exists()
 
-    @staticmethod
-    def _validate_ref(name: str) -> str:
-        """Validate a git ref name to prevent malicious input in subprocess calls."""
-        if not _SAFE_REF_RE.match(name):
-            raise ValueError(f"Invalid git ref name: {name!r}")
-        return name
-
     def _remote_ref_exists(self, ws_path: Path, branch: str, remote: str = "origin") -> bool:
-        """Check if a remote tracking ref exists in a workspace."""
+        """Check if a remote tracking ref exists in a workspace.
+
+        Validates both names with the same predicate the id constructor uses: the
+        default branch reaches here from stored metadata rather than from a
+        ``WorkspaceId``, so this is the one ref that still arrives unproven.
+        """
+        validate_ref_name(remote, "remote")
+        validate_ref_name(branch)
         result = subprocess.run(
             [
                 "git",
                 "show-ref",
                 "--verify",
-                f"refs/remotes/{self._validate_ref(remote)}/{self._validate_ref(branch)}",
+                f"refs/remotes/{remote}/{branch}",
             ],
             cwd=ws_path,
             capture_output=True,
@@ -196,7 +201,6 @@ class WorkspaceCloneManager:
         repo: str,
         branch: str,
         remote_url: str,
-        workspace_id: str,
     ) -> Path:
         """Ensure a workspace clone exists and is on the right branch.
 
@@ -207,8 +211,13 @@ class WorkspaceCloneManager:
         5. Checkout the requested branch
         6. Track workspace in metadata for deletion
 
+        The workspace id written to metadata is derived here rather than passed in.
+        It has to equal the clone directory's leaf name for later lookups to find
+        the clone, and an id-shaped argument could disagree with it silently.
+
         Returns the workspace path.
         """
+        workspace = WorkspaceId(owner, repo, branch)
         # Step 1: Ensure bare reference repo exists
         self.repo_manager.ensure_repo(owner, repo, remote_url)
         bare_repo_path = self.repo_manager.get_bare_path(owner, repo)
@@ -273,8 +282,8 @@ class WorkspaceCloneManager:
             if is_new_workspace:
                 # For new workspaces, reset the branch to the remote ref to
                 # ensure we start from the latest commit, not a stale clone.
-                self._validate_ref(branch)
-                if self._remote_ref_exists(ws_path, branch):
+                # No validation call here: `workspace` is the proof.
+                if self._remote_ref_exists(ws_path, workspace.ref):
                     checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
                 else:
                     base_repo = self.repo_manager.get_repo(owner, repo)
@@ -318,7 +327,7 @@ class WorkspaceCloneManager:
                 repo=repo,
                 branch=branch,
                 local_path=ws_path,
-                workspace_id=workspace_id,
+                workspace_id=workspace.value,
             )
             self.storage.add_worktree(wt_info)
         except Exception as e:

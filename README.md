@@ -100,6 +100,40 @@ dl user/repo@branch              # Create from specific branch
 dl ./path                        # Create from local path
 ```
 
+## Workspace IDs
+
+`dl user/repo@branch` derives one id that names both the devpod workspace (what you
+see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
+
+```
+<repo-slug>-<branch-slug>-<syllables>      at most 38 characters
+
+blooop/devlaunch@main                             -> devlaunch-main-zovomo
+blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-polise
+blooop/test_renv@nb4                              -> test-renv-nb4-poleni
+kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
+                                                  -> kinisi-ros-ags-devcontainer-too-leneve
+blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
+                                                  -> devlaunch-dependabot-codecov-ac-sifiva
+```
+
+The six-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
+It is what makes the id unique: the readable part is shortened to fit the length limit,
+and shortening it can no longer make two different branches share an id. Long branch
+names drop whole `/`-separated middle segments before losing characters, so the part
+that identifies the branch survives.
+
+The id is also the container hostname, so it stays well inside the 38-character budget
+to leave room for tools that add their own prefixes.
+
+Branch names must be safe as both git refs and directory names — a name with a space or
+a leading dash is rejected rather than quietly rewritten.
+
+> **Upgrading:** this id format is new. Existing workspaces and clone directories were
+> named by the previous scheme and will get new ids, so `dl user/repo@branch` creates a
+> fresh workspace and leaves the old container behind. Remove stale ones with
+> `dl <old-id> rm`.
+
 ## Workspace Commands
 
 | Command | Description |

@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from devlaunch import gh_auth
+from devlaunch.workspace_id import TARGET_LENGTH, WorkspaceId
 from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
@@ -804,17 +805,36 @@ class TestSpecToWorkspaceId:
         """Test owner/repo generates sanitized repo name as workspace ID."""
         assert spec_to_workspace_id("blooop/devlaunch") == "devlaunch"
 
-    def test_owner_repo_with_branch_uses_repo_branch(self):
-        """Test owner/repo@branch uses <repo>-<branch> as workspace ID."""
-        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main"
+    def test_owner_repo_with_branch_uses_repo_branch_suffix(self):
+        """owner/repo@branch derives <repo-slug>-<branch-slug>-<syl3>.
+
+        The syllable suffix is new: without it the id was not injective, and
+        `blooop/devlaunch@feature/auth` and `@feature-auth` named one workspace.
+        """
+        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main-zovomo"
 
     def test_owner_repo_with_feature_branch(self):
-        """Test owner/repo@feature/branch sanitizes branch name."""
-        assert spec_to_workspace_id("owner/repo@feature/my-branch") == "repo-feature-my-branch"
+        """Test owner/repo@feature/branch slugs the branch name."""
+        result = spec_to_workspace_id("owner/repo@feature/my-branch")
+        assert result == WorkspaceId("owner", "repo", "feature/my-branch").value
+        assert result.startswith("repo-feature-my-branch-")
 
     def test_owner_repo_with_uppercase_branch(self):
-        """Test branch name is lowercased and underscores replaced."""
-        assert spec_to_workspace_id("Owner/Repo@Feature/MyBranch") == "repo-feature-mybranch"
+        """Test owner, repo and branch are all lowercased into the slug."""
+        result = spec_to_workspace_id("Owner/Repo@Feature/MyBranch")
+        assert result.startswith("repo-feature-mybranch-")
+
+    def test_owner_is_part_of_the_identity(self):
+        """The old derivation dropped the owner, so two forks shared an id."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") != spec_to_workspace_id(
+            "someone/devlaunch@main"
+        )
+
+    def test_slash_and_dash_branches_are_distinct(self):
+        """Defect 1 from #55: these two used to both derive `devlaunch-feature-auth`."""
+        assert spec_to_workspace_id("blooop/devlaunch@feature/auth") != spec_to_workspace_id(
+            "blooop/devlaunch@feature-auth"
+        )
 
     def test_github_url_sanitized(self):
         """Test github.com/owner/repo generates sanitized ID (fallback path)."""
@@ -834,15 +854,18 @@ class TestSpecToWorkspaceId:
 
     def test_branch_allows_multiple_workspaces(self):
         """Test different branches get different workspace IDs."""
-        assert spec_to_workspace_id("blooop/test_renv@nb12") == "test-renv-nb12"
-        assert spec_to_workspace_id("blooop/test_renv@nb14") == "test-renv-nb14"
+        nb12 = spec_to_workspace_id("blooop/test_renv@nb12")
+        nb14 = spec_to_workspace_id("blooop/test_renv@nb14")
+        assert nb12.startswith("test-renv-nb12-")
+        assert nb14.startswith("test-renv-nb14-")
         # Different branches = different IDs = can be open simultaneously
+        assert nb12 != nb14
 
     def test_branch_truncation(self):
-        """Test branch name is truncated so total stays <= 48 chars."""
+        """Test branch name is truncated so total stays within the target length."""
         long_branch = "a" * 60
         result = spec_to_workspace_id(f"owner/repo@{long_branch}")
-        assert len(result) <= 48
+        assert len(result) <= TARGET_LENGTH
         assert result.startswith("repo-")
 
     def test_branch_truncation_strips_trailing_hyphen(self):
@@ -850,7 +873,12 @@ class TestSpecToWorkspaceId:
         # Use a branch that after truncation would end with '-'
         result = spec_to_workspace_id("owner/myrepo@feature/some-very-long-branch-name-here")
         assert not result.endswith("-")
-        assert len(result) <= 48
+        assert len(result) <= TARGET_LENGTH
+
+    def test_long_repo_name_is_capped(self):
+        """Defect 2 from #55: a 47-char repo name skipped truncation and gave 80 chars."""
+        result = spec_to_workspace_id(f"owner/{'r' * 47}@main")
+        assert len(result) <= TARGET_LENGTH
 
     def test_path_extracts_directory_name(self):
         """Test path extracts directory name."""
@@ -863,11 +891,22 @@ class TestSpecToWorkspaceId:
 
     def test_python_template_example(self):
         """Test the motivating example from the plan."""
-        assert spec_to_workspace_id("blooop/python_template@nb4") == "python-template-nb4"
+        result = spec_to_workspace_id("blooop/python_template@nb4")
+        assert result.startswith("python-template-nb4-")
 
     def test_no_branch_no_suffix(self):
-        """Test owner/repo without branch produces just repo name."""
+        """owner/repo with no branch is a repo label, not a workspace identity.
+
+        There is no ref to hash, so there is nothing to identify. Every path that
+        creates a workspace resolves the default branch first and derives the id
+        from the resolved triple.
+        """
         assert spec_to_workspace_id("blooop/python_template") == "python-template"
+
+    def test_unsafe_branch_is_rejected(self):
+        """Bad input gets one response everywhere: rejection at the constructor."""
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            spec_to_workspace_id("owner/repo@bad%branch")
 
 
 class TestCacheFunctions:
@@ -1697,15 +1736,16 @@ class TestMainCLI:
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
         # Workspace ID includes resolved branch
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
+            "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
+        main_id = WorkspaceId("owner", "repo", "main").value
         mock_up.assert_called_once_with(
             "/tmp/ws/repo-main",
-            workspace_id="repo-main",
-            workspace_identity="repo-main",
+            workspace_id=main_id,
+            workspace_identity=main_id,
             devcontainer=None,
         )
-        mock_ssh.assert_called_once_with("repo-main", None)
+        mock_ssh.assert_called_once_with(main_id, None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1730,12 +1770,13 @@ class TestMainCLI:
         # Should ensure branch exists via clone_mgr
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
+            "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
+        main_id = WorkspaceId("owner", "repo", "main").value
         mock_up.assert_called_once_with(
             "/tmp/ws/repo-main",
-            workspace_id="repo-main",
-            workspace_identity="repo-main",
+            workspace_id=main_id,
+            workspace_identity=main_id,
             devcontainer=None,
         )
 
@@ -1759,7 +1800,7 @@ class TestMainCLI:
         assert result == 0
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "newbranch", "git@github.com:owner/repo.git", "repo-newbranch"
+            "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1804,6 +1845,26 @@ class TestMainCLI:
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
+    def test_main_unsafe_branch_is_reported_not_raised(
+        self, mock_up, mock_clone_mgr, mock_ids, caplog
+    ):
+        """An unsafe ref is rejected at the constructor with a message, not a traceback.
+
+        `%` passes OWNER_REPO_PATTERN, so this spec reaches id derivation and is
+        stopped there — before it can name a container or a directory.
+        """
+        mock_ids.return_value = []
+        mock_clone_mgr.return_value = MagicMock()
+        with patch.object(sys, "argv", ["dl", "owner/repo@bad%branch"]):
+            result = main()
+        assert result == 1
+        assert "Invalid git ref name" in caplog.text
+        mock_clone_mgr.return_value.ensure_workspace.assert_not_called()
+        mock_up.assert_not_called()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_feature_branch_with_slash(
@@ -1821,11 +1882,7 @@ class TestMainCLI:
         assert result == 0
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "feature/my-feature")
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner",
-            "repo",
-            "feature/my-feature",
-            "git@github.com:owner/repo.git",
-            "repo-feature-my-feature",
+            "owner", "repo", "feature/my-feature", "git@github.com:owner/repo.git"
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -2086,7 +2143,8 @@ class TestFastAttach:
         self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test git spec with existing workspace skips clone manager."""
-        mock_ids.return_value = ["repo-main"]  # Workspace already exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace already exists
         mock_state.return_value = "Stopped"  # Not running, so workspace_up still called
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -2099,7 +2157,7 @@ class TestFastAttach:
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up called with just the ID (no local path), no custom --id
         mock_up.assert_called_once_with(
-            "repo-main", workspace_id=None, workspace_identity="repo-main", devcontainer=None
+            main_id, workspace_id=None, workspace_identity=main_id, devcontainer=None
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -2113,7 +2171,8 @@ class TestFastAttach:
         self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test git spec with Running workspace skips workspace_up()."""
-        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace exists
         mock_state.return_value = "Running"  # Already running
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
@@ -2126,7 +2185,7 @@ class TestFastAttach:
         # workspace_up should NOT be called (fast-attach)
         mock_up.assert_not_called()
         # Should SSH in to attach
-        mock_ssh.assert_called_once_with("repo-main", None)
+        mock_ssh.assert_called_once_with(main_id, None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -2138,7 +2197,8 @@ class TestFastAttach:
         self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test git spec with Stopped workspace still calls workspace_up() with ID only."""
-        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace exists
         mock_state.return_value = "Stopped"  # Not running
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -2151,7 +2211,7 @@ class TestFastAttach:
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up IS called (need to start it)
         mock_up.assert_called_once_with(
-            "repo-main", workspace_id=None, workspace_identity="repo-main", devcontainer=None
+            main_id, workspace_id=None, workspace_identity=main_id, devcontainer=None
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -2186,7 +2246,8 @@ class TestFastAttach:
         self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test owner/repo (no branch) with existing workspace skips full clone pipeline."""
-        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace exists
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
         mock_clone_mgr.return_value = mock_mgr
