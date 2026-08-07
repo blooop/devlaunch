@@ -1,6 +1,6 @@
 [project]
 name = "devlaunch"
-version = "0.0.8"
+version = "0.0.9"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
@@ -59,6 +59,7 @@ include = ["devlaunch"]
 
 [project.scripts]
 dl = "devlaunch.dl:main"
+aid = "devlaunch.aid:main"
 
 # Environments
 [tool.pixi.environments]

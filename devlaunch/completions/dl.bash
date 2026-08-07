@@ -8,6 +8,10 @@
 # because temporary COMP_WORDBREAKS modification can have side effects with bash's
 # internal completion state and doesn't reliably prevent word splitting in all
 # bash versions. Direct parsing gives us full control over word boundaries.
+#
+# The same function serves `aid`, whose first argument is a dl workspace spec
+# too. Only the flag list and what follows the spec differ, so the two places
+# that care branch on $cmd rather than the script being copied for aid.
 _dl_completion() {
     local cur prev opts
     COMPREPLY=()
@@ -44,8 +48,17 @@ _dl_completion() {
         fi
     fi
 
+    # The command being completed: dl or aid.
+    local cmd=""
+    if (( ${#words[@]} > 0 )); then
+        cmd="${words[0]##*/}"
+    fi
+
     # Global command options (only valid as first arg)
     local global_opts="--ls --install --help -h --version --devcontainer"
+    if [[ "$cmd" == aid ]]; then
+        global_opts="--claude --codex --gemini --devcontainer --help -h --version"
+    fi
 
     # Workspace subcommands
     local ws_cmds="stop rm code restart recreate reset --"
@@ -133,8 +146,9 @@ _dl_completion() {
         return 0
     fi
 
-    # Second argument (after workspace): subcommands
-    if [[ ${word_count} -eq 3 ]]; then
+    # Second argument (after workspace): subcommands. Everything after an aid
+    # workspace is the prompt, so there is nothing to offer there.
+    if [[ ${word_count} -eq 3 && "$cmd" != aid ]]; then
         # Don't complete after global flags
         # Extract the first argument (word after "dl") from the words array
         local first=""
@@ -155,4 +169,5 @@ _dl_completion() {
 
 # Use -o default for better completion behavior
 complete -o default -F _dl_completion dl
+complete -o default -F _dl_completion aid
 # end dl completion

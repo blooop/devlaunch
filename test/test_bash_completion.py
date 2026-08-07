@@ -148,6 +148,25 @@ done
         assert "stop" not in completions
         assert "rm" not in completions
 
+    def test_aid_completes_the_same_workspaces_as_dl(self):
+        """aid's first argument is a dl workspace spec, so it completes alike."""
+        assert self.run_completion("aid my-") == self.run_completion("dl my-")
+
+    def test_aid_completes_agent_flags(self):
+        """Test completion of aid's own flags."""
+        completions = self.run_completion("aid --")
+        for flag in ["--claude", "--codex", "--gemini", "--devcontainer"]:
+            assert flag in completions
+        # dl's workspace-management flags are not aid's business
+        assert "--ls" not in completions
+        assert "--install" not in completions
+
+    def test_no_subcommand_completion_after_an_aid_workspace(self):
+        """Everything after an aid workspace is the prompt, not a subcommand."""
+        completions = self.run_completion("aid my-workspace ")
+        for cmd in ["stop", "rm", "code", "restart", "recreate", "reset"]:
+            assert cmd not in completions
+
     def test_completion_partial_workspace_match(self):
         """Test partial matching of workspace names."""
         # Complete after typing "dl test"

@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  version: "0.0.8"
+  version: "0.0.9"
 
 package:
   name: devlaunch
@@ -32,8 +32,10 @@ tests:
       imports:
         - devlaunch
         - devlaunch.dl
+        - devlaunch.aid
   - script:
       - dl --help
+      - aid --help
 
 about:
   homepage: https://github.com/blooop/devlaunch
