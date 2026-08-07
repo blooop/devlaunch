@@ -25,6 +25,7 @@ requirements:
   run:
     - python >=3.10
     - iterfzf >=1.0.0
+    - tomli >=2.0.0
     - devpod >=0.8.0
 
 tests:
