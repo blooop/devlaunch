@@ -25,6 +25,7 @@ import logging
 import os
 import pathlib
 import re
+import tempfile
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
@@ -692,8 +693,13 @@ def get_known_repos() -> List[str]:
     return result
 
 
-def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedProcess:
+def run_devpod(
+    args: List[str], capture: bool = False, env: Optional[Dict[str, str]] = None
+) -> subprocess.CompletedProcess:
     """Run a devpod command.
+
+    env replaces the child's environment when given, and is how a secret
+    reaches devpod without going through argv. None inherits ours unchanged.
 
     Security note: Using list form of subprocess.run (not shell=True) prevents
     command injection. Each list element is passed as a separate argument to
@@ -703,9 +709,9 @@ def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedPr
     logging.debug("Running: %s", " ".join(cmd))
     if capture:
         # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     # nosec B603 - using list form, not shell=True; no command injection risk
-    return subprocess.run(cmd, check=False)
+    return subprocess.run(cmd, check=False, env=env)
 
 
 def list_workspaces() -> List[Workspace]:
@@ -795,6 +801,61 @@ def get_context_options() -> dict:
         return {}
 
 
+def get_gh_token() -> Optional[str]:
+    """Resolve a GitHub token on the host to forward into the workspace.
+
+    gh keeps its OAuth token in the host's system keyring by default, so a
+    project that bind-mounts ~/.config/gh gets hosts.yml (git_protocol, the
+    account name) but no credential. The container has no D-Bus session and so
+    no keyring to fall back on, and gh reports "The token in default is
+    invalid". GH_TOKEN is the one channel that works whichever storage backend
+    the host chose, so forward that instead of relying on the mount.
+
+    Returns None when there is nothing to forward. gh auth is best-effort:
+    never let it block starting a workspace.
+    """
+    for var in ("GH_TOKEN", "GITHUB_TOKEN"):
+        token = os.environ.get(var)
+        if token and token.strip():
+            return token.strip()
+    try:
+        # nosec B603 B607 - list form, not shell=True; no command injection risk
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # gh not installed, or it hung//crashed - workspaces still start fine.
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _gh_forwarding_token() -> Optional[str]:
+    """The token to forward, or None if forwarding is off or unavailable."""
+    if os.environ.get("DEVLAUNCH_NO_GH_TOKEN"):
+        return None
+    return get_gh_token()
+
+
+def _write_gh_token_env_file(token: str) -> pathlib.Path:
+    """Stage GH_TOKEN in a 0600 temp file for devpod's --workspace-env-file.
+
+    Passing the token as --workspace-env GH_TOKEN=... would expose it in the
+    devpod process's argv, which is world-readable via /proc on Linux. mkstemp
+    creates the file 0600, so only the invoking user can read it, and the
+    caller unlinks it as soon as devpod exits.
+    """
+    fd, name = tempfile.mkstemp(prefix="devlaunch-gh-", suffix=".env")
+    with os.fdopen(fd, "w") as handle:
+        handle.write(f"GH_TOKEN={token}\n")
+    return pathlib.Path(name)
+
+
 def workspace_up(
     workspace: str,
     ide: Optional[str] = None,
@@ -835,7 +896,21 @@ def workspace_up(
         args.extend(["--dotfiles", ctx["DOTFILES_URL"]])
     if ctx.get("DOTFILES_SCRIPT"):
         args.extend(["--dotfiles-script", ctx["DOTFILES_SCRIPT"]])
-    return run_devpod(args)
+
+    # Forward the host's gh credential so `gh` works inside the workspace. This
+    # covers the container's own environment, which is what postCreateCommand
+    # and IDE-attach sessions see; workspace_ssh forwards it again per session
+    # for the fast-attach path, which never calls up at all.
+    gh_env_file = None
+    gh_token = _gh_forwarding_token()
+    if gh_token:
+        gh_env_file = _write_gh_token_env_file(gh_token)
+        args.extend(["--workspace-env-file", str(gh_env_file)])
+    try:
+        return run_devpod(args)
+    finally:
+        if gh_env_file:
+            gh_env_file.unlink(missing_ok=True)
 
 
 def workspace_ssh(
@@ -860,8 +935,18 @@ def workspace_ssh(
     if command:
         args.extend(["--command", command])
 
+    # `dl <ws>` fast-attaches to an already-running workspace without calling
+    # up, so this is the only place a gh token reaches those sessions. --send-env
+    # names the variable and devpod reads the value from our own environment,
+    # keeping it out of argv.
+    env = None
+    gh_token = _gh_forwarding_token()
+    if gh_token:
+        args.extend(["--send-env", "GH_TOKEN"])
+        env = {**os.environ, "GH_TOKEN": gh_token}
+
     logging.info(f"SSH command: devpod {' '.join(args)}")
-    result = run_devpod(args)
+    result = run_devpod(args, env=env)
     return result.returncode
 
 

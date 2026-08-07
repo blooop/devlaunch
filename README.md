@@ -114,6 +114,49 @@ dl blooop/devlaunch stop         # Stop workspace
 - **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
+- **GitHub Auth Forwarding**: `gh` works inside the workspace using your host login
+
+## GitHub Authentication
+
+If you are logged in with `gh` on the host, `dl` forwards that credential into every
+workspace as `GH_TOKEN`, so `gh` works inside the container with no extra setup.
+
+Bind-mounting `~/.config/gh` is not sufficient on its own: `gh` stores its OAuth token
+in the host's system keyring, and the container has no keyring (no D-Bus session) to
+read it from. The mount supplies configuration; the token has to be forwarded.
+
+The token is resolved per `dl` invocation, in this order:
+
+1. `GH_TOKEN` or `GITHUB_TOKEN` from the host environment
+2. `gh auth token`
+
+Forwarding happens on both paths into a workspace, because `dl <workspace>` fast-attaches
+to an already-running container without going through `devpod up`:
+
+| Path | Mechanism | Container footprint |
+| --- | --- | --- |
+| Creating or starting a workspace | `--workspace-env-file` | Written to `/etc/envfile.json`, so `postCreateCommand` and IDE-attach sessions see it |
+| Attaching to a running workspace | `ssh --send-env` | Per session only, nothing on disk |
+
+In neither case does the token reach a command line — `/proc/<pid>/cmdline` is
+world-readable. For `up` it goes through a `0600` temp file that is unlinked as soon as
+devpod exits; for `ssh` devpod reads it from `dl`'s own environment. Nothing is written
+to the host disk or to devpod's workspace config, and each `dl` run re-reads the current
+token, so a rotated one is picked up automatically.
+
+Note that `/etc/envfile.json` is mode `0644`, so any user inside the container can read
+the token. That is the same trust boundary as the container being able to use `gh` at
+all, but it is worth knowing if you run untrusted code in a workspace — use
+`DEVLAUNCH_NO_GH_TOKEN=1` for those.
+
+If `gh` is missing or logged out, forwarding is silently skipped and the workspace
+starts as usual.
+
+To turn it off:
+
+```bash
+DEVLAUNCH_NO_GH_TOKEN=1 dl owner/repo
+```
 
 ## Worktree Backend
 

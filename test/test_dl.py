@@ -43,6 +43,7 @@ from devlaunch.dl import (
     workspace_up,
     setup_hostname,
     get_workspace_state,
+    get_gh_token,
 )
 
 
@@ -1142,6 +1143,158 @@ class TestWorkspaceIdentityEnv:
         workspace_up("/path")
         assert "--init-env" not in mock_run.call_args[0][0]
 
+
+class TestGhTokenForwarding:
+    """gh must work inside the workspace without a keyring in the container.
+
+    Bind-mounting ~/.config/gh is not enough: gh keeps the OAuth token in the
+    host keyring, so the mount carries config but no credential.
+    """
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_prefers_an_existing_env_token_over_shelling_out(self, mock_run, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "gho_from_env")
+        assert get_gh_token() == "gho_from_env"
+        mock_run.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_falls_back_to_gh_auth_token(self, mock_run, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        mock_run.return_value = MagicMock(returncode=0, stdout="gho_from_keyring\n")
+        assert get_gh_token() == "gho_from_keyring"
+        assert mock_run.call_args[0][0] == ["gh", "auth", "token"]
+
+    @patch("devlaunch.dl.subprocess.run")
+    def test_returns_none_when_gh_is_not_logged_in(self, mock_run, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert get_gh_token() is None
+
+    @patch("devlaunch.dl.subprocess.run", side_effect=FileNotFoundError)
+    def test_returns_none_when_gh_is_not_installed(self, _mock_run, monkeypatch):
+        """A missing gh must never stop a workspace from starting."""
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        assert get_gh_token() is None
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.get_gh_token", return_value="gho_secret")
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_up_forwards_the_token_in_a_file(
+        self, mock_run, _mock_token, _mock_ctx, monkeypatch
+    ):
+        """The token goes in a file, never in argv, which /proc exposes."""
+        monkeypatch.delenv("DEVLAUNCH_NO_GH_TOKEN", raising=False)
+        seen = {}
+
+        def capture(args, **_kwargs):
+            path = pathlib.Path(args[args.index("--workspace-env-file") + 1])
+            seen["contents"] = path.read_text(encoding="utf-8")
+            seen["mode"] = path.stat().st_mode & 0o777
+            seen["path"] = path
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = capture
+        workspace_up("/path")
+
+        assert seen["contents"] == "GH_TOKEN=gho_secret\n"
+        assert seen["mode"] == 0o600
+        assert not seen["path"].exists(), "temp token file must be cleaned up"
+        assert not any("gho_secret" in a for a in mock_run.call_args[0][0])
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.get_gh_token", return_value="gho_secret")
+    @patch("devlaunch.dl.run_devpod", side_effect=RuntimeError("devpod blew up"))
+    def test_token_file_is_removed_even_when_devpod_fails(
+        self, mock_run, _mock_token, _mock_ctx, monkeypatch
+    ):
+        monkeypatch.delenv("DEVLAUNCH_NO_GH_TOKEN", raising=False)
+        with pytest.raises(RuntimeError):
+            workspace_up("/path")
+        path = pathlib.Path(mock_run.call_args[0][0][-1])
+        assert not path.exists()
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.get_gh_token", return_value=None)
+    @patch("devlaunch.dl.run_devpod")
+    def test_no_flag_when_there_is_no_token(self, mock_run, _mock_token, _mock_ctx, monkeypatch):
+        monkeypatch.delenv("DEVLAUNCH_NO_GH_TOKEN", raising=False)
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        assert "--workspace-env-file" not in mock_run.call_args[0][0]
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.get_gh_token")
+    @patch("devlaunch.dl.run_devpod")
+    def test_opt_out_skips_the_lookup_entirely(self, mock_run, mock_token, _mock_ctx, monkeypatch):
+        monkeypatch.setenv("DEVLAUNCH_NO_GH_TOKEN", "1")
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        mock_token.assert_not_called()
+        assert "--workspace-env-file" not in mock_run.call_args[0][0]
+
+    @patch("devlaunch.dl.get_gh_token", return_value="gho_secret")
+    @patch("devlaunch.dl.run_devpod")
+    def test_ssh_forwards_the_token_for_fast_attach(self, mock_run, _mock_token, monkeypatch):
+        """`dl <ws>` on a running workspace never calls up, so ssh must forward.
+
+        Without this, attaching to an already-running container leaves gh
+        unauthenticated no matter what up did.
+        """
+        monkeypatch.delenv("DEVLAUNCH_NO_GH_TOKEN", raising=False)
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_ssh("myws")
+
+        args, kwargs = mock_run.call_args[0][0], mock_run.call_args[1]
+        assert args[args.index("--send-env") + 1] == "GH_TOKEN"
+        assert kwargs["env"]["GH_TOKEN"] == "gho_secret"
+        assert not any("gho_secret" in a for a in args), "token must not reach argv"
+
+    @patch("devlaunch.dl.get_gh_token", return_value=None)
+    @patch("devlaunch.dl.run_devpod")
+    def test_ssh_inherits_the_environment_when_there_is_no_token(
+        self, mock_run, _mock_token, monkeypatch
+    ):
+        monkeypatch.delenv("DEVLAUNCH_NO_GH_TOKEN", raising=False)
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_ssh("myws")
+        assert "--send-env" not in mock_run.call_args[0][0]
+        assert mock_run.call_args[1]["env"] is None
+
+    @patch("devlaunch.dl.get_gh_token")
+    @patch("devlaunch.dl.run_devpod")
+    def test_ssh_honours_the_opt_out(self, mock_run, mock_token, monkeypatch):
+        monkeypatch.setenv("DEVLAUNCH_NO_GH_TOKEN", "1")
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_ssh("myws")
+        mock_token.assert_not_called()
+        assert "--send-env" not in mock_run.call_args[0][0]
+
+    @patch("devlaunch.dl.get_workspace_state", return_value="Running")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_gh_token", return_value="gho_secret")
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_fast_attach_through_main_still_forwards(
+        self, mock_run, _mock_ctx, _mock_token, _mock_ids, _mock_state, monkeypatch
+    ):
+        """End-to-end through argv: the real `dl myws` path on a live workspace."""
+        monkeypatch.delenv("DEVLAUNCH_NO_GH_TOKEN", raising=False)
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            main()
+
+        ssh_calls = [c for c in mock_run.call_args_list if c[0][0][:1] == ["ssh"]]
+        assert ssh_calls, "expected a devpod ssh call"
+        assert "--send-env" in ssh_calls[-1][0][0]
+        assert ssh_calls[-1][1]["env"]["GH_TOKEN"] == "gho_secret"
+
+
+class TestIdentityReachesDevpod:
+    """The workspace identity travels as an argument, not inherited env."""
+
     @patch("devlaunch.dl.subprocess.run")
     def test_run_devpod_does_not_touch_the_environment(self, mock_run):
         """The identity travels as a devpod argument, not as inherited env."""
@@ -1943,7 +2096,7 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws"])
+        mock_run.assert_called_once_with(["ssh", "myws"], env=None)
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_command(self, mock_run):
@@ -1951,7 +2104,7 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws", command="echo hello")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"])
+        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"], env=None)
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_workdir(self, mock_run):
@@ -1959,7 +2112,7 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws", workdir="/some/path")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"])
+        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"], env=None)
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_workdir_and_command(self, mock_run):
@@ -1968,7 +2121,7 @@ class TestWorkspaceSsh:
         result = workspace_ssh("myws", command="make test", workdir="/workspaces/myws")
         assert result == 0
         mock_run.assert_called_once_with(
-            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"]
+            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"], env=None
         )
 
 

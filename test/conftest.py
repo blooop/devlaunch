@@ -29,6 +29,18 @@ from fixtures.devpod_mock import DevPodMock, mock_devpod  # noqa: E402
 from fixtures.e2e_helpers import dl_no_ide, devpod_cleanup  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def no_gh_token_forwarding(monkeypatch):
+    """Keep workspace_up from shelling out to the host's real `gh`.
+
+    Without this, every workspace_up test would run `gh auth token` on the
+    machine running the suite and forward whatever credential it finds, making
+    results depend on the developer's login state. Tests that exercise the
+    forwarding itself delete this var explicitly.
+    """
+    monkeypatch.setenv("DEVLAUNCH_NO_GH_TOKEN", "1")
+
+
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
