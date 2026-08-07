@@ -215,8 +215,6 @@ class WorkspaceCloneManager:
 
         ws_path = self.get_workspace_path(owner, repo, branch)
         is_new_workspace = False
-
-        is_new_workspace = False
         if not self.workspace_exists(owner, repo, branch):
             is_new_workspace = True
             # Step 2: Clone from bare repo
