@@ -161,7 +161,7 @@ class TestHotCommandSpawnCounts:
         assert spawns.devpod_commands == [
             ["list", "--output", "json"],
             ["status", "myws", "--output", "json"],
-            ["ssh", "myws", "--command", "echo hi"],
+            ["ssh", "myws", "--command", "bash -lc 'echo hi'"],
         ]
 
 

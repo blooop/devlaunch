@@ -25,6 +25,7 @@ import logging
 import os
 import pathlib
 import re
+import shlex
 import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
@@ -990,7 +991,14 @@ def workspace_ssh(
     if workdir:
         args.extend(["--workdir", workdir])
     if command:
-        args.extend(["--command", command])
+        # devpod runs --command under a non-login, non-interactive `bash -c`,
+        # which sources neither ~/.profile nor ~/.bashrc -- so PATH entries the
+        # image adds there (notably $HOME/.pixi/bin) are missing and the payload
+        # dies with "command not found". An interactive attach gets a login
+        # shell, so wrap here to give both paths the same PATH. dl launches
+        # arbitrary repos, so the parity has to come from the invocation rather
+        # than from any particular devcontainer.json.
+        args.extend(["--command", f"bash -lc {shlex.quote(command)}"])
 
     # Attaching to a running workspace skips workspace_up, so the gh login has
     # to be offered here too. Only the variable name lands in args; the token
