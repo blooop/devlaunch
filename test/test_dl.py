@@ -2016,7 +2016,33 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws", command="echo hello")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"], env=None)
+        mock_run.assert_called_once_with(
+            ["ssh", "myws", "--command", "bash -lc 'echo hello'"], env=None
+        )
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_interactive_is_not_wrapped(self, mock_run):
+        """An interactive attach gets no --command and no shell wrapper."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", workdir="/workspaces/myws")
+        assert result == 0
+        sent_args = mock_run.call_args.args[0]
+        assert "--command" not in sent_args
+        assert not any("bash -lc" in arg for arg in sent_args)
+
+    @patch("devlaunch.dl.run_devpod")
+    def test_workspace_ssh_command_with_quotes_runs_in_login_shell(self, mock_run):
+        """A payload containing single quotes survives the login-shell wrapper."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = workspace_ssh("myws", command="claude 'do the thing'")
+        assert result == 0
+        # shlex.quote closes the outer quote, emits '"'"' for each literal
+        # single quote, and reopens -- so the inner quotes reach the payload
+        # intact instead of terminating it.
+        mock_run.assert_called_once_with(
+            ["ssh", "myws", "--command", "bash -lc 'claude '\"'\"'do the thing'\"'\"''"],
+            env=None,
+        )
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_workdir(self, mock_run):
@@ -2033,7 +2059,7 @@ class TestWorkspaceSsh:
         result = workspace_ssh("myws", command="make test", workdir="/workspaces/myws")
         assert result == 0
         mock_run.assert_called_once_with(
-            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"],
+            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "bash -lc 'make test'"],
             env=None,
         )
 
