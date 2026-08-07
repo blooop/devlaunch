@@ -210,7 +210,7 @@ pixi run style
 
 `pixi run test` skips the e2e suite, which needs a Docker daemon to create real
 workspaces with. The devcontainer carries one (the `docker-in-docker` feature),
-so from inside it:
+and pins the same devpod a host installs, so from inside it:
 
 ```bash
 # Run the e2e suite against a real devpod
