@@ -140,13 +140,6 @@ Use `--warm` to prepare a workspace without attaching a shell:
 dl --warm owner/repo@branch  # Creates container in background
 ```
 
-### Backend Selection
-
-```bash
-dl --backend devpod owner/repo  # Force legacy DevPod backend
-DEVLAUNCH_BACKEND=devpod dl owner/repo  # Use environment variable
-```
-
 ## Shell Completion
 
 After running `dl --install`, you get intelligent tab completion:

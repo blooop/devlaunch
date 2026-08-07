@@ -560,28 +560,6 @@ def get_git_remote_url(path: str) -> Optional[str]:
     return None
 
 
-def get_git_branches(path: str) -> List[str]:
-    """Get list of branches from a git repository."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", path, "branch", "-r"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            branches = []
-            for line in result.stdout.strip().split("\n"):
-                line = line.strip()
-                if line and "origin/" in line and "HEAD" not in line:
-                    branch = line.replace("origin/", "")
-                    branches.append(branch)
-            return branches
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return []
-
-
 def _git_ls_remote(owner_repo: str, *args: str) -> Optional[str]:
     """Run git ls-remote and return stdout, or None on error.
 
@@ -608,15 +586,6 @@ def remote_branch_exists(owner_repo: str, branch: str) -> bool:
     """Check if a branch exists on a remote GitHub repository."""
     output = _git_ls_remote(owner_repo, "--heads", branch)
     return bool(output)
-
-
-def get_remote_head_sha(owner_repo: str) -> Optional[str]:
-    """Get the SHA of the default branch (HEAD) of a remote repository."""
-    output = _git_ls_remote(owner_repo, "HEAD")
-    if not output:
-        return None
-    # Output format: "<sha>\tHEAD"
-    return output.strip().split()[0]
 
 
 def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, List[str]]:
@@ -901,12 +870,6 @@ def workspace_delete(workspace: str) -> int:
         logging.warning(f"Failed to remove local clone: {e}")
     # Update cache after deleting workspace
     update_cache_background()
-    return result.returncode
-
-
-def workspace_status(workspace: str) -> int:
-    """Get status of a workspace."""
-    result = run_devpod(["status", workspace])
     return result.returncode
 
 

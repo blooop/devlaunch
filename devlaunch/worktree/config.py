@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Dict, Optional, Union
 
 import tomli
-import tomli_w
 
 
 def _get_cache_base() -> Path:
@@ -99,15 +98,6 @@ def load_config() -> Dict:
 
     with open(config_path, "rb") as f:
         return tomli.load(f)
-
-
-def save_config(config: Dict) -> None:
-    """Save configuration to file."""
-    config_path = get_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(config_path, "wb") as f:
-        tomli_w.dump(config, f)
 
 
 def get_worktree_config() -> WorktreeConfig:
