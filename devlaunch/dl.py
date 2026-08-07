@@ -27,9 +27,11 @@ import pathlib
 import re
 import shlex
 import time
-from importlib.metadata import version as pkg_version, PackageNotFoundError
+from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from . import gh_auth
 from .completion import install_completions
@@ -64,12 +66,51 @@ DEVPOD_MISSING_MESSAGE = (
 DEVPOD_MISSING_EXIT_CODE = 127
 
 
-def get_version() -> str:
-    """Get the package version."""
+def _install_provenance() -> Optional[str]:
+    """Describe the install this dl was launched from, or None if unremarkable.
+
+    The released build and the editable dev install report the same version, so
+    the version alone cannot say which one just ran. PEP 610 records how a dist
+    was installed in ``direct_url.json``: ``dir_info.editable`` is true only for
+    an editable install, and ``url`` is the tree it resolves to. That is read
+    from the dist's own metadata rather than inferred from where the files sit,
+    so no path is stat'd and no install location is pattern-matched.
+
+    Everything here is best-effort: a dist with no direct-url metadata, or with
+    metadata that does not parse or does not carry the keys, is simply not
+    described. --version must never fail over provenance, so this returns None
+    instead of raising - an ambiguous version beats a broken one.
+    """
     try:
-        return pkg_version("devlaunch")
+        raw = distribution("devlaunch").read_text("direct_url.json")
+        if not raw:
+            return None
+        info = json.loads(raw)
+        dir_info = info.get("dir_info") if isinstance(info, dict) else None
+        if not isinstance(dir_info, dict) or not dir_info.get("editable"):
+            return None
+        url = info.get("url")
+        if not isinstance(url, str):
+            return None
+        parsed = urlparse(url)
+        if parsed.scheme != "file":
+            return None
+        tree = url2pathname(parsed.path)
+        if not tree:
+            return None
+        return f"dev, editable from {tree}"
+    except Exception:
+        return None
+
+
+def get_version() -> str:
+    """Get the package version, noting the install it came from when notable."""
+    try:
+        base = pkg_version("devlaunch")
     except PackageNotFoundError:
         return "unknown"
+    provenance = _install_provenance()
+    return f"{base} ({provenance})" if provenance else base
 
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -1127,7 +1168,7 @@ Global commands:
     dl --refresh                     Refresh completion cache
     dl --purge [-y]                  Remove all DevPod workspaces and caches
     dl --help, -h                    Show this help
-    dl --version                     Show version
+    dl --version                     Show version (editable installs name their tree)
 
 Examples:
     dl                               # Select workspace with fzf

@@ -220,7 +220,23 @@ stays in place — including one it was given before you set
 | `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
 | `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
-| `dl --version` | Show version |
+| `dl --version` | Show version (an editable install also names the tree it runs from) |
+
+A released install prints the version and nothing else. An install made in
+editable mode says so and names the checkout it resolves to, so two builds of
+the same version are told apart at a glance:
+
+```bash
+$ dl --version
+dl 0.0.9
+
+$ dl-next --version          # editable install of a working tree
+dl 0.0.9 (dev, editable from /path/to/your/devlaunch)
+```
+
+`aid --version` reports the same thing under its own name. The provenance comes
+from the installed package's own PEP 610 metadata; an install that records none
+just prints the bare version.
 
 ## Examples
 

@@ -798,6 +798,83 @@ class TestGetVersion:
         assert version == "unknown"
 
 
+def _dist_reporting(direct_url_text):
+    """A stub of the installed-dist metadata reader (a system boundary).
+
+    ``direct_url_text`` is what ``Distribution.read_text('direct_url.json')``
+    hands back: the file's contents, or None when the file is not there.
+    """
+    dist = MagicMock()
+    dist.read_text.return_value = direct_url_text
+    return dist
+
+
+@patch("devlaunch.dl.pkg_version", return_value="1.2.3")
+class TestVersionProvenance:
+    """--version distinguishes an editable dev install from a released one."""
+
+    @patch("devlaunch.dl.distribution")
+    def test_editable_install_is_named_as_dev_with_its_tree_path(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """An editable install says so and names the tree it resolves to."""
+        mock_distribution.return_value = _dist_reporting(
+            '{"url":"file:///srv/checkouts/devlaunch","dir_info":{"editable":true}}'
+        )
+        version = get_version()
+        assert version.startswith("1.2.3 ")
+        assert "dev" in version
+        assert "/srv/checkouts/devlaunch" in version
+
+    @patch("devlaunch.dl.distribution")
+    def test_percent_encoded_tree_path_is_decoded(self, mock_distribution, _mock_pkg_version):
+        """The url is a file:// URI, so its path is decoded, not string-stripped."""
+        mock_distribution.return_value = _dist_reporting(
+            '{"url":"file:///srv/my%20checkouts/devlaunch","dir_info":{"editable":true}}'
+        )
+        assert "/srv/my checkouts/devlaunch" in get_version()
+
+    @patch("devlaunch.dl.distribution")
+    def test_non_editable_install_reports_bare_version(self, mock_distribution, _mock_pkg_version):
+        """A released build's output is unchanged: just the version."""
+        mock_distribution.return_value = _dist_reporting(
+            '{"dir_info": {}, "url": "file:///build/work"}'
+        )
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_absent_direct_url_metadata_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """A plain wheel install has no direct-url metadata at all."""
+        mock_distribution.return_value = _dist_reporting(None)
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_malformed_direct_url_metadata_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """Unparseable direct-url metadata degrades instead of raising."""
+        mock_distribution.return_value = _dist_reporting("{not json at all")
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_direct_url_metadata_missing_keys_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """Editable metadata with no url to name degrades instead of raising."""
+        mock_distribution.return_value = _dist_reporting('{"dir_info":{"editable":true}}')
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_unreadable_dist_metadata_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """A metadata reader that blows up must not take --version with it."""
+        mock_distribution.side_effect = OSError("dist-info is gone")
+        assert get_version() == "1.2.3"
+
+
 class TestSpecToWorkspaceId:
     """Tests for spec_to_workspace_id function."""
 
