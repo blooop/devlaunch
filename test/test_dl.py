@@ -1,5 +1,6 @@
 """Tests for dl (DevLaunch CLI) functionality."""
 
+import io
 import json
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from devlaunch import gh_auth
+from devlaunch.devpod_ssh import RemoteExit
 from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
@@ -45,6 +47,18 @@ from devlaunch.dl import (
     setup_hostname,
     get_workspace_state,
 )
+
+
+def stub_devpod_session(mock_popen, returncode=0, stderr=""):
+    """Make a patched subprocess.Popen stand in for a finished devpod session.
+
+    run_devpod_session drives Popen as a context manager and reads the stderr
+    pipe, so a plain return_value is not enough.
+    """
+    proc = MagicMock(returncode=returncode)
+    proc.stderr = io.StringIO(stderr)
+    mock_popen.return_value.__enter__.return_value = proc
+    return proc
 
 
 class TestIsPathSpec:
@@ -1215,37 +1229,37 @@ class TestGhTokenForwarding:
         assert "--workspace-env-file" not in mock_run.call_args[0][0]
 
     @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
-    @patch("devlaunch.dl.subprocess.run")
-    def test_attach_sends_the_token_through_devpods_environment(self, mock_run, _mock_token):
-        mock_run.return_value = MagicMock(returncode=0)
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_attach_sends_the_token_through_devpods_environment(self, mock_popen, _mock_token):
+        stub_devpod_session(mock_popen)
         workspace_ssh("myws")
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         assert cmd[cmd.index("--send-env") + 1] == "GH_TOKEN"
         assert "gho_hosttoken" not in " ".join(cmd)
-        assert mock_run.call_args[1]["env"]["GH_TOKEN"] == "gho_hosttoken"
+        assert mock_popen.call_args[1]["env"]["GH_TOKEN"] == "gho_hosttoken"
 
     @patch("devlaunch.gh_auth.resolve_token", return_value=None)
-    @patch("devlaunch.dl.subprocess.run")
-    def test_attach_leaves_the_environment_alone_without_a_token(self, mock_run, _mock_token):
-        mock_run.return_value = MagicMock(returncode=0)
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_attach_leaves_the_environment_alone_without_a_token(self, mock_popen, _mock_token):
+        stub_devpod_session(mock_popen)
         workspace_ssh("myws")
-        assert "--send-env" not in mock_run.call_args[0][0]
-        assert mock_run.call_args[1].get("env") is None
+        assert "--send-env" not in mock_popen.call_args[0][0]
+        assert mock_popen.call_args[1].get("env") is None
 
     @patch("devlaunch.dl.update_cache_background")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
-    @patch("devlaunch.dl.subprocess.run")
+    @patch("devlaunch.dl.subprocess.Popen")
     def test_an_already_running_workspace_still_gets_the_token(
-        self, mock_run, _mock_token, _mock_ids, _mock_state, _mock_host, _mock_cache
+        self, mock_popen, _mock_token, _mock_ids, _mock_state, _mock_host, _mock_cache
     ):
         """Attaching to a running workspace skips `devpod up` and its workspace env."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        stub_devpod_session(mock_popen)
         with patch.object(sys, "argv", ["dl", "myws"]):
             main()
-        forwarded = [c for c in mock_run.call_args_list if "--send-env" in c[0][0]]
+        forwarded = [c for c in mock_popen.call_args_list if "--send-env" in c[0][0]]
         assert forwarded, "expected the attach to forward gh auth"
         assert forwarded[0][1]["env"]["GH_TOKEN"] == "gho_hosttoken"
 
@@ -1983,18 +1997,20 @@ class TestHostnameAndWorkdir:
     @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.dl.setup_hostname")
-    @patch("devlaunch.dl.run_devpod")
-    def test_attach_does_not_override_workdir(self, mock_run, _mock_host, _mock_state, _mock_ids):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_attach_does_not_override_workdir(
+        self, mock_session, _mock_host, _mock_state, _mock_ids
+    ):
         """devpod ssh already starts in devcontainer.json's workspaceFolder.
 
         Asserted through main(), because that is where the guessed
         /workspaces/<id> used to be built — and devpod silently drops the session
         in $HOME for any project with a custom workspaceFolder.
         """
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_session.return_value = RemoteExit(0)
         with patch.object(sys, "argv", ["dl", "myws"]):
             main()
-        ssh_calls = [c for c in mock_run.call_args_list if c[0][0][:1] == ["ssh"]]
+        ssh_calls = [c for c in mock_session.call_args_list if c[0][0][:1] == ["ssh"]]
         assert ssh_calls, "expected a devpod ssh call"
         assert "--workdir" not in ssh_calls[0][0][0]
 
@@ -2020,40 +2036,91 @@ class TestHostnameAndWorkdir:
 class TestWorkspaceSsh:
     """Tests for workspace_ssh."""
 
-    @patch("devlaunch.dl.run_devpod")
-    def test_workspace_ssh_basic(self, mock_run):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_workspace_ssh_basic(self, mock_session):
         """Test basic SSH."""
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
         result = workspace_ssh("myws")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws"], env=None)
+        mock_session.assert_called_once_with(["ssh", "myws"], env=None)
 
-    @patch("devlaunch.dl.run_devpod")
-    def test_workspace_ssh_with_command(self, mock_run):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_workspace_ssh_with_command(self, mock_session):
         """Test SSH with command."""
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
         result = workspace_ssh("myws", command="echo hello")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"], env=None)
+        mock_session.assert_called_once_with(["ssh", "myws", "--command", "echo hello"], env=None)
 
-    @patch("devlaunch.dl.run_devpod")
-    def test_workspace_ssh_with_workdir(self, mock_run):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_workspace_ssh_with_workdir(self, mock_session):
         """Test SSH with workdir."""
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
         result = workspace_ssh("myws", workdir="/some/path")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"], env=None)
+        mock_session.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"], env=None)
 
-    @patch("devlaunch.dl.run_devpod")
-    def test_workspace_ssh_with_workdir_and_command(self, mock_run):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_workspace_ssh_with_workdir_and_command(self, mock_session):
         """Test SSH with both workdir and command."""
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
         result = workspace_ssh("myws", command="make test", workdir="/workspaces/myws")
         assert result == 0
-        mock_run.assert_called_once_with(
+        mock_session.assert_called_once_with(
             ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"],
             env=None,
         )
+
+
+class TestSessionExitStatus:
+    """What `dl` reports when a session ends, driven through subprocess.Popen.
+
+    devpod turns every nonzero remote exit into its own generic failure — exit
+    code 1 plus an error and a fatal line — because it type-asserts on an
+    *ssh.ExitError it has already wrapped three times. These pin devlaunch
+    against that, from the process boundary inwards.
+    """
+
+    DEVPOD_NOISE = (
+        "\x1b[97;1m20:41:27 \x1b[0m\x1b[91;1merror \x1b[0m"
+        "Try using the --debug flag to see a more verbose output    root.go:106\n"
+        "\x1b[97;1m20:41:27 \x1b[0m\x1b[91;1mfatal \x1b[0m"
+        "tunnel to container: run in container: ssh session: "
+        "Process exited with status 130                            root.go:113\n"
+    )
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_a_shell_that_exits_130_is_reported_as_130_not_as_devpods_1(self, mock_popen, capsys):
+        """The reported bug: `exit` after a Ctrl-C printed a fatal and returned 1."""
+        stub_devpod_session(mock_popen, returncode=1, stderr=self.DEVPOD_NOISE)
+        assert workspace_ssh("myws") == 130
+        assert "fatal" not in capsys.readouterr().err
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_a_command_that_fails_keeps_its_own_status(self, mock_popen):
+        """`dl ws -- pytest` is scriptable only if the status survives the trip."""
+        stderr = self.DEVPOD_NOISE.replace("status 130", "status 2")
+        stub_devpod_session(mock_popen, returncode=1, stderr=stderr)
+        assert workspace_ssh("myws", command="pytest") == 2
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_devpods_own_failures_still_surface(self, mock_popen, capsys):
+        """Only the noise devpod prints in place of a status is held back."""
+        stderr = "20:41:27 fatal tunnel to container: dial tcp: connection refused\n"
+        stub_devpod_session(mock_popen, returncode=1, stderr=stderr)
+        assert workspace_ssh("myws") == 1
+        assert capsys.readouterr().err == stderr
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_the_session_keeps_the_terminals_stdin_and_stdout(self, mock_popen):
+        """devpod puts the real terminal into raw mode and asks for a pty on that
+        basis, so only stderr may be taken away from it."""
+        stub_devpod_session(mock_popen)
+        workspace_ssh("myws")
+        kwargs = mock_popen.call_args[1]
+        assert kwargs["stderr"] is subprocess.PIPE
+        assert "stdout" not in kwargs
+        assert "stdin" not in kwargs
 
 
 class TestGetWorkspaceState:

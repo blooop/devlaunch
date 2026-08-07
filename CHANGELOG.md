@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `postCreateCommand`, so set `DEVLAUNCH_NO_GH_TOKEN=1` — for one launch or for the
   machine — to opt out.
 
+### Fixed
+- Leaving a workspace no longer reports a failure. devpod turns any nonzero exit
+  from the program it ran into a fatal of its own ("tunnel to container: run in
+  container: ssh session: Process exited with status 130") and exits 1, because it
+  type-asserts on an `*ssh.ExitError` it has already wrapped. Typing `exit` in a
+  shell whose last command was interrupted was enough to trigger it. `dl` now
+  reads that status back out and reports it as the session's, so an ordinary exit
+  is silent and `dl <ws> -- <command>` propagates the command's real exit code
+  instead of a flat 1. Failures that are genuinely devpod's still print in full.
+
 ## [0.0.7] - 2026-08-06
 
 ### Added
