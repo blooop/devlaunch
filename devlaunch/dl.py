@@ -29,6 +29,7 @@ from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
+from . import gh_auth
 from .completion import install_completions
 from .worktree.config import get_worktree_config
 from .worktree.workspace_clone import WorkspaceCloneManager
@@ -692,8 +693,14 @@ def get_known_repos() -> List[str]:
     return result
 
 
-def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedProcess:
+def run_devpod(
+    args: List[str], capture: bool = False, env: Optional[Dict[str, str]] = None
+) -> subprocess.CompletedProcess:
     """Run a devpod command.
+
+    env replaces devpod's whole environment when given, so a caller that wants
+    to add one variable must build it from os.environ. It exists so a secret can
+    be handed to devpod without putting it in argv, where ps would expose it.
 
     Security note: Using list form of subprocess.run (not shell=True) prevents
     command injection. Each list element is passed as a separate argument to
@@ -703,9 +710,9 @@ def run_devpod(args: List[str], capture: bool = False) -> subprocess.CompletedPr
     logging.debug("Running: %s", " ".join(cmd))
     if capture:
         # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     # nosec B603 - using list form, not shell=True; no command injection risk
-    return subprocess.run(cmd, check=False)
+    return subprocess.run(cmd, check=False, env=env)
 
 
 def list_workspaces() -> List[Workspace]:
@@ -835,7 +842,11 @@ def workspace_up(
         args.extend(["--dotfiles", ctx["DOTFILES_URL"]])
     if ctx.get("DOTFILES_SCRIPT"):
         args.extend(["--dotfiles-script", ctx["DOTFILES_SCRIPT"]])
-    return run_devpod(args)
+    # Give every workspace the host's gh login, whatever its devcontainer.json
+    # does or doesn't set up for itself.
+    with gh_auth.up_args() as token_args:
+        args.extend(token_args)
+        return run_devpod(args)
 
 
 def workspace_ssh(
@@ -860,8 +871,14 @@ def workspace_ssh(
     if command:
         args.extend(["--command", command])
 
+    # Attaching to a running workspace skips workspace_up, so the gh login has
+    # to be offered here too. Only the variable name lands in args; the token
+    # travels in devpod's environment.
+    token_args, env = gh_auth.ssh_args_and_env()
+    args.extend(token_args)
+
     logging.info(f"SSH command: devpod {' '.join(args)}")
-    result = run_devpod(args)
+    result = run_devpod(args, env=env)
     return result.returncode
 
 
@@ -937,6 +954,10 @@ Options:
     --devcontainer <variant|path>    Use a non-default devcontainer.json. A bare
                                      name means .devcontainer/<name>/devcontainer.json.
                                      Stored with the workspace, so pass it once.
+
+Environment:
+    DEVLAUNCH_NO_GH_TOKEN=1          Do not forward the host's gh login into
+                                     workspaces (forwarded as GH_TOKEN by default)
 
 Workspace sources:
     dl myproject                     Existing workspace by name

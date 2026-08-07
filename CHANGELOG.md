@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The host's GitHub CLI login is forwarded into every workspace as `GH_TOKEN`, so
+  `gh` works inside whatever container is launched without its devcontainer.json
+  arranging anything. The token comes from `GH_TOKEN`, `GITHUB_TOKEN`, or
+  `gh auth token`, and reaches devpod through a private file (`devpod up`) and
+  devpod's own environment (`devpod ssh`) rather than a command line, so it stays
+  out of `ps`. Everything in the container can read it, including a repo's own
+  `postCreateCommand`, so set `DEVLAUNCH_NO_GH_TOKEN=1` — for one launch or for the
+  machine — to opt out.
+
 ## [0.0.7] - 2026-08-06
 
 ### Added

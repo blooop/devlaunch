@@ -8,6 +8,7 @@ import pathlib
 from unittest.mock import patch, MagicMock
 import pytest
 
+from devlaunch import gh_auth
 from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
@@ -1167,6 +1168,88 @@ class TestWorkspaceIdentityEnv:
         assert "DEVLAUNCH_WORKSPACE_ID=myws" in up_calls[0][0][0]
 
 
+class TestGhTokenForwarding:
+    """Tests for handing the host's gh login to whatever container is launched.
+
+    These patch subprocess.run rather than run_devpod so the flags devpod
+    actually receives are pinned, not just devlaunch's intent to send them.
+    """
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_up_hands_devpod_the_token_out_of_band(self, mock_run, _mock_token, _mock_ctx):
+        """The file has to be readable while devpod runs, and the token stays out of argv."""
+        seen = {}
+
+        def read_env_file(cmd, **_kwargs):
+            path = cmd[cmd.index("--workspace-env-file") + 1]
+            seen["contents"] = pathlib.Path(path).read_text(encoding="utf-8")
+            seen["cmd"] = cmd
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = read_env_file
+        workspace_up("/path")
+        assert seen["contents"] == "GH_TOKEN=gho_hosttoken\n"
+        assert "gho_hosttoken" not in " ".join(seen["cmd"])
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.gh_auth.resolve_token", return_value=None)
+    @patch("devlaunch.dl.subprocess.run")
+    def test_up_forwards_nothing_when_the_host_has_no_token(self, mock_run, _mock_token, _mock_ctx):
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        assert "--workspace-env-file" not in mock_run.call_args[0][0]
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.subprocess.run")
+    def test_the_opt_out_stops_a_token_that_is_there_for_the_taking(
+        self, mock_run, _mock_ctx, monkeypatch
+    ):
+        """DEVLAUNCH_NO_GH_TOKEN, not the absence of a token, is what stops this."""
+        monkeypatch.setenv("GH_TOKEN", "gho_hosttoken")
+        monkeypatch.setenv(gh_auth.DISABLE_VAR, "1")
+        gh_auth.resolve_token.cache_clear()
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        assert "--workspace-env-file" not in mock_run.call_args[0][0]
+
+    @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_attach_sends_the_token_through_devpods_environment(self, mock_run, _mock_token):
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_ssh("myws")
+        cmd = mock_run.call_args[0][0]
+        assert cmd[cmd.index("--send-env") + 1] == "GH_TOKEN"
+        assert "gho_hosttoken" not in " ".join(cmd)
+        assert mock_run.call_args[1]["env"]["GH_TOKEN"] == "gho_hosttoken"
+
+    @patch("devlaunch.gh_auth.resolve_token", return_value=None)
+    @patch("devlaunch.dl.subprocess.run")
+    def test_attach_leaves_the_environment_alone_without_a_token(self, mock_run, _mock_token):
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_ssh("myws")
+        assert "--send-env" not in mock_run.call_args[0][0]
+        assert mock_run.call_args[1].get("env") is None
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.get_workspace_state", return_value="Running")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
+    @patch("devlaunch.dl.subprocess.run")
+    def test_an_already_running_workspace_still_gets_the_token(
+        self, mock_run, _mock_token, _mock_ids, _mock_state, _mock_host, _mock_cache
+    ):
+        """Attaching to a running workspace skips `devpod up` and its workspace env."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            main()
+        forwarded = [c for c in mock_run.call_args_list if "--send-env" in c[0][0]]
+        assert forwarded, "expected the attach to forward gh auth"
+        assert forwarded[0][1]["env"]["GH_TOKEN"] == "gho_hosttoken"
+
+
 class TestIdeSelection:
     """Tests for which IDE devpod is told to open."""
 
@@ -1943,7 +2026,7 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws"])
+        mock_run.assert_called_once_with(["ssh", "myws"], env=None)
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_command(self, mock_run):
@@ -1951,7 +2034,7 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws", command="echo hello")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"])
+        mock_run.assert_called_once_with(["ssh", "myws", "--command", "echo hello"], env=None)
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_workdir(self, mock_run):
@@ -1959,7 +2042,7 @@ class TestWorkspaceSsh:
         mock_run.return_value = MagicMock(returncode=0)
         result = workspace_ssh("myws", workdir="/some/path")
         assert result == 0
-        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"])
+        mock_run.assert_called_once_with(["ssh", "myws", "--workdir", "/some/path"], env=None)
 
     @patch("devlaunch.dl.run_devpod")
     def test_workspace_ssh_with_workdir_and_command(self, mock_run):
@@ -1968,7 +2051,8 @@ class TestWorkspaceSsh:
         result = workspace_ssh("myws", command="make test", workdir="/workspaces/myws")
         assert result == 0
         mock_run.assert_called_once_with(
-            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"]
+            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"],
+            env=None,
         )
 
 
