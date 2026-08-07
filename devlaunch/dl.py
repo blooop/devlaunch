@@ -710,7 +710,9 @@ def run_devpod_session(
         # cannot express that, so the narrowing happens here rather than by
         # widening filter_devpod_stderr to a None it would have no answer for.
         pipe = proc.stderr
-        remote_status = devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe else None
+        remote_status = (
+            devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe is not None else None
+        )
     return devpod_ssh.interpret(proc.returncode, remote_status)
 
 
