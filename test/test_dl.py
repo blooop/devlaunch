@@ -2198,7 +2198,6 @@ class TestWorkspaceUpDotfiles:
             "DOTFILES_SCRIPT": "install.sh",
         }
         mock_devpod.return_value = MagicMock(returncode=0)
-        from devlaunch.dl import workspace_up
 
         workspace_up("myws")
         args = mock_devpod.call_args[0][0]
@@ -2213,7 +2212,6 @@ class TestWorkspaceUpDotfiles:
         """workspace_up omits dotfiles args when context has none."""
         mock_ctx.return_value = {}
         mock_devpod.return_value = MagicMock(returncode=0)
-        from devlaunch.dl import workspace_up
 
         workspace_up("myws")
         args = mock_devpod.call_args[0][0]
