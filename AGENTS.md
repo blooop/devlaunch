@@ -38,9 +38,10 @@ Two things to know about it:
   `dl-next` is whatever the tree looks like at the moment you run it — a
   half-finished edit is live as soon as it is saved. (`wf-next` in
   blooop/wayfinder is the same idea with the opposite trade: a compiled copy that
-  only moves when you rebuild it.) `dl-next --version` reports the package
-  version, not its provenance — it says the same thing a released build of that
-  version would — so the name is the only thing distinguishing the two.
+  only moves when you rebuild it.) `dl-next --version` names the tree it resolves
+  to — `dl 0.0.9 (dev, editable from /path/to/checkout)` — where the released
+  `dl --version` prints the bare version, so the two are told apart by output as
+  well as by name.
 - **It touches real state.** `dl` mutates `metadata.json`, the bare clone cache
   and live devpod workspaces, which is how a half-finished change costs someone
   their workspace list. Everything it stores resolves through `XDG_CACHE_HOME`
