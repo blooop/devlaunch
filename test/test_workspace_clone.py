@@ -618,6 +618,7 @@ class TestRemoveWorkspaceById:
         wt_info.owner = "owner"
         wt_info.repo = "repo"
         wt_info.branch = "nb4"
+        wt_info.local_path = ws_path
         mock_storage.get_worktree_by_workspace_id.return_value = wt_info
 
         result = clone_manager.remove_workspace_by_id("repo-nb4")
@@ -632,6 +633,58 @@ class TestRemoveWorkspaceById:
         result = clone_manager.remove_workspace_by_id("nonexistent")
 
         assert result is False
+
+    def test_removes_a_clone_stored_under_the_old_scheme(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """Removal must follow the record, not re-derive the directory name.
+
+        Every workspace created before the new id scheme has a bare-branch-name
+        leaf. Re-deriving the leaf here looked for a directory that has never
+        existed, so `dl <old-id> rm` deleted the devpod workspace and then returned
+        False — orphaning the clone and its metadata entry with no message, since
+        the caller only logs on success. WorktreeInfo already stores local_path;
+        this is the fix that needs no migration.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        old_path = repo_root / "nb4"  # pre-#64 leaf: the bare branch name
+        old_path.mkdir(parents=True)
+        (old_path / ".git").mkdir()
+        assert old_path.name != leaf("nb4"), "fixture must use the old-scheme name"
+
+        wt_info = MagicMock()
+        wt_info.owner = "owner"
+        wt_info.repo = "repo"
+        wt_info.branch = "nb4"
+        wt_info.local_path = old_path
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        assert clone_manager.remove_workspace_by_id("repo-nb4") is True
+        assert not old_path.exists()
+        mock_storage.remove_worktree.assert_called_once_with("owner", "repo", "nb4")
+
+    def test_falls_back_to_derived_path_when_record_has_none(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """A record with no usable local_path still resolves via the derivation."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        ws_path = repo_root / leaf("nb4")
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        wt_info = MagicMock()
+        wt_info.owner = "owner"
+        wt_info.repo = "repo"
+        wt_info.branch = "nb4"
+        wt_info.local_path = None
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        assert clone_manager.remove_workspace_by_id("repo-nb4") is True
+        assert not ws_path.exists()
 
 
 class TestRefsReachingGit:

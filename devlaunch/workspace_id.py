@@ -2,20 +2,33 @@
 
 A workspace is identified by the triple ``(owner, repo, ref)``. :class:`WorkspaceId`
 is the parsed form of that triple, and its ``value`` names **both** the devpod
-workspace and the clone-directory leaf. There is deliberately no function here that
-takes an already-derived, id-shaped ``str``: the only way to obtain an id is to
-construct a ``WorkspaceId``, and constructing one validates the triple. That is what
-makes it impossible to reach a workspace path or a devpod id with an unvalidated ref.
+workspace and the clone-directory leaf. Constructing a ``WorkspaceId`` is the only way
+to derive an id from a triple, and constructing one validates the triple, so no code
+path can reach a workspace clone directory with an unvalidated ref.
 
 The id format is::
 
     <repo-slug>-<ref-slug>-<suffix>
 
-``suffix`` is six characters of hashed identity and is never truncated. ``repo-slug``
-is the readable context and is cut to at most :data:`REPO_SLUG_LENGTH` characters,
-never shorter. ``ref-slug`` absorbs all remaining truncation. Because only the slugs
-are ever shortened and the suffix hashes the *unsanitized* triple, truncation cannot
-produce a collision — two different triples always differ in the suffix.
+``suffix`` is eight characters of hashed identity and is never truncated.
+``repo-slug`` is the readable context and is cut to at most
+:data:`REPO_SLUG_LENGTH` characters, never shorter. ``ref-slug`` absorbs all
+remaining truncation.
+
+**What truncation does and does not guarantee.** Only the slugs are ever shortened,
+and the suffix is hashed over the full triple before any of that, so truncating the
+readable part adds no collisions of its own: two triples collide only when their
+suffixes collide. That is a birthday bound, not a guarantee: distinct triples share
+an id with probability 2**-:data:`SUFFIX_BITS` per pair, so a large enough corpus
+will eventually produce one. At the earlier 18-bit width a real pair did —
+``release/9999999999999999999999999176`` and ``...234`` in one repo — which is why
+the width is now 24. The property worth relying on is the *independence*: truncation
+policy is a readability choice with no effect on the collision rate.
+
+``source_workspace_id`` covers git sources that name no ref (plain URL specs), which
+cannot form a triple. Note that path specs (``dl ./some/dir``) do not pass through
+this module at all — they reach devpod as a resolved directory name — so an id
+handed to devpod is not necessarily one of these.
 
 See blooop/devlaunch#55 for the reasoning and #64 for the implementation ticket.
 """
@@ -35,15 +48,27 @@ TARGET_LENGTH = 38
 # safe, but trimming it to nothing would make `devpod list` unreadable.
 REPO_SLUG_LENGTH = 20
 
-# 16 consonants x 4 vowels = 64 combinations = exactly 6 bits per syllable, so three
-# syllables encode 18 bits of the digest in 6 pronounceable characters ("zovomo",
-# "hesiro", "leneve") with no wordlist to keep in sync across languages.
+# 16 consonants x 4 vowels = 64 combinations = exactly 6 bits per syllable, so four
+# syllables encode 24 bits of the digest in 8 pronounceable characters ("zovomobo",
+# "hesirora", "lenevere") with no wordlist to keep in sync across languages.
+#
+# This was 3 syllables / 18 bits when the scheme was first decided. 18 bits put a
+# birthday collision inside a single repo's plausible branch count — 500 branches
+# already produced one in test — so it was widened by one syllable. The extra two
+# characters come out of the readable budget; the 38-char cap did not move.
 _CONSONANTS = "bdfghjklmnprstvz"
 _VOWELS = "aeio"
-_SYLLABLES = 3
+_SYLLABLES = 4
+
+#: Bits of the digest the suffix encodes (6 per syllable).
+SUFFIX_BITS = _SYLLABLES * 6
 
 #: Length of the identity-bearing suffix, in characters.
 SUFFIX_LENGTH = _SYLLABLES * 2
+
+# Domain tag for ref-less sources, kept out of the triple's hash input so a URL spec
+# can never derive the same suffix as an (owner, repo, ref) workspace.
+_SOURCE_KIND = "source"
 
 # A name safe to hand to git and to use as a path component: starts with a word
 # character (so it can never be read as a flag) and holds only word characters,
@@ -78,25 +103,51 @@ def slug(text: str) -> str:
     return _NON_ALNUM_RUN_RE.sub("-", text.lower()).strip("-")
 
 
-def _syllable_suffix(owner: str, repo: str, ref: str) -> str:
-    """Six characters of hashed identity for the triple.
+def _syllable_suffix(*fields: str) -> str:
+    """Eight characters of hashed identity for NUL-delimited *fields*.
 
-    The digest is taken over the **unsanitized** triple, NUL-delimited. That is what
-    makes the derivation injective: ``feature/auth`` and ``feature-auth`` share a slug
-    but hash differently, and the delimiter keeps ``(a, bc)`` distinct from ``(ab, c)``.
+    The digest is taken over the fields joined by NUL, with no other normalization
+    applied here. The delimiter is what keeps field boundaries, so ``(a, bc)`` stays
+    distinct from ``(ab, c)``; callers decide what to normalize before calling.
 
     This algorithm is frozen. Every workspace directory and devpod workspace on disk
     is named by its output, and the planned Rust port has to reproduce it byte for
     byte, so the tables, the syllable count, the digest, the byte slice and the
     delimiter are all pinned by test.
     """
-    digest = hashlib.sha256(f"{owner}\0{repo}\0{ref}".encode()).digest()
+    digest = hashlib.sha256("\0".join(fields).encode()).digest()
     bits = int.from_bytes(digest[:8], "big")
     out = ""
     for _ in range(_SYLLABLES):
         out += _CONSONANTS[(bits >> 2) & 15] + _VOWELS[bits & 3]
         bits >>= 6
     return out
+
+
+def source_workspace_id(source: str) -> str:
+    """Workspace id for a git source that names no ref, e.g. ``github.com/owner/repo``.
+
+    A URL spec has no ref, so it cannot form an ``(owner, repo, ref)`` triple, but it
+    still reaches devpod as ``--id``. It gets the same treatment as a triple: slugged
+    for legibility, suffixed for identity, capped at :data:`TARGET_LENGTH`. A bare
+    slug would be both uncapped — a long URL reached 92 characters against devpod's
+    48-char ceiling — and non-injective, since ``my_repo``, ``my-repo`` and
+    ``my.repo`` all slug to the same string.
+
+    The hashed fields are the tag ``"source"`` and the lowercased *source*. The tag
+    keeps a ref-less source from ever sharing a suffix with a real workspace triple.
+    Lowercasing matches the triple's treatment of owner and repo: a host is
+    case-insensitive and so are GitHub owner and repo names, so two spellings of one
+    URL are one workspace.
+    """
+    suffix = _syllable_suffix(_SOURCE_KIND, source.lower())
+    room = TARGET_LENGTH - len(suffix) - 1
+    return _join(slug(source)[:room].strip("-"), suffix)
+
+
+def _join(*parts: str) -> str:
+    """Join non-empty *parts* with dashes, so an absent part leaves no stray dash."""
+    return "-".join(part for part in parts if part)
 
 
 def _fit_ref(ref: str, room: int) -> str:
@@ -139,8 +190,18 @@ class WorkspaceId:
 
     @property
     def suffix(self) -> str:
-        """The six-character identity suffix. Never truncated."""
-        return _syllable_suffix(self.owner, self.repo, self.ref)
+        """The eight-character identity suffix. Never truncated.
+
+        Owner and repo are lowercased before hashing because GitHub treats them
+        case-insensitively: ``NVIDIA/cuda-samples`` and ``nvidia/cuda-samples`` are
+        one repository, and giving each spelling its own id means one repo cloned
+        twice into two containers. The ref is hashed verbatim — git refs really are
+        case-sensitive, and ``Main`` and ``main`` can both exist in one repo.
+
+        Lowercasing does not move ids for input that was already lowercase, which is
+        every id this project has published.
+        """
+        return _syllable_suffix(self.owner.lower(), self.repo.lower(), self.ref)
 
     @property
     def value(self) -> str:
@@ -148,18 +209,14 @@ class WorkspaceId:
         suffix = self.suffix
         repo_part = slug(self.repo)
         # Cut the repo slug only when the id would otherwise overflow. Capping it at
-        # REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 6 = 10
+        # REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 8 = 8
         # characters for the ref, so the ref budget can never go non-positive — the
         # hole that let a 47-char repo name skip truncation altogether.
-        if len(self._join(repo_part, _fit_ref(self.ref, TARGET_LENGTH), suffix)) > TARGET_LENGTH:
+        if len(_join(repo_part, _fit_ref(self.ref, TARGET_LENGTH), suffix)) > TARGET_LENGTH:
             repo_part = repo_part[:REPO_SLUG_LENGTH].strip("-")
         separators = 2 if repo_part else 1
         room = TARGET_LENGTH - len(suffix) - len(repo_part) - separators
-        return self._join(repo_part, _fit_ref(self.ref, max(room, 0)), suffix)
-
-    @staticmethod
-    def _join(*parts: str) -> str:
-        return "-".join(part for part in parts if part)
+        return _join(repo_part, _fit_ref(self.ref, max(room, 0)), suffix)
 
     def __str__(self) -> str:
         return self.value

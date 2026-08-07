@@ -108,20 +108,30 @@ see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
 ```
 <repo-slug>-<branch-slug>-<syllables>      at most 38 characters
 
-blooop/devlaunch@main                             -> devlaunch-main-zovomo
-blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-polise
-blooop/test_renv@nb4                              -> test-renv-nb4-poleni
+blooop/devlaunch@main                             -> devlaunch-main-zovomobo
+blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-poliseno
+blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-nesatabe
+blooop/test_renv@nb4                              -> test-renv-nb4-polenita
 kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
-                                                  -> kinisi-ros-ags-devcontainer-too-leneve
+                                                  -> kinisi-ros-ags-devcontainer-t-lenevere
 blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
-                                                  -> devlaunch-dependabot-codecov-ac-sifiva
+                                                  -> devlaunch-dependabot-codecov-sifivasa
 ```
 
-The six-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
+The eight-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
 It is what makes the id unique: the readable part is shortened to fit the length limit,
-and shortening it can no longer make two different branches share an id. Long branch
-names drop whole `/`-separated middle segments before losing characters, so the part
-that identifies the branch survives.
+and shortening it does not affect whether two branches share an id. Long branch names
+drop whole `/`-separated middle segments before losing characters, so the part that
+identifies the branch survives. Note the third and fourth lines above: `feature/auth` and
+`feature-auth` read the same once slugged but are different branches, and they get
+different ids.
+
+Owner and repo are matched case-insensitively, the way GitHub treats them, so
+`dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main` are the same workspace.
+Branch names are case-sensitive, because git refs are.
+
+URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
+hashed over the URL.
 
 The id is also the container hostname, so it stays well inside the 38-character budget
 to leave room for tools that add their own prefixes.
@@ -132,7 +142,7 @@ a leading dash is rejected rather than quietly rewritten.
 > **Upgrading:** this id format is new. Existing workspaces and clone directories were
 > named by the previous scheme and will get new ids, so `dl user/repo@branch` creates a
 > fresh workspace and leaves the old container behind. Remove stale ones with
-> `dl <old-id> rm`.
+> `dl <old-id> rm`, which still finds and deletes the old clone directory.
 
 ## Workspace Commands
 

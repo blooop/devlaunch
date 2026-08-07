@@ -811,7 +811,7 @@ class TestSpecToWorkspaceId:
         The syllable suffix is new: without it the id was not injective, and
         `blooop/devlaunch@feature/auth` and `@feature-auth` named one workspace.
         """
-        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main-zovomo"
+        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main-zovomobo"
 
     def test_owner_repo_with_feature_branch(self):
         """Test owner/repo@feature/branch slugs the branch name."""
@@ -820,9 +820,34 @@ class TestSpecToWorkspaceId:
         assert result.startswith("repo-feature-my-branch-")
 
     def test_owner_repo_with_uppercase_branch(self):
-        """Test owner, repo and branch are all lowercased into the slug."""
+        """The repo and branch are lowercased into the slug; the owner is not in it.
+
+        The owner still shapes the id through the suffix, and is case-folded there
+        because GitHub owner names are case-insensitive.
+        """
         result = spec_to_workspace_id("Owner/Repo@Feature/MyBranch")
         assert result.startswith("repo-feature-mybranch-")
+
+    def test_repo_case_does_not_fork_the_workspace(self):
+        """One GitHub repo is one workspace, whatever case the user typed.
+
+        Hashing owner and repo raw made every spelling its own container and its own
+        full clone: `dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main`
+        were two workspaces. The old derivation lowercased, so this was a regression.
+        """
+        spellings = [
+            "blooop/devlaunch@main",
+            "Blooop/devlaunch@main",
+            "blooop/DevLaunch@main",
+            "BLOOOP/DEVLAUNCH@main",
+        ]
+        assert len({spec_to_workspace_id(s) for s in spellings}) == 1
+
+    def test_branch_case_does_fork_the_workspace(self):
+        """Refs are case-sensitive in git, so these are genuinely two workspaces."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") != spec_to_workspace_id(
+            "blooop/devlaunch@Main"
+        )
 
     def test_owner_is_part_of_the_identity(self):
         """The old derivation dropped the owner, so two forks shared an id."""
@@ -838,19 +863,53 @@ class TestSpecToWorkspaceId:
 
     def test_github_url_sanitized(self):
         """Test github.com/owner/repo generates sanitized ID (fallback path)."""
-        assert spec_to_workspace_id("github.com/loft-sh/devpod") == "github-com-loft-sh-devpod"
+        assert spec_to_workspace_id("github.com/loft-sh/devpod").startswith(
+            "github-com-loft-sh-devpod-"
+        )
 
     def test_https_url_strips_protocol(self):
         """Test https URL strips protocol and sanitizes (fallback path)."""
-        assert spec_to_workspace_id("https://github.com/owner/repo") == "github-com-owner-repo"
+        assert spec_to_workspace_id("https://github.com/owner/repo").startswith(
+            "github-com-owner-repo-"
+        )
 
     def test_url_with_git_suffix_strips_it(self):
         """Test URL with .git suffix strips it (fallback path)."""
-        assert spec_to_workspace_id("github.com/owner/repo.git") == "github-com-owner-repo"
+        assert spec_to_workspace_id("github.com/owner/repo.git") == spec_to_workspace_id(
+            "github.com/owner/repo"
+        )
+
+    def test_url_specs_are_injective(self):
+        """`my_repo`, `my-repo` and `my.repo` share a slug but are three repos.
+
+        The first cut of the new scheme applied the slug rule here with no suffix,
+        which collapsed all three onto `gitlab-com-group-my-repo` — trading the
+        old derivation's collision for a new one.
+        """
+        sources = [
+            "gitlab.com/group/my_repo",
+            "gitlab.com/group/my-repo",
+            "gitlab.com/group/my.repo",
+        ]
+        assert len({spec_to_workspace_id(s) for s in sources}) == 3
+
+    def test_url_specs_are_capped(self):
+        """A long URL used to yield 92 characters, past devpod's 48-char ceiling."""
+        spec = f"github.com/{'o' * 40}/{'r' * 40}"
+        assert len(spec_to_workspace_id(spec)) <= TARGET_LENGTH
+
+    def test_url_specs_are_case_insensitive(self):
+        assert spec_to_workspace_id("github.com/Blooop/DevLaunch") == spec_to_workspace_id(
+            "github.com/blooop/devlaunch"
+        )
 
     def test_underscore_replaced_in_repo(self):
         """Test underscores are replaced with hyphens in repo name."""
         assert spec_to_workspace_id("blooop/test_renv") == "test-renv"
+
+    def test_repo_label_is_capped(self):
+        """The ref-less repo label must respect the budget too; it yielded 60 chars."""
+        assert len(spec_to_workspace_id(f"owner/{'r' * 60}")) <= TARGET_LENGTH
 
     def test_branch_allows_multiple_workspaces(self):
         """Test different branches get different workspace IDs."""
@@ -1860,6 +1919,36 @@ class TestMainCLI:
         assert result == 1
         assert "Invalid git ref name" in caplog.text
         mock_clone_mgr.return_value.ensure_workspace.assert_not_called()
+        mock_up.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "spec,kind",
+        [("x/..", "repo"), ("../x", "owner"), ("x/.", "repo"), ("../..", "owner")],
+    )
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.workspace_up")
+    def test_main_rejects_traversal_before_touching_the_cache(
+        self, mock_up, mock_clone_mgr, mock_ids, spec, kind, caplog
+    ):
+        """Owner and repo are validated before anything builds a path from them.
+
+        ensure_repo() joins repos_dir/<owner>/<repo>, and (repos_dir/'x'/'..')
+        resolves to repos_dir itself while '../x' escapes it entirely. Validation
+        used to happen only at the WorkspaceId, which is constructed *after* that
+        call, so the traversal reached the filesystem and was rejected afterwards.
+        """
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", spec]):
+            result = main()
+        assert result == 1
+        assert f"Invalid git {kind} name" in caplog.text
+        # Nothing may reach the cache or devpod.
+        mock_mgr.repo_manager.ensure_repo.assert_not_called()
+        mock_mgr.repo_manager.get_default_branch.assert_not_called()
+        mock_mgr.ensure_workspace.assert_not_called()
         mock_up.assert_not_called()
 
     @patch("devlaunch.dl.get_workspace_ids")

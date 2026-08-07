@@ -13,32 +13,43 @@ from devlaunch.workspace_id import (
     TARGET_LENGTH,
     WorkspaceId,
     slug,
+    source_workspace_id,
     validate_ref_name,
 )
 
 
 class TestSyllableSuffix:
-    """The 6-char syllable suffix is the identity-bearing part of every id.
+    """The 8-char syllable suffix is the identity-bearing part of every id.
 
     DO NOT CHANGE THESE EXPECTED VALUES. They are not arbitrary fixtures: the
     planned Rust port has to reproduce the same ids byte for byte, and every
     workspace directory and devpod workspace already on disk is named by this
     output. Changing the consonant table, the vowel table, the syllable count,
     the digest, the byte slice, or the NUL delimiter renames every workspace in
-    existence. These four triples are the values published in #55's resolution.
+    existence.
+
+    These are 4 syllables / 24 bits. The 3-syllable / 18-bit values published in
+    #55's resolution are superseded: at 18 bits a corpus of 500 branches in one
+    repo already hit a birthday collision, so the width was widened by one
+    syllable. Do not try to reproduce the old `zovomo`-era ids.
     """
 
     @pytest.mark.parametrize(
         "owner,repo,ref,expected",
         [
-            ("blooop", "devlaunch", "main", "zovomo"),
-            ("blooop", "wayfinder", "main", "hesiro"),
-            ("blooop", "devlaunch", "feature/auth", "polise"),
-            ("blooop", "devlaunch", "feature-auth", "nesata"),
+            ("blooop", "devlaunch", "main", "zovomobo"),
+            ("blooop", "wayfinder", "main", "hesirora"),
+            ("blooop", "devlaunch", "feature/auth", "poliseno"),
+            ("blooop", "devlaunch", "feature-auth", "nesatabe"),
         ],
     )
     def test_suffix_is_frozen(self, owner, repo, ref, expected):
         assert WorkspaceId(owner, repo, ref).suffix == expected
+
+    def test_suffix_is_four_syllables(self):
+        """24 bits, not 18: widened after a real birthday collision at 3 syllables."""
+        assert SUFFIX_LENGTH == 8
+        assert len(WorkspaceId("blooop", "devlaunch", "main").suffix) == 8
 
     def test_suffix_is_alternating_consonant_vowel(self):
         suffix = WorkspaceId("blooop", "devlaunch", "main").suffix
@@ -47,7 +58,7 @@ class TestSyllableSuffix:
             table = "bdfghjklmnprstvz" if i % 2 == 0 else "aeio"
             assert char in table
 
-    def test_suffix_hashes_the_unsanitized_triple(self):
+    def test_suffix_hashes_the_unsanitized_ref(self):
         """Slug-equal refs must hash differently, or the derivation is not injective."""
         assert (
             WorkspaceId("blooop", "devlaunch", "feature/auth").suffix
@@ -57,6 +68,53 @@ class TestSyllableSuffix:
     def test_suffix_separates_the_triple_fields(self):
         """The NUL delimiter keeps field boundaries; without it these would collide."""
         assert WorkspaceId("a", "bc", "main").suffix != WorkspaceId("ab", "c", "main").suffix
+
+
+class TestOwnerAndRepoAreCaseInsensitive:
+    """One GitHub repo is one workspace, however the user spelled it.
+
+    GitHub owner and repo names are case-insensitive, so `NVIDIA/cuda-samples` and
+    `nvidia/cuda-samples` are the same repository. Hashing them raw made each
+    spelling its own id, so the same repo cloned twice into two containers — a
+    regression against the old derivation, which lowercased before deriving.
+
+    Refs stay case-sensitive: git refs genuinely are, and `Main` and `main` can
+    both exist in one repository.
+    """
+
+    CASE_VARIANTS = [
+        ("blooop", "devlaunch"),
+        ("Blooop", "devlaunch"),
+        ("blooop", "DevLaunch"),
+        ("BLOOOP", "DEVLAUNCH"),
+        ("BlOoOp", "dEvLaUnCh"),
+    ]
+
+    def test_case_variants_of_one_repo_derive_one_id(self):
+        ids = {WorkspaceId(owner, repo, "main").value for owner, repo in self.CASE_VARIANTS}
+        assert len(ids) == 1
+
+    def test_case_variants_share_the_suffix(self):
+        suffixes = {WorkspaceId(owner, repo, "main").suffix for owner, repo in self.CASE_VARIANTS}
+        assert len(suffixes) == 1
+
+    def test_lowercase_input_is_unaffected(self):
+        """Case folding must not move ids for input that was already lowercase."""
+        assert WorkspaceId("blooop", "devlaunch", "main").suffix == "zovomobo"
+
+    def test_refs_stay_case_sensitive(self):
+        """Two real refs differing only in case are two workspaces."""
+        assert (
+            WorkspaceId("blooop", "devlaunch", "main").value
+            != WorkspaceId("blooop", "devlaunch", "Main").value
+        )
+
+    def test_nvidia_case_regression(self):
+        """The concrete case from review: two spellings, one container."""
+        assert (
+            WorkspaceId("NVIDIA", "cuda-samples", "main").value
+            == WorkspaceId("nvidia", "cuda-samples", "main").value
+        )
 
 
 class TestSlug:
@@ -196,7 +254,14 @@ class TestLength:
             value = WorkspaceId("owner", "r" * repo_len, "b" * 80).value
             assert value.endswith("-" + WorkspaceId("owner", "r" * repo_len, "b" * 80).suffix)
 
-    def test_id_shape_is_lowercase_alnum_and_dashes(self):
+    def test_constructed_id_shape_is_lowercase_alnum_and_dashes(self):
+        """Holds for ids this constructor produces.
+
+        It is not an invariant of every string devlaunch hands devpod as `--id`:
+        a path spec (`dl ./My_Project`) still passes a resolved directory name
+        straight through, which this boundary never sees. That gap is tracked
+        separately; the claim here is scoped to constructed ids on purpose.
+        """
         value = WorkspaceId("Owner", "My_Repo.git", "Feature/MyBranch").value
         assert all(c.isalnum() and c.islower() or c.isdigit() or c == "-" for c in value)
         assert not value.startswith("-")
@@ -234,6 +299,70 @@ class TestSegmentAwareTruncation:
     def test_no_double_dashes_after_dropping_segments(self):
         value = WorkspaceId("blooop", "devlaunch", "a//b///c/d").value
         assert "--" not in value
+
+
+class TestSourceWorkspaceId:
+    """Ids for git sources that name no ref — plain URL specs.
+
+    `dl github.com/owner/repo` cannot become a WorkspaceId: there is no ref to
+    hash. It still reaches devpod as `--id`, so it gets the same treatment —
+    slugged, suffixed and capped — rather than a bare slug. A bare slug was both
+    uncapped (a long URL gave 92 characters against devpod's 48-char ceiling) and
+    non-injective, collapsing `my_repo`, `my-repo` and `my.repo` onto one id.
+    """
+
+    def test_underscore_dash_and_dot_sources_stay_distinct(self):
+        """The collision the first cut of this branch introduced."""
+        sources = [
+            "gitlab.com/group/my_repo",
+            "gitlab.com/group/my-repo",
+            "gitlab.com/group/my.repo",
+        ]
+        assert len({source_workspace_id(s) for s in sources}) == 3
+
+    @pytest.mark.parametrize("length", [1, 10, 40, 80, 200])
+    def test_every_source_length_is_capped(self, length):
+        source = f"github.com/{'o' * length}/{'r' * length}"
+        assert len(source_workspace_id(source)) <= TARGET_LENGTH
+
+    def test_long_source_used_to_overflow_devpod(self):
+        """92 characters before; devpod's own ceiling is 48."""
+        source = f"github.com/{'o' * 40}/{'r' * 40}"
+        assert len(source_workspace_id(source)) <= TARGET_LENGTH
+
+    def test_readable_prefix_survives(self):
+        assert source_workspace_id("github.com/loft-sh/devpod").startswith(
+            "github-com-loft-sh-devpod-"
+        )
+
+    def test_suffix_is_present_and_full_width(self):
+        value = source_workspace_id("github.com/owner/repo")
+        assert len(value.rsplit("-", 1)[1]) == SUFFIX_LENGTH
+
+    def test_source_case_is_folded(self):
+        """Same repo, different spelling of the URL: one workspace."""
+        assert source_workspace_id("github.com/Blooop/DevLaunch") == source_workspace_id(
+            "github.com/blooop/devlaunch"
+        )
+
+    def test_source_ids_cannot_collide_with_triple_ids(self):
+        """A ref-less source and a real (owner, repo, ref) workspace are different things.
+
+        Both are tagged before hashing, so even a source whose slug matches a
+        triple's slug gets a different suffix.
+        """
+        # A triple contrived so its slug matches the URL's exactly.
+        triple = WorkspaceId("anyone", "github.com", "owner/repo")
+        source = source_workspace_id("github.com/owner/repo")
+        # Same readable slug ...
+        assert source.rsplit("-", 1)[0] == triple.value.rsplit("-", 1)[0] == "github-com-owner-repo"
+        # ... different identity, because the source's fields are tagged.
+        assert source != triple.value
+
+    def test_is_deterministic(self):
+        assert source_workspace_id("github.com/owner/repo") == source_workspace_id(
+            "github.com/owner/repo"
+        )
 
 
 class TestDeterminism:

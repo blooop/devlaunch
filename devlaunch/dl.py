@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 from . import gh_auth
 from .completion import install_completions
-from .workspace_id import WorkspaceId, slug
+from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
 from .worktree.workspace_clone import WorkspaceCloneManager
 
@@ -516,7 +516,7 @@ def spec_to_workspace_id(spec: str) -> str:
     devlaunch.workspace_id for the format. The other spec shapes are not
     (owner, repo, ref) triples, so they cannot be parsed into one:
 
-    - For owner/repo with branch: <repo-slug>-<branch-slug>-<syl3>
+    - For owner/repo with branch: <repo-slug>-<branch-slug>-<syllables>
     - For owner/repo without branch: <repo-slug>. Not a workspace identity: a
       workspace is a branch checkout, so every caller that creates one resolves
       the default branch first and passes it. This is only a repo label.
@@ -546,7 +546,9 @@ def spec_to_workspace_id(spec: str) -> str:
             owner, repo_name = owner_repo.split("/", 1)
             if parsed_branch:
                 return WorkspaceId(owner, repo_name, parsed_branch).value
-            return slug(repo_name)
+            # A repo label, not an identity — see the docstring. Capped anyway, so no
+            # caller can get a string from here that overflows devpod's limit.
+            return slug(repo_name)[:TARGET_LENGTH].strip("-")
 
         # Fallback for non-owner/repo git URLs (github.com/..., https://...)
         full_source = expand_workspace_spec(base_spec)
@@ -560,10 +562,11 @@ def spec_to_workspace_id(spec: str) -> str:
         # Strip .git suffix if present
         if full_source.endswith(".git"):
             full_source = full_source[:-4]
-        # One slug rule for the whole codebase. This used to delete `_` here while
-        # turning it into `-` on the owner/repo path, so `my_repo` derived two
-        # different ids depending on which spelling of the spec you typed.
-        return slug(full_source)
+        # Same scheme as a triple: slug for legibility, suffix for identity, capped.
+        # The old rule here deleted `_` while the owner/repo path turned it into `-`,
+        # so one repo derived two ids; applying only the slug rule instead swapped
+        # that for a collision, since `my_repo`, `my-repo` and `my.repo` slug alike.
+        return source_workspace_id(full_source)
 
     # Otherwise assume it's already a workspace ID
     return spec
@@ -1314,6 +1317,19 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         # Git spec (owner/repo[@branch]) — check if workspace already exists first
         owner_repo, branch = parsed
         owner, repo = owner_repo.split("/", 1)
+
+        # Validate owner and repo before anything builds a path out of them. The
+        # branch is not resolved yet, so its check waits for the WorkspaceId below,
+        # but ensure_repo() joins repos_dir/<owner>/<repo> and would otherwise act on
+        # a traversal first and reject it after: `x/..` resolves to repos_dir itself
+        # and `../x` leaves it entirely.
+        try:
+            validate_ref_name(owner, "owner")
+            validate_ref_name(repo, "repo")
+        except ValueError as e:
+            logging.error(str(e))
+            return 1
+
         remote_url = f"git@github.com:{owner_repo}.git"
 
         clone_mgr = _get_clone_manager()
@@ -1366,8 +1382,10 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             try:
                 workspace_path = clone_mgr.ensure_workspace(owner, repo, branch, remote_url)
                 workspace_spec = str(workspace_path)
-            # ValueError: the repo's stored default branch is the one ref that does not
-            # arrive inside a WorkspaceId, so it is checked where it enters argv.
+            # ValueError: the branch resolved above does go through WorkspaceId, but
+            # ensure_workspace may fall back to the default branch recorded in the
+            # repo's stored metadata, and that value reaches git unproven. It is
+            # checked where it enters argv, which raises from in here.
             except (RuntimeError, OSError, ValueError) as e:
                 logging.error(f"Failed to prepare workspace: {e}")
                 return 1

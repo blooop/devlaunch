@@ -6,8 +6,8 @@ then fixes the remote URL so push/pull work against GitHub.
 
 Directory layout, for repos/blooop/devlaunch/:
     ├── .bare/                          # bare git repo (hidden)
-    ├── devlaunch-main-zovomo/          # workspace clone
-    └── devlaunch-feature-auth-polise/  # workspace clone
+    ├── devlaunch-main-zovomobo/            # workspace clone
+    └── devlaunch-feature-auth-poliseno/    # workspace clone
 
 The leaf names are ``WorkspaceId.value`` — the same string that names the devpod
 workspace. A bare branch name would be unique only *within* its parent, which is
@@ -41,8 +41,8 @@ class WorkspaceCloneManager:
     Directory layout:
         ~/.cache/devlaunch/repos/blooop/devlaunch/
         ├── .bare/                          # bare git repo
-        ├── devlaunch-main-zovomo/          # workspace clone
-        └── devlaunch-feature-auth-polise/  # workspace clone
+        ├── devlaunch-main-zovomobo/            # workspace clone
+        └── devlaunch-feature-auth-poliseno/    # workspace clone
     """
 
     def __init__(
@@ -336,31 +336,46 @@ class WorkspaceCloneManager:
         return ws_path
 
     def remove_workspace(self, owner: str, repo: str, branch: str) -> bool:
-        """Remove a workspace clone.
+        """Remove a workspace clone, locating it by deriving its path.
 
         Returns True if removed, False if it didn't exist.
         """
-        ws_path = self.get_workspace_path(owner, repo, branch)
-        if ws_path.exists():
-            shutil.rmtree(ws_path)
-            logger.info(f"Removed workspace clone: {ws_path}")
-            # Clean up metadata
-            try:
-                self.storage.remove_worktree(owner, repo, branch)
-            except Exception as e:
-                logger.warning(f"Failed to remove workspace metadata: {e}")
-            return True
-        return False
+        return self._remove_clone(self.get_workspace_path(owner, repo, branch), owner, repo, branch)
 
     def remove_workspace_by_id(self, workspace_id: str) -> bool:
         """Remove a workspace clone by its workspace ID.
 
-        Looks up the workspace in metadata to find owner/repo/branch,
-        then removes the clone directory.
+        Looks the workspace up in metadata and removes the directory the record
+        points at, falling back to the derived path only when the record has none.
+
+        Following the record matters because the derivation has changed: every
+        workspace created before the current id scheme has a bare branch name as its
+        clone-directory leaf. Re-deriving the leaf here looked for a directory that
+        never existed, so removal deleted the devpod workspace and then reported
+        failure — orphaning the clone and its metadata entry, silently, because the
+        caller only logs on success. The stored path makes old and new workspaces
+        both removable with no migration.
 
         Returns True if removed, False if not found.
         """
         wt_info = self.storage.get_worktree_by_workspace_id(workspace_id)
-        if wt_info:
-            return self.remove_workspace(wt_info.owner, wt_info.repo, wt_info.branch)
-        return False
+        if not wt_info:
+            return False
+        ws_path = Path(wt_info.local_path) if wt_info.local_path else None
+        if ws_path is None or not ws_path.exists():
+            ws_path = self.get_workspace_path(wt_info.owner, wt_info.repo, wt_info.branch)
+        return self._remove_clone(ws_path, wt_info.owner, wt_info.repo, wt_info.branch)
+
+    def _remove_clone(self, ws_path: Path, owner: str, repo: str, branch: str) -> bool:
+        """Delete *ws_path* and its metadata entry. False if it was not there."""
+        if not ws_path.exists():
+            logger.info(f"No workspace clone to remove at {ws_path}")
+            return False
+        shutil.rmtree(ws_path)
+        logger.info(f"Removed workspace clone: {ws_path}")
+        # Clean up metadata
+        try:
+            self.storage.remove_worktree(owner, repo, branch)
+        except Exception as e:
+            logger.warning(f"Failed to remove workspace metadata: {e}")
+        return True
