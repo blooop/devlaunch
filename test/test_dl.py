@@ -2712,7 +2712,13 @@ class TestMissingDevpodBinary:
     @patch("devlaunch.dl.write_bash_completion_cache")
     @patch("devlaunch.dl.write_completion_cache")
     def test_update_cache_flag_leaves_the_cache_alone(self, mock_write, mock_write_bash, capsys):
-        """The background updater must not overwrite a good cache with nothing."""
+        """The background updater must not overwrite a good cache with nothing.
+
+        The cache is backdated first so the TTL does not skip the sweep before it
+        can reach devpod -- a fresh cache is a second, unrelated reason for the
+        updater to write nothing, and this test is about the missing binary.
+        """
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
         with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
             with patch.object(sys, "argv", ["dl", "--update-cache"]):
                 result = main()
