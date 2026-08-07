@@ -854,7 +854,7 @@ class TestVersionProvenance:
     def test_malformed_direct_url_metadata_reports_bare_version(
         self, mock_distribution, _mock_pkg_version
     ):
-        """Unparseable direct-url metadata degrades instead of raising."""
+        """Unparsable direct-url metadata degrades instead of raising."""
         mock_distribution.return_value = _dist_reporting("{not json at all")
         assert get_version() == "1.2.3"
 
