@@ -1,12 +1,25 @@
 """Tests for WorkspaceCloneManager."""
 # pylint: disable=redefined-outer-name,protected-access,unused-argument
 
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from devlaunch.worktree.workspace_clone import WorkspaceCloneManager, _sanitize_branch_dir
+from devlaunch.workspace_id import WorkspaceId
+from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 from devlaunch.worktree.config import WorktreeConfig
+
+
+def leaf(branch="nb4", owner="owner", repo="repo"):
+    """The clone-directory leaf name for a triple.
+
+    Derived rather than hardcoded on purpose: the leaf and the devpod workspace id
+    are the same string by construction, and what that string *is* for a given
+    triple is pinned in test_workspace_id.py. Restating it here would only pin the
+    same fact twice, and would make these tests fail for the wrong reason.
+    """
+    return WorkspaceId(owner, repo, branch).value
 
 
 @pytest.fixture
@@ -57,19 +70,6 @@ def clone_manager(config, mock_repo_manager, mock_storage, mock_branch_manager):
     )
 
 
-class TestSanitizeBranchDir:
-    """Tests for _sanitize_branch_dir."""
-
-    def test_simple_branch(self):
-        assert _sanitize_branch_dir("main") == "main"
-
-    def test_slash_branch(self):
-        assert _sanitize_branch_dir("feature/my-branch") == "feature-my-branch"
-
-    def test_dots_preserved(self):
-        assert _sanitize_branch_dir("v1.2.3") == "v1.2.3"
-
-
 class TestWorkspaceCloneManagerInit:
     """Tests for WorkspaceCloneManager initialization."""
 
@@ -86,12 +86,48 @@ class TestGetWorkspacePath:
     def test_returns_correct_path(self, clone_manager, tmp_repos_dir):
         """Test workspace path is a sibling of .bare."""
         path = clone_manager.get_workspace_path("owner", "repo", "nb4")
-        assert path == tmp_repos_dir / "owner" / "repo" / "nb4"
+        assert path == tmp_repos_dir / "owner" / "repo" / leaf("nb4")
 
-    def test_sanitizes_branch(self, clone_manager, tmp_repos_dir):
-        """Test workspace path sanitizes branch with slashes."""
+    def test_leaf_is_the_workspace_id(self, clone_manager):
+        """The clone directory and the devpod workspace share one name.
+
+        A bare branch name was unique only within its parent directory, so any
+        consumer keying on a single path component saw every branch of a repo as
+        one workspace (kinisi-robotics/kinisi_ros#9766).
+        """
         path = clone_manager.get_workspace_path("owner", "repo", "feature/my-branch")
-        assert path == tmp_repos_dir / "owner" / "repo" / "feature-my-branch"
+        assert path.name == WorkspaceId("owner", "repo", "feature/my-branch").value
+
+    def test_leaf_is_self_identifying_across_repos(self, clone_manager, mock_repo_manager):
+        """Same branch, different repo: the leaf names must differ, not just the parent."""
+        mock_repo_manager.get_repo_path.side_effect = lambda o, r: Path("/cache") / o / r
+        first = clone_manager.get_workspace_path("owner", "repo-one", "main")
+        second = clone_manager.get_workspace_path("owner", "repo-two", "main")
+        assert first.name != second.name
+
+    def test_rejects_unvalidated_ref(self, clone_manager):
+        """The path that used to be the unguarded one of three.
+
+        `_validate_ref` returned a naked str, so nothing forced this call site to
+        use it; now the leaf name cannot be produced without constructing a
+        WorkspaceId, and that constructor validates.
+        """
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            clone_manager.get_workspace_path("owner", "repo", "--evil")
+
+    def test_rejects_unvalidated_ref_via_workspace_exists(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            clone_manager.workspace_exists("owner", "repo", "branch name")
+
+    def test_rejects_unvalidated_ref_via_ensure_workspace(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            clone_manager.ensure_workspace(
+                "owner", "repo", "--evil", "git@github.com:owner/repo.git"
+            )
+
+    def test_rejects_unvalidated_ref_via_remove_workspace(self, clone_manager):
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            clone_manager.remove_workspace("owner", "repo", "--evil")
 
 
 class TestWorkspaceExists:
@@ -103,13 +139,13 @@ class TestWorkspaceExists:
 
     def test_returns_false_when_no_git(self, clone_manager, tmp_repos_dir):
         """Test returns False when directory exists but has no .git."""
-        ws_dir = tmp_repos_dir / "owner" / "repo" / "main"
+        ws_dir = tmp_repos_dir / "owner" / "repo" / leaf("main")
         ws_dir.mkdir(parents=True)
         assert clone_manager.workspace_exists("owner", "repo", "main") is False
 
     def test_returns_true_when_valid(self, clone_manager, tmp_repos_dir):
         """Test returns True when directory has .git."""
-        ws_dir = tmp_repos_dir / "owner" / "repo" / "main"
+        ws_dir = tmp_repos_dir / "owner" / "repo" / leaf("main")
         ws_dir.mkdir(parents=True)
         (ws_dir / ".git").mkdir()
         assert clone_manager.workspace_exists("owner", "repo", "main") is True
@@ -215,11 +251,9 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = bare_path
 
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # Should have called: git clone, git remote set-url,
         # git show-ref (remote ref check), git checkout -B (no fetch)
@@ -274,7 +308,7 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
 
         # An existing workspace whose LFS file is still a pointer.
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         (ws_path / ".git").mkdir(parents=True)
         big = ws_path / "big.bin"
         big.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
@@ -286,9 +320,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = run_side_effect
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert ["git", "lfs", "pull", "origin"] in issued
@@ -303,7 +335,7 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
 
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         (ws_path / ".git").mkdir(parents=True)
         (ws_path / "big.bin").write_bytes(b"\x00\x01real binary content")
 
@@ -314,9 +346,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = run_side_effect
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert ["git", "lfs", "pull", "origin"] not in issued
@@ -338,7 +368,7 @@ class TestEnsureWorkspace:
 
         # git clone is mocked, so stand in for what it would have left behind:
         # a tree whose LFS file is still a pointer (cloned with skip-smudge).
-        pointer = repo_root / "nb4" / "assets" / "big.bin"
+        pointer = repo_root / leaf() / "assets" / "big.bin"
         pointer.parent.mkdir(parents=True)
         pointer.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
 
@@ -349,9 +379,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = run_side_effect
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         lfs_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:2] == ["git", "lfs"]]
         assert ["git", "lfs", "ls-files", "--name-only"] in lfs_calls
@@ -384,7 +412,7 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo.return_value = base_repo
 
         clone_manager.ensure_workspace(
-            "owner", "repo", "new-feature", "git@github.com:owner/repo.git", "repo-new-feature"
+            "owner", "repo", "new-feature", "git@github.com:owner/repo.git"
         )
 
         # Last call should be checkout -B <branch> origin/main
@@ -421,7 +449,7 @@ class TestEnsureWorkspace:
 
         with pytest.raises(RuntimeError, match="neither 'origin/new-feature' nor 'origin/main'"):
             clone_manager.ensure_workspace(
-                "owner", "repo", "new-feature", "git@github.com:owner/repo.git", "repo-nf"
+                "owner", "repo", "new-feature", "git@github.com:owner/repo.git"
             )
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
@@ -434,15 +462,13 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
 
         # Create existing workspace
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # Should only call fetch + checkout (no clone, no remote set-url, no show-ref)
         assert mock_run.call_count == 2
@@ -459,15 +485,13 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
 
         # Create existing workspace
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # Should only call fetch + checkout (no clone, no remote set-url)
         assert mock_run.call_count == 2
@@ -481,9 +505,7 @@ class TestEnsureWorkspace:
         """Test that ensure_repo is called before cloning."""
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         mock_repo_manager.ensure_repo.assert_called_once_with(
             "owner", "repo", "git@github.com:owner/repo.git"
@@ -497,9 +519,7 @@ class TestEnsureWorkspace:
         )
 
         with pytest.raises(RuntimeError, match="Failed to clone workspace"):
-            clone_manager.ensure_workspace(
-                "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
-            )
+            clone_manager.ensure_workspace("owner", "repo", "main", "git@github.com:owner/repo.git")
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_returns_workspace_path(
@@ -512,10 +532,10 @@ class TestEnsureWorkspace:
         mock_run.return_value = MagicMock(returncode=0)
 
         result = clone_manager.ensure_workspace(
-            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
+            "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
 
-        assert result == repo_root / "main"
+        assert result == repo_root / leaf("main")
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_newly_created_workspace_skips_fetch(
@@ -527,9 +547,7 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # No call should contain "git fetch origin"
         fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
@@ -544,15 +562,13 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
 
         # Create existing workspace
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "nb4", "git@github.com:owner/repo.git", "repo-nb4"
-        )
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
         assert len(fetch_calls) == 1
@@ -568,7 +584,7 @@ class TestRemoveWorkspace:
         repo_root = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = repo_root
 
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
         (ws_path / "file.txt").write_text("content")
@@ -594,7 +610,7 @@ class TestRemoveWorkspaceById:
         repo_root = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = repo_root
 
-        ws_path = repo_root / "nb4"
+        ws_path = repo_root / leaf()
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
@@ -602,6 +618,7 @@ class TestRemoveWorkspaceById:
         wt_info.owner = "owner"
         wt_info.repo = "repo"
         wt_info.branch = "nb4"
+        wt_info.local_path = ws_path
         mock_storage.get_worktree_by_workspace_id.return_value = wt_info
 
         result = clone_manager.remove_workspace_by_id("repo-nb4")
@@ -617,27 +634,81 @@ class TestRemoveWorkspaceById:
 
         assert result is False
 
+    def test_removes_a_clone_stored_under_the_old_scheme(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """Removal must follow the record, not re-derive the directory name.
 
-class TestValidateRef:
-    """Tests for _validate_ref."""
+        Every workspace created before the new id scheme has a bare-branch-name
+        leaf. Re-deriving the leaf here looked for a directory that has never
+        existed, so `dl <old-id> rm` deleted the devpod workspace and then returned
+        False — orphaning the clone and its metadata entry with no message, since
+        the caller only logs on success. WorktreeInfo already stores local_path;
+        this is the fix that needs no migration.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
 
-    def test_accepts_simple_branch(self, clone_manager):
-        assert clone_manager._validate_ref("main") == "main"
+        old_path = repo_root / "nb4"  # pre-#64 leaf: the bare branch name
+        old_path.mkdir(parents=True)
+        (old_path / ".git").mkdir()
+        assert old_path.name != leaf("nb4"), "fixture must use the old-scheme name"
 
-    def test_accepts_slashes(self, clone_manager):
-        assert clone_manager._validate_ref("feature/my-branch") == "feature/my-branch"
+        wt_info = MagicMock()
+        wt_info.owner = "owner"
+        wt_info.repo = "repo"
+        wt_info.branch = "nb4"
+        wt_info.local_path = old_path
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
 
-    def test_rejects_leading_dash(self, clone_manager):
+        assert clone_manager.remove_workspace_by_id("repo-nb4") is True
+        assert not old_path.exists()
+        mock_storage.remove_worktree.assert_called_once_with("owner", "repo", "nb4")
+
+    def test_falls_back_to_derived_path_when_record_has_none(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """A record with no usable local_path still resolves via the derivation."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        ws_path = repo_root / leaf("nb4")
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        wt_info = MagicMock()
+        wt_info.owner = "owner"
+        wt_info.repo = "repo"
+        wt_info.branch = "nb4"
+        wt_info.local_path = None
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        assert clone_manager.remove_workspace_by_id("repo-nb4") is True
+        assert not ws_path.exists()
+
+
+class TestRefsReachingGit:
+    """The refs handed to git are all either proven or checked at the boundary.
+
+    `_validate_ref` used to be a method returning its own argument, so a caller
+    could skip it and nothing said so — which is how get_workspace_path ended up
+    unguarded. It is gone: refs that name a workspace arrive inside a WorkspaceId,
+    and the one ref that does not (the stored default branch) is checked with the
+    same predicate where it enters argv.
+    """
+
+    @pytest.mark.parametrize("bad", ["--evil", "", "branch name"])
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_remote_ref_exists_rejects_unsafe_names(self, mock_run, bad, clone_manager, tmp_path):
         with pytest.raises(ValueError, match="Invalid git ref name"):
-            clone_manager._validate_ref("--evil")
+            clone_manager._remote_ref_exists(tmp_path, bad)
+        mock_run.assert_not_called()
 
-    def test_rejects_empty(self, clone_manager):
-        with pytest.raises(ValueError, match="Invalid git ref name"):
-            clone_manager._validate_ref("")
-
-    def test_rejects_spaces(self, clone_manager):
-        with pytest.raises(ValueError, match="Invalid git ref name"):
-            clone_manager._validate_ref("branch name")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_remote_ref_exists_rejects_unsafe_remote(self, mock_run, clone_manager, tmp_path):
+        with pytest.raises(ValueError, match="Invalid git remote name"):
+            clone_manager._remote_ref_exists(tmp_path, "main", remote="--upload-pack=evil")
+        mock_run.assert_not_called()
 
 
 class TestRemoteRefExists:

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 from . import gh_auth
 from .completion import install_completions
+from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
 from .worktree.workspace_clone import WorkspaceCloneManager
 
@@ -486,14 +487,6 @@ def expand_workspace_spec(spec: str) -> str:
     return spec
 
 
-def sanitize_workspace_id(name: str) -> str:
-    """Sanitize a name to match devpod's workspace ID format.
-
-    Devpod converts names to lowercase and replaces / with -.
-    """
-    return name.lower().replace("/", "-")
-
-
 def setup_hostname(workspace_id: str) -> bool:
     """Set the container hostname so the terminal prompt shows the project/branch.
 
@@ -519,13 +512,21 @@ def setup_hostname(workspace_id: str) -> bool:
 def spec_to_workspace_id(spec: str) -> str:
     """Derive the workspace ID for a given spec.
 
-    Uses <repo>-<branch> format so workspace names are meaningful in devpod list.
-    Branch is truncated so total stays ≤ 48 chars.
+    For owner/repo@branch this is `WorkspaceId(owner, repo, branch).value` — see
+    devlaunch.workspace_id for the format. The other spec shapes are not
+    (owner, repo, ref) triples, so they cannot be parsed into one:
 
-    - For owner/repo with branch: <repo>-<branch> (e.g., python-template-nb4)
-    - For owner/repo without branch: <repo> (e.g., python-template)
+    - For owner/repo with branch: <repo-slug>-<branch-slug>-<syllables>
+    - For owner/repo without branch: <repo-slug>. Not a workspace identity: a
+      workspace is a branch checkout, so every caller that creates one resolves
+      the default branch first and passes it. This is only a repo label.
+    - For other git URLs: the slugged URL, as devpod would name it
     - For paths: the directory name (e.g., ./my-project -> my-project)
     - For existing IDs: the ID as-is
+
+    Raises:
+        ValueError: if the spec names an owner, repo or branch that is not a safe
+            git name.
     """
     # Check for @branch suffix
     if "@" in spec:
@@ -542,15 +543,12 @@ def spec_to_workspace_id(spec: str) -> str:
         parsed = parse_owner_repo_branch(spec)
         if parsed:
             owner_repo, parsed_branch = parsed
-            repo_name = owner_repo.split("/")[-1]
-            repo_name = sanitize_workspace_id(repo_name).replace("_", "-")
+            owner, repo_name = owner_repo.split("/", 1)
             if parsed_branch:
-                branch_sanitized = sanitize_workspace_id(parsed_branch).replace("_", "-")
-                max_branch = 48 - len(repo_name) - 1  # -1 for separator
-                if 0 < max_branch < len(branch_sanitized):
-                    branch_sanitized = branch_sanitized[:max_branch].rstrip("-")
-                return f"{repo_name}-{branch_sanitized}"
-            return repo_name
+                return WorkspaceId(owner, repo_name, parsed_branch).value
+            # A repo label, not an identity — see the docstring. Capped anyway, so no
+            # caller can get a string from here that overflows devpod's limit.
+            return slug(repo_name)[:TARGET_LENGTH].strip("-")
 
         # Fallback for non-owner/repo git URLs (github.com/..., https://...)
         full_source = expand_workspace_spec(base_spec)
@@ -564,13 +562,11 @@ def spec_to_workspace_id(spec: str) -> str:
         # Strip .git suffix if present
         if full_source.endswith(".git"):
             full_source = full_source[:-4]
-        # Devpod sanitizes: lowercase, replace . and / and : with -, remove _
-        workspace_id = full_source.lower()
-        workspace_id = workspace_id.replace(".", "-").replace("/", "-").replace(":", "-")
-        workspace_id = workspace_id.replace("_", "")
-        # Remove trailing - if any
-        workspace_id = workspace_id.rstrip("-")
-        return workspace_id
+        # Same scheme as a triple: slug for legibility, suffix for identity, capped.
+        # The old rule here deleted `_` while the owner/repo path turned it into `-`,
+        # so one repo derived two ids; applying only the slug rule instead swapped
+        # that for a collision, since `my_repo`, `my-repo` and `my.repo` slug alike.
+        return source_workspace_id(full_source)
 
     # Otherwise assume it's already a workspace ID
     return spec
@@ -1321,6 +1317,19 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         # Git spec (owner/repo[@branch]) — check if workspace already exists first
         owner_repo, branch = parsed
         owner, repo = owner_repo.split("/", 1)
+
+        # Validate owner and repo before anything builds a path out of them. The
+        # branch is not resolved yet, so its check waits for the WorkspaceId below,
+        # but ensure_repo() joins repos_dir/<owner>/<repo> and would otherwise act on
+        # a traversal first and reject it after: `x/..` resolves to repos_dir itself
+        # and `../x` leaves it entirely.
+        try:
+            validate_ref_name(owner, "owner")
+            validate_ref_name(repo, "repo")
+        except ValueError as e:
+            logging.error(str(e))
+            return 1
+
         remote_url = f"git@github.com:{owner_repo}.git"
 
         clone_mgr = _get_clone_manager()
@@ -1336,8 +1345,16 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             repo_ensured = True
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
 
-        # Compute workspace ID with resolved branch
-        workspace_id = spec_to_workspace_id(f"{owner_repo}@{branch}")
+        # Compute workspace ID with resolved branch. Constructing the WorkspaceId is
+        # the parse boundary: an unsafe owner, repo or ref is rejected here, before it
+        # can name a container, a directory or a git command. Nothing downstream
+        # re-checks it, because holding the WorkspaceId is the evidence.
+        try:
+            workspace = WorkspaceId(owner, repo, branch)
+        except ValueError as e:
+            logging.error(str(e))
+            return 1
+        workspace_id = workspace.value
 
         # Fast path: if devpod already knows this workspace, skip clone manager
         if workspace_id in existing_ids:
@@ -1363,11 +1380,13 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
 
             # Create workspace clone
             try:
-                workspace_path = clone_mgr.ensure_workspace(
-                    owner, repo, branch, remote_url, workspace_id
-                )
+                workspace_path = clone_mgr.ensure_workspace(owner, repo, branch, remote_url)
                 workspace_spec = str(workspace_path)
-            except (RuntimeError, OSError) as e:
+            # ValueError: the branch resolved above does go through WorkspaceId, but
+            # ensure_workspace may fall back to the default branch recorded in the
+            # repo's stored metadata, and that value reaches git unproven. It is
+            # checked where it enters argv, which raises from in here.
+            except (RuntimeError, OSError, ValueError) as e:
                 logging.error(f"Failed to prepare workspace: {e}")
                 return 1
     else:
