@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.10] - 2026-08-07
 
+### Added
+- `dl --version` reports which install it is. A released build and an editable
+  install of the same commit both printed a bare `dl <version>`, so a stale
+  released binary was indistinguishable from a working tree at runtime — pulling
+  a fix and still seeing the old behaviour read as a failed merge rather than as
+  the wrong binary on `PATH`. An editable install now says so and names the tree
+  it resolves to. Detection reads PEP 610 `direct_url.json` through
+  `importlib.metadata` and is strictly additive: absent, malformed or
+  missing-key metadata all fall back to the bare output rather than raising.
+  `aid --version` inherits it.
+
 ### Fixed
 - `dl <repo> -- <cmd>` runs its command in a login shell, so it gets the same
   `PATH` an interactive `dl <repo>` attach gets. devpod runs a `--command` payload
