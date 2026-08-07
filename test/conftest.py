@@ -7,6 +7,7 @@ This module provides:
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ if str(test_dir) not in sys.path:
 # Import fixtures from the fixtures package to make them available to all tests
 # Note: pytest automatically discovers fixtures in conftest.py
 # noqa: E402 - imports must come after sys.path modification
-from devlaunch import gh_auth  # noqa: E402
+from devlaunch import dl, gh_auth  # noqa: E402
 from fixtures.git_fixtures import (  # noqa: E402
     isolated_devlaunch_env,
     local_git_repo,
@@ -43,6 +44,31 @@ def no_gh_token_forwarding(monkeypatch):
     gh_auth.resolve_token.cache_clear()
     yield
     gh_auth.resolve_token.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def isolated_completion_cache(monkeypatch):
+    """Give each test its own freshly written completion cache.
+
+    Two pieces of dl's refresh scheduling are per-process, which in a test
+    session means per-*session*: the "already spawned a refresh" latch, and the
+    TTL check that reads the cache file. Left alone, one test's spawn would
+    silence the next one's, and whether a refresh looked necessary would depend
+    on the age of the developer's real ~/.cache/devlaunch/completions.json. A
+    per-test cache that starts out fresh also means no test spawns a real
+    background git sweep unless it deliberately backdates the file.
+
+    It gets a directory of its own rather than `tmp_path`, which tests are
+    entitled to assert the exact contents of.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = Path(tmpdir) / "completions.json"
+        cache.write_text('{"workspaces": [], "repos": [], "owners": [], "branches": []}')
+        monkeypatch.setattr(dl, "CACHE_FILE", cache)
+        monkeypatch.setattr(dl, "BASH_CACHE_FILE", Path(tmpdir) / "completions.bash")
+        dl.reset_cache_refresh_state()
+        yield
+        dl.reset_cache_refresh_state()
 
 
 def pytest_configure(config):

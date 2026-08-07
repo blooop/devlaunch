@@ -1,9 +1,11 @@
 """Tests for dl (DevLaunch CLI) functionality."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import pathlib
 from unittest.mock import patch, MagicMock
 import pytest
@@ -44,6 +46,12 @@ from devlaunch.dl import (
     setup_hostname,
     get_workspace_state,
     DevpodNotInstalled,
+    get_cache_path,
+    update_cache_background,
+    completion_cache_is_fresh,
+    cache_refresh_spawned,
+    reset_cache_refresh_state,
+    COMPLETION_CACHE_TTL_SECONDS,
 )
 
 
@@ -1490,8 +1498,9 @@ class TestMainCLI:
 
     @patch("devlaunch.dl.update_completion_cache")
     def test_main_update_cache_flag(self, mock_update):
-        """Test --update-cache flag updates cache."""
+        """Test --update-cache flag updates a stale cache."""
         mock_update.return_value = {}
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
         with patch.object(sys, "argv", ["dl", "--update-cache"]):
             result = main()
         assert result == 0
@@ -2758,3 +2767,351 @@ class TestMissingDevpodBinary:
         assert "Traceback" not in proc.stderr
         assert self.INSTALL_URL in proc.stderr
         assert proc.stderr.strip().count("\n") == 0
+
+
+def _age_completion_cache(seconds: float) -> None:
+    """Backdate the completion cache's mtime so it reads as `seconds` old."""
+    stamp = time.time() - seconds
+    os.utime(get_cache_path(), (stamp, stamp))
+
+
+class TestCompletionCacheFreshness:
+    """The TTL that decides whether a background refresh is worth spawning."""
+
+    def test_ttl_mirrors_the_lazy_fetch_interval(self):
+        """One hour: the same staleness RepositoryManager already allows a repo."""
+        assert COMPLETION_CACHE_TTL_SECONDS == 3600
+
+    def test_a_just_written_cache_is_fresh(self):
+        assert completion_cache_is_fresh()
+
+    def test_a_cache_older_than_the_ttl_is_stale(self):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        assert not completion_cache_is_fresh()
+
+    def test_a_cache_just_inside_the_ttl_is_fresh(self):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS - 60)
+        assert completion_cache_is_fresh()
+
+    def test_a_missing_cache_is_not_fresh(self):
+        get_cache_path().unlink()
+        assert not completion_cache_is_fresh()
+
+    def test_freshness_follows_the_file_not_its_contents(self):
+        """mtime is the timestamp, so a cache written by an older dl still counts."""
+        get_cache_path().write_text("{}", encoding="utf-8")
+        assert completion_cache_is_fresh()
+
+
+class TestBackgroundRefreshSpawning:
+    """update_cache_background: at most one spawn, and none for a fresh cache."""
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_fresh_cache_costs_no_subprocess(self, mock_popen):
+        update_cache_background()
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_stale_cache_spawns_a_refresh(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        update_cache_background()
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][1:] == ["-m", "devlaunch.dl", "--update-cache"]
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_missing_cache_spawns_a_refresh(self, mock_popen):
+        get_cache_path().unlink()
+        update_cache_background()
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_force_ignores_the_ttl(self, mock_popen):
+        """A caller that just changed the workspace list knows better than the TTL."""
+        update_cache_background(force=True)
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_only_one_spawn_per_process(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        update_cache_background()
+        update_cache_background()
+        update_cache_background(force=True)
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_skipping_on_freshness_does_not_use_up_the_one_spawn(self, mock_popen):
+        """A TTL skip is 'not needed yet', not 'already done'."""
+        update_cache_background()
+        update_cache_background(force=True)
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_the_latch_is_observable_and_resettable(self, mock_popen):
+        assert not cache_refresh_spawned()
+        update_cache_background(force=True)
+        assert cache_refresh_spawned()
+        reset_cache_refresh_state()
+        assert not cache_refresh_spawned()
+        update_cache_background(force=True)
+        assert mock_popen.call_count == 2
+
+    @patch("devlaunch.dl.subprocess.Popen", side_effect=OSError("no fork for you"))
+    def test_a_failed_spawn_is_survivable(self, _mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        update_cache_background()
+
+
+class TestRefreshChildRechecksFreshness:
+    """The spawned child re-checks the TTL, to close the two-parents race."""
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_child_skips_the_sweep_when_the_cache_is_already_fresh(self, mock_update):
+        with patch.object(sys, "argv", ["dl", "--update-cache"]):
+            assert main() == 0
+        mock_update.assert_not_called()
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_child_sweeps_when_the_cache_is_stale(self, mock_update):
+        mock_update.return_value = {}
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--update-cache"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_child_sweeps_a_fresh_cache_when_forced(self, mock_update):
+        """The forced spawn follows a workspace change: age says nothing about it."""
+        mock_update.return_value = {}
+        with patch.object(sys, "argv", ["dl", "--update-cache", "--force"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+
+
+class TestNoRefreshForCacheFreeCommands:
+    """--help/--version/--install/--purge never spawn a refresh."""
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_help_spawns_nothing(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--help"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_short_help_spawns_nothing(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "-h"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_version_spawns_nothing(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--version"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.install_completions", return_value=0)
+    @patch("devlaunch.dl.update_completion_cache")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_install_builds_the_cache_in_the_foreground_and_spawns_nothing(
+        self, mock_popen, mock_update, _mock_install
+    ):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--install"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.list_workspaces", return_value=[])
+    @patch("devlaunch.dl.purge_all_data", return_value=0)
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_purge_spawns_nothing(self, mock_popen, _mock_purge, _mock_ls):
+        """Nothing should be racing to rewrite a cache directory being deleted."""
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--purge", "-y"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+
+class TestManualRefreshIgnoresTheTtl:
+    """--refresh is the escape hatch: it always refreshes, in the foreground."""
+
+    @patch("devlaunch.dl.update_completion_cache")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_refresh_sweeps_even_a_fresh_cache(self, mock_popen, mock_update, capsys):
+        mock_update.return_value = {"workspaces": ["ws1"]}
+        with patch.object(sys, "argv", ["dl", "--refresh"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+        mock_popen.assert_not_called()
+        assert "1 workspaces found" in capsys.readouterr().out
+
+
+class TestCacheReadingCommandsWarmTheCache:
+    """The commands that serve completions keep the cache warm, TTL permitting."""
+
+    @patch("devlaunch.dl.print_workspaces")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_ls_spawns_once_when_the_cache_is_stale(self, mock_popen, _mock_print):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--ls"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.print_workspaces")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_ls_spawns_nothing_when_the_cache_is_fresh(self, mock_popen, _mock_print):
+        with patch.object(sys, "argv", ["dl", "--ls"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.read_completion_cache", return_value={"repos": ["owner/repo"]})
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_repos_completion_warms_a_stale_cache(self, mock_popen, _mock_cache):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--repos"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.read_completion_cache", return_value={"repos": []})
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_repos_completion_is_free_when_the_cache_is_fresh(self, mock_popen, _mock_cache):
+        with patch.object(sys, "argv", ["dl", "--repos"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.read_completion_cache", return_value={"repos": []})
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_completion_data_is_free_when_the_cache_is_fresh(self, mock_popen, _mock_cache):
+        with patch.object(sys, "argv", ["dl", "--completion-data"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+
+class TestWorkspaceCommandsRefreshOnceAfterwards:
+    """Workspace commands change what the cache describes, so they force one
+    refresh -- after the command, not before, and never more than one."""
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_stop_forces_exactly_one_refresh(self, mock_popen, _mock_ids, mock_devpod):
+        mock_devpod.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "stop"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_a_stale_cache_buys_no_refresh_of_the_state_about_to_change(
+        self, mock_popen, _mock_ids, mock_devpod
+    ):
+        """The one refresh a stop gets is the one that runs after the stop.
+
+        A stale cache used to mean an up-front sweep that indexed the workspace
+        list as it was *before* the command, and the post-command refresh then
+        had to race it.
+        """
+        mock_devpod.return_value = MagicMock(returncode=0)
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "myws", "stop"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_delete_forces_exactly_one_refresh(self, mock_popen, _mock_ids, mock_devpod, _mock_mgr):
+        mock_devpod.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "rm"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.get_workspace_state", return_value="Running")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_attaching_to_a_running_workspace_refreshes_once(
+        self, mock_popen, _mock_ids, _mock_state, _mock_ssh, _mock_host
+    ):
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_starting_a_workspace_refreshes_once(
+        self, mock_popen, _mock_ids, _mock_state, mock_up, _mock_ssh, _mock_host
+    ):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_restart_stops_and_starts_but_still_refreshes_once(
+        self, mock_popen, _mock_ids, mock_devpod, mock_up, _mock_ssh, _mock_host
+    ):
+        """The old code spawned twice here: once up front and once from stop."""
+        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "restart"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_code_refreshes_once(self, mock_popen, _mock_ids, mock_up):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "code"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_recreate_refreshes_once(self, mock_popen, _mock_ids, mock_up, _mock_ssh, _mock_host):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_reset_refreshes_once(self, mock_popen, _mock_ids, mock_up, _mock_ssh, _mock_host):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "reset"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids", return_value=[])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_a_rejected_workspace_spec_spawns_nothing(self, mock_popen, _mock_ids):
+        """A spec dl refuses to act on changed nothing worth re-indexing."""
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "nonexistent"]):
+            assert main() == 1
+        mock_popen.assert_not_called()

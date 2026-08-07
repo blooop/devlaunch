@@ -25,6 +25,7 @@ import logging
 import os
 import pathlib
 import re
+import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
@@ -84,6 +85,15 @@ def _get_cache_dir() -> pathlib.Path:
 CACHE_DIR = _get_cache_dir()
 CACHE_FILE = CACHE_DIR / "completions.json"
 BASH_CACHE_FILE = CACHE_DIR / "completions.bash"
+
+# How long a completion cache is considered current. Refreshing it means a
+# `git ls-remote` per known repo, so doing it on every invocation costs seconds
+# of machine for a list of names that barely moves. An hour mirrors
+# WorktreeConfig.fetch_interval, which already decides how stale devlaunch is
+# willing to let its view of a repo's branches get; branch names are exactly
+# what the expensive part of this refresh collects, so the two should agree.
+# `dl --refresh` remains the escape hatch when a user wants it now.
+COMPLETION_CACHE_TTL_SECONDS = 3600
 
 
 def get_cache_path() -> pathlib.Path:
@@ -237,12 +247,67 @@ def update_completion_cache() -> Dict[str, Any]:
     return data
 
 
-def update_cache_background() -> None:
-    """Update completion cache in background."""
+def completion_cache_age_seconds() -> Optional[float]:
+    """Seconds since the completion cache was last written, or None if there is none.
+
+    The timestamp is the cache file's own mtime rather than a field inside it:
+    write_completion_cache renames the finished file into place, so mtime marks a
+    *completed* refresh; caches written by earlier versions carry no timestamp
+    field and would otherwise read as infinitely stale; and a stat() keeps the
+    check free on the path whose entire purpose is to do no work.
+    """
+    try:
+        return max(0.0, time.time() - get_cache_path().stat().st_mtime)
+    except OSError:
+        return None
+
+
+def completion_cache_is_fresh() -> bool:
+    """Whether the completion cache is new enough to leave alone."""
+    age = completion_cache_age_seconds()
+    return age is not None and age < COMPLETION_CACHE_TTL_SECONDS
+
+
+# One background refresh per process, at most. A dl process is one command the
+# user typed and exits when that command is done, so per-process state is
+# per-invocation state -- there is no long-running process here for the latch to
+# go stale in. Held in a dict so it can be mutated without a `global`.
+_refresh_state: Dict[str, bool] = {"spawned": False}
+
+
+def cache_refresh_spawned() -> bool:
+    """Whether this process has already spawned a background cache refresh."""
+    return _refresh_state["spawned"]
+
+
+def reset_cache_refresh_state() -> None:
+    """Forget that a refresh was spawned, so another one may be (tests)."""
+    _refresh_state["spawned"] = False
+
+
+def update_cache_background(force: bool = False) -> None:
+    """Refresh the completion cache in a detached process, if it is worth it.
+
+    Skipped entirely when this process already spawned one, and when the cache is
+    still fresh. ``force`` is for callers that have just changed what the cache
+    describes -- a workspace created, stopped or deleted -- where the cache is
+    wrong no matter how recently it was written. A freshness skip deliberately
+    does not consume the one spawn: it means "not needed yet", not "already
+    done", so a later forced call can still get its refresh.
+    """
+    if _refresh_state["spawned"]:
+        return
+    if not force and completion_cache_is_fresh():
+        return
+    _refresh_state["spawned"] = True
+    cmd = [sys.executable, "-m", "devlaunch.dl", "--update-cache"]
+    if force:
+        # Tell the child its refresh is not subject to the TTL either.
+        cmd.append("--force")
     try:
         # pylint: disable=consider-using-with
         subprocess.Popen(
-            [sys.executable, "-m", "devlaunch.dl", "--update-cache"],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -894,8 +959,8 @@ def workspace_ssh(
 def workspace_stop(workspace: str) -> int:
     """Stop a workspace."""
     result = run_devpod(["stop", workspace])
-    # Update cache after stopping workspace
-    update_cache_background()
+    # The workspace list just changed, so the cache is wrong regardless of age.
+    update_cache_background(force=True)
     return result.returncode
 
 
@@ -915,7 +980,7 @@ def workspace_delete(workspace: str) -> int:
             f"stays retryable. If its devcontainer.json moved, restore the path or "
             f"run: devpod delete {workspace} --force"
         )
-        update_cache_background()
+        update_cache_background(force=True)
         return result.returncode
 
     # Clean up local workspace clone (look up by workspace ID in metadata)
@@ -925,8 +990,8 @@ def workspace_delete(workspace: str) -> int:
             logging.info(f"Removed local clone for {workspace}")
     except Exception as e:
         logging.warning(f"Failed to remove local clone: {e}")
-    # Update cache after deleting workspace
-    update_cache_background()
+    # The workspace list just changed, so the cache is wrong regardless of age.
+    update_cache_background(force=True)
     return result.returncode
 
 
@@ -1009,6 +1074,26 @@ def _get_clone_manager() -> WorkspaceCloneManager:
     return _cache["clone_manager"]
 
 
+# Commands that read the completion cache without changing what it describes.
+# These are the ones worth warming it for before they run.
+_CACHE_READING_COMMANDS = ("--ls", "--repos", "--completion-data")
+
+
+def wants_startup_cache_refresh(args: List[str]) -> bool:
+    """Whether this invocation should warm the completion cache before running.
+
+    Only the commands that read the cache and leave the workspace list alone.
+    Everything else either has no use for completions (--help, --version), owns
+    the refresh itself (--install, --refresh, --update-cache), is about to delete
+    the cache directory (--purge), or is a workspace command -- and those refresh
+    once they are finished, when the workspace list they cache is final, instead
+    of indexing the state they are about to replace.
+    """
+    if not args:
+        return True  # the fzf picker is a view of the workspace list
+    return args[0] in _CACHE_READING_COMMANDS
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Main entry point for dl CLI.
 
@@ -1038,10 +1123,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         logging.error(str(e))
         return 1
 
-    # Always update cache in background (unless we're the update process)
-    if args and args[0] in ["--update-cache"]:
-        pass  # Don't recursively update
-    else:
+    # The decision has to come after parsing: `dl --help` must not pay for a
+    # refresh it has no use for.
+    if wants_startup_cache_refresh(args):
         update_cache_background()
 
     # No args - try fzf selection
@@ -1083,7 +1167,13 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args[0] == "--update-cache":
-        # Silent background update
+        # Silent background update. The TTL is re-checked here as well as in the
+        # parent that spawned us: two parents can both see a stale cache before
+        # either child has written one, and the second sweep would be pure waste.
+        # --force marks a refresh that follows a workspace change, where the
+        # cache is wrong however new it is.
+        if "--force" not in args[1:] and completion_cache_is_fresh():
+            return 0
         update_completion_cache()
         return 0
 
@@ -1227,6 +1317,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             workspace_identity=workspace_id,
             devcontainer=devcontainer,
         )
+        update_cache_background(force=True)
         return result.returncode
 
     if subcommand == "recreate":
@@ -1240,7 +1331,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id)
+        ret = workspace_ssh(workspace_id)
+        update_cache_background(force=True)
+        return ret
 
     if subcommand == "restart":
         # Stop and start without rebuilding
@@ -1256,7 +1349,11 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id)
+        ret = workspace_ssh(workspace_id)
+        # workspace_stop already asked for a refresh on the way through; the
+        # once-per-process latch is what keeps this from being a second one.
+        update_cache_background(force=True)
+        return ret
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
@@ -1270,7 +1367,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id)
+        ret = workspace_ssh(workspace_id)
+        update_cache_background(force=True)
+        return ret
 
     # Check for shell command (after --)
     shell_command = None
@@ -1296,7 +1395,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             workspace_id,
             shell_command,
         )
-        update_cache_background()
+        update_cache_background(force=True)
         return ret
 
     # Default: start workspace and attach shell
@@ -1323,8 +1422,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         shell_command,
     )
 
-    # Update cache after workspace operations
-    update_cache_background()
+    # Update cache after workspace operations: this path may have created the
+    # workspace, so the refresh has to happen now that it exists.
+    update_cache_background(force=True)
 
     return ret
 
