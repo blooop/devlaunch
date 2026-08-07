@@ -184,3 +184,6 @@ logs/
 
 # uv is not this project's package manager (pixi.lock is authoritative)
 uv.lock
+
+# Agent worktrees (local scratch; never committed)
+.claude/worktrees/

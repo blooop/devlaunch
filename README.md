@@ -233,6 +233,19 @@ After running `dl --install`, you get intelligent tab completion:
 - File/directory paths when starting with `./`, `/`, or `~`
 - All global flags (`--ls`, `--install`, etc.) and workspace commands
 
+### How the completion cache stays current
+
+The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
+building it means a `git ls-remote` per known repo — seconds of work. So it is
+rebuilt in the background at most once an hour (the same interval the worktree
+backend uses for lazy fetches), and at most once per `dl` invocation. Commands
+that change your workspaces (starting, stopping or deleting one) rebuild it as
+soon as they finish, regardless of when it was last built. Commands with no use
+for it — `dl --help`, `dl --version` — do not touch it at all.
+
+A branch created on a remote in the last hour may therefore not be offered yet.
+`dl --refresh` rebuilds the cache immediately and ignores the interval.
+
 ## Development
 
 This project uses [pixi](https://pixi.sh) for environment management.
