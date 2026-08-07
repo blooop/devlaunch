@@ -501,9 +501,7 @@ class TestMalformedEntries:
                 {k: v for k, v in _worktree_entry().items() if k != "local_path"},
                 id="missing-local-path",
             ),
-            pytest.param(
-                _worktree_entry(created_at="not-a-timestamp"), id="unparseable-created-at"
-            ),
+            pytest.param(_worktree_entry(created_at="not-a-timestamp"), id="unparsable-created-at"),
             pytest.param(_worktree_entry(local_path=None), id="null-local-path"),
             pytest.param("not-an-object", id="non-dict-entry"),
         ],
