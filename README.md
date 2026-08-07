@@ -82,6 +82,50 @@ Projects with demanding devcontainers — several variants, compose sidecars, or
 host-side `initializeCommand` that has to tell branch workspaces apart — are
 covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
 
+## GitHub Authentication
+
+Every workspace `dl` opens inherits the host's GitHub login, so `gh` is already
+authenticated inside the container and the devcontainer.json does not have to
+arrange anything for it. devpod forwards the ssh agent and git credentials on its
+own, but nothing else carries `gh`.
+
+devlaunch takes the token from `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`,
+whichever answers first, and hands it to the container as `GH_TOKEN`. That reaches
+any image and any container user, unlike a bind-mount of `~/.config/gh`, and it
+works whether the host keeps its token in `hosts.yml` or in a keyring. The token
+is passed to devpod through a private file and through devpod's own environment,
+never on a command line, so it does not appear in `ps`. The container still needs
+`gh` installed for the login to be of any use. Check a workspace with:
+
+```bash
+dl <workspace> -- gh auth status
+```
+
+### Who gets the token
+
+Everything running in the container does — including a `postCreateCommand` from a
+repo you did not write. `dl someone/repo` builds and runs that project's
+devcontainer with your GitHub token in its environment, and a `gh auth login` token
+usually carries `repo`, `workflow`, `gist` and `read:org` scopes. devpod already
+forwards the ssh agent to every workspace, so this is not a new trust boundary, but
+it is a wider one. Skip it for a repo you have not read:
+
+```bash
+DEVLAUNCH_NO_GH_TOKEN=1 dl someone/repo
+```
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_GH_TOKEN=1` | Do not forward the host's GitHub login into workspaces |
+
+### When the token changes
+
+`dl` refreshes the token on every start, so rotating it on the host is enough for
+any workspace that gets started or restarted afterwards. Attaching to a workspace
+that is *already running* skips that step, and the token it was given at startup
+stays in place — including one it was given before you set
+`DEVLAUNCH_NO_GH_TOKEN`. Run `dl <workspace> restart` to replace it.
+
 ## Global Commands
 
 | Command | Description |

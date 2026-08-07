@@ -31,6 +31,29 @@ the guess when it is unset (a plain `git clone` opened in VS Code):
 INSTANCE_ID="${DEVLAUNCH_WORKSPACE_ID:-$(basename "$(dirname "$PWD")")}"
 ```
 
+## GitHub auth in the container
+
+devlaunch puts the host's `gh` token in every workspace it opens, as `GH_TOKEN` in
+the container environment:
+
+| Variable | Value |
+|----------|-------|
+| `GH_TOKEN` | The host's GitHub token, from `gh auth token` or the host's own `GH_TOKEN`/`GITHUB_TOKEN` |
+
+Two consequences for a project that arranges its own GitHub auth:
+
+- A `~/.config/gh` bind-mount is no longer needed for containers opened with `dl`.
+  Keep it if the project is also opened with plain `devpod up` or VS Code's *Reopen
+  in Container*, which do not go through devlaunch; `GH_TOKEN` simply wins over the
+  mounted config when both are present.
+- A `GH_TOKEN` the project sets for itself in `containerEnv` or `remoteEnv` is
+  overridden — devpod's workspace env is applied after the devcontainer's own. A
+  project that needs its own token there has to name the variable something else,
+  or the workspace has to be opened with `DEVLAUNCH_NO_GH_TOKEN=1`.
+
+While `GH_TOKEN` is set, `gh auth login`, `gh auth switch` and `gh auth logout` all
+refuse to act inside the container; the environment variable is the login.
+
 ## Choosing between several devcontainer.json files
 
 Repos that build for more than one target — a second architecture, or a GPU/

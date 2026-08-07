@@ -19,6 +19,7 @@ if str(test_dir) not in sys.path:
 # Import fixtures from the fixtures package to make them available to all tests
 # Note: pytest automatically discovers fixtures in conftest.py
 # noqa: E402 - imports must come after sys.path modification
+from devlaunch import gh_auth  # noqa: E402
 from fixtures.git_fixtures import (  # noqa: E402
     isolated_devlaunch_env,
     local_git_repo,
@@ -27,6 +28,21 @@ from fixtures.git_fixtures import (  # noqa: E402
 )
 from fixtures.devpod_mock import DevPodMock, mock_devpod  # noqa: E402
 from fixtures.e2e_helpers import dl_no_ide, devpod_cleanup  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_gh_token_forwarding(monkeypatch):
+    """Keep the suite away from the host's real GitHub credentials.
+
+    Token forwarding runs on every workspace_up and workspace_ssh, so without
+    this the tests would shell out to `gh` and their assertions would depend on
+    whether the machine running them happens to be logged in. Tests that cover
+    forwarding opt back in by patching gh_auth directly.
+    """
+    monkeypatch.setenv(gh_auth.DISABLE_VAR, "1")
+    gh_auth.resolve_token.cache_clear()
+    yield
+    gh_auth.resolve_token.cache_clear()
 
 
 def pytest_configure(config):

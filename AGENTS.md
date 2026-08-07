@@ -6,7 +6,7 @@ This project uses a devcontainer with pixi for environment management.
 
 ### Available Tools
 
-- **GitHub CLI (`gh`)**: Available via `pixi run gh` or directly if using a login shell. The container mounts the host's `~/.config/gh` directory, so if the user is authenticated on the host, authentication is shared automatically.
+- **GitHub CLI (`gh`)**: Available via `pixi run gh` or directly if using a login shell. Authentication comes from the host: `dl` forwards the host's token into every workspace it opens as `GH_TOKEN`, and this project's devcontainer also mounts `~/.config/gh` for containers started some other way (VS Code, plain `devpod up`).
 
 ### Running Commands
 

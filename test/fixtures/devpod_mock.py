@@ -37,12 +37,19 @@ class DevPodMock:
         self.fail_commands: Dict[str, str] = {}  # command -> error message
         self._patcher = None
 
-    def __call__(self, args: List[str], capture: bool = False) -> subprocess.CompletedProcess:
+    def __call__(
+        self,
+        args: List[str],
+        capture: bool = False,
+        env: Optional[Dict[str, str]] = None,
+    ) -> subprocess.CompletedProcess:
         """Handle a devpod command call.
 
         Args:
             args: Arguments passed to devpod (not including 'devpod' itself)
             capture: Whether output is being captured
+            env: Environment devpod would be run with. Accepted so this stands in
+                for run_devpod on the ssh path, which always passes it.
 
         Returns:
             CompletedProcess with simulated results
