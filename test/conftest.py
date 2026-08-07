@@ -71,6 +71,19 @@ def isolated_completion_cache(monkeypatch):
         dl.reset_cache_refresh_state()
 
 
+@pytest.fixture(autouse=True)
+def fresh_workspace_list_cache():
+    """Give every test its own `devpod list` snapshot.
+
+    list_workspaces() memoizes for the life of the process because a real dl
+    invocation is one short-lived command. A test session is not: without this,
+    the first test to read the list would answer every later test's read.
+    """
+    dl.invalidate_workspace_list_cache()
+    yield
+    dl.invalidate_workspace_list_cache()
+
+
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
