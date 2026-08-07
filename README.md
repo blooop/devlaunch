@@ -207,3 +207,17 @@ pixi run ci
 # Format and lint
 pixi run style
 ```
+
+`pixi run test` skips the e2e suite, which needs a Docker daemon to create real
+workspaces with. The devcontainer carries one (the `docker-in-docker` feature),
+so from inside it:
+
+```bash
+# Run the e2e suite against a real devpod
+pixi run test-e2e
+```
+
+This is why the devcontainer does not use `--network=host`: a nested daemon needs
+a network namespace of its own, or it fights the host's Docker over the shared
+`docker0` bridge and its NAT rules. `test/docker/docker-compose.test.yml` runs the
+same suite in a standalone dind container if you would rather not rebuild.
