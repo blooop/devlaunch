@@ -139,10 +139,43 @@ to leave room for tools that add their own prefixes.
 Branch names must be safe as both git refs and directory names — a name with a space or
 a leading dash is rejected rather than quietly rewritten.
 
-> **Upgrading:** this id format is new. Existing workspaces and clone directories were
-> named by the previous scheme and will get new ids, so `dl user/repo@branch` creates a
-> fresh workspace and leaves the old container behind. Remove stale ones with
-> `dl <old-id> rm`, which still finds and deletes the old clone directory.
+### Upgrading from an older devlaunch
+
+This id format is new, and the directories and containers on your machine were named by
+the previous scheme. The first `dl user/repo…` command after upgrading migrates the cache
+once and prints what it did. `dl --help`, `dl --version`, `dl --ls` and opening an existing
+workspace by name do not trigger it.
+
+**Your clone directories are renamed.** What was
+`~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
+`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo`. A workspace is a git
+clone whose `origin` points at the `.bare` cache next to it, and `.bare` does not move, so
+this is a plain rename: branches, history and **uncommitted changes all survive** — only
+the folder name changes. `metadata.json` is updated in the same pass, so nothing is left
+pointing at the old name.
+
+**Your existing devpod containers keep their old ids and are orphaned.** The next
+`dl user/repo@branch` builds a fresh container under the new id. dl does not delete
+containers for you — deleting by id is how a running sidecar got destroyed the last time
+something tried ([kinisi_ros#9766](https://github.com/kinisi-robotics/kinisi_ros/pull/9766)) —
+so it prints a one-line notice with the count and writes the old ids to
+`~/.cache/devlaunch/orphaned-workspaces.txt`. Remove them when you are ready:
+
+```bash
+xargs -r -n1 devpod delete < ~/.cache/devlaunch/orphaned-workspaces.txt
+```
+
+**A clone directory with no metadata record is left alone.** Nothing records which branch
+it was cloned for, and the old directory name cannot be turned back into one — `feature/auth`
+and `feature-auth` both became `feature-auth` — so a guessed name would be worse than no
+rename. Those directories stay exactly where they are and are listed in
+`~/.cache/devlaunch/unmigrated-clones.txt`.
+
+Running dl again changes nothing: the migration is keyed on the `version` field in
+`metadata.json`, not on directory names, so a branch that happens to look like a new-scheme
+id is never mistaken for one. If a migration is interrupted, the next run finishes it — the
+version is written last, in the same atomic save as the new paths, so it never claims more
+than the filesystem has actually done.
 
 ## Workspace Commands
 

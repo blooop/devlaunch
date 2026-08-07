@@ -12,9 +12,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .models import BaseRepository, WorktreeInfo, unknown_fields
 
-# Version of the on-disk metadata.json format. A file without a "version" key
-# predates versioning and is treated as version 1.
-SCHEMA_VERSION = 1
+# Version of the on-disk metadata.json format.
+#
+# 1: the original shape. Clone-directory leaves are flattened branch names and
+#    workspace ids are derived separately from them.
+# 2: leaves and workspace ids are both WorkspaceId.value (#64). Reached from 1 by
+#    devlaunch.worktree.migration, which renames the directories on disk and then
+#    writes the new paths and this header in one atomic save.
+SCHEMA_VERSION = 2
+
+# What a file whose header cannot be read is assumed to be. A file without a
+# "version" key predates versioning, so it is the original shape, not the current
+# one -- reading it as current would skip the migration it needs. The same applies
+# to a header that is present but nonsense: the conservative reading is the oldest
+# shape, because a migration that runs against an already-migrated cache is a
+# no-op while one that never runs leaves directories nothing looks for.
+LEGACY_SCHEMA_VERSION = 1
 
 # Top-level keys this build writes, and therefore the only ones a rewrite keeps.
 _KNOWN_SECTIONS = frozenset({"version", "repositories", "worktrees"})
@@ -178,8 +191,8 @@ class MetadataStorage:
     def _load_version(self, data: Dict[str, Any]) -> Tuple[int, bool]:
         """Interpret the version header, returning the version and whether it is lossy."""
         if "version" not in data:
-            # An absent version means a legacy pre-versioning file: same shape as v1.
-            return SCHEMA_VERSION, False
+            # An absent version means a legacy pre-versioning file: the v1 shape.
+            return LEGACY_SCHEMA_VERSION, False
 
         raw = data["version"]
         # JSON has a single number type, so tools freely normalize 1 to 1.0; an
@@ -195,9 +208,9 @@ class MetadataStorage:
             # because the rewritten header will not match what is there now.
             _warn(
                 f'metadata file {self._file_path} has an invalid "version" header '
-                f"({raw!r}); reading it as schema version {SCHEMA_VERSION}"
+                f"({raw!r}); reading it as schema version {LEGACY_SCHEMA_VERSION}"
             )
-            return SCHEMA_VERSION, True
+            return LEGACY_SCHEMA_VERSION, True
 
         if version > SCHEMA_VERSION:
             _warn(

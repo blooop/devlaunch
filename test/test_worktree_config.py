@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 
 from devlaunch.worktree.config import WorktreeConfig
 
@@ -9,6 +11,7 @@ from devlaunch.worktree.config import WorktreeConfig
 class TestWorktreeConfig:
     """Tests for WorktreeConfig."""
 
+    @pytest.mark.usefixtures("home_cache_default")
     def test_default_config(self):
         """Test default configuration values."""
         config = WorktreeConfig()
@@ -90,6 +93,7 @@ class TestWorktreeConfig:
         assert config.auto_prune is False
         assert config.prune_after_days == 60
 
+    @pytest.mark.usefixtures("home_cache_default")
     def test_from_dict_empty(self):
         """Test creating config from empty dict uses defaults."""
         config = WorktreeConfig.from_dict({})
@@ -101,6 +105,7 @@ class TestWorktreeConfig:
         assert config.auto_prune is True
         assert config.prune_after_days == 30
 
+    @pytest.mark.usefixtures("home_cache_default")
     def test_from_dict_partial(self):
         """Test creating config from partial dict uses defaults for missing values."""
         data = {
