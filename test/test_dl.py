@@ -32,7 +32,6 @@ from devlaunch.dl import (
     write_bash_completion_cache,
     update_completion_cache,
     remote_branch_exists,
-    get_remote_head_sha,
     get_remote_branches,
     get_local_branches,
     main,
@@ -527,21 +526,6 @@ class TestRemoteBranchFunctions:
         assert remote_branch_exists("owner/repo", "main") is False
 
     @patch("subprocess.run")
-    def test_get_remote_head_sha(self, mock_run):
-        """Test getting HEAD SHA."""
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="abc123def456\tHEAD\n",
-        )
-        assert get_remote_head_sha("owner/repo") == "abc123def456"
-
-    @patch("subprocess.run")
-    def test_get_remote_head_sha_error(self, mock_run):
-        """Test git error returns None."""
-        mock_run.return_value = MagicMock(returncode=1, stdout="")
-        assert get_remote_head_sha("owner/repo") is None
-
-    @patch("subprocess.run")
     def test_get_remote_branches_success(self, mock_run):
         """Test getting list of branches from remote."""
         mock_run.return_value = MagicMock(
@@ -584,18 +568,6 @@ class TestRemoteBranchFunctions:
         """Test OSError returns False."""
         mock_run.side_effect = OSError("git not found")
         assert remote_branch_exists("owner/repo", "main") is False
-
-    @patch("subprocess.run")
-    def test_get_remote_head_sha_os_error(self, mock_run):
-        """Test OSError returns None."""
-        mock_run.side_effect = OSError("git not found")
-        assert get_remote_head_sha("owner/repo") is None
-
-    @patch("subprocess.run")
-    def test_get_remote_head_sha_empty_output(self, mock_run):
-        """Test empty output returns None."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        assert get_remote_head_sha("owner/repo") is None
 
 
 class TestDiscoverReposFromWorkspaces:

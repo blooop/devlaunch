@@ -1,9 +1,31 @@
 """Data models for worktree backend."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+
+def unknown_fields(model: Any, data: Dict) -> List[str]:
+    """Return the keys in ``data`` that ``model`` declares no field for.
+
+    A newer devlaunch writing an extra field is the expected source. Callers use
+    this to report what a rewrite would drop; ``from_dict`` ignores those keys.
+    """
+    known = {f.name for f in fields(model)}
+    return sorted(key for key in data if key not in known)
+
+
+def _drop_unknown(model: Any, data: Dict) -> Dict:
+    """Copy ``data`` keeping only the fields ``model`` declares.
+
+    Ignoring an unrecognized field keeps the entry loadable. Rebuilding it with
+    ``cls(**data)`` instead would raise TypeError, and since one stored field is
+    shaped like every other, a single field added by a newer build would make
+    every entry unreadable at once.
+    """
+    known = {f.name for f in fields(model)}
+    return {key: value for key, value in data.items() if key in known}
 
 
 @dataclass
@@ -27,8 +49,8 @@ class BaseRepository:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "BaseRepository":
-        """Create from dictionary."""
-        data = data.copy()
+        """Create from dictionary, ignoring fields this build does not declare."""
+        data = _drop_unknown(cls, data)
         data["local_path"] = Path(data["local_path"])
         if data.get("last_fetched"):
             data["last_fetched"] = datetime.fromisoformat(data["last_fetched"])
@@ -58,8 +80,8 @@ class WorktreeInfo:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "WorktreeInfo":
-        """Create from dictionary."""
-        data = data.copy()
+        """Create from dictionary, ignoring fields this build does not declare."""
+        data = _drop_unknown(cls, data)
         data["local_path"] = Path(data["local_path"])
         data["created_at"] = datetime.fromisoformat(data["created_at"])
         data["last_used"] = datetime.fromisoformat(data["last_used"])
