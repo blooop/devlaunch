@@ -32,6 +32,8 @@ pip install devlaunch
 ```
 
 Note: When using pip, you must install [devpod](https://devpod.sh/docs/getting-started/install) separately.
+If `devpod` is not on `PATH`, every command that needs it prints a single install hint on stderr and exits `127`
+(the shell's "command not found" code). `dl --help` and `dl --version` keep working without it.
 
 ### Shell Completions
 

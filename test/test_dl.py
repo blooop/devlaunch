@@ -43,6 +43,7 @@ from devlaunch.dl import (
     workspace_up,
     setup_hostname,
     get_workspace_state,
+    DevpodNotInstalled,
 )
 
 
@@ -2589,3 +2590,171 @@ class TestCLIErrorMessages:
         assert result == 1
         error_records = [r for r in caplog.records if r.levelname == "ERROR"]
         assert len(error_records) == 1
+
+
+def _devpod_missing():
+    """The error the OS raises when `devpod` is not on PATH."""
+    return FileNotFoundError(2, "No such file or directory", "devpod")
+
+
+class TestMissingDevpodBinary:
+    """A missing devpod binary must produce one actionable line, not a traceback."""
+
+    INSTALL_URL = "https://devpod.sh/docs/getting-started/install"
+
+    def test_signal_is_not_an_oserror(self):
+        """The signal must dodge every broad OSError/RuntimeError handler in dl.
+
+        FileNotFoundError is an OSError, and dl catches OSError in a dozen
+        places to degrade gracefully (empty branch lists, "failed to prepare
+        workspace"). A missing binary reported through those handlers is
+        reported wrongly, so it travels as its own type.
+        """
+        assert issubclass(DevpodNotInstalled, Exception)
+        assert not issubclass(DevpodNotInstalled, OSError)
+        assert not issubclass(DevpodNotInstalled, RuntimeError)
+
+    @pytest.mark.parametrize("capture", [False, True])
+    def test_run_devpod_translates_the_os_error(self, capture):
+        """The single devpod seam converts FileNotFoundError into the signal."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with pytest.raises(DevpodNotInstalled) as excinfo:
+                run_devpod(["list"], capture=capture)
+        message = str(excinfo.value)
+        assert "devpod" in message
+        assert self.INSTALL_URL in message
+
+    def test_run_devpod_still_reports_a_command_that_ran_and_failed(self):
+        """A devpod that exists and exits non-zero is not a missing binary."""
+        with patch("devlaunch.dl.subprocess.run", return_value=MagicMock(returncode=1)):
+            assert run_devpod(["list"]).returncode == 1
+
+    @patch("devlaunch.dl.update_cache_background")
+    def test_ls_prints_one_line_to_stderr_and_exits_127(self, _cache, capsys):
+        """`dl --ls` is the ticket's repro: one line on stderr, exit 127."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--ls"]):
+                result = main()
+        assert result == 127
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.strip().count("\n") == 0
+        assert "devpod" in captured.err
+        assert self.INSTALL_URL in captured.err
+        assert "Traceback" not in captured.err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    def test_workspace_up_handler_does_not_swallow_it(self, _ids, _state, _cache, capsys, caplog):
+        """Proof for main()'s `except (RuntimeError, OSError)` around workspace_up.
+
+        workspace_up shells out to devpod from inside that try block; the
+        generic "Failed to create workspace" must not appear.
+        """
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "myws"]):
+                result = main()
+        assert result == 127
+        assert "Failed to create workspace" not in caplog.text
+        assert "devpod" in capsys.readouterr().err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    def test_delete_handler_does_not_swallow_it(self, _ids, _cache, capsys, caplog):
+        """Second call site: `dl <ws> rm`, which has its own broad handlers.
+
+        workspace_delete reports devpod failures itself and wraps the local
+        clone cleanup in `except Exception`; neither of those messages may
+        stand in for "devpod is not installed".
+        """
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "myws", "rm"]):
+                result = main()
+        assert result == 127
+        assert "could not delete" not in caplog.text
+        assert "Failed to remove local clone" not in caplog.text
+        assert "devpod" in capsys.readouterr().err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.read_completion_cache", return_value=None)
+    def test_repos_flag_keeps_stdout_clean(self, _cache_read, _cache, capsys):
+        """`dl --repos` feeds shell completion: nothing may reach stdout."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--repos"]):
+                result = main()
+        assert result == 127
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "devpod" in captured.err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.read_completion_cache", return_value=None)
+    def test_completion_data_flag_keeps_stdout_clean(self, _cache_read, _cache, capsys):
+        """`dl --completion-data` must not emit half a JSON document."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--completion-data"]):
+                result = main()
+        assert result == 127
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "devpod" in captured.err
+
+    @patch("devlaunch.dl.write_bash_completion_cache")
+    @patch("devlaunch.dl.write_completion_cache")
+    def test_update_cache_flag_leaves_the_cache_alone(self, mock_write, mock_write_bash, capsys):
+        """The background updater must not overwrite a good cache with nothing."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--update-cache"]):
+                result = main()
+        assert result == 127
+        mock_write.assert_not_called()
+        mock_write_bash.assert_not_called()
+        assert "devpod" in capsys.readouterr().err
+
+    @patch("devlaunch.dl.update_cache_background")
+    def test_help_never_touches_devpod(self, _cache, capsys):
+        """--help must work on a box with no devpod at all."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()) as mock_run:
+            with patch.object(sys, "argv", ["dl", "--help"]):
+                result = main()
+        assert result == 0
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "dl - DevLaunch CLI" in captured.out
+        assert captured.err == ""
+
+    @patch("devlaunch.dl.update_cache_background")
+    def test_version_never_touches_devpod(self, _cache, capsys):
+        """--version must work on a box with no devpod at all."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()) as mock_run:
+            with patch.object(sys, "argv", ["dl", "--version"]):
+                result = main()
+        assert result == 0
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert captured.out.startswith("dl ")
+        assert captured.err == ""
+
+    def test_exit_code_reaches_the_shell(self, tmp_path):
+        """End to end: run dl with a PATH that has no devpod on it."""
+        env = {
+            "PATH": str(tmp_path / "empty-bin"),
+            "HOME": str(tmp_path),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "DEVLAUNCH_NO_GH_TOKEN": "1",
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "devlaunch.dl", "--ls"],
+            cwd=str(pathlib.Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=60,
+        )
+        assert proc.returncode == 127
+        assert proc.stdout == ""
+        assert "Traceback" not in proc.stderr
+        assert self.INSTALL_URL in proc.stderr
+        assert proc.stderr.strip().count("\n") == 0

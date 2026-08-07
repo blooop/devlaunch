@@ -21,7 +21,7 @@ _KNOWN_SECTIONS = frozenset({"version", "repositories", "worktrees"})
 
 # Errors raised when a single stored entry cannot be rebuilt into a model:
 # KeyError for a missing field, TypeError for an unknown/bad-typed field
-# (from_dict does cls(**data)), ValueError for an unparseable timestamp.
+# (from_dict does cls(**data)), ValueError for an unparsable timestamp.
 _ENTRY_ERRORS = (KeyError, TypeError, ValueError)
 
 

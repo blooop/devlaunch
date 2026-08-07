@@ -35,6 +35,32 @@ from .worktree.config import get_worktree_config
 from .worktree.workspace_clone import WorkspaceCloneManager
 
 
+class DevpodNotInstalled(Exception):
+    """The devpod binary dl shells out to is not on PATH.
+
+    Deliberately not an OSError (FileNotFoundError is one) and not a
+    RuntimeError: dl catches both broadly in a dozen places so that a flaky
+    command degrades to an empty list or a "failed to prepare workspace"
+    message. A missing binary reported through one of those handlers is
+    reported wrongly, so it travels as a type nothing between run_devpod and
+    main() catches, and main() is the only place that handles it.
+    """
+
+
+# One line, so a completion helper that trips over it cannot spew into the
+# user's shell. It names both install routes because devpod ships with the
+# pixi/conda package and does not ship with the pip one (see README).
+DEVPOD_MISSING_MESSAGE = (
+    "devpod not found on PATH: dl cannot manage workspaces without it. "
+    "Install devpod from https://devpod.sh/docs/getting-started/install "
+    "(pixi/conda installs of devlaunch include it; pip installs do not)."
+)
+
+# The shell's own "command not found" code, which says more than a bare 1 and
+# cannot be confused with a devpod command that ran and failed.
+DEVPOD_MISSING_EXIT_CODE = 127
+
+
 def get_version() -> str:
     """Get the package version."""
     try:
@@ -674,14 +700,22 @@ def run_devpod(
     Security note: Using list form of subprocess.run (not shell=True) prevents
     command injection. Each list element is passed as a separate argument to
     the executable, so special characters are not interpreted by a shell.
+
+    This is dl's only devpod spawn, so it is also the only place that can tell
+    "devpod is not installed" from "devpod ran and failed". The former is
+    raised as DevpodNotInstalled rather than folded into a returncode: callers
+    branch on returncode and would carry on as though devpod had answered.
     """
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
-    if capture:
+    try:
+        if capture:
+            # nosec B603 - using list form, not shell=True; no command injection risk
+            return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
         # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
-    # nosec B603 - using list form, not shell=True; no command injection risk
-    return subprocess.run(cmd, check=False, env=env)
+        return subprocess.run(cmd, check=False, env=env)
+    except FileNotFoundError as e:
+        raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
 
 def list_workspaces() -> List[Workspace]:
@@ -970,7 +1004,21 @@ def _get_clone_manager() -> WorkspaceCloneManager:
 
 
 def main() -> int:
-    """Main entry point for dl CLI."""
+    """Main entry point for dl CLI.
+
+    Thin wrapper so there is exactly one handler for a missing devpod, however
+    deep in the command it was noticed. The message goes to stderr because
+    stdout is parsed by the completion machinery (--repos, --completion-data).
+    """
+    try:
+        return _run_cli()
+    except DevpodNotInstalled as e:
+        print(e, file=sys.stderr)
+        return DEVPOD_MISSING_EXIT_CODE
+
+
+def _run_cli() -> int:
+    """Dispatch a dl command line. See main() for the error handling around it."""
     try:
         args, devcontainer = extract_devcontainer_flag(sys.argv[1:])
     except ValueError as e:
