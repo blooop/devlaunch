@@ -285,6 +285,66 @@ def parse_owner_repo_branch(spec: str) -> Optional[tuple]:
     return (spec, None)
 
 
+def _resolve_devcontainer_ref(ref: str) -> str:
+    """Turn a --devcontainer value into a devcontainer.json path for devpod.
+
+    A bare name expands to the spec's one-level-deep variant location,
+    `.devcontainer/<name>/devcontainer.json`. Anything containing a separator or
+    ending in .json is used as given.
+
+    devpod's own --devcontainer-id takes a bare variant name and looks like the same
+    job, but it is silently ignored in devpod 0.26.1: a fresh `devpod up --id x
+    --devcontainer-id alt` parses .devcontainer/devcontainer.json and stores no
+    devContainerID, while --devcontainer-path selects the variant correctly. Build
+    the path here until that is fixed upstream.
+
+    Raises ValueError on a value that cannot be a path, so a missing argument
+    (`dl --devcontainer --help`) is an error instead of a nonsense path.
+    """
+    if not ref or ref.isspace():
+        raise ValueError("--devcontainer requires a variant name or path")
+    if ref.startswith("-"):
+        raise ValueError(f"--devcontainer needs a value, got the flag {ref!r}")
+    if "/" in ref or ref.endswith(".json"):
+        return ref
+    return f".devcontainer/{ref}/devcontainer.json"
+
+
+def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[str]]:
+    """Pull `--devcontainer <name-or-path>` out of the argument list.
+
+    Returns (remaining_args, devcontainer_path). Accepts both
+    `--devcontainer x` and `--devcontainer=x`.
+
+    Scanning stops at the first bare `--`: everything after it is the shell
+    command `dl <ws> -- <command>` runs inside the workspace, and must reach it
+    verbatim even when it has flags of its own by the same name.
+
+    Raises ValueError if the flag is given without a usable value.
+    """
+    remaining: List[str] = []
+    selection: Optional[str] = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            remaining.extend(args[i:])
+            break
+        if arg.startswith("--devcontainer="):
+            selection = _resolve_devcontainer_ref(arg.split("=", 1)[1])
+            i += 1
+            continue
+        if arg == "--devcontainer":
+            if i + 1 >= len(args):
+                raise ValueError("--devcontainer requires a variant name or path")
+            selection = _resolve_devcontainer_ref(args[i + 1])
+            i += 2
+            continue
+        remaining.append(arg)
+        i += 1
+    return remaining, selection
+
+
 def is_path_spec(spec: str) -> bool:
     """Check if spec looks like a filesystem path."""
     return spec.startswith("./") or spec.startswith("/") or spec.startswith("~")
@@ -330,14 +390,6 @@ def sanitize_workspace_id(name: str) -> str:
     Devpod converts names to lowercase and replaces / with -.
     """
     return name.lower().replace("/", "-")
-
-
-def get_container_workdir(workspace_id: str) -> str:
-    """Get the container working directory for a workspace.
-
-    DevPod mounts workspaces to /workspaces/{workspace_id}/
-    """
-    return f"/workspaces/{workspace_id}"
 
 
 def setup_hostname(workspace_id: str) -> bool:
@@ -749,13 +801,31 @@ def workspace_up(
     recreate: bool = False,
     reset: bool = False,
     workspace_id: Optional[str] = None,
+    workspace_identity: Optional[str] = None,
+    devcontainer: Optional[str] = None,
 ):
-    """Start or create a workspace."""
+    """Start or create a workspace.
+
+    workspace_id is devpod's --id, passed only when creating. workspace_identity
+    is the id the workspace is known by either way, injected into the workspace
+    initialization environment as DEVLAUNCH_WORKSPACE_ID so a project's host-side
+    initializeCommand can tell branch workspaces apart — devpod gives the hook no
+    workspace identity of its own (see docs/devcontainer-projects.md).
+
+    devcontainer is a devcontainer.json path from _resolve_devcontainer_ref.
+    """
     args = ["up", workspace]
     if workspace_id:
         args.extend(["--id", workspace_id])
-    if ide:
-        args.extend(["--ide", ide])
+    # Default to no IDE: dl attaches a terminal shell, so devpod's configured
+    # default IDE (vscode) must not auto-open a window on every `dl <ws>`.
+    # `dl <ws> code` passes ide="vscode" explicitly.
+    args.extend(["--ide", ide if ide else "none"])
+    if devcontainer:
+        args.extend(["--devcontainer-path", devcontainer])
+    identity = workspace_identity or workspace_id
+    if identity:
+        args.extend(["--init-env", f"DEVLAUNCH_WORKSPACE_ID={identity}"])
     if recreate:
         args.append("--recreate")
     if reset:
@@ -778,7 +848,10 @@ def workspace_ssh(
     Args:
         workspace: The workspace ID to SSH into
         command: Optional command to run (if None, starts interactive shell)
-        workdir: Working directory to start in
+        workdir: Working directory to start in. Leave unset to land in the
+            workspaceFolder from devcontainer.json — devpod falls back to $HOME
+            if given a path that doesn't exist in the container, so never guess
+            one from the workspace id.
     """
     args = ["ssh", workspace]
 
@@ -801,8 +874,24 @@ def workspace_stop(workspace: str) -> int:
 
 
 def workspace_delete(workspace: str) -> int:
-    """Delete a workspace and its local clone (if any)."""
+    """Delete a workspace and its local clone (if any).
+
+    The clone is removed only once devpod has actually let go of the workspace.
+    devpod re-parses the workspace's devcontainer.json to tear the container
+    down, so a config that has since moved or been renamed makes deletion fail —
+    and removing the clone regardless strands the workspace for good, because
+    devpod can then never find the config to retry with.
+    """
     result = run_devpod(["delete", workspace])
+    if result.returncode != 0:
+        logging.error(
+            f"devpod could not delete {workspace}; keeping the local clone so it "
+            f"stays retryable. If its devcontainer.json moved, restore the path or "
+            f"run: devpod delete {workspace} --force"
+        )
+        update_cache_background()
+        return result.returncode
+
     # Clean up local workspace clone (look up by workspace ID in metadata)
     try:
         clone_mgr = _get_clone_manager()
@@ -844,6 +933,11 @@ Usage:
     dl <user/repo> <cmd>             Run workspace command (stop, code, etc.)
     dl <user/repo> -- <shell>        Run shell command in workspace
 
+Options:
+    --devcontainer <variant|path>    Use a non-default devcontainer.json. A bare
+                                     name means .devcontainer/<name>/devcontainer.json.
+                                     Stored with the workspace, so pass it once.
+
 Workspace sources:
     dl myproject                     Existing workspace by name
     dl user/repo                     Create from GitHub repo
@@ -876,6 +970,7 @@ Examples:
     dl blooop/devlaunch code         # Open in VS Code
     dl blooop/devlaunch -- make test # Run command in workspace
     dl blooop/devlaunch stop         # Stop workspace
+    dl org/repo --devcontainer robot # Pick a devcontainer variant
 """
     print(help_text)
 
@@ -892,7 +987,11 @@ def _get_clone_manager() -> WorkspaceCloneManager:
 
 def main() -> int:
     """Main entry point for dl CLI."""
-    args = sys.argv[1:]
+    try:
+        args, devcontainer = extract_devcontainer_flag(sys.argv[1:])
+    except ValueError as e:
+        logging.error(str(e))
+        return 1
 
     # Always update cache in background (unless we're the update process)
     if args and args[0] in ["--update-cache"]:
@@ -906,9 +1005,13 @@ def main() -> int:
         if not selected:
             print_help()
             return 1
-        workspace_up(selected)
+        workspace_up(
+            selected,
+            workspace_identity=selected,
+            devcontainer=devcontainer,
+        )
         setup_hostname(selected)
-        return workspace_ssh(selected, workdir=get_container_workdir(selected))
+        return workspace_ssh(selected)
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -1060,6 +1163,11 @@ def main() -> int:
         custom_id = workspace_id  # Pass --id to create with our desired ID
 
     # Handle workspace subcommands
+    # Paths below that never call workspace_up cannot honour a config choice.
+    # Say so rather than discarding it silently.
+    if devcontainer and subcommand in ("stop", "rm", "prune"):
+        logging.warning(f"Ignoring --devcontainer: it does not apply to '{subcommand}'.")
+
     if subcommand == "stop":
         return workspace_stop(workspace_id)
 
@@ -1067,34 +1175,57 @@ def main() -> int:
         return workspace_delete(workspace_id)
 
     if subcommand == "code":
-        result = workspace_up(workspace_spec, ide="vscode", workspace_id=custom_id)
+        result = workspace_up(
+            workspace_spec,
+            ide="vscode",
+            workspace_id=custom_id,
+            workspace_identity=workspace_id,
+            devcontainer=devcontainer,
+        )
         return result.returncode
 
     if subcommand == "recreate":
-        result = workspace_up(workspace_spec, recreate=True, workspace_id=custom_id)
+        result = workspace_up(
+            workspace_spec,
+            recreate=True,
+            workspace_id=custom_id,
+            workspace_identity=workspace_id,
+            devcontainer=devcontainer,
+        )
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_container_workdir(workspace_id))
+        return workspace_ssh(workspace_id)
 
     if subcommand == "restart":
         # Stop and start without rebuilding
         stop_ret = workspace_stop(workspace_id)
         if stop_ret != 0:
             return stop_ret
-        result = workspace_up(workspace_spec, workspace_id=custom_id)
+        result = workspace_up(
+            workspace_spec,
+            workspace_id=custom_id,
+            workspace_identity=workspace_id,
+            devcontainer=devcontainer,
+        )
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_container_workdir(workspace_id))
+        return workspace_ssh(workspace_id)
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
-        result = workspace_up(workspace_spec, reset=True, workspace_id=custom_id)
+        result = workspace_up(
+            workspace_spec,
+            reset=True,
+            workspace_id=custom_id,
+            workspace_identity=workspace_id,
+            devcontainer=devcontainer,
+        )
         if result.returncode != 0:
             return result.returncode
         setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id, workdir=get_container_workdir(workspace_id))
+        return workspace_ssh(workspace_id)
 
     # Check for shell command (after --)
     shell_command = None
@@ -1110,18 +1241,27 @@ def main() -> int:
     # Fast-attach: skip workspace_up() if workspace is already running
     if custom_id is None and get_workspace_state(workspace_id) == "Running":
         logging.info(f"Workspace {workspace_id} is already running, attaching...")
+        if devcontainer:
+            logging.warning(
+                f"Ignoring --devcontainer: {workspace_id} is already running. "
+                f"Use 'dl {raw_spec} recreate --devcontainer ...' to switch config."
+            )
         setup_hostname(workspace_id)
         ret = workspace_ssh(
             workspace_id,
             shell_command,
-            workdir=get_container_workdir(workspace_id),
         )
         update_cache_background()
         return ret
 
     # Default: start workspace and attach shell
     try:
-        result = workspace_up(workspace_spec, workspace_id=custom_id)
+        result = workspace_up(
+            workspace_spec,
+            workspace_id=custom_id,
+            workspace_identity=workspace_id,
+            devcontainer=devcontainer,
+        )
     except (RuntimeError, OSError) as e:
         logging.error(f"Failed to create workspace: {e}")
         return 1
@@ -1136,7 +1276,6 @@ def main() -> int:
     ret = workspace_ssh(
         workspace_id,
         shell_command,
-        workdir=get_container_workdir(workspace_id),
     )
 
     # Update cache after workspace operations

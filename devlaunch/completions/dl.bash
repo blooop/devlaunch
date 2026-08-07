@@ -45,10 +45,29 @@ _dl_completion() {
     fi
 
     # Global command options (only valid as first arg)
-    local global_opts="--ls --install --help -h --version"
+    local global_opts="--ls --install --help -h --version --devcontainer"
 
     # Workspace subcommands
     local ws_cmds="stop rm code restart recreate reset --"
+
+    # Options that take a value; a variant name or a path follows them.
+    local value_opts="--devcontainer"
+
+    # After --devcontainer, offer the repo's variant directories (and paths).
+    if [[ " ${value_opts} " == *" ${prev} "* ]]; then
+        local variants=""
+        if [[ -d .devcontainer ]]; then
+            local d
+            for d in .devcontainer/*/devcontainer.json; do
+                [[ -f "$d" ]] || continue
+                d="${d#.devcontainer/}"
+                variants+=" ${d%/devcontainer.json}"
+            done
+        fi
+        COMPREPLY=( $(compgen -W "${variants}" -- ${cur}) )
+        compopt -o default 2>/dev/null
+        return 0
+    fi
 
     # Cache file location (honors XDG_CACHE_HOME)
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/devlaunch"

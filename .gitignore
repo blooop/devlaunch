@@ -193,3 +193,6 @@ progress.json
 status.json
 logs/
 .ralph/
+
+# uv is not this project's package manager (pixi.lock is authoritative)
+uv.lock
