@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-08-07
+
 ### Added
 - The host's GitHub CLI login is forwarded into every workspace as `GH_TOKEN`, so
   `gh` works inside whatever container is launched without its devcontainer.json
@@ -16,6 +18,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out of `ps`. Everything in the container can read it, including a repo's own
   `postCreateCommand`, so set `DEVLAUNCH_NO_GH_TOKEN=1` — for one launch or for the
   machine — to opt out.
+
+### Fixed
+- A corrupt `metadata.json` no longer takes down every `dl` command, `dl --help`
+  included. Loading is total now: an unreadable or non-object file is quarantined
+  to `metadata.json.corrupt` and load continues with empty state, a single
+  malformed entry is skipped instead of the whole file, and an entry carrying a
+  field only a newer build declares loads without that field rather than failing.
+  Any load that drops information copies the original to `metadata.json.bak`
+  before the next write can overwrite it, and says so on stderr.
+- On a box without devpod, workspace commands print one line on stderr and exit
+  127 instead of a raw `FileNotFoundError` traceback. `--help`, `--version` and
+  the completion paths never touch devpod and still work; `--update-cache` now
+  leaves a good cache in place rather than overwriting it with an empty one.
+
+### Removed
+- Deletion-only hygiene pass, no behavior change: template leftovers from the
+  python_template origin (`PROMPT.md`, `ralph.yml`, `@fix_plan.md`, `@AGENT.md`,
+  `WORKTREE_BACKEND_PLAN.md`, `WORKTREE_BACKEND_README.md`) and dead code with no
+  references from source or tests — `dl.get_git_branches`, `dl.workspace_status`,
+  `dl.get_remote_head_sha`, `worktree.config.save_config`,
+  `BranchManager.checkout_branch` and `BranchManager.create_remote_branch_via_ssh`.
+- The README's "Backend Selection" section, which documented a `--backend` flag
+  and `DEVLAUNCH_BACKEND` env var that exist nowhere in the code.
 
 ## [0.0.7] - 2026-08-06
 
