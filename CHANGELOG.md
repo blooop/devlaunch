@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host's GitHub login into every container but not the `gh` to spend it on, so
   `dl <ws> -- gh auth status` died with `command not found` while holding a valid
   token. Installed with `pixi global` on `devpod up` and exposed through
-  `~/.profile`; `pixi` itself is installed first if the image has none. A
+  whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` bash actually
+  sources; `pixi` itself is installed first if the image has none. A
   workspace that already has both is left alone, so the cost after the first
   launch is one round-trip and no network. An install that fails costs the
   workspace its tools and not its launch. Set `DEVLAUNCH_NO_TOOLS=1` to opt out.

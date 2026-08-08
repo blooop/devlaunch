@@ -19,9 +19,11 @@ class Runner:
         self.stdout = stdout
         self.stderr = stderr
         self.calls: List[List[str]] = []
+        self.captured: List[bool] = []
 
     def __call__(self, args, capture=False, env=None) -> subprocess.CompletedProcess:
         self.calls.append(list(args))
+        self.captured.append(capture)
         return subprocess.CompletedProcess(
             args=list(args), returncode=self.returncode, stdout=self.stdout, stderr=self.stderr
         )
@@ -89,6 +91,20 @@ class TestProvisionScript:
         assert ".pixi/bin" in script
         assert ".profile" in script
 
+    def test_it_writes_to_the_profile_bash_actually_reads(self):
+        """bash sources the FIRST of bash_profile/bash_login/profile that exists.
+
+        An image shipping a ~/.bash_profile therefore never reads ~/.profile,
+        so writing there leaves the tools installed and unreachable -- and,
+        because the presence check is `command -v`, reinstalled on every launch.
+        """
+        script = provision_script()
+        assert '[ -f "$HOME/.bash_profile" ]' in script
+        assert '[ -f "$HOME/.bash_login" ]' in script
+        # The order is the whole point: bash_profile wins over profile.
+        assert script.index(".bash_profile") < script.index(".bash_login")
+        assert script.index(".bash_login") < script.index('PROFILE="$HOME/.profile"')
+
     def test_the_profile_is_not_appended_to_twice(self):
         """Every profile edit is guarded, so relaunching cannot grow the file."""
         script = provision_script()
@@ -96,9 +112,26 @@ class TestProvisionScript:
         assert profile_writes
         assert all(line.startswith("grep -q") for line in profile_writes)
 
+    def test_a_profile_that_cannot_be_written_is_a_failure(self):
+        """Installed but not on PATH is not the guarantee this module makes."""
+        script = provision_script()
+        profile_writes = [line for line in script.splitlines() if '>> "$PROFILE"' in line]
+        assert all(line.endswith("|| failed=1") for line in profile_writes)
+
     def test_pixi_is_installed_when_the_image_has_none(self):
         """An arbitrary repo's container need not carry pixi."""
         assert "command -v pixi" in provision_script()
+
+    def test_progress_goes_to_stderr_not_stdout(self):
+        """`dl <ws> -- cmd > file` must not get install chatter in the file.
+
+        The provisioning ssh is a separate devpod call from the command's, but
+        it shares dl's stdout, so an uncaptured first launch would write into
+        whatever the caller redirected.
+        """
+        script = provision_script()
+        assert "exec >&2" in script
+        assert script.index("exec >&2") < script.index("echo")
 
     def test_a_custom_tool_set_is_honoured(self):
         script = provision_script([Tool(command="jq", package="jq")])
@@ -125,6 +158,16 @@ class TestEnsureTools:
         argv = shlex.split(runner.script)
         assert argv[:2] == ["bash", "-lc"]
         assert argv[2] == provision_script()
+
+    def test_the_install_output_reaches_the_user(self):
+        """A cold install is tens of seconds; captured, it reads as a hung dl.
+
+        The script's progress lines are the only thing on the terminal during
+        it, so capturing them would be the same as having none.
+        """
+        runner = Runner()
+        ensure_tools("myws", runner)
+        assert runner.captured == [False]
 
     def test_a_failed_install_does_not_raise(self):
         """The workspace is up and the user asked for a session, not an install."""

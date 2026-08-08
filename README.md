@@ -253,7 +253,9 @@ do not: `dl` launches arbitrary repos, so a guarantee that depended on the image
 would not be a guarantee.
 
 They are installed with `pixi global` on `devpod up`, and put on the PATH of a
-login shell through `~/.profile`. A workspace that already has both is left alone —
+login shell through whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile`
+bash actually reads — it sources only the first of those that exists, so an image
+shipping a `~/.bash_profile` never reads `~/.profile`. A workspace that already has both is left alone —
 the check runs first, so the cost after the first launch is one round-trip and no
 network. If `pixi` is missing from the image, `dl` installs that too.
 
