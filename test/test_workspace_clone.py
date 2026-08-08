@@ -43,6 +43,8 @@ def mock_repo_manager(tmp_repos_dir):
     repo_root = tmp_repos_dir / "owner" / "repo"
     mgr.get_repo_path.return_value = repo_root
     mgr.get_bare_path.return_value = repo_root / ".bare"
+    # A real path, not a MagicMock: ensure_workspace/ensure_branch flock this.
+    mgr.lock_path.return_value = repo_root / ".lock"
     mgr.ensure_repo.return_value = MagicMock()
     return mgr
 

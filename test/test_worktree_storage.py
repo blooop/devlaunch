@@ -800,10 +800,13 @@ class TestAtomicSave:
         assert temp_storage.metadata_path.read_text(encoding="utf-8") == original
         reloaded = MetadataStorage(temp_storage.metadata_path)
         assert list(reloaded.repositories) == ["owner1/repo1"]
+        # The lock sidecar is deliberate and permanent (see locks.py: unlinking
+        # an flock'd file breaks the lock); only write debris counts as leftover.
+        lock_name = temp_storage.metadata_path.name + ".lock"
         leftovers = [
             p.name
             for p in temp_storage.metadata_path.parent.iterdir()
-            if p.name != temp_storage.metadata_path.name
+            if p.name not in (temp_storage.metadata_path.name, lock_name)
         ]
         assert leftovers == []
 

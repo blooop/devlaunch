@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from devlaunch.xdg import devlaunch_cache
 
+from .locks import hold_lock
 from .models import BaseRepository, WorktreeInfo, unknown_fields
 
 # Version of the on-disk metadata.json format.
@@ -83,7 +84,27 @@ class MetadataStorage:
         self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         # Every file operation targets the real file, not a symlink pointing at it.
         self._file_path = _resolve_link(self.metadata_path)
+        # A sidecar rather than the file itself: save() replaces metadata.json
+        # by rename, and a lock taken on a replaced inode guards nothing.
+        self._lock_path = self._file_path.with_name(self._file_path.name + ".lock")
         self._load()
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        """Hold the metadata lock and reload before the block runs.
+
+        Every mutation goes through this: the in-memory copy was loaded whenever
+        this process started, and other dl processes may have written since.
+        Rewriting the file from that stale copy silently drops their records —
+        reloading under the lock is what makes read-modify-write safe. The
+        caller applies its change and calls save() before the block ends.
+
+        Not reentrant (see locks.py), so mutators must never be called from
+        inside an exclusive() block — they take this lock themselves.
+        """
+        with hold_lock(self._lock_path, waiting_note="another dl run updating the workspace list"):
+            self._load()
+            yield
 
     def _quarantine(self, reason: str) -> None:
         """Move an unusable metadata file aside so the data stays inspectable.
@@ -288,8 +309,9 @@ class MetadataStorage:
     def add_repository(self, repo: BaseRepository) -> None:
         """Add or update a repository."""
         key = f"{repo.owner}/{repo.repo}"
-        self.repositories[key] = repo
-        self.save()
+        with self.exclusive():
+            self.repositories[key] = repo
+            self.save()
 
     def get_repository(self, owner: str, repo: str) -> Optional[BaseRepository]:
         """Get a repository by owner and name."""
@@ -303,22 +325,24 @@ class MetadataStorage:
     def remove_repository(self, owner: str, repo: str) -> None:
         """Remove a repository."""
         key = f"{owner}/{repo}"
-        if key in self.repositories:
-            del self.repositories[key]
-            self.save()
+        with self.exclusive():
+            if key in self.repositories:
+                del self.repositories[key]
+                self.save()
 
     def add_worktree(self, worktree: WorktreeInfo) -> None:
         """Add or update a worktree."""
         key = f"{worktree.owner}/{worktree.repo}/{worktree.branch}"
-        self.worktrees[key] = worktree
+        with self.exclusive():
+            self.worktrees[key] = worktree
 
-        # Update repository's worktree list in memory, then write once.
-        repo = self.get_repository(worktree.owner, worktree.repo)
-        if repo and worktree.branch not in repo.worktrees:
-            repo.worktrees.append(worktree.branch)
-            self.repositories[f"{worktree.owner}/{worktree.repo}"] = repo
+            # Update repository's worktree list in memory, then write once.
+            repo = self.get_repository(worktree.owner, worktree.repo)
+            if repo and worktree.branch not in repo.worktrees:
+                repo.worktrees.append(worktree.branch)
+                self.repositories[f"{worktree.owner}/{worktree.repo}"] = repo
 
-        self.save()
+            self.save()
 
     def get_worktree(self, owner: str, repo: str, branch: str) -> Optional[WorktreeInfo]:
         """Get a worktree by repository and branch."""
@@ -348,13 +372,14 @@ class MetadataStorage:
     def remove_worktree(self, owner: str, repo: str, branch: str) -> None:
         """Remove a worktree."""
         key = f"{owner}/{repo}/{branch}"
-        if key in self.worktrees:
-            del self.worktrees[key]
+        with self.exclusive():
+            if key in self.worktrees:
+                del self.worktrees[key]
 
-            # Update repository's worktree list in memory, then write once.
-            repo_obj = self.get_repository(owner, repo)
-            if repo_obj and branch in repo_obj.worktrees:
-                repo_obj.worktrees.remove(branch)
-                self.repositories[f"{owner}/{repo}"] = repo_obj
+                # Update repository's worktree list in memory, then write once.
+                repo_obj = self.get_repository(owner, repo)
+                if repo_obj and branch in repo_obj.worktrees:
+                    repo_obj.worktrees.remove(branch)
+                    self.repositories[f"{owner}/{repo}"] = repo_obj
 
-            self.save()
+                self.save()

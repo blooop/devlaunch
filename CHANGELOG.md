@@ -19,6 +19,33 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.20] - 2026-08-08
+
+Launching several workspaces at the same moment is now safe. It nearly was
+already — the point of the isolated-devcontainer work — but the launches
+themselves still raced each other over the shared bookkeeping on the host: two
+first launches of one repo both ran `git clone --bare` into the same cache path,
+and the loser's cleanup deleted the winner's half-written clone out from under
+it; and every launch rewrote `metadata.json` from a copy loaded at its own
+startup, so simultaneous launches silently dropped each other's workspace
+records. Firing two `dl owner/repo@branch` (or two `aid`) at once could
+therefore cost you a clone or a workspace listing, with nothing said.
+
+### Fixed
+- Concurrent `dl` processes now serialize their work on any one repo's cache
+  with an inter-process lock (`repos/<owner>/<repo>/.lock`, `flock`, so a
+  crashed run can never leave the cache wedged). The second launch waits — and
+  says it is waiting — then reuses the clone the first one made, instead of
+  racing it and destroying it.
+- `metadata.json` writers reload the file under a lock before rewriting it, so
+  a workspace record added by one process can no longer be erased by another
+  process that loaded earlier. This also covers the background completion
+  refresh, which shares the same file.
+- A bare clone found on disk without a metadata record — another process just
+  made it, or an earlier run died before saving — is now registered as it
+  stands. Previously `dl` tried to clone over it, failed, and its cleanup
+  deleted the cache the other launch was using.
+
 ## [0.0.19] - 2026-08-08
 
 Three of these are about `dl` and its dev container leaving alone what is not
