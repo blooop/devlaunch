@@ -22,7 +22,6 @@ import sys
 import subprocess
 import json
 import logging
-import os
 import pathlib
 import re
 import shlex
@@ -39,6 +38,7 @@ from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id,
 from .worktree.config import get_worktree_config
 from .worktree.migration import migrate_cache
 from .worktree.workspace_clone import WorkspaceCloneManager
+from .xdg import devlaunch_cache
 
 
 class MissingBinary(Exception):
@@ -162,11 +162,15 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def _get_cache_dir() -> pathlib.Path:
-    """Get the cache directory, honoring XDG_CACHE_HOME."""
-    xdg_cache = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache:
-        return pathlib.Path(xdg_cache) / "devlaunch"
-    return pathlib.Path.home() / ".cache" / "devlaunch"
+    """Get the cache directory, honoring XDG_CACHE_HOME.
+
+    The answer comes from devlaunch.xdg so that this, the worktree config's
+    default `repos_dir` and metadata.json's default path cannot drift apart --
+    is_devlaunch_clone decides what `--purge` may delete by asking whether a
+    workspace's source is under this directory, and the clones it is asking
+    about were put there by the other two.
+    """
+    return devlaunch_cache()
 
 
 # Cache configuration (honors XDG_CACHE_HOME)
@@ -778,6 +782,8 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
     and what a purge actually destroys answering to the same directory, and
     `--purge` names what it leaves rather than passing over it in silence.
     """
+    if workspace.source_type != "local":
+        return False
     source = pathlib.PurePath(workspace.source)
     # Purely lexical, so a clone whose directory has already been removed is
     # still recognisable from the source devpod kept.
@@ -807,9 +813,13 @@ def workspace_ownership(
     Total: every workspace lands in exactly one arm, and listing order is kept
     within each, so what is printed reads in the order devpod gave.
     """
-    mine = tuple(ws for ws in workspaces if is_devlaunch_clone(ws, cache_dir))
-    foreign = tuple(ws for ws in workspaces if not is_devlaunch_clone(ws, cache_dir))
-    return WorkspaceOwnership(mine=mine, foreign=foreign)
+    mine: List[Workspace] = []
+    foreign: List[Workspace] = []
+    for ws in workspaces:
+        # One pass, so the predicate is asked once per workspace and the two
+        # arms cannot be built from two different answers to the same question.
+        (mine if is_devlaunch_clone(ws, cache_dir) else foreign).append(ws)
+    return WorkspaceOwnership(mine=tuple(mine), foreign=tuple(foreign))
 
 
 # Regex patterns for parsing git URLs

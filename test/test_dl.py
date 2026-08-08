@@ -2138,7 +2138,7 @@ class TestPurgeFunctionality:
 
     @patch("devlaunch.dl.run_devpod")
     @patch("devlaunch.dl.list_workspaces")
-    def test_purge_deletes_all_workspaces(self, mock_list, mock_run):
+    def test_purge_deletes_the_workspaces_devlaunch_created(self, mock_list, mock_run):
         """Test purge_all_data deletes every workspace devlaunch created."""
         from devlaunch.dl import purge_all_data
 

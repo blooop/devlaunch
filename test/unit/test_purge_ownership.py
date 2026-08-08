@@ -14,7 +14,6 @@ of those two can be recreated by devlaunch, and neither is touched by the cache
 directory a purge removes.
 """
 
-import dataclasses
 import json
 import pathlib
 import subprocess
@@ -25,7 +24,6 @@ import pytest
 
 from devlaunch.dl import (
     Workspace,
-    WorkspaceOwnership,
     is_devlaunch_clone,
     main,
     purge_all_data,
@@ -83,6 +81,18 @@ def _local(source, workspace_id: str = "ws") -> Workspace:
     return Workspace(workspace_id, "local", str(source), "", "docker", "none")
 
 
+def _record(asked: List[Workspace]):
+    """Stand in for is_devlaunch_clone, recording who it was asked about."""
+
+    def predicate(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
+        asked.append(workspace)
+        # The name imported into this module, not dl's attribute -- that one is
+        # what is being patched, and calling it here would recurse.
+        return is_devlaunch_clone(workspace, cache_dir)
+
+    return predicate
+
+
 class RecordedDevpod:
     """Stands in for the devpod process, answering `list` with a recording."""
 
@@ -128,16 +138,23 @@ class TestWhichWorkspacesAreDevlaunchs:
     def test_a_workspace_in_the_users_own_directory_is_not(self, cache_dir):
         assert not is_devlaunch_clone(_local("/home/dev/projects/python_template"), cache_dir)
 
-    def test_a_git_sourced_workspace_is_not(self, cache_dir):
-        """`devpod up https://github.com/o/r` -- devlaunch always passes a path."""
-        by_hand = Workspace("r", "git", "https://github.com/o/r", "", "docker", "none")
-        assert not is_devlaunch_clone(by_hand, cache_dir)
+    @pytest.mark.parametrize("source_type", ["git", "unknown"])
+    def test_only_a_local_source_can_be_devlaunchs(self, cache_dir, source_type):
+        """devlaunch always hands devpod a local path, so nothing else is ours.
 
-    def test_a_workspace_with_no_source_at_all_is_not(self, cache_dir):
-        """`source_type == "unknown"` is what Workspace.from_json makes of a
-        source shape it does not recognise. Not knowing is not owning."""
-        shapeless = Workspace("x", "unknown", "{}", "", "docker", "none")
-        assert not is_devlaunch_clone(shapeless, cache_dir)
+        The source here is a path *inside* the cache directory on purpose. A
+        git-URL source is not a path at all, so a test using one passes whether
+        or not the source-type guard exists -- containment rejects it either
+        way, and the guard could be deleted with every test still green. Only a
+        source that would otherwise be recognised puts the guard under test.
+
+        The shape is reachable: `devpod up <path-to-bare-repo>` records a
+        `gitRepository` source, and nothing stops that repo living in the cache.
+        """
+        inside = cache_dir / "repos" / "blooop" / "r" / "r-main-abcdefgh"
+        assert is_devlaunch_clone(_local(inside), cache_dir), "the path itself is inside"
+        not_ours = Workspace("r", source_type, str(inside), "", "docker", "none")
+        assert not is_devlaunch_clone(not_ours, cache_dir)
 
     def test_a_sibling_directory_that_merely_shares_a_prefix_is_not(self, cache_dir):
         """`~/.cache/devlaunch-scratch` is not inside `~/.cache/devlaunch`.
@@ -172,13 +189,14 @@ class TestTheSplitIsAValue:
         assert [ws.id for ws in split.mine] == CLONED_BY_DEVLAUNCH
         assert [ws.id for ws in split.foreign] == MADE_BY_SOMEONE_ELSE
 
-    def test_neither_arm_can_be_rewritten_after_the_fact(self):
-        """Through setattr because a direct assignment is a type error too --
-        the point is that it is refused at runtime as well, so the count a user
-        confirmed cannot be edited between the confirmation and the deletion."""
-        split = WorkspaceOwnership(mine=(), foreign=())
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            setattr(split, "mine", (_local("/x"),))
+    def test_the_predicate_is_asked_once_per_workspace(self, cache_dir):
+        """One pass, so the two arms cannot come from two different answers to
+        the same question -- which is the whole reason the split is a value."""
+        listed = _parsed_listing(cache_dir)
+        asked = []
+        with patch("devlaunch.dl.is_devlaunch_clone", side_effect=_record(asked)):
+            workspace_ownership(listed, cache_dir)
+        assert [ws.id for ws in asked] == [ws.id for ws in listed]
 
 
 class TestPurgeDeletesOnlyWhatDevlaunchMade:

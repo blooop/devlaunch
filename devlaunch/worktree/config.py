@@ -1,21 +1,12 @@
 """Configuration management for worktree backend."""
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional, Union
 
 import tomli
 
-from devlaunch.xdg import config_home
-
-
-def _get_cache_base() -> Path:
-    """Get the base cache directory, honoring XDG_CACHE_HOME."""
-    xdg_cache = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache:
-        return Path(xdg_cache) / "devlaunch"
-    return Path.home() / ".cache" / "devlaunch"
+from devlaunch.xdg import config_home, devlaunch_cache
 
 
 @dataclass
@@ -28,7 +19,7 @@ class WorktreeConfig:
     """
 
     enabled: bool = True  # Enabled by default
-    repos_dir: Union[Path, str] = field(default_factory=lambda: _get_cache_base() / "repos")
+    repos_dir: Union[Path, str] = field(default_factory=lambda: devlaunch_cache() / "repos")
     auto_fetch: bool = True
     fetch_interval: int = 3600  # Seconds between auto-fetches
     auto_prune: bool = True
@@ -77,7 +68,7 @@ class WorktreeConfig:
 
         return cls(
             enabled=worktree_data.get("enabled", True),
-            repos_dir=Path(worktree_data.get("repos_dir", _get_cache_base() / "repos")),
+            repos_dir=Path(worktree_data.get("repos_dir", devlaunch_cache() / "repos")),
             auto_fetch=worktree_data.get("auto_fetch", True),
             fetch_interval=worktree_data.get("fetch_interval", 3600),
             auto_prune=cleanup_data.get("auto_prune", True),
