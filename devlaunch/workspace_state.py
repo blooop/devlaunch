@@ -84,6 +84,26 @@ def read_clone(clone: Path) -> CloneState:
     return CloneState(branch=branch or None, unsaved=_unsaved(clone, branch))
 
 
+def _name_a_few(changed: List[str], limit: int = 3) -> str:
+    """Name the first few changed paths from `git status --porcelain` lines.
+
+    A count alone is not enough to decide anything with. A devcontainer that
+    runs `pixi install` in its `postCreateCommand` leaves the tracked lockfile
+    modified in *every* workspace it builds, so "1 uncommitted change(s)" is the
+    permanent state of an otherwise untouched clone — and a person told only the
+    count has no way to tell that from an hour of unsaved work. Told the name,
+    they can.
+
+    The porcelain format is two status characters, a space, then the path, so
+    the path starts at offset 3; a rename reads `old -> new`, and the whole
+    field is kept rather than split, because both halves are the news.
+    """
+    names = [line[3:].strip() for line in changed[:limit] if len(line) > 3]
+    if len(changed) > limit:
+        names.append("…")
+    return ", ".join(names)
+
+
 def _unsaved(clone: Path, branch: Optional[str]) -> Optional[str]:
     """What deleting *clone* would destroy, in words, or ``None`` if nothing.
 
@@ -91,7 +111,8 @@ def _unsaved(clone: Path, branch: Optional[str]) -> Optional[str]:
     force a delete wants both:
 
     - a dirty tree, **untracked files included** — an agent's scratch notes are
-      not less lost for never having been added;
+      not less lost for never having been added — with the first few paths
+      named, because a count alone cannot be judged (see :func:`_name_a_few`);
     - commits no remote-tracking ref contains. ``--not --remotes`` asks about
       *any* remote ref rather than this branch's upstream, so work that was
       pushed under another name, or merged and fetched back, is correctly not
@@ -100,7 +121,8 @@ def _unsaved(clone: Path, branch: Optional[str]) -> Optional[str]:
     losses: List[str] = []
     status = _git(clone, "status", "--porcelain")
     if status:
-        losses.append(f"{len(status.splitlines())} uncommitted change(s)")
+        changed = status.splitlines()
+        losses.append(f"{len(changed)} uncommitted change(s) ({_name_a_few(changed)})")
     if branch:
         # Argument order is load-bearing: `--not` flips the sense of every ref
         # *after* it, so the branch has to be named before it. `log --not

@@ -254,3 +254,33 @@ class TestTheDeleteGuard:
         code, deleted = self._run(tmp_path, clone, ["r-feature-aaa", "rm"])
         assert code == 1
         assert deleted == []
+
+
+class TestNamingWhatIsUnsaved:
+    """A count cannot be judged; a name can.
+
+    The case this exists for is real and permanent: this repo's own devcontainer
+    runs `pixi install` in its postCreateCommand, which leaves the tracked
+    `pixi.lock` modified in *every* workspace it builds. Reported as
+    "1 uncommitted change(s)", an untouched clone is indistinguishable from an
+    hour of someone's unsaved work, and a cleanup tool that believes the count
+    never cleans anything.
+    """
+
+    def test_the_changed_paths_are_named(self, clone):
+        (clone / "pixi.lock").write_text("churned by the container's own build\n")
+        unsaved = holds_unsaved_work(clone)
+        assert unsaved and "pixi.lock" in unsaved
+
+    def test_a_long_list_is_cut_short_rather_than_dumped(self, clone):
+        for i in range(6):
+            (clone / f"file{i}.txt").write_text("x\n")
+        unsaved = holds_unsaved_work(clone)
+        assert unsaved and "6 uncommitted change(s)" in unsaved
+        # Three names and an ellipsis: enough to recognise, not a wall of text.
+        assert unsaved.count(",") == 3 and "…" in unsaved
+
+    def test_a_renamed_path_keeps_both_halves(self, clone):
+        git("mv", "feature.txt", "renamed.txt", cwd=clone)
+        unsaved = holds_unsaved_work(clone)
+        assert unsaved and "renamed.txt" in unsaved

@@ -405,13 +405,19 @@ cleanup tool must not ignore — `unsaved`:
   "repo": "blooop/devlaunch",
   "branch": "wayfinder/devlaunch-80",
   "state": "Stopped",
-  "unsaved": "2 uncommitted change(s) and 1 unpushed commit(s)"
+  "unsaved": "2 uncommitted change(s) (pixi.lock, notes.md) and 1 unpushed commit(s)"
 }
 ```
 
 `unsaved` is a description of what deleting would destroy, or `null` when the
 clone holds nothing that does not also exist on a remote — uncommitted changes
-(untracked files included) and commits no remote has. A workspace `dl` did not
+(untracked files included) and commits no remote has. The changed paths are
+named, not just counted, and that matters more than it looks: a devcontainer
+that runs a package install in its `postCreateCommand` can leave a tracked
+lockfile modified in *every* workspace it builds — this repo's own does — and as
+a bare count that is indistinguishable from an hour of unsaved work. A cleanup
+tool believing the count would then never clean anything. Named, it is
+judgeable. A workspace `dl` did not
 create reports `devlaunch: false` with no repo, branch or `unsaved`: there is no
 clone of `dl`'s to protect, and it has no business inspecting your checkout.
 
