@@ -335,18 +335,26 @@ class TestPurgeE2E:
         assert theirs in listed_after, report
 
         # The cache half of the purge is a different subject, and on a runner it
-        # fails for a reason that has nothing to do with which workspaces are
-        # devlaunch's. The container writes into the bind-mounted clone as its
-        # own user -- `vscode`, uid 1000 in the fixture image -- and where that
-        # is not the uid running the suite (`runner` is 1001), `shutil.rmtree`
-        # hits EACCES on a directory it owns no part of and cannot chmod. That
-        # is a pre-existing defect in `purge_all_data`, unrelated to this diff
-        # and not fixable from inside the process; measured here rather than
-        # inferred, and reported. `test_purge_cleans_cache` covers the cache
-        # half against a cache no container has touched. Any *other* non-zero
-        # exit is this test's to fail on.
+        # is refused for a reason that has nothing to do with which workspaces
+        # are devlaunch's. The container writes into the bind-mounted clone as
+        # its own user -- `vscode`, uid 1000 in the fixture image -- and where
+        # that is not the uid running the suite (`runner` is 1001), those files
+        # are not this process's to remove and no exit code can make them so.
+        #
+        # What a purge does about it is what changed: it removes everything it
+        # is permitted to and names the rest, instead of stopping at the first
+        # refusal and leaving the removable half of the cache standing. So a
+        # non-zero exit here is still expected on a runner, and must be that
+        # refusal reported in the way a person can act on -- any other non-zero
+        # exit is this test's to fail on. `test_purge_cleans_cache` covers the
+        # cache half against a cache no container has touched.
         if purge_result.returncode != 0:
-            assert "Error removing" in purge_result.stdout, report
+            assert "Not permitted to remove:" in printed, report
+            assert [
+                line
+                for line in printed
+                if line.startswith(("Removed what it could from ", "Removed nothing from "))
+            ], report
 
     def test_purge_cleans_cache(self, isolated_devlaunch_env):
         """Test that --purge -y removes the cache directory."""
