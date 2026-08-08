@@ -84,8 +84,16 @@ def ensure_provider(
     return True
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point: `python -m devlaunch.devpod_provider <name>`."""
+def main(
+    argv: Optional[Sequence[str]] = None,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> int:
+    """CLI entry point: `python -m devlaunch.devpod_provider <name>`.
+
+    This is what the `dev-add-docker` pixi task runs, so a devpod that cannot be
+    read has to stop the task rather than let it carry on as if the provider
+    were missing.
+    """
     import argparse  # pylint: disable=import-outside-toplevel
 
     parser = argparse.ArgumentParser(
@@ -96,7 +104,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        added = ensure_provider(args.name)
+        added = ensure_provider(args.name, run=run)
     except (UnreadableProviderList, RuntimeError) as exc:
         print(f"error: {exc}")
         return 1

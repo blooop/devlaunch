@@ -124,3 +124,52 @@ def test_failed_listing_is_reported_rather_than_swallowed():
 def test_recorded_json_is_keyed_by_provider_name():
     """Pins the shape this parser depends on, against the real recording."""
     assert list(json.loads(REGISTERED)) == ["docker"]
+
+
+def test_a_listing_that_is_not_keyed_by_name_is_unreadable():
+    """devpod answering with valid JSON of the wrong shape is still an answer we
+    cannot read, not an answer that says "nothing registered"."""
+    with pytest.raises(devpod_provider.UnreadableProviderList):
+        devpod_provider.parse_provider_names('["docker"]')
+
+
+def test_cli_reports_a_provider_that_was_already_registered(capsys):
+    devpod = RecordedDevpod(REGISTERED)
+
+    assert devpod_provider.main(["docker"], run=devpod) == 0
+
+    assert "already registered" in capsys.readouterr().out
+    assert devpod.added == []
+
+
+def test_cli_reports_a_provider_it_added(capsys):
+    devpod = RecordedDevpod(NOTHING_REGISTERED)
+
+    assert devpod_provider.main(["docker"], run=devpod) == 0
+
+    assert "added" in capsys.readouterr().out
+    assert devpod.added == ["docker"]
+
+
+def test_cli_fails_loudly_when_devpod_cannot_be_read(capsys):
+    """The pixi task that calls this must stop, not carry on as if the provider
+    were missing -- that is the failure the guard exists to prevent."""
+    devpod = RecordedDevpod(COLOURISED_TABLE)
+
+    assert devpod_provider.main(["docker"], run=devpod) == 1
+
+    assert "error:" in capsys.readouterr().out
+    assert devpod.added == []
+
+
+def test_cli_fails_when_adding_the_provider_fails(capsys):
+    class FailingAdd(RecordedDevpod):
+        def __call__(self, cmd, **kwargs):
+            result = super().__call__(cmd, **kwargs)
+            if "add" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            return result
+
+    assert devpod_provider.main(["docker"], run=FailingAdd(NOTHING_REGISTERED)) == 1
+
+    assert "error:" in capsys.readouterr().out
