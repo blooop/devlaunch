@@ -19,6 +19,23 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.17] - 2026-08-08
+
+### Changed
+- `AGENTS.md` says which build to run inside this repo's devcontainer, instead of
+  leaving the host's two-install advice to be followed in a place it does not work.
+  There is one build in there and it is the checkout — the devcontainer installs it
+  editable at create time — so the answer is `pixi run dl` and `pixi run aid`, and
+  `./dev.sh` should not be run in there at all: it exits at its first check because
+  the container has no `uv`, which is the right outcome rather than a gap to fill.
+  The reason `pixi run` matters is which devpod `dl` finds. devpod injects its own
+  agent binary onto the bare `PATH` of every container it creates, so a devlaunch
+  installed outside the project environment finds a devpod when the container was
+  opened by devpod and none when it was opened by VS Code — intermittent by how you
+  got in. The project environment's devpod is present either way and is the version
+  the tree is pinned against. Nothing about `dl` on a host changes, and the two
+  builds the section already described are unaffected.
+
 ## [0.0.16] - 2026-08-08
 
 One fix, and it is the first of this run of releases that an ordinary `dl` user
