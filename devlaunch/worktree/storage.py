@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from devlaunch.xdg import devlaunch_cache
+
 from .models import BaseRepository, WorktreeInfo, unknown_fields
 
 # Version of the on-disk metadata.json format.
@@ -40,10 +42,7 @@ _ENTRY_ERRORS = (KeyError, TypeError, ValueError)
 
 def _get_default_metadata_path() -> Path:
     """Get the default metadata path, honoring XDG_CACHE_HOME."""
-    xdg_cache = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache:
-        return Path(xdg_cache) / "devlaunch" / "metadata.json"
-    return Path.home() / ".cache" / "devlaunch" / "metadata.json"
+    return devlaunch_cache() / "metadata.json"
 
 
 def _warn(message: str) -> None:
