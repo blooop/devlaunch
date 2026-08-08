@@ -7,6 +7,8 @@ from typing import Dict, Optional, Union
 
 import tomli
 
+from devlaunch.xdg import config_home
+
 
 def _get_cache_base() -> Path:
     """Get the base cache directory, honoring XDG_CACHE_HOME."""
@@ -86,8 +88,7 @@ class WorktreeConfig:
 
 def get_config_path() -> Path:
     """Get the path to the config file."""
-    config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return config_dir / "devlaunch" / "config.toml"
+    return config_home() / "devlaunch" / "config.toml"
 
 
 def load_config() -> Dict:

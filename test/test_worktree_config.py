@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 
-from devlaunch.worktree.config import WorktreeConfig
+from devlaunch.worktree.config import WorktreeConfig, get_config_path
 
 
 class TestWorktreeConfig:
@@ -122,3 +122,18 @@ class TestWorktreeConfig:
         assert config.fetch_interval == 3600
         assert config.auto_prune is True
         assert config.prune_after_days == 30
+
+
+class TestConfigPath:
+    """Which directory config.toml is looked for in."""
+
+    def test_the_variable_is_honoured_when_it_names_a_directory(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        assert get_config_path() == tmp_path / "devlaunch" / "config.toml"
+
+    def test_an_empty_value_means_unset_not_the_working_directory(self, monkeypatch):
+        """A shell that exports the variable with no value is not asking for a
+        relative path. Both readers go through devlaunch.xdg for this, so the
+        directory the gh warning names is the one the loader actually reads."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", "")
+        assert get_config_path() == Path.home() / ".config" / "devlaunch" / "config.toml"

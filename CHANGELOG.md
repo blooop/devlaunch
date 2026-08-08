@@ -19,9 +19,33 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.16] - 2026-08-08
+
+One fix, and it is the first of this run of releases that an ordinary `dl` user
+will notice: a launch that could not find a GitHub login used to say nothing about
+it. Nothing about how you install or run `dl` changes, and no workspace needs
+rebuilding.
+
+### Fixed
+- `dl` says so when it opens a workspace with no GitHub credentials. It forwards
+  the host's token into every workspace it launches, but each way of failing to
+  find one returned quietly, so the first sign of trouble was `gh` failing inside a
+  container that had already been built. Every such path now warns, naming what
+  went wrong and never printing the value it read. The `gh auth token` failure also
+  names the config directory it read, because the usual cause is a scratch run that
+  scoped `XDG_CONFIG_HOME` away from the host's login — for which `gh auth login`
+  is exactly the wrong remedy. Relatedly, the scratch-run recipe in `AGENTS.md` and
+  `dev.sh` no longer tells you to set `XDG_CONFIG_HOME`, which had been breaking
+  `gh auth token` on every run that followed it; the trade that recipe makes is now
+  written down rather than implied.
+
 ## [0.0.15] - 2026-08-08
 
-One change, to `aid` only: `dl` is untouched.
+Three changes. Only the `aid` one changes what a command does; the other two are to
+the test suite and the development tasks, and they matter most to anyone who runs
+them on their own machine — where, until now, doing so could cost them their
+workspaces. Those two are recorded here after the fact: they were merged into this
+release but were not described when it was cut.
 
 ### Changed
 - `aid` now starts `claude` with `--dangerously-skip-permissions`, so
@@ -45,6 +69,31 @@ One change, to `aid` only: `dl` is untouched.
   inside the container without asking. It cannot reach the host, but it can rewrite
   the checkout it is in, so treat an `aid` workspace as something to review before
   pushing rather than as a sandbox that will stop it for you.
+
+### Fixed
+- The test suite gets a devpod namespace of its own, so running the e2e suite on a
+  development machine can no longer delete that machine's real workspaces. The
+  suite exercises `dl --purge`, which lists every workspace devpod knows about and
+  force-deletes each one; run on a host rather than in a container, "every
+  workspace devpod knows about" was the developer's own. `pytest_configure` now
+  points `DEVPOD_HOME` and `DEVPOD_SSH_CONFIG` at a fresh per-run directory before
+  collection begins, so every devpod subprocess the session spawns — including the
+  one inside `--purge` — inherits a namespace with nothing of the user's in it.
+  Setting it before collection rather than in a fixture is deliberate: a fixture is
+  something a test has to ask for, and the test that must not forget is the one
+  nobody has written yet. The per-run directory is left behind rather than cleaned
+  up, since a deletion is the failure mode being designed out.
+- `pixi run dev`, its siblings and `test-e2e` work again. Their devpod provider
+  guard looked for `docker` in the output of `devpod provider list`, which prints a
+  colour-coded table; the escape sequence sits directly against the provider name,
+  so a word-boundary match never fired and the guard re-added a provider that was
+  already there, failing the task before any of its real work started. The guard
+  now asks devpod for `--output json` and reads the answer, rather than matching
+  against a rendering that is free to change again. In the same pass, an e2e test
+  that skipped when its workspace-creation step failed was leaving the container it
+  had already built running while reporting green — every e2e workspace now goes
+  through one helper that registers the workspace for cleanup before creation is
+  attempted, passes `--ide none`, and fails rather than skips.
 
 ## [0.0.14] - 2026-08-08
 

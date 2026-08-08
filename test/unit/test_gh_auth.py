@@ -1,5 +1,6 @@
 """Tests for forwarding the host's GitHub CLI credentials into workspaces."""
 
+import logging
 import os
 import pathlib
 import stat
@@ -24,6 +25,24 @@ def enable_forwarding(monkeypatch):
 
 def gh_result(stdout: str, returncode: int = 0) -> MagicMock:
     return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+
+
+def assert_reached_no_log_record(secret: str, caplog) -> None:
+    """A secret in scope must not reach a log record by any route.
+
+    Four layers, because no single one of them holds the line. A lazily
+    interpolated `warning("...: %s", token)` renders nothing into `record.msg`;
+    anything smuggled through `extra=` is invisible to both `getMessage()` and
+    `caplog.text`, and only shows up in the record's own attributes. Every site
+    that has a token or a maybe-credential in scope asserts through here, so the
+    strongest check is the one they all get.
+    """
+    for record in caplog.records:
+        assert secret not in record.getMessage()
+        assert secret not in str(record.msg)
+        assert secret not in repr(record.args)
+        assert secret not in repr(vars(record))
+    assert secret not in caplog.text
 
 
 @pytest.mark.unit
@@ -79,6 +98,81 @@ class TestResolveToken:
         assert gh_auth.resolve_token() == "gho_cached"
         assert gh_auth.resolve_token() == "gho_cached"
         assert mock_run.call_count == 1
+
+
+@pytest.mark.unit
+class TestFailuresAreVisible:
+    """A workspace must not open logged out without saying so."""
+
+    @patch("devlaunch.gh_auth.shutil.which", return_value="/usr/bin/gh")
+    @patch("devlaunch.gh_auth.subprocess.run", return_value=gh_result("", returncode=1))
+    def test_a_refusing_gh_warns_and_names_the_config_dir(
+        self, _mock_run, _mock_which, monkeypatch, caplog
+    ):
+        """Without the dir the message sends a logged-in user to `gh auth login`."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/dl-scratch/config")
+        with caplog.at_level(logging.WARNING):
+            assert gh_auth.resolve_token() is None
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        assert "/tmp/dl-scratch/config" in caplog.text
+
+    @patch("devlaunch.gh_auth.shutil.which", return_value="/usr/bin/gh")
+    @patch("devlaunch.gh_auth.subprocess.run", return_value=gh_result("", returncode=1))
+    def test_the_default_config_dir_is_named_when_the_variable_is_unset(
+        self, _mock_run, _mock_which, monkeypatch, caplog
+    ):
+        """An unscoped run still has to say which directory gh consulted."""
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        with caplog.at_level(logging.WARNING):
+            assert gh_auth.resolve_token() is None
+        assert str(pathlib.Path.home() / ".config") in caplog.text
+
+    @patch("devlaunch.gh_auth.shutil.which", return_value="/usr/bin/gh")
+    @patch(
+        "devlaunch.gh_auth.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("gh", 10),
+    )
+    def test_a_hung_gh_warns_before_the_workspace_opens(self, _mock_run, _mock_which, caplog):
+        with caplog.at_level(logging.WARNING):
+            assert gh_auth.resolve_token() is None
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+    @patch("devlaunch.gh_auth.shutil.which", return_value="/usr/bin/gh")
+    @patch(
+        "devlaunch.gh_auth.subprocess.run",
+        return_value=gh_result("error: sorry, ~SECRETish~ value here\n"),
+    )
+    def test_junk_on_stdout_warns_without_repeating_the_junk(self, _mock_run, _mock_which, caplog):
+        """Whatever gh printed may be a malformed credential; it must not be logged."""
+        with caplog.at_level(logging.DEBUG):
+            assert gh_auth.resolve_token() is None
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        assert_reached_no_log_record("~SECRETish~", caplog)
+
+    @patch("devlaunch.gh_auth.shutil.which", return_value=None)
+    def test_no_gh_installed_says_nothing(self, _mock_which, caplog):
+        """Not installing gh is a choice, not a failure; nagging about it is noise."""
+        with caplog.at_level(logging.WARNING):
+            assert gh_auth.resolve_token() is None
+        assert caplog.records == []
+
+    def test_opting_out_says_nothing_and_asks_gh_nothing(self, monkeypatch, caplog):
+        """The opt-out is the user's own instruction; announcing it back is noise."""
+        monkeypatch.setenv(gh_auth.DISABLE_VAR, "1")
+        with caplog.at_level(logging.WARNING):
+            with patch("devlaunch.gh_auth.subprocess.run") as mock_run:
+                assert gh_auth.resolve_token() is None
+        mock_run.assert_not_called()
+        assert caplog.records == []
+
+    @patch("devlaunch.gh_auth.shutil.which", return_value="/usr/bin/gh")
+    @patch("devlaunch.gh_auth.subprocess.run", return_value=gh_result("", returncode=1))
+    def test_one_dl_run_warns_once_however_often_it_asks(self, _mock_run, _mock_which, caplog):
+        """A run hands the token to both `devpod up` and `devpod ssh`."""
+        with caplog.at_level(logging.WARNING):
+            assert gh_auth.resolve_token() is None
+            assert gh_auth.resolve_token() is None
+        assert len(caplog.records) == 1
 
 
 @pytest.mark.unit
@@ -140,10 +234,32 @@ class TestUpArgs:
 
     @patch("devlaunch.gh_auth.resolve_token", return_value="gho_secret")
     @patch("devlaunch.gh_auth.tempfile.mkstemp", side_effect=OSError("No space left on device"))
-    def test_an_unusable_temp_dir_costs_the_login_not_the_launch(self, _mock_mkstemp, _mock_token):
+    def test_an_unusable_temp_dir_costs_the_login_not_the_launch(
+        self, _mock_mkstemp, _mock_token, caplog
+    ):
         """workspace_up has no exception handler above it on several paths."""
-        with gh_auth.up_args() as args:
-            assert args == []
+        with caplog.at_level(logging.DEBUG):
+            with gh_auth.up_args() as args:
+                assert args == []
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        assert_reached_no_log_record("gho_secret", caplog)
+
+    @patch("devlaunch.gh_auth.resolve_token", return_value="gho_secret")
+    def test_a_token_that_cannot_be_written_is_reported_not_swallowed(
+        self, _mock_token, caplog, monkeypatch
+    ):
+        """The file opens fine and the write is what fails; same cost, same warning."""
+
+        def fail_but_do_not_leak_the_fd(fd, *_args, **_kwargs):
+            os.close(fd)
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(gh_auth.os, "fdopen", fail_but_do_not_leak_the_fd)
+        with caplog.at_level(logging.DEBUG):
+            with gh_auth.up_args() as args:
+                assert args == []
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        assert_reached_no_log_record("gho_secret", caplog)
 
 
 @pytest.mark.unit

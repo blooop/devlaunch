@@ -245,6 +245,11 @@ something to be spent on whatever the image ships. Check a workspace with:
 dl <workspace> -- gh auth status
 ```
 
+If no token can be found, `dl` warns on stderr and opens the workspace anyway rather
+than failing — and the warning names the config directory `gh` consulted, because the
+usual cause is a shell that scoped `XDG_CONFIG_HOME` somewhere `gh` has no login,
+not a host that is actually logged out.
+
 ### Who gets the token
 
 Everything running in the container does — including a `postCreateCommand` from a

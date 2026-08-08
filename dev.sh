@@ -9,11 +9,16 @@
 # Editable, so `dl-next` is whatever the tree looks like right now — there is no
 # build step to forget, and equally no snapshot: a half-finished edit is live the
 # moment it is saved. Run it against throwaway state when that matters; dl
-# resolves everything it stores through XDG_CACHE_HOME and XDG_CONFIG_HOME, so
+# resolves everything it stores through XDG_CACHE_HOME, so
 #
-#   XDG_CACHE_HOME=/tmp/dl-scratch/cache XDG_CONFIG_HOME=/tmp/dl-scratch/config dl-next ...
+#   XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ...
 #
-# leaves the real workspace list alone.
+# leaves the real workspace list alone. Scope that variable only, as a trade
+# rather than a free simplification: a scratch XDG_CONFIG_HOME would also hide a
+# personal config.toml, which can pin repos_dir back at the real cache (which is
+# why test/conftest.py scopes both), but it hides the host's gh login too, so
+# every workspace opens with no GitHub credentials. The credential loss happens
+# on every run; the repos_dir hazard needs a config.toml most hosts do not have.
 
 set -e  # Exit on error
 
@@ -126,6 +131,7 @@ echo "  dl-next owner/repo@branch   # clone + DevPod workspace (specific branch)
 echo "  aid-next owner/repo@branch  # ...with a coding agent started in it"
 echo ""
 echo "Against throwaway state, leaving the real workspace list alone:"
-echo "  XDG_CACHE_HOME=/tmp/dl-scratch/cache XDG_CONFIG_HOME=/tmp/dl-scratch/config dl-next ..."
+echo "  XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ..."
+echo "  (that variable only -- a scratch XDG_CONFIG_HOME hides your gh login)"
 echo ""
 echo "Plain 'dl' and 'aid' remain the released build, untouched by this script."

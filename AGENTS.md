@@ -44,13 +44,21 @@ Two things to know about it:
   well as by name.
 - **It touches real state.** `dl` mutates `metadata.json`, the bare clone cache
   and live devpod workspaces, which is how a half-finished change costs someone
-  their workspace list. Everything it stores resolves through `XDG_CACHE_HOME`
-  and `XDG_CONFIG_HOME`, so point those at a scratch directory when the change
-  being tested is anywhere near storage:
+  their workspace list. Everything it stores resolves through `XDG_CACHE_HOME`,
+  so point that at a scratch directory when the change being tested is anywhere
+  near storage:
 
   ```
-  XDG_CACHE_HOME=/tmp/dl-scratch/cache XDG_CONFIG_HOME=/tmp/dl-scratch/config dl-next owner/repo
+  XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next owner/repo
   ```
+
+  **Only that one variable, and it is a trade rather than a free simplification.**
+  Scoping `XDG_CONFIG_HOME` too would guard one more thing — a personal
+  `config.toml` under it can pin `repos_dir` back at the real cache and beat
+  `XDG_CACHE_HOME` outright, which is why `test/conftest.py` scopes both — but it
+  also hides the host's `gh` login from `gh auth token`, so every workspace opens
+  with no GitHub credentials. The credential loss happens on every run; the
+  `repos_dir` hazard needs a `config.toml` most hosts do not have.
 
   That isolates the bookkeeping, not the machine — `dl` drives devpod and docker
   on the host either way, so the workspaces a scratch run creates are real ones
