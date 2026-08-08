@@ -95,6 +95,18 @@ class TestEachArmCarriesOnlyWhatItHas:
         """
         assert _listed(source).source == UnrecognisedSource(source)
 
+    @pytest.mark.parametrize("value", [{"str_of_a_dict": "is back"}, 7, ["/home/dev"], None])
+    @pytest.mark.parametrize("key", ["localFolder", "gitRepository"])
+    def test_a_key_whose_value_is_not_text_is_not_a_readable_source(self, key, value):
+        """Otherwise the sentinel comes back one level in.
+
+        `{"localFolder": {...}}` would build a `LocalFolder` whose `path` is a
+        dict -- the same dict-where-a-path-belongs this whole change removed --
+        and the two readers that treat it as a path raise `TypeError` on it.
+        An arm's field is only honest if the value going into it is checked.
+        """
+        assert _listed({key: value}).source == UnrecognisedSource({key: value})
+
     def test_a_source_carrying_both_keys_is_read_as_a_folder(self):
         """Key precedence, pinned. Nothing obligates it: a reader that misses an
         arm is a build failure, but the parser *produces* arms, and a producer
@@ -114,12 +126,15 @@ class TestARepoDevlaunchCannotReadIsReportedRatherThanSkipped:
     """
 
     def test_it_says_which_workspace_and_what_it_saw(self, caplog):
-        ws = _listed({"image": "ubuntu:24.04"}, workspace_id="from-an-image")
+        """Both halves are asserted on strings that appear nowhere else: the id
+        is `ws-42`, not something naming an image, so "it said what it saw" is
+        not satisfied by the id having leaked the word."""
+        ws = _listed({"image": "ubuntu:24.04"}, workspace_id="ws-42")
         with caplog.at_level(logging.WARNING):
             repos = discover_repos_from_workspaces([ws])
         assert repos == {}
-        assert "from-an-image" in caplog.text
-        assert "image" in caplog.text
+        assert "ws-42" in caplog.text
+        assert "ubuntu:24.04" in caplog.text
 
     def test_it_is_a_warning_and_not_a_debug_line_nothing_can_turn_on(self, caplog):
         """dl pins logging at INFO with no verbosity flag, so a debug line here

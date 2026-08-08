@@ -761,6 +761,17 @@ def _unhandled_source(source: NoReturn) -> NoReturn:
     raise AssertionError(f"Unhandled workspace source: {source!r}")
 
 
+def _readable_text(source: Mapping[str, Any], key: str) -> Optional[str]:
+    """*key* from *source* if devpod filled it with text, else None.
+
+    devpod's listing is JSON dl did not write, so `source[key]` is whatever the
+    JSON held. Returning None for anything else is what keeps the arms below
+    from being handed a value of a type their field does not describe.
+    """
+    value = source.get(key)
+    return value if isinstance(value, str) and value else None
+
+
 def parse_workspace_source(source: Mapping[str, Any]) -> WorkspaceSource:
     """Read one `devpod list --output json` source object.
 
@@ -768,21 +779,30 @@ def parse_workspace_source(source: Mapping[str, Any]) -> WorkspaceSource:
     carrying both is a devpod that has changed under us, and taking the first
     match keeps that from silently becoming the other one.
 
-    A key devpod left empty is a source dl cannot read, not a folder at the
-    empty path. That distinction is load-bearing rather than tidy: `git -C ""`
-    is a no-op that succeeds, so a `LocalFolder("")` reaching repo discovery
-    would be credited with whatever repository the person running `dl` happened
-    to be standing in.
+    An arm is only as honest as the value put into it, so a key has to be
+    non-empty text before it counts. Both halves of that are load-bearing rather
+    than tidy. `git -C ""` is a no-op that succeeds, so a `LocalFolder("")`
+    reaching repo discovery would be credited with whatever repository the
+    person running `dl` happened to be standing in. And a `localFolder` that is
+    itself an object would put a dict in a field typed as a path -- the exact
+    thing this type exists to make unrepresentable -- which the two readers that
+    treat it as a path raise `TypeError` on.
+
+    Neither is an unreadable *listing*, unlike a `source` that is not an object
+    at all: the object is right here and can be kept whole. It is a source dl
+    cannot read, which is an arm.
 
     Note this is the one link in the chain the type checker cannot stand in for
     a test. A *reader* that misses an arm is a build failure, but this is a
     producer, and a producer that quietly stops producing an arm type-checks
     fine -- so the arms it picks are pinned by tests instead.
     """
-    if source.get("localFolder"):
-        return LocalFolder(source["localFolder"])
-    if source.get("gitRepository"):
-        return GitRepository(source["gitRepository"])
+    path = _readable_text(source, "localFolder")
+    if path is not None:
+        return LocalFolder(path)
+    url = _readable_text(source, "gitRepository")
+    if url is not None:
+        return GitRepository(url)
     return UnrecognisedSource(dict(source))
 
 
