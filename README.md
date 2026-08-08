@@ -35,6 +35,13 @@ Note: When using pip, you must install [devpod](https://devpod.sh/docs/getting-s
 If `devpod` is not on `PATH`, every command that needs it prints a single install hint on stderr and exits `127`
 (the shell's "command not found" code). `dl --help` and `dl --version` keep working without it.
 
+A `devpod` that is installed but cannot answer is a different failure and gets a different exit code. If
+`devpod list` exits non-zero, or prints something that is not a `--output json` workspace listing, `dl` quotes
+what devpod said on stderr and exits `1` rather than reporting that you have no workspaces — so `dl --purge`
+stops instead of deleting caches it never checked. Shell completion is the deliberate exception: `dl --install`,
+`dl --refresh` and `dl --completion-data` log the failure and carry on with the repos and branches they can
+still discover on local disk, so an unreachable devpod costs you workspace-name completion and nothing more.
+
 ### Shell Completions
 
 After installation, set up shell completions for `dl` and `aid`:

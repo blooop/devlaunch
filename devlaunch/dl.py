@@ -292,8 +292,31 @@ def get_local_branches(owner_repo: str) -> List[str]:
 
 
 def update_completion_cache() -> Dict[str, Any]:
-    """Update the completion cache with current data."""
-    workspaces = list_workspaces()
+    """Update the completion cache with current data.
+
+    The one reader of the workspace list that has something to do with a listing
+    it cannot read. Everywhere else, an unreadable listing means the question
+    being asked cannot be answered at all, and UnreadableWorkspaceList travels
+    up to main() to say so. Here the workspace names are one of four things
+    being collected, and the other three -- repos, owners, branches -- come off
+    the local disk without asking devpod anything. So this catches, logs, and
+    builds completions out of what it can still see, deliberately: refusing
+    would mean an unreachable devpod stops `dl --install` from installing
+    completions at all, when what it costs is the workspace names.
+
+    The failure is logged rather than swallowed, because `dl --refresh` prints
+    the workspace count it got and zero-because-we-could-not-ask must not read
+    as zero-because-there-are-none. The cache this then writes offers no
+    workspace names until a later refresh succeeds -- which is what it did
+    before the listing learned to refuse -- and list_workspaces() still declines
+    to remember a list it never got, so the next command asks devpod again
+    instead of being served this one.
+    """
+    try:
+        workspaces = list_workspaces()
+    except UnreadableWorkspaceList as exc:
+        logging.warning(f"Completing without workspace names: {exc}")
+        workspaces = []
     workspace_ids = [ws.id for ws in workspaces]
     repos = discover_repos_from_workspaces(workspaces)
 
@@ -933,8 +956,14 @@ def parse_workspaces(listing: str) -> List[Workspace]:
     Anything that is not such a listing raises rather than parsing to nothing.
     That includes the empty string: devpod prints `[]` for a machine with no
     workspaces, so silence is devpod failing to answer, not devpod answering
-    that there is nothing to list.
+    that there is nothing to list. Silence gets a branch of its own rather than
+    falling into the JSON parser, whose report of it -- `not JSON: ''` -- reads
+    like a bug in dl rather than a devpod that never spoke.
     """
+    if not listing.strip():
+        raise UnreadableWorkspaceList(
+            "devpod said nothing when asked to list workspaces; it prints `[]` when there are none"
+        )
     try:
         parsed = json.loads(listing)
     except json.JSONDecodeError as exc:
@@ -984,8 +1013,11 @@ def list_workspaces(refresh: bool = False) -> List[Workspace]:
             return list(cached)
     result = run_devpod(["list", "--output", "json"], capture=True)
     if result.returncode != 0:
+        # !r for the same reason the parse path uses it: devpod's stderr is
+        # routinely several lines, and DEVPOD_MISSING_MESSAGE's comment sets the
+        # rule that one of dl's failure messages is one line.
         raise UnreadableWorkspaceList(
-            f"`devpod list` exited {result.returncode}: {(result.stderr or '').strip()[:200]}"
+            f"`devpod list` exited {result.returncode}: {(result.stderr or '').strip()[:200]!r}"
         )
     workspaces = parse_workspaces(result.stdout or "")
     _workspace_list_cache[_WORKSPACE_LIST_KEY] = workspaces

@@ -76,7 +76,8 @@ def list_provider_names(
     )
     if result.returncode != 0:
         raise UnreadableProviderList(
-            f"`devpod provider list` exited {result.returncode}: {(result.stderr or '').strip()[:200]}"
+            f"`devpod provider list` exited {result.returncode}: "
+            f"{(result.stderr or '').strip()[:200]!r}"
         )
     return parse_provider_names(result.stdout or "")
 
@@ -101,7 +102,7 @@ def ensure_provider(
     if result.returncode != 0:
         raise ProviderAddFailed(
             f"`devpod provider add {name}` exited {result.returncode}: "
-            f"{(result.stderr or '').strip()[:200]}"
+            f"{(result.stderr or '').strip()[:200]!r}"
         )
     return True
 
