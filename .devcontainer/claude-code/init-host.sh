@@ -13,5 +13,15 @@ mkdir -p "$HOME/.claude"
 #
 # -m 700 applies only to a directory this actually creates, so an existing
 # ~/.ssh keeps whatever permissions the developer gave it.
+#
+# The existence test is not a tidiness habit, it is what lets this container
+# build itself. Run from inside it -- which is the whole point of giving it a
+# Docker daemon -- $HOME/.ssh/known_hosts *is* the read-only mount, so a bare
+# touch fails with EROFS. This is the last command in the script, so the
+# script's exit status is its exit status, and a non-zero initializeCommand
+# aborts `devpod up` outright:
+#
+#   fatal run agent command failed: exit status 1
+#   devcontainer up: exit status 1
 mkdir -m 700 -p "$HOME/.ssh"
-touch "$HOME/.ssh/known_hosts"
+[ -e "$HOME/.ssh/known_hosts" ] || touch "$HOME/.ssh/known_hosts"

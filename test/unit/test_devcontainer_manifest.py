@@ -21,23 +21,58 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVCONTAINER_JSON = REPO_ROOT / ".devcontainer" / "devcontainer.json"
-INITIALIZE_COMMAND = REPO_ROOT / ".devcontainer" / "claude-code" / "init-host.sh"
 DIND_FEATURE = "ghcr.io/devcontainers/features/docker-in-docker:2"
 CONTAINER_SSH_DIR = "/home/vscode/.ssh"
 LOCAL_HOME = "${localEnv:HOME}"
+SSH_SOURCE_PREFIX = f"{LOCAL_HOME}/.ssh/"
 
 
 def parse_mount(spec: str) -> dict:
     """Read one `source=…,target=…,type=…` mount string into its fields.
 
-    Valueless words like `readonly` become keys with an empty value, so a
-    caller can ask whether a mount is read-only without a second parser.
+    Valueless words like `readonly` become keys mapped to the empty string, so
+    the question to ask of one is `"readonly" in mount` and never
+    `mount.get("readonly")` -- the latter is falsy for a flag that is present.
     """
     fields = {}
     for part in spec.split(","):
         key, _, value = part.partition("=")
         fields[key.strip()] = value.strip()
     return fields
+
+
+def ssh_file_mounts(mounts: list, agent_socket: str) -> list:
+    """The mounted ssh files the container only ever reads.
+
+    The agent socket is excluded everywhere it appears below, and always for the
+    same reason: it is owned by the developer's running ssh-agent rather than by
+    this repo. Nothing can create one, and connecting to one is a write.
+    """
+    return [
+        mount
+        for mount in mounts
+        if mount.get("source", "").startswith(SSH_SOURCE_PREFIX)
+        and mount.get("target") != agent_socket
+    ]
+
+
+def run_initialize_command(devcontainer: dict, home: Path) -> subprocess.CompletedProcess:
+    """Run the manifest's own `initializeCommand` against a scratch HOME.
+
+    Taken from the manifest rather than named here, so repointing or deleting
+    the hook is a test failure instead of a test that keeps passing about a
+    script nothing runs any more. Invoked the way a devcontainer runtime invokes
+    it -- through `sh -c`, from the workspace folder -- because that is what
+    decides whose exit status becomes the hook's.
+    """
+    return subprocess.run(
+        ["sh", "-c", devcontainer["initializeCommand"]],
+        cwd=REPO_ROOT,
+        env=dict(os.environ, HOME=str(home)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def strip_jsonc_comments(text: str) -> str:
@@ -155,7 +190,23 @@ def test_agent_socket_is_mounted_where_the_container_looks_for_it(devcontainer, 
     assert auth_sock in {mount.get("target") for mount in mounts}
 
 
-def test_initialize_command_creates_the_ssh_files_this_manifest_mounts(mounts, tmp_path):
+def test_the_ssh_files_the_container_reads_are_mounted_read_only(devcontainer, mounts):
+    """Nothing in the container may edit the developer's ssh files.
+
+    Stated over the mount list rather than about `known_hosts` by name, so a
+    fourth file cannot arrive writable. Read-only is not only a courtesy here:
+    it is what the test below has to survive.
+    """
+    agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
+    read_only = ssh_file_mounts(mounts, agent_socket)
+    assert read_only, "no ssh files are mounted, so this asserts nothing"
+    for mount in read_only:
+        assert "readonly" in mount, f"{mount['source']} is mounted writable"
+
+
+def test_initialize_command_creates_the_ssh_files_this_manifest_mounts(
+    devcontainer, mounts, tmp_path
+):
     """Every mounted ssh file exists before the container is asked to start.
 
     Docker creates nothing for a *file* bind source: a missing one aborts the
@@ -164,24 +215,54 @@ def test_initialize_command_creates_the_ssh_files_this_manifest_mounts(mounts, t
     The `initializeCommand` runs on the host first and is where that is fixed.
 
     Stated as a rule over the mount list rather than as one filename, so adding
-    a fourth ssh file cannot quietly reintroduce the abort. The agent socket is
-    the standing exception and the only one: it is owned by the developer's
-    running ssh-agent, and a script that fabricated it would be manufacturing
-    the absence of key forwarding rather than repairing it.
+    a fourth ssh file cannot quietly reintroduce the abort.
     """
-    env = dict(os.environ, HOME=str(tmp_path))
-    subprocess.run([str(INITIALIZE_COMMAND)], env=env, check=True)
+    agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
+    result = run_initialize_command(devcontainer, tmp_path)
+    assert result.returncode == 0, result.stderr
 
-    ssh_prefix = f"{LOCAL_HOME}/.ssh/"
-    agent_socket_sources = {
-        mount["source"] for mount in mounts if mount.get("target", "").endswith("/agent.sock")
-    }
-    for mount in mounts:
-        source = mount.get("source", "")
-        if not source.startswith(ssh_prefix) or source in agent_socket_sources:
-            continue
+    for mount in ssh_file_mounts(mounts, agent_socket):
+        source = mount["source"]
         created = tmp_path / source[len(f"{LOCAL_HOME}/") :]
         assert created.exists(), f"{source} is mounted but the initializeCommand does not create it"
+
+
+def test_initialize_command_leaves_ssh_files_that_already_exist_alone(
+    devcontainer, mounts, tmp_path
+):
+    """It creates what is missing and touches nothing else -- including mtimes.
+
+    This is what lets the container build itself. Run from *inside* it, which is
+    the whole point of giving it a Docker daemon, the ssh files the hook wants
+    to create are the read-only mounts, and writing to one fails with EROFS. The
+    hook's last command is its exit status, and a non-zero `initializeCommand`
+    aborts `devpod up` outright rather than degrading it -- so a hook that
+    rewrites a file it finds is a container that cannot start.
+
+    Asserted on modification times because a read-only filesystem is not
+    something a unit test can conjure, while "wrote to a file that was already
+    there" is exactly the behaviour that fails on one, and is observable
+    anywhere. A `touch` that bumps an mtime is the failing case.
+
+    The timestamps are set rather than read back, so the assertion does not
+    depend on the filesystem's clock resolution being finer than the gap
+    between two runs of a two-line script.
+    """
+    agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
+    run_initialize_command(devcontainer, tmp_path)
+
+    existing = [
+        tmp_path / mount["source"][len(f"{LOCAL_HOME}/") :]
+        for mount in ssh_file_mounts(mounts, agent_socket)
+    ]
+    assert existing, "no ssh files were created, so this asserts nothing"
+    for path in existing:
+        os.utime(path, ns=(0, 0))
+
+    result = run_initialize_command(devcontainer, tmp_path)
+    assert result.returncode == 0, result.stderr
+    for path in existing:
+        assert path.stat().st_mtime_ns == 0, f"the initializeCommand rewrote {path.name}"
 
 
 def test_devcontainer_registers_a_devpod_provider_for_its_own_daemon(devcontainer):

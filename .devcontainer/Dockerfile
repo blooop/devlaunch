@@ -16,8 +16,9 @@ RUN echo 'eval "$(pixi completion -s bash)"' >> /home/vscode/.bashrc \
     && echo '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"' >> /home/vscode/.profile
 
 # Somewhere for the two mounted ssh files to land, with the permissions ssh
-# insists on. The directory itself stays container-local and is meant to: what
-# devpod writes into it in here has no meaning anywhere else.
+# insists on. The directory around them is deliberately not mounted: what devpod
+# writes into it in here has no meaning anywhere else, so it should not outlive
+# the container.
 RUN mkdir -p /home/vscode/.ssh && chmod 700 /home/vscode/.ssh
 
 # Create .config/gh directory for GitHub CLI config mounts

@@ -21,6 +21,12 @@ read as *the block went somewhere else* rather than *no block was ever written*.
 
 It is safe against a real ssh config by construction: what it asserts is that
 nothing was written, so a passing run has written nothing.
+
+**Where this actually runs is a developer's machine, not CI.** A runner has no
+ssh agent, and this container cannot be built without one, so on `ubuntu-latest`
+the module declines at collection and the guard does not execute. That is worth
+knowing rather than assuming: what protects the ssh config in CI is that there
+is nothing there to protect.
 """
 
 import subprocess
@@ -36,8 +42,8 @@ HOST_SSH_DIR = Path.home() / ".ssh"
 HOST_SSH_CONFIG = HOST_SSH_DIR / "config"
 HOST_AGENT_SOCKET = HOST_SSH_DIR / "agent.sock"
 
-OUTER_WORKSPACE_ID = "e2e-ssh-isolation"
-NESTED_WORKSPACE_ID = "e2e-ssh-isolation-nested"
+OUTER_WORKSPACE_ID = "e2e-test-ssh-isolation"
+NESTED_WORKSPACE_ID = "e2e-test-ssh-isolation-nested"
 
 if not HOST_AGENT_SOCKET.exists():
     opt_out(
@@ -51,6 +57,22 @@ if not HOST_AGENT_SOCKET.exists():
 # a checkout whose `.git` is a worktree pointer -- which every worktree's is --
 # and it exits 128 on the dangling gitdir without ever opening a connection.
 REACH_GITHUB = "cd / && git ls-remote git@github.com:blooop/devlaunch.git HEAD"
+
+# The `initializeCommand` has to survive being run from *inside* a container it
+# built, because `devpod up` in here is the whole point of this container having
+# a Docker daemon -- and in here the ssh file that hook wants to create is the
+# read-only mount. A hook that writes to it exits non-zero, and a non-zero
+# `initializeCommand` aborts the create outright.
+#
+# Three claims, one exit status: the hook is where the manifest says; touching
+# the mounted file really does fail in here, so the middle line is ground truth
+# rather than a premise; and the hook succeeds anyway.
+SURVIVE_ITS_OWN_CONTAINER = """
+set -eu
+test -f .devcontainer/claude-code/init-host.sh
+! touch "$HOME/.ssh/known_hosts"
+sh -c .devcontainer/claude-code/init-host.sh
+"""
 
 # A nested workspace has one job here -- to make the devpod inside the container
 # write an ssh config block -- so it is the smallest image that can hold a
@@ -123,12 +145,15 @@ def test_abandoned_nested_workspace_cannot_reach_the_developers_ssh_config(devpo
     identities = in_container("ssh-add -l")
     assert identities.stdout.strip(), "the forwarded agent holds no identities"
     in_container(REACH_GITHUB)
+    in_container(SURVIVE_ITS_OWN_CONTAINER)
 
     in_container(NESTED_UP)
 
-    # The positive control: devpod really did write a block, in there.
-    written = in_container(f'grep -c "{NESTED_WORKSPACE_ID}.devpod" "$HOME/.ssh/config"')
-    assert int(written.stdout.strip()) > 0
+    # The positive control: devpod really did write a block, in there. grep's
+    # own exit status is the assertion -- it exits 1 on no match, and
+    # in_container turns that into a failure carrying the output. A count
+    # compared against zero here would be a line that can never be false.
+    in_container(f'grep "{NESTED_WORKSPACE_ID}.devpod" "$HOME/.ssh/config"')
 
     # Abandonment. The nested workspace is never deleted -- destroying its
     # container is what a developer closing a branch actually does, and it is
