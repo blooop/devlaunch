@@ -1,25 +1,108 @@
 name: Conda Publish
 
+# Chained off Auto-publish rather than triggered by `release: published`.
+#
+# Auto-publish creates the GitHub release with the default GITHUB_TOKEN, and
+# GitHub deliberately does not start new workflow runs from events raised that
+# way -- so the release trigger never once fired, and every conda package up to
+# 0.0.11 was published by hand. workflow_run is the documented way out: it fires
+# on the *workflow* finishing, not on the release event.
+#
+# The chain is also an ordering requirement, not just a convenience: the recipe
+# builds from `tag: v${{ version }}`, so the tag Auto-publish creates has to
+# exist before rattler-build can fetch the source.
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Auto-publish"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Force build even if version exists'
+        description: 'Force build even if the version did not change'
         required: false
         default: 'false'
         type: boolean
 
 jobs:
+  check:
+    name: Decide whether there is a release to build
+    runs-on: ubuntu-latest
+    # Auto-publish runs on every push to main and succeeds whether or not it
+    # published anything, so its success is not by itself a new release.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      should_publish: ${{ steps.decide.outputs.should_publish }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The commit Auto-publish ran on, plus its parent, so the version can
+          # be compared against what main held before the push.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 2
+
+      - name: Compare the packaged version with the previous commit
+        id: decide
+        run: |
+          set -euo pipefail
+          read_version() { sed -n 's/^version = "\(.*\)"/\1/p' "$1" | head -1; }
+
+          version=$(read_version pyproject.toml)
+          if [ -z "$version" ]; then
+            echo "could not read a version from pyproject.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.force_build }}" = "true" ]; then
+            echo "forced: building $version regardless of whether it changed"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git show HEAD^:pyproject.toml > /tmp/previous-pyproject.toml 2>/dev/null || : > /tmp/previous-pyproject.toml
+          previous=$(read_version /tmp/previous-pyproject.toml)
+
+          if [ "$version" = "$previous" ]; then
+            echo "version is still ${version:-unset}; nothing to publish"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "version went from ${previous:-none} to $version; publishing"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build conda package
+    needs: check
+    if: needs.check.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Wait for the release tag to exist
+        # Auto-publish pushes the tag inside the run that triggers this one, so
+        # it is normally already there. Retrying keeps a slow tag push from
+        # failing the build with a confusing rattler-build fetch error.
+        run: |
+          set -euo pipefail
+          tag="v${{ needs.check.outputs.version }}"
+          for attempt in $(seq 1 10); do
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "$tag exists"
+              exit 0
+            fi
+            echo "waiting for $tag (attempt $attempt)"
+            sleep 15
+          done
+          echo "$tag never appeared; the recipe builds from that tag, so stopping" >&2
+          exit 1
 
       - name: Build conda package
         uses: prefix-dev/rattler-build-action@v0.2.38
@@ -36,7 +119,7 @@ jobs:
 
   publish:
     name: Publish to prefix.dev
-    needs: build
+    needs: [check, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
