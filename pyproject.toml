@@ -22,7 +22,12 @@ platforms = ["linux-64"]
 [tool.pixi.dependencies]
 python = ">=3.10"
 shellcheck = ">=0.10.0,<0.11"
-devpod = ">=0.8.0,<0.9"
+# Match the devpod `dl` is actually installed alongside (pixi global ships
+# 0.26.x). The pin used to be <0.9, which quietly meant the suite exercised a
+# devpod five years of releases behind the one users run -- and it hid this
+# module's bug outright: 0.8 requests a pty for `devpod ssh --command` whenever
+# stdout is a terminal, and 0.26 never does. See devlaunch/tty_session.py.
+devpod = ">=0.26.1,<0.27"
 gh = ">=2.83.0,<3.0"
 
 [tool.pixi.feature.py310.dependencies]

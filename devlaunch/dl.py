@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, gh_auth
+from . import devpod_ssh, gh_auth, tty_session
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -1045,12 +1045,48 @@ def workspace_up(
     return result
 
 
+def run_ssh(args: List[str], env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+    """Run OpenSSH, dl's other way into a workspace.
+
+    Separate from run_devpod because it is a different binary with a different
+    failure mode, and because the pty transport has to be swappable in tests
+    without stubbing out every devpod call as well.
+
+    Takes the whole argv, `ssh` included, because tty_session composes a
+    complete command rather than a tail of flags -- unlike run_devpod, whose
+    callers each build up their own subcommand.
+
+    Security note: list form, not shell=True, so nothing in the payload is
+    interpreted by a host shell.
+    """
+    logging.debug("Running: %s", " ".join(args))
+    try:
+        # nosec B603 B607 - list form, not shell=True; no command injection risk
+        return subprocess.run(list(args), check=False, env=env)
+    except FileNotFoundError as e:
+        raise DevpodNotInstalled(
+            "openssh is needed to give a workspace command a terminal. "
+            f"Install it, or set {tty_session.DISABLE_VAR}=1 to fall back to devpod."
+        ) from e
+
+
 def workspace_ssh(
     workspace: str,
     command: Optional[str] = None,
     workdir: Optional[str] = None,
 ) -> int:
     """SSH into a workspace, optionally running a command.
+
+    A command runs through whichever of the two transports can give it what it
+    needs. devpod's --command never requests a pty, which is fine for `make
+    test` and fatal for anything interactive -- `claude` reads the pipe as a
+    non-interactive invocation and exits instead of starting a session. So when
+    dl is itself on a terminal, the command goes to OpenSSH through the host
+    alias devpod published, with -t (see tty_session). Otherwise, and when no
+    alias exists, it goes to devpod as before.
+
+    A bare attach is left on devpod: it already gets a pty, being the one case
+    devpod requests one for.
 
     Args:
         workspace: The workspace ID to SSH into
@@ -1060,10 +1096,6 @@ def workspace_ssh(
             if given a path that doesn't exist in the container, so never guess
             one from the workspace id.
     """
-    args = ["ssh", workspace]
-
-    if workdir:
-        args.extend(["--workdir", workdir])
     if command:
         # devpod runs --command under a non-login, non-interactive `bash -c`,
         # which sources neither ~/.profile nor ~/.bashrc -- so PATH entries the
@@ -1071,7 +1103,23 @@ def workspace_ssh(
         # dies with "command not found". An interactive attach gets a login
         # shell, so wrap here to give both paths the same PATH. dl launches
         # arbitrary repos, so the parity has to come from the invocation rather
-        # than from any particular devcontainer.json.
+        # than from any particular devcontainer.json. Both transports send the
+        # same wrapped payload, so the command sees one environment either way.
+        payload = f"bash -lc {shlex.quote(command)}"
+        if tty_session.have_terminal():
+            if tty_session.devpod_host_configured(workspace):
+                return _ssh_with_terminal(workspace, payload, workdir)
+            logging.warning(
+                "No devpod ssh host entry for %s, so this command gets no terminal; "
+                "interactive programs may exit immediately. `dl %s restart` republishes it.",
+                workspace,
+                workspace,
+            )
+
+    args = ["ssh", workspace]
+    if workdir:
+        args.extend(["--workdir", workdir])
+    if command:
         args.extend(["--command", f"bash -lc {shlex.quote(command)}"])
 
     # Attaching to a running workspace skips workspace_up, so the gh login has
@@ -1095,6 +1143,14 @@ def workspace_ssh(
             return exit_code
         case _ as unhandled:
             devpod_ssh.assert_never(unhandled)
+
+
+def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> int:
+    """Run an already-wrapped payload under a pty via OpenSSH."""
+    env_names, env = gh_auth.openssh_env_names_and_env()
+    args = tty_session.ssh_command_args(workspace, payload, send_env=env_names, workdir=workdir)
+    logging.info("SSH command: %s", " ".join(args))
+    return run_ssh(args, env=env).returncode
 
 
 def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
