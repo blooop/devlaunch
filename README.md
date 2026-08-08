@@ -430,10 +430,17 @@ pixi run style
 `pixi run test` skips the e2e tests, which need devpod and a Docker daemon and
 build real containers. CI runs `pixi run test-e2e` in a job of its own, outside
 the Python matrix, on a throwaway runner — on every push to `main` and on every
-pull request that targets `main`. A pull request onto any other base runs no CI
-at all, e2e included, because the whole workflow is triggered by
-`pull_request: branches: [main]`; that gap covers every job here rather than
-this one, and stacked PRs are what walk into it.
+pull request, whatever branch that pull request targets. Stacked chains, where
+each link targets its predecessor rather than `main`, get the same CI as anything
+else.
+
+Alongside the matrix and e2e there is a `gate` job that does nothing but fail
+unless all of them succeeded. It exists so that a branch ruleset has a single
+name to require: requiring the jobs one by one means a list of literal strings
+in a repository setting, which nobody reviews and which goes stale the moment a
+job here is added or renamed — and a required check that no longer exists does
+not turn a merge red, it stops gating it. Adding a job to this workflow means
+adding it to `gate`'s `needs`, in the same pull request, where it can be seen.
 
 Running it yourself is a different proposition. This repo's devcontainer carries
 a Docker daemon of its own, through the `docker-in-docker` feature, and pins the

@@ -3,8 +3,19 @@ name: CI
 on:
   push:
     branches: [ "main" ]
+  # Every pull request, whatever its base -- note the absence of a `branches:`
+  # filter here, which is deliberate and is the difference between this workflow
+  # gating a change and only appearing to.
+  #
+  # A filter on `pull_request` matches the *base* branch, not the head. This had
+  # `branches: [ "main" ]`, so a pull request onto any other base did not trigger
+  # a run at all -- not a pending one, not a skipped one, none. That is precisely
+  # the shape this repository's `/stack` workflow produces: a chain in which every
+  # link but the last targets its predecessor, so every link but the last merged
+  # with nothing behind it. A `push` filter is the opposite case and stays: it
+  # matches the branch pushed to, and every branch here reaches `main` through a
+  # pull request that is now covered.
   pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -56,9 +67,8 @@ jobs:
   # job, so excluding only pull requests would leave this one running on every
   # merge as well as on the schedule.
   #
-  # Like every job here, it runs on pushes to `main` and on pull requests
-  # targeting `main`. A pull request onto any other base -- a stacked one --
-  # triggers this workflow not at all.
+  # Like every job here, it runs on pushes to `main` and on every pull request
+  # whatever its base, stacked chains included.
   e2e:
     runs-on: ubuntu-latest
     # A registry serving this suite's 1.25 GB fixture image at 640 B/s is not
