@@ -778,8 +778,6 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
     and what a purge actually destroys answering to the same directory, and
     `--purge` names what it leaves rather than passing over it in silence.
     """
-    if workspace.source_type != "local":
-        return False
     source = pathlib.PurePath(workspace.source)
     # Purely lexical, so a clone whose directory has already been removed is
     # still recognisable from the source devpod kept.

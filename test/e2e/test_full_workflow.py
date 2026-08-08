@@ -308,12 +308,19 @@ class TestPurgeE2E:
             cwd=os.getcwd(),
         )
 
-        assert purge_result.returncode == 0
-        assert f"Deleting DevPod workspace: {mine}" in purge_result.stdout
-        assert f"Deleting DevPod workspace: {theirs}" not in purge_result.stdout
+        # The output goes in every message: `--purge` reports what it deleted,
+        # what it left and what it could not remove on stdout, and a bare rc
+        # comparison says only that something somewhere went wrong.
+        report = (
+            f"`dl --purge -y` exited {purge_result.returncode}\n"
+            f"stdout: {purge_result.stdout}\nstderr: {purge_result.stderr}"
+        )
+        assert purge_result.returncode == 0, report
+        assert f"Deleting DevPod workspace: {mine}" in purge_result.stdout, report
+        assert f"Deleting DevPod workspace: {theirs}" not in purge_result.stdout, report
         # Named rather than silently passed over.
-        assert "did not create" in purge_result.stdout
-        assert theirs in purge_result.stdout
+        assert "did not create" in purge_result.stdout, report
+        assert theirs in purge_result.stdout, report
 
         listed_after = workspace_ids()
         assert mine not in listed_after
