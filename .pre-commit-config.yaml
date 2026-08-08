@@ -36,7 +36,11 @@ repos:
       #   args: ['--autofix']  
       - id: debug-statements
       - id: end-of-file-fixer
+        # Recordings of what devpod actually printed. Their value is that
+        # they are byte-for-byte; a hook that tidies them edits the evidence.
+        exclude: ^test/fixtures/devpod/
       - id: mixed-line-ending
+        exclude: ^test/fixtures/devpod/
       # - id: trailing-whitespace
       - id: fix-byte-order-marker
 

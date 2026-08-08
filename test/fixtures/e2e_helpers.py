@@ -190,3 +190,46 @@ def devpod_cleanup():
     tracker = WorkspaceTracker()
     yield tracker
     tracker.cleanup()
+
+
+def create_e2e_workspace(
+    source: str,
+    workspace_id: str,
+    *,
+    cleanup,
+    env: Optional[Dict[str, str]] = None,
+    run=subprocess.run,
+) -> subprocess.CompletedProcess:
+    """Create the workspace an e2e test needs, or fail the test saying why.
+
+    Every e2e workspace goes through here, because the two ways of getting this
+    wrong are only visible when the creation step is written out by hand:
+
+    - **No IDE, ever.** devpod's default is to open an editor once the workspace
+      is up. On a headless machine that means `xdg-open` is missing, devpod
+      exits 1, and the workspace it already built is left running with the
+      caller convinced nothing happened.
+    - **Registered for cleanup before creation is attempted, not after.**
+      Registering afterwards registers only on the happy path, which is the one
+      path that did not need it.
+
+    A non-zero rc fails rather than skips. `pytest.skip` on a step the test
+    cannot proceed without turns a real outcome -- a leak, a broken daemon, a
+    misconfigured provider -- into a green run with a line of grey text.
+    """
+    cleanup.track(workspace_id)
+    result = run(
+        ["devpod", "up", source, "--id", workspace_id, "--ide", "none"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"devpod up exited {result.returncode} creating workspace {workspace_id!r} "
+            f"from {source!r}; it is registered for cleanup either way.\n"
+            f"stdout: {(result.stdout or '').strip()[-2000:]}\n"
+            f"stderr: {(result.stderr or '').strip()[-2000:]}"
+        )
+    return result
