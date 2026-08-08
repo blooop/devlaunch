@@ -14,6 +14,7 @@ Run these tests with:
 import json
 import os
 import subprocess
+import pathlib
 from pathlib import Path
 
 import pytest
@@ -335,18 +336,40 @@ class TestPurgeE2E:
         assert theirs in listed_after, report
 
         # The cache half of the purge is a different subject, and on a runner it
-        # fails for a reason that has nothing to do with which workspaces are
-        # devlaunch's. The container writes into the bind-mounted clone as its
-        # own user -- `vscode`, uid 1000 in the fixture image -- and where that
-        # is not the uid running the suite (`runner` is 1001), `shutil.rmtree`
-        # hits EACCES on a directory it owns no part of and cannot chmod. That
-        # is a pre-existing defect in `purge_all_data`, unrelated to this diff
-        # and not fixable from inside the process; measured here rather than
-        # inferred, and reported. `test_purge_cleans_cache` covers the cache
-        # half against a cache no container has touched. Any *other* non-zero
-        # exit is this test's to fail on.
+        # cannot fully succeed for a reason that has nothing to do with which
+        # workspaces are devlaunch's. The container writes into the bind-mounted
+        # clone as its own user -- `vscode`, uid 1000 in the fixture image --
+        # and where that is not the uid running the suite (`runner` is 1001),
+        # the clone directory cannot be emptied from out here at all. Not
+        # fixable from inside the process; #131 settled what to do about it
+        # instead. `test_purge_cleans_cache` covers the cache half against a
+        # cache no container has touched.
+        #
+        # This is the only place the real shape of that failure is under test:
+        # every entry in the clone refuses separately, because unlinking needs
+        # write permission on the directory rather than on the file, and no unit
+        # test builds a directory owned by another user. So the assertion is
+        # that the report is the *directory*, once -- the version of this that
+        # merely checked for a non-zero exit passed while stdout carried
+        # forty-odd lines of `.git/objects`.
         if purge_result.returncode != 0:
-            assert "Error removing" in purge_result.stdout, report
+            heading = [i for i, line in enumerate(printed) if line.endswith("These refused:")]
+            assert len(heading) == 1, report
+            named = []
+            for line in printed[heading[0] + 1 :]:
+                if not line.startswith("  - "):
+                    break
+                named.append(line[4:].split(": ")[0])
+            # One line, at or above the clone -- not `== [str(clone)]`. Which
+            # level is blamed depends on which directories devpod chowned, and
+            # betting on `clone` exactly would fail a correct purge if it turns
+            # out to be `clone/.git`. The claim under test is that forty-odd
+            # entries collapse to the directory, and that survives either way.
+            assert len(named) == 1, report
+            assert clone == pathlib.Path(named[0]) or pathlib.Path(named[0]).is_relative_to(
+                clone
+            ), report
+            assert "sudo rm -rf" in purge_result.stdout, report
 
     def test_purge_cleans_cache(self, isolated_devlaunch_env):
         """Test that --purge -y removes the cache directory."""

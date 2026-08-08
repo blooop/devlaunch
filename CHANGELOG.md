@@ -19,6 +19,84 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.23] - 2026-08-08
+
+### Fixed
+
+- `dl --purge` no longer abandons the whole cache when one directory refuses to
+  be removed ([#131](https://github.com/blooop/devlaunch/issues/131)). A
+  container writes into its bind-mounted clone as its own user — uid 1000 in the
+  standard devcontainer base image — so where the host user is not also uid 1000
+  (CI, a shared machine, a container running as root, devlaunch developed inside
+  its own devcontainer) those directories cannot be emptied by the host. The
+  purge used `shutil.rmtree`, which stops at the first failure, so a single
+  unremovable clone left the completion caches, `metadata.json` and every other
+  clone standing, and reported an errno.
+
+  It now removes everything it is permitted to and names the paths that refused,
+  with the command that finishes the job. Exit status is still `1` — a clone the
+  user was told would go is still on disk — but the report distinguishes
+  "removed most of it" from "removed none of it", which an exit code cannot.
+
+  Only paths that actually obstructed are listed, and the obstruction is not
+  the path that raised. Unlinking needs write permission on the *directory*,
+  not on the file, so a clone owned by the container's user refuses every one
+  of its children separately — on a real e2e workspace that was forty-odd
+  `.git/objects` entries, hooks and a README, none an ancestor of another and
+  all of them the same single fact. A failure is attributed upward to the
+  outermost directory that cannot be written into, which is the directory the
+  original errno named, so that clone is now one line.
+
+  Found by the `e2e` job on the first attempt at this fix, which no unit test
+  could have caught: a directory owned by *another user* is not something a
+  test process can build.
+
+  A symlinked cache root is refused rather than followed, naming what it points
+  at. `os.walk`'s `followlinks=False` governs subdirectories only — the top is
+  always scanned — so a hand-rolled walk descends a symlinked
+  `~/.cache/devlaunch`, empties whatever it points at, and reports a clean
+  sweep. `shutil.rmtree` refuses that outright, and losing the refusal turned it
+  into a silent recursive delete outside the named directory.
+
+  Unlinking just the link was tried first and is also wrong: the clones are
+  still on the other volume and the purge says `Removed`. A cache root is a
+  symlink because somebody moved their cache, so following it and unlinking it
+  cost them the same thing by opposite routes — one deletes the workspaces, the
+  other reports them gone. Refusing is the only one of the three that is not a
+  lie, and `sudo rm -rf <cache>` would remove the link and nothing else, so the
+  reason carries the real location. Both found in review; there had been no
+  symlink coverage at all.
+
+  Each refusal now carries what the system actually said, and the advice is
+  offered rather than asserted. The old report claimed "Written by a container
+  running as a different user" unconditionally without ever looking at the
+  errno — false for a read-only mount, `chattr +i` or a busy mountpoint, none of
+  which `sudo rm -rf` fixes either. That path is also `shlex.quote`d now: it is
+  handed to a person to paste into `sudo rm -rf`, and `$XDG_CACHE_HOME` with a
+  space in it made that two targets, the first of them wrong.
+
+  "Cannot look at it" is no longer read as "it is gone". A cache whose parent
+  directory could not be traversed came out as `No data to purge.` and exit 0
+  with the cache fully intact. `Path.exists()` is what could not tell the two
+  apart, and it is not consistent about how it fails to: it returns False on
+  Python 3.14 and raises `PermissionError` on 3.13, so the old check answered
+  wrongly on one version and crashed on the next. Presence and symlink-ness now
+  come from a single `os.lstat`, where the three outcomes are distinguishable.
+
+  Two *separately* unwritable directories on one path are reported as two lines.
+  Clearing the inner one leaves the outer one just as stuck, so each is work
+  somebody has to do, and the earlier "ancestors are never listed" wording
+  described neither the code nor what is useful.
+
+  What a purge reports is decided from the disk once the walk is over, rather
+  than from what raised during it. Randomised trees found why that matters:
+  `os.walk` cannot scan an unlistable directory and says so, but if that
+  directory is empty the `rmdir` afterwards succeeds — so reporting at the point
+  of raising named a path that is not there, and through the ancestor rule could
+  have silenced a genuine refusal above it. Deciding afterwards makes both
+  invariants — nothing survives unsaid, nothing is said that is not there — hold
+  by construction.
+
 ## [0.0.22] - 2026-08-08
 
 ### Changed

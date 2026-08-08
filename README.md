@@ -375,6 +375,48 @@ Erring this way is deliberate — a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
 
+#### When part of the cache will not go
+
+A container writes into its clone as its own user — `vscode`, uid 1000, in the
+standard devcontainer base image. Where your host user is uid 1000 too, nothing
+here comes up. Where it is not — CI, a shared machine, a container running as
+root, or devlaunch developed inside its own devcontainer — the directories the
+container made cannot be emptied by you, and the purge cannot remove them.
+
+It removes everything else anyway, and names what is left:
+
+```
+$ dl --purge -y
+Removed what was permitted under /home/you/.cache/devlaunch. These refused:
+  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-main-kivagede: Permission denied
+
+Usually this means a container wrote them as a different user, and:
+  sudo rm -rf '/home/you/.cache/devlaunch'
+clears them. Check the reasons above first -- it does not fix all of them.
+```
+
+Exit status is `1`, because a clone you were told would go is still on disk. It
+used to be `1` with the *whole* cache still standing: the first refusal stopped
+the purge, so the completion caches, `metadata.json` and every other clone
+survived on account of one directory.
+
+What is listed is the directory, once — not the hundreds of files inside it.
+Unlinking needs write permission on the directory rather than on the file, so
+every entry in that clone refuses separately and they are all the same fact.
+Two *separately* unwritable directories on one path are two lines, though,
+because clearing the inner one would leave the outer one just as stuck.
+
+Each line carries what the system actually said. A container running as another
+user is the common cause, but a read-only mount, `chattr +i` and a busy
+mountpoint all land here too — and `sudo rm -rf` does not fix those, which is
+why the report offers the cause rather than asserting it.
+
+If you have **moved your cache** by making `~/.cache/devlaunch` a symlink, a
+purge refuses it and names the target rather than following it. Remove the real
+directory yourself if you meant to: following the link would empty a directory
+you never named, and removing just the link would report a clean sweep while
+your clones sat on the other volume.
+
 ### Cleaning up workspaces
 
 One workspace per branch means workspaces accumulate, and `--purge` is the wrong

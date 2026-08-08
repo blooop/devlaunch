@@ -22,9 +22,11 @@ import sys
 import subprocess
 import json
 import logging
+import os
 import pathlib
 import re
 import shlex
+import stat
 import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
 from pathlib import Path
@@ -502,6 +504,199 @@ def workspaces_as_json() -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class Refusal:
+    """One path a removal could not remove, and what the system said about it.
+
+    The reason is carried rather than reconstructed because the cause is not
+    guessable from the path. A container writing as another user is the common
+    one and the one devlaunch#131 is about, but a read-only mount, an immutable
+    file and a busy mountpoint all reach here too -- and for the last two the
+    advice that fixes the common case does not work. Printing what the errno
+    said keeps the report honest about which it is.
+    """
+
+    path: pathlib.Path
+    reason: str
+
+
+def _why(error: OSError) -> str:
+    """What the system said, in the words it used."""
+    return error.strerror or str(error)
+
+
+def _present(path: pathlib.Path) -> bool:
+    """Whether *path* is there, where "cannot tell" counts as there.
+
+    Only `FileNotFoundError` means there is nothing to do. Any other refusal --
+    an unreadable parent directory, say -- means something is there that this
+    process cannot look at, and treating that as absent is how a purge reports
+    a clean sweep over an intact cache.
+
+    `Path.exists()` cannot make that distinction and is not consistent about
+    which way it fails: it returns False for an unreadable parent on some Python
+    versions and raises PermissionError on others, so the code it replaced here
+    answered wrongly on one and crashed on the next. Symlinks count as present
+    whether or not they resolve, because the link itself is a thing to remove.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
+    """Remove *tree* and everything under it. Returns what refused, and why.
+
+    `shutil.rmtree` is the obvious way to do this and is the wrong one here,
+    because it stops at the first failure. A container writes into its
+    bind-mounted clone as its own user -- uid 1000 in the standard devcontainer
+    base image -- and where the host user is not also uid 1000 the directories
+    it made cannot be emptied by us. That is one clone out of a cache full of
+    them, and abandoning the other clones, the completion caches and
+    metadata.json on account of it is a worse outcome than the permission error
+    (devlaunch#131). So this keeps going, and the refusals are the return value
+    rather than an exception.
+
+    **Only the obstruction is named**, which is not the same as the path that
+    raised. Unlinking needs write permission on the *directory*, not on the
+    file, so a clone directory owned by the container's user refuses every one
+    of its children separately -- on a real e2e workspace that is forty-odd
+    `.git/objects` entries, hooks and a README, none of them an ancestor of
+    another and every one of them the same single fact. So a failure is
+    attributed upward to the outermost directory that cannot be written into,
+    which is the directory the original errno named and the one a person would
+    go and look at.
+
+    A path is then suppressed when something already reported accounts for it:
+    a directory that cannot be removed because a child refused adds nothing. A
+    *separately* sealed ancestor is not suppressed and should not be, because
+    fixing the one below it would not free it -- so a chain of two sealed
+    directories is two lines, and each is work somebody has to do.
+
+    **What refused is decided from the disk, not from what raised.** A failure
+    during the walk is only a candidate; the report keeps the ones still on disk
+    when it is over. Both suppression rules are then applied to that surviving
+    list, so a path that vanished after failing can neither be reported nor
+    suppress the report of something real.
+
+    That is not a belt-and-braces check, it is load-bearing, and randomised
+    trees found the case: `os.walk` cannot scan an unlistable directory and says
+    so, but if that directory is *empty* the `rmdir` afterwards succeeds. Noting
+    it when it raised named a path that is not there, and -- through the
+    ancestor rule -- could have silenced a genuine refusal above it, which is
+    the one failure direction that matters here.
+
+    An empty result means the tree is gone, including when it was never there:
+    a purge run twice is not a failure the second time.
+    """
+    # One lstat, three outcomes, none of them inferred. `Path.exists()` and
+    # `Path.is_symlink()` cannot be used here: they answer False for a path this
+    # process was not allowed to look at on some Python versions and raise
+    # PermissionError on others, and neither of those is "there is nothing to
+    # remove".
+    try:
+        info = os.lstat(tree)
+    except FileNotFoundError:
+        return ()
+    except OSError as error:
+        # Something is there that we are not allowed to look at. Saying so is
+        # the whole point; calling it gone is the failure this guards.
+        return (Refusal(tree, _why(error)),)
+
+    # A symlinked root is refused, which is what `shutil.rmtree` did and is the
+    # only one of the three available answers that is not a lie.
+    #
+    # `os.walk`'s `followlinks=False` governs *subdirectories*; the top is
+    # always scanned. So following it empties a directory the caller never
+    # named. Unlinking just the link is no better and is worse to diagnose: the
+    # clones are still on the other disk and the purge says "Removed". A cache
+    # root is a symlink because somebody moved their cache, so both of those
+    # answers cost them their workspaces -- one by deleting them, one by telling
+    # them they are gone.
+    #
+    # Naming the target matters: `sudo rm -rf <cache>` would remove the link and
+    # nothing else, so the reader needs the real location to act on.
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            points_at = f" to {os.readlink(tree)}"
+        except OSError:
+            points_at = ""
+        return (Refusal(tree, f"is a symbolic link{points_at}, which a purge will not follow"),)
+
+    failed: List[Refusal] = []
+
+    def obstruction(path: pathlib.Path) -> pathlib.Path:
+        """The outermost path that actually explains a failure to remove *path*.
+
+        `os.access` is advisory -- it answers for the real uid and knows nothing
+        about ACLs -- and that is acceptable precisely here, because it only
+        decides *which* path is named. A wrong answer makes the report less
+        pointed; it can never turn a refusal into a success.
+
+        `path.parent != path` bounds the walk at the filesystem root as well as
+        at *tree*. Nothing reaches here from outside *tree* today; the guard is
+        so that a future caller that does gets a wrong answer rather than a
+        hung purge.
+        """
+        while path != tree:
+            parent = path.parent
+            if parent == path:
+                break  # the filesystem root: there is nothing above to blame
+            if os.access(parent, os.W_OK | os.X_OK):
+                break  # this one is reachable, so *path* is where it stops
+            path = parent
+        return path
+
+    def unreadable(error: OSError) -> None:
+        # os.walk reports a directory it could not scan here and then carries on
+        # as though it were empty. Without this, an unlistable directory holding
+        # files would be walked as though it held none.
+        if error.filename:
+            failed.append(Refusal(pathlib.Path(error.filename), _why(error)))
+
+    def remove(path: pathlib.Path) -> None:
+        try:
+            # A symlink is unlinked, never followed -- descending one would put
+            # a purge outside the cache directory it was asked to remove.
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+            else:
+                path.unlink()
+        except OSError as error:
+            failed.append(Refusal(path, _why(error)))
+
+    # Bottom-up, so a directory is only attempted once its contents have been.
+    for parent, dirs, files in os.walk(tree, topdown=False, onerror=unreadable):
+        here = pathlib.Path(parent)
+        for name in files:
+            remove(here / name)
+        for name in dirs:
+            remove(here / name)
+    # The root is in nobody's `dirs`, so it is removed by name.
+    remove(tree)
+
+    # Bottom-up order is what the ancestor rule needs, and `failed` is already
+    # in it.
+    refused: List[Refusal] = []
+    blocked = set()
+    for candidate in failed:
+        # _present, not `exists()`: a path this process cannot look at must be
+        # reported, not dropped. Dropping it is how the filter that exists to
+        # prevent phantom refusals would have started causing silent ones.
+        if not _present(candidate.path):
+            continue  # it went in the end, so there is nothing to report
+        path = obstruction(candidate.path)
+        if path not in blocked:
+            refused.append(Refusal(path, candidate.reason))
+            blocked.add(path)
+        blocked.add(path.parent)
+    return tuple(refused)
+
+
 def purge_all_data() -> int:
     """Purge devlaunch's data: the workspaces it created, and its caches.
 
@@ -514,9 +709,11 @@ def purge_all_data() -> int:
     Workspaces devlaunch did not create are not deleted and not reported here;
     the report belongs with the confirmation, before anything is destroyed, so
     it lives in main() where the user still has a decision to make.
-    """
-    import shutil
 
+    A cache that does not come away completely is reported rather than raised:
+    see remove_tree for why it is removed as far as it goes, and the exit code
+    below for what that leaves the caller to say.
+    """
     cache_dir = _get_cache_dir()
 
     # First, delete the DevPod workspaces devlaunch made. The list is the same
@@ -533,19 +730,38 @@ def purge_all_data() -> int:
     if owned.mine:
         invalidate_workspace_list_cache()
 
-    # Then remove local cache
-    if not cache_dir.exists():
+    # Then remove local cache. See _present for why this is not `exists()`: a
+    # cache that is there but unreachable must be reached for, not reported as
+    # nothing to do.
+    if not _present(cache_dir):
         if not owned.mine:
             print("No data to purge.")
         return 0
 
-    try:
-        shutil.rmtree(cache_dir)
+    refused = remove_tree(cache_dir)
+    if not refused:
         print(f"Removed: {cache_dir}")
         return 0
-    except OSError as e:
-        print(f"Error removing {cache_dir}: {e}")
-        return 1
+
+    # Not 0: a clone the user was told would go is still on disk. Not silent
+    # either -- an exit code cannot distinguish "removed most of it" from
+    # "removed none of it", and the difference is the whole news, so the report
+    # carries it and the exit code only says the job is unfinished.
+    print(f"Removed what was permitted under {cache_dir}. These refused:")
+    for refusal in refused:
+        print(f"  - {refusal.path}: {refusal.reason}")
+    print()
+    # Hedged, because the cause is not knowable from here. A container writing
+    # as another user is the common one, but a read-only mount, `chattr +i` and
+    # a busy mountpoint all land in the same report -- and for the last two this
+    # command does not help either. Saying so flatly would be wrong more often
+    # than the errno above is.
+    print("Usually this means a container wrote them as a different user, and:")
+    # Quoted: cache_dir comes from $XDG_CACHE_HOME or $HOME, and a space in it
+    # turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
+    print(f"  sudo rm -rf {shlex.quote(str(cache_dir))}")
+    print("clears them. Check the reasons above first -- it does not fix all of them.")
+    return 1
 
 
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)
