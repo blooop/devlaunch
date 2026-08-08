@@ -211,8 +211,9 @@ whichever answers first, and hands it to the container as `GH_TOKEN`. That reach
 any image and any container user, unlike a bind-mount of `~/.config/gh`, and it
 works whether the host keeps its token in `hosts.yml` or in a keyring. The token
 is passed to devpod through a private file and through devpod's own environment,
-never on a command line, so it does not appear in `ps`. The container still needs
-`gh` installed for the login to be of any use. Check a workspace with:
+never on a command line, so it does not appear in `ps`. `dl` installs `gh` itself
+(see [Tools in every workspace](#tools-in-every-workspace)), so the login has
+something to be spent on whatever the image ships. Check a workspace with:
 
 ```bash
 dl <workspace> -- gh auth status
@@ -242,6 +243,34 @@ any workspace that gets started or restarted afterwards. Attaching to a workspac
 that is *already running* skips that step, and the token it was given at startup
 stays in place — including one it was given before you set
 `DEVLAUNCH_NO_GH_TOKEN`. Run `dl <workspace> restart` to replace it.
+
+## Tools in every workspace
+
+`gh` and `claude` are available in every workspace `dl` opens, in every kind of
+session — an interactive `dl <workspace>`, a one-shot `dl <workspace> -- <command>`,
+and `aid`. The repo's `devcontainer.json` does not have to provide them, and most
+do not: `dl` launches arbitrary repos, so a guarantee that depended on the image
+would not be a guarantee.
+
+They are installed with `pixi global` on `devpod up`, and put on the PATH of a
+login shell through `~/.profile`. A workspace that already has both is left alone —
+the check runs first, so the cost after the first launch is one round-trip and no
+network. If `pixi` is missing from the image, `dl` installs that too.
+
+An install that fails costs the workspace its tools, not its launch: `dl` logs a
+warning and hands you the session anyway.
+
+```bash
+DEVLAUNCH_NO_TOOLS=1 dl someone/repo
+```
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude` into workspaces |
+
+Attaching to a workspace that is *already running* skips `devpod up`, and so skips
+this too. A workspace started by something other than `dl` — or created before this
+existed — picks the tools up on its next `dl <workspace> restart`.
 
 ## Global Commands
 

@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, gh_auth
+from . import devpod_ssh, gh_auth, tools
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -1042,6 +1042,12 @@ def workspace_up(
     # `up` creates and starts workspaces, so any snapshot of `devpod list`
     # taken before it is now out of date.
     invalidate_workspace_list_cache()
+    # The tools a session always needs, for whatever repo this is: `up` is the
+    # one path that runs for every workspace dl opens and is already slow
+    # enough to absorb a round-trip. Only after a successful `up` -- there is
+    # no container to install into otherwise.
+    if result.returncode == 0 and identity:
+        tools.ensure_tools(identity, run_devpod)
     return result
 
 

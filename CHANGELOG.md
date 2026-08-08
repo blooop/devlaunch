@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `gh` and `claude` are installed into every workspace `dl` opens, so both are on
+  PATH in an interactive session, in `dl <ws> -- <command>`, and under `aid`,
+  whatever the repo's devcontainer.json provides. `dl` already forwarded the
+  host's GitHub login into every container but not the `gh` to spend it on, so
+  `dl <ws> -- gh auth status` died with `command not found` while holding a valid
+  token. Installed with `pixi global` on `devpod up` and exposed through
+  `~/.profile`; `pixi` itself is installed first if the image has none. A
+  workspace that already has both is left alone, so the cost after the first
+  launch is one round-trip and no network. An install that fails costs the
+  workspace its tools and not its launch. Set `DEVLAUNCH_NO_TOOLS=1` to opt out.
+  Attaching to an already-running workspace skips `devpod up` and so skips this;
+  such a workspace picks the tools up on its next `dl <ws> restart`.
+
 ## [0.0.12] - 2026-08-08
 
 One fix: `dl` stops reporting a failure every time you leave a workspace, and a
