@@ -102,7 +102,7 @@ def test_listing_is_requested_in_machine_readable_form():
 
 def test_unreadable_listing_is_reported_rather_than_swallowed():
     """Recording of the failure mode the fix exists to prevent: if devpod ever
-    answers with something unparseable again, the guard says so instead of
+    answers with something unparsable again, the guard says so instead of
     quietly deciding the provider is missing."""
     devpod = RecordedDevpod(COLOURISED_TABLE)
 

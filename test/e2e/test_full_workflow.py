@@ -16,6 +16,8 @@ import subprocess
 
 import pytest
 
+from fixtures.e2e_helpers import create_e2e_workspace
+
 
 def devpod_available() -> bool:
     """Check if DevPod is available."""
@@ -28,6 +30,23 @@ def devpod_available() -> bool:
         return result.returncode == 0
     except FileNotFoundError:
         return False
+
+
+def workspace_ids() -> list:
+    """The ids devpod currently knows about.
+
+    A listing that could not be read is not a listing with nothing in it, so
+    this raises rather than handing back an empty list an assertion would then
+    read as "the workspace is gone".
+    """
+    result = subprocess.run(
+        ["devpod", "list", "--output", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    workspaces = json.loads(result.stdout) if result.stdout.strip() else []
+    return [ws.get("id", "") for ws in workspaces]
 
 
 @pytest.mark.e2e
@@ -50,30 +69,15 @@ class TestWorkspaceCreationE2E:
         env = isolated_devlaunch_env
         remote_url = local_git_repo_with_devcontainer["remote_url"]
         workspace_id = "e2e-test-create"
-        devpod_cleanup.track(workspace_id)
 
-        # Create workspace using devpod directly
-        result = subprocess.run(
-            ["devpod", "up", remote_url, "--id", workspace_id],
+        create_e2e_workspace(
+            remote_url,
+            workspace_id,
+            cleanup=devpod_cleanup,
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
-            capture_output=True,
-            text=True,
-            check=False,
         )
 
-        if result.returncode == 0:
-            # List DevPod workspaces to verify
-            list_result = subprocess.run(
-                ["devpod", "list", "--output", "json"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            if list_result.returncode == 0 and list_result.stdout:
-                workspaces = json.loads(list_result.stdout)
-                workspace_ids = [ws.get("id", "") for ws in workspaces]
-                assert workspace_id in workspace_ids
+        assert workspace_id in workspace_ids()
 
     def test_workspace_lifecycle_without_ide(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
@@ -84,41 +88,31 @@ class TestWorkspaceCreationE2E:
 
         env = isolated_devlaunch_env
         workspace_id = "e2e-test-lifecycle"
-        devpod_cleanup.track(workspace_id)
 
-        # Create a workspace
-        result = subprocess.run(
-            [
-                "devpod",
-                "up",
-                local_git_repo_with_devcontainer["remote_url"],
-                "--id",
-                workspace_id,
-            ],
+        create_e2e_workspace(
+            local_git_repo_with_devcontainer["remote_url"],
+            workspace_id,
+            cleanup=devpod_cleanup,
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
+        )
+
+        # Stop workspace
+        stop_result = subprocess.run(
+            ["devpod", "stop", workspace_id],
             capture_output=True,
             text=True,
             check=False,
         )
+        assert stop_result.returncode == 0
 
-        if result.returncode == 0:
-            # Stop workspace
-            stop_result = subprocess.run(
-                ["devpod", "stop", workspace_id],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            assert stop_result.returncode == 0
-
-            # Delete workspace
-            delete_result = subprocess.run(
-                ["devpod", "delete", workspace_id, "--force"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            assert delete_result.returncode == 0
+        # Delete workspace
+        delete_result = subprocess.run(
+            ["devpod", "delete", workspace_id, "--force"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert delete_result.returncode == 0
 
 
 @pytest.mark.e2e
@@ -134,35 +128,25 @@ class TestGitOperationsInContainerE2E:
 
         env = isolated_devlaunch_env
         workspace_id = "e2e-test-git"
-        devpod_cleanup.track(workspace_id)
 
-        # Create workspace
-        result = subprocess.run(
-            [
-                "devpod",
-                "up",
-                local_git_repo_with_devcontainer["remote_url"],
-                "--id",
-                workspace_id,
-            ],
+        create_e2e_workspace(
+            local_git_repo_with_devcontainer["remote_url"],
+            workspace_id,
+            cleanup=devpod_cleanup,
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
+        )
+
+        # Run git status via SSH
+        ssh_result = subprocess.run(
+            ["devpod", "ssh", workspace_id, "--command", "git status"],
             capture_output=True,
             text=True,
             check=False,
         )
 
-        if result.returncode == 0:
-            # Run git status via SSH
-            ssh_result = subprocess.run(
-                ["devpod", "ssh", workspace_id, "--command", "git status"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            # Git should work inside the container
-            assert ssh_result.returncode == 0
-            assert "On branch" in ssh_result.stdout or "nothing to commit" in ssh_result.stdout
+        # Git should work inside the container
+        assert ssh_result.returncode == 0
+        assert "On branch" in ssh_result.stdout or "nothing to commit" in ssh_result.stdout
 
 
 @pytest.mark.e2e
@@ -223,7 +207,7 @@ class TestPurgeE2E:
     """E2E tests for purge functionality."""
 
     def test_purge_deletes_workspaces(
-        self, isolated_devlaunch_env, local_git_repo_with_devcontainer
+        self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
         """Test that --purge -y deletes all DevPod workspaces."""
         if not devpod_available():
@@ -233,34 +217,15 @@ class TestPurgeE2E:
 
         # Create a workspace first
         workspace_id = "e2e-test-purge"
-        result = subprocess.run(
-            [
-                "devpod",
-                "up",
-                local_git_repo_with_devcontainer["remote_url"],
-                "--id",
-                workspace_id,
-            ],
+        create_e2e_workspace(
+            local_git_repo_with_devcontainer["remote_url"],
+            workspace_id,
+            cleanup=devpod_cleanup,
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
-            capture_output=True,
-            text=True,
-            check=False,
         )
-
-        if result.returncode != 0:
-            pytest.skip("Could not create test workspace")
 
         # Verify workspace exists
-        list_result = subprocess.run(
-            ["devpod", "list", "--output", "json"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if list_result.returncode == 0:
-            workspaces = json.loads(list_result.stdout) if list_result.stdout.strip() else []
-            workspace_ids = [ws.get("id", "") for ws in workspaces]
-            assert workspace_id in workspace_ids
+        assert workspace_id in workspace_ids()
 
         # Run purge
         purge_result = subprocess.run(
@@ -276,16 +241,7 @@ class TestPurgeE2E:
         assert "Deleting DevPod workspace" in purge_result.stdout
 
         # Verify workspace is gone
-        list_result = subprocess.run(
-            ["devpod", "list", "--output", "json"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if list_result.returncode == 0:
-            workspaces = json.loads(list_result.stdout) if list_result.stdout.strip() else []
-            workspace_ids = [ws.get("id", "") for ws in workspaces]
-            assert workspace_id not in workspace_ids
+        assert workspace_id not in workspace_ids()
 
     def test_purge_cleans_cache(self, isolated_devlaunch_env):
         """Test that --purge -y removes the cache directory."""

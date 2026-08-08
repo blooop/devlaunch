@@ -50,7 +50,9 @@ def parse_provider_names(listing: str) -> Set[str]:
     return set(parsed)
 
 
-def list_provider_names(run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> Set[str]:
+def list_provider_names(
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> Set[str]:
     """Ask devpod which providers are registered."""
     result = run(
         ["devpod", "provider", "list", "--output", "json"],
