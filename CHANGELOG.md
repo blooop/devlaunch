@@ -67,9 +67,13 @@ table and should be judged on its own merits.
   handed to a person to paste into `sudo rm -rf`, and `$XDG_CACHE_HOME` with a
   space in it made that two targets, the first of them wrong.
 
-  "Cannot look at it" is no longer read as "it is gone". `Path.exists()` answers
-  False for both, so a cache whose parent directory could not be traversed came
-  out as `No data to purge.` and exit 0 with the cache fully intact.
+  "Cannot look at it" is no longer read as "it is gone". A cache whose parent
+  directory could not be traversed came out as `No data to purge.` and exit 0
+  with the cache fully intact. `Path.exists()` is what could not tell the two
+  apart, and it is not consistent about how it fails to: it returns False on
+  Python 3.14 and raises `PermissionError` on 3.13, so the old check answered
+  wrongly on one version and crashed on the next. Presence and symlink-ness now
+  come from a single `os.lstat`, where the three outcomes are distinguishable.
 
   Two *separately* unwritable directories on one path are reported as two lines.
   Clearing the inner one leaves the outer one just as stuck, so each is work

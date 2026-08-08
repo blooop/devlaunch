@@ -43,6 +43,31 @@ def refused_paths(tree) -> list:
     return [refusal.path for refusal in remove_tree(tree)]
 
 
+def still_there(path: pathlib.Path) -> bool:
+    """Whether *path* is on disk, for a test that seals directories.
+
+    Not `Path.exists()`, for the same reason the code under test does not use
+    it: with an unreadable parent it returns False on Python 3.14 and raises
+    PermissionError on 3.13, and here both would be reporting "gone" about
+    something present. Only FileNotFoundError means gone.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _link(link: pathlib.Path, target: pathlib.Path) -> None:
+    """Plant a symlink, tolerating a name the trial already used."""
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pass
+
+
 # Every assertion here rests on the process being refused by file permissions.
 # root is refused by nothing, so under root these do not test a weaker version
 # of the behaviour -- they test nothing at all, and would pass with the fix
@@ -399,10 +424,17 @@ class TestNothingToPurge:
     def test_a_cache_that_cannot_be_looked_at_is_not_mistaken_for_absent(self, tmp_path, capsys):
         """ "Cannot tell" is not "gone", and only one of them means success.
 
-        `Path.exists()` answers False for both, so a cache whose *parent*
-        cannot be traversed used to come out as "No data to purge." and exit 0
-        with the cache fully intact -- a clean sweep reported over untouched
-        data, which is the one failure this whole change exists to prevent.
+        A cache whose *parent* cannot be traversed used to come out as "No data
+        to purge." and exit 0 with the cache fully intact -- a clean sweep
+        reported over untouched data, which is the one failure this whole change
+        exists to prevent.
+
+        `Path.exists()` is what could not tell the two apart, and it is not even
+        consistent about how it fails to: on Python 3.14 it returns False here,
+        and on 3.13 it raises PermissionError. So the code this replaced
+        answered wrongly on one version and crashed outright on the next, which
+        CI found and my machine could not. The premise below accepts either,
+        because the point is that neither is usable.
         """
         home = tmp_path / "cachehome"
         root = home / "devlaunch"
@@ -411,7 +443,11 @@ class TestNothingToPurge:
         home.chmod(0o600)  # rw-, not traversable: lstat on root raises EACCES
         listing = subprocess.CompletedProcess([], 0, "[]", "")
         try:
-            assert not root.exists(), "the premise: exists() cannot see it"
+            try:
+                naive = root.exists()
+            except OSError:
+                naive = False
+            assert not naive, "the premise: the naive check cannot see it"
             with patch("devlaunch.dl.subprocess.run", return_value=listing):
                 with patch("devlaunch.dl._get_cache_dir", return_value=root):
                     with patch("devlaunch.dl.update_cache_background"):
@@ -440,7 +476,7 @@ class TestRefusalsAreNotInvented:
         refused = refused_paths(cache.root)
         assert refused, "the sealed directory must produce at least one refusal"
         for path in refused:
-            assert path.exists(), f"{path} was reported as refused but is gone"
+            assert still_there(path), f"{path} was reported as refused but is gone"
 
     @needs_an_unprivileged_user
     def test_nothing_reported_as_removed_survives(self, cache):
@@ -469,15 +505,24 @@ class TestRefusalsAreNotInvented:
         - **nothing is said that is not there** -- naming a path the user then
           cannot find is how a report stops being believed.
 
-        This found a real defect that four hand-written cases missed: an
+        A third, which only symlinks can break: **nothing outside the tree is
+        touched.** Every trial plants links to a canary directory alongside the
+        tree, and the canary's contents are checked afterwards.
+
+        This has found two real defects that hand-written cases missed. An
         unlistable *empty* directory made `os.walk` raise, and reporting at the
-        point of raising named a path the following `rmdir` went on to remove.
-        Fixed by deciding refusals from the disk once the walk is over, which
-        also makes both invariants hold by construction rather than by care.
+        point of raising named a path the following `rmdir` went on to remove --
+        fixed by deciding refusals from the disk once the walk is over. And a
+        symlinked tree root was followed rather than unlinked, which emptied the
+        canary and reported a clean sweep.
 
         Seeded, so a failure here is reproducible rather than a rumour.
         """
         rng = random.Random(20260808)
+        canary = tmp_path / "canary"
+        canary.mkdir()
+        (canary / "precious").write_text("outside the tree")
+
         for trial in range(60):
             root = tmp_path / f"tree{trial}"
             root.mkdir()
@@ -490,20 +535,28 @@ class TestRefusalsAreNotInvented:
             for directory in made:
                 for _ in range(rng.randrange(3)):
                     (directory / f"f{rng.randrange(4)}").write_text("x")
+                roll = rng.random()
+                if roll < 0.15:
+                    _link(directory / f"l{rng.randrange(3)}", canary)
+                elif roll < 0.25:
+                    _link(directory / f"l{rng.randrange(3)}", canary / "precious")
+                elif roll < 0.3:
+                    _link(directory / f"l{rng.randrange(3)}", tmp_path / "nowhere")
             # Deepest first: sealing a parent would make sealing its child fail.
             for directory in sorted(made, key=lambda p: -len(p.parts)):
                 if rng.random() < 0.25:
-                    directory.chmod(rng.choice([0o000, 0o100, 0o300, 0o500]))
+                    directory.chmod(rng.choice([0o000, 0o100, 0o300, 0o400, 0o500]))
 
             refused = refused_paths(root)
             try:
-                assert root.exists() == bool(refused), (
-                    f"trial {trial}: tree survives={root.exists()} but refused={refused}"
+                assert still_there(root) == bool(refused), (
+                    f"trial {trial}: tree survives={still_there(root)} but refused={refused}"
                 )
                 for path in refused:
-                    assert path.exists() or path.is_symlink(), (
-                        f"trial {trial}: reported {path}, which is not there"
-                    )
+                    assert still_there(path), f"trial {trial}: reported {path}, which is not there"
                 assert len(set(refused)) == len(refused), f"trial {trial}: duplicates in {refused}"
+                assert (canary / "precious").read_text() == "outside the tree", (
+                    f"trial {trial}: a symlink was followed out of the tree"
+                )
             finally:
                 subprocess.run(["chmod", "-R", "u+rwx", str(root)], check=False)

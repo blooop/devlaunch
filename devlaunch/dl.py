@@ -26,6 +26,7 @@ import os
 import pathlib
 import re
 import shlex
+import stat
 import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
 from pathlib import Path
@@ -527,12 +528,16 @@ def _why(error: OSError) -> str:
 def _present(path: pathlib.Path) -> bool:
     """Whether *path* is there, where "cannot tell" counts as there.
 
-    `Path.exists()` answers False both for a path that is absent and for one
-    this process was not allowed to look at -- an unreadable parent directory,
-    say. Only the first means there is nothing to do, and taking the second for
-    it is how a purge reports a clean sweep over an intact cache. Symlinks count
-    as present whether or not they resolve, because the link itself is a thing
-    to remove.
+    Only `FileNotFoundError` means there is nothing to do. Any other refusal --
+    an unreadable parent directory, say -- means something is there that this
+    process cannot look at, and treating that as absent is how a purge reports
+    a clean sweep over an intact cache.
+
+    `Path.exists()` cannot make that distinction and is not consistent about
+    which way it fails: it returns False for an unreadable parent on some Python
+    versions and raises PermissionError on others, so the code it replaced here
+    answered wrongly on one and crashed on the next. Symlinks count as present
+    whether or not they resolve, because the link itself is a thing to remove.
     """
     try:
         os.lstat(path)
@@ -588,15 +593,26 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
     An empty result means the tree is gone, including when it was never there:
     a purge run twice is not a failure the second time.
     """
-    if not _present(tree):
+    # One lstat, three outcomes, none of them inferred. `Path.exists()` and
+    # `Path.is_symlink()` cannot be used here: they answer False for a path this
+    # process was not allowed to look at on some Python versions and raise
+    # PermissionError on others, and neither of those is "there is nothing to
+    # remove".
+    try:
+        info = os.lstat(tree)
+    except FileNotFoundError:
         return ()
+    except OSError as error:
+        # Something is there that we are not allowed to look at. Saying so is
+        # the whole point; calling it gone is the failure this guards.
+        return (Refusal(tree, _why(error)),)
 
     # `os.walk` never descends a symlinked *subdirectory*, but it always scans
     # the top -- so a symlinked root would be followed, its target emptied, and
     # a clean sweep reported for a directory the caller never named.
     # `shutil.rmtree` refuses this outright, and so does this: the link is
     # removed, and whatever it pointed at is somebody else's.
-    if tree.is_symlink():
+    if stat.S_ISLNK(info.st_mode):
         try:
             tree.unlink()
             return ()
