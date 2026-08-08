@@ -227,7 +227,7 @@ class TestAidReachesTheTtyTransport:
 
         args = ssh_args(mock_ssh)
         assert "-t" in args
-        assert args[-1] == "bash -lc claude"
+        assert args[-1] == "bash -lc 'claude --dangerously-skip-permissions'"
 
     @patch("devlaunch.dl.run_ssh")
     @patch("devlaunch.dl.workspace_up")

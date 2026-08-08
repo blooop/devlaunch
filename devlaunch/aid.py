@@ -7,7 +7,7 @@ a `dl` one and hands that to :func:`devlaunch.dl.main`, so:
 
 is exactly
 
-    dl owner/repo@branch -- claude 'fix the flaky test'
+    dl owner/repo@branch -- claude --dangerously-skip-permissions 'fix the flaky test'
 
 Everything that decides how a workspace is obtained — the bare repo cache, the
 worktree clone, the workspace id, the devpod container, the fast attach to one
@@ -27,13 +27,32 @@ from typing import Dict, List, Optional
 
 from . import dl
 
+
+@dataclass(frozen=True)
+class Agent:
+    """How one coding agent is started inside the workspace.
+
+    Split in two because gemini's way of taking an initial prompt is a flag that
+    is a syntax error without one: `command` is what always runs, `prompt_flags`
+    only joins it when there is a prompt to pass.
+    """
+
+    command: List[str]
+    prompt_flags: List[str] = field(default_factory=list)
+
+
 # Base command per agent. The prompt, when there is one, is appended as a single
 # quoted argument; each of these CLIs takes an initial prompt that way and then
 # drops into its interactive session.
-AGENT_COMMANDS: Dict[str, List[str]] = {
-    "claude": ["claude"],
-    "codex": ["codex"],
-    "gemini": ["gemini", "--prompt-interactive"],
+#
+# claude is started with --dangerously-skip-permissions: the whole point of a dl
+# workspace is that the agent is already inside a disposable container with only
+# this repo in it, so the per-tool prompts it would otherwise ask on the host buy
+# nothing and stop an unattended `aid owner/repo fix the bug` dead.
+AGENT_COMMANDS: Dict[str, Agent] = {
+    "claude": Agent(["claude", "--dangerously-skip-permissions"]),
+    "codex": Agent(["codex"]),
+    "gemini": Agent(["gemini"], prompt_flags=["--prompt-interactive"]),
 }
 
 # Flags that pick the agent, e.g. `aid --gemini owner/repo ...`.
@@ -123,17 +142,16 @@ def build_agent_command(agent: str, prompt: str = "") -> str:
     the words the user typed reach the agent as the single argument they meant.
     """
     try:
-        command = list(AGENT_COMMANDS[agent])
+        spec = AGENT_COMMANDS[agent]
     except KeyError:
         raise UsageError(
             f"Unknown agent {agent!r}. Choose one of: {', '.join(sorted(AGENT_COMMANDS))}."
         ) from None
     if not prompt:
-        # No prompt to be interactive about: start the agent's plain session.
-        # gemini's --prompt-interactive would be a syntax error without one.
-        return shlex.quote(command[0])
-    command.append(prompt)
-    return shlex.join(command)
+        # No prompt to be interactive about: start the agent's plain session,
+        # without the flags that only make sense alongside one.
+        return shlex.join(spec.command)
+    return shlex.join([*spec.command, *spec.prompt_flags, prompt])
 
 
 def build_dl_args(parsed: AidArgs) -> List[str]:

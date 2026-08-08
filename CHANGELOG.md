@@ -19,6 +19,26 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.15] - 2026-08-08
+
+One change, to `aid` only: `dl` is untouched.
+
+### Changed
+- `aid` now starts `claude` with `--dangerously-skip-permissions`, so
+  `aid owner/repo fix the bug` runs to completion instead of stopping at the first
+  tool prompt. The prompts guard a host with your whole filesystem on it; the agent
+  `aid` starts is already inside a disposable devpod container with one repo in it,
+  where they cost an unattended run its point and buy no isolation that the
+  container is not already providing. `--codex` and `--gemini` are unchanged —
+  neither takes this flag — and `dl <ws> -- claude` still runs exactly the command
+  you typed, permission prompts and all. Nothing here changes what a workspace is
+  or how it is built.
+
+  A side effect worth knowing: an agent started this way will edit, run and delete
+  inside the container without asking. It cannot reach the host, but it can rewrite
+  the checkout it is in, so treat an `aid` workspace as something to review before
+  pushing rather than as a sandbox that will stop it for you.
+
 ## [0.0.14] - 2026-08-08
 
 Workspaces come with the tools a session needs. Nothing about how you install or

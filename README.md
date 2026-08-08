@@ -83,12 +83,16 @@ aid blooop/devlaunch@fix/42 fix the flaky test
 is exactly
 
 ```bash
-dl blooop/devlaunch@fix/42 -- claude 'fix the flaky test'
+dl blooop/devlaunch@fix/42 -- claude --dangerously-skip-permissions 'fix the flaky test'
 ```
 
 That means an `aid` workspace *is* the `dl` workspace: same clone, same workspace
 id, same container — started if stopped, attached to if already running, and never
 rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
+
+`claude` is started with `--dangerously-skip-permissions`. The agent is already
+inside a disposable container holding only this repo, so the per-tool prompts it
+would ask on the host protect nothing here and would stall an unattended run.
 
 | Option | Description |
 |--------|-------------|
