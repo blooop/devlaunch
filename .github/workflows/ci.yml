@@ -48,11 +48,13 @@ jobs:
   # already costs some and runs beside it, so it does not lengthen the wait by
   # its own duration; and a nightly failure arrives detached from the change
   # that caused it, on a repo where nobody is rostered to triage one. To make it
-  # nightly instead: add `schedule:` to `on:` above and
-  # `if: github.event_name == 'schedule'` to this job. Nothing else moves --
-  # and note it has to be that, not `!= 'pull_request'`: `push: branches:
-  # [main]` stays in `on:` for the matrix job, so excluding only pull requests
-  # would leave this one running on every merge as well as on the schedule.
+  # nightly instead: add `schedule:` to `on:` above, add
+  # `if: github.event_name == 'schedule'` to this job, and drop it from `gate`'s
+  # `needs` below -- a job that does not run is not a job that passed, so leaving
+  # it there would block every merge. Note the condition has to be that, not
+  # `!= 'pull_request'`: `push: branches: [main]` stays in `on:` for the matrix
+  # job, so excluding only pull requests would leave this one running on every
+  # merge as well as on the schedule.
   #
   # Like every job here, it runs on pushes to `main` and on pull requests
   # targeting `main`. A pull request onto any other base -- a stacked one --
@@ -73,3 +75,39 @@ jobs:
           environments: default
       - name: E2E
         run: pixi run test-e2e
+
+  # One name for a branch ruleset to require, standing for every job above it.
+  #
+  # A ruleset names required checks as literal strings, so requiring the jobs
+  # individually means `ci (py310)`, `ci (py311)`, `ci (py312)`, `ci (py313)`
+  # and `e2e` written out in a repository setting -- a list that says nothing
+  # about why, that nobody reviews, and that goes stale the moment a matrix leg
+  # or a job is added or renamed here. The stale case is the dangerous one,
+  # because a required check that no longer exists is not a red tick: it is a
+  # merge that sails through ungated. Requiring `gate` instead puts the decision
+  # in this file, next to the jobs it is about, where a pull request that adds a
+  # job also adds it to `needs` under review.
+  #
+  # `if: always()` is load-bearing -- without it this job is skipped when
+  # anything it needs fails, and a skipped job reports neither success nor
+  # failure. And the check below insists on `success` rather than merely not
+  # `failure`, so `cancelled` and `skipped` are failures here too. That is the
+  # point: this workflow exists because a check nobody runs reads exactly like a
+  # check that passed.
+  gate:
+    needs: [ci, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job this gate covers must have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -eu
+          echo "results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != success ]; then
+              echo "::error::a job this gate covers reported '$result'"
+              exit 1
+            fi
+          done
