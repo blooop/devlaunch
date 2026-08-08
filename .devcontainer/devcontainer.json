@@ -57,5 +57,10 @@
         "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind",
         "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind"
     ],
-    "postCreateCommand": "sudo chown vscode .pixi && pixi install"
+    // Register the docker provider with the container's own devpod. A fresh
+    // container has an empty ~/.devpod, and devpod seeds nothing: `devpod up`
+    // there exits 1 with "no default provider found". Since dl's only
+    // subprocess is devpod, that is dl failing to start rather than degrading.
+    // `provider add` also makes it the default, so this is the whole bootstrap.
+    "postCreateCommand": "sudo chown vscode .pixi && pixi install && pixi run dev-add-docker"
 }

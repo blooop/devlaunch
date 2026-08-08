@@ -92,6 +92,17 @@ def test_devcontainer_declares_no_run_args(devcontainer):
     assert "runArgs" not in devcontainer
 
 
+def test_devcontainer_registers_a_devpod_provider_for_its_own_daemon(devcontainer):
+    """A container that cannot reach a provider cannot run `dl` at all.
+
+    `dl`'s only subprocess is `devpod`, and a container starts with an empty
+    `~/.devpod`: `devpod up` there exits 1 with "no default provider found"
+    before it does anything. Registering the provider on create is what makes
+    the daemon this container carries usable by the tool it was added for.
+    """
+    assert "dev-add-docker" in devcontainer["postCreateCommand"]
+
+
 def test_pixi_resolves_a_test_e2e_task():
     """`pixi run test-e2e` is a task that exists, per the task runner itself."""
     pixi = shutil.which("pixi")

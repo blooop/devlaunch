@@ -139,7 +139,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "e2e: Full E2E with Docker-in-Docker. Real DevPod creating real containers.",
+        "e2e: Real DevPod creating real containers. Needs a Docker daemon.",
     )
 
 
