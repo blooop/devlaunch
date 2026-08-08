@@ -317,6 +317,7 @@ existed — picks the tools up on its next `dl <workspace> restart`.
 | Command | Description |
 |---------|-------------|
 | `dl --ls` | List all workspaces |
+| `dl --ls --json` | The same list as JSON, with each workspace's repo, branch, state and [unsaved work](#cleaning-up-workspaces) — for tools that decide what to clean up |
 | `dl --install` | Install shell completions |
 | `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
 | `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
@@ -373,6 +374,63 @@ remove either, so those are left too. Delete any of them with `dl <workspace> rm
 Erring this way is deliberate — a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
+
+### Cleaning up workspaces
+
+One workspace per branch means workspaces accumulate, and `--purge` is the wrong
+tool for tidying: it is all-or-nothing and takes the caches with it.
+
+**devlaunch does not decide which workspaces are finished.** Whether a piece of
+work is over is a fact about a ticket, a review, or somebody's intent, and `dl`
+knows about clones and containers. Inferring it from the branch — merged into
+the default, or deleted from the remote — was tried and dropped: it reads like a
+git fact but is a guess at intent, and it cannot tell a squash-merged branch
+from an abandoned one. So `dl` supplies the two halves a tool that *does* know
+needs, and that tool drives the cleanup:
+
+```bash
+dl --ls --json     # what exists, and what each workspace holds
+dl <workspace> rm  # remove one
+```
+
+The JSON reports, per workspace: `id`, `devlaunch` (did `dl` create it),
+`repo`, `branch` (what the workspace was made for), `checkedOut` (what its clone
+is on now, which can differ), `path`, `state`, `lastUsed`, and — the field a
+cleanup tool must not ignore — `unsaved`:
+
+```json
+{
+  "id": "devlaunch-wayfinder-devlaunch-80-ladepomi",
+  "devlaunch": true,
+  "repo": "blooop/devlaunch",
+  "branch": "wayfinder/devlaunch-80",
+  "state": "Stopped",
+  "unsaved": "2 uncommitted change(s) and 1 unpushed commit(s)"
+}
+```
+
+`unsaved` is a description of what deleting would destroy, or `null` when the
+clone holds nothing that does not also exist on a remote — uncommitted changes
+(untracked files included) and commits no remote has. A workspace `dl` did not
+create reports `devlaunch: false` with no repo, branch or `unsaved`: there is no
+clone of `dl`'s to protect, and it has no business inspecting your checkout.
+
+**`dl <workspace> rm` refuses when the clone holds unsaved work**, so a caller
+that forgets to read the field is still caught:
+
+```
+$ dl blooop/repo@feature rm
+error: devlaunch-repo-feature-xyz holds 1 unpushed commit(s).
+       Push or commit it, or run: dl blooop/repo@feature rm --force
+```
+
+That refusal is the only judgement `dl` makes here, and it is not about finished
+work — it is `dl` declining to destroy the only copy of something. Say `--force`
+if you mean it.
+
+[`wf`](https://github.com/blooop/wayfinder) is the caller this was built for: it
+names its branches after its tickets, so it knows which workspaces belong to
+finished work and removes those.
 
 ## Examples
 

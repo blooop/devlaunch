@@ -19,6 +19,34 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.21] - 2026-08-08
+
+One workspace per branch means workspaces accumulate, and until now the only
+tool for it was `--purge`, which is all-or-nothing and takes the caches too.
+
+devlaunch deliberately does **not** decide which workspaces are finished:
+whether work is over is a fact about a ticket, a review or somebody's intent,
+and `dl` knows about clones and containers. A branch-shaped inference — merged
+into the default branch, or gone from the remote — was built first and dropped;
+it reads as a git fact but is a guess at intent, and it cannot tell a
+squash-merged branch from an abandoned one. What ships instead is the mechanism
+a tool that *does* know can drive.
+
+### Added
+
+- `dl --ls --json`: the workspace list as JSON, each entry carrying `repo`,
+  `branch`, `checkedOut`, `path`, `state`, `lastUsed`, `devlaunch` (did dl make
+  it), and `unsaved` — a description of what deleting would destroy, or null.
+  Workspaces dl did not create report `devlaunch: false` and are not inspected.
+
+### Changed
+
+- `dl <workspace> rm` refuses when the clone holds uncommitted changes or
+  commits no remote has, naming what would be lost and how to insist. `--force`
+  deletes anyway. This is the only judgement dl makes here, and it is about the
+  only copy of something rather than about finished work. `--purge` is
+  unaffected: it already scopes itself to what it is about to delete anyway.
+
 ## [0.0.20] - 2026-08-08
 
 Launching several workspaces at the same moment is now safe. It nearly was
