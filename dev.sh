@@ -9,11 +9,13 @@
 # Editable, so `dl-next` is whatever the tree looks like right now — there is no
 # build step to forget, and equally no snapshot: a half-finished edit is live the
 # moment it is saved. Run it against throwaway state when that matters; dl
-# resolves everything it stores through XDG_CACHE_HOME and XDG_CONFIG_HOME, so
+# resolves everything it stores through XDG_CACHE_HOME, so
 #
-#   XDG_CACHE_HOME=/tmp/dl-scratch/cache XDG_CONFIG_HOME=/tmp/dl-scratch/config dl-next ...
+#   XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ...
 #
-# leaves the real workspace list alone.
+# leaves the real workspace list alone. Scope that variable only: dl writes
+# nothing under XDG_CONFIG_HOME, and pointing it at a scratch dir hides the
+# host's gh login, so the workspace opens with no GitHub credentials.
 
 set -e  # Exit on error
 
@@ -126,6 +128,7 @@ echo "  dl-next owner/repo@branch   # clone + DevPod workspace (specific branch)
 echo "  aid-next owner/repo@branch  # ...with a coding agent started in it"
 echo ""
 echo "Against throwaway state, leaving the real workspace list alone:"
-echo "  XDG_CACHE_HOME=/tmp/dl-scratch/cache XDG_CONFIG_HOME=/tmp/dl-scratch/config dl-next ..."
+echo "  XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ..."
+echo "  (that variable only -- a scratch XDG_CONFIG_HOME hides your gh login)"
 echo ""
 echo "Plain 'dl' and 'aid' remain the released build, untouched by this script."

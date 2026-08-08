@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 # The variable set inside the container. gh consults it before its config file.
@@ -57,6 +58,17 @@ def _is_token(value: str) -> bool:
     return bool(value) and bool(_TOKEN_PATTERN.match(value))
 
 
+def _gh_config_home() -> str:
+    """The config directory gh just consulted, spelled as the environment set it.
+
+    A run that scopes XDG_CONFIG_HOME to a scratch directory hides the host's
+    `gh` login, so `gh auth token` refuses even though the user is logged in.
+    Naming the directory is what stops the warning from sending them to `gh auth
+    login`, which in exactly that case fixes nothing.
+    """
+    return os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+
+
 def _token_from_gh_cli() -> Optional[str]:
     """Ask the gh CLI for the host's token, or None if it has none to give."""
     if not shutil.which("gh"):
@@ -74,14 +86,28 @@ def _token_from_gh_cli() -> Optional[str]:
             timeout=_GH_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logging.debug("Could not read a GitHub token from gh: %s", e)
+        logging.warning(
+            "Could not read a GitHub token from gh (%s), so this workspace opens "
+            "without a GitHub login.",
+            e,
+        )
         return None
     if result.returncode != 0:
-        logging.debug("gh auth token exited %s; no GitHub auth to forward", result.returncode)
+        logging.warning(
+            "gh auth token exited %s, so this workspace opens without a GitHub login. "
+            "gh read its config from %s -- if you are logged in on this host, that "
+            "directory is the thing to check before `gh auth login`.",
+            result.returncode,
+            _gh_config_home(),
+        )
         return None
-    # Never log the value itself, only whether it was usable.
+    # Never log the value itself, only whether it was usable: what gh printed may
+    # be a malformed credential, and a warning is not a place to put one.
     if not _is_token(result.stdout.strip()):
-        logging.debug("gh auth token printed something that is not a token; ignoring it")
+        logging.warning(
+            "gh auth token printed something that is not a token, so this workspace "
+            "opens without a GitHub login."
+        )
         return None
     return result.stdout.strip()
 
@@ -112,13 +138,21 @@ def _stage_token_file(token: str) -> Optional[str]:
     try:
         fd, path = tempfile.mkstemp(prefix="devlaunch-gh-", suffix=".env")
     except OSError as e:
-        logging.debug("Could not create a file to pass the GitHub token to devpod: %s", e)
+        logging.warning(
+            "Could not create a file to pass the GitHub token to devpod (%s), so this "
+            "workspace opens without a GitHub login.",
+            e,
+        )
         return None
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(f"{TOKEN_VAR}={token}\n")
     except OSError as e:
-        logging.debug("Could not write the GitHub token for devpod: %s", e)
+        logging.warning(
+            "Could not write the GitHub token for devpod (%s), so this workspace "
+            "opens without a GitHub login.",
+            e,
+        )
         with contextlib.suppress(OSError):
             os.unlink(path)
         return None

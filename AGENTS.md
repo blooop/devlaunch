@@ -44,13 +44,17 @@ Two things to know about it:
   well as by name.
 - **It touches real state.** `dl` mutates `metadata.json`, the bare clone cache
   and live devpod workspaces, which is how a half-finished change costs someone
-  their workspace list. Everything it stores resolves through `XDG_CACHE_HOME`
-  and `XDG_CONFIG_HOME`, so point those at a scratch directory when the change
-  being tested is anywhere near storage:
+  their workspace list. Everything it stores resolves through `XDG_CACHE_HOME`,
+  so point that at a scratch directory when the change being tested is anywhere
+  near storage:
 
   ```
-  XDG_CACHE_HOME=/tmp/dl-scratch/cache XDG_CONFIG_HOME=/tmp/dl-scratch/config dl-next owner/repo
+  XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next owner/repo
   ```
+
+  **Only that one variable.** Scoping `XDG_CONFIG_HOME` as well guards nothing —
+  `dl` writes nothing under it — while hiding the host's `gh` login from `gh auth
+  token`, so the workspace opens with no GitHub credentials at all.
 
   That isolates the bookkeeping, not the machine — `dl` drives devpod and docker
   on the host either way, so the workspaces a scratch run creates are real ones
