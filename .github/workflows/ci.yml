@@ -24,9 +24,12 @@ on:
 # superseded before they finish.
 #
 # Only pull requests are cancelled. A push to `main` is the run that says whether
-# `main` is good, and there is no later run to replace a cancelled one with.
+# that commit is good, and there is no later run to replace a cancelled one with
+# -- which is also why pushes are grouped by commit rather than by ref: sharing a
+# group without cancellation makes them queue, and a third arrival cancels the
+# one waiting in the middle, leaving a commit on `main` with no verdict at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
