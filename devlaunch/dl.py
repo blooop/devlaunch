@@ -65,6 +65,26 @@ class SshNotInstalled(MissingBinary):
     """
 
 
+class UnreadableWorkspaceList(Exception):
+    """devpod's workspace listing could not be read.
+
+    Distinct from "this machine has no workspaces", which is a listing that
+    reads fine and is empty. The two used to share one representation -- an
+    empty list -- so `dl --purge` could report that there was nothing to purge
+    when the truth was that it never found out, and a workspace spec could be
+    called unknown when nothing had been asked.
+
+    Deliberately not a RuntimeError, for the same reason MissingBinary is not:
+    dl catches RuntimeError broadly wherever a flaky command should degrade
+    rather than abort, and an answer dl could not read is precisely the thing
+    that must not degrade. It travels as a type nothing in between catches, and
+    main() is the only place that handles it.
+
+    The sibling shape in devpod_provider deliberately reads the same way. Two
+    listings devpod can fail to produce, two exceptions that say so, one rule.
+    """
+
+
 # One line, so a completion helper that trips over it cannot spew into the
 # user's shell. It names both install routes because devpod ships with the
 # pixi/conda package and does not ship with the pip one (see README).
@@ -85,6 +105,10 @@ SSH_MISSING_MESSAGE = (
 # The shell's own "command not found" code, which says more than a bare 1 and
 # cannot be confused with a devpod command that ran and failed.
 DEVPOD_MISSING_EXIT_CODE = 127
+
+# devpod is there and dl asked it, but what came back could not be read. A plain
+# failure rather than 127: nothing is missing and nothing needs installing.
+UNREADABLE_WORKSPACE_LIST_EXIT_CODE = 1
 
 
 def _install_provenance() -> Optional[str]:
@@ -268,8 +292,31 @@ def get_local_branches(owner_repo: str) -> List[str]:
 
 
 def update_completion_cache() -> Dict[str, Any]:
-    """Update the completion cache with current data."""
-    workspaces = list_workspaces()
+    """Update the completion cache with current data.
+
+    The one reader of the workspace list that has something to do with a listing
+    it cannot read. Everywhere else, an unreadable listing means the question
+    being asked cannot be answered at all, and UnreadableWorkspaceList travels
+    up to main() to say so. Here the workspace names are one of four things
+    being collected, and the other three -- repos, owners, branches -- come off
+    the local disk without asking devpod anything. So this catches, logs, and
+    builds completions out of what it can still see, deliberately: refusing
+    would mean an unreachable devpod stops `dl --install` from installing
+    completions at all, when what it costs is the workspace names.
+
+    The failure is logged rather than swallowed, because `dl --refresh` prints
+    the workspace count it got and zero-because-we-could-not-ask must not read
+    as zero-because-there-are-none. The cache this then writes offers no
+    workspace names until a later refresh succeeds -- which is what it did
+    before the listing learned to refuse -- and list_workspaces() still declines
+    to remember a list it never got, so the next command asks devpod again
+    instead of being served this one.
+    """
+    try:
+        workspaces = list_workspaces()
+    except UnreadableWorkspaceList as exc:
+        logging.warning(f"Completing without workspace names: {exc}")
+        workspaces = []
     workspace_ids = [ws.id for ws in workspaces]
     repos = discover_repos_from_workspaces(workspaces)
 
@@ -903,6 +950,38 @@ def invalidate_workspace_list_cache() -> None:
     _workspace_list_cache.pop(_WORKSPACE_LIST_KEY, None)
 
 
+def parse_workspaces(listing: str) -> List[Workspace]:
+    """The workspaces in a `devpod list --output json` listing.
+
+    Anything that is not such a listing raises rather than parsing to nothing.
+    That includes the empty string: devpod prints `[]` for a machine with no
+    workspaces, so silence is devpod failing to answer, not devpod answering
+    that there is nothing to list. Silence gets a branch of its own rather than
+    falling into the JSON parser, whose report of it -- `not JSON: ''` -- reads
+    like a bug in dl rather than a devpod that never spoke.
+    """
+    if not listing.strip():
+        raise UnreadableWorkspaceList(
+            "devpod said nothing when asked to list workspaces; it prints `[]` when there are none"
+        )
+    try:
+        parsed = json.loads(listing)
+    except json.JSONDecodeError as exc:
+        raise UnreadableWorkspaceList(
+            f"devpod's workspace listing is not JSON: {listing[:120]!r}"
+        ) from exc
+    if not isinstance(parsed, list):
+        raise UnreadableWorkspaceList(
+            f"expected devpod to list workspaces, got {type(parsed).__name__}"
+        )
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            raise UnreadableWorkspaceList(
+                f"expected each listed workspace to be an object, got {type(entry).__name__}"
+            )
+    return [Workspace.from_json(ws) for ws in parsed]
+
+
 def list_workspaces(refresh: bool = False) -> List[Workspace]:
     """List all devpod workspaces, reading devpod at most once per command.
 
@@ -916,10 +995,15 @@ def list_workspaces(refresh: bool = False) -> List[Workspace]:
     refresh=True bypasses the snapshot for a caller that must have the
     post-mutation truth even if nothing announced the mutation.
 
-    Only an answer devpod actually gave is remembered. A failed or unparsable
-    read returns an empty list without caching it, so a transient failure — and
-    a missing devpod, which raises out of here — can never be served again as
-    "this machine has no workspaces".
+    Only an answer devpod actually gave is remembered, and only an answer devpod
+    actually gave is returned: a read that failed or could not be parsed raises
+    UnreadableWorkspaceList rather than answering with an empty list, so neither
+    a transient failure nor a missing devpod can be served to a caller as "this
+    machine has no workspaces".
+
+    Which of the workspaces devpod lists belong to dl is a separate question,
+    and not one this function answers. It answers only whether the list can be
+    believed at all.
     """
     if not refresh:
         cached = _workspace_list_cache.get(_WORKSPACE_LIST_KEY)
@@ -928,14 +1012,14 @@ def list_workspaces(refresh: bool = False) -> List[Workspace]:
             # be rewriting what the next caller sees.
             return list(cached)
     result = run_devpod(["list", "--output", "json"], capture=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        logging.error("Failed to parse devpod output")
-        return []
-    workspaces = [Workspace.from_json(ws) for ws in data]
+    if result.returncode != 0:
+        # !r for the same reason the parse path uses it: devpod's stderr is
+        # routinely several lines, and DEVPOD_MISSING_MESSAGE's comment sets the
+        # rule that one of dl's failure messages is one line.
+        raise UnreadableWorkspaceList(
+            f"`devpod list` exited {result.returncode}: {(result.stderr or '').strip()[:200]!r}"
+        )
+    workspaces = parse_workspaces(result.stdout or "")
     _workspace_list_cache[_WORKSPACE_LIST_KEY] = workspaces
     return list(workspaces)
 
@@ -1372,9 +1456,10 @@ def wants_startup_cache_refresh(args: List[str]) -> bool:
 def main(argv: Optional[List[str]] = None) -> int:
     """Main entry point for dl CLI.
 
-    Thin wrapper so there is exactly one handler for a missing devpod, however
-    deep in the command it was noticed. The message goes to stderr because
-    stdout is parsed by the completion machinery (--repos, --completion-data).
+    Thin wrapper so there is exactly one handler for a missing devpod, and one
+    for a devpod that answered with something dl could not read, however deep in
+    the command either was noticed. Both messages go to stderr because stdout is
+    parsed by the completion machinery (--repos, --completion-data).
 
     argv is the argument list without the program name, defaulting to the real
     one. It is a parameter so that a sibling entry point can hand dl a command
@@ -1390,6 +1475,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except MissingBinary as e:
         print(e, file=sys.stderr)
         return DEVPOD_MISSING_EXIT_CODE
+    except UnreadableWorkspaceList as e:
+        print(f"error: {e}", file=sys.stderr)
+        return UNREADABLE_WORKSPACE_LIST_EXIT_CODE
 
 
 def _run_cli(argv: Optional[List[str]] = None) -> int:
