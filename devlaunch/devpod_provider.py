@@ -27,11 +27,25 @@ import subprocess
 from typing import Callable, Optional, Sequence, Set
 
 
-class UnreadableProviderList(RuntimeError):
+class UnreadableProviderList(Exception):
     """devpod's provider listing could not be read.
 
     Distinct from "no providers are registered", which is a listing that reads
     fine and is empty.
+
+    Not a RuntimeError. It used to be, and the CLI below then had to name
+    RuntimeError as well to catch the add failure -- which made the handler
+    broad enough to report any RuntimeError in the process as a devpod problem.
+    The two failures devpod can hand this module now have a type each, and the
+    handler names both and nothing else.
+    """
+
+
+class ProviderAddFailed(Exception):
+    """`devpod provider add` ran and failed.
+
+    Distinct from a listing that could not be read: devpod answered the question
+    it was asked, and then refused to do the thing.
     """
 
 
@@ -74,13 +88,21 @@ def ensure_provider(
 
     Returns True if it had to be added, False if it was already there. Raises
     `UnreadableProviderList` rather than guessing when devpod's answer cannot
-    be read.
+    be read, and `ProviderAddFailed` when the add itself fails.
     """
     if name in list_provider_names(run=run):
         return False
-    result = run(["devpod", "provider", "add", name], check=False)
+    result = run(
+        ["devpod", "provider", "add", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.returncode != 0:
-        raise RuntimeError(f"`devpod provider add {name}` exited {result.returncode}")
+        raise ProviderAddFailed(
+            f"`devpod provider add {name}` exited {result.returncode}: "
+            f"{(result.stderr or '').strip()[:200]}"
+        )
     return True
 
 
@@ -105,7 +127,7 @@ def main(
 
     try:
         added = ensure_provider(args.name, run=run)
-    except (UnreadableProviderList, RuntimeError) as exc:
+    except (UnreadableProviderList, ProviderAddFailed) as exc:
         print(f"error: {exc}")
         return 1
     print(f"devpod provider {args.name}: {'added' if added else 'already registered'}")
