@@ -1,13 +1,14 @@
 """E2E tests for full devlaunch workflows with real DevPod.
 
-These tests run inside a Docker-in-Docker environment where they can
-execute real DevPod commands creating real containers.
+These tests execute real DevPod commands creating real containers, so they
+need a Docker daemon. Run them from inside this repo's devcontainer, which
+carries a daemon of its own, or on a machine you do not mind them writing to.
 
 IMPORTANT: These tests do NOT launch any IDE. The default `dl` command
 without the `code` subcommand creates workspaces without opening editors.
 
 Run these tests with:
-    docker compose -f test/docker/docker-compose.test.yml up --build
+    pixi run test-e2e
 """
 
 import json

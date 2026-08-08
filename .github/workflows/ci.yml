@@ -3,9 +3,34 @@ name: CI
 on:
   push:
     branches: [ "main" ]
+  # Every pull request, whatever its base -- note the absence of a `branches:`
+  # filter here, which is deliberate and is the difference between this workflow
+  # gating a change and only appearing to.
+  #
+  # A filter on `pull_request` matches the *base* branch, not the head. This had
+  # `branches: [ "main" ]`, so a pull request onto any other base did not trigger
+  # a run at all -- not a pending one, not a skipped one, none. That exempted a
+  # whole class of pull request: a stacked chain, in which every link but the last
+  # targets its predecessor rather than `main`, so every link but the last merged
+  # with nothing behind it. A `push` filter is the opposite case and stays: it
+  # matches the branch pushed to, and every branch here reaches `main` through a
+  # pull request that is now covered.
   pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
+
+# One run per pull request at a time. This matters more since the filter above
+# came off: rebasing the bottom of a stacked chain pushes every branch in it, and
+# without this that is one full matrix and one e2e run per link, all of them
+# superseded before they finish.
+#
+# Only pull requests are cancelled. A push to `main` is the run that says whether
+# that commit is good, and there is no later run to replace a cancelled one with
+# -- which is also why pushes are grouped by commit rather than by ref: sharing a
+# group without cancellation makes them queue, and a third arrival cancels the
+# one waiting in the middle, leaving a commit on `main` with no verdict at all.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -48,15 +73,16 @@ jobs:
   # already costs some and runs beside it, so it does not lengthen the wait by
   # its own duration; and a nightly failure arrives detached from the change
   # that caused it, on a repo where nobody is rostered to triage one. To make it
-  # nightly instead: add `schedule:` to `on:` above and
-  # `if: github.event_name == 'schedule'` to this job. Nothing else moves --
-  # and note it has to be that, not `!= 'pull_request'`: `push: branches:
-  # [main]` stays in `on:` for the matrix job, so excluding only pull requests
-  # would leave this one running on every merge as well as on the schedule.
+  # nightly instead: add `schedule:` to `on:` above, add
+  # `if: github.event_name == 'schedule'` to this job, and drop it from `gate`'s
+  # `needs` below -- a job that does not run is not a job that passed, so leaving
+  # it there would block every merge. Note the condition has to be that, not
+  # `!= 'pull_request'`: `push: branches: [main]` stays in `on:` for the matrix
+  # job, so excluding only pull requests would leave this one running on every
+  # merge as well as on the schedule.
   #
-  # Like every job here, it runs on pushes to `main` and on pull requests
-  # targeting `main`. A pull request onto any other base -- a stacked one --
-  # triggers this workflow not at all.
+  # Like every job here, it runs on pushes to `main` and on every pull request
+  # whatever its base, stacked chains included.
   e2e:
     runs-on: ubuntu-latest
     # A registry serving this suite's 1.25 GB fixture image at 640 B/s is not
@@ -73,3 +99,55 @@ jobs:
           environments: default
       - name: E2E
         run: pixi run test-e2e
+
+  # One name for a branch ruleset to require, standing for every job above it.
+  #
+  # A ruleset names required checks as literal strings, so requiring the jobs
+  # individually means `ci (py310)`, `ci (py311)`, `ci (py312)`, `ci (py313)`
+  # and `e2e` written out in a repository setting -- a list that says nothing
+  # about why, that nobody reviews, and that goes stale the moment a matrix leg
+  # or a job is added or renamed here. The stale case is the dangerous one,
+  # because a required check that no longer exists is not a red tick: it is a
+  # merge that sails through ungated. Requiring `gate` instead puts the decision
+  # in this file, next to the jobs it is about, where a pull request that adds a
+  # job also adds it to `needs` under review.
+  #
+  # It covers this workflow and only this workflow: `needs` cannot reach across
+  # files, so the lint workflow's `prek` job is not in here and has to be
+  # required alongside `gate` rather than through it.
+  #
+  # `always()` on both the job and the step is load-bearing, and it is `always()`
+  # rather than `!cancelled()` on purpose. Without it on the job, the gate is
+  # skipped whenever anything it needs fails -- and a skipped job reports neither
+  # success nor failure. Without it on the step, a cancelled run skips the step
+  # while still running the job. And `!cancelled()` would leave the gate *skipped*
+  # when a run is cancelled, which a ruleset reads as satisfied: the unsafe
+  # direction of the two.
+  #
+  # The check insists on `success` rather than merely on the absence of
+  # `failure`, so `cancelled` and `skipped` fail it too, and it refuses to pass
+  # on an empty list. Both of those are the same point, which is the point of the
+  # whole workflow: a check nobody ran reads exactly like a check that passed,
+  # and a gate that covers nothing is the purest form of that.
+  gate:
+    needs: [ci, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job this gate covers must have succeeded
+        if: always()
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -eu
+          echo "results: $RESULTS"
+          if [ -z "$RESULTS" ]; then
+            echo "::error::this gate covers no jobs, so it is not gating anything"
+            exit 1
+          fi
+          for result in $RESULTS; do
+            if [ "$result" != success ]; then
+              echo "::error::a job this gate covers reported '$result'"
+              exit 1
+            fi
+          done

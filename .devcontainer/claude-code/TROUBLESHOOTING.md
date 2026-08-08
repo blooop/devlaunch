@@ -23,7 +23,6 @@
     "ghcr.io/devcontainers/features/node:1": {},
     "./claude-code": {}
   },
-  "runArgs": ["--network=host"],
   "containerEnv": {
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
     "XDG_CONFIG_HOME": "/home/vscode/.config",
@@ -86,24 +85,20 @@ claude  # Should go straight to interactive mode without wizard
 - Browser callback URL fails to connect
 
 **Root Cause:**
-OAuth callback server runs inside container on a random port (e.g., `localhost:35673`). Your browser tries to connect to that port on the HOST, but the container's port isn't accessible.
+The OAuth callback listener runs inside the container, on the container's loopback (e.g. `localhost:54545`). Your browser runs on the host, so it connects to the *host's* loopback, where nothing is listening. A `curl` from the host to that port gets connection refused.
 
-**Solution:**
-Add `--network=host` to devcontainer.json:
+**Solution — authenticate on the host, once:**
+Run `claude` on your host machine and complete the flow there. The feature bind-mounts `~/.claude`, so `.credentials.json` arrives already populated and no container ever needs to run this flow. This is what the shipped configuration does, and it is why the problem does not normally appear.
 
-```json
-{
-  "runArgs": ["--network=host"]
-}
+**If you must complete the flow from inside the container:**
+Forward the port for that one session, rather than changing how every container is built:
+
+```bash
+devpod ssh <workspace> -L 54545:localhost:54545
 ```
 
-This makes the container share the host's network namespace, so ports inside the container are accessible from the host browser.
-
-**Trade-off:**
-Using `--network=host` gives the container full network access and may prevent VS Code extensions from installing (known issue: [#9212](https://github.com/microsoft/vscode-remote-release/issues/9212)).
-
-**Workaround if you can't use --network=host:**
-Authenticate on your host machine first, then credentials are shared via mounts.
+**Why not `--network=host`:**
+Earlier versions of this guide recommended it. It does work, and it costs more than it is worth. Sharing the host's network namespace means a listener in the container *is* a listener on the host: two containers cannot both run the callback flow, and neither can one while anything on the host holds the port (`nc -l -p 54545` in a host-networked container fails with `Address in use` against the host's own listener). It also breaks nesting a Docker daemon, since a second daemon in the host's namespace co-manages the host's `docker0` bridge and writes its NAT rules into the host's netfilter tables.
 
 ### Issue 3: `claude --print` Works But Interactive `claude` Asks for Login
 
@@ -247,7 +242,7 @@ Look for:
 ```bash
 # On HOST
 docker inspect <container-id> | jq '.[0].HostConfig.NetworkMode'
-# Should show: "host"
+# Should NOT show "host" -- this container runs on a bridge network
 ```
 
 ## Complete Setup Checklist
@@ -256,7 +251,6 @@ When setting up a new workspace:
 
 - [ ] Node.js feature added to devcontainer.json
 - [ ] `./claude-code` feature added
-- [ ] `runArgs: ["--network=host"]` added
 - [ ] Environment variables added (CLAUDE_CONFIG_DIR, XDG_*)
 - [ ] Files exist on host: `.credentials.json`, `.claude.json`
 - [ ] File permissions: `chmod 600` on sensitive files
@@ -349,21 +343,17 @@ watch -n 1 'stat ~/.claude/.claude.json | grep Modify'
 
 ## Known Limitations
 
-1. **VS Code extensions may not install with --network=host**
-   - Issue: https://github.com/microsoft/vscode-remote-release/issues/9212
-   - Workaround: Build without runArgs first, then add it
-
-2. **Per-workspace setup tracking**
+1. **Per-workspace setup tracking**
    - Each workspace path needs its own `projectOnboardingSeenCount`
    - Renaming workspace requires updating the flag
 
-3. **No credential isolation**
+2. **No credential isolation**
    - All containers share same host credentials
    - Can't use different Claude accounts per container
 
-4. **OAuth callback browser routing**
-   - Requires `--network=host` or manual code pasting
-   - May not work in some network environments
+3. **OAuth callback browser routing**
+   - The in-container callback needs a forwarded port, or the code pasted by hand
+   - Moot in the shipped configuration, which mounts credentials from the host
 
 ## Getting Help
 
@@ -382,4 +372,3 @@ If issues persist:
 - Claude Code Docs: https://code.claude.com/docs/
 - deps_rocker reference: https://github.com/blooop/deps_rocker
 - OAuth callback issue: https://github.com/anthropics/claude-code/issues/1529
-- Network=host issue: https://github.com/microsoft/vscode-remote-release/issues/9212

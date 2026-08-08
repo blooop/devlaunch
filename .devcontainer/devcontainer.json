@@ -19,16 +19,32 @@
         }
     },
 	"features": {
-		"./claude-code": {}
+		"./claude-code": {},
 
-        // "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+        // A Docker daemon of our own, so devpod can create real containers from
+        // in here and the e2e suite (pixi run test-e2e) has something to run
+        // against. The feature is self-contained: it brings "privileged": true,
+        // its own entrypoint, and a named volume for /var/lib/docker -- which is
+        // what buys overlayfs rather than the vfs fallback, so nested builds run
+        // at normal speed. Nothing else has to be arranged for it.
+        //
+        // It declares no "init" key, and does not need one: PID 1 in here is
+        // devpod's agent, which reaps orphans already, and dockerd is one of
+        // them. Adding "init": true would stack a second init on a done job.
+        //
+        // This is also why the container does not join the host's network
+        // namespace. The host's own docker0 bridge is already up in there, so a
+        // second daemon would co-manage that bridge and write its NAT rules into
+        // the host's netfilter tables -- fighting the host's Docker rather than
+        // nesting under it -- and every port a process here listens on would be
+        // a port on the host. Nothing this repo reaches for needs host
+        // networking; a bridge network serves all of it.
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+
 		// "ghcr.io/devcontainers/features/common-utils:2": {},
 		// "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
 		// "ghcr.io/jsburckhardt/devcontainer-features/codex:latest": {}
     },
-    "runArgs": [
-        "--network=host"
-    ],
     "containerEnv": {
         "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
         "XDG_CONFIG_HOME": "/home/vscode/.config",
@@ -38,8 +54,43 @@
     },
     "mounts": [
         "source=${localWorkspaceFolderBasename}-pixi,target=${containerWorkspaceFolder}/.pixi,type=volume",
-        "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind",
+
+        // Two files, not the directory they sit in. devpod running in here
+        // writes `Host <id>.devpod` blocks into $HOME/.ssh/config, each with a
+        // ProxyCommand naming a devpod binary that exists only inside this
+        // container -- so mounting the directory put entries on the
+        // developer's real config that nothing outside could ever honour, and
+        // that survived the container they pointed at. Left container-local,
+        // they die with it.
+        //
+        // These two are what SSH actually needs here, measured rather than
+        // assumed: the agent socket alone authenticates to GitHub, so the
+        // private key is not load-bearing and is deliberately not mounted,
+        // while without known_hosts a clone fails host key verification.
+        // known_hosts is read-only because nothing in here has any business
+        // adding hosts to the developer's list.
+        //
+        // The HOME-relative socket path is an assumption -- stock OpenSSH puts
+        // its agent socket in /tmp -- but a pre-existing one, since
+        // containerEnv already hardcodes the same path.
+        "source=${localEnv:HOME}/.ssh/agent.sock,target=/home/vscode/.ssh/agent.sock,type=bind",
+        "source=${localEnv:HOME}/.ssh/known_hosts,target=/home/vscode/.ssh/known_hosts,type=bind,readonly",
         "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind"
     ],
-    "postCreateCommand": "sudo chown vscode .pixi && pixi install"
+    // Register the docker provider with the container's own devpod. A fresh
+    // container has an empty ~/.devpod, and devpod seeds nothing: `devpod up`
+    // there exits 1 with "no default provider found". Since dl's only
+    // subprocess is devpod, that is dl failing to start rather than degrading.
+    // `provider add` also makes it the default, so this is the whole bootstrap.
+    //
+    // What it costs: this is now a three-link && chain on the critical path of
+    // every container create, and the new link can fail. The task refuses to
+    // guess when `devpod provider list` cannot be read -- it exits 1 rather
+    // than treating an unreadable answer as "no providers, add one" -- so an
+    // unreadable listing now fails container creation. That is the intended
+    // trade. The alternative is a container that comes up looking fine and
+    // fails on the first dl command anyone runs in it, which is the failure
+    // this step exists to remove; failing at create is louder, immediate, and
+    // attributable. It is idempotent, so a rebuild after a fix is the remedy.
+    "postCreateCommand": "sudo chown vscode .pixi && pixi install && pixi run dev-add-docker"
 }

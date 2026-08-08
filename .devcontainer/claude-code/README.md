@@ -58,39 +58,53 @@ Add this feature to your `devcontainer.json`:
 {
   "features": {
     "./claude-code": {}
-  },
-  "runArgs": ["--network=host"]
+  }
 }
 ```
 
 **Note**: Node.js is automatically installed via the `installsAfter` dependency mechanism - you don't need to explicitly add it to your features.
 
-### Why `--network=host` is Required
+### The OAuth callback, and why host networking is not the answer
 
-The `runArgs: ["--network=host"]` is **critical for OAuth authentication** to work in containers.
+This feature used to tell you to add `"runArgs": ["--network=host"]`, on an
+argument about the OAuth callback. The argument's mechanism is real; its
+conclusion was wrong, and the flag has been removed.
 
-**How OAuth works:**
-1. You run `claude` → starts OAuth flow
-2. Opens browser → you click "Authorize"
-3. Browser redirects to `http://localhost:<random-port>/callback`
-4. OAuth server running in container receives the callback
+**The mechanism, which is real:**
+1. You run `claude` → starts the OAuth flow
+2. Your browser opens → you click "Authorize"
+3. The browser redirects to `http://localhost:<port>/callback`
+4. The listener waiting for that callback is **inside the container**
 
-**The problem without host networking:**
-- OAuth server runs on port X **inside container**
-- Browser callback goes to port X on **host's localhost**
-- ❌ Container's port is not accessible from host → **callback fails**
+Your browser runs on the host, so `localhost` in step 3 is the *host's*
+loopback, and nothing is listening there. A `curl` from the host to that port
+gets connection refused. The callback genuinely does not complete on its own.
 
-**The solution:**
-- With `--network=host`, container shares host's network namespace
-- OAuth server on port X in container = port X on host
-- ✅ Browser callback reaches the container → **authentication succeeds**
+**Why that is not a reason for host networking.** Two independent reasons:
 
-**Security note:** Host networking gives the container full network access. Only use in trusted environments.
+- **The port can simply be forwarded.** `devpod ssh -L <port>:localhost:<port>`
+  makes the host's loopback reach the container's, and the one-click callback
+  works again. That is a per-session flag, not a property baked into every
+  container this feature builds.
+- **The shipped configuration never runs that flow anyway.** This feature
+  bind-mounts `~/.claude`, so `.credentials.json` is already populated when the
+  container starts. The interactive OAuth flow is for a host that has never
+  authenticated — and that host should authenticate itself, once, rather than
+  every container it builds carrying a networking mode for the case.
 
-**Alternative (if host networking is not acceptable):**
-- Authenticate Claude on your host machine first
-- Credentials in `~/.claude/.credentials.json` are automatically shared with container
-- No OAuth flow needed in container
+**And host networking has a cost that is not hypothetical.** Sharing the host's
+network namespace means a listener in the container *is* a listener on the host.
+Two containers cannot both run the callback flow, and a container cannot run it
+while anything on the host holds the port — demonstrated: `nc -l -p 54545` in a
+host-networked container fails with `Address in use` against the host's own
+listener. In this repo it is worse than a collision, because the container runs
+a Docker daemon of its own: a second daemon in the host's namespace would
+co-manage the host's `docker0` bridge and write its NAT rules into the host's
+netfilter tables.
+
+**If you have never authenticated on the host**: run `claude` there once. The
+credentials land in `~/.claude/.credentials.json` and every container this
+feature builds picks them up.
 
 ### Build the Container
 
@@ -375,34 +389,28 @@ Then use both:
 
 ### OAuth callback hangs at "Paste code here"
 
-**Problem**: Browser clicks "Authorize" but container never receives the callback.
+**Problem**: Browser clicks "Authorize" but the container never receives the callback.
 
-**Solution**: Add `--network=host` to your `devcontainer.json`:
+**Root cause**: The listener is on the container's loopback and your browser is
+on the host's. Nothing is wrong with the container.
 
-```json
-{
-  "runArgs": ["--network=host"]
-}
+**Solution**: Authenticate on the host once — `claude` there, then rebuild — and
+the mounted `~/.claude/.credentials.json` means the container never runs this
+flow. If you must complete it from inside, forward the port for that session:
+
+```bash
+devpod ssh <workspace> -L <port>:localhost:<port>
 ```
 
-See "Why `--network=host` is Required" section above for details.
+See "The OAuth callback, and why host networking is not the answer" above.
 
 ### Interactive `claude` asks for authentication but `claude --print` works
 
 **Problem**: You're authenticated (credentials mounted) but interactive mode prompts for login.
 
-**Root cause**: Without `--network=host`, OAuth callbacks can't reach the container.
-
-**Solution**: Add `"runArgs": ["--network=host"]` to devcontainer.json.
-
-### VS Code extensions don't install with `--network=host`
-
-**Known Issue**: [Using runArgs network=host prevents extensions from installing](https://github.com/microsoft/vscode-remote-release/issues/9212)
-
-**Workarounds:**
-1. **Rebuild without runArgs first**, let extensions install, then add runArgs (extensions persist)
-2. **Authenticate on host**, mount credentials, remove runArgs (no OAuth needed in container)
-3. **Manually install extensions** after container starts
+**Root cause**: Not networking. Check that `~/.claude/.credentials.json` is
+actually mounted and readable in the container, and that `CLAUDE_CONFIG_DIR`
+points at the mounted directory rather than a fresh one.
 
 ### Mount warnings about missing files
 

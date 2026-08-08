@@ -1,8 +1,18 @@
 name: prek
 
+# No `branches:` filter, deliberately -- on a `pull_request` trigger that filter
+# matches the base branch, so adding one would exempt every pull request onto
+# anything but `main`, stacked chains included. `ci.yml` carries the long version
+# of that story.
 on: [pull_request]
 
 jobs:
+  # This job's name is meant to be named directly by `main`'s branch ruleset, as
+  # a literal string. It cannot hide behind `ci.yml`'s `gate` job the way that
+  # file's own jobs do, because `needs` does not reach across workflow files. So
+  # once it is required, renaming this job or this workflow does not make the
+  # ruleset fail -- it makes it stop gating, silently. Rename only together with
+  # the ruleset.
   prek:
     runs-on: ubuntu-latest
     steps:
