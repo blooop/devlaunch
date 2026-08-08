@@ -53,6 +53,18 @@ dl <user/repo> <cmd>             # Run workspace command (stop, code, etc.)
 dl <user/repo> -- <command>      # Run shell command in workspace
 ```
 
+### Commands that need a terminal
+
+`dl <ws> -- <command>` gives the command a terminal whenever `dl` itself has one,
+so interactive programs — a coding agent, `htop`, `git rebase -i`, a REPL — start
+and stay up instead of exiting immediately. Redirect the output and the terminal
+goes away again, so `dl <ws> -- ls > files.txt` stays free of escape sequences.
+
+This needs the ssh host alias `devpod up` writes to `~/.ssh/config`. If a
+workspace has none, `dl` says so and falls back to the plain `devpod ssh`
+transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
+`DEVLAUNCH_NO_TTY=1` to force the fallback everywhere.
+
 ## aid: start a coding agent in a workspace
 
 `aid` is `dl` with a coding agent started for you:
@@ -187,13 +199,14 @@ than the filesystem has actually done.
 | `dl <user/repo> restart` | Stop and start (no rebuild) |
 | `dl <user/repo> recreate` | Recreate container |
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
-| `dl <user/repo> -- <command>` | Run shell command in workspace |
+| `dl <user/repo> -- <command>` | Run shell command in workspace (with a terminal, when `dl` has one) |
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `--devcontainer <variant\|path>` | Use a non-default `devcontainer.json`. A bare name means `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so pass it once. |
+| `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal; always use the plain `devpod ssh` transport. |
 
 Projects with demanding devcontainers — several variants, compose sidecars, or a
 host-side `initializeCommand` that has to tell branch workspaces apart — are

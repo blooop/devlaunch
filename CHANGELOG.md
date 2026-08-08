@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-08
+
+One fix: `dl <ws> -- <command>` now gives the command a terminal when you have
+one, so interactive programs — a coding agent, a REPL, `git rebase -i` — start
+and stay up instead of exiting immediately. This is what made `aid <repo>` return
+straight to your shell.
+
+### Fixed
+- Interactive commands get a terminal. `devpod ssh --command` never requests a
+  pty, so anything it started ran with stdin, stdout and stderr on pipes and
+  `TERM=dumb`. Nothing about that looks like a missing terminal from the outside:
+  `claude` reads the pipe as a non-interactive invocation, switches to `--print`
+  mode and exits, so `aid <repo>` left no session behind and `aid <repo> 'fix it'`
+  printed one answer and stopped. `dl` now hands such commands to OpenSSH through
+  the `<workspace>.devpod` host alias `devpod up` already writes, with `-t`, which
+  also puts window size and SIGWINCH in OpenSSH's hands rather than dl's.
+
+  The choice is the one `ssh` itself makes — a terminal when there is a terminal
+  to use — so `dl <ws> -- ls > files.txt` keeps the devpod transport and stays
+  free of escape sequences. A workspace with no host alias falls back with a
+  warning that says how to republish it, and `DEVLAUNCH_NO_TTY=1` forces the
+  fallback everywhere. A bare `dl <ws>` attach is untouched; devpod already gives
+  that one a pty.
+
+### Changed
+- The devpod floor moves from 0.8 to 0.26.1, in the conda recipe and in the
+  development environment. dl's behaviour depends on devpod's, and the two differ
+  across that range — 0.8 gives `devpod ssh --command` a pty and 0.26 does not —
+  so the suite had been exercising a devpod five years of releases behind the one
+  `dl` ships alongside, and could not have reproduced the bug above at all.
+
 ## [0.0.12] - 2026-08-08
 
 One fix: `dl` stops reporting a failure every time you leave a workspace, and a
