@@ -74,7 +74,7 @@ py312 = ["py312", "test"]
 py313 = ["py313", "test"]
 
 [tool.pixi.tasks]
-dev-add-docker = "devpod provider list | grep -qw docker || devpod provider add docker"
+dev-add-docker = "python -m devlaunch.devpod_provider docker"
 dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
 dev-restart = { cmd = "devpod up . --recreate --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }

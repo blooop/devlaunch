@@ -27,6 +27,7 @@ from fixtures.git_fixtures import (  # noqa: E402
     local_git_repo_with_devcontainer,
     real_managers,
 )
+from devpod_scoping import scope_devpod_to_this_run  # noqa: E402
 from fixtures.devpod_mock import DevPodMock, mock_devpod  # noqa: E402
 from fixtures.e2e_helpers import dl_no_ide, devpod_cleanup  # noqa: E402
 
@@ -118,7 +119,16 @@ def fresh_workspace_list_cache():
 
 
 def pytest_configure(config):
-    """Register custom markers."""
+    """Scope this run's devpod state, then register custom markers.
+
+    The scoping happens here, before collection, rather than in a fixture: a
+    fixture is something a test has to ask for, and the test that must not
+    forget is the one nobody has written yet. Everything the session spawns
+    inherits this process's environment, so one assignment covers the whole
+    suite -- including the `devpod list` that decides what `dl --purge` deletes.
+    """
+    scope_devpod_to_this_run()
+
     config.addinivalue_line(
         "markers",
         "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
