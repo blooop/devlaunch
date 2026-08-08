@@ -56,6 +56,13 @@ def _git(repo: Path, *args: str) -> Optional[str]:
     never be reported as *safe to delete* on the strength of a failed command —
     every caller here treats ``None`` as "no information", and the one place
     that matters (:func:`holds_unsaved_work`) fails safe explicitly.
+
+    Only trailing newlines are trimmed, never leading whitespace. A full
+    ``strip()`` here was wrong in a way that took real use to notice: the first
+    line of ``git status --porcelain`` for a *modified tracked* file begins with
+    a space (`` M pixi.lock``), so stripping ate the status column and
+    :func:`_name_a_few` then reported ``ixi.lock``. Untracked entries start
+    ``??`` and were unharmed, which is exactly why the tests missed it.
     """
     try:
         result = subprocess.run(
@@ -67,7 +74,7 @@ def _git(repo: Path, *args: str) -> Optional[str]:
     if result.returncode != 0:
         logger.debug(f"git {' '.join(args)} in {repo}: {result.stderr.strip()}")
         return None
-    return result.stdout.strip()
+    return result.stdout.rstrip("\n")
 
 
 def read_clone(clone: Path) -> CloneState:

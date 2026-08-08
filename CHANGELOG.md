@@ -32,6 +32,15 @@ table and should be judged on its own merits.
   Named, the same fact is judgeable — by a person, and by a caller deciding
   whether to insist.
 
+### Fixed
+
+- The first named path lost its first character (`ixi.lock` for `pixi.lock`).
+  `git status --porcelain` writes a modified *tracked* file as `` M path`` —
+  leading space — and this module stripped git's output at both ends, eating
+  the status column of the first line only. Untracked entries start `??` and
+  were unharmed, which is why the tests written alongside the feature all
+  passed. Only trailing newlines are trimmed now.
+
 ## [0.0.21] - 2026-08-08
 
 One workspace per branch means workspaces accumulate, and until now the only

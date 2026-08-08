@@ -272,6 +272,16 @@ class TestNamingWhatIsUnsaved:
         unsaved = holds_unsaved_work(clone)
         assert unsaved and "pixi.lock" in unsaved
 
+    def test_a_modified_tracked_file_keeps_its_first_letter(self, clone):
+        # The regression that took real use to find. `git status --porcelain`
+        # writes a *modified* tracked file as " M path" -- leading space -- and
+        # a full strip() of git's output ate it, so the path was reported one
+        # character short ("ixi.lock"). Untracked files start "??" and were
+        # unharmed, which is why every test here passed while the feature was
+        # printing nonsense. Asserted on the exact rendering, not on a substring.
+        (clone / "feature.txt").write_text("edited by the container's build\n")
+        assert holds_unsaved_work(clone) == "1 uncommitted change(s) (feature.txt)"
+
     def test_a_long_list_is_cut_short_rather_than_dumped(self, clone):
         for i in range(6):
             (clone / f"file{i}.txt").write_text("x\n")
