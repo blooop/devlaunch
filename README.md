@@ -416,3 +416,53 @@ pixi run ci
 # Format and lint
 pixi run style
 ```
+
+`pixi run test` skips the e2e suite, which needs a Docker daemon to create real
+workspaces with. This repo's devcontainer carries one of its own, through the
+`docker-in-docker` feature, and pins the same devpod a host installs, so from
+inside it:
+
+```bash
+# Run the e2e suite against a real devpod
+pixi run test-e2e
+```
+
+You can also run it on a machine you do not mind it writing to — an ephemeral CI
+runner, say. It is skipped by default rather than gated on a container, because
+what it needs is a daemon, not nesting.
+
+This is also why the devcontainer does not join the host's network namespace: a
+nested daemon needs a namespace of its own, or it co-manages the host's `docker0`
+bridge and writes its NAT rules into the host's netfilter tables.
+
+### Disk cost of the dev container
+
+Opening a devcontainer for a branch costs about **2 GB on the host before you do
+anything in it**: ~600 MB of image layers unique to this image, a ~680 MB container
+writable layer, and a ~520 MB `<workspace>-pixi` volume.
+
+The container carries its own Docker daemon, and that daemon's `/var/lib/docker`
+lives on a second named volume. One `pixi run test-e2e` plus a couple of nested
+workspaces puts **~2.3 GB** in there, and nothing garbage-collects it — the inner
+daemon reports ~45% of its images reclaimable with no reclaimer. Nested daemons
+share no layers with the host or with each other, so this is paid once per branch.
+
+**Budget ~4 GB per branch you are actively developing and e2e-testing — about 12 GB
+for three concurrent branches.**
+
+The time cost is cold pulls in a fresh nested daemon: the first `devpod up` inside a
+new container takes ~25s, ~16s of which is pulling a base image the host already has.
+Workspaces after that reuse it and take ~8s.
+
+**These volumes are not reclaimed automatically.** `devpod delete` removes the
+container with `docker rm` and never touches volumes, and Docker never
+garbage-collects a *named* volume — so `<workspace>-pixi` and
+`dind-var-lib-docker-*` outlive the workspace that created them. To see what has
+piled up:
+
+```bash
+docker system df -v      # under Local Volumes, LINKS 0 means no container uses it
+```
+
+Cross-check a name against `devpod list` before removing it with `docker volume rm`:
+a volume belonging to a live workspace shows `LINKS 1`.
