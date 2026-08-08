@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-08-08
+
+One fix: `dl` stops reporting a failure every time you leave a workspace, and a
+one-shot `dl <ws> -- <command>` now exits with the command's own status instead
+of a flat 1. Nothing about how you install or run `dl` changes.
+
 ### Fixed
 - Leaving a workspace no longer reports a failure. devpod turns any nonzero exit
   from the program it ran into a fatal of its own ("tunnel to container: run in
