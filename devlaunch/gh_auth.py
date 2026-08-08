@@ -169,3 +169,17 @@ def ssh_args_and_env() -> Tuple[List[str], Optional[Dict[str, str]]]:
     if not token:
         return [], None
     return ["--send-env", TOKEN_VAR], {**os.environ, TOKEN_VAR: token}
+
+
+def openssh_env_names_and_env() -> Tuple[List[str], Optional[Dict[str, str]]]:
+    """The same forwarding, for the OpenSSH transport that carries a terminal.
+
+    Interactive payloads reach the workspace through `ssh` rather than `devpod
+    ssh` (see tty_session), which spells the same idea `-o SendEnv=NAME`. Only
+    the names are returned here; tty_session turns them into flags, and the
+    values travel in the environment for the same reason as above.
+    """
+    token = resolve_token()
+    if not token:
+        return [], None
+    return [TOKEN_VAR], {**os.environ, TOKEN_VAR: token}

@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  version: "0.0.13"
+  version: "0.0.14"
 
 package:
   name: devlaunch
@@ -26,7 +26,11 @@ requirements:
     - python >=3.10
     - iterfzf >=1.0.0
     - tomli >=2.0.0
-    - devpod >=0.8.0
+    # Floor raised from 0.8 to the version dl is developed and tested against.
+    # dl's behaviour depends on devpod's, and the two differ across that range:
+    # 0.8 gives `devpod ssh --command` a pty, 0.26 does not. Claiming support
+    # for a span nothing exercises is how that difference went unnoticed.
+    - devpod >=0.26.1
 
 tests:
   - python:

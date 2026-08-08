@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, gh_auth, tools
+from . import devpod_ssh, gh_auth, tools, tty_session
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -41,15 +41,27 @@ from .worktree.migration import migrate_cache
 from .worktree.workspace_clone import WorkspaceCloneManager
 
 
-class DevpodNotInstalled(Exception):
-    """The devpod binary dl shells out to is not on PATH.
+class MissingBinary(Exception):
+    """A binary dl shells out to is not on PATH.
 
     Deliberately not an OSError (FileNotFoundError is one) and not a
     RuntimeError: dl catches both broadly in a dozen places so that a flaky
     command degrades to an empty list or a "failed to prepare workspace"
     message. A missing binary reported through one of those handlers is
-    reported wrongly, so it travels as a type nothing between run_devpod and
-    main() catches, and main() is the only place that handles it.
+    reported wrongly, so it travels as a type nothing between the spawn helpers
+    and main() catches, and main() is the only place that handles it.
+    """
+
+
+class DevpodNotInstalled(MissingBinary):
+    """The devpod binary is not on PATH."""
+
+
+class SshNotInstalled(MissingBinary):
+    """OpenSSH is not on PATH, so no command can be given a terminal.
+
+    Its own type rather than DevpodNotInstalled: telling someone to install
+    devpod when devpod is present and working would send them the wrong way.
     """
 
 
@@ -60,6 +72,14 @@ DEVPOD_MISSING_MESSAGE = (
     "devpod not found on PATH: dl cannot manage workspaces without it. "
     "Install devpod from https://devpod.sh/docs/getting-started/install "
     "(pixi/conda installs of devlaunch include it; pip installs do not)."
+)
+
+# Same shape, and names the way out that does not need ssh at all: the devpod
+# transport still runs commands, it just cannot give them a terminal.
+SSH_MISSING_MESSAGE = (
+    "ssh not found on PATH: dl needs OpenSSH to give a workspace command a "
+    "terminal. Install it, or set DEVLAUNCH_NO_TTY=1 to run commands through "
+    "devpod instead (interactive programs will not work)."
 )
 
 # The shell's own "command not found" code, which says more than a bare 1 and
@@ -1051,12 +1071,45 @@ def workspace_up(
     return result
 
 
+def run_ssh(args: List[str], env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+    """Run OpenSSH, dl's other way into a workspace.
+
+    Separate from run_devpod because it is a different binary with a different
+    failure mode, and because the pty transport has to be swappable in tests
+    without stubbing out every devpod call as well.
+
+    Takes the whole argv, `ssh` included, because tty_session composes a
+    complete command rather than a tail of flags -- unlike run_devpod, whose
+    callers each build up their own subcommand.
+
+    Security note: list form, not shell=True, so nothing in the payload is
+    interpreted by a host shell.
+    """
+    logging.debug("Running: %s", " ".join(args))
+    try:
+        # nosec B603 B607 - list form, not shell=True; no command injection risk
+        return subprocess.run(list(args), check=False, env=env)
+    except FileNotFoundError as e:
+        raise SshNotInstalled(SSH_MISSING_MESSAGE) from e
+
+
 def workspace_ssh(
     workspace: str,
     command: Optional[str] = None,
     workdir: Optional[str] = None,
 ) -> int:
     """SSH into a workspace, optionally running a command.
+
+    A command runs through whichever of the two transports can give it what it
+    needs. devpod's --command never requests a pty, which is fine for `make
+    test` and fatal for anything interactive -- `claude` reads the pipe as a
+    non-interactive invocation and exits instead of starting a session. So when
+    dl is itself on a terminal, the command goes to OpenSSH through the host
+    alias devpod published, with -t (see tty_session). Otherwise, and when no
+    alias exists, it goes to devpod as before.
+
+    A bare attach is left on devpod: it already gets a pty, being the one case
+    devpod requests one for.
 
     Args:
         workspace: The workspace ID to SSH into
@@ -1066,19 +1119,34 @@ def workspace_ssh(
             if given a path that doesn't exist in the container, so never guess
             one from the workspace id.
     """
-    args = ["ssh", workspace]
+    # devpod runs --command under a non-login, non-interactive `bash -c`, which
+    # sources neither ~/.profile nor ~/.bashrc -- so PATH entries the image adds
+    # there (notably $HOME/.pixi/bin) are missing and the payload dies with
+    # "command not found". An interactive attach gets a login shell, so wrap
+    # here to give both paths the same PATH. dl launches arbitrary repos, so the
+    # parity has to come from the invocation rather than from any particular
+    # devcontainer.json.
+    #
+    # Built once and shared by both transports: two copies of this expression
+    # would be two chances for the transports to drift, which is the whole
+    # failure this function exists to have fixed.
+    payload = f"bash -lc {shlex.quote(command)}" if command else None
 
+    if payload is not None and tty_session.have_terminal():
+        if tty_session.devpod_host_configured(workspace):
+            return _ssh_with_terminal(workspace, payload, workdir)
+        logging.warning(
+            "No devpod ssh host entry for %s, so this command gets no terminal; "
+            "interactive programs may exit immediately. `dl %s restart` republishes it.",
+            workspace,
+            workspace,
+        )
+
+    args = ["ssh", workspace]
     if workdir:
         args.extend(["--workdir", workdir])
-    if command:
-        # devpod runs --command under a non-login, non-interactive `bash -c`,
-        # which sources neither ~/.profile nor ~/.bashrc -- so PATH entries the
-        # image adds there (notably $HOME/.pixi/bin) are missing and the payload
-        # dies with "command not found". An interactive attach gets a login
-        # shell, so wrap here to give both paths the same PATH. dl launches
-        # arbitrary repos, so the parity has to come from the invocation rather
-        # than from any particular devcontainer.json.
-        args.extend(["--command", f"bash -lc {shlex.quote(command)}"])
+    if payload is not None:
+        args.extend(["--command", payload])
 
     # Attaching to a running workspace skips workspace_up, so the gh login has
     # to be offered here too. Only the variable name lands in args; the token
@@ -1101,6 +1169,20 @@ def workspace_ssh(
             return exit_code
         case _ as unhandled:
             devpod_ssh.assert_never(unhandled)
+
+
+def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> int:
+    """Run an already-wrapped payload under a pty via OpenSSH.
+
+    No devpod_ssh.SshOutcome here, and nothing to recover: OpenSSH exits with
+    the remote program's own status, which is the thing devpod loses by wrapping
+    its *ssh.ExitError three times before type-asserting on it. This transport
+    never had that bug, so it needs none of the machinery that works around it.
+    """
+    env_names, env = gh_auth.openssh_env_names_and_env()
+    args = tty_session.ssh_command_args(workspace, payload, send_env=env_names, workdir=workdir)
+    logging.info("SSH command: %s", " ".join(args))
+    return run_ssh(args, env=env).returncode
 
 
 def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
@@ -1305,7 +1387,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     invalidate_workspace_list_cache()
     try:
         return _run_cli(argv)
-    except DevpodNotInstalled as e:
+    except MissingBinary as e:
         print(e, file=sys.stderr)
         return DEVPOD_MISSING_EXIT_CODE
 
