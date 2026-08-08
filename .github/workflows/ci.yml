@@ -9,14 +9,25 @@ on:
   #
   # A filter on `pull_request` matches the *base* branch, not the head. This had
   # `branches: [ "main" ]`, so a pull request onto any other base did not trigger
-  # a run at all -- not a pending one, not a skipped one, none. That is precisely
-  # the shape this repository's `/stack` workflow produces: a chain in which every
-  # link but the last targets its predecessor, so every link but the last merged
+  # a run at all -- not a pending one, not a skipped one, none. That exempted a
+  # whole class of pull request: a stacked chain, in which every link but the last
+  # targets its predecessor rather than `main`, so every link but the last merged
   # with nothing behind it. A `push` filter is the opposite case and stays: it
   # matches the branch pushed to, and every branch here reaches `main` through a
   # pull request that is now covered.
   pull_request:
   workflow_dispatch:
+
+# One run per pull request at a time. This matters more since the filter above
+# came off: rebasing the bottom of a stacked chain pushes every branch in it, and
+# without this that is one full matrix and one e2e run per link, all of them
+# superseded before they finish.
+#
+# Only pull requests are cancelled. A push to `main` is the run that says whether
+# `main` is good, and there is no later run to replace a cancelled one with.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -98,23 +109,39 @@ jobs:
   # in this file, next to the jobs it is about, where a pull request that adds a
   # job also adds it to `needs` under review.
   #
-  # `if: always()` is load-bearing -- without it this job is skipped when
-  # anything it needs fails, and a skipped job reports neither success nor
-  # failure. And the check below insists on `success` rather than merely not
-  # `failure`, so `cancelled` and `skipped` are failures here too. That is the
-  # point: this workflow exists because a check nobody runs reads exactly like a
-  # check that passed.
+  # It covers this workflow and only this workflow: `needs` cannot reach across
+  # files, so the lint workflow's `prek` job is not in here and has to be
+  # required alongside `gate` rather than through it.
+  #
+  # `always()` on both the job and the step is load-bearing, and it is `always()`
+  # rather than `!cancelled()` on purpose. Without it on the job, the gate is
+  # skipped whenever anything it needs fails -- and a skipped job reports neither
+  # success nor failure. Without it on the step, a cancelled run skips the step
+  # while still running the job. And `!cancelled()` would leave the gate *skipped*
+  # when a run is cancelled, which a ruleset reads as satisfied: the unsafe
+  # direction of the two.
+  #
+  # The check insists on `success` rather than merely on the absence of
+  # `failure`, so `cancelled` and `skipped` fail it too, and it refuses to pass
+  # on an empty list. Both of those are the same point, which is the point of the
+  # whole workflow: a check nobody ran reads exactly like a check that passed,
+  # and a gate that covers nothing is the purest form of that.
   gate:
     needs: [ci, e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Every job this gate covers must have succeeded
+        if: always()
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
           set -eu
           echo "results: $RESULTS"
+          if [ -z "$RESULTS" ]; then
+            echo "::error::this gate covers no jobs, so it is not gating anything"
+            exit 1
+          fi
           for result in $RESULTS; do
             if [ "$result" != success ]; then
               echo "::error::a job this gate covers reported '$result'"
