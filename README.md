@@ -35,6 +35,13 @@ Note: When using pip, you must install [devpod](https://devpod.sh/docs/getting-s
 If `devpod` is not on `PATH`, every command that needs it prints a single install hint on stderr and exits `127`
 (the shell's "command not found" code). `dl --help` and `dl --version` keep working without it.
 
+A `devpod` that is installed but cannot answer is a different failure and gets a different exit code. If
+`devpod list` exits non-zero, or prints something that is not a `--output json` workspace listing, `dl` quotes
+what devpod said on stderr and exits `1` rather than reporting that you have no workspaces — so `dl --purge`
+stops instead of deleting caches it never checked. Shell completion is the deliberate exception: `dl --install`,
+`dl --refresh` and `dl --completion-data` log the failure and carry on with the repos and branches they can
+still discover on local disk, so an unreachable devpod costs you workspace-name completion and nothing more.
+
 ### Shell Completions
 
 After installation, set up shell completions for `dl` and `aid`:
@@ -410,6 +417,9 @@ This project uses [pixi](https://pixi.sh) for environment management.
 # Run tests
 pixi run test
 
+# Run the e2e suite: real devpod, real containers
+pixi run test-e2e
+
 # Run full CI suite
 pixi run ci
 
@@ -417,23 +427,48 @@ pixi run ci
 pixi run style
 ```
 
-`pixi run test` skips the e2e suite, which needs a Docker daemon to create real
-workspaces with. This repo's devcontainer carries one of its own, through the
-`docker-in-docker` feature, and pins the same devpod a host installs, so from
-inside it:
+`pixi run test` skips the e2e tests, which need devpod and a Docker daemon and
+build real containers. CI runs `pixi run test-e2e` in a job of its own, outside
+the Python matrix, on a throwaway runner — on every push to `main` and on every
+pull request that targets `main`. A pull request onto any other base runs no CI
+at all, e2e included, because the whole workflow is triggered by
+`pull_request: branches: [main]`; that gap covers every job here rather than
+this one, and stacked PRs are what walk into it.
 
-```bash
-# Run the e2e suite against a real devpod
-pixi run test-e2e
+Running it yourself is a different proposition. This repo's devcontainer carries
+a Docker daemon of its own, through the `docker-in-docker` feature, and pins the
+same devpod a host installs, so `pixi run test-e2e` from inside it builds its
+containers in there rather than on your Docker. You can also run it on a machine
+you do not mind it writing to — an ephemeral CI runner, say. It is skipped by
+default rather than gated on a container, because what it needs is a daemon, not
+nesting. Either way the suite exercises `dl --purge`, so it gives itself a
+private devpod namespace before collection begins — but the containers it builds
+are real ones, and it wants several minutes and a 1.25 GB image pull the first
+time.
+
+Its skips mean one thing only. A test that opts out does so through
+`fixtures.e2e_guard.opt_out`, and any other skip is reported as a failure,
+because a run that could not reach a registry used to be indistinguishable from
+a healthy one. Every run also prints what it actually built:
+
+```
+--------------------------------- e2e session ---------------------------------
+22 e2e tests attempted, 4 workspaces created: e2e-test-create, e2e-test-lifecycle, e2e-test-git, e2e-test-purge
 ```
 
-You can also run it on a machine you do not mind it writing to — an ephemeral CI
-runner, say. It is skipped by default rather than gated on a container, because
-what it needs is a daemon, not nesting.
+A run whose workspace-building tests built nothing does not pass: the shortfall
+is counted into the last line of the run, so `4 passed, 18 skipped` becomes
+`1 failed, 4 passed, 18 skipped`. A run with no workspace-building tests in it —
+`pytest -m e2e test/e2e/test_interactive_session.py`, say — has nothing to
+answer for and says so instead.
 
-This is also why the devcontainer does not join the host's network namespace: a
-nested daemon needs a namespace of its own, or it co-manages the host's `docker0`
-bridge and writes its NAT rules into the host's netfilter tables.
+`DEVLAUNCH_E2E_WORKSPACE=<id>` opts in to the interactive-session tests, which
+attach to a workspace you already have running rather than building one.
+
+The nested daemon is also why the devcontainer does not join the host's network
+namespace: a nested daemon needs a namespace of its own, or it co-manages the
+host's `docker0` bridge and writes its NAT rules into the host's netfilter
+tables.
 
 ### Disk cost of the dev container
 

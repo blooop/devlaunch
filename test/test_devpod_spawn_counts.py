@@ -22,6 +22,7 @@ import pytest
 
 from devlaunch.dl import (
     DevpodNotInstalled,
+    UnreadableWorkspaceList,
     attach_workspace,
     invalidate_workspace_list_cache,
     list_workspaces,
@@ -265,7 +266,8 @@ class TestWorkspaceListMemoization:
         assert list_workspaces() == []
 
     def test_a_failed_read_is_not_remembered_as_an_empty_list(self):
-        """devpod exiting non-zero is not an answer, so it must not be cached."""
+        """devpod exiting non-zero is not an answer, so it is neither returned
+        as one nor cached as one: every read asks again, and every read says so."""
         calls: List[List[str]] = []
 
         def failing(cmd, *_args, **_kwargs):
@@ -273,8 +275,9 @@ class TestWorkspaceListMemoization:
             return subprocess.CompletedProcess(args=list(cmd), returncode=1, stdout="", stderr="")
 
         with patch("devlaunch.dl.subprocess.run", side_effect=failing):
-            assert list_workspaces() == []
-            assert list_workspaces() == []
+            for _ in range(2):
+                with pytest.raises(UnreadableWorkspaceList):
+                    list_workspaces()
         assert len(calls) == 2
 
     def test_an_honestly_empty_list_is_remembered(self, spawns):

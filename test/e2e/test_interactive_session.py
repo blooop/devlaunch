@@ -26,6 +26,7 @@ import subprocess
 import pytest
 
 from devlaunch import tty_session
+from fixtures.e2e_guard import opt_out
 from fixtures.pty_helpers import PtySession
 
 # Announce readiness, then block on stdin with no exit of its own.
@@ -60,28 +61,25 @@ NEEDS_A_TTY = 'if [ -t 0 ]; then S=HAVE; else S=MISSING; fi; echo "TTY-STATUS:$S
 LOGIN_SHELL_PROBE = 'P=PATH; echo "SHELL-${P}:$PATH"'
 
 
-def devpod_available() -> bool:
-    try:
-        return (
-            subprocess.run(["devpod", "version"], capture_output=True, check=False).returncode == 0
-        )
-    except FileNotFoundError:
-        return False
-
-
 @pytest.fixture(scope="module")
 def running_workspace() -> str:
     """A started workspace to attach to, reused by every test in the module.
 
     Creating one costs an image pull and a container build, so it is worth
     doing once. The id is read back from devpod rather than assumed.
-    """
-    if not devpod_available():
-        pytest.skip("devpod not available")
 
+    Two outcomes short of that, and they are not the same outcome. Naming no
+    workspace is declining these tests, which is what every run that has not
+    set the variable is doing -- thirteen opt-outs, and the reason the suite's
+    baseline is skip-heavy enough to hide a fourteenth. Naming one that devpod
+    cannot describe is a broken workspace, and asking for these tests and not
+    getting them is a failure however grey the text would look.
+
+    Whether devpod runs at all is settled once, in the directory's conftest.
+    """
     workspace_id = os.environ.get("DEVLAUNCH_E2E_WORKSPACE")
     if not workspace_id:
-        pytest.skip("set DEVLAUNCH_E2E_WORKSPACE to a started devpod workspace to run these tests")
+        opt_out("set DEVLAUNCH_E2E_WORKSPACE to a started devpod workspace to run these tests")
 
     state = subprocess.run(
         ["devpod", "status", workspace_id, "--output", "json"],
@@ -90,7 +88,10 @@ def running_workspace() -> str:
         check=False,
     )
     if state.returncode != 0:
-        pytest.skip(f"workspace {workspace_id} is not usable: {state.stderr.strip()}")
+        pytest.fail(
+            f"DEVLAUNCH_E2E_WORKSPACE names {workspace_id!r}, which devpod cannot "
+            f"report on: {state.stderr.strip()}"
+        )
     return workspace_id
 
 
@@ -233,7 +234,7 @@ class TestAidStartsAnAgent:
         with probe:
             probe.wait(timeout=90)
             if "claude" not in probe.text:
-                pytest.skip("no claude in this workspace")
+                opt_out("no claude in this workspace")
 
         session = PtySession(["python", "-m", "devlaunch.aid", running_workspace], timeout=180)
         with session:

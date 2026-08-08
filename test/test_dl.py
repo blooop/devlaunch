@@ -24,6 +24,7 @@ from devlaunch.dl import (
     discover_repos_from_workspaces,
     discover_repos_from_cache_dir,
     get_known_repos,
+    UnreadableWorkspaceList,
     Workspace,
     list_workspaces,
     get_workspace_ids,
@@ -380,25 +381,26 @@ class TestListWorkspaces:
 
     @patch("devlaunch.dl.run_devpod")
     def test_list_workspaces_error(self, mock_run):
-        """Test handling of devpod error."""
+        """A devpod that exited non-zero has not said there are no workspaces."""
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stdout = ""
+        mock_result.stderr = ""
         mock_run.return_value = mock_result
 
-        workspaces = list_workspaces()
-        assert workspaces == []
+        with pytest.raises(UnreadableWorkspaceList):
+            list_workspaces()
 
     @patch("devlaunch.dl.run_devpod")
     def test_list_workspaces_invalid_json(self, mock_run):
-        """Test handling of invalid JSON output."""
+        """Nor has a devpod whose output could not be parsed."""
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "not valid json"
         mock_run.return_value = mock_result
 
-        workspaces = list_workspaces()
-        assert workspaces == []
+        with pytest.raises(UnreadableWorkspaceList):
+            list_workspaces()
 
 
 class TestGetWorkspaceIds:

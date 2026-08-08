@@ -162,14 +162,57 @@ def test_cli_fails_loudly_when_devpod_cannot_be_read(capsys):
     assert devpod.added == []
 
 
-def test_cli_fails_when_adding_the_provider_fails(capsys):
-    class FailingAdd(RecordedDevpod):
-        def __call__(self, cmd, **kwargs):
-            result = super().__call__(cmd, **kwargs)
-            if "add" in cmd:
-                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-            return result
+class FailingAdd(RecordedDevpod):
+    """A devpod whose listing reads fine but whose `provider add` fails."""
 
+    def __init__(self, listing: str, stderr: str = "boom"):
+        super().__init__(listing)
+        self.add_stderr = stderr
+        self.add_kwargs: dict = {}
+
+    def __call__(self, cmd, **kwargs):
+        result = super().__call__(cmd, **kwargs)
+        if "add" in cmd:
+            self.add_kwargs = kwargs
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=self.add_stderr)
+        return result
+
+
+def test_cli_fails_when_adding_the_provider_fails(capsys):
     assert devpod_provider.main(["docker"], run=FailingAdd(NOTHING_REGISTERED)) == 1
 
     assert "error:" in capsys.readouterr().out
+
+
+def test_a_failed_add_reports_what_devpod_said():
+    """The listing failure next door quotes devpod's stderr, and this one used
+    not to -- so the one failure a user can actually act on was the quiet one."""
+    devpod = FailingAdd(NOTHING_REGISTERED, stderr="provider docker already exists")
+
+    with pytest.raises(devpod_provider.ProviderAddFailed) as raised:
+        devpod_provider.ensure_provider("docker", run=devpod)
+
+    assert "provider docker already exists" in str(raised.value)
+
+
+def test_a_failed_add_is_asked_for_its_output():
+    """Quoting devpod's stderr means capturing it: without capture_output there
+    is nothing on the result to quote."""
+    devpod = FailingAdd(NOTHING_REGISTERED)
+
+    with pytest.raises(devpod_provider.ProviderAddFailed):
+        devpod_provider.ensure_provider("docker", run=devpod)
+
+    assert devpod.add_kwargs.get("capture_output") is True
+
+
+def test_the_cli_does_not_swallow_failures_it_knows_nothing_about():
+    """The handler exists to turn devpod's two known failures into an exit code.
+    A RuntimeError from somewhere else is not one of them, and reporting it as
+    `error: <text>` and exit 1 hides a bug behind a tidy message."""
+
+    def exploding(*_args, **_kwargs):
+        raise RuntimeError("something else entirely")
+
+    with pytest.raises(RuntimeError, match="something else entirely"):
+        devpod_provider.main(["docker"], run=exploding)
