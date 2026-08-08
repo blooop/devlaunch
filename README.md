@@ -435,10 +435,16 @@ at all, e2e included, because the whole workflow is triggered by
 `pull_request: branches: [main]`; that gap covers every job here rather than
 this one, and stacked PRs are what walk into it.
 
-Running it on your own machine is a different proposition. The suite exercises
-`dl --purge`, so it gives itself a private devpod namespace before collection
-begins — but the containers it builds are real ones on your Docker, and it wants
-several minutes and a 1.25 GB image pull the first time.
+Running it yourself is a different proposition. This repo's devcontainer carries
+a Docker daemon of its own, through the `docker-in-docker` feature, and pins the
+same devpod a host installs, so `pixi run test-e2e` from inside it builds its
+containers in there rather than on your Docker. You can also run it on a machine
+you do not mind it writing to — an ephemeral CI runner, say. It is skipped by
+default rather than gated on a container, because what it needs is a daemon, not
+nesting. Either way the suite exercises `dl --purge`, so it gives itself a
+private devpod namespace before collection begins — but the containers it builds
+are real ones, and it wants several minutes and a 1.25 GB image pull the first
+time.
 
 Its skips mean one thing only. A test that opts out does so through
 `fixtures.e2e_guard.opt_out`, and any other skip is reported as a failure,
@@ -458,3 +464,40 @@ answer for and says so instead.
 
 `DEVLAUNCH_E2E_WORKSPACE=<id>` opts in to the interactive-session tests, which
 attach to a workspace you already have running rather than building one.
+
+The nested daemon is also why the devcontainer does not join the host's network
+namespace: a nested daemon needs a namespace of its own, or it co-manages the
+host's `docker0` bridge and writes its NAT rules into the host's netfilter
+tables.
+
+### Disk cost of the dev container
+
+Opening a devcontainer for a branch costs about **2 GB on the host before you do
+anything in it**: ~600 MB of image layers unique to this image, a ~680 MB container
+writable layer, and a ~520 MB `<workspace>-pixi` volume.
+
+The container carries its own Docker daemon, and that daemon's `/var/lib/docker`
+lives on a second named volume. One `pixi run test-e2e` plus a couple of nested
+workspaces puts **~2.3 GB** in there, and nothing garbage-collects it — the inner
+daemon reports ~45% of its images reclaimable with no reclaimer. Nested daemons
+share no layers with the host or with each other, so this is paid once per branch.
+
+**Budget ~4 GB per branch you are actively developing and e2e-testing — about 12 GB
+for three concurrent branches.**
+
+The time cost is cold pulls in a fresh nested daemon: the first `devpod up` inside a
+new container takes ~25s, ~16s of which is pulling a base image the host already has.
+Workspaces after that reuse it and take ~8s.
+
+**These volumes are not reclaimed automatically.** `devpod delete` removes the
+container with `docker rm` and never touches volumes, and Docker never
+garbage-collects a *named* volume — so `<workspace>-pixi` and
+`dind-var-lib-docker-*` outlive the workspace that created them. To see what has
+piled up:
+
+```bash
+docker system df -v      # under Local Volumes, LINKS 0 means no container uses it
+```
+
+Cross-check a name against `devpod list` before removing it with `docker volume rm`:
+a volume belonging to a live workspace shows `LINKS 1`.

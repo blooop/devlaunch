@@ -1,6 +1,6 @@
 [project]
 name = "devlaunch"
-version = "0.0.17"
+version = "0.0.18"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
@@ -90,11 +90,22 @@ lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
 test = "pytest"
+# Needs a real Docker daemon and a real devpod. Inside this repo's devcontainer
+# that daemon is the container's own, via the docker-in-docker feature; on an
+# ephemeral CI runner or a machine you do not mind writing to, it is the host's.
+#
 # The default run excludes e2e (see addopts); this is the way back in. A
 # trailing `-m e2e` beats the one in addopts, and `-ra` puts every skip's reason
 # in the summary, which is the whole difference between a run that opted out of
 # something and a run that could not do it.
-test-e2e = "pytest -m e2e -ra"
+#
+# Deliberately no `depends-on = ["dev-add-docker"]`. The suite repoints
+# DEVPOD_HOME at a fresh directory in pytest_configure, before collection, so a
+# provider registered in the ambient ~/.devpod is one this run never reads:
+# test/e2e/conftest.py installs it into the run's own home instead. An edge here
+# would buy the suite nothing and write to the developer's real devpod home as a
+# side effect of running tests.
+test-e2e = "pytest -m e2e -ra test/e2e/"
 coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
 coverage-report = "coverage report -m"
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
@@ -128,11 +139,13 @@ enable = "no-else-return,consider-using-in"
 markers = [
     "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
     "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
-    "e2e: Full E2E with Docker-in-Docker. Real DevPod creating real containers.",
+    "e2e: Real DevPod creating real containers. Needs a Docker daemon.",
     "creates_workspace: This e2e test builds a real workspace. The session floor in test/e2e/conftest.py holds a run that attempted one of these and built nothing to be a failure, so the promise is declared by the test rather than inferred afterwards.",
 ]
 testpaths = ["test"]
-# Default: run unit and integration tests, skip e2e (requires Docker-in-Docker)
+# Default: run unit and integration tests, skip e2e (which needs a daemon, and
+# creates and deletes real containers -- in a devpod home the suite makes for
+# the run, never the developer's)
 addopts = "-m 'not e2e'"
 
 [tool.coverage.run]

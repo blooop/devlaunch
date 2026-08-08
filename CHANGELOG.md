@@ -19,6 +19,123 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.18] - 2026-08-08
+
+Mostly a release about developing `devlaunch` rather than running it: the dev
+container now carries its own Docker daemon, so the e2e suite and `dl` itself run
+inside it against that daemon and not the host's, and the same suite runs in CI —
+where a green tick now means it did something, which it did not always before.
+Riding along is the one user-visible fix of the three, a `dl` that stops claiming
+you have no workspaces when what actually happened is that it could not find out.
+Nothing about how you install or run `dl` changes and no workspace needs
+rebuilding, but the dev container has to be rebuilt once and costs meaningfully
+more disk than it used to. 0.0.17 shipped the AGENTS.md half of this same arc.
+
+### Added
+- The dev container carries its own Docker daemon, so the e2e suite and `dl`
+  itself both run inside it — against that daemon, not the host's. Several
+  branches can be developed and e2e-tested at once on one machine without
+  touching the host's Docker, its devpod workspace list, or each other. `pixi run
+  test-e2e` runs the suite; it is still skipped by the default `pixi run test`,
+  because what it needs is a real daemon and a real devpod, not nesting, and it
+  creates and deletes real containers — in the private devpod home it makes for
+  the run, never yours. The container also registers the docker provider when it
+  is created — a fresh container has an empty devpod home and devpod seeds nothing
+  into it, so without that step `dl` inside would exit on the first command it
+  ran.
+- The README now says what the dev container costs: roughly 2 GB on the host per
+  branch plus about 2.3 GB in the nested daemon's volume, so budget around 4 GB
+  per branch you are actively working on and about 12 GB for three at once.
+  Nothing reclaims those volumes — `devpod delete` removes containers without
+  touching volumes, and Docker never garbage-collects a named one — so the
+  section also shows how to find what has piled up. This is documented rather
+  than mitigated on purpose: every candidate mechanism cost about an order of
+  magnitude more than it saved, and pruning images from a task would have thrown
+  away exactly the ones the next e2e run needs.
+- The e2e suite runs in CI, in a job of its own, on pushes to `main` and on pull
+  requests targeting `main`. It is
+  plain `pytest -m e2e` against the runner's own Docker rather than a nested
+  daemon: a development machine needs one because it is shared and long-lived,
+  and a runner is an ephemeral VM with Docker already on it. The job sits outside
+  the py310–py313 matrix, because what it exercises is devpod and Docker and not
+  a Python version, and it needs no devpod install step, devpod being a pixi
+  dependency already in the lockfile. It finishes before the matrix does.
+  `pixi run test-e2e` is the same run on your own machine — where it builds real
+  containers on your Docker, so read the README first.
+
+### Changed
+- The dev container no longer shares the host's network namespace. Nothing this
+  repo reaches for needed it, and it caused a real collision: a listener in the
+  container was a listener on the host, so two containers could not both run the
+  Claude OAuth callback flow and neither could one while the host held the port.
+  It is also incompatible with nesting a daemon, since a second daemon in the
+  host's namespace co-manages the host's bridge and writes its NAT rules into the
+  host's tables.
+- The `claude-code` feature's docs no longer tell you to turn host networking on.
+  The argument they made for it had a real mechanism and a wrong conclusion: the
+  OAuth callback listener genuinely is inside the container while your browser is
+  outside it, but the answer is to authenticate on the host once — which the
+  mounted credentials already arrange, so the flow never runs — or to forward the
+  port for a single session. Both documents now say that, and say what the flag
+  costs. The VS Code extension limitation recorded alongside it is gone, having
+  been a consequence of host networking rather than a fact about the feature.
+
+### Fixed
+- `dl` no longer reports that a machine has no workspaces when it merely failed
+  to find out. `devpod list` can fail by exiting non-zero and it can fail by
+  answering with something that is not a listing, and both used to come back as
+  an empty list — which is also how devpod says there genuinely are none. The
+  sharpest cost was `dl --purge`: it iterates that list, so a purge that never
+  learned what to delete printed that there was nothing to purge and then removed
+  your local cache anyway, looking exactly like a purge that had nothing to do.
+  It now stops before touching anything, quoting what devpod said. Elsewhere the
+  same empty list read as "this workspace does not exist yet", which is the wrong
+  branch to take when the truth is "I could not tell". A listing that reads fine
+  and is empty is still empty, so `dl --ls` on a fresh machine still says "No
+  workspaces found" and exits 0. Silence from devpod counts as a failure to
+  answer, checked against the real binary: devpod with an empty home prints `[]`.
+- The `dev-add-docker` provider guard reports a failed `devpod provider add` with
+  devpod's own explanation attached, where it used to report only an exit code.
+  Its handler also no longer catches every `RuntimeError` in the process, so an
+  unrelated bug in a `pixi run dev` stops looking like a devpod problem.
+- Shell completion still installs and still completes when devpod cannot be
+  reached. `dl --install` warms the completion cache before it installs, so it is
+  the one place that reads the workspace list without the list being the point:
+  the repos, owners and branches it offers come off your own disk. It now says
+  which part it could not fill in and gets on with the rest, rather than
+  installing nothing at all — `dl --install`, `dl --refresh` and
+  `dl --completion-data` behave exactly as they did before this release.
+- An e2e run that could not do anything no longer reports that it passed. Two
+  unrelated outcomes were both spelled `skipped`: tests declining an opt-in they
+  were never given, and tests that could not reach what they needed. A run
+  against a registry serving the suite's 1.25 GB fixture image at 640 B/s
+  reported `7 passed, 14 skipped` having created no containers at all, which is
+  the summary line a healthy run prints — and with thirteen legitimate skips in
+  the baseline, one more was invisible. Deliberate skips now say so in a word of
+  their own — a distinct exception type, so the check is what a test raised and
+  not how it worded it; any other skip under the e2e directory is reported as a
+  failure against the test's own name; a missing devpod fails the session once
+  instead of skipping five tests quietly; and every run prints the workspaces it
+  actually built and refuses to exit zero if the tests that promised one built
+  none.
+- `test_git_status_via_ssh` tests git in a container again. It had been pointed
+  at the fixture's bare repository, which has no work tree, so `git status`
+  inside the container exited 128 on any machine; it now gets the working copy.
+  Nobody had seen it, because until the creation
+  step was made unskippable its assertions sat behind a condition that was never
+  true on a headless machine. The first session to reach them was the first CI
+  run of this suite.
+
+### Removed
+- The standalone `test/docker/` dind harness. Its own header named one job, which
+  is now verbatim the dev container's job and measured. The one real argument for
+  keeping it — a CI runner that cannot nest a container — does not hold, because
+  a hosted runner is already an ephemeral VM with Docker on it and has no host to
+  protect. It was also the wrong image regardless: Alpine, a plain `pip install`
+  and a download of whatever devpod release was newest, diverging from the shipped
+  Ubuntu-and-pixi environment on every axis under test and reaching around the
+  lockfile the devpod pin exists to enforce.
+
 ## [0.0.17] - 2026-08-08
 
 ### Changed
