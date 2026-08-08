@@ -153,3 +153,16 @@ class TestSshCommandArgs:
     def test_workdir_with_spaces_is_quoted(self):
         args = tty_session.ssh_command_args("myws", "bash -lc make", workdir="/a dir/with space")
         assert "'/a dir/with space'" in args[-1]
+
+    @pytest.mark.parametrize(
+        "workspace_id",
+        ["-oProxyCommand=touch /tmp/pwned", "-t", "--rubbish"],
+    )
+    def test_workspace_id_that_looks_like_an_option_is_refused(self, workspace_id):
+        """The alias is positional, so a leading dash would reach ssh as a flag.
+
+        `-o ProxyCommand=...` is arbitrary execution on the host, so this is
+        refused rather than quoted: nothing upstream can legitimately produce it.
+        """
+        with pytest.raises(ValueError, match="looks like an option"):
+            tty_session.ssh_command_args(workspace_id, "bash -lc claude")

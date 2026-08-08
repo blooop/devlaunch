@@ -118,7 +118,20 @@ def ssh_command_args(
     environment, so a forwarded token never appears in argv where `ps` would
     show it to every other user on the host -- the same discipline gh_auth
     applies to the devpod transport.
+
+    Raises:
+        ValueError: if the workspace id would reach ssh as an option.
     """
+    # The alias goes in positionally, and ssh has no reliable `--`, so an id
+    # beginning with a dash would be read as a flag -- and `-o ProxyCommand=...`
+    # is arbitrary command execution on the host. devpod's own ids cannot look
+    # like that (workspace_id validates a leading word character) and neither
+    # can the ~/.ssh/config entry this is gated on, so reaching here means
+    # something upstream is already wrong: refuse rather than hand it to ssh.
+    if workspace_id.startswith("-"):
+        raise ValueError(
+            f"refusing to ssh to a workspace id that looks like an option: {workspace_id!r}"
+        )
     args = ["ssh", "-t"]
     for name in send_env:
         args.extend(["-o", f"SendEnv={name}"])

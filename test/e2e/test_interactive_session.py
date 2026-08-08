@@ -15,7 +15,12 @@ These require a real devpod and are excluded from the default run. To run them:
     pixi run pytest -m e2e test/e2e/test_interactive_session.py
 """
 
+# Requesting a fixture shadows its name; that is how pytest is written.
+# pylint: disable=redefined-outer-name
+
 import os
+import re
+import shlex
 import subprocess
 
 import pytest
@@ -94,6 +99,13 @@ def dl(workspace_id: str, *args: str) -> PtySession:
     return PtySession(["python", "-m", "devlaunch.dl", workspace_id, *args], timeout=120)
 
 
+def reported_cwd(output: str) -> str:
+    """Pull the directory the probe printed, failing loudly if it printed none."""
+    match = re.search(r"IN-PWD:(\S+)", output)
+    assert match, f"no working directory in output:\n{output}"
+    return match.group(1)
+
+
 @pytest.mark.e2e
 class TestCommandGetsATerminal:
     """The half the user reported working -- kept working, now with a terminal."""
@@ -133,6 +145,29 @@ class TestCommandGetsATerminal:
         with dl(running_workspace, "--", 'T=TERM; echo "IS-${T}:$TERM"') as s:
             s.expect("IS-TERM:")
             assert "IS-TERM:dumb" not in s.text
+
+    def test_lands_in_the_same_directory_as_the_devpod_transport(self, running_workspace):
+        """Changing transport must not quietly change where the command runs.
+
+        Neither invocation passes a working directory -- devpod's ssh server
+        picks the workspaceFolder on its own, over the tunnel as well as
+        directly -- and a command that started running in $HOME instead would be
+        a silent, confusing regression rather than a visible failure.
+        """
+        probe = 'D=PWD; echo "IN-${D}:$PWD"'
+        with dl(running_workspace, "--", probe) as s:
+            s.expect(r"IN-PWD:\S+")
+            through_ssh = reported_cwd(s.text)
+
+        direct = subprocess.run(
+            ["devpod", "ssh", running_workspace, "--command", f"bash -lc {shlex.quote(probe)}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        through_devpod = reported_cwd(direct.stdout)
+
+        assert through_ssh == through_devpod
 
 
 @pytest.mark.e2e

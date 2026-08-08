@@ -13,11 +13,17 @@ the shape of both invocations; test/e2e/test_interactive_session.py proves the
 resulting session is real and stays up.
 """
 
+# Requesting a fixture shadows its name and often ignores its value -- both are
+# how pytest is written, and neither is a defect. Same suppression as
+# test/fixtures/git_fixtures.py.
+# pylint: disable=redefined-outer-name,unused-argument
+
 import pathlib
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from devlaunch import dl as dl_module
 from devlaunch import gh_auth, tty_session
 from devlaunch.dl import workspace_ssh
 
@@ -109,6 +115,29 @@ class TestTransportRouting:
         mock_ssh.assert_not_called()
         args = mock_devpod.call_args[0][0]
         assert args == ["ssh", "myws"]
+
+
+class TestMissingSsh:
+    """A host without OpenSSH has to be told what is missing, and what to do."""
+
+    @patch("devlaunch.dl.subprocess.run", side_effect=FileNotFoundError())
+    def test_missing_ssh_is_its_own_error(self, _run, on_a_terminal):
+        """Not DevpodNotInstalled: devpod is present, so that message misleads."""
+        with pytest.raises(dl_module.SshNotInstalled) as excinfo:
+            workspace_ssh("myws", command="claude")
+        assert "DEVLAUNCH_NO_TTY=1" in str(excinfo.value), "the message must name the way out"
+
+    def test_both_missing_binary_errors_share_a_base(self):
+        """main() catches one type, so a new spawn helper cannot slip past it."""
+        assert issubclass(dl_module.SshNotInstalled, dl_module.MissingBinary)
+        assert issubclass(dl_module.DevpodNotInstalled, dl_module.MissingBinary)
+
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_workspace_state", return_value="Running")
+    @patch("devlaunch.dl.subprocess.run", side_effect=FileNotFoundError())
+    def test_main_reports_it_rather_than_crashing(self, _run, _state, _ids, on_a_terminal, capsys):
+        assert dl_module.main(["myws", "--", "claude"]) == dl_module.DEVPOD_MISSING_EXIT_CODE
+        assert "ssh not found" in capsys.readouterr().err
 
 
 class TestPayloadParity:
