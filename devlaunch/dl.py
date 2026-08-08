@@ -25,22 +25,93 @@ import logging
 import os
 import pathlib
 import re
-from importlib.metadata import version as pkg_version, PackageNotFoundError
+import shlex
+import time
+from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from . import devpod_ssh, gh_auth
 from .completion import install_completions
+from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
+from .worktree.migration import migrate_cache
 from .worktree.workspace_clone import WorkspaceCloneManager
 
 
-def get_version() -> str:
-    """Get the package version."""
+class DevpodNotInstalled(Exception):
+    """The devpod binary dl shells out to is not on PATH.
+
+    Deliberately not an OSError (FileNotFoundError is one) and not a
+    RuntimeError: dl catches both broadly in a dozen places so that a flaky
+    command degrades to an empty list or a "failed to prepare workspace"
+    message. A missing binary reported through one of those handlers is
+    reported wrongly, so it travels as a type nothing between run_devpod and
+    main() catches, and main() is the only place that handles it.
+    """
+
+
+# One line, so a completion helper that trips over it cannot spew into the
+# user's shell. It names both install routes because devpod ships with the
+# pixi/conda package and does not ship with the pip one (see README).
+DEVPOD_MISSING_MESSAGE = (
+    "devpod not found on PATH: dl cannot manage workspaces without it. "
+    "Install devpod from https://devpod.sh/docs/getting-started/install "
+    "(pixi/conda installs of devlaunch include it; pip installs do not)."
+)
+
+# The shell's own "command not found" code, which says more than a bare 1 and
+# cannot be confused with a devpod command that ran and failed.
+DEVPOD_MISSING_EXIT_CODE = 127
+
+
+def _install_provenance() -> Optional[str]:
+    """Describe the install this dl was launched from, or None if unremarkable.
+
+    The released build and the editable dev install report the same version, so
+    the version alone cannot say which one just ran. PEP 610 records how a dist
+    was installed in ``direct_url.json``: ``dir_info.editable`` is true only for
+    an editable install, and ``url`` is the tree it resolves to. That is read
+    from the dist's own metadata rather than inferred from where the files sit,
+    so no path is stat'd and no install location is pattern-matched.
+
+    Everything here is best-effort: a dist with no direct-url metadata, or with
+    metadata that does not parse or does not carry the keys, is simply not
+    described. --version must never fail over provenance, so this returns None
+    instead of raising - an ambiguous version beats a broken one.
+    """
     try:
-        return pkg_version("devlaunch")
+        raw = distribution("devlaunch").read_text("direct_url.json")
+        if not raw:
+            return None
+        info = json.loads(raw)
+        dir_info = info.get("dir_info") if isinstance(info, dict) else None
+        if not isinstance(dir_info, dict) or not dir_info.get("editable"):
+            return None
+        url = info.get("url")
+        if not isinstance(url, str):
+            return None
+        parsed = urlparse(url)
+        if parsed.scheme != "file":
+            return None
+        tree = url2pathname(parsed.path)
+        if not tree:
+            return None
+        return f"dev, editable from {tree}"
+    except Exception:
+        return None
+
+
+def get_version() -> str:
+    """Get the package version, noting the install it came from when notable."""
+    try:
+        base = pkg_version("devlaunch")
     except PackageNotFoundError:
         return "unknown"
+    provenance = _install_provenance()
+    return f"{base} ({provenance})" if provenance else base
 
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -58,6 +129,15 @@ def _get_cache_dir() -> pathlib.Path:
 CACHE_DIR = _get_cache_dir()
 CACHE_FILE = CACHE_DIR / "completions.json"
 BASH_CACHE_FILE = CACHE_DIR / "completions.bash"
+
+# How long a completion cache is considered current. Refreshing it means a
+# `git ls-remote` per known repo, so doing it on every invocation costs seconds
+# of machine for a list of names that barely moves. An hour mirrors
+# WorktreeConfig.fetch_interval, which already decides how stale devlaunch is
+# willing to let its view of a repo's branches get; branch names are exactly
+# what the expensive part of this refresh collects, so the two should agree.
+# `dl --refresh` remains the escape hatch when a user wants it now.
+COMPLETION_CACHE_TTL_SECONDS = 3600
 
 
 def get_cache_path() -> pathlib.Path:
@@ -211,12 +291,67 @@ def update_completion_cache() -> Dict[str, Any]:
     return data
 
 
-def update_cache_background() -> None:
-    """Update completion cache in background."""
+def completion_cache_age_seconds() -> Optional[float]:
+    """Seconds since the completion cache was last written, or None if there is none.
+
+    The timestamp is the cache file's own mtime rather than a field inside it:
+    write_completion_cache renames the finished file into place, so mtime marks a
+    *completed* refresh; caches written by earlier versions carry no timestamp
+    field and would otherwise read as infinitely stale; and a stat() keeps the
+    check free on the path whose entire purpose is to do no work.
+    """
+    try:
+        return max(0.0, time.time() - get_cache_path().stat().st_mtime)
+    except OSError:
+        return None
+
+
+def completion_cache_is_fresh() -> bool:
+    """Whether the completion cache is new enough to leave alone."""
+    age = completion_cache_age_seconds()
+    return age is not None and age < COMPLETION_CACHE_TTL_SECONDS
+
+
+# One background refresh per process, at most. A dl process is one command the
+# user typed and exits when that command is done, so per-process state is
+# per-invocation state -- there is no long-running process here for the latch to
+# go stale in. Held in a dict so it can be mutated without a `global`.
+_refresh_state: Dict[str, bool] = {"spawned": False}
+
+
+def cache_refresh_spawned() -> bool:
+    """Whether this process has already spawned a background cache refresh."""
+    return _refresh_state["spawned"]
+
+
+def reset_cache_refresh_state() -> None:
+    """Forget that a refresh was spawned, so another one may be (tests)."""
+    _refresh_state["spawned"] = False
+
+
+def update_cache_background(force: bool = False) -> None:
+    """Refresh the completion cache in a detached process, if it is worth it.
+
+    Skipped entirely when this process already spawned one, and when the cache is
+    still fresh. ``force`` is for callers that have just changed what the cache
+    describes -- a workspace created, stopped or deleted -- where the cache is
+    wrong no matter how recently it was written. A freshness skip deliberately
+    does not consume the one spawn: it means "not needed yet", not "already
+    done", so a later forced call can still get its refresh.
+    """
+    if _refresh_state["spawned"]:
+        return
+    if not force and completion_cache_is_fresh():
+        return
+    _refresh_state["spawned"] = True
+    cmd = [sys.executable, "-m", "devlaunch.dl", "--update-cache"]
+    if force:
+        # Tell the child its refresh is not subject to the TTL either.
+        cmd.append("--force")
     try:
         # pylint: disable=consider-using-with
         subprocess.Popen(
-            [sys.executable, "-m", "devlaunch.dl", "--update-cache"],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -237,13 +372,17 @@ def purge_all_data() -> int:
 
     cache_dir = _get_cache_dir()
 
-    # First, delete all DevPod workspaces
+    # First, delete all DevPod workspaces. The list is the same snapshot the
+    # caller printed the count from, so the confirmation the user answered and
+    # the set actually deleted cannot disagree.
     workspaces = list_workspaces()
     for ws in workspaces:
         print(f"Deleting DevPod workspace: {ws.id}")
         result = run_devpod(["delete", ws.id, "--force"], capture=True)
         if result.returncode != 0:
             logging.warning(f"Failed to delete workspace {ws.id}: {result.stderr}")
+    if workspaces:
+        invalidate_workspace_list_cache()
 
     # Then remove local cache
     if not cache_dir.exists():
@@ -309,6 +448,12 @@ def _resolve_devcontainer_ref(ref: str) -> str:
     if "/" in ref or ref.endswith(".json"):
         return ref
     return f".devcontainer/{ref}/devcontainer.json"
+
+
+# dl options whose value is a separate argument. aid splits its own command line
+# before handing it to dl and has to tell such a value from the workspace spec,
+# so the list lives here, next to the parsing it describes.
+DL_VALUE_OPTIONS = frozenset({"--devcontainer"})
 
 
 def extract_devcontainer_flag(args: List[str]) -> tuple[List[str], Optional[str]]:
@@ -385,14 +530,6 @@ def expand_workspace_spec(spec: str) -> str:
     return spec
 
 
-def sanitize_workspace_id(name: str) -> str:
-    """Sanitize a name to match devpod's workspace ID format.
-
-    Devpod converts names to lowercase and replaces / with -.
-    """
-    return name.lower().replace("/", "-")
-
-
 def setup_hostname(workspace_id: str) -> bool:
     """Set the container hostname so the terminal prompt shows the project/branch.
 
@@ -418,13 +555,21 @@ def setup_hostname(workspace_id: str) -> bool:
 def spec_to_workspace_id(spec: str) -> str:
     """Derive the workspace ID for a given spec.
 
-    Uses <repo>-<branch> format so workspace names are meaningful in devpod list.
-    Branch is truncated so total stays ≤ 48 chars.
+    For owner/repo@branch this is `WorkspaceId(owner, repo, branch).value` — see
+    devlaunch.workspace_id for the format. The other spec shapes are not
+    (owner, repo, ref) triples, so they cannot be parsed into one:
 
-    - For owner/repo with branch: <repo>-<branch> (e.g., python-template-nb4)
-    - For owner/repo without branch: <repo> (e.g., python-template)
+    - For owner/repo with branch: <repo-slug>-<branch-slug>-<syllables>
+    - For owner/repo without branch: <repo-slug>. Not a workspace identity: a
+      workspace is a branch checkout, so every caller that creates one resolves
+      the default branch first and passes it. This is only a repo label.
+    - For other git URLs: the slugged URL, as devpod would name it
     - For paths: the directory name (e.g., ./my-project -> my-project)
     - For existing IDs: the ID as-is
+
+    Raises:
+        ValueError: if the spec names an owner, repo or branch that is not a safe
+            git name.
     """
     # Check for @branch suffix
     if "@" in spec:
@@ -441,15 +586,12 @@ def spec_to_workspace_id(spec: str) -> str:
         parsed = parse_owner_repo_branch(spec)
         if parsed:
             owner_repo, parsed_branch = parsed
-            repo_name = owner_repo.split("/")[-1]
-            repo_name = sanitize_workspace_id(repo_name).replace("_", "-")
+            owner, repo_name = owner_repo.split("/", 1)
             if parsed_branch:
-                branch_sanitized = sanitize_workspace_id(parsed_branch).replace("_", "-")
-                max_branch = 48 - len(repo_name) - 1  # -1 for separator
-                if 0 < max_branch < len(branch_sanitized):
-                    branch_sanitized = branch_sanitized[:max_branch].rstrip("-")
-                return f"{repo_name}-{branch_sanitized}"
-            return repo_name
+                return WorkspaceId(owner, repo_name, parsed_branch).value
+            # A repo label, not an identity — see the docstring. Capped anyway, so no
+            # caller can get a string from here that overflows devpod's limit.
+            return slug(repo_name)[:TARGET_LENGTH].strip("-")
 
         # Fallback for non-owner/repo git URLs (github.com/..., https://...)
         full_source = expand_workspace_spec(base_spec)
@@ -463,13 +605,11 @@ def spec_to_workspace_id(spec: str) -> str:
         # Strip .git suffix if present
         if full_source.endswith(".git"):
             full_source = full_source[:-4]
-        # Devpod sanitizes: lowercase, replace . and / and : with -, remove _
-        workspace_id = full_source.lower()
-        workspace_id = workspace_id.replace(".", "-").replace("/", "-").replace(":", "-")
-        workspace_id = workspace_id.replace("_", "")
-        # Remove trailing - if any
-        workspace_id = workspace_id.rstrip("-")
-        return workspace_id
+        # Same scheme as a triple: slug for legibility, suffix for identity, capped.
+        # The old rule here deleted `_` while the owner/repo path turned it into `-`,
+        # so one repo derived two ids; applying only the slug rule instead swapped
+        # that for a collision, since `my_repo`, `my-repo` and `my.repo` slug alike.
+        return source_workspace_id(full_source)
 
     # Otherwise assume it's already a workspace ID
     return spec
@@ -674,14 +814,22 @@ def run_devpod(
     Security note: Using list form of subprocess.run (not shell=True) prevents
     command injection. Each list element is passed as a separate argument to
     the executable, so special characters are not interpreted by a shell.
+
+    This is dl's only devpod spawn, so it is also the only place that can tell
+    "devpod is not installed" from "devpod ran and failed". The former is
+    raised as DevpodNotInstalled rather than folded into a returncode: callers
+    branch on returncode and would carry on as though devpod had answered.
     """
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
-    if capture:
+    try:
+        if capture:
+            # nosec B603 - using list form, not shell=True; no command injection risk
+            return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
         # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
-    # nosec B603 - using list form, not shell=True; no command injection risk
-    return subprocess.run(cmd, check=False, env=env)
+        return subprocess.run(cmd, check=False, env=env)
+    except FileNotFoundError as e:
+        raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
 
 def run_devpod_session(
@@ -716,17 +864,60 @@ def run_devpod_session(
     return devpod_ssh.interpret(proc.returncode, remote_status)
 
 
-def list_workspaces() -> List[Workspace]:
-    """List all devpod workspaces."""
+# The memoized `devpod list` snapshot. A dict rather than a module-level
+# Optional so the accessors below need no `global`, and so "nothing read yet"
+# (no key at all) stays distinguishable from "devpod has no workspaces" (an
+# empty list) — the two must not be confused, or a real empty answer would be
+# re-read on every call.
+_WORKSPACE_LIST_KEY = "workspaces"
+_workspace_list_cache: Dict[str, List[Workspace]] = {}
+
+
+def invalidate_workspace_list_cache() -> None:
+    """Forget the memoized `devpod list` snapshot.
+
+    Every dl code path that changes what devpod would list calls this, so a
+    later read in the same process re-reads devpod instead of answering from a
+    snapshot taken before the change.
+    """
+    _workspace_list_cache.pop(_WORKSPACE_LIST_KEY, None)
+
+
+def list_workspaces(refresh: bool = False) -> List[Workspace]:
+    """List all devpod workspaces, reading devpod at most once per command.
+
+    `devpod list --output json` costs ~0.45s — five times the entire Python
+    startup dl pays — and six call sites read it, so `dl --purge` used to spend
+    ~0.9s asking the same question twice. dl is a short-lived single-command
+    process, so one snapshot per command is enough; the only reader that could
+    see a stale one is a reader that runs after dl itself changed a workspace,
+    and every such mutation calls invalidate_workspace_list_cache().
+
+    refresh=True bypasses the snapshot for a caller that must have the
+    post-mutation truth even if nothing announced the mutation.
+
+    Only an answer devpod actually gave is remembered. A failed or unparsable
+    read returns an empty list without caching it, so a transient failure — and
+    a missing devpod, which raises out of here — can never be served again as
+    "this machine has no workspaces".
+    """
+    if not refresh:
+        cached = _workspace_list_cache.get(_WORKSPACE_LIST_KEY)
+        if cached is not None:
+            # A copy: a caller that sorts or filters its list in place must not
+            # be rewriting what the next caller sees.
+            return list(cached)
     result = run_devpod(["list", "--output", "json"], capture=True)
     if result.returncode != 0 or not result.stdout.strip():
         return []
     try:
         data = json.loads(result.stdout)
-        return [Workspace.from_json(ws) for ws in data]
     except json.JSONDecodeError:
         logging.error("Failed to parse devpod output")
         return []
+    workspaces = [Workspace.from_json(ws) for ws in data]
+    _workspace_list_cache[_WORKSPACE_LIST_KEY] = workspaces
+    return list(workspaces)
 
 
 def get_workspace_ids() -> List[str]:
@@ -847,7 +1038,11 @@ def workspace_up(
     # does or doesn't set up for itself.
     with gh_auth.up_args() as token_args:
         args.extend(token_args)
-        return run_devpod(args)
+        result = run_devpod(args)
+    # `up` creates and starts workspaces, so any snapshot of `devpod list`
+    # taken before it is now out of date.
+    invalidate_workspace_list_cache()
+    return result
 
 
 def workspace_ssh(
@@ -870,7 +1065,14 @@ def workspace_ssh(
     if workdir:
         args.extend(["--workdir", workdir])
     if command:
-        args.extend(["--command", command])
+        # devpod runs --command under a non-login, non-interactive `bash -c`,
+        # which sources neither ~/.profile nor ~/.bashrc -- so PATH entries the
+        # image adds there (notably $HOME/.pixi/bin) are missing and the payload
+        # dies with "command not found". An interactive attach gets a login
+        # shell, so wrap here to give both paths the same PATH. dl launches
+        # arbitrary repos, so the parity has to come from the invocation rather
+        # than from any particular devcontainer.json.
+        args.extend(["--command", f"bash -lc {shlex.quote(command)}"])
 
     # Attaching to a running workspace skips workspace_up, so the gh login has
     # to be offered here too. Only the variable name lands in args; the token
@@ -895,11 +1097,32 @@ def workspace_ssh(
             devpod_ssh.assert_never(unhandled)
 
 
+def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
+    """Hand the workspace to the user: name its prompt, then ssh in.
+
+    Setting the hostname is a whole extra `devpod ssh` (~0.5s) in front of every
+    attach, and it cannot be folded into the attach itself: bash reads the
+    hostname once when the shell starts, so it has to be set before the session
+    dl hands over begins, and `devpod ssh` exposes no hook inside that session.
+
+    It is skipped for a one-shot `dl <ws> -- cmd`, which renders no prompt for
+    the hostname to appear in — the round-trip would buy that command nothing.
+    An interactive attach later still names the container, so nothing the user
+    can see depends on having paid for it here.
+    """
+    if shell_command is None:
+        setup_hostname(workspace_id)
+    return workspace_ssh(workspace_id, shell_command)
+
+
 def workspace_stop(workspace: str) -> int:
     """Stop a workspace."""
     result = run_devpod(["stop", workspace])
-    # Update cache after stopping workspace
-    update_cache_background()
+    # A stopped workspace still appears in `devpod list`, but with different
+    # details, and `restart` calls straight into `up` after this.
+    invalidate_workspace_list_cache()
+    # The workspace list just changed, so the cache is wrong regardless of age.
+    update_cache_background(force=True)
     return result.returncode
 
 
@@ -913,13 +1136,16 @@ def workspace_delete(workspace: str) -> int:
     devpod can then never find the config to retry with.
     """
     result = run_devpod(["delete", workspace])
+    # Unconditionally: a delete that reports failure may still have got far
+    # enough to change what devpod lists.
+    invalidate_workspace_list_cache()
     if result.returncode != 0:
         logging.error(
             f"devpod could not delete {workspace}; keeping the local clone so it "
             f"stays retryable. If its devcontainer.json moved, restore the path or "
             f"run: devpod delete {workspace} --force"
         )
-        update_cache_background()
+        update_cache_background(force=True)
         return result.returncode
 
     # Clean up local workspace clone (look up by workspace ID in metadata)
@@ -929,8 +1155,8 @@ def workspace_delete(workspace: str) -> int:
             logging.info(f"Removed local clone for {workspace}")
     except Exception as e:
         logging.warning(f"Failed to remove local clone: {e}")
-    # Update cache after deleting workspace
-    update_cache_background()
+    # The workspace list just changed, so the cache is wrong regardless of age.
+    update_cache_background(force=True)
     return result.returncode
 
 
@@ -987,7 +1213,7 @@ Global commands:
     dl --refresh                     Refresh completion cache
     dl --purge [-y]                  Remove all DevPod workspaces and caches
     dl --help, -h                    Show this help
-    dl --version                     Show version
+    dl --version                     Show version (editable installs name their tree)
 
 Examples:
     dl                               # Select workspace with fzf
@@ -1007,24 +1233,90 @@ _cache: dict[str, WorkspaceCloneManager] = {}
 
 
 def _get_clone_manager() -> WorkspaceCloneManager:
-    """Lazy factory for WorkspaceCloneManager."""
+    """Lazy factory for WorkspaceCloneManager, migrating the cache on first use.
+
+    This is where the one-shot id-scheme migration runs, for three reasons. It is
+    dl's single construction point for the object that owns every read of a
+    workspace path, so nothing can reach a stale path before the rename. It is
+    lazy, so the commands that touch no workspace -- `--help`, `--version`,
+    `--ls`, the completion commands, `--purge`, and opening an existing workspace
+    by name -- never reach it, which keeps #58's promise that help does no work.
+    And the memo makes it at most once per process.
+
+    On an already-migrated cache this costs one integer comparison, because the
+    trigger is the version header the storage load already parsed. Nothing here
+    spawns devpod: the orphaned container ids come from metadata.
+    """
     if "clone_manager" not in _cache:
-        _cache["clone_manager"] = WorkspaceCloneManager()
+        manager = WorkspaceCloneManager()
+        try:
+            migrate_cache(manager.storage, pathlib.Path(manager.config.repos_dir))
+        except OSError as e:
+            # A failed migration must not take the command with it. The renames
+            # that did happen are still resumable: the version header is only
+            # written by the final save, so an unwritten file means the next run
+            # migrates again and finds them already in place.
+            logging.warning(f"Could not migrate the workspace cache: {e}")
+        _cache["clone_manager"] = manager
     return _cache["clone_manager"]
 
 
-def main() -> int:
-    """Main entry point for dl CLI."""
+# Commands that read the completion cache without changing what it describes.
+# These are the ones worth warming it for before they run.
+_CACHE_READING_COMMANDS = ("--ls", "--repos", "--completion-data")
+
+
+def wants_startup_cache_refresh(args: List[str]) -> bool:
+    """Whether this invocation should warm the completion cache before running.
+
+    Only the commands that read the cache and leave the workspace list alone.
+    Everything else either has no use for completions (--help, --version), owns
+    the refresh itself (--install, --refresh, --update-cache), is about to delete
+    the cache directory (--purge), or is a workspace command -- and those refresh
+    once they are finished, when the workspace list they cache is final, instead
+    of indexing the state they are about to replace.
+    """
+    if not args:
+        return True  # the fzf picker is a view of the workspace list
+    return args[0] in _CACHE_READING_COMMANDS
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Main entry point for dl CLI.
+
+    Thin wrapper so there is exactly one handler for a missing devpod, however
+    deep in the command it was noticed. The message goes to stderr because
+    stdout is parsed by the completion machinery (--repos, --completion-data).
+
+    argv is the argument list without the program name, defaulting to the real
+    one. It is a parameter so that a sibling entry point can hand dl a command
+    line it built and get dl's behaviour itself rather than a second copy of it
+    (see aid.py) — a copy is what left aid rebuilding containers dl reuses.
+    """
+    # The workspace-list snapshot is scoped to one command, not to the process:
+    # a caller that drives main() twice (a test, a shell wrapper) must not have
+    # the first command's view of devpod answer the second command's questions.
+    invalidate_workspace_list_cache()
     try:
-        args, devcontainer = extract_devcontainer_flag(sys.argv[1:])
+        return _run_cli(argv)
+    except DevpodNotInstalled as e:
+        print(e, file=sys.stderr)
+        return DEVPOD_MISSING_EXIT_CODE
+
+
+def _run_cli(argv: Optional[List[str]] = None) -> int:
+    """Dispatch a dl command line. See main() for the error handling around it."""
+    if argv is None:
+        argv = sys.argv[1:]
+    try:
+        args, devcontainer = extract_devcontainer_flag(argv)
     except ValueError as e:
         logging.error(str(e))
         return 1
 
-    # Always update cache in background (unless we're the update process)
-    if args and args[0] in ["--update-cache"]:
-        pass  # Don't recursively update
-    else:
+    # The decision has to come after parsing: `dl --help` must not pay for a
+    # refresh it has no use for.
+    if wants_startup_cache_refresh(args):
         update_cache_background()
 
     # No args - try fzf selection
@@ -1038,8 +1330,7 @@ def main() -> int:
             workspace_identity=selected,
             devcontainer=devcontainer,
         )
-        setup_hostname(selected)
-        return workspace_ssh(selected)
+        return attach_workspace(selected)
 
     # Global commands (no workspace required)
     if args[0] in ("--help", "-h"):
@@ -1066,7 +1357,13 @@ def main() -> int:
         return 0
 
     if args[0] == "--update-cache":
-        # Silent background update
+        # Silent background update. The TTL is re-checked here as well as in the
+        # parent that spawned us: two parents can both see a stale cache before
+        # either child has written one, and the second sweep would be pure waste.
+        # --force marks a refresh that follows a workspace change, where the
+        # cache is wrong however new it is.
+        if "--force" not in args[1:] and completion_cache_is_fresh():
+            return 0
         update_completion_cache()
         return 0
 
@@ -1136,6 +1433,19 @@ def main() -> int:
         # Git spec (owner/repo[@branch]) — check if workspace already exists first
         owner_repo, branch = parsed
         owner, repo = owner_repo.split("/", 1)
+
+        # Validate owner and repo before anything builds a path out of them. The
+        # branch is not resolved yet, so its check waits for the WorkspaceId below,
+        # but ensure_repo() joins repos_dir/<owner>/<repo> and would otherwise act on
+        # a traversal first and reject it after: `x/..` resolves to repos_dir itself
+        # and `../x` leaves it entirely.
+        try:
+            validate_ref_name(owner, "owner")
+            validate_ref_name(repo, "repo")
+        except ValueError as e:
+            logging.error(str(e))
+            return 1
+
         remote_url = f"git@github.com:{owner_repo}.git"
 
         clone_mgr = _get_clone_manager()
@@ -1151,8 +1461,16 @@ def main() -> int:
             repo_ensured = True
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
 
-        # Compute workspace ID with resolved branch
-        workspace_id = spec_to_workspace_id(f"{owner_repo}@{branch}")
+        # Compute workspace ID with resolved branch. Constructing the WorkspaceId is
+        # the parse boundary: an unsafe owner, repo or ref is rejected here, before it
+        # can name a container, a directory or a git command. Nothing downstream
+        # re-checks it, because holding the WorkspaceId is the evidence.
+        try:
+            workspace = WorkspaceId(owner, repo, branch)
+        except ValueError as e:
+            logging.error(str(e))
+            return 1
+        workspace_id = workspace.value
 
         # Fast path: if devpod already knows this workspace, skip clone manager
         if workspace_id in existing_ids:
@@ -1178,11 +1496,13 @@ def main() -> int:
 
             # Create workspace clone
             try:
-                workspace_path = clone_mgr.ensure_workspace(
-                    owner, repo, branch, remote_url, workspace_id
-                )
+                workspace_path = clone_mgr.ensure_workspace(owner, repo, branch, remote_url)
                 workspace_spec = str(workspace_path)
-            except (RuntimeError, OSError) as e:
+            # ValueError: the branch resolved above does go through WorkspaceId, but
+            # ensure_workspace may fall back to the default branch recorded in the
+            # repo's stored metadata, and that value reaches git unproven. It is
+            # checked where it enters argv, which raises from in here.
+            except (RuntimeError, OSError, ValueError) as e:
                 logging.error(f"Failed to prepare workspace: {e}")
                 return 1
     else:
@@ -1210,6 +1530,7 @@ def main() -> int:
             workspace_identity=workspace_id,
             devcontainer=devcontainer,
         )
+        update_cache_background(force=True)
         return result.returncode
 
     if subcommand == "recreate":
@@ -1222,8 +1543,9 @@ def main() -> int:
         )
         if result.returncode != 0:
             return result.returncode
-        setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id)
+        ret = attach_workspace(workspace_id)
+        update_cache_background(force=True)
+        return ret
 
     if subcommand == "restart":
         # Stop and start without rebuilding
@@ -1238,8 +1560,11 @@ def main() -> int:
         )
         if result.returncode != 0:
             return result.returncode
-        setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id)
+        ret = attach_workspace(workspace_id)
+        # workspace_stop already asked for a refresh on the way through; the
+        # once-per-process latch is what keeps this from being a second one.
+        update_cache_background(force=True)
+        return ret
 
     if subcommand == "reset":
         # Clean slate - remove everything and recreate
@@ -1252,8 +1577,9 @@ def main() -> int:
         )
         if result.returncode != 0:
             return result.returncode
-        setup_hostname(workspace_id)
-        return workspace_ssh(workspace_id)
+        ret = attach_workspace(workspace_id)
+        update_cache_background(force=True)
+        return ret
 
     # Check for shell command (after --)
     shell_command = None
@@ -1274,12 +1600,8 @@ def main() -> int:
                 f"Ignoring --devcontainer: {workspace_id} is already running. "
                 f"Use 'dl {raw_spec} recreate --devcontainer ...' to switch config."
             )
-        setup_hostname(workspace_id)
-        ret = workspace_ssh(
-            workspace_id,
-            shell_command,
-        )
-        update_cache_background()
+        ret = attach_workspace(workspace_id, shell_command)
+        update_cache_background(force=True)
         return ret
 
     # Default: start workspace and attach shell
@@ -1297,17 +1619,12 @@ def main() -> int:
     if result.returncode != 0:
         return result.returncode
 
-    # Set hostname so terminal prompt shows project/branch
-    setup_hostname(workspace_id)
+    # Attach to workspace (naming its prompt first, for an interactive shell)
+    ret = attach_workspace(workspace_id, shell_command)
 
-    # Attach to workspace
-    ret = workspace_ssh(
-        workspace_id,
-        shell_command,
-    )
-
-    # Update cache after workspace operations
-    update_cache_background()
+    # Update cache after workspace operations: this path may have created the
+    # workspace, so the refresh has to happen now that it exists.
+    update_cache_background(force=True)
 
     return ret
 

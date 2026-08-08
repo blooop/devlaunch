@@ -7,6 +7,7 @@ This module provides:
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ if str(test_dir) not in sys.path:
 # Import fixtures from the fixtures package to make them available to all tests
 # Note: pytest automatically discovers fixtures in conftest.py
 # noqa: E402 - imports must come after sys.path modification
-from devlaunch import gh_auth  # noqa: E402
+from devlaunch import dl, gh_auth  # noqa: E402
 from fixtures.git_fixtures import (  # noqa: E402
     isolated_devlaunch_env,
     local_git_repo,
@@ -28,6 +29,36 @@ from fixtures.git_fixtures import (  # noqa: E402
 )
 from fixtures.devpod_mock import DevPodMock, mock_devpod  # noqa: E402
 from fixtures.e2e_helpers import dl_no_ide, devpod_cleanup  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
+    """Keep every test out of the developer's real ~/.cache/devlaunch.
+
+    That cache holds workspace clones with uncommitted work in them, and since the
+    id-scheme migration landed, the first command that touches a workspace path
+    renames those directories and rewrites metadata.json. A test reaching that path
+    with XDG_CACHE_HOME unset does it to the machine running the suite:
+    `test_workspace_delete` did, because workspace_delete() builds a real clone
+    manager. Reading the developer's cache was already wrong -- assertions that
+    depend on whichever repos they happen to have cloned -- but writing to it is a
+    different order of wrong, so the whole suite gets its own cache.
+
+    XDG_CONFIG_HOME goes with it: config.toml can point repos_dir back at the real
+    cache, which would defeat the isolation from the other direction.
+
+    The few tests that assert what the *unset* default location is opt out with the
+    `home_cache_default` fixture.
+    """
+    root = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+
+
+@pytest.fixture
+def home_cache_default(monkeypatch):
+    """Drop XDG_CACHE_HOME so the home-relative fallback is what gets tested."""
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +74,44 @@ def no_gh_token_forwarding(monkeypatch):
     gh_auth.resolve_token.cache_clear()
     yield
     gh_auth.resolve_token.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def isolated_completion_cache(monkeypatch):
+    """Give each test its own freshly written completion cache.
+
+    Two pieces of dl's refresh scheduling are per-process, which in a test
+    session means per-*session*: the "already spawned a refresh" latch, and the
+    TTL check that reads the cache file. Left alone, one test's spawn would
+    silence the next one's, and whether a refresh looked necessary would depend
+    on the age of the developer's real ~/.cache/devlaunch/completions.json. A
+    per-test cache that starts out fresh also means no test spawns a real
+    background git sweep unless it deliberately backdates the file.
+
+    It gets a directory of its own rather than `tmp_path`, which tests are
+    entitled to assert the exact contents of.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = Path(tmpdir) / "completions.json"
+        cache.write_text('{"workspaces": [], "repos": [], "owners": [], "branches": []}')
+        monkeypatch.setattr(dl, "CACHE_FILE", cache)
+        monkeypatch.setattr(dl, "BASH_CACHE_FILE", Path(tmpdir) / "completions.bash")
+        dl.reset_cache_refresh_state()
+        yield
+        dl.reset_cache_refresh_state()
+
+
+@pytest.fixture(autouse=True)
+def fresh_workspace_list_cache():
+    """Give every test its own `devpod list` snapshot.
+
+    list_workspaces() memoizes for the life of the process because a real dl
+    invocation is one short-lived command. A test session is not: without this,
+    the first test to read the list would answer every later test's read.
+    """
+    dl.invalidate_workspace_list_cache()
+    yield
+    dl.invalidate_workspace_list_cache()
 
 
 def pytest_configure(config):
@@ -77,6 +146,8 @@ def pytest_collection_modifyitems(config, items):  # noqa: ARG001  # pylint: dis
 
 # Re-export fixtures so they're available without explicit imports
 __all__ = [
+    "isolated_devlaunch_cache",
+    "home_cache_default",
     "isolated_devlaunch_env",
     "local_git_repo",
     "local_git_repo_with_devcontainer",

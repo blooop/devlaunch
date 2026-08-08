@@ -12,7 +12,7 @@ import pytest
 
 from devlaunch.worktree import storage as storage_module
 from devlaunch.worktree.models import BaseRepository, WorktreeInfo
-from devlaunch.worktree.storage import SCHEMA_VERSION, MetadataStorage
+from devlaunch.worktree.storage import LEGACY_SCHEMA_VERSION, SCHEMA_VERSION, MetadataStorage
 
 
 @pytest.fixture
@@ -501,9 +501,7 @@ class TestMalformedEntries:
                 {k: v for k, v in _worktree_entry().items() if k != "local_path"},
                 id="missing-local-path",
             ),
-            pytest.param(
-                _worktree_entry(created_at="not-a-timestamp"), id="unparseable-created-at"
-            ),
+            pytest.param(_worktree_entry(created_at="not-a-timestamp"), id="unparsable-created-at"),
             pytest.param(_worktree_entry(local_path=None), id="null-local-path"),
             pytest.param("not-an-object", id="non-dict-entry"),
         ],
@@ -973,16 +971,21 @@ class TestSchemaVersion:
     """The top-level version key gives future migrations a deterministic trigger."""
 
     def test_save_writes_current_version(self, temp_storage):
-        """A round-trip writes and reads back version 1."""
+        """A round-trip writes and reads back the current version."""
         temp_storage.save()
         on_disk = json.loads(temp_storage.metadata_path.read_text(encoding="utf-8"))
 
-        assert SCHEMA_VERSION == 1
-        assert on_disk["version"] == 1
-        assert MetadataStorage(temp_storage.metadata_path).schema_version == 1
+        assert SCHEMA_VERSION == 2
+        assert on_disk["version"] == 2
+        assert MetadataStorage(temp_storage.metadata_path).schema_version == 2
 
     def test_legacy_file_without_version_loads_silently(self, tmp_path, capsys):
-        """A pre-versioning file is treated as version 1 with no warning."""
+        """A pre-versioning file is the oldest shape, read with no warning.
+
+        Not the *current* version: an absent header must still put the file below
+        SCHEMA_VERSION, or the id-scheme migration keyed on that comparison would
+        skip exactly the caches that predate versioning.
+        """
         metadata_path = tmp_path / "metadata.json"
         _write_metadata(
             metadata_path,
@@ -996,7 +999,8 @@ class TestSchemaVersion:
 
         storage = MetadataStorage(metadata_path)
 
-        assert storage.schema_version == 1
+        assert storage.schema_version == LEGACY_SCHEMA_VERSION
+        assert LEGACY_SCHEMA_VERSION < SCHEMA_VERSION
         assert list(storage.repositories) == ["owner1/repo1"]
         assert list(storage.worktrees) == ["owner1/repo1/branch1"]
         captured = capsys.readouterr()
@@ -1073,7 +1077,8 @@ class TestSchemaVersion:
         "version, normalized",
         [
             pytest.param("1.0", 1, id="integral-float"),
-            pytest.param("2.0", 2, id="integral-float-newer"),
+            pytest.param("2.0", 2, id="integral-float-current"),
+            pytest.param("3.0", 3, id="integral-float-newer"),
             pytest.param("true", None, id="bool-true"),
             pytest.param("null", None, id="null"),
             pytest.param('"1"', None, id="string"),
@@ -1115,7 +1120,9 @@ class TestSchemaVersion:
                 assert captured.err == ""
                 assert not backup_path.exists()
         else:
-            assert storage.schema_version == SCHEMA_VERSION
+            # An unreadable header is read as the oldest shape, not the current
+            # one, so a cache that needs migrating never claims to be current.
+            assert storage.schema_version == LEGACY_SCHEMA_VERSION
             assert len(captured.err.strip().splitlines()) == 2
             assert str(backup_path) in captured.err
             assert backup_path.read_bytes() == original_bytes

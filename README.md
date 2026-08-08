@@ -10,7 +10,7 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.0.7-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -32,10 +32,12 @@ pip install devlaunch
 ```
 
 Note: When using pip, you must install [devpod](https://devpod.sh/docs/getting-started/install) separately.
+If `devpod` is not on `PATH`, every command that needs it prints a single install hint on stderr and exits `127`
+(the shell's "command not found" code). `dl --help` and `dl --version` keep working without it.
 
 ### Shell Completions
 
-After installation, set up shell completions:
+After installation, set up shell completions for `dl` and `aid`:
 
 ```bash
 dl --install
@@ -51,6 +53,44 @@ dl <user/repo> <cmd>             # Run workspace command (stop, code, etc.)
 dl <user/repo> -- <command>      # Run shell command in workspace
 ```
 
+## aid: start a coding agent in a workspace
+
+`aid` is `dl` with a coding agent started for you:
+
+```bash
+aid <user/repo>[@branch] [prompt...]   # Open the workspace, start the agent
+```
+
+It is a shortcut, not a second launcher. `aid` rewrites its command line into a
+`dl` one and hands it to `dl` itself, so
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test
+```
+
+is exactly
+
+```bash
+dl blooop/devlaunch@fix/42 -- claude 'fix the flaky test'
+```
+
+That means an `aid` workspace *is* the `dl` workspace: same clone, same workspace
+id, same container — started if stopped, attached to if already running, and never
+rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
+
+| Option | Description |
+|--------|-------------|
+| `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
+| `--devcontainer <variant\|path>` | Passed through to `dl` |
+| `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
+
+Everything after the workspace is the prompt, flags and all, so it never needs
+quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
+deleting, VS Code — stays with `dl`.
+
+The agent's CLI has to be installed in the container; `aid` runs it there, it does
+not install it.
+
 ## Workspace Sources
 
 ```bash
@@ -59,6 +99,83 @@ dl user/repo                     # Create from GitHub repo
 dl user/repo@branch              # Create from specific branch
 dl ./path                        # Create from local path
 ```
+
+## Workspace IDs
+
+`dl user/repo@branch` derives one id that names both the devpod workspace (what you
+see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
+
+```
+<repo-slug>-<branch-slug>-<syllables>      at most 38 characters
+
+blooop/devlaunch@main                             -> devlaunch-main-zovomobo
+blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-poliseno
+blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-nesatabe
+blooop/test_renv@nb4                              -> test-renv-nb4-polenita
+kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
+                                                  -> kinisi-ros-ags-devcontainer-t-lenevere
+blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
+                                                  -> devlaunch-dependabot-codecov-sifivasa
+```
+
+The eight-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
+It is what makes the id unique: the readable part is shortened to fit the length limit,
+and shortening it does not affect whether two branches share an id. Long branch names
+drop whole `/`-separated middle segments before losing characters, so the part that
+identifies the branch survives. Note the third and fourth lines above: `feature/auth` and
+`feature-auth` read the same once slugged but are different branches, and they get
+different ids.
+
+Owner and repo are matched case-insensitively, the way GitHub treats them, so
+`dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main` are the same workspace.
+Branch names are case-sensitive, because git refs are.
+
+URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
+hashed over the URL.
+
+The id is also the container hostname, so it stays well inside the 38-character budget
+to leave room for tools that add their own prefixes.
+
+Branch names must be safe as both git refs and directory names — a name with a space or
+a leading dash is rejected rather than quietly rewritten.
+
+### Upgrading from an older devlaunch
+
+This id format is new, and the directories and containers on your machine were named by
+the previous scheme. The first `dl user/repo…` command after upgrading migrates the cache
+once and prints what it did. `dl --help`, `dl --version`, `dl --ls` and opening an existing
+workspace by name do not trigger it.
+
+**Your clone directories are renamed.** What was
+`~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
+`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo`. A workspace is a git
+clone whose `origin` points at the `.bare` cache next to it, and `.bare` does not move, so
+this is a plain rename: branches, history and **uncommitted changes all survive** — only
+the folder name changes. `metadata.json` is updated in the same pass, so nothing is left
+pointing at the old name.
+
+**Your existing devpod containers keep their old ids and are orphaned.** The next
+`dl user/repo@branch` builds a fresh container under the new id. dl does not delete
+containers for you — deleting by id is how a running sidecar got destroyed the last time
+something tried ([kinisi_ros#9766](https://github.com/kinisi-robotics/kinisi_ros/pull/9766)) —
+so it prints a one-line notice with the count and writes the old ids to
+`~/.cache/devlaunch/orphaned-workspaces.txt`. Remove them when you are ready:
+
+```bash
+xargs -r -n1 devpod delete < ~/.cache/devlaunch/orphaned-workspaces.txt
+```
+
+**A clone directory with no metadata record is left alone.** Nothing records which branch
+it was cloned for, and the old directory name cannot be turned back into one — `feature/auth`
+and `feature-auth` both became `feature-auth` — so a guessed name would be worse than no
+rename. Those directories stay exactly where they are and are listed in
+`~/.cache/devlaunch/unmigrated-clones.txt`.
+
+Running dl again changes nothing: the migration is keyed on the `version` field in
+`metadata.json`, not on directory names, so a branch that happens to look like a new-scheme
+id is never mistaken for one. If a migration is interrupted, the next run finishes it — the
+version is written last, in the same atomic save as the new paths, so it never claims more
+than the filesystem has actually done.
 
 ## Workspace Commands
 
@@ -136,7 +253,23 @@ stays in place — including one it was given before you set
 | `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
 | `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
-| `dl --version` | Show version |
+| `dl --version` | Show version (an editable install also names the tree it runs from) |
+
+A released install prints the version and nothing else. An install made in
+editable mode says so and names the checkout it resolves to, so two builds of
+the same version are told apart at a glance:
+
+```bash
+$ dl --version
+dl 0.0.9
+
+$ dl-next --version          # editable install of a working tree
+dl 0.0.9 (dev, editable from /path/to/your/devlaunch)
+```
+
+`aid --version` reports the same thing under its own name. The provenance comes
+from the installed package's own PEP 610 metadata; an install that records none
+just prints the bare version.
 
 ## Examples
 
@@ -158,6 +291,7 @@ dl blooop/devlaunch stop         # Stop workspace
 - **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
+- **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and `dl <ws> -- <cmd>` skips the extra round-trip that names an interactive prompt, since a one-shot command has none
 
 ## Worktree Backend
 
@@ -192,6 +326,19 @@ After running `dl --install`, you get intelligent tab completion:
 - Known GitHub owners and repositories from your workspaces
 - File/directory paths when starting with `./`, `/`, or `~`
 - All global flags (`--ls`, `--install`, etc.) and workspace commands
+
+### How the completion cache stays current
+
+The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
+building it means a `git ls-remote` per known repo — seconds of work. So it is
+rebuilt in the background at most once an hour (the same interval the worktree
+backend uses for lazy fetches), and at most once per `dl` invocation. Commands
+that change your workspaces (starting, stopping or deleting one) rebuild it as
+soon as they finish, regardless of when it was last built. Commands with no use
+for it — `dl --help`, `dl --version` — do not touch it at all.
+
+A branch created on a remote in the last hour may therefore not be offered yet.
+`dl --refresh` rebuilds the cache immediately and ignores the interval.
 
 ## Development
 

@@ -34,7 +34,7 @@ def _completion_file_path() -> pathlib.Path:
 
 
 def install_completions(rc_path: Optional[pathlib.Path] = None) -> int:
-    """Install or refresh completion scripts for dl."""
+    """Install or refresh completion scripts for dl and aid."""
     completion_path = _completion_file_path().expanduser()
     rc_target = (rc_path if rc_path is not None else pathlib.Path.home() / ".bashrc").expanduser()
 

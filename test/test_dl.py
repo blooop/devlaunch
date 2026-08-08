@@ -2,15 +2,18 @@
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import pathlib
 from unittest.mock import patch, MagicMock
 import pytest
 
 from devlaunch import gh_auth
 from devlaunch.devpod_ssh import RemoteExit
+from devlaunch.workspace_id import TARGET_LENGTH, WorkspaceId
 from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
@@ -45,6 +48,13 @@ from devlaunch.dl import (
     workspace_up,
     setup_hostname,
     get_workspace_state,
+    DevpodNotInstalled,
+    get_cache_path,
+    update_cache_background,
+    completion_cache_is_fresh,
+    cache_refresh_spawned,
+    reset_cache_refresh_state,
+    COMPLETION_CACHE_TTL_SECONDS,
 )
 
 
@@ -802,6 +812,83 @@ class TestGetVersion:
         assert version == "unknown"
 
 
+def _dist_reporting(direct_url_text):
+    """A stub of the installed-dist metadata reader (a system boundary).
+
+    ``direct_url_text`` is what ``Distribution.read_text('direct_url.json')``
+    hands back: the file's contents, or None when the file is not there.
+    """
+    dist = MagicMock()
+    dist.read_text.return_value = direct_url_text
+    return dist
+
+
+@patch("devlaunch.dl.pkg_version", return_value="1.2.3")
+class TestVersionProvenance:
+    """--version distinguishes an editable dev install from a released one."""
+
+    @patch("devlaunch.dl.distribution")
+    def test_editable_install_is_named_as_dev_with_its_tree_path(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """An editable install says so and names the tree it resolves to."""
+        mock_distribution.return_value = _dist_reporting(
+            '{"url":"file:///srv/checkouts/devlaunch","dir_info":{"editable":true}}'
+        )
+        version = get_version()
+        assert version.startswith("1.2.3 ")
+        assert "dev" in version
+        assert "/srv/checkouts/devlaunch" in version
+
+    @patch("devlaunch.dl.distribution")
+    def test_percent_encoded_tree_path_is_decoded(self, mock_distribution, _mock_pkg_version):
+        """The url is a file:// URI, so its path is decoded, not string-stripped."""
+        mock_distribution.return_value = _dist_reporting(
+            '{"url":"file:///srv/my%20checkouts/devlaunch","dir_info":{"editable":true}}'
+        )
+        assert "/srv/my checkouts/devlaunch" in get_version()
+
+    @patch("devlaunch.dl.distribution")
+    def test_non_editable_install_reports_bare_version(self, mock_distribution, _mock_pkg_version):
+        """A released build's output is unchanged: just the version."""
+        mock_distribution.return_value = _dist_reporting(
+            '{"dir_info": {}, "url": "file:///build/work"}'
+        )
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_absent_direct_url_metadata_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """A plain wheel install has no direct-url metadata at all."""
+        mock_distribution.return_value = _dist_reporting(None)
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_malformed_direct_url_metadata_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """Unparsable direct-url metadata degrades instead of raising."""
+        mock_distribution.return_value = _dist_reporting("{not json at all")
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_direct_url_metadata_missing_keys_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """Editable metadata with no url to name degrades instead of raising."""
+        mock_distribution.return_value = _dist_reporting('{"dir_info":{"editable":true}}')
+        assert get_version() == "1.2.3"
+
+    @patch("devlaunch.dl.distribution")
+    def test_unreadable_dist_metadata_reports_bare_version(
+        self, mock_distribution, _mock_pkg_version
+    ):
+        """A metadata reader that blows up must not take --version with it."""
+        mock_distribution.side_effect = OSError("dist-info is gone")
+        assert get_version() == "1.2.3"
+
+
 class TestSpecToWorkspaceId:
     """Tests for spec_to_workspace_id function."""
 
@@ -809,45 +896,126 @@ class TestSpecToWorkspaceId:
         """Test owner/repo generates sanitized repo name as workspace ID."""
         assert spec_to_workspace_id("blooop/devlaunch") == "devlaunch"
 
-    def test_owner_repo_with_branch_uses_repo_branch(self):
-        """Test owner/repo@branch uses <repo>-<branch> as workspace ID."""
-        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main"
+    def test_owner_repo_with_branch_uses_repo_branch_suffix(self):
+        """owner/repo@branch derives <repo-slug>-<branch-slug>-<syl3>.
+
+        The syllable suffix is new: without it the id was not injective, and
+        `blooop/devlaunch@feature/auth` and `@feature-auth` named one workspace.
+        """
+        assert spec_to_workspace_id("blooop/devlaunch@main") == "devlaunch-main-zovomobo"
 
     def test_owner_repo_with_feature_branch(self):
-        """Test owner/repo@feature/branch sanitizes branch name."""
-        assert spec_to_workspace_id("owner/repo@feature/my-branch") == "repo-feature-my-branch"
+        """Test owner/repo@feature/branch slugs the branch name."""
+        result = spec_to_workspace_id("owner/repo@feature/my-branch")
+        assert result == WorkspaceId("owner", "repo", "feature/my-branch").value
+        assert result.startswith("repo-feature-my-branch-")
 
     def test_owner_repo_with_uppercase_branch(self):
-        """Test branch name is lowercased and underscores replaced."""
-        assert spec_to_workspace_id("Owner/Repo@Feature/MyBranch") == "repo-feature-mybranch"
+        """The repo and branch are lowercased into the slug; the owner is not in it.
+
+        The owner still shapes the id through the suffix, and is case-folded there
+        because GitHub owner names are case-insensitive.
+        """
+        result = spec_to_workspace_id("Owner/Repo@Feature/MyBranch")
+        assert result.startswith("repo-feature-mybranch-")
+
+    def test_repo_case_does_not_fork_the_workspace(self):
+        """One GitHub repo is one workspace, whatever case the user typed.
+
+        Hashing owner and repo raw made every spelling its own container and its own
+        full clone: `dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main`
+        were two workspaces. The old derivation lowercased, so this was a regression.
+        """
+        spellings = [
+            "blooop/devlaunch@main",
+            "Blooop/devlaunch@main",
+            "blooop/DevLaunch@main",
+            "BLOOOP/DEVLAUNCH@main",
+        ]
+        assert len({spec_to_workspace_id(s) for s in spellings}) == 1
+
+    def test_branch_case_does_fork_the_workspace(self):
+        """Refs are case-sensitive in git, so these are genuinely two workspaces."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") != spec_to_workspace_id(
+            "blooop/devlaunch@Main"
+        )
+
+    def test_owner_is_part_of_the_identity(self):
+        """The old derivation dropped the owner, so two forks shared an id."""
+        assert spec_to_workspace_id("blooop/devlaunch@main") != spec_to_workspace_id(
+            "someone/devlaunch@main"
+        )
+
+    def test_slash_and_dash_branches_are_distinct(self):
+        """Defect 1 from #55: these two used to both derive `devlaunch-feature-auth`."""
+        assert spec_to_workspace_id("blooop/devlaunch@feature/auth") != spec_to_workspace_id(
+            "blooop/devlaunch@feature-auth"
+        )
 
     def test_github_url_sanitized(self):
         """Test github.com/owner/repo generates sanitized ID (fallback path)."""
-        assert spec_to_workspace_id("github.com/loft-sh/devpod") == "github-com-loft-sh-devpod"
+        assert spec_to_workspace_id("github.com/loft-sh/devpod").startswith(
+            "github-com-loft-sh-devpod-"
+        )
 
     def test_https_url_strips_protocol(self):
         """Test https URL strips protocol and sanitizes (fallback path)."""
-        assert spec_to_workspace_id("https://github.com/owner/repo") == "github-com-owner-repo"
+        assert spec_to_workspace_id("https://github.com/owner/repo").startswith(
+            "github-com-owner-repo-"
+        )
 
     def test_url_with_git_suffix_strips_it(self):
         """Test URL with .git suffix strips it (fallback path)."""
-        assert spec_to_workspace_id("github.com/owner/repo.git") == "github-com-owner-repo"
+        assert spec_to_workspace_id("github.com/owner/repo.git") == spec_to_workspace_id(
+            "github.com/owner/repo"
+        )
+
+    def test_url_specs_are_injective(self):
+        """`my_repo`, `my-repo` and `my.repo` share a slug but are three repos.
+
+        The first cut of the new scheme applied the slug rule here with no suffix,
+        which collapsed all three onto `gitlab-com-group-my-repo` — trading the
+        old derivation's collision for a new one.
+        """
+        sources = [
+            "gitlab.com/group/my_repo",
+            "gitlab.com/group/my-repo",
+            "gitlab.com/group/my.repo",
+        ]
+        assert len({spec_to_workspace_id(s) for s in sources}) == 3
+
+    def test_url_specs_are_capped(self):
+        """A long URL used to yield 92 characters, past devpod's 48-char ceiling."""
+        spec = f"github.com/{'o' * 40}/{'r' * 40}"
+        assert len(spec_to_workspace_id(spec)) <= TARGET_LENGTH
+
+    def test_url_specs_are_case_insensitive(self):
+        assert spec_to_workspace_id("github.com/Blooop/DevLaunch") == spec_to_workspace_id(
+            "github.com/blooop/devlaunch"
+        )
 
     def test_underscore_replaced_in_repo(self):
         """Test underscores are replaced with hyphens in repo name."""
         assert spec_to_workspace_id("blooop/test_renv") == "test-renv"
 
+    def test_repo_label_is_capped(self):
+        """The ref-less repo label must respect the budget too; it yielded 60 chars."""
+        assert len(spec_to_workspace_id(f"owner/{'r' * 60}")) <= TARGET_LENGTH
+
     def test_branch_allows_multiple_workspaces(self):
         """Test different branches get different workspace IDs."""
-        assert spec_to_workspace_id("blooop/test_renv@nb12") == "test-renv-nb12"
-        assert spec_to_workspace_id("blooop/test_renv@nb14") == "test-renv-nb14"
+        nb12 = spec_to_workspace_id("blooop/test_renv@nb12")
+        nb14 = spec_to_workspace_id("blooop/test_renv@nb14")
+        assert nb12.startswith("test-renv-nb12-")
+        assert nb14.startswith("test-renv-nb14-")
         # Different branches = different IDs = can be open simultaneously
+        assert nb12 != nb14
 
     def test_branch_truncation(self):
-        """Test branch name is truncated so total stays <= 48 chars."""
+        """Test branch name is truncated so total stays within the target length."""
         long_branch = "a" * 60
         result = spec_to_workspace_id(f"owner/repo@{long_branch}")
-        assert len(result) <= 48
+        assert len(result) <= TARGET_LENGTH
         assert result.startswith("repo-")
 
     def test_branch_truncation_strips_trailing_hyphen(self):
@@ -855,7 +1023,12 @@ class TestSpecToWorkspaceId:
         # Use a branch that after truncation would end with '-'
         result = spec_to_workspace_id("owner/myrepo@feature/some-very-long-branch-name-here")
         assert not result.endswith("-")
-        assert len(result) <= 48
+        assert len(result) <= TARGET_LENGTH
+
+    def test_long_repo_name_is_capped(self):
+        """Defect 2 from #55: a 47-char repo name skipped truncation and gave 80 chars."""
+        result = spec_to_workspace_id(f"owner/{'r' * 47}@main")
+        assert len(result) <= TARGET_LENGTH
 
     def test_path_extracts_directory_name(self):
         """Test path extracts directory name."""
@@ -868,11 +1041,22 @@ class TestSpecToWorkspaceId:
 
     def test_python_template_example(self):
         """Test the motivating example from the plan."""
-        assert spec_to_workspace_id("blooop/python_template@nb4") == "python-template-nb4"
+        result = spec_to_workspace_id("blooop/python_template@nb4")
+        assert result.startswith("python-template-nb4-")
 
     def test_no_branch_no_suffix(self):
-        """Test owner/repo without branch produces just repo name."""
+        """owner/repo with no branch is a repo label, not a workspace identity.
+
+        There is no ref to hash, so there is nothing to identify. Every path that
+        creates a workspace resolves the default branch first and derives the id
+        from the resolved triple.
+        """
         assert spec_to_workspace_id("blooop/python_template") == "python-template"
+
+    def test_unsafe_branch_is_rejected(self):
+        """Bad input gets one response everywhere: rejection at the constructor."""
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            spec_to_workspace_id("owner/repo@bad%branch")
 
 
 class TestCacheFunctions:
@@ -1503,8 +1687,9 @@ class TestMainCLI:
 
     @patch("devlaunch.dl.update_completion_cache")
     def test_main_update_cache_flag(self, mock_update):
-        """Test --update-cache flag updates cache."""
+        """Test --update-cache flag updates a stale cache."""
         mock_update.return_value = {}
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
         with patch.object(sys, "argv", ["dl", "--update-cache"]):
             result = main()
         assert result == 0
@@ -1701,15 +1886,16 @@ class TestMainCLI:
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
         # Workspace ID includes resolved branch
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
+            "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
+        main_id = WorkspaceId("owner", "repo", "main").value
         mock_up.assert_called_once_with(
             "/tmp/ws/repo-main",
-            workspace_id="repo-main",
-            workspace_identity="repo-main",
+            workspace_id=main_id,
+            workspace_identity=main_id,
             devcontainer=None,
         )
-        mock_ssh.assert_called_once_with("repo-main", None)
+        mock_ssh.assert_called_once_with(main_id, None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1734,12 +1920,13 @@ class TestMainCLI:
         # Should ensure branch exists via clone_mgr
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "main", "git@github.com:owner/repo.git", "repo-main"
+            "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
+        main_id = WorkspaceId("owner", "repo", "main").value
         mock_up.assert_called_once_with(
             "/tmp/ws/repo-main",
-            workspace_id="repo-main",
-            workspace_identity="repo-main",
+            workspace_id=main_id,
+            workspace_identity=main_id,
             devcontainer=None,
         )
 
@@ -1763,7 +1950,7 @@ class TestMainCLI:
         assert result == 0
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner", "repo", "newbranch", "git@github.com:owner/repo.git", "repo-newbranch"
+            "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -1808,6 +1995,56 @@ class TestMainCLI:
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
+    def test_main_unsafe_branch_is_reported_not_raised(
+        self, mock_up, mock_clone_mgr, mock_ids, caplog
+    ):
+        """An unsafe ref is rejected at the constructor with a message, not a traceback.
+
+        `%` passes OWNER_REPO_PATTERN, so this spec reaches id derivation and is
+        stopped there — before it can name a container or a directory.
+        """
+        mock_ids.return_value = []
+        mock_clone_mgr.return_value = MagicMock()
+        with patch.object(sys, "argv", ["dl", "owner/repo@bad%branch"]):
+            result = main()
+        assert result == 1
+        assert "Invalid git ref name" in caplog.text
+        mock_clone_mgr.return_value.ensure_workspace.assert_not_called()
+        mock_up.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "spec,kind",
+        [("x/..", "repo"), ("../x", "owner"), ("x/.", "repo"), ("../..", "owner")],
+    )
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.workspace_up")
+    def test_main_rejects_traversal_before_touching_the_cache(
+        self, mock_up, mock_clone_mgr, mock_ids, spec, kind, caplog
+    ):
+        """Owner and repo are validated before anything builds a path from them.
+
+        ensure_repo() joins repos_dir/<owner>/<repo>, and (repos_dir/'x'/'..')
+        resolves to repos_dir itself while '../x' escapes it entirely. Validation
+        used to happen only at the WorkspaceId, which is constructed *after* that
+        call, so the traversal reached the filesystem and was rejected afterwards.
+        """
+        mock_ids.return_value = []
+        mock_mgr = MagicMock()
+        mock_clone_mgr.return_value = mock_mgr
+        with patch.object(sys, "argv", ["dl", spec]):
+            result = main()
+        assert result == 1
+        assert f"Invalid git {kind} name" in caplog.text
+        # Nothing may reach the cache or devpod.
+        mock_mgr.repo_manager.ensure_repo.assert_not_called()
+        mock_mgr.repo_manager.get_default_branch.assert_not_called()
+        mock_mgr.ensure_workspace.assert_not_called()
+        mock_up.assert_not_called()
+
+    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_feature_branch_with_slash(
@@ -1825,11 +2062,7 @@ class TestMainCLI:
         assert result == 0
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "feature/my-feature")
         mock_mgr.ensure_workspace.assert_called_once_with(
-            "owner",
-            "repo",
-            "feature/my-feature",
-            "git@github.com:owner/repo.git",
-            "repo-feature-my-feature",
+            "owner", "repo", "feature/my-feature", "git@github.com:owner/repo.git"
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -2022,7 +2255,33 @@ class TestWorkspaceSsh:
         mock_session.return_value = RemoteExit(0)
         result = workspace_ssh("myws", command="echo hello")
         assert result == 0
-        mock_session.assert_called_once_with(["ssh", "myws", "--command", "echo hello"], env=None)
+        mock_session.assert_called_once_with(
+            ["ssh", "myws", "--command", "bash -lc 'echo hello'"], env=None
+        )
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_workspace_ssh_interactive_is_not_wrapped(self, mock_session):
+        """An interactive attach gets no --command and no shell wrapper."""
+        mock_session.return_value = RemoteExit(0)
+        result = workspace_ssh("myws", workdir="/workspaces/myws")
+        assert result == 0
+        sent_args = mock_session.call_args.args[0]
+        assert "--command" not in sent_args
+        assert not any("bash -lc" in arg for arg in sent_args)
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_workspace_ssh_command_with_quotes_runs_in_login_shell(self, mock_session):
+        """A payload containing single quotes survives the login-shell wrapper."""
+        mock_session.return_value = RemoteExit(0)
+        result = workspace_ssh("myws", command="claude 'do the thing'")
+        assert result == 0
+        # shlex.quote closes the outer quote, emits '"'"' for each literal
+        # single quote, and reopens -- so the inner quotes reach the payload
+        # intact instead of terminating it.
+        mock_session.assert_called_once_with(
+            ["ssh", "myws", "--command", "bash -lc 'claude '\"'\"'do the thing'\"'\"''"],
+            env=None,
+        )
 
     @patch("devlaunch.dl.run_devpod_session")
     def test_workspace_ssh_with_workdir(self, mock_session):
@@ -2039,7 +2298,7 @@ class TestWorkspaceSsh:
         result = workspace_ssh("myws", command="make test", workdir="/workspaces/myws")
         assert result == 0
         mock_session.assert_called_once_with(
-            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "make test"],
+            ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "bash -lc 'make test'"],
             env=None,
         )
 
@@ -2143,7 +2402,8 @@ class TestFastAttach:
         self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test git spec with existing workspace skips clone manager."""
-        mock_ids.return_value = ["repo-main"]  # Workspace already exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace already exists
         mock_state.return_value = "Stopped"  # Not running, so workspace_up still called
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -2156,7 +2416,7 @@ class TestFastAttach:
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up called with just the ID (no local path), no custom --id
         mock_up.assert_called_once_with(
-            "repo-main", workspace_id=None, workspace_identity="repo-main", devcontainer=None
+            main_id, workspace_id=None, workspace_identity=main_id, devcontainer=None
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -2170,7 +2430,8 @@ class TestFastAttach:
         self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test git spec with Running workspace skips workspace_up()."""
-        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace exists
         mock_state.return_value = "Running"  # Already running
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
@@ -2183,7 +2444,7 @@ class TestFastAttach:
         # workspace_up should NOT be called (fast-attach)
         mock_up.assert_not_called()
         # Should SSH in to attach
-        mock_ssh.assert_called_once_with("repo-main", None)
+        mock_ssh.assert_called_once_with(main_id, None)
 
     @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
@@ -2195,7 +2456,8 @@ class TestFastAttach:
         self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test git spec with Stopped workspace still calls workspace_up() with ID only."""
-        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace exists
         mock_state.return_value = "Stopped"  # Not running
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -2208,7 +2470,7 @@ class TestFastAttach:
         mock_mgr.ensure_workspace.assert_not_called()
         # workspace_up IS called (need to start it)
         mock_up.assert_called_once_with(
-            "repo-main", workspace_id=None, workspace_identity="repo-main", devcontainer=None
+            main_id, workspace_id=None, workspace_identity=main_id, devcontainer=None
         )
 
     @patch("devlaunch.dl.get_workspace_ids")
@@ -2243,7 +2505,8 @@ class TestFastAttach:
         self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
     ):
         """Test owner/repo (no branch) with existing workspace skips full clone pipeline."""
-        mock_ids.return_value = ["repo-main"]  # Workspace exists
+        main_id = WorkspaceId("owner", "repo", "main").value
+        mock_ids.return_value = [main_id]  # Workspace exists
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
         mock_clone_mgr.return_value = mock_mgr
@@ -2656,3 +2919,525 @@ class TestCLIErrorMessages:
         assert result == 1
         error_records = [r for r in caplog.records if r.levelname == "ERROR"]
         assert len(error_records) == 1
+
+
+def _devpod_missing():
+    """The error the OS raises when `devpod` is not on PATH."""
+    return FileNotFoundError(2, "No such file or directory", "devpod")
+
+
+class TestMissingDevpodBinary:
+    """A missing devpod binary must produce one actionable line, not a traceback."""
+
+    INSTALL_URL = "https://devpod.sh/docs/getting-started/install"
+
+    def test_signal_is_not_an_oserror(self):
+        """The signal must dodge every broad OSError/RuntimeError handler in dl.
+
+        FileNotFoundError is an OSError, and dl catches OSError in a dozen
+        places to degrade gracefully (empty branch lists, "failed to prepare
+        workspace"). A missing binary reported through those handlers is
+        reported wrongly, so it travels as its own type.
+        """
+        assert issubclass(DevpodNotInstalled, Exception)
+        assert not issubclass(DevpodNotInstalled, OSError)
+        assert not issubclass(DevpodNotInstalled, RuntimeError)
+
+    @pytest.mark.parametrize("capture", [False, True])
+    def test_run_devpod_translates_the_os_error(self, capture):
+        """The single devpod seam converts FileNotFoundError into the signal."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with pytest.raises(DevpodNotInstalled) as excinfo:
+                run_devpod(["list"], capture=capture)
+        message = str(excinfo.value)
+        assert "devpod" in message
+        assert self.INSTALL_URL in message
+
+    def test_run_devpod_still_reports_a_command_that_ran_and_failed(self):
+        """A devpod that exists and exits non-zero is not a missing binary."""
+        with patch("devlaunch.dl.subprocess.run", return_value=MagicMock(returncode=1)):
+            assert run_devpod(["list"]).returncode == 1
+
+    @patch("devlaunch.dl.update_cache_background")
+    def test_ls_prints_one_line_to_stderr_and_exits_127(self, _cache, capsys):
+        """`dl --ls` is the ticket's repro: one line on stderr, exit 127."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--ls"]):
+                result = main()
+        assert result == 127
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.strip().count("\n") == 0
+        assert "devpod" in captured.err
+        assert self.INSTALL_URL in captured.err
+        assert "Traceback" not in captured.err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    def test_workspace_up_handler_does_not_swallow_it(self, _ids, _state, _cache, capsys, caplog):
+        """Proof for main()'s `except (RuntimeError, OSError)` around workspace_up.
+
+        workspace_up shells out to devpod from inside that try block; the
+        generic "Failed to create workspace" must not appear.
+        """
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "myws"]):
+                result = main()
+        assert result == 127
+        assert "Failed to create workspace" not in caplog.text
+        assert "devpod" in capsys.readouterr().err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    def test_delete_handler_does_not_swallow_it(self, _ids, _cache, capsys, caplog):
+        """Second call site: `dl <ws> rm`, which has its own broad handlers.
+
+        workspace_delete reports devpod failures itself and wraps the local
+        clone cleanup in `except Exception`; neither of those messages may
+        stand in for "devpod is not installed".
+        """
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "myws", "rm"]):
+                result = main()
+        assert result == 127
+        assert "could not delete" not in caplog.text
+        assert "Failed to remove local clone" not in caplog.text
+        assert "devpod" in capsys.readouterr().err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.read_completion_cache", return_value=None)
+    def test_repos_flag_keeps_stdout_clean(self, _cache_read, _cache, capsys):
+        """`dl --repos` feeds shell completion: nothing may reach stdout."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--repos"]):
+                result = main()
+        assert result == 127
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "devpod" in captured.err
+
+    @patch("devlaunch.dl.update_cache_background")
+    @patch("devlaunch.dl.read_completion_cache", return_value=None)
+    def test_completion_data_flag_keeps_stdout_clean(self, _cache_read, _cache, capsys):
+        """`dl --completion-data` must not emit half a JSON document."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--completion-data"]):
+                result = main()
+        assert result == 127
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "devpod" in captured.err
+
+    @patch("devlaunch.dl.write_bash_completion_cache")
+    @patch("devlaunch.dl.write_completion_cache")
+    def test_update_cache_flag_leaves_the_cache_alone(self, mock_write, mock_write_bash, capsys):
+        """The background updater must not overwrite a good cache with nothing.
+
+        The cache is backdated first so the TTL does not skip the sweep before it
+        can reach devpod -- a fresh cache is a second, unrelated reason for the
+        updater to write nothing, and this test is about the missing binary.
+        """
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()):
+            with patch.object(sys, "argv", ["dl", "--update-cache"]):
+                result = main()
+        assert result == 127
+        mock_write.assert_not_called()
+        mock_write_bash.assert_not_called()
+        assert "devpod" in capsys.readouterr().err
+
+    @patch("devlaunch.dl.update_cache_background")
+    def test_help_never_touches_devpod(self, _cache, capsys):
+        """--help must work on a box with no devpod at all."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()) as mock_run:
+            with patch.object(sys, "argv", ["dl", "--help"]):
+                result = main()
+        assert result == 0
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "dl - DevLaunch CLI" in captured.out
+        assert captured.err == ""
+
+    @patch("devlaunch.dl.update_cache_background")
+    def test_version_never_touches_devpod(self, _cache, capsys):
+        """--version must work on a box with no devpod at all."""
+        with patch("devlaunch.dl.subprocess.run", side_effect=_devpod_missing()) as mock_run:
+            with patch.object(sys, "argv", ["dl", "--version"]):
+                result = main()
+        assert result == 0
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert captured.out.startswith("dl ")
+        assert captured.err == ""
+
+    def test_exit_code_reaches_the_shell(self, tmp_path):
+        """End to end: run dl with a PATH that has no devpod on it."""
+        env = {
+            "PATH": str(tmp_path / "empty-bin"),
+            "HOME": str(tmp_path),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "DEVLAUNCH_NO_GH_TOKEN": "1",
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "devlaunch.dl", "--ls"],
+            cwd=str(pathlib.Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=60,
+        )
+        assert proc.returncode == 127
+        assert proc.stdout == ""
+        assert "Traceback" not in proc.stderr
+        assert self.INSTALL_URL in proc.stderr
+        assert proc.stderr.strip().count("\n") == 0
+
+
+def _age_completion_cache(seconds: float) -> None:
+    """Backdate the completion cache's mtime so it reads as `seconds` old."""
+    stamp = time.time() - seconds
+    os.utime(get_cache_path(), (stamp, stamp))
+
+
+class TestCompletionCacheFreshness:
+    """The TTL that decides whether a background refresh is worth spawning."""
+
+    def test_ttl_mirrors_the_lazy_fetch_interval(self):
+        """One hour: the same staleness RepositoryManager already allows a repo."""
+        assert COMPLETION_CACHE_TTL_SECONDS == 3600
+
+    def test_a_just_written_cache_is_fresh(self):
+        assert completion_cache_is_fresh()
+
+    def test_a_cache_older_than_the_ttl_is_stale(self):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        assert not completion_cache_is_fresh()
+
+    def test_a_cache_just_inside_the_ttl_is_fresh(self):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS - 60)
+        assert completion_cache_is_fresh()
+
+    def test_a_missing_cache_is_not_fresh(self):
+        get_cache_path().unlink()
+        assert not completion_cache_is_fresh()
+
+    def test_freshness_follows_the_file_not_its_contents(self):
+        """mtime is the timestamp, so a cache written by an older dl still counts."""
+        get_cache_path().write_text("{}", encoding="utf-8")
+        assert completion_cache_is_fresh()
+
+
+class TestBackgroundRefreshSpawning:
+    """update_cache_background: at most one spawn, and none for a fresh cache."""
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_fresh_cache_costs_no_subprocess(self, mock_popen):
+        update_cache_background()
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_stale_cache_spawns_a_refresh(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        update_cache_background()
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][1:] == ["-m", "devlaunch.dl", "--update-cache"]
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_missing_cache_spawns_a_refresh(self, mock_popen):
+        get_cache_path().unlink()
+        update_cache_background()
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_force_ignores_the_ttl(self, mock_popen):
+        """A caller that just changed the workspace list knows better than the TTL."""
+        update_cache_background(force=True)
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_only_one_spawn_per_process(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        update_cache_background()
+        update_cache_background()
+        update_cache_background(force=True)
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_skipping_on_freshness_does_not_use_up_the_one_spawn(self, mock_popen):
+        """A TTL skip is 'not needed yet', not 'already done'."""
+        update_cache_background()
+        update_cache_background(force=True)
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_the_latch_is_observable_and_resettable(self, mock_popen):
+        assert not cache_refresh_spawned()
+        update_cache_background(force=True)
+        assert cache_refresh_spawned()
+        reset_cache_refresh_state()
+        assert not cache_refresh_spawned()
+        update_cache_background(force=True)
+        assert mock_popen.call_count == 2
+
+    @patch("devlaunch.dl.subprocess.Popen", side_effect=OSError("no fork for you"))
+    def test_a_failed_spawn_is_survivable(self, _mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        update_cache_background()
+
+
+class TestRefreshChildRechecksFreshness:
+    """The spawned child re-checks the TTL, to close the two-parents race."""
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_child_skips_the_sweep_when_the_cache_is_already_fresh(self, mock_update):
+        with patch.object(sys, "argv", ["dl", "--update-cache"]):
+            assert main() == 0
+        mock_update.assert_not_called()
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_child_sweeps_when_the_cache_is_stale(self, mock_update):
+        mock_update.return_value = {}
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--update-cache"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+
+    @patch("devlaunch.dl.update_completion_cache")
+    def test_child_sweeps_a_fresh_cache_when_forced(self, mock_update):
+        """The forced spawn follows a workspace change: age says nothing about it."""
+        mock_update.return_value = {}
+        with patch.object(sys, "argv", ["dl", "--update-cache", "--force"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+
+
+class TestNoRefreshForCacheFreeCommands:
+    """--help/--version/--install/--purge never spawn a refresh."""
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_help_spawns_nothing(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--help"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_short_help_spawns_nothing(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "-h"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_version_spawns_nothing(self, mock_popen):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--version"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.install_completions", return_value=0)
+    @patch("devlaunch.dl.update_completion_cache")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_install_builds_the_cache_in_the_foreground_and_spawns_nothing(
+        self, mock_popen, mock_update, _mock_install
+    ):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--install"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.list_workspaces", return_value=[])
+    @patch("devlaunch.dl.purge_all_data", return_value=0)
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_purge_spawns_nothing(self, mock_popen, _mock_purge, _mock_ls):
+        """Nothing should be racing to rewrite a cache directory being deleted."""
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--purge", "-y"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+
+class TestManualRefreshIgnoresTheTtl:
+    """--refresh is the escape hatch: it always refreshes, in the foreground."""
+
+    @patch("devlaunch.dl.update_completion_cache")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_refresh_sweeps_even_a_fresh_cache(self, mock_popen, mock_update, capsys):
+        mock_update.return_value = {"workspaces": ["ws1"]}
+        with patch.object(sys, "argv", ["dl", "--refresh"]):
+            assert main() == 0
+        mock_update.assert_called_once()
+        mock_popen.assert_not_called()
+        assert "1 workspaces found" in capsys.readouterr().out
+
+
+class TestCacheReadingCommandsWarmTheCache:
+    """The commands that serve completions keep the cache warm, TTL permitting."""
+
+    @patch("devlaunch.dl.print_workspaces")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_ls_spawns_once_when_the_cache_is_stale(self, mock_popen, _mock_print):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--ls"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.print_workspaces")
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_ls_spawns_nothing_when_the_cache_is_fresh(self, mock_popen, _mock_print):
+        with patch.object(sys, "argv", ["dl", "--ls"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.read_completion_cache", return_value={"repos": ["owner/repo"]})
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_repos_completion_warms_a_stale_cache(self, mock_popen, _mock_cache):
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "--repos"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.read_completion_cache", return_value={"repos": []})
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_repos_completion_is_free_when_the_cache_is_fresh(self, mock_popen, _mock_cache):
+        with patch.object(sys, "argv", ["dl", "--repos"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+    @patch("devlaunch.dl.read_completion_cache", return_value={"repos": []})
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_completion_data_is_free_when_the_cache_is_fresh(self, mock_popen, _mock_cache):
+        with patch.object(sys, "argv", ["dl", "--completion-data"]):
+            assert main() == 0
+        mock_popen.assert_not_called()
+
+
+class TestWorkspaceCommandsRefreshOnceAfterwards:
+    """Workspace commands change what the cache describes, so they force one
+    refresh -- after the command, not before, and never more than one."""
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_stop_forces_exactly_one_refresh(self, mock_popen, _mock_ids, mock_devpod):
+        mock_devpod.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "stop"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_a_stale_cache_buys_no_refresh_of_the_state_about_to_change(
+        self, mock_popen, _mock_ids, mock_devpod
+    ):
+        """The one refresh a stop gets is the one that runs after the stop.
+
+        A stale cache used to mean an up-front sweep that indexed the workspace
+        list as it was *before* the command, and the post-command refresh then
+        had to race it.
+        """
+        mock_devpod.return_value = MagicMock(returncode=0)
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "myws", "stop"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl._get_clone_manager")
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_delete_forces_exactly_one_refresh(self, mock_popen, _mock_ids, mock_devpod, _mock_mgr):
+        mock_devpod.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "rm"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args[0][0][-1] == "--force"
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.get_workspace_state", return_value="Running")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_attaching_to_a_running_workspace_refreshes_once(
+        self, mock_popen, _mock_ids, _mock_state, _mock_ssh, _mock_host
+    ):
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_starting_a_workspace_refreshes_once(
+        self, mock_popen, _mock_ids, _mock_state, mock_up, _mock_ssh, _mock_host
+    ):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_restart_stops_and_starts_but_still_refreshes_once(
+        self, mock_popen, _mock_ids, mock_devpod, mock_up, _mock_ssh, _mock_host
+    ):
+        """The old code spawned twice here: once up front and once from stop."""
+        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "restart"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_code_refreshes_once(self, mock_popen, _mock_ids, mock_up):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "code"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_recreate_refreshes_once(self, mock_popen, _mock_ids, mock_up, _mock_ssh, _mock_host):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.setup_hostname")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.workspace_up")
+    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_reset_refreshes_once(self, mock_popen, _mock_ids, mock_up, _mock_ssh, _mock_host):
+        mock_up.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["dl", "myws", "reset"]):
+            assert main() == 0
+        mock_popen.assert_called_once()
+
+    @patch("devlaunch.dl.get_workspace_ids", return_value=[])
+    @patch("devlaunch.dl.subprocess.Popen")
+    def test_a_rejected_workspace_spec_spawns_nothing(self, mock_popen, _mock_ids):
+        """A spec dl refuses to act on changed nothing worth re-indexing."""
+        _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
+        with patch.object(sys, "argv", ["dl", "nonexistent"]):
+            assert main() == 1
+        mock_popen.assert_not_called()

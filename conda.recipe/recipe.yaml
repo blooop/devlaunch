@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  version: "0.0.7"
+  version: "0.0.11"
 
 package:
   name: devlaunch
@@ -25,6 +25,7 @@ requirements:
   run:
     - python >=3.10
     - iterfzf >=1.0.0
+    - tomli >=2.0.0
     - devpod >=0.8.0
 
 tests:
@@ -32,8 +33,10 @@ tests:
       imports:
         - devlaunch
         - devlaunch.dl
+        - devlaunch.aid
   - script:
       - dl --help
+      - aid --help
 
 about:
   homepage: https://github.com/blooop/devlaunch
