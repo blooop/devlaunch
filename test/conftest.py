@@ -32,6 +32,36 @@ from fixtures.e2e_helpers import dl_no_ide, devpod_cleanup  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
+    """Keep every test out of the developer's real ~/.cache/devlaunch.
+
+    That cache holds workspace clones with uncommitted work in them, and since the
+    id-scheme migration landed, the first command that touches a workspace path
+    renames those directories and rewrites metadata.json. A test reaching that path
+    with XDG_CACHE_HOME unset does it to the machine running the suite:
+    `test_workspace_delete` did, because workspace_delete() builds a real clone
+    manager. Reading the developer's cache was already wrong -- assertions that
+    depend on whichever repos they happen to have cloned -- but writing to it is a
+    different order of wrong, so the whole suite gets its own cache.
+
+    XDG_CONFIG_HOME goes with it: config.toml can point repos_dir back at the real
+    cache, which would defeat the isolation from the other direction.
+
+    The few tests that assert what the *unset* default location is opt out with the
+    `home_cache_default` fixture.
+    """
+    root = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+
+
+@pytest.fixture
+def home_cache_default(monkeypatch):
+    """Drop XDG_CACHE_HOME so the home-relative fallback is what gets tested."""
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_gh_token_forwarding(monkeypatch):
     """Keep the suite away from the host's real GitHub credentials.
 
@@ -116,6 +146,8 @@ def pytest_collection_modifyitems(config, items):  # noqa: ARG001  # pylint: dis
 
 # Re-export fixtures so they're available without explicit imports
 __all__ = [
+    "isolated_devlaunch_cache",
+    "home_cache_default",
     "isolated_devlaunch_env",
     "local_git_repo",
     "local_git_repo_with_devcontainer",

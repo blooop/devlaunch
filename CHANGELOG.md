@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Existing caches are migrated onto the new workspace id scheme once, by the first
+  command that touches a workspace. Clone directories are renamed in place —
+  `~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
+  `.../devlaunch-main-zovomobo` — a plain `mv` of a git clone, which carries its `.git`
+  with it and refers to its own path nowhere, so history and **uncommitted changes
+  survive**; `metadata.json` is updated in the same atomic write and its `version`
+  becomes `2`. `dl --help`, `dl --version` and `dl --ls` do not trigger it, and a
+  second run does nothing.
+- Existing devpod containers keep their old ids and are orphaned, since the new id
+  names a new container. dl does not delete containers for you: it prints the count
+  and writes the old ids to `~/.cache/devlaunch/orphaned-workspaces.txt`, so
+  `xargs -r -n1 devpod delete < ~/.cache/devlaunch/orphaned-workspaces.txt` clears
+  them when you are ready. A clone directory with no metadata record cannot be
+  renamed — nothing records which branch it holds — so it is left alone and listed
+  in `~/.cache/devlaunch/unmigrated-clones.txt`.
+
+### Fixed
+- The test suite no longer reads or writes the real `~/.cache/devlaunch`. One test
+  reached a code path that builds a real clone manager, which with the migration in
+  place would have renamed the developer's own workspace clones.
+
 ## [0.0.10] - 2026-08-07
 
 ### Added

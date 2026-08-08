@@ -37,6 +37,7 @@ from . import gh_auth
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
+from .worktree.migration import migrate_cache
 from .worktree.workspace_clone import WorkspaceCloneManager
 
 
@@ -1188,9 +1189,31 @@ _cache: dict[str, WorkspaceCloneManager] = {}
 
 
 def _get_clone_manager() -> WorkspaceCloneManager:
-    """Lazy factory for WorkspaceCloneManager."""
+    """Lazy factory for WorkspaceCloneManager, migrating the cache on first use.
+
+    This is where the one-shot id-scheme migration runs, for three reasons. It is
+    dl's single construction point for the object that owns every read of a
+    workspace path, so nothing can reach a stale path before the rename. It is
+    lazy, so the commands that touch no workspace -- `--help`, `--version`,
+    `--ls`, the completion commands, `--purge`, and opening an existing workspace
+    by name -- never reach it, which keeps #58's promise that help does no work.
+    And the memo makes it at most once per process.
+
+    On an already-migrated cache this costs one integer comparison, because the
+    trigger is the version header the storage load already parsed. Nothing here
+    spawns devpod: the orphaned container ids come from metadata.
+    """
     if "clone_manager" not in _cache:
-        _cache["clone_manager"] = WorkspaceCloneManager()
+        manager = WorkspaceCloneManager()
+        try:
+            migrate_cache(manager.storage, pathlib.Path(manager.config.repos_dir))
+        except OSError as e:
+            # A failed migration must not take the command with it. The renames
+            # that did happen are still resumable: the version header is only
+            # written by the final save, so an unwritten file means the next run
+            # migrates again and finds them already in place.
+            logging.warning(f"Could not migrate the workspace cache: {e}")
+        _cache["clone_manager"] = manager
     return _cache["clone_manager"]
 
 
