@@ -27,6 +27,24 @@ def gh_result(stdout: str, returncode: int = 0) -> MagicMock:
     return MagicMock(returncode=returncode, stdout=stdout, stderr="")
 
 
+def assert_reached_no_log_record(secret: str, caplog) -> None:
+    """A secret in scope must not reach a log record by any route.
+
+    Four layers, because no single one of them holds the line. A lazily
+    interpolated `warning("...: %s", token)` renders nothing into `record.msg`;
+    anything smuggled through `extra=` is invisible to both `getMessage()` and
+    `caplog.text`, and only shows up in the record's own attributes. Every site
+    that has a token or a maybe-credential in scope asserts through here, so the
+    strongest check is the one they all get.
+    """
+    for record in caplog.records:
+        assert secret not in record.getMessage()
+        assert secret not in str(record.msg)
+        assert secret not in repr(record.args)
+        assert secret not in repr(vars(record))
+    assert secret not in caplog.text
+
+
 @pytest.mark.unit
 class TestResolveToken:
     """Where the token comes from."""
@@ -126,16 +144,10 @@ class TestFailuresAreVisible:
     )
     def test_junk_on_stdout_warns_without_repeating_the_junk(self, _mock_run, _mock_which, caplog):
         """Whatever gh printed may be a malformed credential; it must not be logged."""
-        junk = "~SECRETish~"
         with caplog.at_level(logging.DEBUG):
             assert gh_auth.resolve_token() is None
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
-        for record in caplog.records:
-            assert junk not in record.getMessage()
-            assert junk not in str(record.msg)
-            assert junk not in repr(record.args)
-            assert junk not in repr(vars(record))
-        assert junk not in caplog.text
+        assert_reached_no_log_record("~SECRETish~", caplog)
 
     @patch("devlaunch.gh_auth.shutil.which", return_value=None)
     def test_no_gh_installed_says_nothing(self, _mock_which, caplog):
@@ -226,10 +238,11 @@ class TestUpArgs:
         self, _mock_mkstemp, _mock_token, caplog
     ):
         """workspace_up has no exception handler above it on several paths."""
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             with gh_auth.up_args() as args:
                 assert args == []
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        assert_reached_no_log_record("gho_secret", caplog)
 
     @patch("devlaunch.gh_auth.resolve_token", return_value="gho_secret")
     def test_a_token_that_cannot_be_written_is_reported_not_swallowed(
@@ -242,11 +255,11 @@ class TestUpArgs:
             raise OSError("No space left on device")
 
         monkeypatch.setattr(gh_auth.os, "fdopen", fail_but_do_not_leak_the_fd)
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             with gh_auth.up_args() as args:
                 assert args == []
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
-        assert "gho_secret" not in caplog.text
+        assert_reached_no_log_record("gho_secret", caplog)
 
 
 @pytest.mark.unit

@@ -13,9 +13,12 @@
 #
 #   XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ...
 #
-# leaves the real workspace list alone. Scope that variable only: dl writes
-# nothing under XDG_CONFIG_HOME, and pointing it at a scratch dir hides the
-# host's gh login, so the workspace opens with no GitHub credentials.
+# leaves the real workspace list alone. Scope that variable only, as a trade
+# rather than a free simplification: a scratch XDG_CONFIG_HOME would also hide a
+# personal config.toml, which can pin repos_dir back at the real cache (which is
+# why test/conftest.py scopes both), but it hides the host's gh login too, so
+# every workspace opens with no GitHub credentials. The credential loss happens
+# on every run; the repos_dir hazard needs a config.toml most hosts do not have.
 
 set -e  # Exit on error
 

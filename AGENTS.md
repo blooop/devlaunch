@@ -52,9 +52,13 @@ Two things to know about it:
   XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next owner/repo
   ```
 
-  **Only that one variable.** Scoping `XDG_CONFIG_HOME` as well guards nothing —
-  `dl` writes nothing under it — while hiding the host's `gh` login from `gh auth
-  token`, so the workspace opens with no GitHub credentials at all.
+  **Only that one variable, and it is a trade rather than a free simplification.**
+  Scoping `XDG_CONFIG_HOME` too would guard one more thing — a personal
+  `config.toml` under it can pin `repos_dir` back at the real cache and beat
+  `XDG_CACHE_HOME` outright, which is why `test/conftest.py` scopes both — but it
+  also hides the host's `gh` login from `gh auth token`, so every workspace opens
+  with no GitHub credentials. The credential loss happens on every run; the
+  `repos_dir` hazard needs a `config.toml` most hosts do not have.
 
   That isolates the bookkeeping, not the machine — `dl` drives devpod and docker
   on the host either way, so the workspaces a scratch run creates are real ones

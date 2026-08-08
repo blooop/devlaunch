@@ -45,7 +45,10 @@ def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
     different order of wrong, so the whole suite gets its own cache.
 
     XDG_CONFIG_HOME goes with it: config.toml can point repos_dir back at the real
-    cache, which would defeat the isolation from the other direction.
+    cache, which would defeat the isolation from the other direction. The scratch-run
+    recipe in AGENTS.md trades that guard away rather than contradicting it -- scoping
+    the variable hides the host's gh login, which the suite has already given up in
+    no_gh_token_forwarding below and a real `dl-next` run has not.
 
     The few tests that assert what the *unset* default location is opt out with the
     `home_cache_default` fixture.
