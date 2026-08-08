@@ -83,12 +83,25 @@ aid blooop/devlaunch@fix/42 fix the flaky test
 is exactly
 
 ```bash
-dl blooop/devlaunch@fix/42 -- claude 'fix the flaky test'
+dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the flaky test'
 ```
 
 That means an `aid` workspace *is* the `dl` workspace: same clone, same workspace
 id, same container — started if stopped, attached to if already running, and never
 rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
+
+`claude` is started with `--dangerously-skip-permissions`. The agent is already
+inside a disposable container holding only this repo, so the per-tool prompts it
+would ask on the host protect nothing here and would stall an unattended run.
+`IS_SANDBOX=1` rides along because `claude` otherwise refuses that flag outright
+under `uid 0`, and devcontainers that run as root are ordinary. The variable is
+scoped to the agent process, not exported into your shell.
+
+The trade is worth stating plainly: an agent started this way edits, runs and
+deletes inside the container without asking. It cannot reach your host, but it can
+rewrite the checkout it is in, so review an `aid` workspace before pushing rather
+than treating it as a sandbox that will stop it for you. `--codex` and `--gemini`
+are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 
 | Option | Description |
 |--------|-------------|
