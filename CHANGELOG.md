@@ -19,6 +19,28 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.22] - 2026-08-08
+
+### Changed
+
+- `unsaved` now names the first few changed paths, not just a count:
+  `1 uncommitted change(s) (pixi.lock)`. Found by using 0.0.21 for real — this
+  repo's own devcontainer runs `pixi install` in its `postCreateCommand`, which
+  leaves the tracked lockfile modified in **every** workspace it builds. As a
+  bare count that is indistinguishable from an hour of someone's unsaved work,
+  so a cleanup tool reading it correctly refuses to clean anything, forever.
+  Named, the same fact is judgeable — by a person, and by a caller deciding
+  whether to insist.
+
+### Fixed
+
+- The first named path lost its first character (`ixi.lock` for `pixi.lock`).
+  `git status --porcelain` writes a modified *tracked* file as `` M path`` —
+  leading space — and this module stripped git's output at both ends, eating
+  the status column of the first line only. Untracked entries start `??` and
+  were unharmed, which is why the tests written alongside the feature all
+  passed. Only trailing newlines are trimmed now.
+
 ## [0.0.21] - 2026-08-08
 
 One workspace per branch means workspaces accumulate, and until now the only
