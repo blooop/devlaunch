@@ -388,10 +388,11 @@ It removes everything else anyway, and names what is left:
 ```
 $ dl --purge -y
 Removed what was permitted under /home/you/.cache/devlaunch. These refused:
-  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-main-kivagede
+  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-main-kivagede: Permission denied
 
-Written by a container running as a different user. To finish:
-  sudo rm -rf /home/you/.cache/devlaunch
+Usually this means a container wrote them as a different user, and:
+  sudo rm -rf '/home/you/.cache/devlaunch'
+clears them. Check the reasons above first -- it does not fix all of them.
 ```
 
 Exit status is `1`, because a clone you were told would go is still on disk. It
@@ -402,6 +403,13 @@ survived on account of one directory.
 What is listed is the directory, once — not the hundreds of files inside it.
 Unlinking needs write permission on the directory rather than on the file, so
 every entry in that clone refuses separately and they are all the same fact.
+Two *separately* unwritable directories on one path are two lines, though,
+because clearing the inner one would leave the outer one just as stuck.
+
+Each line carries what the system actually said. A container running as another
+user is the common cause, but a read-only mount, `chattr +i` and a busy
+mountpoint all land here too — and `sudo rm -rf` does not fix those, which is
+why the report offers the cause rather than asserting it.
 
 ### Cleaning up workspaces
 

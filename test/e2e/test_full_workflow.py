@@ -14,6 +14,7 @@ Run these tests with:
 import json
 import os
 import subprocess
+import pathlib
 from pathlib import Path
 
 import pytest
@@ -358,8 +359,16 @@ class TestPurgeE2E:
             for line in printed[heading[0] + 1 :]:
                 if not line.startswith("  - "):
                     break
-                named.append(line[4:])
-            assert named == [str(clone)], report
+                named.append(line[4:].split(": ")[0])
+            # One line, at or above the clone -- not `== [str(clone)]`. Which
+            # level is blamed depends on which directories devpod chowned, and
+            # betting on `clone` exactly would fail a correct purge if it turns
+            # out to be `clone/.git`. The claim under test is that forty-odd
+            # entries collapse to the directory, and that survives either way.
+            assert len(named) == 1, report
+            assert clone == pathlib.Path(named[0]) or pathlib.Path(named[0]).is_relative_to(
+                clone
+            ), report
             assert "sudo rm -rf" in purge_result.stdout, report
 
     def test_purge_cleans_cache(self, isolated_devlaunch_env):

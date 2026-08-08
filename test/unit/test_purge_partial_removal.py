@@ -36,6 +36,13 @@ import pytest
 
 from devlaunch.dl import purge_all_data, remove_tree
 
+
+def refused_paths(tree) -> list:
+    """`remove_tree` reports a path *and* what the system said about it; most
+    assertions here are about which paths, so this drops the reasons."""
+    return [refusal.path for refusal in remove_tree(tree)]
+
+
 # Every assertion here rests on the process being refused by file permissions.
 # root is refused by nothing, so under root these do not test a weaker version
 # of the behaviour -- they test nothing at all, and would pass with the fix
@@ -144,23 +151,51 @@ class TestTheReportIsActionable:
     """An errno is a fact about a syscall, not an answer to "now what"."""
 
     @needs_an_unprivileged_user
-    def test_the_refused_path_is_named(self, cache, purge, capsys):
+    def test_the_refused_path_is_named_with_what_the_system_said(self, cache, purge, capsys):
+        """The reason is carried, not reconstructed from the path.
+
+        A container writing as another user is the common cause and the one
+        #131 is about, but a read-only mount, `chattr +i` and a busy mountpoint
+        reach the same report -- and for the last two the advice below does not
+        work. Printing the errno keeps the report honest about which it is.
+        """
         cache.seal()
         purge()
-        assert f"  - {cache.stuck}" in capsys.readouterr().out.splitlines()
+        assert f"  - {cache.stuck}: Permission denied" in capsys.readouterr().out.splitlines()
 
     @needs_an_unprivileged_user
     def test_the_command_that_finishes_the_job_is_given(self, cache, purge, capsys):
-        """The user is told the one thing that works, not left to compose it.
-
-        `sudo` is what clears a directory owned by another uid, and the cache
-        root is the argument -- naming the individual refusals there would leave
-        the empty parents behind.
-        """
+        """The user is told the one thing that usually works, not left to
+        compose it. The cache root is the argument -- naming the individual
+        refusals there would leave the empty parents behind."""
         cache.seal()
         purge()
         printed = capsys.readouterr().out
         assert f"sudo rm -rf {cache.root}" in printed
+
+    def test_the_path_in_that_command_is_shell_quoted(self, tmp_path, capsys):
+        """It is handed to a person to paste into `sudo rm -rf`.
+
+        $XDG_CACHE_HOME and $HOME are the user's to choose and a space in
+        either is legal. Unquoted, `sudo rm -rf /home/ada/My Cache/devlaunch`
+        pastes as two targets, and the first of them is a directory nobody
+        asked to remove. This is the one place quoting is not cosmetic.
+        """
+        root = tmp_path / "My Cache" / "devlaunch"
+        stuck = root / "repos" / "held"
+        stuck.mkdir(parents=True)
+        (stuck / "file").write_text("x")
+        stuck.chmod(0o500)
+        listing = subprocess.CompletedProcess([], 0, "[]", "")
+        try:
+            with patch("devlaunch.dl.subprocess.run", return_value=listing):
+                with patch("devlaunch.dl._get_cache_dir", return_value=root):
+                    with patch("devlaunch.dl.update_cache_background"):
+                        purge_all_data()
+            printed = capsys.readouterr().out
+            assert f"sudo rm -rf '{root}'" in printed, printed
+        finally:
+            stuck.chmod(0o700)
 
     @needs_an_unprivileged_user
     def test_what_did_go_is_said_too(self, cache, purge, capsys):
@@ -170,6 +205,20 @@ class TestTheReportIsActionable:
         printed = capsys.readouterr().out
         assert "Removed what was permitted" in printed
 
+    @needs_an_unprivileged_user
+    def test_the_cause_is_offered_rather_than_asserted(self, cache, purge, capsys):
+        """The code never looks at the errno it caught, so it cannot know.
+
+        It used to say "Written by a container running as a different user."
+        flatly, which is wrong for every non-permission cause and for a
+        directory the user sealed themselves.
+        """
+        cache.seal()
+        purge()
+        printed = capsys.readouterr().out
+        assert "Usually this means" in printed
+        assert "does not fix all of them" in printed
+
 
 class TestOnlyTheObstructionIsNamed:
     """`remove_tree` on its own, where the reporting rule is decided."""
@@ -177,8 +226,8 @@ class TestOnlyTheObstructionIsNamed:
     @needs_an_unprivileged_user
     def test_ancestors_that_only_failed_because_of_it_are_not_listed(self, cache):
         cache.seal()
-        refused = remove_tree(cache.root)
-        assert refused == (cache.stuck,), (
+        refused = refused_paths(cache.root)
+        assert refused == [cache.stuck], (
             "every directory from the cache root down to the sealed one also fails "
             f"to go, and saying so five times buries the one fact: {refused}"
         )
@@ -199,7 +248,7 @@ class TestOnlyTheObstructionIsNamed:
             (cache.stuck / name).write_text("also written by the container\n")
         (cache.stuck / "objects").mkdir()
         cache.seal()
-        assert remove_tree(cache.root) == (cache.stuck,)
+        assert refused_paths(cache.root) == [cache.stuck]
 
     @needs_an_unprivileged_user
     def test_two_separate_obstructions_are_both_listed(self, cache):
@@ -209,8 +258,30 @@ class TestOnlyTheObstructionIsNamed:
         (second / "held").write_text("also stuck\n")
         _sealed(second)
         cache.seal()
-        refused = remove_tree(cache.root)
+        refused = refused_paths(cache.root)
         assert sorted(refused) == sorted([cache.stuck, second])
+
+    @needs_an_unprivileged_user
+    def test_a_separately_sealed_ancestor_is_reported_as_well(self, cache):
+        """Two sealed directories on one chain are two obstructions, not one.
+
+        This is where "ancestors are not listed" stops being the right rule.
+        The outer one does not fail *because* of the inner one -- clearing the
+        inner would leave the outer exactly as stuck -- so each is a separate
+        piece of work and a person told only about the inner one would fix it
+        and find the purge still refusing.
+        """
+        outer = cache.root / "repos" / "outer"
+        inner = outer / "middle" / "inner"
+        inner.mkdir(parents=True)
+        (inner / "file").write_text("x")
+        _sealed(inner)
+        _sealed(outer)
+        try:
+            assert sorted(refused_paths(cache.root)) == sorted([inner, outer])
+        finally:
+            outer.chmod(0o700)
+            inner.chmod(0o700)
 
     @needs_an_unprivileged_user
     def test_a_path_whose_parent_is_writable_is_blamed_itself(self, cache):
@@ -224,7 +295,7 @@ class TestOnlyTheObstructionIsNamed:
         (held / "inner").write_text("x\n")
         held.chmod(0o500)
         # `held`'s own parent is writable, so `held` is where the trail stops.
-        assert remove_tree(cache.root) == (held,)
+        assert refused_paths(cache.root) == [held]
         held.chmod(0o700)
 
     def test_a_tree_that_goes_completely_refuses_nothing(self, cache):
@@ -248,7 +319,7 @@ class TestOnlyTheObstructionIsNamed:
         opaque.mkdir(parents=True)
         (opaque / "inside").write_text("unreadable\n")
         opaque.chmod(0o300)  # -wx: enterable, not listable
-        refused = remove_tree(cache.root)
+        refused = refused_paths(cache.root)
         try:
             assert opaque in refused, f"the directory it could not read must be named: {refused}"
         finally:
@@ -272,6 +343,49 @@ class TestOnlyTheObstructionIsNamed:
         assert not cache.root.exists()
 
 
+class TestNothingOutsideTheTreeIsTouched:
+    """A purge removes the directory it was named. Not what it points at.
+
+    `shutil.rmtree` refuses a symlinked root outright ("Cannot call rmtree on a
+    symbolic link"), and losing that refusal is how a hand-rolled walk becomes
+    dangerous rather than merely wrong: `os.walk`'s `followlinks=False` governs
+    *subdirectories*, and the top is scanned whatever it is. So the version of
+    this that only guarded inner symlinks descended a symlinked cache, emptied
+    somebody's directory somewhere else entirely, and returned no refusals --
+    a silent recursive delete outside the named tree, reported as a clean sweep.
+    """
+
+    def test_a_symlinked_root_is_unlinked_and_its_target_left_alone(self, tmp_path):
+        target = tmp_path / "elsewhere"
+        (target / "repos").mkdir(parents=True)
+        (target / "metadata.json").write_text("somebody's cache")
+        (target / "repos" / "work.txt").write_text("somebody's work")
+        link = tmp_path / "cache" / "devlaunch"
+        link.parent.mkdir()
+        link.symlink_to(target)
+
+        assert remove_tree(link) == ()
+        assert not link.is_symlink(), "the link itself is devlaunch's to remove"
+        assert (target / "metadata.json").read_text() == "somebody's cache"
+        assert (target / "repos" / "work.txt").exists()
+
+    def test_a_symlink_inside_the_tree_is_unlinked_not_followed(self, cache, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "precious.txt").write_text("not devlaunch's")
+        (cache.root / "repos" / "link").symlink_to(outside)
+        (cache.root / "repos" / "file-link").symlink_to(outside / "precious.txt")
+
+        assert remove_tree(cache.root) == ()
+        assert not cache.root.exists()
+        assert (outside / "precious.txt").read_text() == "not devlaunch's"
+
+    def test_a_dangling_symlink_is_removed_without_complaint(self, cache):
+        (cache.root / "repos" / "broken").symlink_to(cache.root / "never-existed")
+        assert remove_tree(cache.root) == ()
+        assert not cache.root.exists()
+
+
 class TestNothingToPurge:
     """The existing empty-cache path, kept honest while the rest changed."""
 
@@ -280,6 +394,35 @@ class TestNothingToPurge:
         remove_tree(cache.root)
         assert purge() == 0
         assert "No data to purge." in capsys.readouterr().out
+
+    @needs_an_unprivileged_user
+    def test_a_cache_that_cannot_be_looked_at_is_not_mistaken_for_absent(self, tmp_path, capsys):
+        """ "Cannot tell" is not "gone", and only one of them means success.
+
+        `Path.exists()` answers False for both, so a cache whose *parent*
+        cannot be traversed used to come out as "No data to purge." and exit 0
+        with the cache fully intact -- a clean sweep reported over untouched
+        data, which is the one failure this whole change exists to prevent.
+        """
+        home = tmp_path / "cachehome"
+        root = home / "devlaunch"
+        root.mkdir(parents=True)
+        (root / "metadata.json").write_text("still here")
+        home.chmod(0o600)  # rw-, not traversable: lstat on root raises EACCES
+        listing = subprocess.CompletedProcess([], 0, "[]", "")
+        try:
+            assert not root.exists(), "the premise: exists() cannot see it"
+            with patch("devlaunch.dl.subprocess.run", return_value=listing):
+                with patch("devlaunch.dl._get_cache_dir", return_value=root):
+                    with patch("devlaunch.dl.update_cache_background"):
+                        code = purge_all_data()
+            printed = capsys.readouterr().out
+            assert code == 1, printed
+            assert "No data to purge." not in printed, printed
+            assert str(root) in printed, printed
+        finally:
+            home.chmod(0o700)
+            assert (root / "metadata.json").read_text() == "still here"
 
 
 class TestRefusalsAreNotInvented:
@@ -294,7 +437,7 @@ class TestRefusalsAreNotInvented:
     @needs_an_unprivileged_user
     def test_every_refused_path_is_still_on_disk_afterwards(self, cache):
         cache.seal()
-        refused = remove_tree(cache.root)
+        refused = refused_paths(cache.root)
         assert refused, "the sealed directory must produce at least one refusal"
         for path in refused:
             assert path.exists(), f"{path} was reported as refused but is gone"
@@ -303,7 +446,7 @@ class TestRefusalsAreNotInvented:
     def test_nothing_reported_as_removed_survives(self, cache):
         cache.seal()
         survivors: List[pathlib.Path] = []
-        refused = remove_tree(cache.root)
+        refused = refused_paths(cache.root)
         for parent, dirs, files in os.walk(cache.root):
             for name in files:
                 survivors.append(pathlib.Path(parent) / name)
@@ -352,7 +495,7 @@ class TestRefusalsAreNotInvented:
                 if rng.random() < 0.25:
                     directory.chmod(rng.choice([0o000, 0o100, 0o300, 0o500]))
 
-            refused = remove_tree(root)
+            refused = refused_paths(root)
             try:
                 assert root.exists() == bool(refused), (
                     f"trial {trial}: tree survives={root.exists()} but refused={refused}"

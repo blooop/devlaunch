@@ -51,6 +51,31 @@ table and should be judged on its own merits.
   could have caught: a directory owned by *another user* is not something a
   test process can build.
 
+  A symlinked cache root is refused rather than followed. `os.walk`'s
+  `followlinks=False` governs subdirectories only — the top is always scanned —
+  so a hand-rolled walk descends a symlinked `~/.cache/devlaunch`, empties
+  whatever it points at, and reports a clean sweep. `shutil.rmtree` refuses that
+  outright, and losing the refusal turned it into a silent recursive delete
+  outside the named directory. The link is now unlinked and its target left
+  alone. Found in review; there had been no symlink coverage at all.
+
+  Each refusal now carries what the system actually said, and the advice is
+  offered rather than asserted. The old report claimed "Written by a container
+  running as a different user" unconditionally without ever looking at the
+  errno — false for a read-only mount, `chattr +i` or a busy mountpoint, none of
+  which `sudo rm -rf` fixes either. That path is also `shlex.quote`d now: it is
+  handed to a person to paste into `sudo rm -rf`, and `$XDG_CACHE_HOME` with a
+  space in it made that two targets, the first of them wrong.
+
+  "Cannot look at it" is no longer read as "it is gone". `Path.exists()` answers
+  False for both, so a cache whose parent directory could not be traversed came
+  out as `No data to purge.` and exit 0 with the cache fully intact.
+
+  Two *separately* unwritable directories on one path are reported as two lines.
+  Clearing the inner one leaves the outer one just as stuck, so each is work
+  somebody has to do, and the earlier "ancestors are never listed" wording
+  described neither the code nor what is useful.
+
   What a purge reports is decided from the disk once the walk is over, rather
   than from what raised during it. Randomised trees found why that matters:
   `os.walk` cannot scan an unlistable directory and says so, but if that

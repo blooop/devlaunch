@@ -503,8 +503,48 @@ def workspaces_as_json() -> int:
     return 0
 
 
-def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
-    """Remove *tree* and everything under it. Returns the paths that refused.
+@dataclass(frozen=True)
+class Refusal:
+    """One path a removal could not remove, and what the system said about it.
+
+    The reason is carried rather than reconstructed because the cause is not
+    guessable from the path. A container writing as another user is the common
+    one and the one devlaunch#131 is about, but a read-only mount, an immutable
+    file and a busy mountpoint all reach here too -- and for the last two the
+    advice that fixes the common case does not work. Printing what the errno
+    said keeps the report honest about which it is.
+    """
+
+    path: pathlib.Path
+    reason: str
+
+
+def _why(error: OSError) -> str:
+    """What the system said, in the words it used."""
+    return error.strerror or str(error)
+
+
+def _present(path: pathlib.Path) -> bool:
+    """Whether *path* is there, where "cannot tell" counts as there.
+
+    `Path.exists()` answers False both for a path that is absent and for one
+    this process was not allowed to look at -- an unreadable parent directory,
+    say. Only the first means there is nothing to do, and taking the second for
+    it is how a purge reports a clean sweep over an intact cache. Symlinks count
+    as present whether or not they resolve, because the link itself is a thing
+    to remove.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
+    """Remove *tree* and everything under it. Returns what refused, and why.
 
     `shutil.rmtree` is the obvious way to do this and is the wrong one here,
     because it stops at the first failure. A container writes into its
@@ -526,10 +566,11 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
     which is the directory the original errno named and the one a person would
     go and look at.
 
-    Failures are then suppressed along ancestor chains too: a directory that
-    cannot be removed because something under it refused adds nothing. Sibling
-    obstructions survive both rules, because two chains do not meet until they
-    are past both.
+    A path is then suppressed when something already reported accounts for it:
+    a directory that cannot be removed because a child refused adds nothing. A
+    *separately* sealed ancestor is not suppressed and should not be, because
+    fixing the one below it would not free it -- so a chain of two sealed
+    directories is two lines, and each is work somebody has to do.
 
     **What refused is decided from the disk, not from what raised.** A failure
     during the walk is only a candidate; the report keeps the ones still on disk
@@ -547,10 +588,22 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
     An empty result means the tree is gone, including when it was never there:
     a purge run twice is not a failure the second time.
     """
-    if not tree.exists() and not tree.is_symlink():
+    if not _present(tree):
         return ()
 
-    failed: List[pathlib.Path] = []
+    # `os.walk` never descends a symlinked *subdirectory*, but it always scans
+    # the top -- so a symlinked root would be followed, its target emptied, and
+    # a clean sweep reported for a directory the caller never named.
+    # `shutil.rmtree` refuses this outright, and so does this: the link is
+    # removed, and whatever it pointed at is somebody else's.
+    if tree.is_symlink():
+        try:
+            tree.unlink()
+            return ()
+        except OSError as error:
+            return (Refusal(tree, _why(error)),)
+
+    failed: List[Refusal] = []
 
     def obstruction(path: pathlib.Path) -> pathlib.Path:
         """The outermost path that actually explains a failure to remove *path*.
@@ -559,8 +612,15 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
         about ACLs -- and that is acceptable precisely here, because it only
         decides *which* path is named. A wrong answer makes the report less
         pointed; it can never turn a refusal into a success.
+
+        `path.parent != path` bounds the walk at the filesystem root as well as
+        at *tree*. Nothing reaches here from outside *tree* today; the guard is
+        so that a future caller that does gets a wrong answer rather than a
+        hung purge.
         """
-        while path != tree and not os.access(path.parent, os.W_OK | os.X_OK):
+        while path != tree and path.parent != path:
+            if os.access(path.parent, os.W_OK | os.X_OK):
+                break
             path = path.parent
         return path
 
@@ -569,7 +629,7 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
         # as though it were empty. Without this, an unlistable directory holding
         # files would be walked as though it held none.
         if error.filename:
-            failed.append(pathlib.Path(error.filename))
+            failed.append(Refusal(pathlib.Path(error.filename), _why(error)))
 
     def remove(path: pathlib.Path) -> None:
         try:
@@ -579,8 +639,8 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
                 path.rmdir()
             else:
                 path.unlink()
-        except OSError:
-            failed.append(path)
+        except OSError as error:
+            failed.append(Refusal(path, _why(error)))
 
     # Bottom-up, so a directory is only attempted once its contents have been.
     for parent, dirs, files in os.walk(tree, topdown=False, onerror=unreadable):
@@ -594,14 +654,17 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
 
     # Bottom-up order is what the ancestor rule needs, and `failed` is already
     # in it.
-    refused: List[pathlib.Path] = []
+    refused: List[Refusal] = []
     blocked = set()
-    for path in failed:
-        if not path.exists() and not path.is_symlink():
+    for candidate in failed:
+        # _present, not `exists()`: a path this process cannot look at must be
+        # reported, not dropped. Dropping it is how the filter that exists to
+        # prevent phantom refusals would have started causing silent ones.
+        if not _present(candidate.path):
             continue  # it went in the end, so there is nothing to report
-        path = obstruction(path)
+        path = obstruction(candidate.path)
         if path not in blocked:
-            refused.append(path)
+            refused.append(Refusal(path, candidate.reason))
             blocked.add(path)
         blocked.add(path.parent)
     return tuple(refused)
@@ -640,8 +703,10 @@ def purge_all_data() -> int:
     if owned.mine:
         invalidate_workspace_list_cache()
 
-    # Then remove local cache
-    if not cache_dir.exists():
+    # Then remove local cache. See _present for why this is not `exists()`: a
+    # cache that is there but unreachable must be reached for, not reported as
+    # nothing to do.
+    if not _present(cache_dir):
         if not owned.mine:
             print("No data to purge.")
         return 0
@@ -656,11 +721,19 @@ def purge_all_data() -> int:
     # "removed none of it", and the difference is the whole news, so the report
     # carries it and the exit code only says the job is unfinished.
     print(f"Removed what was permitted under {cache_dir}. These refused:")
-    for path in refused:
-        print(f"  - {path}")
+    for refusal in refused:
+        print(f"  - {refusal.path}: {refusal.reason}")
     print()
-    print("Written by a container running as a different user. To finish:")
-    print(f"  sudo rm -rf {cache_dir}")
+    # Hedged, because the cause is not knowable from here. A container writing
+    # as another user is the common one, but a read-only mount, `chattr +i` and
+    # a busy mountpoint all land in the same report -- and for the last two this
+    # command does not help either. Saying so flatly would be wrong more often
+    # than the errno above is.
+    print("Usually this means a container wrote them as a different user, and:")
+    # Quoted: cache_dir comes from $XDG_CACHE_HOME or $HOME, and a space in it
+    # turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
+    print(f"  sudo rm -rf {shlex.quote(str(cache_dir))}")
+    print("clears them. Check the reasons above first -- it does not fix all of them.")
     return 1
 
 
