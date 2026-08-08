@@ -23,6 +23,9 @@ from unittest.mock import patch
 import pytest
 
 from devlaunch.dl import (
+    GitRepository,
+    LocalFolder,
+    UnrecognisedSource,
     Workspace,
     is_devlaunch_clone,
     main,
@@ -78,7 +81,7 @@ def _parsed_listing(cache_dir: pathlib.Path) -> Sequence[Workspace]:
 
 
 def _local(source, workspace_id: str = "ws") -> Workspace:
-    return Workspace(workspace_id, "local", str(source), "", "docker", "none")
+    return Workspace(workspace_id, LocalFolder(str(source)), "", "docker", "none")
 
 
 def _record(asked: List[Workspace]):
@@ -138,22 +141,38 @@ class TestWhichWorkspacesAreDevlaunchs:
     def test_a_workspace_in_the_users_own_directory_is_not(self, cache_dir):
         assert not is_devlaunch_clone(_local("/home/dev/projects/python_template"), cache_dir)
 
-    @pytest.mark.parametrize("source_type", ["git", "unknown"])
-    def test_only_a_local_source_can_be_devlaunchs(self, cache_dir, source_type):
+    def test_a_git_source_is_not_ours_even_when_it_names_a_path_in_the_cache(self, cache_dir):
         """devlaunch always hands devpod a local path, so nothing else is ours.
 
         The source here is a path *inside* the cache directory on purpose. A
-        git-URL source is not a path at all, so a test using one passes whether
-        or not the source-type guard exists -- containment rejects it either
-        way, and the guard could be deleted with every test still green. Only a
-        source that would otherwise be recognised puts the guard under test.
+        real git URL is not a path at all, so a test using one passes whether or
+        not this arm is refused -- containment rejects it either way, and the
+        refusal could be deleted with every test still green. Only a source that
+        would otherwise be recognised puts the refusal under test.
 
         The shape is reachable: `devpod up <path-to-bare-repo>` records a
         `gitRepository` source, and nothing stops that repo living in the cache.
         """
         inside = cache_dir / "repos" / "blooop" / "r" / "r-main-abcdefgh"
         assert is_devlaunch_clone(_local(inside), cache_dir), "the path itself is inside"
-        not_ours = Workspace("r", source_type, str(inside), "", "docker", "none")
+        not_ours = Workspace("r", GitRepository(str(inside)), "", "docker", "none")
+        assert not is_devlaunch_clone(not_ours, cache_dir)
+
+    def test_a_source_devlaunch_cannot_read_is_not_ours(self, cache_dir):
+        """The other half of what used to be one parametrised case.
+
+        It has stopped being the same test. When the source was a tag beside a
+        parallel string, an unreadable source could hold a path in the cache and
+        the only thing standing between it and deletion was a string comparison.
+        That arm now has no path on it at all -- the nearest thing expressible is
+        a payload devpod sent, which no containment test can be run against -- so
+        this reads as a check that the arm is *answered*, rather than as a guard
+        against a value that can no longer be built.
+        """
+        inside = cache_dir / "repos" / "blooop" / "r" / "r-main-abcdefgh"
+        not_ours = Workspace(
+            "r", UnrecognisedSource({"container": str(inside)}), "", "docker", "none"
+        )
         assert not is_devlaunch_clone(not_ours, cache_dir)
 
     def test_a_sibling_directory_that_merely_shares_a_prefix_is_not(self, cache_dir):

@@ -1,6 +1,6 @@
 [project]
 name = "devlaunch"
-version = "0.0.18"
+version = "0.0.19"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
@@ -158,6 +158,10 @@ exclude_also = [
   "if 0:",
   "raise AssertionError",
   "raise NotImplementedError",
+  # The exhaustiveness sentinel. `ty` runs in CI and rejects any call to it that
+  # is reachable, so in a build that type-checks these lines cannot be executed
+  # -- the same reason `raise AssertionError` is already on this list.
+  "_unhandled_source\\(",
   "if __name__ == .__main__.:",
   "pass",
   "(_):",

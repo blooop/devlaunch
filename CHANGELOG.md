@@ -19,6 +19,80 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.19] - 2026-08-08
+
+Three of these are about `dl` and its dev container leaving alone what is not
+theirs. `dl --purge` deletes only the workspaces devlaunch itself created, where it
+used to take every workspace `devpod list` returned — including ones you made by
+hand. The dev container mounts the two ssh files it actually needs instead of your
+whole `~/.ssh`, so a devpod running inside it stops leaving entries in your real
+config that nothing outside the container can use. And a workspace whose source
+`dl` cannot read is now named rather than dropped in silence. The fourth is CI,
+which turned out not to have been running on stacked pull requests at all.
+
+Nothing about how you install or run `dl` changes and no workspace needs
+rebuilding, but the dev container has to be rebuilt once to pick up the ssh mount
+change, and `--purge` now leaves more standing than it used to — read the note
+under Changed if you have opened workspaces with `dl ./path` or `dl <git-url>`.
+
+### Added
+- A `gate` job that depends on every other job in the CI workflow and fails unless
+  all of them succeeded, so that a branch ruleset has one stable name to require
+  instead of a list of literal job names that nobody reviews and that goes stale
+  whenever a job is added or renamed. It insists on `success` rather than on the
+  absence of `failure`, so a job that was cancelled or skipped fails it too — a
+  check that did not run is not a check that passed.
+
+### Changed
+- `dl --purge` now deletes only the DevPod workspaces devlaunch created — the
+  clones it made under its own cache directory — instead of every workspace
+  `devpod list` returns. devpod's namespace is shared, and a workspace you made
+  with `devpod up`, or that another tool made, was being destroyed along with
+  devlaunch's own.
+- `dl --purge` names the workspaces it is leaving behind, before it asks for
+  confirmation, and the count it asks you to approve is now the number it will
+  actually delete. **If you have used `dl ./path` or `dl <git-url>`:** those
+  workspaces open a source `dl` did not clone, so `--purge` cannot tell them from
+  one you made by hand and now leaves them standing. They are listed in the
+  output; remove one with `dl <workspace> rm`.
+- A workspace's source is one value rather than a `source_type` tag beside a
+  parallel `source` string. Each arm carries only what that arm has — a folder
+  path, a repository URL, or the raw payload for a source devlaunch cannot read —
+  so the tag and the value can no longer disagree, and every reader of a source is
+  exhaustive under the type checker CI already runs.
+
+### Fixed
+- CI runs on every pull request, not only on pull requests targeting `main`. The
+  `branches:` filter on a `pull_request` trigger matches the base branch, so a
+  pull request onto any other base triggered the workflow not at all — no run,
+  pending or otherwise. This repository's `/stack` workflow exists to produce
+  chains in which every link but the last targets its predecessor, so every one of
+  those links was merging with nothing behind it, e2e and the interpreter matrix
+  alike.
+- The dev container no longer bind-mounts the developer's whole `~/.ssh`. Only the
+  ssh agent socket and a read-only `known_hosts` are mounted, so the `Host
+  <id>.devpod` blocks that a nested devpod writes stay inside the container and die
+  with it, instead of accumulating on the developer's real ssh config with a
+  `ProxyCommand` nothing outside the container can run.
+- The dev container image builds from a checkout that already has a pixi
+  environment in it. It could not before, for want of a `.dockerignore`.
+- Pointing `XDG_CACHE_HOME` at a scratch directory now protects `dl --purge`. It
+  never did: `devpod list` reads `~/.devpod`, so a scratch run still saw — and
+  deleted — every real workspace on the machine.
+- `dl` no longer drops a workspace whose source it cannot read. Repo discovery
+  skipped it in silence, which is the same outcome as a source it read fine and
+  found no repo in; it now says which workspace, and what devpod described. `dl
+  --ls` and the fuzzy picker show that payload rather than a Python `repr` of it,
+  and the picker still offers the workspace instead of leaving it out of the list.
+- A `devpod list` entry `dl` cannot make sense of is refused or reported instead of
+  being half-read. A `source` that is not an object at all is now an unreadable
+  listing, where it used to reach a substring test — `"localFolder" in
+  "/srv/localFolder/x"` is true, and the indexing that follows is a `TypeError`.
+  A `localFolder` or `gitRepository` that devpod left empty, or filled with
+  something other than text, is a source `dl` cannot read rather than a folder at
+  the empty path: `git -C ""` succeeds, so the second of those would have credited
+  a workspace with whatever repository you happened to be standing in.
+
 ## [0.0.18] - 2026-08-08
 
 Mostly a release about developing `devlaunch` rather than running it: the dev

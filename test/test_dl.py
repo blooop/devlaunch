@@ -25,6 +25,9 @@ from devlaunch.dl import (
     discover_repos_from_cache_dir,
     get_known_repos,
     UnreadableWorkspaceList,
+    GitRepository,
+    LocalFolder,
+    UnrecognisedSource,
     Workspace,
     list_workspaces,
     get_workspace_ids,
@@ -291,8 +294,7 @@ class TestWorkspace:
         }
         ws = Workspace.from_json(data)
         assert ws.id == "myproject"
-        assert ws.source_type == "local"
-        assert ws.source == "/home/user/myproject"
+        assert ws.source == LocalFolder("/home/user/myproject")
         assert ws.provider == "docker"
         assert ws.ide == "vscode"
 
@@ -307,8 +309,7 @@ class TestWorkspace:
         }
         ws = Workspace.from_json(data)
         assert ws.id == "devpod"
-        assert ws.source_type == "git"
-        assert ws.source == "github.com/loft-sh/devpod"
+        assert ws.source == GitRepository("github.com/loft-sh/devpod")
 
     def test_from_json_unknown_source(self):
         """Test parsing workspace with unknown source type."""
@@ -321,14 +322,14 @@ class TestWorkspace:
         }
         ws = Workspace.from_json(data)
         assert ws.id == "unknown"
-        assert ws.source_type == "unknown"
+        assert ws.source == UnrecognisedSource({"someOther": "value"})
 
     def test_from_json_missing_fields(self):
         """Test parsing workspace with missing optional fields."""
         data = {"id": "minimal"}
         ws = Workspace.from_json(data)
         assert ws.id == "minimal"
-        assert ws.source_type == "unknown"
+        assert ws.source == UnrecognisedSource({})
         assert ws.last_used == ""
         assert ws.provider == ""
         assert ws.ide == ""
@@ -410,8 +411,8 @@ class TestGetWorkspaceIds:
     def test_get_workspace_ids(self, mock_list):
         """Test getting workspace IDs."""
         mock_list.return_value = [
-            Workspace("ws1", "local", "/path", "", "docker", "vscode"),
-            Workspace("ws2", "git", "github.com/o/r", "", "docker", "none"),
+            Workspace("ws1", LocalFolder("/path"), "", "docker", "vscode"),
+            Workspace("ws2", GitRepository("github.com/o/r"), "", "docker", "none"),
         ]
 
         ids = get_workspace_ids()
@@ -588,7 +589,7 @@ class TestDiscoverReposFromWorkspaces:
     def test_discover_from_git_workspace(self):
         """Test discovering repo from git workspace."""
         workspaces = [
-            Workspace("ws1", "git", "github.com/owner/repo", "", "docker", "vscode"),
+            Workspace("ws1", GitRepository("github.com/owner/repo"), "", "docker", "vscode"),
         ]
         repos = discover_repos_from_workspaces(workspaces)
         assert repos == {"owner": ["repo"]}
@@ -598,7 +599,7 @@ class TestDiscoverReposFromWorkspaces:
         """Test discovering repo from local workspace with git remote."""
         mock_remote.return_value = "git@github.com:blooop/python_template.git"
         workspaces = [
-            Workspace("ws1", "local", "/home/user/project", "", "docker", "vscode"),
+            Workspace("ws1", LocalFolder("/home/user/project"), "", "docker", "vscode"),
         ]
         repos = discover_repos_from_workspaces(workspaces)
         assert repos == {"blooop": ["python_template"]}
@@ -612,9 +613,9 @@ class TestDiscoverReposFromWorkspaces:
             "git@github.com:owner1/repo3.git",
         ]
         workspaces = [
-            Workspace("ws1", "local", "/path1", "", "docker", "vscode"),
-            Workspace("ws2", "local", "/path2", "", "docker", "vscode"),
-            Workspace("ws3", "local", "/path3", "", "docker", "vscode"),
+            Workspace("ws1", LocalFolder("/path1"), "", "docker", "vscode"),
+            Workspace("ws2", LocalFolder("/path2"), "", "docker", "vscode"),
+            Workspace("ws3", LocalFolder("/path3"), "", "docker", "vscode"),
         ]
         repos = discover_repos_from_workspaces(workspaces)
         assert repos == {"owner1": ["repo1", "repo3"], "owner2": ["repo2"]}
@@ -624,7 +625,7 @@ class TestDiscoverReposFromWorkspaces:
         """Test workspace without git remote is skipped."""
         mock_remote.return_value = None
         workspaces = [
-            Workspace("ws1", "local", "/path", "", "docker", "vscode"),
+            Workspace("ws1", LocalFolder("/path"), "", "docker", "vscode"),
         ]
         repos = discover_repos_from_workspaces(workspaces)
         assert repos == {}
@@ -781,8 +782,8 @@ class TestGetKnownRepos:
     def test_get_known_repos(self, mock_list):
         """Test getting known repos as sorted list."""
         mock_list.return_value = [
-            Workspace("ws1", "git", "github.com/zowner/zrepo", "", "docker", "vscode"),
-            Workspace("ws2", "git", "github.com/aowner/arepo", "", "docker", "vscode"),
+            Workspace("ws1", GitRepository("github.com/zowner/zrepo"), "", "docker", "vscode"),
+            Workspace("ws2", GitRepository("github.com/aowner/arepo"), "", "docker", "vscode"),
         ]
         repos = get_known_repos()
         assert repos == ["aowner/arepo", "zowner/zrepo"]
@@ -1133,7 +1134,7 @@ class TestCacheFunctions:
     ):
         """Test update_completion_cache fetches branches for all repos."""
         mock_list.return_value = [
-            Workspace("ws1", "git", "github.com/owner/repo1", "", "docker", "vscode"),
+            Workspace("ws1", GitRepository("github.com/owner/repo1"), "", "docker", "vscode"),
         ]
         mock_discover.return_value = {"owner": ["repo1", "repo2"]}
         mock_remote.side_effect = [
@@ -1187,7 +1188,7 @@ class TestCacheFunctions:
     ):
         """Test that locally-created branches appear in completion cache."""
         mock_list.return_value = [
-            Workspace("ws1", "git", "github.com/owner/repo1", "", "docker", "vscode"),
+            Workspace("ws1", GitRepository("github.com/owner/repo1"), "", "docker", "vscode"),
         ]
         mock_discover.return_value = {"owner": ["repo1"]}
         mock_remote.return_value = ["main", "develop"]
@@ -1637,7 +1638,7 @@ class TestPrintFunctions:
     def test_print_workspaces(self, mock_list, capsys):
         """Test print_workspaces outputs workspace table."""
         mock_list.return_value = [
-            Workspace("ws1", "local", "/path/to/ws1", "2024-01-01", "docker", "vscode"),
+            Workspace("ws1", LocalFolder("/path/to/ws1"), "2024-01-01", "docker", "vscode"),
         ]
         print_workspaces()
         captured = capsys.readouterr()
@@ -2132,7 +2133,9 @@ class TestPurgeFunctionality:
         `--purge` deleted other people's work. See test/unit/test_purge_ownership.py.
         """
         return [
-            Workspace(ws, "local", str(cache_dir / "repos" / "o" / "r" / ws), "", "docker", "none")
+            Workspace(
+                ws, LocalFolder(str(cache_dir / "repos" / "o" / "r" / ws)), "", "docker", "none"
+            )
             for ws in ids
         ]
 

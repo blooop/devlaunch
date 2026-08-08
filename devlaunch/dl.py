@@ -27,7 +27,7 @@ import re
 import shlex
 import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, NoReturn, Optional, Sequence, Tuple
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -708,35 +708,140 @@ def validate_workspace_spec(spec: str, existing_ids: List[str]) -> Optional[str]
     return f"Unknown workspace '{spec}'. Use 'dl --ls' to list workspaces, or specify owner/repo or ./path"
 
 
+@dataclass(frozen=True)
+class LocalFolder:
+    """devpod is opening a directory on this machine."""
+
+    path: str
+
+
+@dataclass(frozen=True)
+class GitRepository:
+    """devpod is opening a repository it clones itself, named by URL.
+
+    Never a path on this machine, which is why the purge predicate can refuse
+    this arm outright instead of asking where it points.
+    """
+
+    url: str
+
+
+@dataclass(frozen=True)
+class UnrecognisedSource:
+    """A `devpod list` source devlaunch has no reading for, kept verbatim.
+
+    Reachable rather than defensive: devpod's workspace source also carries
+    `image` and `container`, so `devpod up ubuntu:24.04` lands here. Holding the
+    payload rather than a rendering of it is the whole point -- the field this
+    replaced was typed as a path and filled with `str(the dict)`, so the one
+    thing a caller could not do with it was read what devpod had said.
+
+    It deliberately has no path and no URL. There is nothing to make it say
+    where the source lives, because devlaunch does not know.
+    """
+
+    payload: Mapping[str, Any]
+
+
+WorkspaceSource = LocalFolder | GitRepository | UnrecognisedSource
+
+
+def _unhandled_source(source: NoReturn) -> NoReturn:
+    """Reject a source arm nobody handled -- at type-check time, not at runtime.
+
+    `ty` runs in CI, so passing anything but `Never` here is a build failure:
+    adding an arm to WorkspaceSource breaks every reader that has not grown a
+    case for it. That is the property this type exists for, and it is why this
+    body should be unreachable in a passing build.
+
+    Hand-rolled rather than `typing.assert_never`, which is 3.11+ while this
+    package supports 3.10. A parameter typed `NoReturn` gets the same treatment
+    from the checker.
+    """
+    raise AssertionError(f"Unhandled workspace source: {source!r}")
+
+
+def _readable_text(source: Mapping[str, Any], key: str) -> Optional[str]:
+    """*key* from *source* if devpod filled it with text, else None.
+
+    devpod's listing is JSON dl did not write, so `source[key]` is whatever the
+    JSON held. Returning None for anything else is what keeps the arms below
+    from being handed a value of a type their field does not describe.
+    """
+    value = source.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def parse_workspace_source(source: Mapping[str, Any]) -> WorkspaceSource:
+    """Read one `devpod list --output json` source object.
+
+    The keys are checked in devpod's own order of specificity: a source object
+    carrying both is a devpod that has changed under us, and taking the first
+    match keeps that from silently becoming the other one.
+
+    An arm is only as honest as the value put into it, so a key has to be
+    non-empty text before it counts. Both halves of that are load-bearing rather
+    than tidy. `git -C ""` is a no-op that succeeds, so a `LocalFolder("")`
+    reaching repo discovery would be credited with whatever repository the
+    person running `dl` happened to be standing in. And a `localFolder` that is
+    itself an object would put a dict in a field typed as a path -- the exact
+    thing this type exists to make unrepresentable -- which the two readers that
+    treat it as a path raise `TypeError` on.
+
+    Neither is an unreadable *listing*, unlike a `source` that is not an object
+    at all: the object is right here and can be kept whole. It is a source dl
+    cannot read, which is an arm.
+
+    Note this is the one link in the chain the type checker cannot stand in for
+    a test. A *reader* that misses an arm is a build failure, but this is a
+    producer, and a producer that quietly stops producing an arm type-checks
+    fine -- so the arms it picks are pinned by tests instead.
+    """
+    path = _readable_text(source, "localFolder")
+    if path is not None:
+        return LocalFolder(path)
+    url = _readable_text(source, "gitRepository")
+    if url is not None:
+        return GitRepository(url)
+    return UnrecognisedSource(dict(source))
+
+
+def describe_source(source: WorkspaceSource) -> Tuple[str, str]:
+    """How a source reads in `dl --ls` and in the fzf picker: (kind, detail).
+
+    One function for both columns, and one function for both callers, so the
+    kind shown and the detail shown cannot come from two different readings of
+    the same source -- which is what a tag beside a parallel field allowed.
+
+    An unreadable source shows the payload as JSON. That is a debug rendering
+    and is meant to be: the listing's job is to put the row on screen rather
+    than pass over it, and devlaunch has nothing truer to say about it.
+    """
+    if isinstance(source, LocalFolder):
+        return "local", source.path
+    if isinstance(source, GitRepository):
+        return "git", source.url
+    if isinstance(source, UnrecognisedSource):
+        return "unknown", json.dumps(source.payload)
+    _unhandled_source(source)
+
+
 @dataclass
 class Workspace:
     """Represents a devpod workspace."""
 
     id: str
-    source_type: str  # "local" or "git"
-    source: str
+    source: WorkspaceSource
     last_used: str
     provider: str
     ide: str
 
     @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> "Workspace":
+    def from_json(cls, data: Mapping[str, Any]) -> "Workspace":
         """Parse workspace from devpod JSON output."""
-        source = data.get("source", {})
-        if "localFolder" in source:
-            source_type = "local"
-            source_path = source["localFolder"]
-        elif "gitRepository" in source:
-            source_type = "git"
-            source_path = source["gitRepository"]
-        else:
-            source_type = "unknown"
-            source_path = str(source)
-
         return cls(
             id=data.get("id", ""),
-            source_type=source_type,
-            source=source_path,
+            source=parse_workspace_source(data.get("source", {})),
             last_used=data.get("lastUsed", ""),
             provider=data.get("provider", {}).get("name", ""),
             ide=data.get("ide", {}).get("name", ""),
@@ -774,6 +879,13 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
     is a path containment test, not a string prefix -- `<cache>-scratch` shares
     six characters with `<cache>` and is not inside it.
 
+    That first refusal is now half structural. An unrecognised source has no
+    path on it at all, so there is nothing to test for containment and no way
+    to write the mistake; a git source does carry a string that could be one --
+    `devpod up <path-to-bare-repo>` records a `gitRepository`, and nothing
+    stops that repo living in the cache -- so refusing that arm is a decision
+    this function still has to make, and it is made by name.
+
     Not every workspace dl creates is recognised. `dl ./path` and `dl <git-url>`
     open a source dl did not clone and does not record anywhere, and a
     `config.toml` that points `repos_dir` outside the cache puts the clones
@@ -782,12 +894,15 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
     and what a purge actually destroys answering to the same directory, and
     `--purge` names what it leaves rather than passing over it in silence.
     """
-    if workspace.source_type != "local":
+    source = workspace.source
+    if isinstance(source, LocalFolder):
+        path = pathlib.PurePath(source.path)
+        # Purely lexical, so a clone whose directory has already been removed is
+        # still recognisable from the source devpod kept.
+        return path != pathlib.PurePath(cache_dir) and path.is_relative_to(cache_dir)
+    if isinstance(source, (GitRepository, UnrecognisedSource)):
         return False
-    source = pathlib.PurePath(workspace.source)
-    # Purely lexical, so a clone whose directory has already been removed is
-    # still recognisable from the source devpod kept.
-    return source != pathlib.PurePath(cache_dir) and source.is_relative_to(cache_dir)
+    _unhandled_source(source)
 
 
 @dataclass(frozen=True)
@@ -890,21 +1005,38 @@ def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, Lis
     """Discover owner/repo from workspace git remotes.
 
     Returns dict mapping owner -> list of repos.
+
+    Every source is answered, including the ones devlaunch cannot read. There
+    is no owner/repo to be had from an image reference, so the answer for that
+    arm is still "nothing discovered" -- but it is said rather than reached by
+    falling off the end of the chain, which is what used to make it
+    indistinguishable from a source that was read fine and held no repo.
     """
     repos: Dict[str, List[str]] = {}
 
     for ws in workspaces:
         owner_repo = None
+        source = ws.source
 
         # For git workspaces, parse the source URL directly
-        if ws.source_type == "git":
-            owner_repo = parse_owner_repo_from_url(ws.source)
+        if isinstance(source, GitRepository):
+            owner_repo = parse_owner_repo_from_url(source.url)
 
         # For local workspaces, try to get git remote
-        elif ws.source_type == "local" and ws.source:
-            remote_url = get_git_remote_url(ws.source)
+        elif isinstance(source, LocalFolder):
+            remote_url = get_git_remote_url(source.path)
             if remote_url:
                 owner_repo = parse_owner_repo_from_url(remote_url)
+
+        elif isinstance(source, UnrecognisedSource):
+            logging.warning(
+                f"Not looking for a repo in workspace '{ws.id}': "
+                f"devpod describes its source as {json.dumps(source.payload)}, "
+                "which devlaunch cannot read."
+            )
+
+        else:
+            _unhandled_source(source)
 
         if owner_repo:
             owner, repo = owner_repo
@@ -1049,6 +1181,12 @@ def parse_workspaces(listing: str) -> List[Workspace]:
     that there is nothing to list. Silence gets a branch of its own rather than
     falling into the JSON parser, whose report of it -- `not JSON: ''` -- reads
     like a bug in dl rather than a devpod that never spoke.
+
+    A `source` that is not an object is refused here for the same reason. The
+    source arms below are total over the object devpod documents, and the arm
+    for a source dl cannot read holds that object -- so something that is not
+    one is not an unreadable source, it is an unreadable *listing*, and that is
+    the answer this function already knows how to give.
     """
     if not listing.strip():
         raise UnreadableWorkspaceList(
@@ -1068,6 +1206,12 @@ def parse_workspaces(listing: str) -> List[Workspace]:
         if not isinstance(entry, dict):
             raise UnreadableWorkspaceList(
                 f"expected each listed workspace to be an object, got {type(entry).__name__}"
+            )
+        source = entry.get("source", {})
+        if not isinstance(source, dict):
+            raise UnreadableWorkspaceList(
+                f"expected workspace {entry.get('id', '')!r} to have an object for its "
+                f"source, got {type(source).__name__}"
             )
     return [Workspace.from_json(ws) for ws in parsed]
 
@@ -1126,10 +1270,14 @@ def print_workspaces():
         print("No workspaces found.")
         return
 
+    # Describe each source once, so the widths are measured on the same strings
+    # that get printed.
+    rows = [(ws, *describe_source(ws.source)) for ws in workspaces]
+
     # Calculate column widths
-    id_width = max(len(ws.id) for ws in workspaces)
-    type_width = max(len(ws.source_type) for ws in workspaces)
-    source_width = max(len(ws.source) for ws in workspaces)
+    id_width = max(len(ws.id) for ws, _kind, _detail in rows)
+    type_width = max(len(kind) for _ws, kind, _detail in rows)
+    source_width = max(len(detail) for _ws, _kind, detail in rows)
 
     # Print header
     print(
@@ -1138,11 +1286,9 @@ def print_workspaces():
     print("-" * (id_width + type_width + source_width + 30))
 
     # Print rows
-    for ws in workspaces:
+    for ws, kind, detail in rows:
         last_used = ws.last_used[:19].replace("T", " ") if ws.last_used else "never"
-        print(
-            f"{ws.id:<{id_width}}  {ws.source_type:<{type_width}}  {ws.source:<{source_width}}  {last_used}"
-        )
+        print(f"{ws.id:<{id_width}}  {kind:<{type_width}}  {detail:<{source_width}}  {last_used}")
 
 
 def fuzzy_select_workspace() -> Optional[str]:
@@ -1162,7 +1308,8 @@ def fuzzy_select_workspace() -> Optional[str]:
     options = []
     ws_map = {}
     for ws in workspaces:
-        label = f"{ws.id} | {ws.source_type} | {ws.source}"
+        kind, detail = describe_source(ws.source)
+        label = f"{ws.id} | {kind} | {detail}"
         options.append(label)
         ws_map[label] = ws.id
 
