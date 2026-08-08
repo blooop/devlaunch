@@ -83,6 +83,26 @@ class TestEachArmCarriesOnlyWhatItHas:
         assert not hasattr(source, "path")
         assert not hasattr(source, "url")
 
+    @pytest.mark.parametrize("source", [{"localFolder": ""}, {"gitRepository": ""}])
+    def test_a_key_devpod_left_empty_is_not_a_readable_source(self, source):
+        """The empty string is the same defect one level down: a sentinel living
+        *inside* the arm that is supposed to mean "a folder devlaunch can read".
+
+        It is not harmless. `git -C "" remote get-url origin` is not an error --
+        measured, exit 0 -- because `-C ""` is a no-op, so a workspace with an
+        empty folder would be credited with whatever repository the person
+        running `dl` happened to be standing in.
+        """
+        assert _listed(source).source == UnrecognisedSource(source)
+
+    def test_a_source_carrying_both_keys_is_read_as_a_folder(self):
+        """Key precedence, pinned. Nothing obligates it: a reader that misses an
+        arm is a build failure, but the parser *produces* arms, and a producer
+        that quietly stops producing one type-checks fine. This is the one place
+        in the chain the checker cannot stand in for a test."""
+        both = {"localFolder": "/home/dev/myproject", "gitRepository": "github.com/o/r"}
+        assert _listed(both).source == LocalFolder("/home/dev/myproject")
+
 
 class TestARepoDevlaunchCannotReadIsReportedRatherThanSkipped:
     """Repo discovery used to be an `if`/`elif` with no `else`.
@@ -169,7 +189,7 @@ class TestTheFuzzyPickerOffersEverySource:
         ]
         offered = []
 
-        def fake_iterfzf(options, multi=False):  # noqa: ARG001 - matches iterfzf's signature
+        def fake_iterfzf(options, **_kwargs):
             offered.extend(options)
             return offered[1]
 

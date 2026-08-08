@@ -767,10 +767,21 @@ def parse_workspace_source(source: Mapping[str, Any]) -> WorkspaceSource:
     The keys are checked in devpod's own order of specificity: a source object
     carrying both is a devpod that has changed under us, and taking the first
     match keeps that from silently becoming the other one.
+
+    A key devpod left empty is a source dl cannot read, not a folder at the
+    empty path. That distinction is load-bearing rather than tidy: `git -C ""`
+    is a no-op that succeeds, so a `LocalFolder("")` reaching repo discovery
+    would be credited with whatever repository the person running `dl` happened
+    to be standing in.
+
+    Note this is the one link in the chain the type checker cannot stand in for
+    a test. A *reader* that misses an arm is a build failure, but this is a
+    producer, and a producer that quietly stops producing an arm type-checks
+    fine -- so the arms it picks are pinned by tests instead.
     """
-    if "localFolder" in source:
+    if source.get("localFolder"):
         return LocalFolder(source["localFolder"])
-    if "gitRepository" in source:
+    if source.get("gitRepository"):
         return GitRepository(source["gitRepository"])
     return UnrecognisedSource(dict(source))
 
@@ -993,10 +1004,9 @@ def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, Lis
 
         # For local workspaces, try to get git remote
         elif isinstance(source, LocalFolder):
-            if source.path:
-                remote_url = get_git_remote_url(source.path)
-                if remote_url:
-                    owner_repo = parse_owner_repo_from_url(remote_url)
+            remote_url = get_git_remote_url(source.path)
+            if remote_url:
+                owner_repo = parse_owner_repo_from_url(remote_url)
 
         elif isinstance(source, UnrecognisedSource):
             logging.warning(
