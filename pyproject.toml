@@ -90,6 +90,10 @@ lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
 test = "pytest"
+# Needs a real Docker daemon and a real devpod. Inside this repo's devcontainer
+# that daemon is the container's own, via the docker-in-docker feature; on an
+# ephemeral CI runner or a machine you do not mind writing to, it is the host's.
+test-e2e = { cmd = "pytest -m e2e test/e2e/", depends-on = ["dev-add-docker"] }
 coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
 coverage-report = "coverage report -m"
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
@@ -123,10 +127,11 @@ enable = "no-else-return,consider-using-in"
 markers = [
     "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
     "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
-    "e2e: Full E2E with Docker-in-Docker. Real DevPod creating real containers.",
+    "e2e: Real DevPod creating real containers. Needs a Docker daemon.",
 ]
 testpaths = ["test"]
-# Default: run unit and integration tests, skip e2e (requires Docker-in-Docker)
+# Default: run unit and integration tests, skip e2e (which needs a daemon, and
+# creates and deletes workspaces in whichever devpod namespace it can reach)
 addopts = "-m 'not e2e'"
 
 [tool.coverage.run]

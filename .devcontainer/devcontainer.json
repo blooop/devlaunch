@@ -19,16 +19,32 @@
         }
     },
 	"features": {
-		"./claude-code": {}
+		"./claude-code": {},
 
-        // "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+        // A Docker daemon of our own, so devpod can create real containers from
+        // in here and the e2e suite (pixi run test-e2e) has something to run
+        // against. The feature is self-contained: it brings "privileged": true,
+        // its own entrypoint, and a named volume for /var/lib/docker -- which is
+        // what buys overlayfs rather than the vfs fallback, so nested builds run
+        // at normal speed. Nothing else has to be arranged for it.
+        //
+        // It declares no "init" key, and does not need one: PID 1 in here is
+        // devpod's agent, which reaps orphans already, and dockerd is one of
+        // them. Adding "init": true would stack a second init on a done job.
+        //
+        // This is also why the container does not join the host's network
+        // namespace. The host's own docker0 bridge is already up in there, so a
+        // second daemon would co-manage that bridge and write its NAT rules into
+        // the host's netfilter tables -- fighting the host's Docker rather than
+        // nesting under it -- and every port a process here listens on would be
+        // a port on the host. Nothing this repo reaches for needs host
+        // networking; a bridge network serves all of it.
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+
 		// "ghcr.io/devcontainers/features/common-utils:2": {},
 		// "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
 		// "ghcr.io/jsburckhardt/devcontainer-features/codex:latest": {}
     },
-    "runArgs": [
-        "--network=host"
-    ],
     "containerEnv": {
         "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
         "XDG_CONFIG_HOME": "/home/vscode/.config",
