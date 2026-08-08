@@ -1281,6 +1281,18 @@ class TestRunDevpod:
         assert call_kwargs["capture_output"] is True
 
 
+def _devpod_up_args(mock_run):
+    """The argv of the `devpod up` call, out of everything workspace_up spawns.
+
+    `up` is no longer the last thing workspace_up does -- it goes on to install
+    the session tools (devlaunch.tools), which is another run_devpod call -- so
+    reading call_args would give an `ssh --command` instead.
+    """
+    up_calls = [c for c in mock_run.call_args_list if c[0][0][:1] == ["up"]]
+    assert up_calls, "expected a devpod up call"
+    return up_calls[0][0][0]
+
+
 class TestWorkspaceIdentityEnv:
     """Tests for the workspace identity handed to devpod's initializeCommand."""
 
@@ -1294,7 +1306,7 @@ class TestWorkspaceIdentityEnv:
         """
         mock_run.return_value = MagicMock(returncode=0)
         workspace_up("/path/to/clone", workspace_id=None, workspace_identity="repo-nb4")
-        args = mock_run.call_args[0][0]
+        args = _devpod_up_args(mock_run)
         assert "--init-env" in args
         assert args[args.index("--init-env") + 1] == "DEVLAUNCH_WORKSPACE_ID=repo-nb4"
 
@@ -1303,7 +1315,7 @@ class TestWorkspaceIdentityEnv:
     def test_workspace_up_falls_back_to_the_creation_id(self, mock_run, _mock_ctx):
         mock_run.return_value = MagicMock(returncode=0)
         workspace_up("/path", workspace_id="repo-main")
-        args = mock_run.call_args[0][0]
+        args = _devpod_up_args(mock_run)
         assert args[args.index("--init-env") + 1] == "DEVLAUNCH_WORKSPACE_ID=repo-main"
 
     @patch("devlaunch.dl.get_context_options", return_value={})

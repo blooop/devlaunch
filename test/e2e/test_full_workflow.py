@@ -13,23 +13,63 @@ Run these tests with:
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from fixtures.e2e_helpers import create_e2e_workspace
+from fixtures.e2e_helpers import create_e2e_workspace, devpod_available
 
 
-def devpod_available() -> bool:
-    """Check if DevPod is available."""
-    try:
+def real_devpod_workspace_ids() -> set:
+    """Workspace ids in the developer's own ~/.devpod, read straight off disk.
+
+    Read from the filesystem rather than from `devpod list`, because the whole
+    point of the assertion below is that `devpod list` no longer answers for
+    that directory.
+    """
+    contexts = Path.home() / ".devpod" / "contexts"
+    if not contexts.is_dir():
+        return set()
+    return {
+        workspace.name
+        for context in contexts.iterdir()
+        for workspace in (context / "workspaces").glob("*")
+        if workspace.is_dir()
+    }
+
+
+@pytest.mark.e2e
+class TestSuiteIsolationE2E:
+    """The destructive half of this suite must not be able to reach real state."""
+
+    def test_devpod_in_this_session_cannot_see_the_developers_workspaces(self):
+        """Proves the scoping is live in the session that could do the damage.
+
+        Every devpod call in this file -- including the one inside `dl --purge`
+        -- inherits this process's environment, so what `devpod list` reports
+        here is exactly what `--purge` would delete.
+
+        Any set at all is disjoint from an empty one, so where there is no real
+        devpod state to be disjoint from -- CI, or a fresh DinD container --
+        this skips rather than passing on nothing.
+        """
+        if not devpod_available():
+            pytest.skip("DevPod not available")
+
+        real_ids = real_devpod_workspace_ids()
+        if not real_ids:
+            pytest.skip("no workspaces in ~/.devpod on this host; nothing to be isolated from")
+
         result = subprocess.run(
-            ["devpod", "version"],
+            ["devpod", "list", "--output", "json"],
             capture_output=True,
+            text=True,
             check=False,
         )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+        assert result.returncode == 0
+
+        visible = {ws.get("id", "") for ws in json.loads(result.stdout or "[]")}
+        assert visible.isdisjoint(real_ids)
 
 
 def workspace_ids() -> list:

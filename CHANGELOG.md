@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
+itself the last release of the Python implementation, on the go decision recorded in
+[#53](https://github.com/blooop/devlaunch/issues/53); 0.0.12 and 0.0.13 have shipped
+since, and there is no cutoff to plan around now. Nothing about how you install or run
+`dl` changes, and no release is withdrawn — this only retires an expectation the
+changelog had set.
+
+What it does change is what is worth doing to this codebase. Work that was ruled out as
+wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was gating,
+and paying down anything scoped as "the Rust version will fix it" — is back on the
+table and should be judged on its own merits.
+
+## [0.0.14] - 2026-08-08
+
+Workspaces come with the tools a session needs. Nothing about how you install or
+run `dl` changes; existing workspaces pick the tools up on their next restart.
+
+### Added
+- `gh` and `claude` are installed into every workspace `dl` opens, so both are on
+  PATH in an interactive session, in `dl <ws> -- <command>`, and under `aid`,
+  whatever the repo's devcontainer.json provides. `dl` already forwarded the
+  host's GitHub login into every container but not the `gh` to spend it on, so
+  `dl <ws> -- gh auth status` died with `command not found` while holding a valid
+  token. Installed with `pixi global` on `devpod up` and exposed through
+  whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` bash actually
+  sources; `pixi` itself is installed first if the image has none. A
+  workspace that already has both is left alone, so the cost after the first
+  launch is one round-trip and no network. An install that fails costs the
+  workspace its tools and not its launch. Set `DEVLAUNCH_NO_TOOLS=1` to opt out.
+  Attaching to an already-running workspace skips `devpod up` and so skips this;
+  such a workspace picks the tools up on its next `dl <ws> restart`.
+
 ## [0.0.13] - 2026-08-08
 
 One fix: `dl <ws> -- <command>` now gives the command a terminal when you have
@@ -63,6 +95,10 @@ last release of the Python implementation — the successor is a Rust rewrite wh
 becomes a library shared with [blooop/wayfinder](https://github.com/blooop/wayfinder),
 decided in [#53](https://github.com/blooop/devlaunch/issues/53). Nothing about how you
 install or run `dl` changes in this release.
+
+> **Superseded.** The Rust rewrite was deferred on 2026-08-08 and Python remains the
+> implementation, so this was not the last Python release — 0.0.12 and 0.0.13 followed.
+> The rest of the entry stands as shipped. See [Unreleased](#unreleased).
 
 ### Changed
 - Existing caches are migrated onto the new workspace id scheme once, by the first
