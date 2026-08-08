@@ -410,9 +410,35 @@ This project uses [pixi](https://pixi.sh) for environment management.
 # Run tests
 pixi run test
 
+# Run the e2e suite: real devpod, real containers
+pixi run test-e2e
+
 # Run full CI suite
 pixi run ci
 
 # Format and lint
 pixi run style
 ```
+
+`pixi run test` skips the e2e tests, which need devpod and a Docker daemon and
+build real containers. CI runs `pixi run test-e2e` on every pull request, in a
+job of its own outside the Python matrix, on a throwaway runner.
+
+Running it on your own machine is a different proposition. The suite exercises
+`dl --purge`, so it gives itself a private devpod namespace before collection
+begins — but the containers it builds are real ones on your Docker, and it wants
+several minutes and a 1.25 GB image pull the first time.
+
+Its skips mean one thing only. A test that opts out says so in those words, and
+any other skip is reported as a failure, because a run that could not reach a
+registry used to be indistinguishable from a healthy one. Every run also prints
+what it actually built:
+
+```
+--------------------------------- e2e session ---------------------------------
+9 e2e tests attempted, 4 workspaces created: e2e-test-create, e2e-test-lifecycle, ...
+```
+
+A run that created nothing does not pass, whatever the summary line says.
+`DEVLAUNCH_E2E_WORKSPACE=<id>` opts in to the interactive-session tests, which
+attach to a workspace you already have running rather than building one.

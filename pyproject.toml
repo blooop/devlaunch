@@ -90,6 +90,11 @@ lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
 test = "pytest"
+# The default run excludes e2e (see addopts); this is the way back in. A
+# trailing `-m e2e` beats the one in addopts, and `-ra` puts every skip's reason
+# in the summary, which is the whole difference between a run that opted out of
+# something and a run that could not do it.
+test-e2e = "pytest -m e2e -ra"
 coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
 coverage-report = "coverage report -m"
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"

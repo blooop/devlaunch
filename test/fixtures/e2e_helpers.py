@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 import pytest
 
+from fixtures.e2e_guard import LEDGER
+
 
 def devpod_available() -> bool:
     """Whether real devpod commands can run at all.
@@ -28,6 +30,23 @@ def devpod_available() -> bool:
         return result.returncode == 0
     except FileNotFoundError:
         return False
+
+
+def require_devpod() -> None:
+    """Fail the session -- not skip it -- if devpod cannot be executed.
+
+    devpod is a pixi dependency of this project, so a run that cannot execute
+    it has a broken environment rather than one that declined to test devpod.
+    `pytest -m e2e` is an explicit request for exactly the tests that need it,
+    and answering that request with grey text is how a suite reports nothing
+    and passes.
+    """
+    if not devpod_available():
+        pytest.fail(
+            "`devpod version` did not run, so no e2e test in this session can "
+            "do anything. devpod is a pixi dependency of this project -- run "
+            "the suite as `pixi run test-e2e` rather than a bare pytest."
+        )
 
 
 class DLRunner:
@@ -216,6 +235,12 @@ def create_e2e_workspace(
     A non-zero rc fails rather than skips. `pytest.skip` on a step the test
     cannot proceed without turns a real outcome -- a leak, a broken daemon, a
     misconfigured provider -- into a green run with a line of grey text.
+
+    Being the only door is also what makes it the only honest counter. The
+    session ledger asks "did this run build anything", and no report of a
+    passing test answers that -- inferring a container from a green test is the
+    mistake that let a run with a dead registry in it look healthy. Recorded
+    after the rc check, so the count is of workspaces that exist.
     """
     cleanup.track(workspace_id)
     result = run(
@@ -232,4 +257,5 @@ def create_e2e_workspace(
             f"stdout: {(result.stdout or '').strip()[-2000:]}\n"
             f"stderr: {(result.stderr or '').strip()[-2000:]}"
         )
+    LEDGER.record_workspace_created(workspace_id)
     return result
