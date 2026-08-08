@@ -190,7 +190,9 @@ If workspace ID is just the branch name:
 
 Orphaned workspaces have cached container configurations that may be stale.
 
-**Solution**: Before removing local files, delete all tracked DevPod workspaces.
+**Solution**: Before removing local files, delete the DevPod workspaces devlaunch
+created — the ones whose source is a clone under its own cache directory.
+Workspaces it did not create are named and left standing.
 
 **Implementation**: `dl.py:purge_all_data()`
 
@@ -256,7 +258,7 @@ The current tests mock DevPod commands and don't verify:
 ### CLI Flags
 
 - `--backend worktree|devpod`: Override backend for single command
-- `--purge [-y]`: Remove all devlaunch data and DevPod workspaces
+- `--purge [-y]`: Remove all devlaunch data — its caches, and the DevPod workspaces it created
 
 ## File Reference
 

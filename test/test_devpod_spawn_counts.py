@@ -70,6 +70,10 @@ class DevpodSpawns:
         self.workspace_ids = workspace_ids
         self.state = state
         self.commands: List[List[str]] = []
+        # Where the listed workspaces' sources sit. `dl --purge` deletes only
+        # the ones under devlaunch's own cache directory, so a test that wants
+        # a workspace purge will act on points this at the cache dir it patched.
+        self.source_root = "/cache"
 
     def __call__(self, cmd, *_args, **_kwargs) -> subprocess.CompletedProcess:
         argv = list(cmd)
@@ -91,7 +95,7 @@ class DevpodSpawns:
                 [
                     {
                         "id": ws,
-                        "source": {"localFolder": f"/cache/{ws}"},
+                        "source": {"localFolder": f"{self.source_root}/{ws}"},
                         "provider": {"name": "docker"},
                         "ide": {"name": "none"},
                         "lastUsed": "2026-01-01T00:00:00Z",
@@ -154,6 +158,8 @@ class TestHotCommandSpawnCounts:
         spawns.workspace_ids = ["ws1", "ws2"]
         cache_dir = tmp_path / "devlaunch"
         cache_dir.mkdir()
+        # Both are clones devlaunch made, so both are its to delete.
+        spawns.source_root = str(cache_dir / "repos")
         with patch("devlaunch.dl._get_cache_dir", return_value=cache_dir):
             assert _run_dl("--purge", "-y") == 0
         assert spawns.devpod_commands == [
@@ -257,10 +263,13 @@ class TestWorkspaceListMemoization:
     def test_purging_drops_the_snapshot(self, spawns, tmp_path):
         """Nothing reads the list after a purge today, and nothing may inherit
         the workspaces the purge just deleted if something starts to."""
-        assert [ws.id for ws in list_workspaces()] == ["myws"]
-        spawns.workspace_ids = []
         cache_dir = tmp_path / "devlaunch"
         cache_dir.mkdir()
+        # A clone devlaunch made, so the purge has something of its own to
+        # delete -- a purge that deleted nothing would drop no snapshot.
+        spawns.source_root = str(cache_dir / "repos")
+        assert [ws.id for ws in list_workspaces()] == ["myws"]
+        spawns.workspace_ids = []
         with patch("devlaunch.dl._get_cache_dir", return_value=cache_dir):
             assert purge_all_data() == 0
         assert list_workspaces() == []

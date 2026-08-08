@@ -260,13 +260,26 @@ class TestPurgeE2E:
     """E2E tests for purge functionality."""
 
     @pytest.mark.creates_workspace
-    def test_purge_deletes_workspaces(
+    def test_purge_leaves_a_workspace_devlaunch_did_not_create(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
-        """Test that --purge -y deletes all DevPod workspaces."""
+        """`--purge -y` leaves a real workspace devlaunch never made, and says so.
+
+        This used to assert the opposite -- that `--purge` deleted the workspace
+        `devpod up` had just built for it -- which is the defect #107 is about,
+        written down as an assertion. devpod's namespace is shared, and a
+        workspace made by hand is somebody's work that devlaunch cannot recreate.
+
+        The workspace built here is made the way a person makes one: `devpod up
+        <source> --id <id>`, with the source outside devlaunch's cache. That is
+        the arm worth spending a real container on, because its regression is the
+        destructive one. Which workspaces devlaunch *does* delete is pinned in
+        test/unit/test_purge_ownership.py against a recorded `devpod list`.
+        """
         env = isolated_devlaunch_env
 
-        # Create a workspace first
+        # A workspace devlaunch did not create: built here, from a source that
+        # is not a clone under devlaunch's cache directory.
         workspace_id = "e2e-test-purge"
         create_e2e_workspace(
             local_git_repo_with_devcontainer["remote_url"],
@@ -275,7 +288,6 @@ class TestPurgeE2E:
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
         )
 
-        # Verify workspace exists
         assert workspace_id in workspace_ids()
 
         # Run purge
@@ -289,10 +301,11 @@ class TestPurgeE2E:
         )
 
         assert purge_result.returncode == 0
-        assert "Deleting DevPod workspace" in purge_result.stdout
-
-        # Verify workspace is gone
-        assert workspace_id not in workspace_ids()
+        # Still standing, and named rather than silently passed over.
+        assert workspace_id in workspace_ids()
+        assert f"Deleting DevPod workspace: {workspace_id}" not in purge_result.stdout
+        assert "did not create" in purge_result.stdout
+        assert workspace_id in purge_result.stdout
 
     def test_purge_cleans_cache(self, isolated_devlaunch_env):
         """Test that --purge -y removes the cache directory."""

@@ -28,7 +28,7 @@ import re
 import shlex
 import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -428,32 +428,39 @@ def update_cache_background(force: bool = False) -> None:
 
 
 def purge_all_data() -> int:
-    """Purge all devlaunch data including DevPod workspaces and caches.
+    """Purge devlaunch's data: the workspaces it created, and its caches.
 
     This:
-    1. Deletes all DevPod workspaces
+    1. Deletes the DevPod workspaces devlaunch created -- see
+       is_devlaunch_clone for what that means, and for what it leaves alone.
     2. Removes ~/.cache/devlaunch/ which contains:
        - completions.json, completions.bash (completion caches)
+
+    Workspaces devlaunch did not create are not deleted and not reported here;
+    the report belongs with the confirmation, before anything is destroyed, so
+    it lives in main() where the user still has a decision to make.
     """
     import shutil
 
     cache_dir = _get_cache_dir()
 
-    # First, delete all DevPod workspaces. The list is the same snapshot the
-    # caller printed the count from, so the confirmation the user answered and
-    # the set actually deleted cannot disagree.
-    workspaces = list_workspaces()
-    for ws in workspaces:
+    # First, delete the DevPod workspaces devlaunch made. The list is the same
+    # snapshot the caller printed the count from -- list_workspaces() is
+    # memoized per command and nothing between the two reads changes what devpod
+    # would say -- so the confirmation the user answered and the set actually
+    # deleted cannot disagree.
+    owned = workspace_ownership(list_workspaces(), cache_dir)
+    for ws in owned.mine:
         print(f"Deleting DevPod workspace: {ws.id}")
         result = run_devpod(["delete", ws.id, "--force"], capture=True)
         if result.returncode != 0:
             logging.warning(f"Failed to delete workspace {ws.id}: {result.stderr}")
-    if workspaces:
+    if owned.mine:
         invalidate_workspace_list_cache()
 
     # Then remove local cache
     if not cache_dir.exists():
-        if not workspaces:
+        if not owned.mine:
             print("No data to purge.")
         return 0
 
@@ -730,6 +737,81 @@ class Workspace:
             provider=data.get("provider", {}).get("name", ""),
             ide=data.get("ide", {}).get("name", ""),
         )
+
+
+def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
+    """Whether *workspace* is one devlaunch made, rather than someone else's.
+
+    devpod's workspace namespace is shared: `devpod up` by hand, another tool
+    and an older devlaunch all land in the same list, and devlaunch has no
+    business destroying any of them. The question this answers is the narrow
+    one -- *did I make this* -- and it is answered from where the workspace's
+    source lives.
+
+    Every workspace `dl owner/repo[@branch]` creates is a clone devlaunch put
+    under its own cache directory (`<cache>/repos/<owner>/<repo>/<id>`, see
+    WorkspaceCloneManager.get_workspace_path) and then handed to `devpod up` as
+    a path, so devpod records that path as the source. That makes the predicate
+    say something true of `--purge` rather than merely correlated with it: the
+    cache directory is exactly what a purge removes, so the workspaces it
+    deletes are the ones whose source it is about to delete anyway. Anything
+    else keeps working afterwards, because nothing a purge touches backs it.
+
+    Chosen over reading metadata.json, which also records these ids, for two
+    reasons. metadata.json lives *inside* the cache directory a purge removes,
+    and `purge_all_data` only warns when `devpod delete` fails -- so one failed
+    delete plus one successful purge would leave a workspace no later purge
+    could ever recognise. And the record is append-mostly: nothing prunes it,
+    so it accumulates entries for workspaces that are long gone. A source path
+    is read back from devpod itself every time, and survives the cache it names.
+
+    Deliberately conservative in two places. A `git` or unrecognised source is
+    never ours: devlaunch always passes devpod a local path. And the comparison
+    is a path containment test, not a string prefix -- `<cache>-scratch` shares
+    six characters with `<cache>` and is not inside it.
+
+    Not every workspace dl creates is recognised. `dl ./path` and `dl <git-url>`
+    open a source dl did not clone and does not record anywhere, and a
+    `config.toml` that points `repos_dir` outside the cache puts the clones
+    somewhere `--purge` does not remove either -- so all three read as someone
+    else's. That is the safe direction to be wrong in, it keeps this predicate
+    and what a purge actually destroys answering to the same directory, and
+    `--purge` names what it leaves rather than passing over it in silence.
+    """
+    if workspace.source_type != "local":
+        return False
+    source = pathlib.PurePath(workspace.source)
+    # Purely lexical, so a clone whose directory has already been removed is
+    # still recognisable from the source devpod kept.
+    return source != pathlib.PurePath(cache_dir) and source.is_relative_to(cache_dir)
+
+
+@dataclass(frozen=True)
+class WorkspaceOwnership:
+    """A `devpod list` answer split by whether devlaunch created each workspace.
+
+    A value rather than a filter applied at the point of deletion: `--purge`
+    prints a count and then deletes a set, and those two cannot disagree if they
+    read the same object. It also gives the workspaces devlaunch does *not* own
+    somewhere to be named from, which is the difference between a purge that
+    surprises a user with survivors and one that lists them.
+    """
+
+    mine: Tuple[Workspace, ...]
+    foreign: Tuple[Workspace, ...]
+
+
+def workspace_ownership(
+    workspaces: Sequence[Workspace], cache_dir: pathlib.Path
+) -> WorkspaceOwnership:
+    """Split *workspaces* into the ones devlaunch made and the ones it did not.
+
+    Total: every workspace lands in exactly one arm, and listing order is kept
+    within each, so what is printed reads in the order devpod gave.
+    """
+    mine = tuple(ws for ws in workspaces if is_devlaunch_clone(ws, cache_dir))
+    foreign = tuple(ws for ws in workspaces if not is_devlaunch_clone(ws, cache_dir))
+    return WorkspaceOwnership(mine=mine, foreign=foreign)
 
 
 # Regex patterns for parsing git URLs
@@ -1383,7 +1465,7 @@ Global commands:
     dl --ls                          List all workspaces
     dl --install                     Install shell completions
     dl --refresh                     Refresh completion cache
-    dl --purge [-y]                  Remove all DevPod workspaces and caches
+    dl --purge [-y]                  Remove devlaunch's workspaces and caches
     dl --help, -h                    Show this help
     dl --version                     Show version (editable installs name their tree)
 
@@ -1573,10 +1655,18 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         # Check for -y flag to skip confirmation
         skip_confirm = len(args) > 1 and args[1] in ("-y", "--yes")
         cache_dir = _get_cache_dir()
-        workspaces = list_workspaces()
+        owned = workspace_ownership(list_workspaces(), cache_dir)
         print("This will remove all devlaunch data:")
-        print(f"  - {len(workspaces)} DevPod workspace(s)")
+        print(f"  - {len(owned.mine)} DevPod workspace(s)")
         print(f"  - {cache_dir}/ (workspace clones, repo caches, completions)")
+        # Named, not merely excluded from the count: a user who asked for a
+        # clean slate and gets survivors should learn it here, while saying no
+        # is still an option, rather than from a later `dl --ls`.
+        if owned.foreign:
+            print()
+            print(f"Leaving {len(owned.foreign)} workspace(s) devlaunch did not create:")
+            for ws in owned.foreign:
+                print(f"  - {ws.id}")
         print()
         if skip_confirm:
             return purge_all_data()

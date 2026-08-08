@@ -2123,20 +2123,31 @@ class TestMainCLI:
 class TestPurgeFunctionality:
     """Tests for purge functionality."""
 
+    @staticmethod
+    def _clones(cache_dir: pathlib.Path, *ids: str):
+        """Workspaces in the shape devlaunch creates them: clones under its cache.
+
+        These used to be sourced from `/path` and a git URL, which is what a
+        workspace someone else made looks like -- so this test asserted that
+        `--purge` deleted other people's work. See test/unit/test_purge_ownership.py.
+        """
+        return [
+            Workspace(ws, "local", str(cache_dir / "repos" / "o" / "r" / ws), "", "docker", "none")
+            for ws in ids
+        ]
+
     @patch("devlaunch.dl.run_devpod")
     @patch("devlaunch.dl.list_workspaces")
     def test_purge_deletes_all_workspaces(self, mock_list, mock_run):
-        """Test purge_all_data deletes all workspaces."""
+        """Test purge_all_data deletes every workspace devlaunch created."""
         from devlaunch.dl import purge_all_data
 
-        mock_list.return_value = [
-            Workspace("ws1", "local", "/path", "", "docker", "vscode"),
-            Workspace("ws2", "git", "github.com/o/r", "", "docker", "none"),
-        ]
         mock_run.return_value = MagicMock(returncode=0)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("devlaunch.dl._get_cache_dir", return_value=pathlib.Path(tmpdir)):
+            cache_dir = pathlib.Path(tmpdir)
+            mock_list.return_value = self._clones(cache_dir, "ws1", "ws2")
+            with patch("devlaunch.dl._get_cache_dir", return_value=cache_dir):
                 result = purge_all_data()
 
         assert result == 0
@@ -2174,10 +2185,6 @@ class TestPurgeFunctionality:
         """Test purge continues even if workspace delete fails."""
         from devlaunch.dl import purge_all_data
 
-        mock_list.return_value = [
-            Workspace("ws1", "local", "/path", "", "docker", "vscode"),
-            Workspace("ws2", "git", "github.com/o/r", "", "docker", "none"),
-        ]
         # First delete fails, second succeeds
         mock_run.side_effect = [
             MagicMock(returncode=1, stderr="error"),
@@ -2185,7 +2192,9 @@ class TestPurgeFunctionality:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("devlaunch.dl._get_cache_dir", return_value=pathlib.Path(tmpdir)):
+            cache_dir = pathlib.Path(tmpdir)
+            mock_list.return_value = self._clones(cache_dir, "ws1", "ws2")
+            with patch("devlaunch.dl._get_cache_dir", return_value=cache_dir):
                 result = purge_all_data()
 
         # Should still return 0 (cache cleanup succeeded)

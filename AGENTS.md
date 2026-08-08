@@ -64,6 +64,14 @@ Two things to know about it:
   on the host either way, so the workspaces a scratch run creates are real ones
   that `devpod list` shows and that need deleting like any other.
 
+  One thing the scratch cache now does cover: **`dl --purge`**. It deletes only
+  workspaces whose source is a clone under devlaunch's cache directory, so a run
+  pointed at a scratch cache finds every real workspace unrecognised and leaves
+  it standing, naming what it left. It used to delete every workspace `devpod
+  list` returned, which no `XDG_*` variable could scope — `devpod list` reads
+  `~/.devpod`. `DEVPOD_HOME` is still what scopes devpod itself, and is what
+  `test/conftest.py` sets for the suite.
+
 ### Inside the devcontainer: one build, and it is `pixi run dl`
 
 Everything above is about the host. This repo's devcontainer already installs the

@@ -318,7 +318,7 @@ existed — picks the tools up on its next `dl <workspace> restart`.
 |---------|-------------|
 | `dl --ls` | List all workspaces |
 | `dl --install` | Install shell completions |
-| `dl --purge [-y]` | Remove all devlaunch data |
+| `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
 | `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
 | `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
@@ -339,6 +339,38 @@ dl 0.0.9 (dev, editable from /path/to/your/devlaunch)
 `aid --version` reports the same thing under its own name. The provenance comes
 from the installed package's own PEP 610 metadata; an install that records none
 just prints the bare version.
+
+### What purge deletes
+
+devpod's workspace list is shared. A workspace you made with `devpod up`, or that
+another tool made, sits in the same list as the ones `dl` made, and `dl --purge`
+has no business destroying it. So it deletes only the workspaces devlaunch
+created — the clones it made under its own cache directory (`$XDG_CACHE_HOME` or
+`~/.cache`, then `devlaunch/repos/<owner>/<repo>/<id>`), which is exactly the
+directory the purge is about to remove anyway. Everything else keeps working
+afterwards, because nothing a purge touches backs it.
+
+Anything it is leaving is named before it asks:
+
+```
+$ dl --purge
+This will remove all devlaunch data:
+  - 4 DevPod workspace(s)
+  - /home/you/.cache/devlaunch/ (workspace clones, repo caches, completions)
+
+Leaving 2 workspace(s) devlaunch did not create:
+  - pythontemplate
+  - my-hand-made-workspace
+
+Are you sure? [y/N]
+```
+
+Two things `dl` does create are in that second list rather than the first:
+`dl ./some/path` and `dl <git-url>` open a source `dl` did not clone, so it
+cannot tell them from a workspace you made by hand. Delete one of those with
+`dl <workspace> rm`. Erring this way is deliberate — a purge that skips one of
+your own workspaces costs you a command, and the other kind of mistake costs you
+work you cannot get back.
 
 ## Examples
 
