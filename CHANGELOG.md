@@ -19,6 +19,128 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+### Added
+
+- `dl <workspace> up` starts or creates a workspace **without attaching**. The
+  warm half of a launch, for a caller that wants the container ready before a
+  user arrives: wayfinder fires it in the background the moment a launch is
+  staged, so the container builds while the human is still choosing a mode and
+  typing steering text. Idempotent — a workspace already running is a no-op
+  and says so.
+
+### Changed
+
+- **A launch is one `devpod status`, not a `devpod list` and then a status.**
+  Every workspace command opened with `devpod list --output json` purely to ask
+  whether devpod knew this workspace, then asked `devpod status` about the same
+  workspace a moment later. One `status` answers both questions, so the listing
+  is gone from the path: `dl <ws> -- cmd` on a running workspace is now three
+  devpod spawns rather than four, and `dl owner/repo@branch -- cmd` — the shape
+  wayfinder hands every agent launch — two rather than three. Measured on the
+  reference machine, ~0.4–0.5s off every launch, warm or cold, and it no longer
+  grows with the number of workspaces on the machine.
+
+  The trade is that `devpod status` cannot distinguish "no such workspace" from
+  "devpod failed to answer", where the listing raised
+  `UnreadableWorkspaceList`. A launch made wrongly cold by that redoes
+  idempotent git work and hands devpod a source it already knows; devpod's own
+  error then names the real problem. A **bare name** gets a second opinion
+  before being refused, because there the wrong answer is worse: `status`
+  consults the provider while `list` only reads devpod's own records, so a
+  workspace whose provider is broken or gone still lists and cannot be
+  described — and that is exactly the workspace somebody is about to
+  `dl <ws> rm`. Refusing on the status alone would be both a wrong diagnosis
+  and a refusal of the command that fixes it, so the listing decides. It is
+  read only on that path.
+
+  `validate_workspace_spec` went with the listing — it existed to check a spec
+  against a list nothing fetches any more, and leaving it invited someone to
+  fetch one again.
+
+- **A cold container is lent the host's own `claude` and `gh` instead of
+  downloading its own.** Provisioning ran `curl | bash` for pixi and two
+  `pixi global install`s inside every fresh container, and the `claude-shim`
+  package then pulled a ~285MB binary from GCS — tens of seconds to minutes of
+  network, per container, on the critical path of every cold launch. The host
+  running `dl` almost always has both tools already, and the container is one
+  pipe away on the same disk, so they are now streamed in as a tar over the
+  `devpod ssh` channel dl already holds. Measured here: 342MB in **5.1s**,
+  checksum-verified, with both lent binaries running in the container.
+
+  The network install is still there and still correct — it runs when the host
+  has nothing to lend (no official `claude` install, no resolvable `gh`) or
+  when the lent binaries do not run in that container. A pixi trampoline on the
+  host is resolved to the binary it names; copying the launcher alone would
+  copy nothing that runs.
+
+  **Nothing lands in the container until it has been proved to run there.** The
+  tar is unpacked into a staging directory, both binaries are run once, and
+  only then are they moved into place, symlinked and put on the login `PATH`;
+  a trap removes the staging directory whichever way the script leaves. Doing
+  it the other way round was worse than a failed transfer: the host's `claude`
+  is dynamically linked, so a musl or older-glibc container fails that check
+  routinely, and an earlier arrangement that unpacked straight into `$HOME`
+  left the `PATH` edit and a broken `claude` symlink behind when it did. The
+  network fallback then decided what to install with `command -v`, which a
+  broken binary satisfies — so it installed nothing, reported success, and
+  every later launch's probe agreed with it. The workspace was left with a
+  `claude` that could never run.
+
+  The probe that decides all this is captured, unlike the trips that may follow
+  it. It reports nothing, and its everyday answer on a cold workspace ("tools
+  missing") reached the terminal as a red devpod
+  `fatal ... Process exited with status 1` describing the probe working.
+
+- **Two `up`s of one workspace serialize on a per-workspace lock.** Background
+  prewarming makes concurrent `up`s of a single workspace an everyday event
+  rather than an edge case, and two `devpod up`s of one workspace is not a race
+  devpod promises to survive. The loser waits; a loser that *had* to wait
+  re-checks the state first, because the likeliest reason for the wait is that
+  the winner just brought this very workspace up — so the launch attaches to
+  the container the prewarm built instead of re-walking a whole container
+  lifecycle to arrive where it already is. The re-check costs one status round
+  trip and is paid only on contention. It is skipped for calls wanting a side
+  effect a sibling cannot have had: an IDE to open, a recreate, a reset, or a
+  `--devcontainer` variant — that last one especially, since skipping it would
+  hand the user the default container while they asked for another and say
+  nothing about it.
+
+  A skipped `up` still checks the tools. `Running` says the sibling's `devpod
+  up` returned, not that its install did: it can be interrupted between the two
+  (the flock dies with the process), its `up` can fail after the container has
+  started, and it can have run with `DEVLAUNCH_NO_TOOLS` set where this one did
+  not. The check is a probe round trip against a workspace already up, and
+  silent when there is nothing to do.
+
+  A lock that cannot be taken does not fail the launch. The cache directory can
+  be unwritable — a container writing as another uid is a documented occurrence
+  in this very cache — and serialization guards a race that may not be
+  happening, so an errno traceback in front of a `devpod up` that would have
+  worked is the worse answer.
+
+- `devpod context options` is cached on disk for an hour. It was re-read in
+  front of every `up` to fetch two dotfiles settings that change only when
+  somebody runs `devpod context set-options`. The TTL is not the only thing
+  that expires it: these options are per *context* and this is one cache file,
+  so a cache older than devpod's own config file is stale whatever its age —
+  otherwise `devpod context use <other>` would feed the previous context's
+  settings to `devpod up` for an hour, a wrong answer nobody could connect to a
+  cache they did not know existed.
+
+### Fixed
+
+- A cold `devpod up` no longer prints a red `fatal ... Process exited with
+  status 1` from the tools probe. The probe asks a yes/no question and reports
+  nothing; "no" is its everyday answer on a fresh workspace, and devpod
+  rendered that as an error describing the probe working. It is captured now.
+
+- `.dockerignore` excludes `.pixi` at any depth, not just at the repository
+  root. A git worktree under `.claude/worktrees/` has an environment of its
+  own, and one left behind by an earlier effort put the very symlink the file
+  was written to exclude back into the build context — so the e2e suite failed
+  to build a container with the exact error the comment above the pattern
+  quotes.
+
 ## [0.0.23] - 2026-08-08
 
 ### Fixed

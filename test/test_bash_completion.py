@@ -116,7 +116,7 @@ done
         """Test subcommand completion after a workspace with dashes."""
         # Complete after typing "dl my-workspace " (note the trailing space)
         completions = self.run_completion("dl my-workspace ")
-        expected = ["stop", "rm", "code", "restart", "recreate", "reset", "--"]
+        expected = ["up", "stop", "rm", "code", "restart", "recreate", "reset", "--"]
         for cmd in expected:
             assert cmd in completions
 
@@ -164,7 +164,7 @@ done
     def test_no_subcommand_completion_after_an_aid_workspace(self):
         """Everything after an aid workspace is the prompt, not a subcommand."""
         completions = self.run_completion("aid my-workspace ")
-        for cmd in ["stop", "rm", "code", "restart", "recreate", "reset"]:
+        for cmd in ["up", "stop", "rm", "code", "restart", "recreate", "reset"]:
             assert cmd not in completions
 
     def test_completion_partial_workspace_match(self):

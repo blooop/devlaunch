@@ -9,8 +9,15 @@
 # checkout the tests have ever been run in -- building the container failed
 # before it started. The environment inside the container comes from a volume
 # mount and pixi.lock, never from here.
-.pixi/
+#
+# At any depth, not just the root. A git worktree under .claude/worktrees/ has
+# an environment of its own, and one left behind by an earlier effort put the
+# very symlink named above back into the context -- so the pattern that exists
+# to prevent this failure was watching one directory while the failure came
+# from another.
+**/.pixi/
 
 # Local state with the same story: never copied, and only ever slows the build.
 .git/
 .pytest_cache/
+**/.claude/worktrees/

@@ -4,7 +4,7 @@ from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
     is_git_spec,
-    validate_workspace_spec,
+    spec_to_workspace_id,
 )
 
 # Check if a spec is a path
@@ -18,9 +18,7 @@ print(f"Is './myproject' a git spec? {is_git_spec('./myproject')}")  # False
 # Expand owner/repo to full URL
 print(f"Expanded: {expand_workspace_spec('blooop/devlaunch')}")  # github.com/blooop/devlaunch
 
-# Validate workspace specs
-error = validate_workspace_spec("unknown", ["ws1", "ws2"])
-print(f"Validation error: {error}")  # Returns error message
-
-error = validate_workspace_spec("ws1", ["ws1", "ws2"])
-print(f"Validation error for existing: {error}")  # None (valid)
+# Derive the workspace a spec names. A branch spec is a full identity; a bare
+# name is already one and comes back unchanged.
+print(f"Workspace id: {spec_to_workspace_id('blooop/devlaunch@main')}")
+print(f"Workspace id: {spec_to_workspace_id('myws')}")  # myws

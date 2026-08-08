@@ -33,23 +33,33 @@ from typing import Iterator, Optional
 
 
 @contextlib.contextmanager
-def hold_lock(lock_path: Path, waiting_note: Optional[str] = None) -> Iterator[None]:
+def hold_lock(lock_path: Path, waiting_note: Optional[str] = None) -> Iterator[bool]:
     """Hold an exclusive inter-process lock on *lock_path* for the block.
 
     Blocks until the lock is free. When another process already holds it and
     *waiting_note* is given, one line is printed to stderr first, so a dl run
     that sits waiting on a sibling's long clone says why it is sitting.
+
+    Yields whether the lock was **contended** — True when this process had to
+    wait for another holder. Contention is information: a launch that waited
+    knows the world may have changed while it did (a sibling may have brought
+    the very workspace it wants up) and can re-check cheaply, where a launch
+    that walked straight in knows its earlier reads still stand. Callers that
+    only want the mutual exclusion ignore the value, which is what the
+    pre-existing `with hold_lock(...):` sites do.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
+        waited = False
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            waited = True
             if waiting_note:
                 print(f"dl: waiting for {waiting_note}", file=sys.stderr)
             fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        yield waited
     finally:
         # Closing the descriptor releases the lock; nothing is unlinked.
         os.close(fd)

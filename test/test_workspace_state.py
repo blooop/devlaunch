@@ -216,6 +216,9 @@ class TestTheDeleteGuard:
         def devpod(args, **kwargs):
             if args[:1] == ["list"]:
                 return subprocess.CompletedProcess(args, 0, listing, "")
+            if args[:1] == ["status"]:
+                # The spec is resolved with one `devpod status`, not a listing.
+                return subprocess.CompletedProcess(args, 0, '{"state": "Stopped"}', "")
             if args[:1] == ["delete"]:
                 deleted.append(args[1])
             return subprocess.CompletedProcess(args, 0, "", "")

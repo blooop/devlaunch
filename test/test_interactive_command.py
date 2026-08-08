@@ -133,10 +133,9 @@ class TestMissingSsh:
         assert issubclass(dl_module.SshNotInstalled, dl_module.MissingBinary)
         assert issubclass(dl_module.DevpodNotInstalled, dl_module.MissingBinary)
 
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.dl.subprocess.run", side_effect=FileNotFoundError())
-    def test_main_reports_it_rather_than_crashing(self, _run, _state, _ids, on_a_terminal, capsys):
+    def test_main_reports_it_rather_than_crashing(self, _run, _state, on_a_terminal, capsys):
         assert dl_module.main(["myws", "--", "claude"]) == dl_module.DEVPOD_MISSING_EXIT_CODE
         assert "ssh not found" in capsys.readouterr().err
 
@@ -216,9 +215,8 @@ class TestAidReachesTheTtyTransport:
     @patch("devlaunch.dl.run_ssh")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     def test_aid_with_no_prompt_starts_an_interactive_agent(
-        self, _ids, _state, _up, mock_ssh, on_a_terminal
+        self, _state, _up, mock_ssh, on_a_terminal
     ):
         from devlaunch import aid
 
@@ -232,10 +230,7 @@ class TestAidReachesTheTtyTransport:
     @patch("devlaunch.dl.run_ssh")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
-    def test_aid_with_a_prompt_still_gets_a_terminal(
-        self, _ids, _state, _up, mock_ssh, on_a_terminal
-    ):
+    def test_aid_with_a_prompt_still_gets_a_terminal(self, _state, _up, mock_ssh, on_a_terminal):
         """The prompt seeds the session; the session still has to be interactive."""
         from devlaunch import aid
 
