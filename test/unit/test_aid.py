@@ -86,11 +86,30 @@ class TestBuildAgentCommand:
     def test_claude_with_prompt(self):
         assert (
             aid.build_agent_command("claude", "fix the bug")
-            == "claude --dangerously-skip-permissions 'fix the bug'"
+            == "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the bug'"
         )
 
     def test_claude_without_prompt(self):
-        assert aid.build_agent_command("claude") == "claude --dangerously-skip-permissions"
+        assert (
+            aid.build_agent_command("claude")
+            == "IS_SANDBOX=1 claude --dangerously-skip-permissions"
+        )
+
+    def test_claude_can_skip_permissions_in_a_root_container(self):
+        """The flag alone is not enough, and the gap is silent.
+
+        claude exits 1 with "cannot be used with root/sudo privileges" when it
+        sees --dangerously-skip-permissions under uid 0, and a devcontainer
+        running as root is ordinary. IS_SANDBOX=1 is the documented way to say
+        the container is the sandbox that refusal is asking for; without it aid
+        would not start at all in those workspaces.
+        """
+        for command in (aid.build_agent_command("claude"), aid.build_agent_command("claude", "hi")):
+            assert command.startswith("IS_SANDBOX=1 ")
+
+    def test_agents_that_take_no_flag_get_no_environment(self):
+        for agent in ("codex", "gemini"):
+            assert "IS_SANDBOX" not in aid.build_agent_command(agent, "hi")
 
     def test_gemini_needs_its_interactive_flag_only_with_a_prompt(self):
         assert aid.build_agent_command("gemini", "hi") == "gemini --prompt-interactive hi"
@@ -98,11 +117,14 @@ class TestBuildAgentCommand:
 
     def test_prompt_with_quotes_is_escaped(self):
         command = aid.build_agent_command("claude", 'don\'t break "this"')
-        assert command == "claude --dangerously-skip-permissions 'don'\"'\"'t break \"this\"'"
+        assert (
+            command
+            == "IS_SANDBOX=1 claude --dangerously-skip-permissions 'don'\"'\"'t break \"this\"'"
+        )
 
     def test_prompt_cannot_smuggle_a_second_command(self):
         command = aid.build_agent_command("claude", "hi; rm -rf /")
-        assert command == "claude --dangerously-skip-permissions 'hi; rm -rf /'"
+        assert command == "IS_SANDBOX=1 claude --dangerously-skip-permissions 'hi; rm -rf /'"
 
     def test_unknown_agent_is_an_error(self):
         with pytest.raises(aid.UsageError):
@@ -117,7 +139,7 @@ class TestBuildDlArgs:
         assert aid.build_dl_args(parsed) == [
             "owner/repo@branch",
             "--",
-            "claude --dangerously-skip-permissions 'fix it'",
+            "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix it'",
         ]
 
     def test_dl_options_come_first(self):
@@ -127,7 +149,7 @@ class TestBuildDlArgs:
             "robot",
             "owner/repo",
             "--",
-            "claude --dangerously-skip-permissions",
+            "IS_SANDBOX=1 claude --dangerously-skip-permissions",
         ]
 
     def test_dl_reads_the_command_back_whole(self):
@@ -140,7 +162,8 @@ class TestBuildDlArgs:
         dl_args = aid.build_dl_args(parsed)
         remaining, _ = dl.extract_devcontainer_flag(dl_args)
         assert (
-            " ".join(remaining[2:]) == "claude --dangerously-skip-permissions 'fix the flaky test'"
+            " ".join(remaining[2:])
+            == "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the flaky test'"
         )
 
 
@@ -151,7 +174,7 @@ class TestMainDelegatesToDl:
         with patch.object(aid.dl, "main", return_value=0) as mock_main:
             assert aid.main(["owner/repo", "fix", "it"]) == 0
         mock_main.assert_called_once_with(
-            ["owner/repo", "--", "claude --dangerously-skip-permissions 'fix it'"]
+            ["owner/repo", "--", "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix it'"]
         )
 
     def test_main_returns_dls_exit_code(self):

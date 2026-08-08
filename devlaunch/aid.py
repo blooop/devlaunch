@@ -32,13 +32,15 @@ from . import dl
 class Agent:
     """How one coding agent is started inside the workspace.
 
-    Split in two because gemini's way of taking an initial prompt is a flag that
-    is a syntax error without one: `command` is what always runs, `prompt_flags`
-    only joins it when there is a prompt to pass.
+    Split three ways because not every part of the line belongs everywhere:
+    `env` and `command` always run, while `prompt_flags` only joins them when
+    there is a prompt — gemini's way of taking an initial prompt is a flag that
+    is a syntax error without one.
     """
 
     command: List[str]
     prompt_flags: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
 
 
 # Base command per agent. The prompt, when there is one, is appended as a single
@@ -49,8 +51,15 @@ class Agent:
 # workspace is that the agent is already inside a disposable container with only
 # this repo in it, so the per-tool prompts it would otherwise ask on the host buy
 # nothing and stop an unattended `aid owner/repo fix the bug` dead.
+#
+# IS_SANDBOX=1 is what makes that flag usable at all here. claude refuses it
+# outright under uid 0 -- "cannot be used with root/sudo privileges", exit 1 --
+# and plenty of devcontainers run as root, so without this aid would not start
+# in them at all. The variable is claude's own way of being told the refusal is
+# answering for a machine that isn't there, which is exactly a dl workspace: a
+# disposable container holding one repo.
 AGENT_COMMANDS: Dict[str, Agent] = {
-    "claude": Agent(["claude", "--dangerously-skip-permissions"]),
+    "claude": Agent(["claude", "--dangerously-skip-permissions"], env={"IS_SANDBOX": "1"}),
     "codex": Agent(["codex"]),
     "gemini": Agent(["gemini"], prompt_flags=["--prompt-interactive"]),
 }
@@ -141,17 +150,21 @@ def build_agent_command(agent: str, prompt: str = "") -> str:
     takes. The prompt is quoted here rather than reassembled by the caller, so
     the words the user typed reach the agent as the single argument they meant.
     """
+    # Named for the agent, not `spec`, which is the workspace everywhere else here.
     try:
-        spec = AGENT_COMMANDS[agent]
+        started = AGENT_COMMANDS[agent]
     except KeyError:
         raise UsageError(
             f"Unknown agent {agent!r}. Choose one of: {', '.join(sorted(AGENT_COMMANDS))}."
         ) from None
-    if not prompt:
-        # No prompt to be interactive about: start the agent's plain session,
-        # without the flags that only make sense alongside one.
-        return shlex.join(spec.command)
-    return shlex.join([*spec.command, *spec.prompt_flags, prompt])
+    # No prompt to be interactive about: start the agent's plain session, without
+    # the flags that only make sense alongside one.
+    words = [*started.command, *started.prompt_flags, prompt] if prompt else list(started.command)
+    # Assignments prefixing a command set the variables for that command only, so
+    # the agent is the one process that sees them and nothing in the login shell
+    # dl runs this under is changed.
+    assignments = [f"{name}={shlex.quote(value)}" for name, value in sorted(started.env.items())]
+    return " ".join([*assignments, shlex.join(words)])
 
 
 def build_dl_args(parsed: AidArgs) -> List[str]:

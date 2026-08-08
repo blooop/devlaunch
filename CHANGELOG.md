@@ -34,6 +34,13 @@ One change, to `aid` only: `dl` is untouched.
   you typed, permission prompts and all. Nothing here changes what a workspace is
   or how it is built.
 
+  `IS_SANDBOX=1` is set on the agent process for the same reason. `claude` refuses
+  `--dangerously-skip-permissions` outright under `uid 0` — it prints "cannot be
+  used with root/sudo privileges" and exits 1 — and a devcontainer running as root
+  is ordinary, so the flag on its own would have stopped `aid` from starting at all
+  in those workspaces rather than merely failing to help. The variable is scoped to
+  that one command and is not exported into the login shell around it.
+
   A side effect worth knowing: an agent started this way will edit, run and delete
   inside the container without asking. It cannot reach the host, but it can rewrite
   the checkout it is in, so treat an `aid` workspace as something to review before
