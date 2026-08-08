@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from .locks import hold_lock
 from .models import BaseRepository
 from .storage import MetadataStorage
 
@@ -41,6 +42,15 @@ class RepositoryManager:
         """Get the bare git directory for a repository."""
         return self.get_repo_path(owner, repo) / ".bare"
 
+    def lock_path(self, owner: str, repo: str) -> Path:
+        """The lock every process takes before mutating repos/<owner>/<repo>.
+
+        A file, not a directory, inside the repo dir: every walker of the cache
+        filters on ``is_dir()``, so it is invisible to discovery, migration and
+        completion scans.
+        """
+        return self.get_repo_path(owner, repo) / ".lock"
+
     def clone_repo(self, owner: str, repo: str, remote_url: str) -> BaseRepository:
         """Clone a new base repository as bare (no working directory).
 
@@ -58,7 +68,21 @@ class RepositoryManager:
             existing_repo = self.get_repo(owner, repo)
             if existing_repo:
                 return existing_repo
-            # Repository path exists but metadata doesn't - continue to create metadata
+            if (bare_path / "HEAD").exists():
+                # The bare clone is already on disk but this process has no
+                # record of it -- another process just made it (this process's
+                # metadata was loaded before that one saved), or an earlier run
+                # died between clone and save. Either way the clone on disk is
+                # the authority and the record is derived state: rebuild the
+                # record. Cloning over it instead is not an option -- git
+                # refuses the non-empty destination, and the failure cleanup
+                # below would then delete a cache another launch is using.
+                return self._register_existing_bare(owner, repo, remote_url, bare_path)
+            # No HEAD: a dead run's partial clone. Holding the repo lock (every
+            # caller comes through ensure_repo) means no live process owns it,
+            # so clear it and clone fresh.
+            logger.warning(f"Removing partial clone at {bare_path}")
+            shutil.rmtree(bare_path)
 
         # Create parent directory
         bare_path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,10 +121,27 @@ class RepositoryManager:
 
         except subprocess.CalledProcessError as e:
             logger.debug(f"Failed to clone repository: {e.stderr}")
-            # Clean up partial clone
+            # Clean up the partial clone. Safe to delete: the exists-cases were
+            # all handled above, so this directory is one this call created.
             if bare_path.exists():
                 shutil.rmtree(bare_path)
             raise RuntimeError(f"Failed to clone repository: {e.stderr}") from e
+
+    def _register_existing_bare(
+        self, owner: str, repo: str, remote_url: str, bare_path: Path
+    ) -> BaseRepository:
+        """Rebuild the metadata record for a bare clone already on disk."""
+        base_repo = BaseRepository(
+            owner=owner,
+            repo=repo,
+            remote_url=remote_url,
+            local_path=bare_path,
+            default_branch=self._get_default_branch(bare_path),
+            last_fetched=datetime.now(),
+            worktrees=[],
+        )
+        self.storage.add_repository(base_repo)
+        return base_repo
 
     def fetch_repo(self, owner: str, repo: str) -> None:
         """Fetch latest changes from remote."""
@@ -166,20 +207,33 @@ class RepositoryManager:
         """Ensure repo exists locally, clone if needed.
 
         Uses lazy fetch: only fetches if fetch_interval has elapsed since last fetch.
-        """
-        if self.repo_exists(owner, repo):
-            existing_repo = self.get_repo(owner, repo)
-            if existing_repo:
-                # Only fetch if interval has elapsed (lazy fetch)
-                if auto_fetch and self._should_fetch(existing_repo):
-                    try:
-                        self.fetch_repo(owner, repo)
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch updates: {e}")
-                return existing_repo
-            # Metadata doesn't exist but repo exists - fall through to clone (which will add metadata)
 
-        return self.clone_repo(owner, repo, remote_url)
+        The whole exists-check-then-clone sequence runs under the repo lock:
+        without it, two processes launching the same repo at once both saw no
+        clone and both ran ``git clone --bare`` into the same path — and the
+        loser's cleanup in clone_repo deleted the winner's half-written cache.
+        Serialized, the loser just waits and then reuses the winner's clone.
+        clone_repo and fetch_repo rely on this lock rather than taking it
+        themselves (hold_lock is not reentrant).
+        """
+        with hold_lock(
+            self.lock_path(owner, repo),
+            waiting_note=f"another dl run preparing {owner}/{repo}",
+        ):
+            if self.repo_exists(owner, repo):
+                existing_repo = self.get_repo(owner, repo)
+                if existing_repo:
+                    # Only fetch if interval has elapsed (lazy fetch)
+                    if auto_fetch and self._should_fetch(existing_repo):
+                        try:
+                            self.fetch_repo(owner, repo)
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch updates: {e}")
+                    return existing_repo
+                # Metadata doesn't exist but repo exists - fall through to clone
+                # (which will add metadata)
+
+            return self.clone_repo(owner, repo, remote_url)
 
     def repo_exists(self, owner: str, repo: str) -> bool:
         """Check if repository exists locally."""

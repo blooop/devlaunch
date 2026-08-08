@@ -25,6 +25,7 @@ from typing import Optional
 from ..workspace_id import WorkspaceId, validate_ref_name
 from .branch_manager import BranchManager
 from .config import WorktreeConfig, get_worktree_config
+from .locks import hold_lock
 from .models import WorktreeInfo
 from .repo_manager import RepositoryManager
 from .storage import MetadataStorage
@@ -173,27 +174,36 @@ class WorkspaceCloneManager:
 
         Fetches latest refs, then uses BranchManager to create the branch
         locally if needed. Does not push to the remote.
+
+        Runs under the repo lock: the fetch and the branch creation both write
+        refs in the shared bare repo, and two processes doing so at once trip
+        over git's own ref locks. (hold_lock is not reentrant; no callee here
+        takes the repo lock.)
         """
         bare_path = self.repo_manager.get_bare_path(owner, repo)
-        # Lazy-fetch: only hits the network when the fetch interval has elapsed
-        try:
-            self.repo_manager.lazy_fetch(owner, repo)
-        except (RuntimeError, ValueError, OSError) as e:
-            logger.warning(f"Failed to fetch before branch ensure: {e}")
+        with hold_lock(
+            self.repo_manager.lock_path(owner, repo),
+            waiting_note=f"another dl run preparing {owner}/{repo}",
+        ):
+            # Lazy-fetch: only hits the network when the fetch interval has elapsed
+            try:
+                self.repo_manager.lazy_fetch(owner, repo)
+            except (RuntimeError, ValueError, OSError) as e:
+                logger.warning(f"Failed to fetch before branch ensure: {e}")
 
-        try:
-            default_branch = self.repo_manager.get_default_branch(owner, repo)
-        except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
-            logger.warning(f"Failed to resolve default branch: {e}")
-            default_branch = None
+            try:
+                default_branch = self.repo_manager.get_default_branch(owner, repo)
+            except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
+                logger.warning(f"Failed to resolve default branch: {e}")
+                default_branch = None
 
-        self.branch_manager.ensure_branch_exists(
-            bare_path,
-            branch,
-            create_remote=False,
-            start_point=default_branch or "HEAD",
-            use_local_refs=True,
-        )
+            self.branch_manager.ensure_branch_exists(
+                bare_path,
+                branch,
+                create_remote=False,
+                start_point=default_branch or "HEAD",
+                use_local_refs=True,
+            )
 
     def ensure_workspace(
         self,
@@ -223,6 +233,28 @@ class WorkspaceCloneManager:
         bare_repo_path = self.repo_manager.get_bare_path(owner, repo)
 
         ws_path = self.get_workspace_path(owner, repo, branch)
+
+        # Steps 2-6 mutate the workspace clone, so they run under the repo
+        # lock: fire the same workspace twice at once and, unserialized, each
+        # process saw no clone, both cloned into the same path, and the loser's
+        # cleanup deleted the winner's. The lock is taken only after
+        # ensure_repo (which takes the same lock) has returned -- hold_lock is
+        # not reentrant.
+        with hold_lock(
+            self.repo_manager.lock_path(owner, repo),
+            waiting_note=f"another dl run preparing {owner}/{repo}",
+        ):
+            return self._prepare_workspace(workspace, bare_repo_path, ws_path, remote_url)
+
+    def _prepare_workspace(
+        self,
+        workspace: WorkspaceId,
+        bare_repo_path: Path,
+        ws_path: Path,
+        remote_url: str,
+    ) -> Path:
+        """Steps 2-6 of ensure_workspace; the caller holds the repo lock."""
+        owner, repo, branch = workspace.owner, workspace.repo, workspace.ref
         is_new_workspace = False
         if not self.workspace_exists(owner, repo, branch):
             is_new_workspace = True

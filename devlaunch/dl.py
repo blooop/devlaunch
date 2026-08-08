@@ -1659,7 +1659,12 @@ def _get_clone_manager() -> WorkspaceCloneManager:
     if "clone_manager" not in _cache:
         manager = WorkspaceCloneManager()
         try:
-            migrate_cache(manager.storage, pathlib.Path(manager.config.repos_dir))
+            # Under the metadata lock so two dl processes cannot migrate at
+            # once: the renames are not idempotent mid-flight, and exclusive()
+            # reloads first so the version check sees the other side's result.
+            # migrate_cache calls save() directly, never a locked mutator.
+            with manager.storage.exclusive():
+                migrate_cache(manager.storage, pathlib.Path(manager.config.repos_dir))
         except OSError as e:
             # A failed migration must not take the command with it. The renames
             # that did happen are still resumable: the version header is only
