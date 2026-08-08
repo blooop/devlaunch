@@ -618,10 +618,13 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
         so that a future caller that does gets a wrong answer rather than a
         hung purge.
         """
-        while path != tree and path.parent != path:
-            if os.access(path.parent, os.W_OK | os.X_OK):
-                break
-            path = path.parent
+        while path != tree:
+            parent = path.parent
+            if parent == path:
+                break  # the filesystem root: there is nothing above to blame
+            if os.access(parent, os.W_OK | os.X_OK):
+                break  # this one is reachable, so *path* is where it stops
+            path = parent
         return path
 
     def unreadable(error: OSError) -> None:
