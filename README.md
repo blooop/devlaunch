@@ -417,9 +417,44 @@ This project uses [pixi](https://pixi.sh) for environment management.
 # Run tests
 pixi run test
 
+# Run the e2e suite: real devpod, real containers
+pixi run test-e2e
+
 # Run full CI suite
 pixi run ci
 
 # Format and lint
 pixi run style
 ```
+
+`pixi run test` skips the e2e tests, which need devpod and a Docker daemon and
+build real containers. CI runs `pixi run test-e2e` in a job of its own, outside
+the Python matrix, on a throwaway runner — on every push to `main` and on every
+pull request that targets `main`. A pull request onto any other base runs no CI
+at all, e2e included, because the whole workflow is triggered by
+`pull_request: branches: [main]`; that gap covers every job here rather than
+this one, and stacked PRs are what walk into it.
+
+Running it on your own machine is a different proposition. The suite exercises
+`dl --purge`, so it gives itself a private devpod namespace before collection
+begins — but the containers it builds are real ones on your Docker, and it wants
+several minutes and a 1.25 GB image pull the first time.
+
+Its skips mean one thing only. A test that opts out does so through
+`fixtures.e2e_guard.opt_out`, and any other skip is reported as a failure,
+because a run that could not reach a registry used to be indistinguishable from
+a healthy one. Every run also prints what it actually built:
+
+```
+--------------------------------- e2e session ---------------------------------
+22 e2e tests attempted, 4 workspaces created: e2e-test-create, e2e-test-lifecycle, e2e-test-git, e2e-test-purge
+```
+
+A run whose workspace-building tests built nothing does not pass: the shortfall
+is counted into the last line of the run, so `4 passed, 18 skipped` becomes
+`1 failed, 4 passed, 18 skipped`. A run with no workspace-building tests in it —
+`pytest -m e2e test/e2e/test_interactive_session.py`, say — has nothing to
+answer for and says so instead.
+
+`DEVLAUNCH_E2E_WORKSPACE=<id>` opts in to the interactive-session tests, which
+attach to a workspace you already have running rather than building one.

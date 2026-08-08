@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from fixtures.e2e_helpers import create_e2e_workspace, devpod_available
+from fixtures.e2e_guard import opt_out
+from fixtures.e2e_helpers import create_e2e_workspace
 
 
 def real_devpod_workspace_ids() -> set:
@@ -51,14 +52,14 @@ class TestSuiteIsolationE2E:
 
         Any set at all is disjoint from an empty one, so where there is no real
         devpod state to be disjoint from -- CI, or a fresh DinD container --
-        this skips rather than passing on nothing.
+        this opts out rather than passing on nothing. That is a genuine opt-out
+        and not a thing that went wrong, which is why it goes through the call
+        the guard recognises: on a runner it is the only skip in the file, and
+        an unexplained one there would be the interesting kind.
         """
-        if not devpod_available():
-            pytest.skip("DevPod not available")
-
         real_ids = real_devpod_workspace_ids()
         if not real_ids:
-            pytest.skip("no workspaces in ~/.devpod on this host; nothing to be isolated from")
+            opt_out("no workspaces in ~/.devpod on this host; nothing to be isolated from")
 
         result = subprocess.run(
             ["devpod", "list", "--output", "json"],
@@ -93,6 +94,7 @@ def workspace_ids() -> list:
 class TestWorkspaceCreationE2E:
     """E2E tests for workspace creation with real DevPod."""
 
+    @pytest.mark.creates_workspace
     def test_create_workspace_from_local_repo(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
@@ -103,9 +105,6 @@ class TestWorkspaceCreationE2E:
         2. Uses devpod directly to create a workspace
         3. Verifies the workspace exists
         """
-        if not devpod_available():
-            pytest.skip("DevPod not available")
-
         env = isolated_devlaunch_env
         remote_url = local_git_repo_with_devcontainer["remote_url"]
         workspace_id = "e2e-test-create"
@@ -119,13 +118,11 @@ class TestWorkspaceCreationE2E:
 
         assert workspace_id in workspace_ids()
 
+    @pytest.mark.creates_workspace
     def test_workspace_lifecycle_without_ide(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
         """Test workspace create -> status -> stop -> delete without IDE."""
-        if not devpod_available():
-            pytest.skip("DevPod not available")
-
         env = isolated_devlaunch_env
         workspace_id = "e2e-test-lifecycle"
 
@@ -159,18 +156,28 @@ class TestWorkspaceCreationE2E:
 class TestGitOperationsInContainerE2E:
     """E2E tests verifying git operations work inside containers."""
 
+    @pytest.mark.creates_workspace
     def test_git_status_via_ssh(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
-        """Test that git status works when SSH'd into workspace."""
-        if not devpod_available():
-            pytest.skip("DevPod not available")
+        """Test that git status works when SSH'd into workspace.
 
+        The source is the working copy and not the bare repo its siblings use.
+        A bare repo has no work tree, and devpod opens a local path as the
+        workspace folder rather than cloning it, so pointing this test at the
+        fixture's stand-in remote put the container inside `objects/`, `refs/`
+        and a `core.bare=true` config -- where `git status` exits 128 saying so,
+        on every machine, always. It had never once been observed doing anything
+        else: until the creation step was made unskippable, `devpod up` without
+        `--ide none` exited 1 on any headless machine and both assertions below
+        sat behind an `if` that was never true. The first run that reached them
+        was the first run of this suite in CI.
+        """
         env = isolated_devlaunch_env
         workspace_id = "e2e-test-git"
 
         create_e2e_workspace(
-            local_git_repo_with_devcontainer["remote_url"],
+            str(local_git_repo_with_devcontainer["work_dir"]),
             workspace_id,
             cleanup=devpod_cleanup,
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
@@ -184,8 +191,14 @@ class TestGitOperationsInContainerE2E:
             check=False,
         )
 
-        # Git should work inside the container
-        assert ssh_result.returncode == 0
+        # Git should work inside the container. The output goes in the message
+        # because devpod reports a failed remote command as its own exit 1 and
+        # buries git's line in its logging, so a bare rc comparison says only
+        # that something went wrong somewhere in the tunnel.
+        assert ssh_result.returncode == 0, (
+            f"`git status` over devpod ssh exited {ssh_result.returncode}\n"
+            f"stdout: {ssh_result.stdout}\nstderr: {ssh_result.stderr}"
+        )
         assert "On branch" in ssh_result.stdout or "nothing to commit" in ssh_result.stdout
 
 
@@ -246,13 +259,11 @@ class TestDLCommandsE2E:
 class TestPurgeE2E:
     """E2E tests for purge functionality."""
 
+    @pytest.mark.creates_workspace
     def test_purge_deletes_workspaces(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
         """Test that --purge -y deletes all DevPod workspaces."""
-        if not devpod_available():
-            pytest.skip("DevPod not available")
-
         env = isolated_devlaunch_env
 
         # Create a workspace first

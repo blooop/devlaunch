@@ -11,23 +11,40 @@ from typing import Dict, List, Optional
 
 import pytest
 
+from fixtures.e2e_guard import LEDGER
 
-def devpod_available() -> bool:
-    """Whether real devpod commands can run at all.
 
-    The single answer to that question for the whole e2e directory: an
+# The real runner, captured once. `create_e2e_workspace` compares against it to
+# decide whether anything was actually built; see the note there.
+_REAL_RUN = subprocess.run
+
+
+def require_devpod() -> None:
+    """Fail the session -- not skip it -- if devpod cannot be executed.
+
+    devpod is a pixi dependency of this project, so a run that cannot execute
+    it has a broken environment rather than one that declined to test devpod.
+    `pytest -m e2e` is an explicit request for exactly the tests that need it,
+    and answering that request with grey text is how a suite reports nothing
+    and passes.
+
+    Asked once for the whole e2e directory, from the conftest: an
     installed-but-unrunnable devpod and a missing one are the same thing to a
     test, and two checks that can disagree are worse than one that cannot.
     """
     try:
-        result = subprocess.run(
-            ["devpod", "version"],
-            capture_output=True,
-            check=False,
+        runnable = (
+            subprocess.run(["devpod", "version"], capture_output=True, check=False).returncode == 0
         )
-        return result.returncode == 0
     except FileNotFoundError:
-        return False
+        runnable = False
+
+    if not runnable:
+        pytest.fail(
+            "`devpod version` did not run, so no e2e test in this session can "
+            "do anything. devpod is a pixi dependency of this project -- run "
+            "the suite as `pixi run test-e2e` rather than a bare pytest."
+        )
 
 
 class DLRunner:
@@ -198,7 +215,7 @@ def create_e2e_workspace(
     *,
     cleanup,
     env: Optional[Dict[str, str]] = None,
-    run=subprocess.run,
+    run=_REAL_RUN,
 ) -> subprocess.CompletedProcess:
     """Create the workspace an e2e test needs, or fail the test saying why.
 
@@ -216,6 +233,19 @@ def create_e2e_workspace(
     A non-zero rc fails rather than skips. `pytest.skip` on a step the test
     cannot proceed without turns a real outcome -- a leak, a broken daemon, a
     misconfigured provider -- into a green run with a line of grey text.
+
+    Being the only door is also what makes it the only honest counter. The
+    session ledger asks "did this run build anything", and no report of a
+    passing test answers that -- inferring a container from a green test is the
+    mistake that let a run with a dead registry in it look healthy. Recorded
+    after the rc check, so the count is of workspaces that exist.
+
+    `run` is injectable so this function's own logic can be unit-tested without
+    devpod, which is the one way the count above could be made to lie: a stub
+    that returns rc 0 built nothing. So the ledger is credited only when the
+    real runner was the thing that ran, which no stub can be. Without that,
+    `pytest -m ""` -- unit tests and e2e in one session -- would credit three
+    workspaces that never existed and clear the session floor with them.
     """
     cleanup.track(workspace_id)
     result = run(
@@ -232,4 +262,6 @@ def create_e2e_workspace(
             f"stdout: {(result.stdout or '').strip()[-2000:]}\n"
             f"stderr: {(result.stderr or '').strip()[-2000:]}"
         )
+    if run is _REAL_RUN:
+        LEDGER.record_workspace_created(workspace_id)
     return result

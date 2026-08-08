@@ -90,6 +90,11 @@ lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
 test = "pytest"
+# The default run excludes e2e (see addopts); this is the way back in. A
+# trailing `-m e2e` beats the one in addopts, and `-ra` puts every skip's reason
+# in the summary, which is the whole difference between a run that opted out of
+# something and a run that could not do it.
+test-e2e = "pytest -m e2e -ra"
 coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
 coverage-report = "coverage report -m"
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
@@ -124,6 +129,7 @@ markers = [
     "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
     "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
     "e2e: Full E2E with Docker-in-Docker. Real DevPod creating real containers.",
+    "creates_workspace: This e2e test builds a real workspace. The session floor in test/e2e/conftest.py holds a run that attempted one of these and built nothing to be a failure, so the promise is declared by the test rather than inferred afterwards.",
 ]
 testpaths = ["test"]
 # Default: run unit and integration tests, skip e2e (requires Docker-in-Docker)

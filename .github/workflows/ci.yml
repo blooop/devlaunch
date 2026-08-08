@@ -4,7 +4,8 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]  
+    branches: [ "main" ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,8 +26,50 @@ jobs:
           environments: ${{ matrix.environment }}
       - name: CI
         run: |
-          pixi run -e ${{ matrix.environment }} ci 
+          pixi run -e ${{ matrix.environment }} ci
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # The e2e suite: real devpod, real containers, on the runner's own Docker.
+  #
+  # Unnested on purpose. A development box needs a Docker daemon of its own
+  # because it is shared and long-lived, and this suite deletes every workspace
+  # it can see; `ubuntu-latest` is an ephemeral VM with Docker preinstalled, so
+  # there is no host here to protect. No devpod install step either -- devpod is
+  # a pixi dependency, already in the lockfile setup-pixi restores.
+  #
+  # Outside the matrix above, because what it exercises is devpod and Docker
+  # rather than a Python version; four copies would buy nothing and cost four
+  # image pulls.
+  #
+  # Per-PR rather than nightly. It costs a few minutes against a matrix that
+  # already costs some and runs beside it, so it does not lengthen the wait by
+  # its own duration; and a nightly failure arrives detached from the change
+  # that caused it, on a repo where nobody is rostered to triage one. To make it
+  # nightly instead: add `schedule:` to `on:` above and
+  # `if: github.event_name == 'schedule'` to this job. Nothing else moves --
+  # and note it has to be that, not `!= 'pull_request'`: `push: branches:
+  # [main]` stays in `on:` for the matrix job, so excluding only pull requests
+  # would leave this one running on every merge as well as on the schedule.
+  #
+  # Like every job here, it runs on pushes to `main` and on pull requests
+  # targeting `main`. A pull request onto any other base -- a stacked one --
+  # triggers this workflow not at all.
+  e2e:
+    runs-on: ubuntu-latest
+    # A registry serving this suite's 1.25 GB fixture image at 640 B/s is not
+    # hypothetical; it has happened. Unbounded, that is a job that hangs for six
+    # hours and then reports a timeout nobody reads. Bounded, it is a red tick.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          cache: true
+          frozen: true
+          environments: default
+      - name: E2E
+        run: pixi run test-e2e
