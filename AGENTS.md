@@ -39,7 +39,7 @@ Two things to know about it:
   half-finished edit is live as soon as it is saved. (`wf-next` in
   blooop/wayfinder is the same idea with the opposite trade: a compiled copy that
   only moves when you rebuild it.) `dl-next --version` names the tree it resolves
-  to — `dl 0.0.9 (dev, editable from /path/to/checkout)` — where the released
+  to — `dl <version> (dev, editable from /path/to/checkout)` — where the released
   `dl --version` prints the bare version, so the two are told apart by output as
   well as by name.
 - **It touches real state.** `dl` mutates `metadata.json`, the bare clone cache
@@ -72,7 +72,7 @@ checkout editable — `pyproject.toml` declares
 and `postCreateCommand` runs `pixi install` — so the container comes up with
 `./dev.sh`'s job already done. **Inside, run `pixi run dl` and `pixi run aid`.**
 They are the working tree, and `--version` says so:
-`dl 0.0.16 (dev, editable from /workspaces/<checkout>)`.
+`dl <version> (dev, editable from /workspaces/<checkout>)`.
 
 `pixi run` is not a style preference there, because `dl` shells out to a bare
 `devpod` resolved from `PATH` and *which* devpod that finds depends on how the
@@ -93,10 +93,12 @@ project env is where the code and its devpod agree, not an isolation boundary.
 **Do not run `./dev.sh` in the container.** It exits at its first check, because
 `uv` is not installed there — and that refusal is correct rather than a gap to
 fill. A `-next` build would be a second editable install of the *same* tree,
-printing the *same* provenance string as `pixi run dl`, so the one property the
-two-install convention rests on — being able to tell the builds apart — would not
-exist. No released `dl` is wanted in there either: the host keeps one because on
-the host `dl` is the way in, and inside you are already in. When the tree is
+printing the *same* provenance string as `pixi run dl` — the same build under a
+second name. On the host the convention is worth its keep because the two names
+stand for genuinely different builds, released and working tree; in here there
+would be nothing to tell apart, and nothing gained by telling it. No released
+`dl` is wanted in there either: the host keeps one because on the host `dl` is
+the way in, and inside you are already in. When the tree is
 half-edited, `git stash` restores a working `pixi run dl` with no reinstall, and
 the host's released `dl` — the build that opened this container — is one level up,
 untouched.
