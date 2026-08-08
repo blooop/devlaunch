@@ -27,12 +27,13 @@ import re
 import shlex
 import time
 from importlib.metadata import version as pkg_version, PackageNotFoundError, distribution
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, NoReturn, Optional, Sequence, Tuple
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, gh_auth, tools, tty_session
+from . import devpod_ssh, gh_auth, tools, tty_session, workspace_state
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -429,6 +430,76 @@ def update_cache_background(force: bool = False) -> None:
         )
     except OSError:
         pass
+
+
+def _unsaved_work_in(workspace_id: str) -> Optional[str]:
+    """What deleting *workspace_id* would destroy, or None if nothing would be.
+
+    Answers None for a workspace devlaunch has no record of, which is the honest
+    answer rather than a permissive one: those are workspaces opened from a path
+    or a URL that dl never cloned and does not manage, so it has no clone of its
+    own to protect and no business inspecting someone's checkout to find one.
+    """
+    try:
+        record = _get_clone_manager().storage.get_worktree_by_workspace_id(workspace_id)
+    except (OSError, RuntimeError) as e:
+        logging.debug(f"could not read the workspace record for {workspace_id}: {e}")
+        return None
+    if record is None:
+        return None
+    return workspace_state.holds_unsaved_work(Path(record.local_path))
+
+
+def workspaces_as_json() -> int:
+    """Print the workspace list as JSON: what exists, and what each one holds.
+
+    The machine-readable half of cleanup. devlaunch does not decide which
+    workspaces are finished -- that is a fact about tickets, reviews and intent,
+    none of which it knows -- so it reports what it does know and lets the
+    caller that knows the rest decide. `wf` is one such caller: it named the
+    branches after its tickets, so matching a workspace to a ticket is its
+    business, not dl's.
+
+    Every field is something dl can answer for certain:
+
+    - `repo` and `branch` come from the record dl wrote when it made the clone;
+      a workspace dl did not make has neither, and says so with `devlaunch:
+      false` rather than a guess.
+    - `unsaved` is the field a caller must not ignore: a description of what
+      deleting would destroy, or null. `dl <ws> rm` refuses on it too, so a
+      caller that forgets is still caught -- but a caller that reads it can
+      leave the workspace alone instead of arguing with a refusal.
+    - `state` is devpod's, one `devpod status` per workspace, which is why this
+      is a command someone runs rather than something on the fast path.
+    """
+    cache_dir = _get_cache_dir()
+    workspaces = list_workspaces()
+    clone_mgr = _get_clone_manager()
+    report: List[Dict[str, Any]] = []
+    for ws in workspaces:
+        mine = is_devlaunch_clone(ws, cache_dir)
+        record = clone_mgr.storage.get_worktree_by_workspace_id(ws.id) if mine else None
+        clone_path = Path(record.local_path) if record else None
+        state = workspace_state.read_clone(clone_path) if clone_path else None
+        report.append(
+            {
+                "id": ws.id,
+                "devlaunch": mine,
+                "repo": f"{record.owner}/{record.repo}" if record else None,
+                # The recorded branch is what the workspace was made for; the
+                # clone's current HEAD can differ (an agent checked something
+                # else out), so both are reported rather than one being made to
+                # stand for the other.
+                "branch": record.branch if record else None,
+                "checkedOut": state.branch if state else None,
+                "path": str(clone_path) if clone_path else None,
+                "state": get_workspace_state(ws.id),
+                "lastUsed": ws.last_used,
+                "unsaved": state.unsaved if state else None,
+            }
+        )
+    print(json.dumps(report, indent=2))
+    return 0
 
 
 def purge_all_data() -> int:
@@ -1609,7 +1680,9 @@ Workspace sources:
 
 Workspace commands:
     dl <user/repo> stop              Stop the workspace
-    dl <user/repo> rm, prune         Delete the workspace
+    dl <user/repo> rm, prune         Delete the workspace. Refuses if its clone
+                                     holds uncommitted or unpushed work; add
+                                     --force to delete it anyway.
     dl <user/repo> code              Open in VS Code
     dl <user/repo> restart           Stop and start (no rebuild)
     dl <user/repo> recreate          Recreate container
@@ -1618,6 +1691,10 @@ Workspace commands:
 
 Global commands:
     dl --ls                          List all workspaces
+    dl --ls --json                   List them as JSON, with each one's repo,
+                                     branch, state, and what it holds that is
+                                     not pushed anywhere ("unsaved"). For tools
+                                     that decide which workspaces to clean up.
     dl --install                     Install shell completions
     dl --refresh                     Refresh completion cache
     dl --purge [-y]                  Remove devlaunch's workspaces and caches
@@ -1760,6 +1837,8 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args[0] == "--ls":
+        if "--json" in args[1:]:
+            return workspaces_as_json()
         print_workspaces()
         return 0
 
@@ -1946,6 +2025,20 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         return workspace_stop(workspace_id)
 
     if subcommand in ("rm", "prune"):
+        # The one thing dl refuses on its own account. It is not a judgement
+        # about whether the work is finished -- dl has no way to know that --
+        # but about whether this clone is the only place the work exists.
+        # Cleanup is expected to be driven by something that knows more than dl
+        # does (a ticket tool, a script, a person), and this is what keeps a
+        # confident caller from destroying an hour of somebody's afternoon.
+        if "--force" not in args[2:]:
+            unsaved = _unsaved_work_in(workspace_id)
+            if unsaved:
+                logging.error(
+                    f"{workspace_id} holds {unsaved}. Push or commit it, or run: "
+                    f"dl {raw_spec} rm --force"
+                )
+                return 1
         return workspace_delete(workspace_id)
 
     if subcommand == "code":
