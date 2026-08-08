@@ -375,6 +375,32 @@ Erring this way is deliberate — a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
 
+#### When part of the cache will not go
+
+A container writes into its clone as its own user — `vscode`, uid 1000, in the
+standard devcontainer base image. Where your host user is uid 1000 too, nothing
+here comes up. Where it is not — CI, a shared machine, a container running as
+root, or devlaunch developed inside its own devcontainer — the directories the
+container made cannot be emptied by you, and the purge cannot remove them.
+
+It removes everything else anyway, and names what is left:
+
+```
+$ dl --purge -y
+Removed what was permitted under /home/you/.cache/devlaunch. These refused:
+  - /home/you/.cache/devlaunch/repos/blooop/e2e-repo/ws/pixi.lock
+
+Written by a container running as a different user. To finish:
+  sudo rm -rf /home/you/.cache/devlaunch
+```
+
+Exit status is `1`, because a clone you were told would go is still on disk. It
+used to be `1` with the *whole* cache still standing: the first refusal stopped
+the purge, so the completion caches, `metadata.json` and every other clone
+survived on account of one directory. Only the paths that actually obstructed
+are listed — every parent above them fails too, and saying so would bury the one
+fact you need.
+
 ### Cleaning up workspaces
 
 One workspace per branch means workspaces accumulate, and `--purge` is the wrong

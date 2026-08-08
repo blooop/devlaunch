@@ -19,6 +19,29 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.23] - 2026-08-08
+
+### Fixed
+
+- `dl --purge` no longer abandons the whole cache when one directory refuses to
+  be removed ([#131](https://github.com/blooop/devlaunch/issues/131)). A
+  container writes into its bind-mounted clone as its own user — uid 1000 in the
+  standard devcontainer base image — so where the host user is not also uid 1000
+  (CI, a shared machine, a container running as root, devlaunch developed inside
+  its own devcontainer) those directories cannot be emptied by the host. The
+  purge used `shutil.rmtree`, which stops at the first failure, so a single
+  unremovable clone left the completion caches, `metadata.json` and every other
+  clone standing, and reported an errno.
+
+  It now removes everything it is permitted to and names the paths that refused,
+  with the command that finishes the job. Exit status is still `1` — a clone the
+  user was told would go is still on disk — but the report distinguishes
+  "removed most of it" from "removed none of it", which an exit code cannot.
+
+  Only paths that actually obstructed are listed. Every directory above one of
+  them fails to be removed as well, for a reason the path below has already
+  given, so naming them would bury the one useful fact.
+
 ## [0.0.22] - 2026-08-08
 
 ### Changed

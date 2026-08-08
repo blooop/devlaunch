@@ -22,6 +22,7 @@ import sys
 import subprocess
 import json
 import logging
+import os
 import pathlib
 import re
 import shlex
@@ -502,6 +503,72 @@ def workspaces_as_json() -> int:
     return 0
 
 
+def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
+    """Remove *tree* and everything under it. Returns the paths that refused.
+
+    `shutil.rmtree` is the obvious way to do this and is the wrong one here,
+    because it stops at the first failure. A container writes into its
+    bind-mounted clone as its own user -- uid 1000 in the standard devcontainer
+    base image -- and where the host user is not also uid 1000 the directories
+    it made cannot be emptied by us. That is one clone out of a cache full of
+    them, and abandoning the other clones, the completion caches and
+    metadata.json on account of it is a worse outcome than the permission error
+    (devlaunch#131). So this keeps going, and the refusals are the return value
+    rather than an exception.
+
+    **Only the obstruction is named.** Every directory from *tree* down to a
+    refusing path also fails to be removed, for a reason already stated by the
+    path below it -- so a path is reported only when nothing under it has been.
+    A sibling obstruction is not suppressed by this: `blocked` grows along
+    ancestor chains, and two chains do not meet until they are past both.
+
+    The suppression is the one place a bug here would be silent in the dangerous
+    direction, reporting a clean sweep that did not happen, so it is checked in
+    the tests against a list of survivors built by walking the disk afterwards.
+
+    An empty result means the tree is gone, including when it was never there:
+    a purge run twice is not a failure the second time.
+    """
+    if not tree.exists() and not tree.is_symlink():
+        return ()
+
+    refused: List[pathlib.Path] = []
+    blocked = set()
+
+    def note(path: pathlib.Path) -> None:
+        if path not in blocked:
+            refused.append(path)
+            blocked.add(path)
+        blocked.add(path.parent)
+
+    def unreadable(error: OSError) -> None:
+        # os.walk reports a directory it could not scan here and then carries on
+        # as though it were empty. Without this, an unlistable directory's
+        # contents would be neither removed nor mentioned.
+        if error.filename:
+            note(pathlib.Path(error.filename))
+
+    def remove(path: pathlib.Path) -> None:
+        try:
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+            else:
+                path.unlink()
+        except OSError:
+            note(path)
+
+    # Bottom-up, so a directory is only attempted once its contents have been.
+    for parent, dirs, files in os.walk(tree, topdown=False, onerror=unreadable):
+        here = pathlib.Path(parent)
+        for name in files:
+            remove(here / name)
+        for name in dirs:
+            remove(here / name)
+    # The root is in nobody's `dirs`, so it is removed by name.
+    remove(tree)
+    return tuple(refused)
+
+
 def purge_all_data() -> int:
     """Purge devlaunch's data: the workspaces it created, and its caches.
 
@@ -514,9 +581,11 @@ def purge_all_data() -> int:
     Workspaces devlaunch did not create are not deleted and not reported here;
     the report belongs with the confirmation, before anything is destroyed, so
     it lives in main() where the user still has a decision to make.
-    """
-    import shutil
 
+    A cache that does not come away completely is reported rather than raised:
+    see remove_tree for why it is removed as far as it goes, and the exit code
+    below for what that leaves the caller to say.
+    """
     cache_dir = _get_cache_dir()
 
     # First, delete the DevPod workspaces devlaunch made. The list is the same
@@ -539,13 +608,22 @@ def purge_all_data() -> int:
             print("No data to purge.")
         return 0
 
-    try:
-        shutil.rmtree(cache_dir)
+    refused = remove_tree(cache_dir)
+    if not refused:
         print(f"Removed: {cache_dir}")
         return 0
-    except OSError as e:
-        print(f"Error removing {cache_dir}: {e}")
-        return 1
+
+    # Not 0: a clone the user was told would go is still on disk. Not silent
+    # either -- an exit code cannot distinguish "removed most of it" from
+    # "removed none of it", and the difference is the whole news, so the report
+    # carries it and the exit code only says the job is unfinished.
+    print(f"Removed what was permitted under {cache_dir}. These refused:")
+    for path in refused:
+        print(f"  - {path}")
+    print()
+    print("Written by a container running as a different user. To finish:")
+    print(f"  sudo rm -rf {cache_dir}")
+    return 1
 
 
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)
