@@ -25,6 +25,7 @@ import pytest
 
 from devlaunch import dl as dl_module
 from devlaunch import gh_auth, tty_session
+from devlaunch.devpod_ssh import RemoteExit
 from devlaunch.dl import workspace_ssh
 
 
@@ -65,8 +66,8 @@ class TestTransportRouting:
     """Which of the two transports carries the command."""
 
     @patch("devlaunch.dl.run_ssh")
-    @patch("devlaunch.dl.run_devpod")
-    def test_terminal_uses_openssh_with_a_pty(self, mock_devpod, mock_ssh, on_a_terminal):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_terminal_uses_openssh_with_a_pty(self, mock_session, mock_ssh, on_a_terminal):
         """The regression: an interactive payload must not go through --command."""
         mock_ssh.return_value = MagicMock(returncode=0)
         workspace_ssh("myws", command="claude")
@@ -75,45 +76,45 @@ class TestTransportRouting:
         assert args[0] == "ssh"
         assert "-t" in args
         assert "myws.devpod" in args
-        mock_devpod.assert_not_called()
+        mock_session.assert_not_called()
 
     @patch("devlaunch.dl.run_ssh")
-    @patch("devlaunch.dl.run_devpod")
-    def test_no_terminal_keeps_the_devpod_transport(self, mock_devpod, mock_ssh, no_terminal):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_no_terminal_keeps_the_devpod_transport(self, mock_session, mock_ssh, no_terminal):
         """Piped output must stay clean, so no pty and no escape sequences."""
-        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
         workspace_ssh("myws", command="make test")
 
         mock_ssh.assert_not_called()
-        args = mock_devpod.call_args[0][0]
+        args = mock_session.call_args[0][0]
         assert args[:2] == ["ssh", "myws"]
         assert "--command" in args
 
     @patch("devlaunch.dl.run_ssh")
-    @patch("devlaunch.dl.run_devpod")
+    @patch("devlaunch.dl.run_devpod_session")
     def test_missing_host_alias_falls_back_and_warns(
-        self, mock_devpod, mock_ssh, monkeypatch, tmp_path, caplog
+        self, mock_session, mock_ssh, monkeypatch, tmp_path, caplog
     ):
         """A workspace devpod never wrote an alias for still has to run the command."""
         monkeypatch.setattr(tty_session, "have_terminal", lambda *a, **k: True)
         monkeypatch.setattr(tty_session, "SSH_CONFIG_PATH", tmp_path / "absent")
-        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
 
         workspace_ssh("myws", command="claude")
 
         mock_ssh.assert_not_called()
-        assert "--command" in mock_devpod.call_args[0][0]
+        assert "--command" in mock_session.call_args[0][0]
         assert "myws" in caplog.text
 
     @patch("devlaunch.dl.run_ssh")
-    @patch("devlaunch.dl.run_devpod")
-    def test_interactive_attach_is_untouched(self, mock_devpod, mock_ssh, on_a_terminal):
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_interactive_attach_is_untouched(self, mock_session, mock_ssh, on_a_terminal):
         """`dl <ws>` with no command already gets a pty from devpod; leave it alone."""
-        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_session.return_value = RemoteExit(0)
         workspace_ssh("myws")
 
         mock_ssh.assert_not_called()
-        args = mock_devpod.call_args[0][0]
+        args = mock_session.call_args[0][0]
         assert args == ["ssh", "myws"]
 
 

@@ -1166,7 +1166,13 @@ def workspace_ssh(
 
 
 def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> int:
-    """Run an already-wrapped payload under a pty via OpenSSH."""
+    """Run an already-wrapped payload under a pty via OpenSSH.
+
+    No devpod_ssh.SshOutcome here, and nothing to recover: OpenSSH exits with
+    the remote program's own status, which is the thing devpod loses by wrapping
+    its *ssh.ExitError three times before type-asserting on it. This transport
+    never had that bug, so it needs none of the machinery that works around it.
+    """
     env_names, env = gh_auth.openssh_env_names_and_env()
     args = tty_session.ssh_command_args(workspace, payload, send_env=env_names, workdir=workdir)
     logging.info("SSH command: %s", " ".join(args))
