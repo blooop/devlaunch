@@ -39,7 +39,7 @@ Two things to know about it:
   half-finished edit is live as soon as it is saved. (`wf-next` in
   blooop/wayfinder is the same idea with the opposite trade: a compiled copy that
   only moves when you rebuild it.) `dl-next --version` names the tree it resolves
-  to — `dl 0.0.9 (dev, editable from /path/to/checkout)` — where the released
+  to — `dl <version> (dev, editable from /path/to/checkout)` — where the released
   `dl --version` prints the bare version, so the two are told apart by output as
   well as by name.
 - **It touches real state.** `dl` mutates `metadata.json`, the bare clone cache
@@ -63,6 +63,45 @@ Two things to know about it:
   That isolates the bookkeeping, not the machine — `dl` drives devpod and docker
   on the host either way, so the workspaces a scratch run creates are real ones
   that `devpod list` shows and that need deleting like any other.
+
+### Inside the devcontainer: one build, and it is `pixi run dl`
+
+Everything above is about the host. This repo's devcontainer already installs the
+checkout editable — `pyproject.toml` declares
+`devlaunch = { path = ".", editable = true }` under `[tool.pixi.pypi-dependencies]`,
+and `postCreateCommand` runs `pixi install` — so the container comes up with
+`./dev.sh`'s job already done. **Inside, run `pixi run dl` and `pixi run aid`.**
+They are the working tree, and `--version` says so:
+`dl <version> (dev, editable from /workspaces/<checkout>)`.
+
+`pixi run` is not a style preference there, because `dl` shells out to a bare
+`devpod` resolved from `PATH` and *which* devpod that finds depends on how the
+container was opened. Open it with devpod — which is what `dl` does — and devpod
+injects its own agent binary at `/usr/local/bin/devpod`, a working CLI sitting on
+the bare `PATH`. Open the same devcontainer through VS Code or a plain
+`devcontainer up` and nothing puts it there. A devlaunch installed outside the
+project env therefore has a devpod to drive on one route in and none on the
+other, which is worse to diagnose than never working. The project env's devpod is
+there either way, and it is the version the tree is pinned against rather than
+whatever the host happened to inject — a difference that has already hidden a bug
+once, since devpod 0.8 asks for a pty on `ssh --command` and 0.26 never does.
+
+Note what choosing between them does *not* buy: both binaries read the same
+`~/.devpod`, so the workspace list and the configured providers are shared. The
+project env is where the code and its devpod agree, not an isolation boundary.
+
+**Do not run `./dev.sh` in the container.** It exits at its first check, because
+`uv` is not installed there — and that refusal is correct rather than a gap to
+fill. A `-next` build would be a second editable install of the *same* tree,
+printing the *same* provenance string as `pixi run dl` — the same build under a
+second name. On the host the convention is worth its keep because the two names
+stand for genuinely different builds, released and working tree; in here there
+would be nothing to tell apart, and nothing gained by telling it. No released
+`dl` is wanted in there either: the host keeps one because on the host `dl` is
+the way in, and inside you are already in. When the tree is
+half-edited, `git stash` restores a working `pixi run dl` with no reinstall, and
+the host's released `dl` — the build that opened this container — is one level up,
+untouched.
 
 ## Documentation Maintenance
 
