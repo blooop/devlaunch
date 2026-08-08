@@ -17,18 +17,7 @@ from pathlib import Path
 
 import pytest
 
-
-def devpod_available() -> bool:
-    """Check if DevPod is available."""
-    try:
-        result = subprocess.run(
-            ["devpod", "version"],
-            capture_output=True,
-            check=False,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+from fixtures.e2e_helpers import devpod_available
 
 
 def real_devpod_workspace_ids() -> set:
@@ -59,9 +48,17 @@ class TestSuiteIsolationE2E:
         Every devpod call in this file -- including the one inside `dl --purge`
         -- inherits this process's environment, so what `devpod list` reports
         here is exactly what `--purge` would delete.
+
+        Any set at all is disjoint from an empty one, so where there is no real
+        devpod state to be disjoint from -- CI, or a fresh DinD container --
+        this skips rather than passing on nothing.
         """
         if not devpod_available():
             pytest.skip("DevPod not available")
+
+        real_ids = real_devpod_workspace_ids()
+        if not real_ids:
+            pytest.skip("no workspaces in ~/.devpod on this host; nothing to be isolated from")
 
         result = subprocess.run(
             ["devpod", "list", "--output", "json"],
@@ -72,7 +69,7 @@ class TestSuiteIsolationE2E:
         assert result.returncode == 0
 
         visible = {ws.get("id", "") for ws in json.loads(result.stdout or "[]")}
-        assert visible.isdisjoint(real_devpod_workspace_ids())
+        assert visible.isdisjoint(real_ids)
 
 
 @pytest.mark.e2e

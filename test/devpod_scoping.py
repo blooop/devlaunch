@@ -12,6 +12,14 @@ through the process environment, before any test runs. Two variables are needed
 rather than one -- `DEVPOD_HOME` does not cover the ssh config, which devpod
 resolves against the real `$HOME` regardless.
 
+The two variables do not have the same reach, and the difference is worth
+knowing. `--devpod-home` is a *persistent root* flag, so `DEVPOD_HOME` applies
+to every subcommand. `--ssh-config` is registered on `devpod up` alone
+(measured on devpod v0.26.1: `up` has it, `ssh`/`delete`/`stop` do not), so
+`DEVPOD_SSH_CONFIG` only redirects the subcommand that *writes* ssh config.
+That is the one that does the damage, so the suite is covered -- but a reader
+should not take `DEVPOD_SSH_CONFIG` for a global.
+
 Scoping rather than guarding is deliberate. A guard is an assertion some future
 test can forget to make; this applies to every subprocess the session spawns,
 including the `devpod list` inside `dl --purge`, because they all inherit this
@@ -28,22 +36,21 @@ DEVPOD_HOME_VAR = "DEVPOD_HOME"
 DEVPOD_SSH_CONFIG_VAR = "DEVPOD_SSH_CONFIG"
 
 
-def make_scoped_devpod_home(parent: Path) -> Path:
-    """Create a devpod home that belongs to this run and no other."""
-    return Path(tempfile.mkdtemp(prefix="devlaunch-testrun-", dir=parent))
-
-
 def scope_devpod_to_this_run() -> Path:
     """Point every devpod subprocess in this process at a private namespace.
 
-    Returns the devpod home it created.
+    Returns the devpod home it created, which is a *new* directory on every
+    call. That is load-bearing rather than incidental: the suite's e2e
+    workspace ids are hardcoded constants, so a namespace shared between two
+    concurrent runs means each run's teardown force-deletes the other's
+    workspaces.
 
     The directory is deliberately not cleaned up afterwards. It holds the
     metadata devpod needs to find and delete the containers a run created, so
     deleting it after a crashed run would leave those containers orphaned with
     no way to reach them -- worse than a stale directory the OS will reap.
     """
-    devpod_home = make_scoped_devpod_home(Path(tempfile.gettempdir()))
+    devpod_home = Path(tempfile.mkdtemp(prefix="devlaunch-testrun-"))
     os.environ[DEVPOD_HOME_VAR] = str(devpod_home)
     os.environ[DEVPOD_SSH_CONFIG_VAR] = str(devpod_home / "ssh_config")
     return devpod_home

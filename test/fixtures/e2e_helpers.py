@@ -12,6 +12,24 @@ from typing import Dict, List, Optional
 import pytest
 
 
+def devpod_available() -> bool:
+    """Whether real devpod commands can run at all.
+
+    The single answer to that question for the whole e2e directory: an
+    installed-but-unrunnable devpod and a missing one are the same thing to a
+    test, and two checks that can disagree are worse than one that cannot.
+    """
+    try:
+        result = subprocess.run(
+            ["devpod", "version"],
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 class DLRunner:
     """Helper to run dl commands safely without launching IDE.
 

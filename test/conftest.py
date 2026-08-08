@@ -27,8 +27,8 @@ from fixtures.git_fixtures import (  # noqa: E402
     local_git_repo_with_devcontainer,
     real_managers,
 )
+from devpod_scoping import scope_devpod_to_this_run  # noqa: E402
 from fixtures.devpod_mock import DevPodMock, mock_devpod  # noqa: E402
-from fixtures.devpod_scoping import scope_devpod_to_this_run  # noqa: E402
 from fixtures.e2e_helpers import dl_no_ide, devpod_cleanup  # noqa: E402
 
 
