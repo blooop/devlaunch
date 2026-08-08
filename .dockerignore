@@ -1,0 +1,16 @@
+# The devcontainer image is built with the repository root as its context and a
+# Dockerfile that copies nothing out of it, so everything here is pure overhead
+# -- and .pixi is worse than overhead. It holds the solved environment, half a
+# gigabyte of it, including symlinks that the context hasher refuses outright:
+#
+#   failed to compute context hash: read .pixi/envs/default/lib/icu/current: is a directory
+#
+# So on any checkout where the environment has been installed -- which is every
+# checkout the tests have ever been run in -- building the container failed
+# before it started. The environment inside the container comes from a volume
+# mount and pixi.lock, never from here.
+.pixi/
+
+# Local state with the same story: never copied, and only ever slows the build.
+.git/
+.pytest_cache/
