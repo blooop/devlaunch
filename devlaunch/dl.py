@@ -516,15 +516,25 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
     (devlaunch#131). So this keeps going, and the refusals are the return value
     rather than an exception.
 
-    **Only the obstruction is named.** Every directory from *tree* down to a
-    refusing path also fails to be removed, for a reason already stated by the
-    path below it -- so a path is reported only when nothing under it has been.
-    A sibling obstruction is not suppressed by this: `blocked` grows along
-    ancestor chains, and two chains do not meet until they are past both.
+    **Only the obstruction is named**, which is not the same as the path that
+    raised. Unlinking needs write permission on the *directory*, not on the
+    file, so a clone directory owned by the container's user refuses every one
+    of its children separately -- on a real e2e workspace that is forty-odd
+    `.git/objects` entries, hooks and a README, none of them an ancestor of
+    another and every one of them the same single fact. So a failure is
+    attributed upward to the outermost directory that cannot be written into,
+    which is the directory the original errno named and the one a person would
+    go and look at.
 
-    The suppression is the one place a bug here would be silent in the dangerous
-    direction, reporting a clean sweep that did not happen, so it is checked in
-    the tests against a list of survivors built by walking the disk afterwards.
+    Failures are then suppressed along ancestor chains too: a directory that
+    cannot be removed because something under it refused adds nothing. Sibling
+    obstructions survive both rules, because two chains do not meet until they
+    are past both.
+
+    That suppression is the one place a bug here would be silent in the
+    dangerous direction, reporting a clean sweep that did not happen, so it is
+    checked in the tests against a list of survivors built by walking the disk
+    afterwards rather than against the rule itself.
 
     An empty result means the tree is gone, including when it was never there:
     a purge run twice is not a failure the second time.
@@ -535,7 +545,20 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
     refused: List[pathlib.Path] = []
     blocked = set()
 
+    def obstruction(path: pathlib.Path) -> pathlib.Path:
+        """The outermost path that actually explains a failure to remove *path*.
+
+        `os.access` is advisory -- it answers for the real uid and knows nothing
+        about ACLs -- and that is acceptable precisely here, because it only
+        decides *which* path is named. A wrong answer makes the report less
+        pointed; it can never turn a refusal into a success.
+        """
+        while path != tree and not os.access(path.parent, os.W_OK | os.X_OK):
+            path = path.parent
+        return path
+
     def note(path: pathlib.Path) -> None:
+        path = obstruction(path)
         if path not in blocked:
             refused.append(path)
             blocked.add(path)

@@ -388,7 +388,7 @@ It removes everything else anyway, and names what is left:
 ```
 $ dl --purge -y
 Removed what was permitted under /home/you/.cache/devlaunch. These refused:
-  - /home/you/.cache/devlaunch/repos/blooop/e2e-repo/ws/pixi.lock
+  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-main-kivagede
 
 Written by a container running as a different user. To finish:
   sudo rm -rf /home/you/.cache/devlaunch
@@ -397,9 +397,11 @@ Written by a container running as a different user. To finish:
 Exit status is `1`, because a clone you were told would go is still on disk. It
 used to be `1` with the *whole* cache still standing: the first refusal stopped
 the purge, so the completion caches, `metadata.json` and every other clone
-survived on account of one directory. Only the paths that actually obstructed
-are listed — every parent above them fails too, and saying so would bury the one
-fact you need.
+survived on account of one directory.
+
+What is listed is the directory, once — not the hundreds of files inside it.
+Unlinking needs write permission on the directory rather than on the file, so
+every entry in that clone refuses separately and they are all the same fact.
 
 ### Cleaning up workspaces
 

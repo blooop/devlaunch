@@ -146,7 +146,7 @@ class TestTheReportIsActionable:
     def test_the_refused_path_is_named(self, cache, purge, capsys):
         cache.seal()
         purge()
-        assert str(cache.stuck) in capsys.readouterr().out
+        assert f"  - {cache.stuck}" in capsys.readouterr().out.splitlines()
 
     @needs_an_unprivileged_user
     def test_the_command_that_finishes_the_job_is_given(self, cache, purge, capsys):
@@ -177,10 +177,28 @@ class TestOnlyTheObstructionIsNamed:
     def test_ancestors_that_only_failed_because_of_it_are_not_listed(self, cache):
         cache.seal()
         refused = remove_tree(cache.root)
-        assert refused == (cache.stuck / "pixi.lock",), (
+        assert refused == (cache.stuck,), (
             "every directory from the cache root down to the sealed one also fails "
             f"to go, and saying so five times buries the one fact: {refused}"
         )
+
+    @needs_an_unprivileged_user
+    def test_the_directory_is_blamed_rather_than_each_file_in_it(self, cache):
+        """The shape a real workspace has, and the reason this rule exists.
+
+        Unlinking needs write permission on the *directory*, not on the file, so
+        a clone owned by the container's user refuses every one of its children
+        separately -- and none of them is an ancestor of another, so ancestor
+        suppression alone catches none of them. On a real e2e workspace that was
+        forty-odd `.git/objects` entries, hooks and a README reported one per
+        line, all saying the same thing. The obstruction is the directory, which
+        is also what the original errno named.
+        """
+        for name in ("README.md", "pyproject.toml", "config"):
+            (cache.stuck / name).write_text("also written by the container\n")
+        (cache.stuck / "objects").mkdir()
+        cache.seal()
+        assert remove_tree(cache.root) == (cache.stuck,)
 
     @needs_an_unprivileged_user
     def test_two_separate_obstructions_are_both_listed(self, cache):
@@ -191,7 +209,22 @@ class TestOnlyTheObstructionIsNamed:
         _sealed(second)
         cache.seal()
         refused = remove_tree(cache.root)
-        assert sorted(refused) == sorted([cache.stuck / "pixi.lock", second / "held"])
+        assert sorted(refused) == sorted([cache.stuck, second])
+
+    @needs_an_unprivileged_user
+    def test_a_path_whose_parent_is_writable_is_blamed_itself(self, cache):
+        """Attribution walks up only as far as the permissions justify.
+
+        Without this, a refusal in a perfectly writable directory would be
+        blamed on an ancestor that has nothing wrong with it.
+        """
+        held = cache.root / "repos" / "blooop" / "held-open"
+        held.mkdir(parents=True)
+        (held / "inner").write_text("x\n")
+        held.chmod(0o500)
+        # `held`'s own parent is writable, so `held` is where the trail stops.
+        assert remove_tree(cache.root) == (held,)
+        held.chmod(0o700)
 
     def test_a_tree_that_goes_completely_refuses_nothing(self, cache):
         assert remove_tree(cache.root) == ()

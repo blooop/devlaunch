@@ -38,9 +38,18 @@ table and should be judged on its own merits.
   user was told would go is still on disk — but the report distinguishes
   "removed most of it" from "removed none of it", which an exit code cannot.
 
-  Only paths that actually obstructed are listed. Every directory above one of
-  them fails to be removed as well, for a reason the path below has already
-  given, so naming them would bury the one useful fact.
+  Only paths that actually obstructed are listed, and the obstruction is not
+  the path that raised. Unlinking needs write permission on the *directory*,
+  not on the file, so a clone owned by the container's user refuses every one
+  of its children separately — on a real e2e workspace that was forty-odd
+  `.git/objects` entries, hooks and a README, none an ancestor of another and
+  all of them the same single fact. A failure is attributed upward to the
+  outermost directory that cannot be written into, which is the directory the
+  original errno named, so that clone is now one line.
+
+  Found by the `e2e` job on the first attempt at this fix, which no unit test
+  could have caught: a directory owned by *another user* is not something a
+  test process can build.
 
 ## [0.0.22] - 2026-08-08
 
