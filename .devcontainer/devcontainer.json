@@ -62,5 +62,15 @@
     // there exits 1 with "no default provider found". Since dl's only
     // subprocess is devpod, that is dl failing to start rather than degrading.
     // `provider add` also makes it the default, so this is the whole bootstrap.
+    //
+    // What it costs: this is now a three-link && chain on the critical path of
+    // every container create, and the new link can fail. The task refuses to
+    // guess when `devpod provider list` cannot be read -- it exits 1 rather
+    // than treating an unreadable answer as "no providers, add one" -- so an
+    // unreadable listing now fails container creation. That is the intended
+    // trade. The alternative is a container that comes up looking fine and
+    // fails on the first dl command anyone runs in it, which is the failure
+    // this step exists to remove; failing at create is louder, immediate, and
+    // attributable. It is idempotent, so a rebuild after a fix is the remedy.
     "postCreateCommand": "sudo chown vscode .pixi && pixi install && pixi run dev-add-docker"
 }

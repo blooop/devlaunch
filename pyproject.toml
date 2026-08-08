@@ -93,7 +93,14 @@ test = "pytest"
 # Needs a real Docker daemon and a real devpod. Inside this repo's devcontainer
 # that daemon is the container's own, via the docker-in-docker feature; on an
 # ephemeral CI runner or a machine you do not mind writing to, it is the host's.
-test-e2e = { cmd = "pytest -m e2e test/e2e/", depends-on = ["dev-add-docker"] }
+#
+# Deliberately no `depends-on = ["dev-add-docker"]`. The suite repoints
+# DEVPOD_HOME at a fresh directory in pytest_configure, before collection, so a
+# provider registered in the ambient ~/.devpod is one this run never reads:
+# test/e2e/conftest.py installs it into the run's own home instead. An edge here
+# would buy the suite nothing and write to the developer's real devpod home as a
+# side effect of running tests.
+test-e2e = "pytest -m e2e test/e2e/"
 coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
 coverage-report = "coverage report -m"
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
@@ -131,7 +138,8 @@ markers = [
 ]
 testpaths = ["test"]
 # Default: run unit and integration tests, skip e2e (which needs a daemon, and
-# creates and deletes workspaces in whichever devpod namespace it can reach)
+# creates and deletes real containers -- in a devpod home the suite makes for
+# the run, never the developer's)
 addopts = "-m 'not e2e'"
 
 [tool.coverage.run]

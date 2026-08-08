@@ -26,6 +26,13 @@ def strip_jsonc_comments(text: str) -> str:
     """Remove `//` and `/* */` comments, leaving string literals alone.
 
     devcontainer.json is JSON with comments; `json` cannot read it directly.
+
+    This is a comment stripper, not a JSONC parser, and it is deliberately
+    *stricter* than a devcontainer runtime: what it leaves behind still has to
+    satisfy `json.loads`, so a trailing comma -- which the spec allows and every
+    real runtime accepts -- fails here while building fine. That is a house rule
+    on one file we own, not a claim about what the runtime will take, and the
+    tests below are worded to promise only the former.
     """
     out = []
     i = 0
@@ -66,8 +73,13 @@ def devcontainer_fixture() -> dict:
     return json.loads(strip_jsonc_comments(DEVCONTAINER_JSON.read_text()))
 
 
-def test_devcontainer_manifest_is_readable_as_jsonc(devcontainer):
-    """A devcontainer runtime has to be able to parse this file at all."""
+def test_devcontainer_manifest_is_this_repos_and_parses(devcontainer):
+    """Comments stripped, this file is JSON, and it is the manifest we mean.
+
+    The `name` assertion is the second half doing real work: every other test
+    here reads through the same fixture, so if the path ever pointed at a
+    different manifest they would all pass while checking nothing.
+    """
     assert devcontainer["name"] == "devlaunch"
 
 

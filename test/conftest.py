@@ -118,29 +118,19 @@ def fresh_workspace_list_cache():
     dl.invalidate_workspace_list_cache()
 
 
-def pytest_configure(config):
-    """Scope this run's devpod state, then register custom markers.
+def pytest_configure():
+    """Scope this run's devpod state.
 
-    The scoping happens here, before collection, rather than in a fixture: a
-    fixture is something a test has to ask for, and the test that must not
-    forget is the one nobody has written yet. Everything the session spawns
-    inherits this process's environment, so one assignment covers the whole
-    suite -- including the `devpod list` that decides what `dl --purge` deletes.
+    This happens here, before collection, rather than in a fixture: a fixture is
+    something a test has to ask for, and the test that must not forget is the
+    one nobody has written yet. Everything the session spawns inherits this
+    process's environment, so one assignment covers the whole suite -- including
+    the `devpod list` that decides what `dl --purge` deletes.
+
+    The markers are registered in `[tool.pytest.ini_options] markers` and not
+    also here: two copies of the same sentence is one that goes stale.
     """
     scope_devpod_to_this_run()
-
-    config.addinivalue_line(
-        "markers",
-        "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
-    )
-    config.addinivalue_line(
-        "markers",
-        "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
-    )
-    config.addinivalue_line(
-        "markers",
-        "e2e: Real DevPod creating real containers. Needs a Docker daemon.",
-    )
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: ARG001  # pylint: disable=unused-argument
