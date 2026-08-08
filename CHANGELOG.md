@@ -51,6 +51,15 @@ table and should be judged on its own merits.
   could have caught: a directory owned by *another user* is not something a
   test process can build.
 
+  What a purge reports is decided from the disk once the walk is over, rather
+  than from what raised during it. Randomised trees found why that matters:
+  `os.walk` cannot scan an unlistable directory and says so, but if that
+  directory is empty the `rmdir` afterwards succeeds — so reporting at the point
+  of raising named a path that is not there, and through the ancestor rule could
+  have silenced a genuine refusal above it. Deciding afterwards makes both
+  invariants — nothing survives unsaid, nothing is said that is not there — hold
+  by construction.
+
 ## [0.0.22] - 2026-08-08
 
 ### Changed

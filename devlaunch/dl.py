@@ -531,10 +531,18 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
     obstructions survive both rules, because two chains do not meet until they
     are past both.
 
-    That suppression is the one place a bug here would be silent in the
-    dangerous direction, reporting a clean sweep that did not happen, so it is
-    checked in the tests against a list of survivors built by walking the disk
-    afterwards rather than against the rule itself.
+    **What refused is decided from the disk, not from what raised.** A failure
+    during the walk is only a candidate; the report keeps the ones still on disk
+    when it is over. Both suppression rules are then applied to that surviving
+    list, so a path that vanished after failing can neither be reported nor
+    suppress the report of something real.
+
+    That is not a belt-and-braces check, it is load-bearing, and randomised
+    trees found the case: `os.walk` cannot scan an unlistable directory and says
+    so, but if that directory is *empty* the `rmdir` afterwards succeeds. Noting
+    it when it raised named a path that is not there, and -- through the
+    ancestor rule -- could have silenced a genuine refusal above it, which is
+    the one failure direction that matters here.
 
     An empty result means the tree is gone, including when it was never there:
     a purge run twice is not a failure the second time.
@@ -542,8 +550,7 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
     if not tree.exists() and not tree.is_symlink():
         return ()
 
-    refused: List[pathlib.Path] = []
-    blocked = set()
+    failed: List[pathlib.Path] = []
 
     def obstruction(path: pathlib.Path) -> pathlib.Path:
         """The outermost path that actually explains a failure to remove *path*.
@@ -557,28 +564,23 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
             path = path.parent
         return path
 
-    def note(path: pathlib.Path) -> None:
-        path = obstruction(path)
-        if path not in blocked:
-            refused.append(path)
-            blocked.add(path)
-        blocked.add(path.parent)
-
     def unreadable(error: OSError) -> None:
         # os.walk reports a directory it could not scan here and then carries on
-        # as though it were empty. Without this, an unlistable directory's
-        # contents would be neither removed nor mentioned.
+        # as though it were empty. Without this, an unlistable directory holding
+        # files would be walked as though it held none.
         if error.filename:
-            note(pathlib.Path(error.filename))
+            failed.append(pathlib.Path(error.filename))
 
     def remove(path: pathlib.Path) -> None:
         try:
+            # A symlink is unlinked, never followed -- descending one would put
+            # a purge outside the cache directory it was asked to remove.
             if path.is_dir() and not path.is_symlink():
                 path.rmdir()
             else:
                 path.unlink()
         except OSError:
-            note(path)
+            failed.append(path)
 
     # Bottom-up, so a directory is only attempted once its contents have been.
     for parent, dirs, files in os.walk(tree, topdown=False, onerror=unreadable):
@@ -589,6 +591,19 @@ def remove_tree(tree: pathlib.Path) -> Tuple[pathlib.Path, ...]:
             remove(here / name)
     # The root is in nobody's `dirs`, so it is removed by name.
     remove(tree)
+
+    # Bottom-up order is what the ancestor rule needs, and `failed` is already
+    # in it.
+    refused: List[pathlib.Path] = []
+    blocked = set()
+    for path in failed:
+        if not path.exists() and not path.is_symlink():
+            continue  # it went in the end, so there is nothing to report
+        path = obstruction(path)
+        if path not in blocked:
+            refused.append(path)
+            blocked.add(path)
+        blocked.add(path.parent)
     return tuple(refused)
 
 

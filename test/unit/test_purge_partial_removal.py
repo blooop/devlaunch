@@ -27,6 +27,7 @@ permission, so a directory this process cannot empty reproduces it exactly.
 
 import os
 import pathlib
+import random
 import subprocess
 from typing import Iterator, List
 from unittest.mock import patch
@@ -253,6 +254,23 @@ class TestOnlyTheObstructionIsNamed:
         finally:
             opaque.chmod(0o700)
 
+    @needs_an_unprivileged_user
+    def test_an_unlistable_but_empty_directory_is_not_reported(self, cache):
+        """The other half of the case above, and it goes the opposite way.
+
+        `os.walk` cannot scan this one either and says so -- but it is empty, so
+        the `rmdir` afterwards succeeds and there is nothing left to report.
+        Treating the scan failure as the refusal named a path that is not there,
+        and, through the ancestor rule, could have silenced a genuine refusal
+        above it. Found by the randomised trees in TestRefusalsAreNotInvented,
+        not by reading the code.
+        """
+        opaque = cache.root / "repos" / "blooop" / "opaque"
+        opaque.mkdir(parents=True)
+        opaque.chmod(0o300)  # -wx and empty: unlistable, but it will go
+        assert remove_tree(cache.root) == ()
+        assert not cache.root.exists()
+
 
 class TestNothingToPurge:
     """The existing empty-cache path, kept honest while the rest changed."""
@@ -295,3 +313,54 @@ class TestRefusalsAreNotInvented:
             path for path in survivors if not any(path.is_relative_to(r.parent) for r in refused)
         ]
         assert not unexplained, f"still on disk and not explained by any refusal: {unexplained}"
+
+    @needs_an_unprivileged_user
+    def test_the_two_invariants_hold_over_randomised_trees(self, tmp_path):
+        """Hand-built cases check the shapes I thought of. This checks the rest.
+
+        Two invariants, and between them they are the whole contract:
+
+        - **nothing survives unsaid** -- a tree still on disk with an empty
+          refusal list is a purge claiming a clean sweep it did not have, and is
+          the only failure here that costs anybody anything;
+        - **nothing is said that is not there** -- naming a path the user then
+          cannot find is how a report stops being believed.
+
+        This found a real defect that four hand-written cases missed: an
+        unlistable *empty* directory made `os.walk` raise, and reporting at the
+        point of raising named a path the following `rmdir` went on to remove.
+        Fixed by deciding refusals from the disk once the walk is over, which
+        also makes both invariants hold by construction rather than by care.
+
+        Seeded, so a failure here is reproducible rather than a rumour.
+        """
+        rng = random.Random(20260808)
+        for trial in range(60):
+            root = tmp_path / f"tree{trial}"
+            root.mkdir()
+            made = [root]
+            for _ in range(rng.randint(0, 10)):
+                child = rng.choice(made) / f"d{rng.randrange(4)}"
+                child.mkdir(exist_ok=True)
+                if child not in made:
+                    made.append(child)
+            for directory in made:
+                for _ in range(rng.randrange(3)):
+                    (directory / f"f{rng.randrange(4)}").write_text("x")
+            # Deepest first: sealing a parent would make sealing its child fail.
+            for directory in sorted(made, key=lambda p: -len(p.parts)):
+                if rng.random() < 0.25:
+                    directory.chmod(rng.choice([0o000, 0o100, 0o300, 0o500]))
+
+            refused = remove_tree(root)
+            try:
+                assert root.exists() == bool(refused), (
+                    f"trial {trial}: tree survives={root.exists()} but refused={refused}"
+                )
+                for path in refused:
+                    assert path.exists() or path.is_symlink(), (
+                        f"trial {trial}: reported {path}, which is not there"
+                    )
+                assert len(set(refused)) == len(refused), f"trial {trial}: duplicates in {refused}"
+            finally:
+                subprocess.run(["chmod", "-R", "u+rwx", str(root)], check=False)
