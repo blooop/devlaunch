@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import gh_auth
+from . import devpod_ssh, gh_auth
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -832,6 +832,38 @@ def run_devpod(
         raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
 
+def run_devpod_session(
+    args: List[str], env: Optional[Dict[str, str]] = None
+) -> devpod_ssh.SshOutcome:
+    """Run a devpod command that hands its stdin/stdout to a terminal session.
+
+    stdin and stdout are inherited untouched — devpod puts the real terminal into
+    raw mode through them, and requests a pty on that basis. Only stderr is read,
+    which under a pty carries devpod's own warnings and errors and nothing else,
+    so that devpod's report of how the session ended can be interpreted rather
+    than dumped on the user. See devpod_ssh for why that is necessary.
+    """
+    cmd = ["devpod"] + args
+    logging.debug("Running: %s", " ".join(cmd))
+    # nosec B603 - using list form, not shell=True; no command injection risk
+    with subprocess.Popen(
+        cmd,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    ) as proc:
+        # proc.stderr is a pipe because PIPE was asked for, but Popen's type
+        # cannot express that, so the narrowing happens here rather than by
+        # widening filter_devpod_stderr to a None it would have no answer for.
+        pipe = proc.stderr
+        remote_status = (
+            devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe is not None else None
+        )
+    return devpod_ssh.interpret(proc.returncode, remote_status)
+
+
 # The memoized `devpod list` snapshot. A dict rather than a module-level
 # Optional so the accessors below need no `global`, and so "nothing read yet"
 # (no key at all) stays distinguishable from "devpod has no workspaces" (an
@@ -1049,8 +1081,20 @@ def workspace_ssh(
     args.extend(token_args)
 
     logging.info(f"SSH command: devpod {' '.join(args)}")
-    result = run_devpod(args, env=env)
-    return result.returncode
+    outcome = run_devpod_session(args, env=env)
+
+    # The two arms carry the same kind of number from different processes, which
+    # is exactly the confusion this used to make: `dl` reported devpod's exit
+    # code (always 1) for a session that had ended perfectly normally with, say,
+    # 130. Whichever arm this is, the status returned is the session's.
+    match outcome:
+        case devpod_ssh.RemoteExit(status=status):
+            return status
+        case devpod_ssh.DevpodFailed(exit_code=exit_code):
+            logging.debug("devpod ssh failed with exit code %s", exit_code)
+            return exit_code
+        case _ as unhandled:
+            devpod_ssh.assert_never(unhandled)
 
 
 def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:

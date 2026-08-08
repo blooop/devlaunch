@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-08-08
+
+One fix: `dl` stops reporting a failure every time you leave a workspace, and a
+one-shot `dl <ws> -- <command>` now exits with the command's own status instead
+of a flat 1. Nothing about how you install or run `dl` changes.
+
+### Fixed
+- Leaving a workspace no longer reports a failure. devpod turns any nonzero exit
+  from the program it ran into a fatal of its own ("tunnel to container: run in
+  container: ssh session: Process exited with status 130") and exits 1, because it
+  type-asserts on an `*ssh.ExitError` it has already wrapped. Typing `exit` in a
+  shell whose last command was interrupted was enough to trigger it. `dl` now
+  reads that status back out and reports it as the session's, so an ordinary exit
+  is silent and `dl <ws> -- <command>` propagates the command's real exit code
+  instead of a flat 1. Failures that are genuinely devpod's still print in full.
+
 ## [0.0.11] - 2026-08-08
 
 This completes the review that ran across [#51](https://github.com/blooop/devlaunch/issues/51):

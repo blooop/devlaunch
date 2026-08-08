@@ -11,6 +11,7 @@ subprocess boundary rather than at run_devpod, so a change that reintroduces a
 redundant round-trip fails here instead of quietly costing half a second.
 """
 
+import io
 import json
 import subprocess
 import sys
@@ -32,12 +33,36 @@ from devlaunch.dl import (
 )
 
 
+class FinishedSession:
+    """A `devpod ssh` session that wrote nothing to stderr and exited 0.
+
+    Enough of Popen for run_devpod_session: it is used as a context manager and
+    the only thing read out of it is the stderr pipe, which under a pty carries
+    devpod's own warnings and errors and nothing else.
+    """
+
+    def __init__(self, argv: List[str], stderr: str = ""):
+        self.args = argv
+        self.stderr = io.StringIO(stderr)
+        self.returncode = 0
+
+    def __enter__(self) -> "FinishedSession":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
 class DevpodSpawns:
     """Stands in for subprocess.run and records every devpod command line.
 
     Answers the read-only devpod commands dl makes (list/status/context
     options) from in-memory state so a whole CLI invocation can run without a
     devpod binary, and reports the devpod spawns in order.
+
+    A session attach spawns through Popen rather than run, so `popen` records
+    into the same list: what these tests count is devpod processes, not which
+    subprocess primitive started them.
     """
 
     def __init__(self, workspace_ids: List[str], state: str = "Running"):
@@ -52,6 +77,12 @@ class DevpodSpawns:
         if argv[:1] == ["devpod"]:
             stdout = self._devpod_stdout(argv[1:])
         return subprocess.CompletedProcess(args=argv, returncode=0, stdout=stdout, stderr="")
+
+    def popen(self, cmd, *_args, **_kwargs) -> FinishedSession:
+        """Stand in for the Popen behind an interactive or one-shot session."""
+        argv = list(cmd)
+        self.commands.append(argv)
+        return FinishedSession(argv)
 
     def _devpod_stdout(self, args: List[str]) -> str:
         if args[:1] == ["list"]:
@@ -93,8 +124,9 @@ def spawns():
     """
     recorder = DevpodSpawns(["myws"])
     with patch("devlaunch.dl.subprocess.run", side_effect=recorder):
-        with patch("devlaunch.dl.update_cache_background"):
-            yield recorder
+        with patch("devlaunch.dl.subprocess.Popen", side_effect=recorder.popen):
+            with patch("devlaunch.dl.update_cache_background"):
+                yield recorder
 
 
 def _run_dl(*argv: str) -> int:
