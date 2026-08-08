@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-08-08
+
+This completes the review that ran across [#51](https://github.com/blooop/devlaunch/issues/51):
+seven targeted fixes to performance, correctness and maintainability, of which six
+shipped in 0.0.10 and the cache migration lands here. It is also intended to be the
+last release of the Python implementation — the successor is a Rust rewrite whose core
+becomes a library shared with [blooop/wayfinder](https://github.com/blooop/wayfinder),
+decided in [#53](https://github.com/blooop/devlaunch/issues/53). Nothing about how you
+install or run `dl` changes in this release.
+
 ### Changed
 - Existing caches are migrated onto the new workspace id scheme once, by the first
   command that touches a workspace. Clone directories are renamed in place —
@@ -43,6 +53,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `aid --version` inherits it.
 
 ### Fixed
+- A corrupt `~/.cache/devlaunch/metadata.json` no longer takes down every `dl`
+  command, `dl --help` included. It used to raise while the storage object was being
+  built, before any command ran. An unreadable file is now moved aside to
+  `metadata.json.corrupt` and dl starts with empty metadata; a single malformed entry
+  is skipped rather than costing the whole file; and any load that would drop
+  information — a skipped entry, a field only a newer build knows about, a newer
+  schema version — copies the original to `metadata.json.bak` before the next write
+  can overwrite it, and says so. Saving is atomic, writes through a symlinked
+  `metadata.json` rather than replacing the link, and preserves the file's mode.
+  The file gains a `version` key.
+- `dl` says so when devpod is not installed, instead of printing a
+  `FileNotFoundError` traceback. One line naming the install page, and exit `127` —
+  the shell's own "command not found" code. `dl --help` and `dl --version` keep
+  working without devpod, and the completion commands leave stdout empty, since that
+  is what the shell parses.
 - `dl <repo> -- <cmd>` runs its command in a login shell, so it gets the same
   `PATH` an interactive `dl <repo>` attach gets. devpod runs a `--command` payload
   under a non-login, non-interactive `bash -c`, which sources neither `~/.profile`
