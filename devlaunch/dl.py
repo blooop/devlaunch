@@ -22,6 +22,7 @@ import sys
 import subprocess
 import json
 import logging
+import os
 import pathlib
 import re
 import shlex
@@ -502,6 +503,134 @@ def workspaces_as_json() -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class RemovedEverything:
+    """The path is gone, and so is everything that was under it."""
+
+
+@dataclass(frozen=True)
+class RemovedWhatItCould:
+    """Some of it went. *refused* is what the filesystem would not let go."""
+
+    refused: Tuple[pathlib.Path, ...]
+
+
+@dataclass(frozen=True)
+class RemovedNothing:
+    """None of it went. *refused* is what the filesystem would not let go."""
+
+    refused: Tuple[pathlib.Path, ...]
+
+
+# Three outcomes, because a removal that is allowed to remove some of a tree has
+# three. An exit status has two, and rendering the three as two is what let a
+# purge that removed almost nothing read the same as one that removed nothing at
+# all. The distinction lives here, where it is stated; the exit status is a
+# deliberately lossy projection of it -- see purge_all_data.
+#
+# A pair of (removed_something, refused) fields would make "removed everything,
+# and here is what it refused" expressible, and every reader would then have to
+# be trusted not to build it. These arms cannot say it.
+Removal = RemovedEverything | RemovedWhatItCould | RemovedNothing
+
+
+def _unhandled_removal(outcome: NoReturn) -> NoReturn:
+    """Reject a Removal arm nobody handled, at type-check time.
+
+    The sibling of _unhandled_source, and there for the same reason: adding a
+    fourth outcome should break every reader that has not grown a case for it.
+    """
+    raise AssertionError(f"Unhandled removal outcome: {outcome!r}")
+
+
+def remove_as_far_as_permitted(path: pathlib.Path) -> Removal:
+    """Remove *path* and everything under it, going as far as permissions allow.
+
+    `shutil.rmtree` stops at the first path it is refused and raises, which
+    leaves the rest of the tree standing however removable it was. That is the
+    wrong trade for a purge: a user who asked for the cache to go is better
+    served by losing all of it that may be lost, and being told precisely what
+    survived, than by losing an arbitrary prefix of it and being handed an
+    errno. Refusals are ordinary here -- a container writes into its clone as
+    its own uid, and a non-owner cannot chmod a directory to empty it.
+
+    **A directory that cannot be written is named once, rather than everything
+    inside it.** Unlinking an entry is governed by the permissions of the
+    directory holding it, not of the entry, so a clone another user wrote refuses
+    all of its hundreds of files for a single reason -- and a report that lists
+    them all is a report nobody reads. Asking whether the directory is writable
+    before walking into it names that one reason once, and skips a descent that
+    could only fail. The question is asked of the filesystem rather than assumed
+    from the errnos on the way back up, because "this directory would not let go
+    of its entries" and "everything in this directory was already stuck" produce
+    the same refusals and want different reports.
+
+    Not a guarantee, only the common case: a sticky-bit directory answers
+    writable and still refuses another user's files. The removal is attempted
+    regardless, so such a tree is reported entry by entry rather than wrongly
+    reported as removed -- verbose where this is imprecise, never silent.
+
+    Symlinks are unlinked, never followed: a link in the cache pointing at a
+    checkout elsewhere is one entry to remove, not a tree to walk into.
+    """
+    if path.is_dir() and not path.is_symlink():
+        if not os.access(path, os.W_OK | os.X_OK):
+            return RemovedNothing((path,))
+        try:
+            # Sorted so the report reads the same way twice, and so a refusal is
+            # named in a place a reader can find it again.
+            children = sorted(path.iterdir())
+        except OSError:
+            # Readable a moment ago and not now, or not readable in the way the
+            # access check answers for. Nothing inside it can go.
+            return RemovedNothing((path,))
+        refused: List[pathlib.Path] = []
+        removed_any = False
+        for child in children:
+            outcome = remove_as_far_as_permitted(child)
+            if isinstance(outcome, RemovedEverything):
+                removed_any = True
+            elif isinstance(outcome, RemovedWhatItCould):
+                removed_any = True
+                refused.extend(outcome.refused)
+            elif isinstance(outcome, RemovedNothing):
+                refused.extend(outcome.refused)
+            else:
+                _unhandled_removal(outcome)
+        if refused:
+            # Whatever survived under it keeps it standing too, so naming the
+            # directory as well would only bury the paths a reader needs.
+            return (
+                RemovedWhatItCould(tuple(refused))
+                if removed_any
+                else RemovedNothing(tuple(refused))
+            )
+        try:
+            path.rmdir()
+        except OSError:
+            # Emptied but not removable: the write permission that governs a
+            # directory's own removal belongs to its parent, not to it.
+            return RemovedWhatItCould((path,)) if removed_any else RemovedNothing((path,))
+        return RemovedEverything()
+    try:
+        path.unlink()
+    except OSError:
+        return RemovedNothing((path,))
+    return RemovedEverything()
+
+
+def _report_refusals(refused: Tuple[pathlib.Path, ...], cache_dir: pathlib.Path) -> None:
+    """Name the paths that stayed, and the one command that finishes the job."""
+    print("Not permitted to remove:")
+    for path in refused:
+        print(f"  - {path}")
+    print(
+        "These belong to another user -- a container writing as its own uid is "
+        "the usual cause -- so the owner of this cache cannot remove them."
+    )
+    print(f"To finish: sudo rm -rf {cache_dir}")
+
+
 def purge_all_data() -> int:
     """Purge devlaunch's data: the workspaces it created, and its caches.
 
@@ -514,9 +643,15 @@ def purge_all_data() -> int:
     Workspaces devlaunch did not create are not deleted and not reported here;
     the report belongs with the confirmation, before anything is destroyed, so
     it lives in main() where the user still has a decision to make.
-    """
-    import shutil
 
+    The cache half removes as much as it is permitted to and names the rest --
+    see remove_as_far_as_permitted for why it is not shutil.rmtree. Its three
+    outcomes are projected onto two exit statuses on purpose: zero says the
+    cache is gone and nothing else does, which is the only distinction a caller
+    can act on, and inventing a third code would be an interface to keep
+    forever. Which of the two failures happened is in the report, where the
+    person who can do something about it reads it.
+    """
     cache_dir = _get_cache_dir()
 
     # First, delete the DevPod workspaces devlaunch made. The list is the same
@@ -539,13 +674,19 @@ def purge_all_data() -> int:
             print("No data to purge.")
         return 0
 
-    try:
-        shutil.rmtree(cache_dir)
+    outcome = remove_as_far_as_permitted(cache_dir)
+    if isinstance(outcome, RemovedEverything):
         print(f"Removed: {cache_dir}")
         return 0
-    except OSError as e:
-        print(f"Error removing {cache_dir}: {e}")
+    if isinstance(outcome, RemovedWhatItCould):
+        print(f"Removed what it could from {cache_dir}.")
+        _report_refusals(outcome.refused, cache_dir)
         return 1
+    if isinstance(outcome, RemovedNothing):
+        print(f"Removed nothing from {cache_dir}.")
+        _report_refusals(outcome.refused, cache_dir)
+        return 1
+    _unhandled_removal(outcome)
 
 
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)

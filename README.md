@@ -375,6 +375,29 @@ Erring this way is deliberate — a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
 
+### When the cache will not go
+
+A container writes into its bind-mounted clone as its own user. Where that user
+is not yours — CI, a shared machine, a container running as root, or devlaunch
+developed inside its own devcontainer — part of the cache belongs to somebody
+else, and you cannot remove it. A purge removes everything it is allowed to,
+names the rest, and exits non-zero:
+
+```
+$ dl --purge -y
+Deleting DevPod workspace: devlaunch-main-zovomobo
+Removed what it could from /home/you/.cache/devlaunch.
+Not permitted to remove:
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo
+These belong to another user — a container writing as its own uid is the usual
+cause — so the owner of this cache cannot remove them.
+To finish: sudo rm -rf /home/you/.cache/devlaunch
+```
+
+`Removed nothing from …` in place of the first line means exactly that: not one
+path went, rather than most of them. Only a purge that removed the whole cache
+exits `0`.
+
 ### Cleaning up workspaces
 
 One workspace per branch means workspaces accumulate, and `--purge` is the wrong
