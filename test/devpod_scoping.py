@@ -49,6 +49,12 @@ def scope_devpod_to_this_run() -> Path:
     metadata devpod needs to find and delete the containers a run created, so
     deleting it after a crashed run would leave those containers orphaned with
     no way to reach them -- worse than a stale directory the OS will reap.
+
+    Two honest caveats on that. Most runs are unit runs that never spawn devpod
+    at all, so what they leave behind is an empty directory rather than
+    recoverable state. And the reaping this leans on is itself the orphaning
+    event it is trying to avoid, just deferred: a devpod home that outlives its
+    containers by long enough gets collected with them still running.
     """
     devpod_home = Path(tempfile.mkdtemp(prefix="devlaunch-testrun-"))
     os.environ[DEVPOD_HOME_VAR] = str(devpod_home)
