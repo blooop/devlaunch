@@ -8,10 +8,11 @@ nothing can be brought up there until one is installed. Doing that here, autouse
 and session-scoped, means every test in this directory gets it without asking.
 
 The second is the guard described in `fixtures/e2e_guard.py`: any skip nobody
-declared becomes a failure, and a session that built no workspaces does not get
-to exit zero. Both live in hooks rather than fixtures for the same reason the
-devpod scoping does -- a fixture is something a test has to ask for, and the
-test that must not forget is the one nobody has written yet.
+declared becomes a failure, and a session that ran tests which promise a
+container and built none does not get to exit zero. Both live in hooks rather
+than fixtures for the same reason the devpod scoping does -- a fixture is
+something a test has to ask for, and the test that must not forget is the one
+nobody has written yet.
 """
 
 import os
@@ -20,7 +21,7 @@ import subprocess
 import pytest
 
 from devpod_scoping import DEVPOD_HOME_VAR
-from fixtures.e2e_guard import LEDGER, is_declared_opt_out
+from fixtures.e2e_guard import LEDGER, is_undeclared_skip
 from fixtures.e2e_helpers import require_devpod
 
 
@@ -65,6 +66,11 @@ def docker_provider_in_scoped_devpod_home():
         )
 
 
+# What the session floor is called when it fails, in the failure list and in
+# the last line of the run. Not a test id, because it is not a test: it is the
+# session's own answer to "did anything actually happen".
+SHORTFALL_NODEID = "e2e session floor"
+
 UNDECLARED_SKIP = (
     "This e2e test skipped without declaring an opt-out, which means something "
     "it needed was missing rather than not wanted. Skips that are deliberate go "
@@ -75,20 +81,45 @@ UNDECLARED_SKIP = (
 
 
 @pytest.hookimpl(wrapper=True)
-def pytest_runtest_makereport(item, call):  # noqa: ARG001  # pylint: disable=unused-argument
+def pytest_runtest_makereport(item, call):
     """Count what was attempted, and turn undeclared skips into failures.
 
     Rewriting the report rather than checking at the end of the session is
     deliberate: the complaint this whole guard answers is that the summary line
     lies, so the correction has to land in the summary line. A test that could
     not run shows up as `F` against its own name, where a reader will look.
+
+    The judgement is made on `call.excinfo` -- what the test raised -- and not
+    on the text of the report. See `fixtures.e2e_guard.DeclaredOptOut`.
     """
     report = yield
 
     if report.when == "setup":
-        LEDGER.record_test_attempted()
+        LEDGER.record_test_attempted(
+            builds_workspace=item.get_closest_marker("creates_workspace") is not None
+        )
 
-    if report.skipped and not is_declared_opt_out(str(report.longrepr)):
+    if is_undeclared_skip(call.excinfo):
+        report.outcome = "failed"
+        report.longrepr = UNDECLARED_SKIP + str(report.longrepr)
+
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):  # noqa: ARG001  # pylint: disable=unused-argument
+    """The same judgement, for skips raised before any test exists to skip.
+
+    `pytest.skip(..., allow_module_level=True)` runs at import time, produces a
+    `CollectReport`, and never reaches the hook above -- a module-level skip of
+    `test_interactive_session.py` would take thirteen tests out of the run and
+    leave it green. The collect report carries the `CallInfo` that produced it,
+    so the same question can be asked of the same exception.
+    """
+    report = yield
+
+    call = getattr(report, "call", None)
+    if call is not None and is_undeclared_skip(call.excinfo):
         report.outcome = "failed"
         report.longrepr = UNDECLARED_SKIP + str(report.longrepr)
 
@@ -103,8 +134,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001  # pylint: disabl
     assertion fails when no container is ever built, so the run is a success by
     every measure the tool has.
     """
-    shortfalls = LEDGER.shortfalls()
-    if shortfalls:
+    if LEDGER.shortfall() is not None:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -113,11 +143,32 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG0
 
     Without this a healthy run and one that created nothing print the same
     summary line. This is the line to read when a green tick is in doubt.
+
+    A shortfall is also filed as a failure report, which is what the very last
+    line of the run is built from. Printing it here and stopping would leave
+    `4 passed, 18 skipped` as the final word twenty rows further down -- the
+    byte-identical line this whole guard exists to stop being printed. Filed
+    instead, it becomes `1 failed, 4 passed, 18 skipped`, in red, and it is
+    named in the short summary alongside the tests. A real report rather than a
+    note in the tally because every other plugin reads that structure too, and
+    one that expects a report and finds a string takes the run down with it.
     """
     if LEDGER.tests_attempted == 0:
         return
 
     terminalreporter.write_sep("-", "e2e session")
     terminalreporter.write_line(LEDGER.summary())
-    for shortfall in LEDGER.shortfalls():
+
+    shortfall = LEDGER.shortfall()
+    if shortfall is not None:
         terminalreporter.write_line(f"FAILED: {shortfall}", red=True, bold=True)
+        terminalreporter.stats.setdefault("failed", []).append(
+            pytest.TestReport(
+                nodeid=SHORTFALL_NODEID,
+                location=(__file__, None, SHORTFALL_NODEID),
+                keywords={},
+                outcome="failed",
+                longrepr=shortfall,
+                when="call",
+            )
+        )

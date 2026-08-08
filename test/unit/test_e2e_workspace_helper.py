@@ -18,6 +18,7 @@ import subprocess
 
 import pytest
 
+from fixtures.e2e_guard import LEDGER
 from fixtures.e2e_helpers import create_e2e_workspace
 
 SOURCE = "/tmp/some-local-repo"
@@ -93,6 +94,25 @@ def test_failed_creation_leaves_the_workspace_registered_for_cleanup():
         create_e2e_workspace(SOURCE, WORKSPACE_ID, cleanup=tracker, run=devpod)
 
     assert tracker.workspaces == [WORKSPACE_ID]
+
+
+def test_a_stubbed_creation_does_not_credit_the_session_ledger():
+    """The one way the ledger could be made to lie, closed.
+
+    The ledger's whole claim is that a workspace in it is a container that
+    exists, which is why it is written at the only place that builds one. But
+    these very tests call that place with a stub -- a `devpod up` that returns
+    rc 0 having done nothing -- and a session that ran both kinds of test at
+    once (`pytest -m ""`) would find three phantom workspaces credited and its
+    floor cleared by them.
+    """
+    tracker = RecordingTracker()
+    devpod = RecordingDevpod(tracker)
+    before = list(LEDGER.workspaces_created)
+
+    create_e2e_workspace(SOURCE, WORKSPACE_ID, cleanup=tracker, run=devpod)
+
+    assert LEDGER.workspaces_created == before
 
 
 def test_creation_reports_the_source_and_id_it_was_given():

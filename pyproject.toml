@@ -129,6 +129,7 @@ markers = [
     "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
     "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
     "e2e: Full E2E with Docker-in-Docker. Real DevPod creating real containers.",
+    "creates_workspace: This e2e test builds a real workspace. The session floor in test/e2e/conftest.py holds a run that attempted one of these and built nothing to be a failure, so the promise is declared by the test rather than inferred afterwards.",
 ]
 testpaths = ["test"]
 # Default: run unit and integration tests, skip e2e (requires Docker-in-Docker)

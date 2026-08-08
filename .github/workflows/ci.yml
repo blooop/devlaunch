@@ -49,7 +49,14 @@ jobs:
   # its own duration; and a nightly failure arrives detached from the change
   # that caused it, on a repo where nobody is rostered to triage one. To make it
   # nightly instead: add `schedule:` to `on:` above and
-  # `if: github.event_name != 'pull_request'` to this job. Nothing else moves.
+  # `if: github.event_name == 'schedule'` to this job. Nothing else moves --
+  # and note it has to be that, not `!= 'pull_request'`: `push: branches:
+  # [main]` stays in `on:` for the matrix job, so excluding only pull requests
+  # would leave this one running on every merge as well as on the schedule.
+  #
+  # Like every job here, it runs on pushes to `main` and on pull requests
+  # targeting `main`. A pull request onto any other base -- a stacked one --
+  # triggers this workflow not at all.
   e2e:
     runs-on: ubuntu-latest
     # A registry serving this suite's 1.25 GB fixture image at 640 B/s is not

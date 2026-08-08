@@ -53,7 +53,7 @@ class TestSuiteIsolationE2E:
         Any set at all is disjoint from an empty one, so where there is no real
         devpod state to be disjoint from -- CI, or a fresh DinD container --
         this opts out rather than passing on nothing. That is a genuine opt-out
-        and not a thing that went wrong, which is why it says so in the word
+        and not a thing that went wrong, which is why it goes through the call
         the guard recognises: on a runner it is the only skip in the file, and
         an unexplained one there would be the interesting kind.
         """
@@ -94,6 +94,7 @@ def workspace_ids() -> list:
 class TestWorkspaceCreationE2E:
     """E2E tests for workspace creation with real DevPod."""
 
+    @pytest.mark.creates_workspace
     def test_create_workspace_from_local_repo(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
@@ -117,6 +118,7 @@ class TestWorkspaceCreationE2E:
 
         assert workspace_id in workspace_ids()
 
+    @pytest.mark.creates_workspace
     def test_workspace_lifecycle_without_ide(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
@@ -154,6 +156,7 @@ class TestWorkspaceCreationE2E:
 class TestGitOperationsInContainerE2E:
     """E2E tests verifying git operations work inside containers."""
 
+    @pytest.mark.creates_workspace
     def test_git_status_via_ssh(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
@@ -256,6 +259,7 @@ class TestDLCommandsE2E:
 class TestPurgeE2E:
     """E2E tests for purge functionality."""
 
+    @pytest.mark.creates_workspace
     def test_purge_deletes_workspaces(
         self, isolated_devlaunch_env, local_git_repo_with_devcontainer, devpod_cleanup
     ):
