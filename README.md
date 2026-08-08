@@ -411,6 +411,12 @@ user is the common cause, but a read-only mount, `chattr +i` and a busy
 mountpoint all land here too — and `sudo rm -rf` does not fix those, which is
 why the report offers the cause rather than asserting it.
 
+If you have **moved your cache** by making `~/.cache/devlaunch` a symlink, a
+purge refuses it and names the target rather than following it. Remove the real
+directory yourself if you meant to: following the link would empty a directory
+you never named, and removing just the link would report a clean sweep while
+your clones sat on the other volume.
+
 ### Cleaning up workspaces
 
 One workspace per branch means workspaces accumulate, and `--purge` is the wrong

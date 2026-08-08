@@ -380,7 +380,17 @@ class TestNothingOutsideTheTreeIsTouched:
     a silent recursive delete outside the named tree, reported as a clean sweep.
     """
 
-    def test_a_symlinked_root_is_unlinked_and_its_target_left_alone(self, tmp_path):
+    def test_a_symlinked_root_is_refused_and_left_where_it_is(self, tmp_path):
+        """Refused, not followed and not quietly unlinked.
+
+        Unlinking only the link was the first attempt at this and it is the
+        wrong answer for a reason worth writing down: it reports a clean sweep
+        over clones that are still on disk on another volume, which is the
+        failure direction this whole change exists to remove. A cache root is a
+        symlink because somebody moved their cache, so following it and
+        unlinking it cost them the same thing by opposite routes -- one deletes
+        the workspaces, the other says they are gone.
+        """
         target = tmp_path / "elsewhere"
         (target / "repos").mkdir(parents=True)
         (target / "metadata.json").write_text("somebody's cache")
@@ -389,10 +399,33 @@ class TestNothingOutsideTheTreeIsTouched:
         link.parent.mkdir()
         link.symlink_to(target)
 
-        assert remove_tree(link) == ()
-        assert not link.is_symlink(), "the link itself is devlaunch's to remove"
+        refused = remove_tree(link)
+        assert [r.path for r in refused] == [link]
+        assert link.is_symlink(), "the link is left where it is, not silently removed"
         assert (target / "metadata.json").read_text() == "somebody's cache"
         assert (target / "repos" / "work.txt").exists()
+        # The advice is `sudo rm -rf <cache>`, which would remove the link and
+        # nothing else, so the reason has to carry the real location.
+        assert str(target) in refused[0].reason, refused[0].reason
+
+    def test_a_purge_of_a_symlinked_cache_does_not_report_success(self, tmp_path, capsys):
+        """The end-to-end half, because the exit code is the whole point."""
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "metadata.json").write_text("somebody's cache")
+        root = tmp_path / "cache" / "devlaunch"
+        root.parent.mkdir()
+        root.symlink_to(target)
+
+        listing = subprocess.CompletedProcess([], 0, "[]", "")
+        with patch("devlaunch.dl.subprocess.run", return_value=listing):
+            with patch("devlaunch.dl._get_cache_dir", return_value=root):
+                with patch("devlaunch.dl.update_cache_background"):
+                    code = purge_all_data()
+        printed = capsys.readouterr().out
+        assert code == 1, printed
+        assert "Removed:" not in printed, printed
+        assert (target / "metadata.json").read_text() == "somebody's cache"
 
     def test_a_symlink_inside_the_tree_is_unlinked_not_followed(self, cache, tmp_path):
         outside = tmp_path / "outside"

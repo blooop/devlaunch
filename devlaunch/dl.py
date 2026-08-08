@@ -607,17 +607,25 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
         # the whole point; calling it gone is the failure this guards.
         return (Refusal(tree, _why(error)),)
 
-    # `os.walk` never descends a symlinked *subdirectory*, but it always scans
-    # the top -- so a symlinked root would be followed, its target emptied, and
-    # a clean sweep reported for a directory the caller never named.
-    # `shutil.rmtree` refuses this outright, and so does this: the link is
-    # removed, and whatever it pointed at is somebody else's.
+    # A symlinked root is refused, which is what `shutil.rmtree` did and is the
+    # only one of the three available answers that is not a lie.
+    #
+    # `os.walk`'s `followlinks=False` governs *subdirectories*; the top is
+    # always scanned. So following it empties a directory the caller never
+    # named. Unlinking just the link is no better and is worse to diagnose: the
+    # clones are still on the other disk and the purge says "Removed". A cache
+    # root is a symlink because somebody moved their cache, so both of those
+    # answers cost them their workspaces -- one by deleting them, one by telling
+    # them they are gone.
+    #
+    # Naming the target matters: `sudo rm -rf <cache>` would remove the link and
+    # nothing else, so the reader needs the real location to act on.
     if stat.S_ISLNK(info.st_mode):
         try:
-            tree.unlink()
-            return ()
-        except OSError as error:
-            return (Refusal(tree, _why(error)),)
+            points_at = f" to {os.readlink(tree)}"
+        except OSError:
+            points_at = ""
+        return (Refusal(tree, f"is a symbolic link{points_at}, which a purge will not follow"),)
 
     failed: List[Refusal] = []
 

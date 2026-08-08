@@ -51,13 +51,21 @@ table and should be judged on its own merits.
   could have caught: a directory owned by *another user* is not something a
   test process can build.
 
-  A symlinked cache root is refused rather than followed. `os.walk`'s
-  `followlinks=False` governs subdirectories only — the top is always scanned —
-  so a hand-rolled walk descends a symlinked `~/.cache/devlaunch`, empties
-  whatever it points at, and reports a clean sweep. `shutil.rmtree` refuses that
-  outright, and losing the refusal turned it into a silent recursive delete
-  outside the named directory. The link is now unlinked and its target left
-  alone. Found in review; there had been no symlink coverage at all.
+  A symlinked cache root is refused rather than followed, naming what it points
+  at. `os.walk`'s `followlinks=False` governs subdirectories only — the top is
+  always scanned — so a hand-rolled walk descends a symlinked
+  `~/.cache/devlaunch`, empties whatever it points at, and reports a clean
+  sweep. `shutil.rmtree` refuses that outright, and losing the refusal turned it
+  into a silent recursive delete outside the named directory.
+
+  Unlinking just the link was tried first and is also wrong: the clones are
+  still on the other volume and the purge says `Removed`. A cache root is a
+  symlink because somebody moved their cache, so following it and unlinking it
+  cost them the same thing by opposite routes — one deletes the workspaces, the
+  other reports them gone. Refusing is the only one of the three that is not a
+  lie, and `sudo rm -rf <cache>` would remove the link and nothing else, so the
+  reason carries the real location. Both found in review; there had been no
+  symlink coverage at all.
 
   Each refusal now carries what the system actually said, and the advice is
   offered rather than asserted. The old report claimed "Written by a container
