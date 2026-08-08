@@ -479,7 +479,7 @@ a healthy one. Every run also prints what it actually built:
 
 ```
 --------------------------------- e2e session ---------------------------------
-22 e2e tests attempted, 4 workspaces created: e2e-test-create, e2e-test-lifecycle, e2e-test-git, e2e-test-purge
+22 e2e tests attempted, 5 workspaces created: e2e-test-create, e2e-test-lifecycle, e2e-test-git, e2e-test-purge-mine, e2e-test-purge
 ```
 
 A run whose workspace-building tests built nothing does not pass: the shortfall
