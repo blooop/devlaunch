@@ -18,7 +18,6 @@ from devlaunch.dl import (
     expand_workspace_spec,
     is_path_spec,
     is_git_spec,
-    validate_workspace_spec,
     parse_owner_repo_from_url,
     parse_owner_repo_branch,
     discover_repos_from_workspaces,
@@ -128,41 +127,6 @@ class TestIsGitSpec:
     def test_path_not_git(self):
         """Test path is not git."""
         assert not is_git_spec("./my-project")
-
-
-class TestValidateWorkspaceSpec:
-    """Tests for validate_workspace_spec function."""
-
-    def test_existing_workspace_valid(self):
-        """Test existing workspace name is valid."""
-        error = validate_workspace_spec("myws", ["myws", "other"])
-        assert error is None
-
-    def test_owner_repo_valid(self):
-        """Test owner/repo is valid even if not existing."""
-        error = validate_workspace_spec("owner/repo", [])
-        assert error is None
-
-    def test_owner_repo_with_branch_valid(self):
-        """Test owner/repo@branch is valid."""
-        error = validate_workspace_spec("blooop/devlaunch@main", [])
-        assert error is None
-
-    def test_path_valid(self):
-        """Test path is valid even if not existing."""
-        error = validate_workspace_spec("./my-project", [])
-        assert error is None
-
-    def test_unknown_name_invalid(self):
-        """Test unknown simple name returns error."""
-        error = validate_workspace_spec("blo", ["myws", "other"])
-        assert error is not None
-        assert "Unknown workspace 'blo'" in error
-
-    def test_partial_name_invalid(self):
-        """Test partial match is not valid."""
-        error = validate_workspace_spec("my", ["myws", "myother"])
-        assert error is not None
 
 
 class TestExpandWorkspaceSpec:
@@ -1335,11 +1299,13 @@ class TestWorkspaceIdentityEnv:
         run_devpod(["up", "/path"])
         assert mock_run.call_args[1].get("env") is None
 
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
-    def test_identity_reaches_devpod_through_main(self, mock_run, _mock_ctx, _mock_ssh, _mock_ids):
+    def test_identity_reaches_devpod_through_main(
+        self, mock_run, _mock_ctx, _mock_ssh, _mock_state
+    ):
         """End-to-end through argv, so the main() wiring itself is pinned.
 
         Asserting on workspace_up's kwargs alone let the whole feature be
@@ -1420,11 +1386,10 @@ class TestGhTokenForwarding:
     @patch("devlaunch.dl.update_cache_background")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
     @patch("devlaunch.dl.subprocess.Popen")
     def test_an_already_running_workspace_still_gets_the_token(
-        self, mock_popen, _mock_token, _mock_ids, _mock_state, _mock_host, _mock_cache
+        self, mock_popen, _mock_token, _mock_state, _mock_host, _mock_cache
     ):
         """Attaching to a running workspace skips `devpod up` and its workspace env."""
         stub_devpod_session(mock_popen)
@@ -1541,13 +1506,12 @@ class TestDevcontainerPath:
         assert args == ["ws", "--", "echo", "--devcontainer", "hi"]
         assert selection == ".devcontainer/robot/devcontainer.json"
 
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
     def test_selection_reaches_devpod_through_main(
-        self, mock_run, _mock_ctx, _mock_state, _mock_ssh, _mock_ids
+        self, mock_run, _mock_ctx, _mock_state, _mock_ssh
     ):
         """The main() wiring is pinned, not just workspace_up's signature."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -1560,22 +1524,19 @@ class TestDevcontainerPath:
             ".devcontainer/sim/devcontainer.json"
         )
 
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.dl.workspace_up")
-    def test_ignored_on_a_running_workspace_warns(
-        self, mock_up, _mock_state, _mock_ssh, _mock_ids, caplog
-    ):
+    def test_ignored_on_a_running_workspace_warns(self, mock_up, _mock_state, _mock_ssh, caplog):
         """Fast-attach skips workspace_up entirely, so the flag does nothing."""
         with patch.object(sys, "argv", ["dl", "myws", "--devcontainer", "sim"]):
             main()
         mock_up.assert_not_called()
         assert "Ignoring --devcontainer" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.workspace_stop", return_value=0)
-    def test_ignored_on_stop_warns(self, _mock_stop, _mock_ids, caplog):
+    def test_ignored_on_stop_warns(self, _mock_stop, _mock_state, caplog):
         with patch.object(sys, "argv", ["dl", "myws", "--devcontainer", "sim", "stop"]):
             main()
         assert "Ignoring --devcontainer" in caplog.text
@@ -1732,44 +1693,44 @@ class TestMainCLI:
         assert result == 0
         mock_install.assert_called_once()
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_stop")
-    def test_main_workspace_stop(self, mock_stop, mock_ids):
+    def test_main_workspace_stop(self, mock_stop, mock_state):
         """Test workspace stop command."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_stop.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws", "stop"]):
             result = main()
         assert result == 0
         mock_stop.assert_called_once_with("myws")
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_delete")
-    def test_main_workspace_rm(self, mock_delete, mock_ids):
+    def test_main_workspace_rm(self, mock_delete, mock_state):
         """Test workspace rm command."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_delete.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws", "rm"]):
             result = main()
         assert result == 0
         mock_delete.assert_called_once_with("myws")
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_delete")
-    def test_main_workspace_prune(self, mock_delete, mock_ids):
+    def test_main_workspace_prune(self, mock_delete, mock_state):
         """Test workspace prune command (alias for rm)."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_delete.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws", "prune"]):
             result = main()
         assert result == 0
         mock_delete.assert_called_once()
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
-    def test_main_workspace_code(self, mock_up, mock_ids):
+    def test_main_workspace_code(self, mock_up, mock_state):
         """Test workspace code command."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "code"]):
             result = main()
@@ -1778,12 +1739,12 @@ class TestMainCLI:
             "myws", ide="vscode", workspace_id=None, workspace_identity="myws", devcontainer=None
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_main_workspace_recreate(self, mock_ssh, mock_up, mock_ids):
+    def test_main_workspace_recreate(self, mock_ssh, mock_up, mock_state):
         """Test workspace recreate command."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
@@ -1793,13 +1754,13 @@ class TestMainCLI:
             "myws", recreate=True, workspace_id=None, workspace_identity="myws", devcontainer=None
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_stop")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_main_workspace_restart(self, mock_ssh, mock_up, mock_stop, mock_ids):
+    def test_main_workspace_restart(self, mock_ssh, mock_up, mock_stop, mock_state):
         """Test workspace restart command."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_stop.return_value = 0
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -1811,12 +1772,12 @@ class TestMainCLI:
             "myws", workspace_id=None, workspace_identity="myws", devcontainer=None
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_main_workspace_reset(self, mock_ssh, mock_up, mock_ids):
+    def test_main_workspace_reset(self, mock_ssh, mock_up, mock_state):
         """Test workspace reset command."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws", "reset"]):
@@ -1826,32 +1787,32 @@ class TestMainCLI:
             "myws", reset=True, workspace_id=None, workspace_identity="myws", devcontainer=None
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_main_unknown_command_error(self, mock_ids, caplog):
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_main_unknown_command_error(self, mock_state, caplog):
         """Test unknown subcommand returns error."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         with patch.object(sys, "argv", ["dl", "myws", "badcmd"]):
             result = main()
         assert result == 1
         assert "Unknown command" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_main_invalid_workspace_error(self, mock_ids, caplog):
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_main_invalid_workspace_error(self, mock_state, caplog):
         """Test invalid workspace spec returns error."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         with patch.object(sys, "argv", ["dl", "nonexistent"]):
             result = main()
         assert result == 1
         assert "Unknown workspace" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_workspace_shell_command(self, _cache, _hostname, mock_ssh, mock_up, mock_ids):
+    def test_main_workspace_shell_command(self, _cache, _hostname, mock_ssh, mock_up, mock_state):
         """Test running shell command with -- separator."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws", "--", "echo", "hello"]):
@@ -1859,14 +1820,14 @@ class TestMainCLI:
         assert result == 0
         mock_ssh.assert_called_once_with("myws", "echo hello")
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_workspace_default(self, _cache, _hostname, mock_ssh, mock_up, mock_ids):
+    def test_main_workspace_default(self, _cache, _hostname, mock_ssh, mock_up, mock_state):
         """Test default workspace start and attach."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "myws"]):
@@ -1875,17 +1836,17 @@ class TestMainCLI:
         mock_up.assert_called_once()
         mock_ssh.assert_called_once_with("myws", None)
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_from_repo(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+        self, _cache, _hostname, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test creating workspace from owner/repo resolves default branch."""
-        mock_ids.return_value = []  # Not existing
+        mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
         mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
@@ -1912,16 +1873,16 @@ class TestMainCLI:
         )
         mock_ssh.assert_called_once_with(main_id, None)
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_from_repo_with_branch(
-        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test creating workspace from owner/repo@branch uses ensure_branch."""
-        mock_ids.return_value = []  # Not existing
+        mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
         mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
         mock_clone_mgr.return_value = mock_mgr
@@ -1945,16 +1906,16 @@ class TestMainCLI:
             devcontainer=None,
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_creates_branch(
-        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test creating workspace from owner/repo@newbranch creates the branch."""
-        mock_ids.return_value = []  # Not existing
+        mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
         mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-newbranch")
         mock_clone_mgr.return_value = mock_mgr
@@ -1968,11 +1929,11 @@ class TestMainCLI:
             "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_main_branch_creation_fails(self, mock_clone_mgr, mock_ids):
+    def test_main_branch_creation_fails(self, mock_clone_mgr, mock_state):
         """Test error when branch ensure fails."""
-        mock_ids.return_value = []  # Not existing
+        mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
         mock_mgr.ensure_branch.side_effect = RuntimeError("push failed")
         mock_clone_mgr.return_value = mock_mgr
@@ -1981,11 +1942,11 @@ class TestMainCLI:
         assert result == 1
         mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_main_clone_fails_no_branch(self, mock_clone_mgr, mock_ids):
+    def test_main_clone_fails_no_branch(self, mock_clone_mgr, mock_state):
         """Test error when ensure_repo fails (no branch specified, triggers clone for default branch)."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError("repository not found")
         mock_clone_mgr.return_value = mock_mgr
@@ -1994,11 +1955,11 @@ class TestMainCLI:
         assert result == 1
         mock_mgr.repo_manager.ensure_repo.assert_called_once()
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_main_clone_fails_with_branch(self, mock_clone_mgr, mock_ids):
+    def test_main_clone_fails_with_branch(self, mock_clone_mgr, mock_state):
         """Test error when ensure_repo fails (branch specified, workspace not existing)."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = OSError("network unreachable")
         mock_clone_mgr.return_value = mock_mgr
@@ -2007,18 +1968,18 @@ class TestMainCLI:
         assert result == 1
         mock_mgr.repo_manager.ensure_repo.assert_called_once()
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     def test_main_unsafe_branch_is_reported_not_raised(
-        self, mock_up, mock_clone_mgr, mock_ids, caplog
+        self, mock_up, mock_clone_mgr, mock_state, caplog
     ):
         """An unsafe ref is rejected at the constructor with a message, not a traceback.
 
         `%` passes OWNER_REPO_PATTERN, so this spec reaches id derivation and is
         stopped there — before it can name a container or a directory.
         """
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_clone_mgr.return_value = MagicMock()
         with patch.object(sys, "argv", ["dl", "owner/repo@bad%branch"]):
             result = main()
@@ -2031,11 +1992,11 @@ class TestMainCLI:
         "spec,kind",
         [("x/..", "repo"), ("../x", "owner"), ("x/.", "repo"), ("../..", "owner")],
     )
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     def test_main_rejects_traversal_before_touching_the_cache(
-        self, mock_up, mock_clone_mgr, mock_ids, spec, kind, caplog
+        self, mock_up, mock_clone_mgr, mock_state, spec, kind, caplog
     ):
         """Owner and repo are validated before anything builds a path from them.
 
@@ -2044,7 +2005,7 @@ class TestMainCLI:
         used to happen only at the WorkspaceId, which is constructed *after* that
         call, so the traversal reached the filesystem and was rejected afterwards.
         """
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", spec]):
@@ -2057,16 +2018,16 @@ class TestMainCLI:
         mock_mgr.ensure_workspace.assert_not_called()
         mock_up.assert_not_called()
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_feature_branch_with_slash(
-        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test creating workspace with feature/branch style branch name."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-feature-my-feature")
         mock_clone_mgr.return_value = mock_mgr
@@ -2080,16 +2041,16 @@ class TestMainCLI:
             "owner", "repo", "feature/my-feature", "git@github.com:owner/repo.git"
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_existing_workspace_no_clone_manager(
-        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test existing workspace doesn't use clone manager."""
-        mock_ids.return_value = ["myworkspace"]  # Existing
+        mock_state.return_value = "Stopped"  # Existing
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "myworkspace"]):
@@ -2097,16 +2058,16 @@ class TestMainCLI:
         assert result == 0
         mock_clone_mgr.assert_not_called()
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_repo_without_branch_resolves_default(
-        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test owner/repo without @branch resolves default branch."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
         mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
@@ -2225,13 +2186,10 @@ class TestPurgeFunctionality:
 class TestHostnameAndWorkdir:
     """Tests for hostname setup and container workdir."""
 
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.run_devpod_session")
-    def test_attach_does_not_override_workdir(
-        self, mock_session, _mock_host, _mock_state, _mock_ids
-    ):
+    def test_attach_does_not_override_workdir(self, mock_session, _mock_host, _mock_state):
         """devpod ssh already starts in devcontainer.json's workspaceFolder.
 
         Asserted through main(), because that is where the guessed
@@ -2418,19 +2376,17 @@ class TestGetWorkspaceState:
 class TestFastAttach:
     """Tests for fast-attach optimization (skipping clone manager and workspace_up)."""
 
-    @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_git_spec_existing_workspace_skips_clone_manager(
-        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr
     ):
         """Test git spec with existing workspace skips clone manager."""
         main_id = WorkspaceId("owner", "repo", "main").value
-        mock_ids.return_value = [main_id]  # Workspace already exists
-        mock_state.return_value = "Stopped"  # Not running, so workspace_up still called
+        mock_state.return_value = "Stopped"  # Known but not running, so workspace_up still called
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
@@ -2445,7 +2401,6 @@ class TestFastAttach:
             main_id, workspace_id=None, workspace_identity=main_id, devcontainer=None
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
@@ -2453,11 +2408,10 @@ class TestFastAttach:
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_git_spec_running_workspace_skips_workspace_up(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr
     ):
         """Test git spec with Running workspace skips workspace_up()."""
         main_id = WorkspaceId("owner", "repo", "main").value
-        mock_ids.return_value = [main_id]  # Workspace exists
         mock_state.return_value = "Running"  # Already running
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
@@ -2472,19 +2426,17 @@ class TestFastAttach:
         # Should SSH in to attach
         mock_ssh.assert_called_once_with(main_id, None)
 
-    @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
     def test_git_spec_stopped_workspace_calls_workspace_up(
-        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr
     ):
         """Test git spec with Stopped workspace still calls workspace_up() with ID only."""
         main_id = WorkspaceId("owner", "repo", "main").value
-        mock_ids.return_value = [main_id]  # Workspace exists
-        mock_state.return_value = "Stopped"  # Not running
+        mock_state.return_value = "Stopped"  # Known but not running
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
@@ -2499,17 +2451,15 @@ class TestFastAttach:
             main_id, workspace_id=None, workspace_identity=main_id, devcontainer=None
         )
 
-    @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_existing_id_running_skips_workspace_up(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_ids
+        self, _cache, _hostname, mock_ssh, mock_up, mock_state
     ):
         """Test existing raw workspace ID with Running state skips workspace_up()."""
-        mock_ids.return_value = ["python-template-ws3"]
         mock_state.return_value = "Running"
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "python-template-ws3"]):
@@ -2520,7 +2470,6 @@ class TestFastAttach:
         # Should SSH in to attach
         mock_ssh.assert_called_once_with("python-template-ws3", None)
 
-    @patch("devlaunch.dl.get_workspace_ids")
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
@@ -2528,11 +2477,9 @@ class TestFastAttach:
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_git_spec_no_branch_existing_workspace_skips_clone_manager(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr, mock_ids
+        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr
     ):
         """Test owner/repo (no branch) with existing workspace skips full clone pipeline."""
-        main_id = WorkspaceId("owner", "repo", "main").value
-        mock_ids.return_value = [main_id]  # Workspace exists
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
         mock_clone_mgr.return_value = mock_mgr
@@ -2640,28 +2587,28 @@ class TestCLIErrorMessages:
 
     # --- Invalid workspace spec errors ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_invalid_spec_bare_word(self, mock_ids, caplog):
-        """Bare word that isn't an existing workspace returns error."""
-        mock_ids.return_value = ["real-ws"]
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_invalid_spec_bare_word(self, mock_state, caplog):
+        """Bare word that devpod has no workspace for returns error."""
+        mock_state.return_value = None
         with patch.object(sys, "argv", ["dl", "nonexistent"]):
             result = main()
         assert result == 1
         assert "Unknown workspace 'nonexistent'" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_invalid_spec_partial_match(self, mock_ids, caplog):
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_invalid_spec_partial_match(self, mock_state, caplog):
         """Partial workspace name doesn't match."""
-        mock_ids.return_value = ["my-workspace"]
+        mock_state.return_value = None
         with patch.object(sys, "argv", ["dl", "my-work"]):
             result = main()
         assert result == 1
         assert "Unknown workspace" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_invalid_spec_suggests_alternatives(self, mock_ids, caplog):
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_invalid_spec_suggests_alternatives(self, mock_state, caplog):
         """Error message suggests using --ls or owner/repo."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         with patch.object(sys, "argv", ["dl", "badname"]):
             result = main()
         assert result == 1
@@ -2670,20 +2617,20 @@ class TestCLIErrorMessages:
 
     # --- Unknown subcommand errors ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_unknown_subcommand_message(self, mock_ids, caplog):
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_unknown_subcommand_message(self, mock_state, caplog):
         """Unknown subcommand produces helpful error with -- hint."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         with patch.object(sys, "argv", ["dl", "myws", "badcmd"]):
             result = main()
         assert result == 1
         assert "Unknown command 'badcmd'" in caplog.text
         assert "dl myws -- badcmd" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
-    def test_unknown_subcommand_with_git_spec(self, mock_ids, caplog):
+    @patch("devlaunch.dl.get_workspace_state")
+    def test_unknown_subcommand_with_git_spec(self, mock_state, caplog):
         """Unknown subcommand with owner/repo spec returns error."""
-        mock_ids.return_value = ["repo-main"]
+        mock_state.return_value = "Stopped"
         with patch.object(sys, "argv", ["dl", "repo-main", "deploy"]):
             result = main()
         assert result == 1
@@ -2691,11 +2638,11 @@ class TestCLIErrorMessages:
 
     # --- Clone failure errors (no duplicate messages) ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_clone_fail_no_branch_single_error(self, mock_clone_mgr, mock_ids, caplog):
+    def test_clone_fail_no_branch_single_error(self, mock_clone_mgr, mock_state, caplog):
         """Clone failure (no branch) produces exactly one error line."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
             "Failed to clone repository: repository not found"
@@ -2711,11 +2658,11 @@ class TestCLIErrorMessages:
         assert len(error_records) == 1
         assert error_records[0].message.startswith("Repository 'owner/repo':")
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_clone_fail_with_branch_single_error(self, mock_clone_mgr, mock_ids, caplog):
+    def test_clone_fail_with_branch_single_error(self, mock_clone_mgr, mock_state, caplog):
         """Clone failure (with branch) produces exactly one error line."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = OSError("network unreachable")
         mock_clone_mgr.return_value = mock_mgr
@@ -2726,11 +2673,11 @@ class TestCLIErrorMessages:
         assert len(error_records) == 1
         assert "owner/repo" in error_records[0].message
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_clone_fail_runtime_error_message(self, mock_clone_mgr, mock_ids, caplog):
+    def test_clone_fail_runtime_error_message(self, mock_clone_mgr, mock_state, caplog):
         """RuntimeError from clone surfaces the original error text."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
             "Failed to clone repository: ERROR: Repository not found."
@@ -2743,11 +2690,11 @@ class TestCLIErrorMessages:
 
     # --- Branch ensure failure errors ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_branch_ensure_runtime_error(self, mock_clone_mgr, mock_ids, caplog):
+    def test_branch_ensure_runtime_error(self, mock_clone_mgr, mock_state, caplog):
         """Branch ensure RuntimeError logged with branch name."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.ensure_branch.side_effect = RuntimeError("push failed: permission denied")
         mock_clone_mgr.return_value = mock_mgr
@@ -2757,11 +2704,11 @@ class TestCLIErrorMessages:
         assert "newbranch" in caplog.text
         assert "push failed" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_branch_ensure_os_error(self, mock_clone_mgr, mock_ids, caplog):
+    def test_branch_ensure_os_error(self, mock_clone_mgr, mock_state, caplog):
         """Branch ensure OSError returns 1."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.ensure_branch.side_effect = OSError("git not found")
         mock_clone_mgr.return_value = mock_mgr
@@ -2772,11 +2719,11 @@ class TestCLIErrorMessages:
 
     # --- Workspace prepare failure errors ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_ensure_workspace_runtime_error(self, mock_clone_mgr, mock_ids, caplog):
+    def test_ensure_workspace_runtime_error(self, mock_clone_mgr, mock_state, caplog):
         """ensure_workspace RuntimeError returns 1 with message."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.ensure_workspace.side_effect = RuntimeError("worktree creation failed")
         mock_clone_mgr.return_value = mock_mgr
@@ -2786,11 +2733,11 @@ class TestCLIErrorMessages:
         assert "Failed to prepare workspace" in caplog.text
         assert "worktree creation failed" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_ensure_workspace_os_error(self, mock_clone_mgr, mock_ids, caplog):
+    def test_ensure_workspace_os_error(self, mock_clone_mgr, mock_state, caplog):
         """ensure_workspace OSError returns 1."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.ensure_workspace.side_effect = OSError("disk full")
         mock_clone_mgr.return_value = mock_mgr
@@ -2801,24 +2748,24 @@ class TestCLIErrorMessages:
 
     # --- workspace_up failure errors ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_workspace_up_exception(self, _mock_ssh, mock_up, mock_ids, caplog):
+    def test_workspace_up_exception(self, _mock_ssh, mock_up, mock_state, caplog):
         """workspace_up exception returns 1 with message."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.side_effect = RuntimeError("devpod crashed")
         with patch.object(sys, "argv", ["dl", "myws"]):
             result = main()
         assert result == 1
         assert "Failed to create workspace" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_workspace_up_nonzero_exit(self, mock_ssh, mock_up, mock_ids):
+    def test_workspace_up_nonzero_exit(self, mock_ssh, mock_up, mock_state):
         """workspace_up returning non-zero propagates exit code."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=2)
         with patch.object(sys, "argv", ["dl", "myws"]):
             result = main()
@@ -2827,53 +2774,53 @@ class TestCLIErrorMessages:
 
     # --- Subcommand failure propagation ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
-    def test_recreate_up_failure_propagates(self, mock_up, mock_ids):
+    def test_recreate_up_failure_propagates(self, mock_up, mock_state):
         """recreate subcommand propagates workspace_up failure."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=3)
         with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
             result = main()
         assert result == 3
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_stop")
-    def test_restart_stop_failure_propagates(self, mock_stop, mock_ids):
+    def test_restart_stop_failure_propagates(self, mock_stop, mock_state):
         """restart subcommand propagates stop failure."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_stop.return_value = 1
         with patch.object(sys, "argv", ["dl", "myws", "restart"]):
             result = main()
         assert result == 1
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_stop")
     @patch("devlaunch.dl.workspace_up")
-    def test_restart_up_failure_propagates(self, mock_up, mock_stop, mock_ids):
+    def test_restart_up_failure_propagates(self, mock_up, mock_stop, mock_state):
         """restart subcommand propagates workspace_up failure after successful stop."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_stop.return_value = 0
         mock_up.return_value = MagicMock(returncode=4)
         with patch.object(sys, "argv", ["dl", "myws", "restart"]):
             result = main()
         assert result == 4
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
-    def test_reset_up_failure_propagates(self, mock_up, mock_ids):
+    def test_reset_up_failure_propagates(self, mock_up, mock_state):
         """reset subcommand propagates workspace_up failure."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=5)
         with patch.object(sys, "argv", ["dl", "myws", "reset"]):
             result = main()
         assert result == 5
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
-    def test_code_up_failure_propagates(self, mock_up, mock_ids):
+    def test_code_up_failure_propagates(self, mock_up, mock_state):
         """code subcommand propagates workspace_up failure."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=1)
         with patch.object(sys, "argv", ["dl", "myws", "code"]):
             result = main()
@@ -2881,11 +2828,11 @@ class TestCLIErrorMessages:
 
     # --- No duplicate error messages ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_clone_fail_no_duplicate_failed_to_clone(self, mock_clone_mgr, mock_ids, caplog):
+    def test_clone_fail_no_duplicate_failed_to_clone(self, mock_clone_mgr, mock_state, caplog):
         """Verify 'Failed to clone' doesn't appear twice in error output."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
             "Failed to clone repository: Cloning into bare repository...\nERROR: Repository not found."
@@ -2902,11 +2849,11 @@ class TestCLIErrorMessages:
         assert not msg.startswith("Failed to clone")
         assert msg.startswith("Repository 'owner/repo':")
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_fetch_fail_no_duplicate_messages(self, mock_clone_mgr, mock_ids, caplog):
+    def test_fetch_fail_no_duplicate_messages(self, mock_clone_mgr, mock_state, caplog):
         """Verify fetch failure doesn't produce duplicate error messages."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
             "Failed to fetch repository: network timeout"
@@ -2920,23 +2867,23 @@ class TestCLIErrorMessages:
 
     # --- Edge cases ---
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    def test_workspace_up_os_error(self, _mock_ssh, mock_up, mock_ids, caplog):
+    def test_workspace_up_os_error(self, _mock_ssh, mock_up, mock_state, caplog):
         """workspace_up OSError is caught and returns 1."""
-        mock_ids.return_value = ["myws"]
+        mock_state.return_value = "Stopped"
         mock_up.side_effect = OSError("connection refused")
         with patch.object(sys, "argv", ["dl", "myws"]):
             result = main()
         assert result == 1
         assert "connection refused" in caplog.text
 
-    @patch("devlaunch.dl.get_workspace_ids")
+    @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_clone_fail_empty_error_message(self, mock_clone_mgr, mock_ids, caplog):
+    def test_clone_fail_empty_error_message(self, mock_clone_mgr, mock_state, caplog):
         """Clone failure with empty error still returns 1."""
-        mock_ids.return_value = []
+        mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError("")
         mock_clone_mgr.return_value = mock_mgr
@@ -3000,8 +2947,7 @@ class TestMissingDevpodBinary:
 
     @patch("devlaunch.dl.update_cache_background")
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
-    def test_workspace_up_handler_does_not_swallow_it(self, _ids, _state, _cache, capsys, caplog):
+    def test_workspace_up_handler_does_not_swallow_it(self, _state, _cache, capsys, caplog):
         """Proof for main()'s `except (RuntimeError, OSError)` around workspace_up.
 
         workspace_up shells out to devpod from inside that try block; the
@@ -3015,8 +2961,8 @@ class TestMissingDevpodBinary:
         assert "devpod" in capsys.readouterr().err
 
     @patch("devlaunch.dl.update_cache_background")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
-    def test_delete_handler_does_not_swallow_it(self, _ids, _cache, capsys, caplog):
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
+    def test_delete_handler_does_not_swallow_it(self, _state, _cache, capsys, caplog):
         """Second call site: `dl <ws> rm`, which has its own broad handlers.
 
         workspace_delete reports devpod failures itself and wraps the local
@@ -3347,20 +3293,20 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     refresh -- after the command, not before, and never more than one."""
 
     @patch("devlaunch.dl.run_devpod")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_stop_forces_exactly_one_refresh(self, mock_popen, _mock_ids, mock_devpod):
-        mock_devpod.return_value = MagicMock(returncode=0)
+    def test_stop_forces_exactly_one_refresh(self, mock_popen, mock_devpod):
+        # The one devpod spawn before the command is the `status` probe that
+        # resolves the spec; it answers through run_devpod like the stop itself.
+        mock_devpod.return_value = MagicMock(returncode=0, stdout='{"state": "Stopped"}')
         with patch.object(sys, "argv", ["dl", "myws", "stop"]):
             assert main() == 0
         mock_popen.assert_called_once()
         assert mock_popen.call_args[0][0][-1] == "--force"
 
     @patch("devlaunch.dl.run_devpod")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.subprocess.Popen")
     def test_a_stale_cache_buys_no_refresh_of_the_state_about_to_change(
-        self, mock_popen, _mock_ids, mock_devpod
+        self, mock_popen, mock_devpod
     ):
         """The one refresh a stop gets is the one that runs after the stop.
 
@@ -3368,7 +3314,7 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
         list as it was *before* the command, and the post-command refresh then
         had to race it.
         """
-        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_devpod.return_value = MagicMock(returncode=0, stdout='{"state": "Stopped"}')
         _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
         with patch.object(sys, "argv", ["dl", "myws", "stop"]):
             assert main() == 0
@@ -3377,10 +3323,9 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
 
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.run_devpod")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_delete_forces_exactly_one_refresh(self, mock_popen, _mock_ids, mock_devpod, _mock_mgr):
-        mock_devpod.return_value = MagicMock(returncode=0)
+    def test_delete_forces_exactly_one_refresh(self, mock_popen, mock_devpod, _mock_mgr):
+        mock_devpod.return_value = MagicMock(returncode=0, stdout='{"state": "Stopped"}')
         with patch.object(sys, "argv", ["dl", "myws", "rm"]):
             assert main() == 0
         mock_popen.assert_called_once()
@@ -3389,10 +3334,9 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.subprocess.Popen")
     def test_attaching_to_a_running_workspace_refreshes_once(
-        self, mock_popen, _mock_ids, _mock_state, _mock_ssh, _mock_host
+        self, mock_popen, _mock_state, _mock_ssh, _mock_host
     ):
         with patch.object(sys, "argv", ["dl", "myws"]):
             assert main() == 0
@@ -3402,10 +3346,9 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.subprocess.Popen")
     def test_starting_a_workspace_refreshes_once(
-        self, mock_popen, _mock_ids, _mock_state, mock_up, _mock_ssh, _mock_host
+        self, mock_popen, _mock_state, mock_up, _mock_ssh, _mock_host
     ):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws"]):
@@ -3416,22 +3359,21 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.run_devpod")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
     @patch("devlaunch.dl.subprocess.Popen")
     def test_restart_stops_and_starts_but_still_refreshes_once(
-        self, mock_popen, _mock_ids, mock_devpod, mock_up, _mock_ssh, _mock_host
+        self, mock_popen, mock_devpod, mock_up, _mock_ssh, _mock_host
     ):
         """The old code spawned twice here: once up front and once from stop."""
-        mock_devpod.return_value = MagicMock(returncode=0)
+        mock_devpod.return_value = MagicMock(returncode=0, stdout='{"state": "Stopped"}')
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "restart"]):
             assert main() == 0
         mock_popen.assert_called_once()
 
     @patch("devlaunch.dl.workspace_up")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_code_refreshes_once(self, mock_popen, _mock_ids, mock_up):
+    def test_code_refreshes_once(self, mock_popen, _mock_state, mock_up):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "code"]):
             assert main() == 0
@@ -3440,9 +3382,9 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_recreate_refreshes_once(self, mock_popen, _mock_ids, mock_up, _mock_ssh, _mock_host):
+    def test_recreate_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh, _mock_host):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
             assert main() == 0
@@ -3451,17 +3393,20 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
-    @patch("devlaunch.dl.get_workspace_ids", return_value=["myws"])
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_reset_refreshes_once(self, mock_popen, _mock_ids, mock_up, _mock_ssh, _mock_host):
+    def test_reset_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh, _mock_host):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "reset"]):
             assert main() == 0
         mock_popen.assert_called_once()
 
+    # Both answers are needed to reject a bare name: devpod cannot describe it
+    # *and* does not list it. Either one alone is not a missing workspace.
     @patch("devlaunch.dl.get_workspace_ids", return_value=[])
+    @patch("devlaunch.dl.get_workspace_state", return_value=None)
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_a_rejected_workspace_spec_spawns_nothing(self, mock_popen, _mock_ids):
+    def test_a_rejected_workspace_spec_spawns_nothing(self, mock_popen, _mock_state, _mock_ids):
         """A spec dl refuses to act on changed nothing worth re-indexing."""
         _age_completion_cache(COMPLETION_CACHE_TTL_SECONDS + 60)
         with patch.object(sys, "argv", ["dl", "nonexistent"]):

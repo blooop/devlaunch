@@ -69,6 +69,10 @@ class DevpodSpawns:
     def __init__(self, workspace_ids: List[str], state: str = "Running"):
         self.workspace_ids = workspace_ids
         self.state = state
+        # Workspaces devpod lists but cannot `status` — a provider that is
+        # broken, reconfigured or removed. The two answers really can differ,
+        # which is why dl asks the second question before refusing.
+        self.undescribable: set = set()
         self.commands: List[List[str]] = []
         # Where the listed workspaces' sources sit. `dl --purge` deletes only
         # the ones under devlaunch's own cache directory, so a test that wants
@@ -79,9 +83,20 @@ class DevpodSpawns:
         argv = list(cmd)
         self.commands.append(argv)
         stdout = ""
+        returncode = 0
         if argv[:1] == ["devpod"]:
             stdout = self._devpod_stdout(argv[1:])
-        return subprocess.CompletedProcess(args=argv, returncode=0, stdout=stdout, stderr="")
+            # Real devpod exits non-zero for `status` on a workspace it does
+            # not have, and dl now reads that answer as "not found" -- a fake
+            # that succeeds for every id would hide the cold path entirely.
+            if argv[1:2] == ["status"] and (
+                argv[2] not in self.workspace_ids or argv[2] in self.undescribable
+            ):
+                stdout = ""
+                returncode = 1
+        return subprocess.CompletedProcess(
+            args=argv, returncode=returncode, stdout=stdout, stderr=""
+        )
 
     def popen(self, cmd, *_args, **_kwargs) -> FinishedSession:
         """Stand in for the Popen behind an interactive or one-shot session."""
@@ -171,13 +186,15 @@ class TestHotCommandSpawnCounts:
     def test_attaching_to_a_running_workspace(self, spawns):
         """The interactive attach chain, pinned call by call.
 
-        The hostname round-trip is kept deliberately: bash reads the hostname
-        when the shell starts, so it has to be set before the session dl hands
-        over, and devpod ssh has no hook inside that session to fold it into.
+        One `status` answers both questions dl has -- does devpod know this
+        workspace, and is it running -- so the `list` that used to precede it
+        is gone. The hostname round-trip is kept deliberately: bash reads the
+        hostname when the shell starts, so it has to be set before the session
+        dl hands over, and devpod ssh has no hook inside that session to fold
+        it into.
         """
         assert _run_dl("myws") == 0
         assert spawns.devpod_commands == [
-            ["list", "--output", "json"],
             ["status", "myws", "--output", "json"],
             ["ssh", "myws", "--command", "sudo hostname myws"],
             ["ssh", "myws"],
@@ -198,10 +215,52 @@ class TestHotCommandSpawnCounts:
         """`dl <ws> -- cmd` renders no prompt, so the hostname buys nothing."""
         assert _run_dl("myws", "--", "echo", "hi") == 0
         assert spawns.devpod_commands == [
-            ["list", "--output", "json"],
             ["status", "myws", "--output", "json"],
             ["ssh", "myws", "--command", "bash -lc 'echo hi'"],
         ]
+
+    def test_a_git_spec_one_shot_on_a_running_workspace(self, spawns):
+        """The launcher path: `dl owner/repo@branch -- cmd`, workspace warm.
+
+        This is the exact shape wayfinder hands dl for every agent launch, so
+        its overhead is what sits between picking a ticket and a running
+        agent. Resolving the spec must cost one `status` -- membership and
+        state are the same answer -- and the command itself one `ssh`.
+        """
+        from devlaunch.workspace_id import WorkspaceId
+
+        ws_id = WorkspaceId("blooop", "devlaunch", "wayfinder/devlaunch-7").value
+        spawns.workspace_ids = [ws_id]
+        assert _run_dl("blooop/devlaunch@wayfinder/devlaunch-7", "--", "echo", "hi") == 0
+        assert spawns.devpod_commands == [
+            ["status", ws_id, "--output", "json"],
+            ["ssh", ws_id, "--command", "bash -lc 'echo hi'"],
+        ]
+
+    def test_an_unknown_bare_name_is_refused_after_asking_devpod_twice(self, spawns):
+        """A typo'd workspace name costs a status and then a listing.
+
+        The listing is the second opinion, and it is only ever paid on this
+        path. `status` consults the provider while `list` reads devpod's own
+        records, so a workspace whose provider is broken or gone still lists
+        and cannot be described — and that is exactly the workspace somebody
+        is about to `dl <ws> rm`. Refusing on the status alone would be a
+        wrong diagnosis and would block the command that fixes it.
+        """
+        assert _run_dl("no-such-ws") == 1
+        assert spawns.devpod_commands == [
+            ["status", "no-such-ws", "--output", "json"],
+            ["list", "--output", "json"],
+        ]
+
+    def test_a_bare_name_devpod_lists_but_cannot_describe_is_still_usable(self, spawns):
+        """The reason the listing gets the final word: this workspace exists,
+        and `rm` is the whole point of reaching for it."""
+        spawns.workspace_ids = ["broken-ws"]
+        spawns.undescribable = {"broken-ws"}
+        with patch("devlaunch.dl._get_clone_manager"):
+            assert _run_dl("broken-ws", "rm", "--force") == 0
+        assert ["delete", "broken-ws"] in spawns.devpod_commands
 
 
 class TestWorkspaceListMemoization:

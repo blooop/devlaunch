@@ -213,6 +213,7 @@ than the filesystem has actually done.
 
 | Command | Description |
 |---------|-------------|
+| `dl <user/repo> up` | Start (or create) the workspace without attaching — for prewarming a container before a session wants it |
 | `dl <user/repo> stop` | Stop the workspace |
 | `dl <user/repo> rm, prune` | Delete the workspace |
 | `dl <user/repo> code` | Open in VS Code |

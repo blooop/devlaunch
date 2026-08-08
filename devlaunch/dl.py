@@ -20,6 +20,7 @@ Usage:
 
 import sys
 import subprocess
+import contextlib
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ from . import devpod_ssh, gh_auth, tools, tty_session, workspace_state
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
+from .worktree.locks import hold_lock
 from .worktree.migration import migrate_cache
 from .worktree.workspace_clone import WorkspaceCloneManager
 from .xdg import devlaunch_cache
@@ -980,21 +982,6 @@ def spec_to_workspace_id(spec: str) -> str:
     return spec
 
 
-def validate_workspace_spec(spec: str, existing_ids: List[str]) -> Optional[str]:
-    """Validate workspace spec and return error message if invalid."""
-    # Valid if it's an existing workspace
-    if spec in existing_ids:
-        return None
-    # Valid if it's a path
-    if is_path_spec(spec):
-        return None
-    # Valid if it's a git spec (owner/repo or URL)
-    if is_git_spec(spec):
-        return None
-    # Invalid - provide helpful error
-    return f"Unknown workspace '{spec}'. Use 'dl --ls' to list workspaces, or specify owner/repo or ./path"
-
-
 @dataclass(frozen=True)
 class LocalFolder:
     """devpod is opening a directory on this machine."""
@@ -1379,13 +1366,21 @@ def get_known_repos() -> List[str]:
 
 
 def run_devpod(
-    args: List[str], capture: bool = False, env: Optional[Dict[str, str]] = None
+    args: List[str],
+    capture: bool = False,
+    env: Optional[Dict[str, str]] = None,
+    stdin_file=None,
 ) -> subprocess.CompletedProcess:
     """Run a devpod command.
 
     env replaces devpod's whole environment when given, so a caller that wants
     to add one variable must build it from os.environ. It exists so a secret can
     be handed to devpod without putting it in argv, where ps would expose it.
+
+    stdin_file, when given, becomes the command's stdin -- how tools.py streams
+    the host's binaries into a container over `devpod ssh`, the one channel dl
+    already holds into every workspace. A file rather than bytes, because the
+    payload runs to hundreds of megabytes that have no business in memory.
 
     Security note: Using list form of subprocess.run (not shell=True) prevents
     command injection. Each list element is passed as a separate argument to
@@ -1401,9 +1396,11 @@ def run_devpod(
     try:
         if capture:
             # nosec B603 - using list form, not shell=True; no command injection risk
-            return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+            return subprocess.run(
+                cmd, capture_output=True, text=True, check=False, env=env, stdin=stdin_file
+            )
         # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, check=False, env=env)
+        return subprocess.run(cmd, check=False, env=env, stdin=stdin_file)
     except FileNotFoundError as e:
         raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
@@ -1610,16 +1607,91 @@ def fuzzy_select_workspace() -> Optional[str]:
     return None
 
 
+# How long a cached read of `devpod context options` stays current. The two
+# options dl reads (DOTFILES_URL, DOTFILES_SCRIPT) change only when somebody
+# runs `devpod context set-options`, and the read costs a whole devpod
+# round trip in front of every `up`. An hour mirrors the completion cache's
+# view of how stale devlaunch is willing to be; deleting the cache file is
+# the escape hatch when a changed option is wanted now.
+CONTEXT_OPTIONS_TTL_SECONDS = 3600
+
+
+def _context_options_cache_path() -> pathlib.Path:
+    # Resolved at call time, not from the module-level CACHE_DIR: the test
+    # suite scopes XDG_CACHE_HOME per test, and this cache must follow it.
+    return _get_cache_dir() / "context-options.json"
+
+
+def _launch_lock_path(workspace_id: str) -> pathlib.Path:
+    """The lock two `up`s of one workspace serialize on (see workspace_up).
+
+    Its own directory rather than the repo cache: this lock is keyed by
+    workspace, exists for workspaces that have no clone under the cache at
+    all (paths, URLs), and must not look like a repo to the cache's walkers.
+    Resolved at call time for the same reason as the context-options cache.
+    """
+    return _get_cache_dir() / "launch-locks" / f"{workspace_id}.lock"
+
+
+def _devpod_config_path() -> pathlib.Path:
+    """devpod's own config file, which holds every context and its options.
+
+    Honours DEVPOD_HOME for the same reason the rest of dl does: it is what
+    scopes devpod, and the test suite sets it.
+    """
+    home = os.environ.get("DEVPOD_HOME")
+    root = pathlib.Path(home) if home else pathlib.Path.home() / ".devpod"
+    return root / "config.yaml"
+
+
 def get_context_options() -> dict:
-    """Fetch all devpod context options as a dict of {name: value}."""
+    """The devpod context options, as {name: value}, cached on disk for an hour.
+
+    Only an answer devpod actually gave is cached, so a failed or unreadable
+    read costs nothing worse than the uncached behaviour: the empty dict.
+
+    The TTL is not the only thing that expires it. These options are *per
+    context*, and this is one cache file, so `devpod context use <other>`
+    would otherwise feed the previous context's dotfiles settings to `devpod
+    up` for up to an hour -- a wrong answer nobody could connect to a cache
+    they did not know existed. Both switching context and setting an option
+    rewrite devpod's config file, so a cache older than that file is stale
+    whatever its age. One stat, and no round trip to find out.
+    """
+    cache_path = _context_options_cache_path()
+    try:
+        cached_at = cache_path.stat().st_mtime
+        try:
+            config_changed = _devpod_config_path().stat().st_mtime > cached_at
+        except OSError:
+            # No config file to disagree with; the TTL is the whole test.
+            config_changed = False
+        if not config_changed and time.time() - cached_at < CONTEXT_OPTIONS_TTL_SECONDS:
+            with open(cache_path, encoding="utf-8") as f:
+                cached = json.load(f)
+            if isinstance(cached, dict):
+                return cached
+    except (OSError, json.JSONDecodeError):
+        pass
+
     result = run_devpod(["context", "options", "--output", "json"], capture=True)
     if result.returncode != 0 or not result.stdout.strip():
         return {}
     try:
         data = json.loads(result.stdout)
-        return {k: v.get("value") for k, v in data.items() if v.get("value")}
+        options = {k: v.get("value") for k, v in data.items() if v.get("value")}
     except (json.JSONDecodeError, AttributeError):
         return {}
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(".tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(options, f)
+        temp_path.replace(cache_path)
+    except OSError:
+        pass
+    return options
 
 
 def workspace_up(
@@ -1640,6 +1712,20 @@ def workspace_up(
     workspace identity of its own (see docs/devcontainer-projects.md).
 
     devcontainer is a devcontainer.json path from _resolve_devcontainer_ref.
+
+    One `up` per workspace at a time, serialized over a per-workspace lock.
+    Two dl processes can want the same workspace up at the same moment --
+    wayfinder fires a background `dl <ws> up` the moment a launch is staged,
+    and the human's second enter runs the launch itself seconds later -- and
+    two concurrent `devpod up`s of one workspace is a race devpod does not
+    promise to survive. The loser waits; and a loser that *had* to wait
+    re-checks the state before doing anything, because the most likely reason
+    for the wait is that the winner just brought this very workspace up. That
+    re-check is one status round trip paid only on contention; the everyday
+    uncontended `up` pays nothing but the flock itself.
+
+    The skip does not apply when the call is there for a side effect the
+    sibling cannot have had: an IDE to open, a recreate or reset to perform.
     """
     args = ["up", workspace]
     if workspace_id:
@@ -1662,20 +1748,71 @@ def workspace_up(
         args.extend(["--dotfiles", ctx["DOTFILES_URL"]])
     if ctx.get("DOTFILES_SCRIPT"):
         args.extend(["--dotfiles-script", ctx["DOTFILES_SCRIPT"]])
-    # Give every workspace the host's gh login, whatever its devcontainer.json
-    # does or doesn't set up for itself.
-    with gh_auth.up_args() as token_args:
-        args.extend(token_args)
-        result = run_devpod(args)
-    # `up` creates and starts workspaces, so any snapshot of `devpod list`
-    # taken before it is now out of date.
-    invalidate_workspace_list_cache()
-    # The tools a session always needs, for whatever repo this is: `up` is the
-    # one path that runs for every workspace dl opens and is already slow
-    # enough to absorb a round-trip. Only after a successful `up` -- there is
-    # no container to install into otherwise.
-    if result.returncode == 0 and identity:
-        tools.ensure_tools(identity, run_devpod)
+    with contextlib.ExitStack() as stack:
+        # Two ways to end up unserialized, and neither is worth failing a
+        # launch over. No identity means there is nothing to key a lock on,
+        # and the caller shapes that reach here that way are not the
+        # concurrent-launch ones. A lock file that cannot be created means an
+        # unwritable cache directory -- a container writing as another uid is
+        # a documented occurrence in this very cache (see purge_all_data), and
+        # a full or read-only disk lands here too. Serialization guards
+        # against a race that may not even be happening, so taking the whole
+        # command down with an errno traceback in front of a `devpod up` that
+        # would have worked is the worse answer.
+        waited = False
+        if identity:
+            try:
+                waited = stack.enter_context(
+                    hold_lock(
+                        _launch_lock_path(identity),
+                        waiting_note=f"another launch of {identity}",
+                    )
+                )
+            except OSError as e:
+                logging.debug("Could not take the launch lock for %s: %s", identity, e)
+        if (
+            identity
+            and waited
+            and not (ide or recreate or reset or devcontainer)
+            and get_workspace_state(identity) == "Running"
+        ):
+            # The sibling this call waited on already brought the workspace
+            # up; re-running `devpod up` would re-walk a whole container
+            # lifecycle to arrive where we already are.
+            #
+            # Only for a call that wanted nothing the sibling cannot have
+            # done. An IDE to open, a rebuild, a reset and a devcontainer
+            # variant are all requests a running workspace is not the answer
+            # to -- and the variant especially, since skipping it would hand
+            # the user the default container while they asked for another one
+            # and say nothing about it.
+            logging.info(f"Workspace {identity} was brought up by another dl run.")
+            invalidate_workspace_list_cache()
+            # The tools are still this call's business. "Running" says the
+            # sibling's `devpod up` finished, not that its ensure_tools did:
+            # it may have been interrupted between the two, its `up` may have
+            # failed after the container started, or it may have run with
+            # DEVLAUNCH_NO_TOOLS set where this one does not. ensure_tools is
+            # idempotent and costs one probe round trip against a workspace
+            # that is already up, which is the cheap way to stop a skipped
+            # `up` from meaning a session with no tools.
+            tools.ensure_tools(identity, run_devpod)
+            return subprocess.CompletedProcess(args=["devpod"] + args, returncode=0)
+        # Give every workspace the host's gh login, whatever its
+        # devcontainer.json does or doesn't set up for itself.
+        with gh_auth.up_args() as token_args:
+            args.extend(token_args)
+            result = run_devpod(args)
+        # `up` creates and starts workspaces, so any snapshot of `devpod list`
+        # taken before it is now out of date.
+        invalidate_workspace_list_cache()
+        # The tools a session always needs, for whatever repo this is: `up` is
+        # the one path that runs for every workspace dl opens and is already
+        # slow enough to absorb a round-trip. Only after a successful `up` --
+        # there is no container to install into otherwise. Inside the lock, so
+        # a launch waiting on a prewarm cannot attach before the tools land.
+        if result.returncode == 0 and identity:
+            tools.ensure_tools(identity, run_devpod)
     return result
 
 
@@ -1895,6 +2032,7 @@ Workspace sources:
     dl ./path                        Create from local path
 
 Workspace commands:
+    dl <user/repo> up                Start the workspace without attaching
     dl <user/repo> stop              Stop the workspace
     dl <user/repo> rm, prune         Delete the workspace. Refuses if its clone
                                      holds uncommitted or unpushed work; add
@@ -2135,22 +2273,25 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
     raw_spec = args[0]
     subcommand = args[1] if len(args) > 1 else None
 
-    # Validate the workspace spec
-    existing_ids = get_workspace_ids()
-    error = validate_workspace_spec(raw_spec, existing_ids)
-    if error:
-        logging.error(error)
-        return 1
-
-    # Resolve workspace spec and ID
-    is_existing = raw_spec in existing_ids
+    # Resolve workspace spec and ID.
+    #
+    # "Does devpod already know this workspace?" used to be answered with a
+    # `devpod list` paid by every workspace command. One `devpod status <id>`
+    # answers it for the one workspace the command is about, at the price the
+    # fast-attach check below was already paying -- so it is asked once, and
+    # the answer (known_state) is threaded down instead of asked again. The
+    # spec shapes cannot collide: a workspace id never contains `/`, `:` or a
+    # path prefix, so whichever arm matches is the only arm that could.
+    #
+    # The trade: `devpod status` cannot tell "no such workspace" from a devpod
+    # that failed to answer, where the listing raised UnreadableWorkspaceList.
+    # A launch made wrongly cold by that redoes idempotent git work and hands
+    # devpod a source it already knows; devpod's own error then names the real
+    # problem.
     parsed = parse_owner_repo_branch(raw_spec)
+    known_state: Optional[str] = None
 
-    if is_existing:
-        workspace_spec = raw_spec
-        workspace_id = raw_spec
-        custom_id = None  # Don't pass --id for existing workspaces
-    elif parsed:
+    if parsed:
         # Git spec (owner/repo[@branch]) — check if workspace already exists first
         owner_repo, branch = parsed
         owner, repo = owner_repo.split("/", 1)
@@ -2194,7 +2335,8 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         workspace_id = workspace.value
 
         # Fast path: if devpod already knows this workspace, skip clone manager
-        if workspace_id in existing_ids:
+        known_state = get_workspace_state(workspace_id)
+        if known_state is not None:
             workspace_spec = workspace_id
             custom_id = None
         else:
@@ -2226,10 +2368,33 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             except (RuntimeError, OSError, ValueError) as e:
                 logging.error(f"Failed to prepare workspace: {e}")
                 return 1
-    else:
+    elif is_path_spec(raw_spec) or is_git_spec(raw_spec):
         workspace_spec = expand_workspace_spec(raw_spec)
         workspace_id = spec_to_workspace_id(raw_spec)
         custom_id = workspace_id  # Pass --id to create with our desired ID
+    else:
+        # A bare name can only be a workspace devpod already has; everything
+        # creatable is a path or a git spec and matched above.
+        known_state = get_workspace_state(raw_spec)
+        if known_state is None and raw_spec not in get_workspace_ids():
+            logging.error(
+                f"Unknown workspace '{raw_spec}'. Use 'dl --ls' to list workspaces, "
+                f"or specify owner/repo or ./path"
+            )
+            return 1
+        # `status` failing is not the same as the workspace not existing, and
+        # the difference decides whether the user can clean it up. `status`
+        # consults the provider; `list` only reads devpod's own records. So a
+        # workspace whose provider is broken, reconfigured or gone still
+        # lists and cannot be described -- and that is precisely the
+        # workspace somebody is about to run `dl <ws> rm` on. Answering
+        # "Unknown workspace" there would be both a wrong diagnosis and a
+        # refusal of the command that fixes it, so the listing gets the final
+        # word. It costs a round trip only on the failure path, where a
+        # second one is not what is wrong.
+        workspace_spec = raw_spec
+        workspace_id = raw_spec
+        custom_id = None  # Don't pass --id for existing workspaces
 
     # Handle workspace subcommands
     # Paths below that never call workspace_up cannot honour a config choice.
@@ -2256,6 +2421,31 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
                 )
                 return 1
         return workspace_delete(workspace_id)
+
+    if subcommand == "up":
+        # Start (or create) the workspace without attaching: the warm half of
+        # a launch, for callers that want the container ready before a user
+        # arrives -- e.g. wayfinder prewarming a ticket's workspace while its
+        # launch overlay is still open. Idempotent and quiet when already up.
+        if custom_id is None and known_state == "Running":
+            logging.info(f"Workspace {workspace_id} is already running.")
+            # Still top up the tools. `up` is one of the two verbs tools.py
+            # names as how a workspace that missed provisioning -- started by
+            # something other than dl, or created before provisioning existed
+            # -- gets it, and returning here without them would make the
+            # documented recovery the one path that cannot recover. It is a
+            # probe round trip against a running workspace, and silent when
+            # there is nothing to do.
+            tools.ensure_tools(workspace_id, run_devpod)
+            return 0
+        result = workspace_up(
+            workspace_spec,
+            workspace_id=custom_id,
+            workspace_identity=workspace_id,
+            devcontainer=devcontainer,
+        )
+        update_cache_background(force=True)
+        return result.returncode
 
     if subcommand == "code":
         result = workspace_up(
@@ -2327,8 +2517,10 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         )
         return 1
 
-    # Fast-attach: skip workspace_up() if workspace is already running
-    if custom_id is None and get_workspace_state(workspace_id) == "Running":
+    # Fast-attach: skip workspace_up() if workspace is already running.
+    # known_state is the status fetched during spec resolution above; every
+    # path that leaves custom_id None filled it in.
+    if custom_id is None and known_state == "Running":
         logging.info(f"Workspace {workspace_id} is already running, attaching...")
         if devcontainer:
             logging.warning(
