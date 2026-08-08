@@ -187,6 +187,27 @@ class TestThePurgeSaysWhichOfTheThreeThingsHappened:
         assert f"Removed nothing from {cache_dir}" in out
         assert "Removed what it could" not in out
 
+    def test_a_cache_whose_only_content_is_refused_removed_nothing(self, cache_dir, capsys):
+        """The same answer reached the long way round, and the one a purge is
+        most likely to give in earnest: every directory down to the clone is
+        writable, so the removal walks the whole cache and still gets nowhere.
+
+        Distinct from the case above, where the cache directory itself was
+        unwritable and the walk never started. A removal that reports what it
+        managed by counting its refusals cannot tell these two apart from a
+        partial success -- both are "some paths were refused".
+        """
+        (cache_dir / "completions.json").unlink()
+        (cache_dir / "metadata.json").unlink()
+        refused = make_unremovable(cache_dir / "repos" / "blooop" / "e2e-repo" / "clone")
+
+        assert purge_all_data() == 1
+
+        out = capsys.readouterr().out
+        assert f"Removed nothing from {cache_dir}" in out
+        assert "Removed what it could" not in out
+        assert str(refused) in out
+
     def test_a_cache_it_partly_emptied_says_that_instead(self, cache_dir, capsys):
         make_unremovable(cache_dir / "repos" / "blooop" / "e2e-repo" / "clone")
 
@@ -237,6 +258,20 @@ class TestTheRemovalIsAValue:
             assert not (tree / "removable").exists()
         finally:
             restore_permissions(tree)
+
+    def test_a_tree_it_emptied_but_cannot_remove_names_the_tree(self, tmp_path):
+        """A directory's own removal is governed by its parent, so emptying one
+        completely and still being refused it is a real outcome -- and it is the
+        second arm, not the first: everything that was in it did go."""
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "file").write_text("goes")
+        tmp_path.chmod(0o500)
+        try:
+            assert remove_as_far_as_permitted(tree) == RemovedWhatItCould((tree,))
+            assert not (tree / "file").exists()
+        finally:
+            tmp_path.chmod(0o700)
 
     def test_a_symlink_is_unlinked_and_not_walked_into(self, tmp_path):
         """A purge removes devlaunch's cache and nothing else. Following a link
