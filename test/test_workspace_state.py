@@ -1,3 +1,4 @@
+# pylint: disable=redefined-outer-name,unused-argument
 """What a workspace holds, and dl's refusal to destroy the only copy of it.
 
 A workspace per branch means workspaces accumulate. Removing the finished ones
@@ -155,15 +156,15 @@ class TestTheJsonListing:
                 return subprocess.CompletedProcess(args, 0, json.dumps({"state": "Stopped"}), "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with patch("devlaunch.dl._get_cache_dir", return_value=cache), patch(
-            "devlaunch.dl.run_devpod", side_effect=devpod
-        ), patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)):
+        with (
+            patch("devlaunch.dl._get_cache_dir", return_value=cache),
+            patch("devlaunch.dl.run_devpod", side_effect=devpod),
+            patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)),
+        ):
             code = main(["--ls", "--json"])
         return code, json.loads(capsys.readouterr().out)
 
-    def test_it_reports_the_repo_branch_and_that_nothing_is_unsaved(
-        self, tmp_path, clone, capsys
-    ):
+    def test_it_reports_the_repo_branch_and_that_nothing_is_unsaved(self, tmp_path, clone, capsys):
         code, report = self._run(tmp_path, clone, capsys)
         assert code == 0
         ours = next(w for w in report if w["id"] == "r-feature-aaa")
@@ -173,9 +174,7 @@ class TestTheJsonListing:
         assert ours["unsaved"] is None
         assert ours["state"] == "Stopped"
 
-    def test_unsaved_work_is_reported_so_a_caller_can_leave_it_alone(
-        self, tmp_path, clone, capsys
-    ):
+    def test_unsaved_work_is_reported_so_a_caller_can_leave_it_alone(self, tmp_path, clone, capsys):
         (clone / "scratch.txt").write_text("half-finished\n")
         _code, report = self._run(tmp_path, clone, capsys)
         ours = next(w for w in report if w["id"] == "r-feature-aaa")
@@ -221,10 +220,11 @@ class TestTheDeleteGuard:
                 deleted.append(args[1])
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with patch("devlaunch.dl._get_cache_dir", return_value=cache), patch(
-            "devlaunch.dl.run_devpod", side_effect=devpod
-        ), patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)), patch(
-            "devlaunch.dl.update_cache_background"
+        with (
+            patch("devlaunch.dl._get_cache_dir", return_value=cache),
+            patch("devlaunch.dl.run_devpod", side_effect=devpod),
+            patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)),
+            patch("devlaunch.dl.update_cache_background"),
         ):
             code = main(argv)
         return code, deleted
@@ -234,9 +234,7 @@ class TestTheDeleteGuard:
         assert code == 0
         assert deleted == ["r-feature-aaa"]
 
-    def test_unpushed_work_stops_the_delete_and_says_how_to_insist(
-        self, tmp_path, clone, caplog
-    ):
+    def test_unpushed_work_stops_the_delete_and_says_how_to_insist(self, tmp_path, clone, caplog):
         (clone / "more.txt").write_text("more\n")
         commit(clone, "more")
         code, deleted = self._run(tmp_path, clone, ["r-feature-aaa", "rm"])
