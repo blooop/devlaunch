@@ -54,7 +54,27 @@
     },
     "mounts": [
         "source=${localWorkspaceFolderBasename}-pixi,target=${containerWorkspaceFolder}/.pixi,type=volume",
-        "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind",
+
+        // Two files, not the directory they sit in. devpod running in here
+        // writes `Host <id>.devpod` blocks into $HOME/.ssh/config, each with a
+        // ProxyCommand naming a devpod binary that exists only inside this
+        // container -- so mounting the directory put entries on the
+        // developer's real config that nothing outside could ever honour, and
+        // that survived the container they pointed at. Left container-local,
+        // they die with it.
+        //
+        // These two are what SSH actually needs here, measured rather than
+        // assumed: the agent socket alone authenticates to GitHub, so the
+        // private key is not load-bearing and is deliberately not mounted,
+        // while without known_hosts a clone fails host key verification.
+        // known_hosts is read-only because nothing in here has any business
+        // adding hosts to the developer's list.
+        //
+        // The HOME-relative socket path is an assumption -- stock OpenSSH puts
+        // its agent socket in /tmp -- but a pre-existing one, since
+        // containerEnv already hardcodes the same path.
+        "source=${localEnv:HOME}/.ssh/agent.sock,target=/home/vscode/.ssh/agent.sock,type=bind",
+        "source=${localEnv:HOME}/.ssh/known_hosts,target=/home/vscode/.ssh/known_hosts,type=bind,readonly",
         "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind"
     ],
     // Register the docker provider with the container's own devpod. A fresh
