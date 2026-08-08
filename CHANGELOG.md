@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-08
+
+Workspaces come with the tools a session needs. Nothing about how you install or
+run `dl` changes; existing workspaces pick the tools up on their next restart.
+
 ### Added
 - `gh` and `claude` are installed into every workspace `dl` opens, so both are on
   PATH in an interactive session, in `dl <ws> -- <command>`, and under `aid`,
