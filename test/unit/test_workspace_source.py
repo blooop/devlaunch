@@ -22,6 +22,7 @@ source is that shape, not an invented one.
 
 import json
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -33,6 +34,7 @@ from devlaunch.dl import (
     Workspace,
     describe_source,
     discover_repos_from_workspaces,
+    fuzzy_select_workspace,
     parse_workspaces,
 )
 
@@ -153,6 +155,35 @@ class TestTheListingDescribesEverySource:
         for source in ({"localFolder": "/p"}, {"gitRepository": "u"}, {"image": "i"}, {}):
             kind, detail = describe_source(_listed(source).source)
             assert kind and detail
+
+
+class TestTheFuzzyPickerOffersEverySource:
+    """The other of the two display call sites, and the one with no tests at all
+    before this change -- so the arm the ticket is about could have been dropped
+    from the picker too and nothing would have said."""
+
+    def test_a_workspace_devlaunch_cannot_read_is_still_offered_and_selectable(self):
+        workspaces = [
+            _listed({"localFolder": "/home/dev/myproject"}, workspace_id="mine"),
+            _listed({"image": "ubuntu:24.04"}, workspace_id="from-an-image"),
+        ]
+        offered = []
+
+        def fake_iterfzf(options, multi=False):  # noqa: ARG001 - matches iterfzf's signature
+            offered.extend(options)
+            return offered[1]
+
+        with patch("devlaunch.dl.list_workspaces", return_value=workspaces):
+            with patch("iterfzf.iterfzf", fake_iterfzf):
+                selected = fuzzy_select_workspace()
+
+        assert offered == [
+            "mine | local | /home/dev/myproject",
+            'from-an-image | unknown | {"image": "ubuntu:24.04"}',
+        ]
+        # Picking the row maps back to the workspace, which is what makes it an
+        # offer rather than a line of text.
+        assert selected == "from-an-image"
 
 
 class TestASourceThatIsNotAnObjectAtAllIsAnUnreadableListing:
