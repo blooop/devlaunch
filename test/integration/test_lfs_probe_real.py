@@ -25,6 +25,10 @@ from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 # in a clone made with GIT_LFS_SKIP_SMUDGE=1.
 POINTER = b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"0" * 64 + b"\nsize 12\n"
 
+# What materialization would leave behind: the twelve bytes POINTER declares.
+REAL_CONTENT = b"real content"
+assert len(REAL_CONTENT) == 12, "must match the size the pointer declares"
+
 LFS_ATTRIBUTE_LINE = "*.bin filter=lfs diff=lfs merge=lfs -text\n"
 
 
@@ -34,11 +38,20 @@ def git(repo, *args):
 
 
 def make_repo(path):
-    """Create a real git repository with committer identity configured."""
+    """Create a real git repository these tests can commit to.
+
+    Signing is switched off explicitly rather than left to whatever the machine
+    running the suite has in its global config: with `commit.gpgsign = true` set
+    there, every commit below fails for want of a key, and the suite reports a
+    dozen failures about git-lfs that have nothing to do with git-lfs. Other
+    integration tests in this repo still inherit that config; this one does not
+    need to.
+    """
     path.mkdir(parents=True, exist_ok=True)
     git(path, "init", "-q")
     git(path, "config", "user.email", "test@example.com")
     git(path, "config", "user.name", "Test")
+    git(path, "config", "commit.gpgsign", "false")
     return path
 
 
@@ -174,6 +187,46 @@ class TestPointerDetectionAgainstRealRepos:
         assert answer is True
         assert forked_git_lfs(issued)
 
+    def test_pointer_is_detected_when_the_clone_has_no_index(self, tmp_path):
+        """A clone left with no `.git/index` still gets its pointers materialized.
+
+        An interrupted clone or checkout can leave the index missing entirely,
+        and git answers `ls-files` for such a clone with *success and no output*
+        — not with an error. A gate that asked only the index would read that as
+        "nothing is tracked, so nothing can be a pointer" and skip, while
+        git-lfs, which reads HEAD as well, still names the pointer. Nothing
+        about that heals on its own: the materialization retry exists for
+        exactly the interrupted operations that produce this state, so the skip
+        would repeat on every later launch.
+        """
+        ws = make_repo(tmp_path / "ws")
+        (ws / ".gitattributes").write_text(LFS_ATTRIBUTE_LINE)
+        commit_pointer(ws)
+        (ws / ".git" / "index").unlink()
+
+        answer, issued = check_pointers(ws, lfs_reports=["big.bin"])
+
+        assert answer is True
+        assert forked_git_lfs(issued)
+
+    def test_pointer_only_in_head_is_detected(self, tmp_path):
+        """A pointer git-lfs names from HEAD counts even when the index drops it.
+
+        `git lfs ls-files` reports the union of HEAD's tree and the index, so
+        un-staging a tracked path leaves it named by git-lfs and absent from the
+        index. The gate has to ask the same union, or it answers "no pointers"
+        about a path the probe would have named.
+        """
+        ws = make_repo(tmp_path / "ws")
+        (ws / ".gitattributes").write_text(LFS_ATTRIBUTE_LINE)
+        commit_pointer(ws)
+        git(ws, "rm", "-q", "--cached", "big.bin")
+
+        answer, issued = check_pointers(ws, lfs_reports=["big.bin"])
+
+        assert answer is True
+        assert forked_git_lfs(issued)
+
     def test_unmaterialized_pointer_is_detected_on_every_launch(self, tmp_path):
         """A workspace left on pointers is retried, not written off.
 
@@ -199,7 +252,7 @@ class TestPointerDetectionAgainstRealRepos:
         ws = make_repo(tmp_path / "ws")
         (ws / ".gitattributes").write_text(LFS_ATTRIBUTE_LINE)
         commit_pointer(ws)
-        (ws / "big.bin").write_bytes(b"the real twelve bytes of content")
+        (ws / "big.bin").write_bytes(REAL_CONTENT)
 
         answer, _ = check_pointers(ws, lfs_reports=["big.bin"])
 
@@ -238,9 +291,36 @@ class TestProbeCostAgainstRealRepos:
         ws = make_repo(tmp_path / "ws")
         (ws / ".gitattributes").write_text(LFS_ATTRIBUTE_LINE)
         commit_pointer(ws)
-        (ws / "big.bin").write_bytes(b"the real twelve bytes of content")
+        (ws / "big.bin").write_bytes(REAL_CONTENT)
 
         answer, issued = check_pointers(ws, lfs_reports=["big.bin"])
+
+        assert answer is False
+        assert not forked_git_lfs(issued)
+
+    def test_tracked_paths_that_will_not_open_are_not_read_as_pointers(self, tmp_path):
+        """A path that cannot be opened is not evidence of a pointer.
+
+        The counterpart to the scan-does-not-stop test above: every ordinary
+        workspace has tracked paths that will not open — a file the user
+        deleted, a dangling symlink, a submodule's directory — and none of them
+        says anything about LFS. Reading "cannot open it" as "assume pointer"
+        would reinstate the git-lfs fork on every launch of every such
+        workspace, which is the entire cost this gate removes, and would do it
+        with the answer unchanged.
+        """
+        ws = make_repo(tmp_path / "ws")
+        (ws / "gone.txt").write_text("deleted from the working tree later\n")
+        (ws / "dangling").symlink_to("no-such-target")
+        submodule = make_repo(ws / "nested")
+        (submodule / "f").write_text("x\n")
+        git(submodule, "add", "-A")
+        git(submodule, "commit", "-qm", "nested")
+        git(ws, "add", "-A")
+        git(ws, "commit", "-qm", "init")
+        (ws / "gone.txt").unlink()
+
+        answer, issued = check_pointers(ws)
 
         assert answer is False
         assert not forked_git_lfs(issued)

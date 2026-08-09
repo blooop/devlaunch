@@ -26,9 +26,10 @@ def stub_git(tracked=(), lfs_files=(), index_readable=True):
     """Stand in for git in the tests that mock the subprocess boundary wholesale.
 
     Only the two listings the LFS path reads are modelled, each in the shape git
-    really returns it: `git ls-files -z` answers from the index as NUL-separated
-    bytes, `git lfs ls-files` as newline-separated text. Every other command
-    succeeds silently.
+    really returns it: `git ls-files -z --with-tree=HEAD` answers with the union
+    of HEAD and the index as NUL-separated bytes, `git lfs ls-files` with the
+    same union as newline-separated text. Every other command succeeds silently.
+    `tracked` is that union, which is why one list feeds both.
     """
 
     def run(cmd, *_args, **_kwargs):
@@ -422,6 +423,35 @@ class TestEnsureWorkspace:
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert not any(cmd[:2] == ["git", "lfs"] for cmd in issued)
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_lfs_path_missing_from_the_working_tree_is_not_pulled_forever(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """An LFS-tracked path that is not on disk is not an unmaterialized pointer.
+
+        A sparse checkout leaves LFS-tracked paths out of the working tree
+        altogether, so opening them fails. Reading that failure as "still a
+        pointer" would run `git lfs pull origin` — an unbounded, uncaptured
+        fetch that can be gigabytes — on every launch of such a workspace,
+        forever, because the pull does not put the excluded path on disk and so
+        never changes the answer.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        # An existing workspace whose one LFS-tracked path is absent from disk.
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+
+        mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] not in issued
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")

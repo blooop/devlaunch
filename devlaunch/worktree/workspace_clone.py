@@ -113,7 +113,17 @@ class WorkspaceCloneManager:
 
     @staticmethod
     def _is_lfs_pointer(path: Path) -> bool:
-        """True if *path* holds an unmaterialized git-lfs pointer."""
+        """True if *path* holds an unmaterialized git-lfs pointer.
+
+        A path that will not open is not a pointer. Every ordinary workspace has
+        several — a deleted file, a dangling symlink, a submodule's directory, a
+        path a sparse checkout leaves off disk — and none of them says anything
+        about LFS. Answering True instead is not a harmless over-estimate: it
+        reinstates the git-lfs fork at the gate, and at the materialization call
+        site it drives ``git lfs pull origin`` — unbounded and uncaptured — on
+        every launch of such a workspace, forever, since the pull cannot put a
+        path the checkout excludes back on disk.
+        """
         try:
             with open(path, "rb") as f:
                 return f.read(len(_LFS_POINTER_PREFIX)) == _LFS_POINTER_PREFIX
@@ -122,13 +132,27 @@ class WorkspaceCloneManager:
 
     @classmethod
     def _may_hold_lfs_pointers(cls, ws_path: Path) -> bool:
-        """True unless no tracked file in the clone holds a pointer.
+        """True unless nothing git-lfs could name holds a pointer.
 
-        A cheap necessary condition for _has_lfs_pointers, standing in front of
-        the git-lfs fork. Every path ``git lfs ls-files`` can name is a tracked
-        path, so if no tracked file holds a pointer the probe would answer False
-        anyway and forking git-lfs to hear it is pure cost — which the
-        overwhelmingly common non-LFS repo pays on every single launch.
+        A necessary condition for _has_lfs_pointers, standing in front of the
+        git-lfs fork. ``git lfs ls-files`` reports the union of HEAD's tree and
+        the index, and ``--with-tree=HEAD`` is what makes ``git ls-files``
+        enumerate that same union — so if none of those paths holds a pointer
+        the probe would answer False anyway, and forking git-lfs to hear it is
+        pure cost, which the overwhelmingly common non-LFS repo pays on every
+        single launch.
+
+        Cheaper than the probe, not free: one fork plus the first few bytes of
+        each listed path. It is the same O(tracked files) shape as the probe it
+        stands in front of, at a much smaller constant.
+
+        The union is load-bearing. The index alone is a strictly smaller set
+        than what git-lfs can name, and the gap is reachable with no user
+        action: a clone left with no ``.git/index`` — an interrupted clone or
+        checkout, exactly what the materialization retry exists to recover from
+        — makes ``git ls-files`` exit *zero with empty output*, and reading that
+        as "nothing tracked, so no pointers" would strand the workspace on stub
+        files on every later launch.
 
         Deliberately a question about pointer *content*, not about declarations:
         a repo can hold committed pointers with no ``filter=lfs`` attribute of
@@ -138,11 +162,13 @@ class WorkspaceCloneManager:
         actually needs to know, and it is also the thing that stops being true
         once materialization succeeds.
 
-        Fails open: an unlistable index means "can't tell", not "no LFS", so the
-        probe runs — the same degradation _lfs_tracked_files refuses.
+        Fails open: paths that cannot be enumerated mean "can't tell", not "no
+        LFS", so the probe runs — the same degradation _lfs_tracked_files
+        refuses. An unborn HEAD lands there too, and pays one probe to be told
+        that a repo with no commits holds nothing.
         """
         result = subprocess.run(
-            ["git", "ls-files", "-z"],
+            ["git", "ls-files", "-z", "--with-tree=HEAD"],
             cwd=ws_path,
             capture_output=True,
             check=False,
@@ -181,9 +207,10 @@ class WorkspaceCloneManager:
         interrupted or failed materialization is retried on the next run instead
         of leaving the workspace on pointer files for good.
 
-        The cheap scan runs first and can only rule the answer out, never in, so
-        the git-lfs probe still decides which pointer-shaped files are really
-        LFS — the answer is what it always was, minus a fork nobody needed.
+        The working-tree scan runs first and can only rule the answer out, never
+        in, so the git-lfs probe still decides which pointer-shaped files are
+        really LFS — the answer is what it always was, minus a fork nobody
+        needed.
         """
         if shutil.which("git-lfs") is None:
             return False
