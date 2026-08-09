@@ -2069,7 +2069,22 @@ Examples:
     print(help_text)
 
 
+_CLONE_MANAGER_KEY = "clone_manager"
 _cache: dict[str, WorkspaceCloneManager] = {}
+
+
+def invalidate_clone_manager() -> None:
+    """Forget the memoized clone manager, so the next use builds a fresh one.
+
+    The memo below is bound to the cache and config directories that were in
+    effect when it was built. A real dl invocation is one short-lived process,
+    so those never move under it. A test session is not: without this, the
+    first test to build a manager answers every later test's question about the
+    cache, and a test asserting that a code path did *not* touch metadata.json
+    would pass whether or not the path was still touching it -- it would only
+    be observing the earlier test's memo.
+    """
+    _cache.pop(_CLONE_MANAGER_KEY, None)
 
 
 def _get_clone_manager() -> WorkspaceCloneManager:
@@ -2079,15 +2094,18 @@ def _get_clone_manager() -> WorkspaceCloneManager:
     dl's single construction point for the object that owns every read of a
     workspace path, so nothing can reach a stale path before the rename. It is
     lazy, so the commands that touch no workspace -- `--help`, `--version`,
-    `--ls`, the completion commands, `--purge`, and opening an existing workspace
-    by name -- never reach it, which keeps #58's promise that help does no work.
+    `--ls`, the completion commands, `--purge`, opening an existing workspace by
+    name, and (since #145) a warm `owner/repo@branch` launch, which attaches to a
+    workspace devpod already reports as running -- never reach it, which keeps
+    #58's promise that help does no work. Migration therefore does not run on
+    those shapes; it runs on the next command that does build the manager.
     And the memo makes it at most once per process.
 
     On an already-migrated cache this costs one integer comparison, because the
     trigger is the version header the storage load already parsed. Nothing here
     spawns devpod: the orphaned container ids come from metadata.
     """
-    if "clone_manager" not in _cache:
+    if _CLONE_MANAGER_KEY not in _cache:
         manager = WorkspaceCloneManager()
         try:
             # Under the metadata lock so two dl processes cannot migrate at
@@ -2102,8 +2120,8 @@ def _get_clone_manager() -> WorkspaceCloneManager:
             # written by the final save, so an unwritten file means the next run
             # migrates again and finds them already in place.
             logging.warning(f"Could not migrate the workspace cache: {e}")
-        _cache["clone_manager"] = manager
-    return _cache["clone_manager"]
+        _cache[_CLONE_MANAGER_KEY] = manager
+    return _cache[_CLONE_MANAGER_KEY]
 
 
 # Commands that read the completion cache without changing what it describes.
@@ -2310,11 +2328,18 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
 
         remote_url = f"git@github.com:{owner_repo}.git"
 
-        clone_mgr = _get_clone_manager()
         repo_ensured = False
 
         # Resolve branch early so we can compute workspace ID
         if not branch:
+            # Constructed here rather than above the branch, because building it
+            # reads config.toml, loads metadata.json under the metadata lock and
+            # runs the cache migration -- and a spec that already names its
+            # branch reaches the fast-attach check below without needing any of
+            # it (#145). A bare owner/repo does need it, to name the default
+            # branch, so this arm still pays for it. _get_clone_manager memoizes,
+            # so a launch that passes through both arms builds it once.
+            clone_mgr = _get_clone_manager()
             try:
                 clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
             except (RuntimeError, OSError) as e:
@@ -2340,7 +2365,10 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             workspace_spec = workspace_id
             custom_id = None
         else:
-            # Full path: clone locally and pass local path to DevPod
+            # Full path: clone locally and pass local path to DevPod. The cold
+            # path is the other place that needs the manager, so it is the other
+            # place that builds it.
+            clone_mgr = _get_clone_manager()
             if not repo_ensured:
                 try:
                     clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)

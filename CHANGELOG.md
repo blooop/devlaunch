@@ -33,18 +33,51 @@ table and should be judged on its own merits.
 - **A workspace with no LFS content no longer forks git-lfs on every launch.**
   Preparing a workspace always asked `git lfs ls-files` whether there was
   anything to materialize, and git-lfs is a large binary whose startup dominates
-  that answer. The question is now settled first from the working tree: git-lfs
-  can only name a file that git tracks, so if no tracked file holds a pointer
-  there is nothing for it to report, and the fork is skipped. Measured on the
-  reference machine, ~33ms → ~4ms for this repo's own checkout and ~93ms → ~22ms
-  for a 3000-file repo; a workspace that really is holding pointers still pays
-  the probe and materializes exactly as before.
+  that answer. The question is now settled first from the clone itself.
+  `git lfs ls-files` reports the union of HEAD's tree and the index, and
+  `git ls-files --with-tree=HEAD` enumerates exactly that union — so if none of
+  those paths holds a pointer, the probe has nothing to report and the fork is
+  skipped.
+
+  That check is cheaper, not free: it is a `git ls-files` fork plus reading the
+  first few bytes of each listed path, so it is the same O(tracked files) shape
+  as the probe it replaces, at a much smaller constant. Measured on the
+  reference machine, median of 7–9 runs: ~34ms → ~4ms for this repo's own
+  checkout (124 tracked files), ~119ms → ~18ms at 3000 files, ~1180ms → ~202ms
+  at 50 000. A workspace that really is holding pointers still pays the probe
+  and materializes exactly as before, and a clone whose paths cannot be
+  enumerated at all falls open to probing rather than being written off.
+
+  The union is load-bearing, not belt-and-braces. The index alone is a strictly
+  smaller set than what git-lfs can name: a clone left with no `.git/index` —
+  an interrupted clone or checkout, which is precisely what the retry path
+  exists to recover from — makes `git ls-files` succeed with *empty* output, and
+  reading that as "nothing tracked, therefore no pointers" would strand the
+  workspace on stub files on every later launch.
 
   Deliberately a question about pointer content rather than about whether the
   repo declares `filter=lfs`: a repo can hold committed pointers while declaring
   nothing, and can be LFS-tracked through attributes git reads from outside the
   clone. Either would have been read as "no LFS here" — leaving that workspace on
   stub files on every launch, not just once.
+
+- **A warm launch no longer builds the clone manager it never uses.** Every
+  `dl owner/repo@branch -- cmd` read `config.toml`, loaded `metadata.json` twice
+  under its flock, created `repos_dir` and ran the id-scheme migration — and
+  then attached to the running workspace without touching any of it.
+  Construction now happens in the two arms that need it: resolving the default
+  branch for a bare `owner/repo`, and the cold clone. The cold path is
+  unaffected and the pinned devpod argv sequences are unchanged.
+
+  Measured on the reference machine, the removed work is **~0.29ms** (median of
+  25 fresh processes, 4-worktree `metadata.json`, already migrated) — real, but
+  small next to the two devpod round trips a launch spends. The reason to do it
+  is that a warm attach now touches no shared cache state at all.
+
+  The consequence worth knowing: on that one shape, the one-shot cache
+  migration and the quarantine of an unreadable `metadata.json` no longer run.
+  They run on the next command that does build the manager, which is any cold
+  launch, any bare `owner/repo`, and every workspace-management command.
 
 - **A launch is one `devpod status`, not a `devpod list` and then a status.**
   Every workspace command opened with `devpod list --output json` purely to ask
