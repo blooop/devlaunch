@@ -163,9 +163,9 @@ table and should be judged on its own merits.
   network, per container, on the critical path of every cold launch. The host
   running `dl` almost always has both tools already, and the container is one
   pipe away on the same disk, so they are now streamed in as a tar over the
-  `devpod ssh` channel dl already holds. Measured here: 342MB in **5.1s**, with
-  both lent binaries proved to run in a staging directory before anything was
-  moved into place.
+  `devpod ssh` channel dl already holds. Measured here: a **342MB** payload,
+  with both lent binaries proved to run in a staging directory before anything
+  was moved into place.
 
   The network install is still there and still correct — it runs when the host
   has nothing to lend (no official `claude` install, no resolvable `gh`) or

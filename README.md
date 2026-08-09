@@ -296,10 +296,10 @@ would not be a guarantee.
 On `devpod up`, at most three round trips, each one earning the next.
 
 **1. A probe — the only trip a ready workspace ever pays.** The container reports
-two facts only it can know: where its `claude` resolves to, and where
-`~/.local/share/claude/versions` in its own home resolves to. It reports them and
-names no verdict; the host reads them, so "a real `claude`" is defined in exactly
-one place. The reading is one of three:
+what only it can know: whether both tools answer at all, where its `claude`
+resolves to, and where `~/.local/share/claude/versions` in its own home resolves
+to. It reports those and names no verdict; the host reads them, so "a real
+`claude`" is defined in exactly one place. The reading is one of three:
 
 - **provisioned** — `gh` answers on the login PATH and `claude` resolves to a
   binary the official installer put in the versions directory. Nothing else
@@ -315,9 +315,11 @@ them (a different libc, a different architecture) is left exactly as it was.
 
 **3. The network install, for *absent* only.** When the host had nothing to lend,
 or the lend was refused, `pixi global` installs both tools — and `pixi` itself
-first if the image has none. A *lendable* container stops after trip 2 either way:
-a `claude` already answers there, and this install decides what to do with the
-same `command -v` that a shim satisfies, so the trip would install nothing.
+first if the image has none. A *lendable* container never reaches this trip: it
+stops after the lend, or — when the host had nothing to lend — after the probe
+itself. A `claude` already answers there, and this install decides what to do
+with the same `command -v` that a shim satisfies, so the trip would install
+nothing.
 
 Tools reach the PATH of a login shell through whichever of `~/.bash_profile`,
 `~/.bash_login` or `~/.profile` bash actually reads — it sources only the first of
@@ -329,12 +331,23 @@ warning and hands you the session anyway.
 
 ### What to bake so a launch does no work at all
 
-To make every `dl` launch of an image stop at trip 1:
+To make every `dl` launch of an image stop at trip 1. The probe asks a **login**
+shell to resolve each name, so every bullet here is about what a login shell can
+find:
 
 - **`gh`** anywhere on the login PATH.
 - **`claude`** in the layout its official installer creates — the binary at
-  `~/.local/share/claude/versions/<version>`, with `~/.local/bin/claude`
-  symlinked to it.
+  `~/.local/share/claude/versions/<version>`, a **direct child** of that
+  directory named for the version, with `~/.local/bin/claude` symlinked to it.
+  Nested any deeper — `versions/<version>/bin/claude`, the shape a downloader
+  parked there would take — is read as somebody else's tree that merely starts
+  with the official path, and does not count.
+- **`~/.local/bin` on the login PATH**. The symlink above is how `claude`
+  answers at all; a login shell that cannot find that directory reads the image
+  as *absent* however carefully the rest was baked, and it pays the full lend.
+  Ubuntu's stock `~/.profile` prepends `~/.local/bin` itself — but an image
+  shipping a `~/.bash_profile` never reads `~/.profile` (above), and then
+  nothing does.
 
 Nothing else counts as a `claude`, and that is the point. A *shim* — a small
 launcher that downloads the real binary the first time it is called — answers
