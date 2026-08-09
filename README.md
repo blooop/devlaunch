@@ -614,6 +614,36 @@ dl blooop/devlaunch stop         # Stop workspace
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
 - **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and `dl <ws> -- <cmd>` skips the extra round-trip that names an interactive prompt, since a one-shot command has none
 
+## Measuring launch time
+
+Every `dl` process can account for its own wall time. Set `DEVLAUNCH_TIMING=1`
+and the command ends with one summary on stderr, naming each subprocess round
+trip (`devpod status`, `devpod ssh`, `gh auth token`, `git ls-remote`, ...) and
+the total:
+
+```bash
+$ DEVLAUNCH_TIMING=1 dl myws -- true
+dl-timing: devpod status 0.412s
+dl-timing: devpod ssh 0.583s
+dl-timing: devpod ssh 1.102s
+dl-timing: total 2.201s
+```
+
+With the variable unset (or `0`) there is no output and nothing is recorded.
+The summary goes to stderr, after the command's own output, so it composes
+with one-shot commands.
+
+For before/after numbers, `scripts/bench_launch.py` runs a command N times and
+reports the median — one command per side of a change:
+
+```bash
+python scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true   # warm launch
+```
+
+(`pixi run bench -n 5 -- ...` inside the devcontainer.) A cold launch is the
+same command after `dl-next owner/repo delete`. The bench refuses to report a
+median if any run fails, so a broken launch cannot pass as a fast one.
+
 ## Worktree Backend
 
 For git repositories, devlaunch uses an efficient worktree backend by default:

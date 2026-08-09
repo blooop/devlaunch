@@ -55,15 +55,16 @@ def spawns():
                 yield recorder
 
 
+@pytest.mark.usefixtures("spawns")
 class TestDevpodRoundTripsAreNamed:
     """The summary names each devpod round trip, in the order it happened."""
 
-    def test_ls_names_its_single_list_round_trip(self, spawns, monkeypatch, capsys):
+    def test_ls_names_its_single_list_round_trip(self, monkeypatch, capsys):
         monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
         assert main(["--ls"]) == 0
         assert timing_labels(capsys.readouterr().err) == ["devpod list", "total"]
 
-    def test_attach_names_every_round_trip_in_order(self, spawns, monkeypatch, capsys):
+    def test_attach_names_every_round_trip_in_order(self, monkeypatch, capsys):
         """The attach chain from the spawn-count tests, seen as named timings:
         one status, the hostname ssh, then the session ssh."""
         monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
