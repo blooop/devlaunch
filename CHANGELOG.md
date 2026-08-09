@@ -96,15 +96,27 @@ table and should be judged on its own merits.
   any built from this repo's own `.devcontainer/claude-code/` feature) skipped
   the lend and paid the ~285MB GCS download on first use, the exact cost the
   lending exists to remove. It now answers one of three states: `provisioned`
-  when `gh` is on the login `PATH` **and** `claude` resolves into
-  `~/.local/share/claude/versions/` — the same definition of "a real claude"
-  the host already applies to decide what it may lend, now written down once
-  and used on both sides of the pipe; `lendable` when both answer but the
-  claude is a shim or wrapper; `absent` otherwise.
+  when `gh` is on the login `PATH` **and** `claude` resolves to a binary the
+  official installer itself put in `~/.local/share/claude/versions/`;
+  `lendable` when both answer but the claude is a shim or wrapper; `absent`
+  otherwise.
 
-  A `lendable` container is quietly upgraded: the host streams in its own
-  binary and the transfer's `~/.local/bin` `PATH` prepend is what makes it win
-  from then on, so the *next* launch probes `provisioned`. If the host has
+  "The official install" is one definition, asked from both ends of the pipe.
+  The container reports two facts only it can know — where its `claude`
+  resolves to, and where that directory in its own home resolves to — and
+  which state those mean is decided on the host, by the same code that decides
+  what the host may lend. Two copies of that rule, one per language, is what a
+  shared constant alone does not prevent: a downloader parked at
+  `versions/latest/bin/claude` satisfies "somewhere under the versions
+  directory" while failing "a binary the installer wrote", and a probe holding
+  the looser of the two opinions trusts it.
+
+  Both paths are compared fully resolved, which is what makes the upgrade
+  terminate on an image whose `$HOME` is reached through a symlink: a
+  `lendable` container is quietly upgraded — the host streams in its own binary
+  and the transfer's `~/.local/bin` `PATH` prepend is what makes it win from
+  then on — so the *next* launch probes `provisioned` and the tar is paid once
+  rather than on every launch for the life of the workspace. If the host has
   nothing to lend, or the lent binaries do not run there, the container is
   accepted as it stands rather than falling through to the network install —
   that install decides what to do with its own `command -v` guards, which a
@@ -112,9 +124,10 @@ table and should be judged on its own merits.
 
   The probe never executes the candidate `claude`; on a shim, *any* invocation
   triggers the very download the probe exists to detect. It resolves the path
-  instead. It also exits 0 in all three states now, which retires the red
-  devpod `fatal ... Process exited with status 1` that the old probe's
-  everyday cold answer painted on the terminal.
+  instead. It also exits 0 in every state now — including in an image that
+  never set `HOME` — which retires the red devpod
+  `fatal ... Process exited with status 1` that the old probe's everyday cold
+  answer painted on the terminal.
 
   Two things this deliberately does not do. It does not compare versions: a
   real `claude` already in the container is left alone however old it is, since

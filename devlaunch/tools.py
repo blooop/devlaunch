@@ -28,10 +28,12 @@ What "lacks them" means is the probe's job, and it has three answers rather
 than two, because a `claude` on PATH is not necessarily a `claude` worth
 keeping: the shim this repo's own devcontainer feature bakes satisfies
 `command -v` while still owing the GCS download on first use. So the probe
-reports `provisioned` only for the official install layout, `lendable` for a
+answers `provisioned` only for the official install layout, `lendable` for a
 container whose claude is something else, and `absent` when a tool is really
 missing -- and a lendable container is quietly upgraded to the host's real
-binary the next time it goes through `up`.
+binary the next time it goes through `up`. The container reports what it
+found and the host says what that means, so "the official install layout" is
+one definition asked from both ends rather than one per side.
 
 The round trips this costs, by path: a provisioned workspace pays one (the
 probe, which was always paid); a lendable or cold one pays two (probe, then
@@ -73,12 +75,17 @@ _FALSEY = ("", "0", "false", "no")
 BLOOOP_CHANNEL = "https://prefix.dev/blooop"
 
 # Where the official claude installer keeps one binary per version, relative to
-# a home directory. This is the definition of "a real claude" on both sides of
-# the pipe -- the host reads it to decide what it may lend (`_claude_source`),
-# writes into it when it lends (`transfer_script`), and the container is asked
-# about it to decide whether it needs anything (`probe_script`). Stated once,
-# because two copies of that definition are two probes with different opinions.
+# a home directory. The host reads it to decide what it may lend
+# (`_claude_source`), writes into it when it lends (`transfer_script`), and the
+# container is asked about it to decide whether it needs anything
+# (`probe_script`). The *relation* that makes a path the official layout lives
+# in `_is_official_claude`, for the same reason this string lives here: two
+# copies of a definition are two probes with different opinions.
 CLAUDE_VERSIONS_RELPATH = ".local/share/claude/versions"
+
+# What every line of a probe's report starts with, so the report survives being
+# printed into the same stdout as a container login profile's banner.
+PROBE_MARK = "devlaunch-probe"
 
 # Which file a bash login shell will actually read. bash tries ~/.bash_profile,
 # ~/.bash_login and ~/.profile in that order and sources only the first that
@@ -126,6 +133,41 @@ def provisioning_disabled() -> bool:
     return os.environ.get(DISABLE_VAR, "").strip().lower() not in _FALSEY
 
 
+def _all_present(tools: Sequence[Tool]) -> str:
+    """The bash test for "every one of these already answers on PATH"."""
+    return " && ".join(f"command -v {shlex.quote(tool.command)} >/dev/null 2>&1" for tool in tools)
+
+
+def _is_official_claude(versions_dir: str, claude_binary: str) -> bool:
+    """Whether a resolved `claude` is a binary of the official install.
+
+    The one definition of "the official layout", and both sides of the pipe
+    ask it: the host asks it of its own filesystem to decide what it may lend,
+    and the container's probe reports its two resolved paths so it can be asked
+    of those here. Written down once because a container-side copy of this
+    relation and a host-side copy are two probes with different opinions --
+    which is how a downloader parked at `versions/latest/bin/claude` came to be
+    trusted by one while the other refused to lend the very same tree.
+
+    A *direct child*, because that is what the installer creates: one binary
+    per version, named for the version. Anything deeper is somebody else's
+    tree that merely starts with the official path, and a downloader is free
+    to choose such a path.
+
+    Both arguments must arrive resolved -- `readlink -f` in the container,
+    `Path.resolve` on the host -- because either home may be reached through a
+    symlink, and comparing a resolved binary against an unresolved home makes
+    a genuine install look like a shim forever. Anything that is not an
+    absolute path (the empty answer a container with no `readlink` gives, a
+    truncated line) is not the official layout: of the two ways to be wrong,
+    lending again costs seconds and trusting a shim ships a container that
+    still owes the download.
+    """
+    if not versions_dir.startswith("/") or not claude_binary.startswith("/"):
+        return False
+    return pathlib.PurePosixPath(claude_binary).parent == pathlib.PurePosixPath(versions_dir)
+
+
 def _install_line(tool: Tool) -> str:
     args = " ".join(shlex.quote(arg) for arg in tool.install_args)
     return (
@@ -148,9 +190,7 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
     Exits 0 unless an install actually failed, so "nothing to do" and "all
     installs worked" are the same answer to the caller.
     """
-    all_present = " && ".join(
-        f"command -v {shlex.quote(tool.command)} >/dev/null 2>&1" for tool in tools
-    )
+    all_present = _all_present(tools)
     installs = "\n".join(_install_line(tool) for tool in tools)
     # The trampoline pixi writes into ~/.pixi/bin does not work for packages
     # that ship a shell script, which is why the env's own bin directory is
@@ -203,8 +243,9 @@ class ProbeResult(enum.Enum):
     A boolean plus a flag would have been the same two questions with a fourth,
     meaningless combination available; three named states have no illegal one.
 
-    The values are the tokens `probe_script` prints, so the protocol over the
-    ssh channel is written down once rather than once per side.
+    Which state a report means is decided here and nowhere else. The container
+    reports what it found and never names a state, so there is no container-
+    side copy of "the official layout" to drift away from the host's.
     """
 
     PROVISIONED = "provisioned"
@@ -212,49 +253,77 @@ class ProbeResult(enum.Enum):
     ABSENT = "absent"
 
     @classmethod
-    def parse(cls, answer: str) -> "ProbeResult":
-        """Read a probe's answer. Total: anything unrecognised is ABSENT.
+    def parse(cls, report: str) -> "ProbeResult":
+        """Read a probe's report. Total: anything unreadable is ABSENT.
 
-        The last line, not the whole output: the probe runs under `bash -lc`,
-        so the container's login profile is sourced before the script and an
-        image whose profile prints a banner puts it on stdout ahead of the
-        token. The token is always the last thing printed.
+        The report is marked `key value` lines rather than one token because a
+        token would mean the container had already decided -- with its own copy
+        of the relation `_is_official_claude` states once, for both sides.
+        What crosses the pipe is therefore two resolved paths only the
+        container can know, and what they mean is settled here.
 
-        A garbled, empty or truncated answer has to mean something, and ABSENT
+        Marked lines, and read from anywhere in the output, because the probe
+        runs under `bash -lc`: the container's login profile is sourced first,
+        so an image whose profile prints a banner puts it on the same stdout.
+
+        A garbled, empty or truncated report has to mean something, and ABSENT
         is the only state whose worst case is harmless -- provisioning is
         idempotent, so reading it wrongly costs a redundant round trip, where
         a wrong PROVISIONED would silently skip the work the probe exists to
         schedule.
         """
-        lines = [line.strip() for line in answer.splitlines() if line.strip()]
-        if not lines:
+        found = {}
+        for line in report.splitlines():
+            mark, _, rest = line.strip().partition(" ")
+            if mark != PROBE_MARK:
+                continue
+            key, _, value = rest.partition(" ")
+            found[key] = value.strip()
+        if found.get("tools") != "present":
             return cls.ABSENT
-        try:
-            return cls(lines[-1])
-        except ValueError:
-            return cls.ABSENT
+        if _is_official_claude(found.get("versions", ""), found.get("claude", "")):
+            return cls.PROVISIONED
+        return cls.LENDABLE
 
 
 def probe_script() -> str:
-    """The shell script that answers what provisioning a workspace still needs.
+    """The shell script that reports what a workspace already has.
 
-    Prints exactly one token -- `provisioned`, `lendable` or `absent` -- and
-    exits 0 in every one of them: "this container has nothing" is an answer,
-    not a failure, and a probe that exits non-zero paints a red devpod
+    It reports; it does not decide. Whether a container counts as provisioned
+    turns on two facts only the container can know -- where its `claude`
+    resolves to, and where the official versions directory in its home
+    resolves to -- so those are what it prints, and `ProbeResult.parse` says
+    what they mean. That split is the point: the relation between the two
+    paths is stated once, in `_is_official_claude`, instead of once per
+    language, which is what let a shim be trusted by one side and refused by
+    the other.
+
+    Exits 0 in every state: "this container has nothing" is an answer, not a
+    failure, and a probe that exits non-zero paints a red devpod
     `fatal ... Process exited with status 1` on the terminal of every cold
-    launch, describing the probe working exactly as intended.
+    launch, describing the probe working exactly as intended. Nothing here can
+    fail -- `$HOME` is expanded defensively because an image that never set it
+    would otherwise abort the script under `set -u`, and a path that will not
+    resolve is reported empty, which reads as `lendable`.
 
     It asks about the fixed pair this module lends rather than an arbitrary
     tool set, for the same reason `host_payload` does: what can be lent is
     `gh` and `claude`, so those are what there is a three-state answer for.
     """
-    present = " && ".join(
-        f"command -v {shlex.quote(tool.command)} >/dev/null 2>&1" for tool in REQUIRED_TOOLS
-    )
     return "\n".join(
         [
             "set -u",
-            f"if ! {{ {present} ; }}; then echo {ProbeResult.ABSENT.value}; exit 0; fi",
+            f"if ! {{ {_all_present(REQUIRED_TOOLS)} ; }}; then",
+            f'  echo "{PROBE_MARK} tools missing"',
+            "  exit 0",
+            "fi",
+            f'echo "{PROBE_MARK} tools present"',
+            # Both paths fully resolved, because the comparison they are for is
+            # an equality: a home reached through a symlink resolves one side
+            # and not the other, and a real install then reads `lendable` on
+            # every launch forever.
+            f'echo "{PROBE_MARK} versions '
+            f'$(readlink -f "${{HOME-}}/{CLAUDE_VERSIONS_RELPATH}" 2>/dev/null || true)"',
             # Resolved, never run. The shim on PATH answers `command -v` just
             # as the real binary does, and telling them apart by asking either
             # one for its version would trigger, on the shim, the very ~285MB
@@ -262,11 +331,7 @@ def probe_script() -> str:
             # is the whole test. `readlink` failing (or missing) leaves this
             # empty, which reads as `lendable` -- the answer that does more
             # work, never the one that skips it.
-            'target=$(readlink -f "$(command -v claude)" 2>/dev/null || true)',
-            'case "$target" in',
-            f'  "$HOME/{CLAUDE_VERSIONS_RELPATH}/"*) echo {ProbeResult.PROVISIONED.value} ;;',
-            f"  *) echo {ProbeResult.LENDABLE.value} ;;",
-            "esac",
+            f'echo "{PROBE_MARK} claude $(readlink -f "$(command -v claude)" 2>/dev/null || true)"',
         ]
     )
 
@@ -311,16 +376,23 @@ def _claude_source() -> Optional[Tuple[str, pathlib.Path]]:
     The official installer keeps one binary per version under
     `~/.local/share/claude/versions/` and points `~/.local/bin/claude` at the
     current one. Anything else on PATH answering to `claude` -- the pixi shim,
-    a wrapper script -- is exactly the kind of downloader this transfer exists
-    to skip, so only the official layout counts.
+    a wrapper script, a downloader that parked itself deeper inside that same
+    directory -- is exactly the kind of downloader this transfer exists to
+    skip, so only the official layout counts, and what counts as the official
+    layout is `_is_official_claude`: the same relation the container's report
+    is read through, so the two sides cannot come to different answers about
+    one tree.
     """
-    link = pathlib.Path.home() / ".local/bin/claude"
+    home = pathlib.Path.home()
+    link = home / ".local/bin/claude"
     try:
         target = link.resolve(strict=True)
     except OSError:
         return None
-    versions_dir = (pathlib.Path.home() / CLAUDE_VERSIONS_RELPATH).resolve()
-    if target.parent != versions_dir or not os.access(target, os.X_OK):
+    versions_dir = (home / CLAUDE_VERSIONS_RELPATH).resolve()
+    if not _is_official_claude(str(versions_dir), str(target)):
+        return None
+    if not os.access(target, os.X_OK):
         return None
     return target.name, target
 
@@ -480,8 +552,12 @@ def _transfer(workspace: str, runner, payload: HostPayload) -> bool:
     return result.returncode == 0
 
 
-def ensure_tools(workspace: str, runner, tools: Sequence[Tool] = REQUIRED_TOOLS) -> bool:
-    """Make `tools` available in `workspace`. Returns whether they now are.
+def ensure_tools(workspace: str, runner) -> bool:
+    """Make REQUIRED_TOOLS available in `workspace`. Returns whether they now are.
+
+    Not parametric over a tool set, because the probe is not: it asks about the
+    fixed pair this module can lend, so a caller-supplied set would be probed
+    for one thing and installed for another.
 
     `runner` is dl.run_devpod, passed in rather than imported to keep this
     module off dl's import cycle and testable without a devpod.
@@ -545,7 +621,7 @@ def ensure_tools(workspace: str, runner, tools: Sequence[Tool] = REQUIRED_TOOLS)
             return True
 
         # ProbeResult.ABSENT: the cold flow, with a tool genuinely missing.
-        script = provision_script(tools)
+        script = provision_script()
         result = runner(["ssh", workspace, "--command", f"bash -lc {shlex.quote(script)}"])
     except OSError as e:
         logging.debug("Could not install tools into %s: %s", workspace, e)
@@ -556,7 +632,7 @@ def ensure_tools(workspace: str, runner, tools: Sequence[Tool] = REQUIRED_TOOLS)
         # session, not for an install.
         logging.warning(
             "Could not install %s into %s; the session will start without them.",
-            " and ".join(tool.command for tool in tools),
+            " and ".join(tool.command for tool in REQUIRED_TOOLS),
             workspace,
         )
         return False
