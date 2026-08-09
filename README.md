@@ -640,9 +640,28 @@ reports the median — one command per side of a change:
 python scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true   # warm launch
 ```
 
-(`pixi run bench -n 5 -- ...` inside the devcontainer.) A cold launch is the
-same command after `dl-next owner/repo delete`. The bench refuses to report a
-median if any run fails, so a broken launch cannot pass as a fast one.
+(`pixi run bench -n 5 -- ...` inside the devcontainer.) The bench refuses to
+report a median if any run fails, so a broken launch cannot pass as a fast one.
+
+### A cold median needs a reset per run
+
+A cold launch measured once is one sample, and a cold launch deleted once and
+then benched five times is one cold run plus four warm ones — a warm median
+under a cold label. `--before` runs a reset command before every timed run and
+does not count its time, so all N runs start cold:
+
+```bash
+XDG_CACHE_HOME=/tmp/dl-bench/cache \
+python scripts/bench_launch.py -n 5 \
+  --before 'dl-next owner/repo delete' \
+  -- dl-next owner/repo -- true                                     # cold launch
+```
+
+Scope `XDG_CACHE_HOME` (that variable only — see `dev.sh`) so the reset deletes
+the bench's own workspace rather than one you are working in. If a reset exits
+non-zero the bench stops and prints no median: a run whose cold state was never
+established is not a cold measurement, and a number labelled cold has to have
+been taken cold.
 
 ## Worktree Backend
 

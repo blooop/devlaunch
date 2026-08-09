@@ -13,6 +13,7 @@ the CLI entry point on one side, the subprocess module on the other.
 import io
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -187,5 +188,50 @@ class TestBenchHarness:
         """A failing launch's time is not a number to compare against, so the
         bench must not report a median over it."""
         result = run_bench("-n", "3", "--", sys.executable, "-c", "raise SystemExit(7)")
+        assert result.returncode != 0
+        assert "median" not in result.stdout
+
+    def test_rejects_a_run_count_below_one(self):
+        """There is no median of nothing, so the bench refuses to be asked for
+        one rather than dying inside statistics."""
+        result = run_bench("-n", "0", "--", sys.executable, "-c", "pass")
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+
+
+class TestColdBench:
+    """#140's "Done when": *a contributor can produce a median warm-launch and
+    cold-launch wall time with one documented command*.
+
+    A cold median needs the cold condition re-established before *every* timed
+    run: delete once and bench N times and runs 2..N are warm, so the printed
+    median is a warm number wearing a cold label. `--before` is that per-run
+    reset, and the bench refuses to report a median when the reset fails --
+    a run whose cold condition was never established is not a cold measurement.
+    """
+
+    def before_writing(self, marker: Path) -> str:
+        return shlex.join([sys.executable, "-c", f"open({str(marker)!r}, 'a').write('x')"])
+
+    def test_the_reset_runs_once_before_every_timed_run(self, tmp_path):
+        marker = tmp_path / "resets"
+        result = run_bench(
+            "-n", "3", "--before", self.before_writing(marker), "--", sys.executable, "-c", "pass"
+        )
+        assert result.returncode == 0, result.stderr
+        assert marker.read_text() == "xxx"
+
+    def test_the_reset_is_not_counted_as_launch_time(self):
+        """The number reported is the launch's, not the teardown's."""
+        slow_reset = shlex.join([sys.executable, "-c", "import time; time.sleep(0.5)"])
+        result = run_bench("-n", "1", "--before", slow_reset, "--", sys.executable, "-c", "pass")
+        assert result.returncode == 0, result.stderr
+        run = re.search(r"^run 1/1: (\d+\.\d{3})s", result.stdout, re.M)
+        assert run is not None, result.stdout
+        assert float(run.group(1)) < 0.4
+
+    def test_refuses_a_median_when_the_reset_fails(self):
+        failing_reset = shlex.join([sys.executable, "-c", "raise SystemExit(3)"])
+        result = run_bench("-n", "3", "--before", failing_reset, "--", sys.executable, "-c", "pass")
         assert result.returncode != 0
         assert "median" not in result.stdout
