@@ -291,15 +291,82 @@ and `aid`. The repo's `devcontainer.json` does not have to provide them, and mos
 do not: `dl` launches arbitrary repos, so a guarantee that depended on the image
 would not be a guarantee.
 
-They are installed with `pixi global` on `devpod up`, and put on the PATH of a
-login shell through whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile`
-bash actually reads — it sources only the first of those that exists, so an image
-shipping a `~/.bash_profile` never reads `~/.profile`. A workspace that already has both is left alone —
-the check runs first, so the cost after the first launch is one round-trip and no
-network. If `pixi` is missing from the image, `dl` installs that too.
+### How they get there
+
+On `devpod up`, at most three round trips, each one earning the next.
+
+**1. A probe — the only trip a ready workspace ever pays.** The container reports
+two facts only it can know: where its `claude` resolves to, and where
+`~/.local/share/claude/versions` in its own home resolves to. It reports them and
+names no verdict; the host reads them, so "a real `claude`" is defined in exactly
+one place. The reading is one of three:
+
+- **provisioned** — `gh` answers on the login PATH and `claude` resolves to a
+  binary the official installer put in the versions directory. Nothing else
+  happens.
+- **lendable** — both names answer, but that `claude` is a shim or a wrapper.
+- **absent** — a tool is genuinely missing.
+
+**2. A lend, for *lendable* and *absent*.** `dl` streams its own `gh` and `claude`
+into the container as a tar over the `devpod ssh` channel it already holds — a
+local pipe, no network and no download. Nothing lands outside a staging directory
+until both binaries have been run there once, so a container that cannot execute
+them (a different libc, a different architecture) is left exactly as it was.
+
+**3. The network install, for *absent* only.** When the host had nothing to lend,
+or the lend was refused, `pixi global` installs both tools — and `pixi` itself
+first if the image has none. A *lendable* container stops after trip 2 either way:
+a `claude` already answers there, and this install decides what to do with the
+same `command -v` that a shim satisfies, so the trip would install nothing.
+
+Tools reach the PATH of a login shell through whichever of `~/.bash_profile`,
+`~/.bash_login` or `~/.profile` bash actually reads — it sources only the first of
+those that exists, so an image shipping a `~/.bash_profile` never reads
+`~/.profile`.
 
 An install that fails costs the workspace its tools, not its launch: `dl` logs a
 warning and hands you the session anyway.
+
+### What to bake so a launch does no work at all
+
+To make every `dl` launch of an image stop at trip 1:
+
+- **`gh`** anywhere on the login PATH.
+- **`claude`** in the layout its official installer creates — the binary at
+  `~/.local/share/claude/versions/<version>`, with `~/.local/bin/claude`
+  symlinked to it.
+
+Nothing else counts as a `claude`, and that is the point. A *shim* — a small
+launcher that downloads the real binary the first time it is called — answers
+`command -v claude` exactly as the real thing does, while the workspace still
+owes a multi-hundred-megabyte download at the least convenient moment. So `dl`
+resolves the name rather than running it (running a shim *is* the download), reads
+a shim as *lendable*, and sends the host's real binary. The lend prepends
+`~/.local/bin` to the login PATH, which is what puts the lent binary in front of
+the shim from then on — intended, and the reason the next launch probes
+*provisioned* and the transfer is paid once rather than forever.
+
+**This repo's own devcontainer feature bakes a shim.**
+`.devcontainer/claude-code/install.sh` installs `claude-shim`, so an image built
+from it does *not* meet the contract by itself: its first `dl` launch is lent a
+real `claude`, and only launches after that do nothing. Build the official layout
+into the image if you want the first launch free too.
+
+### What this deliberately does not do
+
+- **No per-tool transfer.** The lend is all-or-nothing — an image with a real `gh`
+  but a shimmed `claude` is sent both. Splitting the payload would save part of
+  one transfer, paid once per workspace, in exchange for a matrix of half-lent
+  states every later step would have to reason about. (The *network* install is
+  already per tool: each install guards itself with its own `command -v`.)
+- **No version sync.** A real `claude` already in the container is left alone
+  whatever its version. `dl` lends what is missing; it is not a package manager,
+  and keeping versions in step would mean deciding what to do when the container
+  is the newer one. The official binary self-updates in a long-lived workspace,
+  and rebuilding one re-provisions it from scratch. The single upgrade `dl` does
+  perform is replacing a shim with a real binary.
+
+### Turning it off
 
 ```bash
 DEVLAUNCH_NO_TOOLS=1 dl someone/repo
