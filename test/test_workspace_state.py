@@ -208,10 +208,9 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
 
     Asked for rather than always answered, because the walk is O(files) with no
     ceiling and plain `--ls` is one devpod round-trip and no filesystem work at
-    all. Measured on one machine, warm page cache: a real 8,309-entry clone
-    walked in 24-28 ms and a 114,817-entry tree in 232-239 ms, and an ordinary
-    devcontainer builds its environment *inside* the clone -- so the file count,
-    and with it the cost, is unbounded. README records the conditions.
+    all -- and an ordinary devcontainer builds its environment *inside* the
+    clone, so the file count is unbounded too. The measured cost and the machine
+    it was measured on live in README, once.
     """
 
     def _run(

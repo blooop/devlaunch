@@ -1,17 +1,11 @@
 """What a directory costs, and what it would give back if it went away.
 
-devlaunch shares git objects between a repo's workspaces on purpose: the bare
-cache holds one copy and every workspace clone hardlinks out of it (devlaunch
-#154), which is where most of the saving on a repo's second workspace comes
-from. A number that walks one workspace and adds up file sizes reports that
-saving as if it had never happened -- it bills every workspace for the whole
-shared pool, so three workspaces of one repo read as three times the disk they
-actually occupy.
-
-So the number here is *exclusive* bytes: what deleting this directory would
-free. A file counts only when every one of its links lies inside the tree being
-measured. The tests below are the pin on that choice; swapping in an apparent
-size fails the hardlink ones and nothing else.
+The number under test is *exclusive* bytes: what deleting this directory would
+free, counting a file only when every one of its links lies inside the tree
+being measured. Why that rather than an apparent size, and the measurement that
+settled it, are in :mod:`devlaunch.disk_usage` and not repeated here -- these
+tests are the pin on the choice, not a second copy of the argument for it.
+Swapping in an apparent size fails the hardlink cases and nothing else.
 
 The other property under test is that a measurement which could not be
 completed never comes back as a number. A clone is written into by a container
@@ -246,8 +240,11 @@ class TestHowAUsageReads:
             (0, "0 B"),
             (512, "512 B"),
             (1536, "1.5 KiB"),
-            (512_540_672, "488.8 MiB"),
-            (1_824_649_216, "1.7 GiB"),
+            # The two ends of the measurement the module docstring is written
+            # from: what deleting one real clone frees, and what `du` bills it.
+            (68_050_944, "64.9 MiB"),
+            (353_230_848, "336.9 MiB"),
+            (2_147_483_648, "2.0 GiB"),
         ],
     )
     def test_a_measurement_reads_as_a_size(self, measured, expected):

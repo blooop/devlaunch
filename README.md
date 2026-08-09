@@ -491,7 +491,7 @@ object beside the other per-workspace facts:
 ```
 $ dl --ls --size
 WORKSPACE                      TYPE   SOURCE                                              SIZE  LAST USED
-kinisi-ros-main-lubadaha       local  /home/…/repos/kinisi-robotics/kinisi_ros/main   488.8 MiB  2026-08-08 11:43:27
+kinisi-ros-main-lubadaha       local  /home/…/repos/kinisi-robotics/kinisi_ros/main    64.9 MiB  2026-08-08 11:43:27
 my-own-checkout                local  /home/…/projects/scratch                                -  2026-08-01 09:12:04
 ```
 
@@ -501,10 +501,22 @@ once into a bare cache and every workspace clone hardlinks its git objects out
 of that one copy, so the objects exist once on disk however many workspaces
 share them. A size that walked each workspace on its own — which is what `du`
 does when you point it at one directory, counting the blocks every file in it
-occupies — bills each workspace for the whole shared pool. On a real cache,
-three workspaces of one repo read as 2.48 GiB that way, against the 1.70 GiB
-`du` says the disk actually holds when asked about all of them together, and a
-single workspace reads 755.0 MiB where 488.8 MiB is what removing it frees.
+occupies — bills each workspace for the whole shared pool.
+
+The measurement the row above comes from, taken with the shipped code on one
+machine (Ubuntu 24.04, ext4, warm page cache) on a real clone of that repo made
+by `git clone` from the bare in `dl`'s own cache:
+
+| | bytes |
+| --- | --- |
+| `du -s --block-size=1` on the clone alone | 353,230,848 |
+| what `dl --ls --size` reports for it | 68,050,944 |
+| what `dl --ls --size` reports for the bare it clones from | 651,264 |
+| `du -sc --block-size=1` over both together | 353,882,112 |
+
+`du` bills that workspace **5.2x** what deleting it would actually free. The
+difference is a single 270,823,424-byte pack file with one link in the clone and
+one in the bare, so removing either end frees none of it.
 
 So `dl` counts a file only when every one of its hardlinks lies inside the
 workspace being measured. Two consequences, both deliberate:
@@ -512,7 +524,9 @@ workspace being measured. Two consequences, both deliberate:
 - **The sizes do not add up to the size of the cache.** Bytes shared between
   workspaces belong to none of them, because deleting any one frees none of
   them. They become the last workspace's the moment it is the last one — which
-  is exactly when deleting it *would* free them.
+  is exactly when deleting it *would* free them. In the table above that is the
+  last two rows read against each other: 68,702,208 reported bytes against
+  353,882,112 held.
 - **A workspace's size can change without the workspace changing**, when a
   sibling that was sharing with it goes away. That is the truth about shared
   storage.

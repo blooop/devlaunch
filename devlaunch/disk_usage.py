@@ -11,12 +11,31 @@ bare cache holds one copy of its git objects and every workspace clone hardlinks
 out of it (devlaunch#154), which is where most of the saving on a repo's second
 workspace comes from. Walking one clone on its own and adding up the blocks its
 files occupy -- what `du` reports when pointed at one directory -- counts that
-shared pool in full, so three workspaces of one repo read as three times the
-disk they actually occupy: the design's own saving, reported as if it had never
-happened. Measured on a real cache: one ROS workspace reads 755.0 MiB that way
-against 488.8 MiB exclusive, and the three workspaces sharing that bare read as
-2.48 GiB against the 1.70 GiB `du` says the disk really holds when asked about
-all of them at once.
+shared pool in full, so a repo's workspaces each read as most of the disk they
+share: the design's own saving, reported as if it had never happened.
+
+**The measurement this module is documented from.** One real clone of a ROS
+repo, made by `git clone` from the bare in devlaunch's own cache, on Ubuntu
+24.04 / ext4 with a warm page cache:
+
+===============================================  ==============
+``du -s --block-size=1`` on the clone alone      353,230,848 B
+``exclusive_usage`` on the clone                  68,050,944 B
+``exclusive_usage`` on the bare it clones from       651,264 B
+``du -sc --block-size=1`` over both together     353,882,112 B
+===============================================  ==============
+
+`du` bills that one workspace **5.2x** what deleting it would free. The
+difference is one 270,823,424-byte pack file with two links, one in the clone
+and one in the bare: removing either end frees nothing, and the bytes go to
+whichever is last. Note the last two rows against each other -- the exclusive
+figures sum to 68,702,208 B while the disk holds 353,882,112 B, which is the
+first of the two consequences below and not an error.
+
+Every number here was taken with the shipped code on one machine and is quoted
+with its conditions for that reason: a figure whose conditions are lost cannot
+be checked later, and this repository has twice found an inherited working
+number to be wrong once somebody finally measured it.
 
 So a file's bytes are billed to a tree only when **every one of its links lies
 inside that tree**. Two consequences worth stating plainly, because they are

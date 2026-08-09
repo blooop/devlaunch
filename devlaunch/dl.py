@@ -534,11 +534,9 @@ def _disk_report(clone: Optional[Path]) -> Optional[Dict[str, Any]]:
     part-measured clone as small when it is not -- which is exactly the sentinel
     this codebase refuses to write.
 
-    "Exclusive" is the choice devlaunch made and documents: bytes whose every
-    hardlink lies inside the clone, i.e. what deleting it would actually give
-    back. A repo's workspaces share their git objects with the bare cache on
-    purpose, so an apparent size bills each of them for the whole shared pool.
-    See :mod:`devlaunch.disk_usage`.
+    Which bytes count, why they are not what `du` prints, and the measurement
+    that settled it: :mod:`devlaunch.disk_usage`, which is the one place any of
+    that is written down.
     """
     if clone is None:
         return None
@@ -1616,10 +1614,11 @@ def print_workspaces(with_size: bool = False):
     repo's bare cache are billed to nobody rather than to everybody. It is asked
     for rather than always answered because the walk is O(files) with no
     ceiling, while this listing is otherwise one devpod round-trip and no
-    filesystem work at all: measured on the machine in README's note, a
-    ~9,000-entry workspace clone walks in 17-28 ms and a 114,817-entry tree in
-    232-239 ms, and an ordinary devcontainer builds its environment inside the
-    clone.
+    filesystem work at all -- and an ordinary devcontainer builds its
+    environment inside the clone, so the file count has no ceiling either.
+    README's "How much disk a workspace costs" carries the timings and the
+    machine they were taken on; they are not repeated here, so re-measuring
+    changes one place.
     """
     workspaces = list_workspaces()
     if not workspaces:
