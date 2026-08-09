@@ -22,6 +22,30 @@ def leaf(branch="nb4", owner="owner", repo="repo"):
     return WorkspaceId(owner, repo, branch).value
 
 
+def stub_git(tracked=(), lfs_files=(), index_readable=True):
+    """Stand in for git in the tests that mock the subprocess boundary wholesale.
+
+    Only the two listings the LFS path reads are modelled, each in the shape git
+    really returns it: `git ls-files -z --with-tree=HEAD` answers with the union
+    of HEAD and the index as NUL-separated bytes, `git lfs ls-files` with the
+    same union as newline-separated text. Every other command succeeds silently.
+    `tracked` is that union, which is why one list feeds both.
+    """
+
+    def run(cmd, *_args, **_kwargs):
+        if cmd[:3] == ["git", "lfs", "ls-files"]:
+            return MagicMock(returncode=0, stdout="".join(f"{n}\n" for n in lfs_files), stderr="")
+        if cmd[:2] == ["git", "ls-files"]:
+            if not index_readable:
+                return MagicMock(returncode=128, stdout=b"", stderr=b"fatal: broken index")
+            return MagicMock(
+                returncode=0, stdout=b"".join(f"{n}\0".encode() for n in tracked), stderr=b""
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    return run
+
+
 @pytest.fixture
 def tmp_repos_dir(tmp_path):
     """Create temporary repos directory."""
@@ -315,12 +339,7 @@ class TestEnsureWorkspace:
         big = ws_path / "big.bin"
         big.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
 
-        def run_side_effect(cmd, *args, **kwargs):
-            if cmd[:3] == ["git", "lfs", "ls-files"]:
-                return MagicMock(returncode=0, stdout="big.bin\n", stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        mock_run.side_effect = run_side_effect
+        mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
 
         clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
@@ -341,12 +360,7 @@ class TestEnsureWorkspace:
         (ws_path / ".git").mkdir(parents=True)
         (ws_path / "big.bin").write_bytes(b"\x00\x01real binary content")
 
-        def run_side_effect(cmd, *args, **kwargs):
-            if cmd[:3] == ["git", "lfs", "ls-files"]:
-                return MagicMock(returncode=0, stdout="big.bin\n", stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        mock_run.side_effect = run_side_effect
+        mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
 
         clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
@@ -370,22 +384,102 @@ class TestEnsureWorkspace:
 
         # git clone is mocked, so stand in for what it would have left behind:
         # a tree whose LFS file is still a pointer (cloned with skip-smudge).
-        pointer = repo_root / leaf() / "assets" / "big.bin"
+        ws_root = repo_root / leaf()
+        pointer = ws_root / "assets" / "big.bin"
         pointer.parent.mkdir(parents=True)
         pointer.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
 
-        def run_side_effect(cmd, *args, **kwargs):
-            if cmd[:3] == ["git", "lfs", "ls-files"]:
-                return MagicMock(returncode=0, stdout="assets/big.bin\n", stderr="")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        mock_run.side_effect = run_side_effect
+        mock_run.side_effect = stub_git(tracked=["assets/big.bin"], lfs_files=["assets/big.bin"])
 
         clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         lfs_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:2] == ["git", "lfs"]]
         assert ["git", "lfs", "ls-files", "--name-only"] in lfs_calls
         assert ["git", "lfs", "pull", "origin"] in lfs_calls
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_workspace_without_pointer_files_never_forks_git_lfs(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """A workspace holding no pointer files must not pay a git-lfs fork.
+
+        The overwhelmingly common repo has no LFS content at all, and probing it
+        with `git lfs ls-files` costs a fork on every single launch for an answer
+        already sitting in the working tree.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        # An existing workspace with ordinary content.
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "main.py").write_text("print('hi')\n")
+
+        mock_run.side_effect = stub_git(tracked=["main.py"])
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert not any(cmd[:2] == ["git", "lfs"] for cmd in issued)
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_lfs_path_missing_from_the_working_tree_is_not_pulled_forever(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """An LFS-tracked path that is not on disk is not an unmaterialized pointer.
+
+        A sparse checkout leaves LFS-tracked paths out of the working tree
+        altogether, so opening them fails. Reading that failure as "still a
+        pointer" would run `git lfs pull origin` — an unbounded, uncaptured
+        fetch that can be gigabytes — on every launch of such a workspace,
+        forever, because the pull does not put the excluded path on disk and so
+        never changes the answer.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        # An existing workspace whose one LFS-tracked path is absent from disk.
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+
+        mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] not in issued
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_unlistable_index_fails_open_to_probing(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """If the tracked files can't be listed, the probe runs anyway.
+
+        The cheap check exists to save a fork, not to decide LFS is absent: when
+        the listing fails, skipping would silently strand a workspace on pointer
+        files — the same degradation the probe itself refuses.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        mock_run.side_effect = stub_git(lfs_files=["big.bin"], index_readable=False)
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] in issued
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
