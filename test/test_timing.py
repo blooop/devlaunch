@@ -13,6 +13,8 @@ the CLI entry point on one side, the subprocess module on the other.
 import io
 import re
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -132,3 +134,29 @@ class TestTransportAndGitGhCallsAreNamed:
             assert remote_branch_exists("owner/repo", "main")
         timing.emit(recording)
         assert timing_labels(recording.getvalue()) == ["git ls-remote", "total"]
+
+
+BENCH = Path(__file__).parent.parent / "scripts" / "bench_launch.py"
+
+
+def run_bench(*argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(BENCH), *argv], capture_output=True, text=True, check=False
+    )
+
+
+class TestBenchHarness:
+    """One command per side of a before/after: N runs, a median."""
+
+    def test_reports_each_run_and_the_median(self):
+        result = run_bench("-n", "3", "--", sys.executable, "-c", "pass")
+        assert result.returncode == 0
+        assert len(re.findall(r"^run \d+/3: \d+\.\d{3}s$", result.stdout, re.M)) == 3
+        assert re.search(r"^median of 3: \d+\.\d{3}s$", result.stdout, re.M)
+
+    def test_fails_loudly_when_the_command_fails(self):
+        """A failing launch's time is not a number to compare against, so the
+        bench must not report a median over it."""
+        result = run_bench("-n", "3", "--", sys.executable, "-c", "raise SystemExit(7)")
+        assert result.returncode != 0
+        assert "median" not in result.stdout
