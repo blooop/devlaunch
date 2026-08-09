@@ -162,6 +162,31 @@ class TestHotCommandSpawnCounts:
         assert _run_dl("--ls") == 0
         assert spawns.devpod_commands == [["list", "--output", "json"]]
 
+    def test_ls_with_sizes_spawns_nothing_extra(self, spawns, tmp_path, capsys):
+        """`dl --ls --size` costs a filesystem walk and not one more process.
+
+        Sizes come from `lstat`, never from `du` and never from docker: adding a
+        subprocess per workspace to a listing command is the thing this file
+        exists to catch.
+
+        The workspace has to be one dl would actually measure, or this guards
+        nothing: a source outside the cache is left unmeasured by design, the
+        walk never runs, and a `du` per workspace sails past. So the clone is
+        put under the patched cache directory with a payload in it, and the
+        rendered size is asserted before the spawn counts -- a `-` in that cell
+        means the counts below are counting a code path that did not execute.
+        """
+        cache_dir = tmp_path / "devlaunch"
+        clone = cache_dir / "repos" / "myws"
+        clone.mkdir(parents=True)
+        (clone / "payload.bin").write_bytes(b"\0" * 2 * 1024 * 1024)
+        spawns.source_root = str(cache_dir / "repos")
+        with patch("devlaunch.dl._get_cache_dir", return_value=cache_dir):
+            assert _run_dl("--ls", "--size") == 0
+        assert "2.0 MiB" in capsys.readouterr().out
+        assert spawns.devpod_commands == [["list", "--output", "json"]]
+        assert spawns.commands == [["devpod", "list", "--output", "json"]]
+
     def test_purge_reads_the_workspace_list_exactly_once(self, spawns, tmp_path):
         """`dl --purge -y` used to read the list twice: once to print the count
         it asks the user to confirm, once again inside purge_all_data.
