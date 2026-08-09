@@ -100,6 +100,20 @@ _PROFILE_RESOLUTION = "\n".join(
     ]
 )
 
+# What devlaunch writes above every PATH line it appends to a container's login
+# profile, and the only thing its "have I already done this?" guard looks for.
+# The mark exists so the guard can ask about devlaunch's own work instead of
+# about a directory name. Asking about the directory made the answer depend on
+# a file devlaunch does not own: Ubuntu's stock ~/.profile prepends
+# ~/.local/bin itself, so on this repo's own base image
+# (mcr.microsoft.com/devcontainers/base:ubuntu-24.04) the transfer's guard read
+# the image's block as its own, skipped the prepend, and left the claude shim
+# in front of the binary just lent -- which made every `devpod up` re-pay a
+# multi-hundred-megabyte transfer for the life of the workspace. The same
+# lesson devpod_provider learned from grepping devpod's rendered table: a guard
+# that reads someone else's artifact is only correct until they change it.
+PROFILE_MARK = "# devlaunch:"
+
 
 @dataclass(frozen=True)
 class Tool:
@@ -168,6 +182,33 @@ def _is_official_claude(versions_dir: str, claude_binary: str) -> bool:
     return pathlib.PurePosixPath(claude_binary).parent == pathlib.PurePosixPath(versions_dir)
 
 
+def _profile_prepend(tag: str, line: str, on_failure: str = "") -> str:
+    """One PATH line appended to `$PROFILE` at most once, ever.
+
+    The line is written under a `PROFILE_MARK` comment naming `tag`, and the
+    guard is an exact-line match on that comment -- so what decides whether the
+    edit has already been made is a line only these scripts ever write.
+    Substring-matching the directory being added cannot do that job: a base
+    image is free to mention, or even prepend, the same directory for its own
+    reasons, and then the guard skips an append the workspace still needs.
+
+    Exact-line (`-x`) and fixed-string (`-F`) rather than a pattern, so nothing
+    in the mark is read as a regex and a longer line that merely contains it
+    does not count as a match.
+
+    Appending under a *new* mark to a profile some older devlaunch already
+    edited duplicates one PATH entry, once: harmless (a directory twice on PATH
+    resolves the same), self-limiting (the mark is there from then on), and the
+    price of the guard no longer being able to lie.
+    """
+    mark = f"{PROFILE_MARK} {tag}"
+    tail = f" || {on_failure}" if on_failure else ""
+    return (
+        f'grep -qxF {shlex.quote(mark)} "$PROFILE" 2>/dev/null || '
+        f"printf '%s\\n' {shlex.quote(mark)} {shlex.quote(line)} >> \"$PROFILE\"{tail}"
+    )
+
+
 def _install_line(tool: Tool) -> str:
     args = " ".join(shlex.quote(arg) for arg in tool.install_args)
     return (
@@ -205,11 +246,15 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
             # (since the check above is `command -v`) reinstalled from scratch
             # on every single launch.
             _PROFILE_RESOLUTION,
-            'grep -q "\\.pixi/bin" "$PROFILE" 2>/dev/null || '
-            'echo \'export PATH="$HOME/.pixi/bin:$PATH"\' >> "$PROFILE" || failed=1',
-            'grep -q "pixi/envs/claude-shim" "$PROFILE" 2>/dev/null || '
-            'echo \'[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
-            'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"\' >> "$PROFILE" || failed=1',
+            _profile_prepend(
+                "pixi-bin", 'export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"
+            ),
+            _profile_prepend(
+                "claude-shim-bin",
+                '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
+                'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
+                on_failure="failed=1",
+            ),
         ]
     )
     return "\n".join(
@@ -454,11 +499,15 @@ def transfer_script(payload: HostPayload) -> str:
     """
     version = payload.claude_version
     claude_rel = f"{CLAUDE_VERSIONS_RELPATH}/{version}"
+    # Prepended, and appended *last*, because winning is the whole point: the
+    # container this lend exists for already has a shim earlier on PATH, put
+    # there by a line further up this same file. The lent binary only becomes
+    # the `claude` a session finds -- and the next probe only reads
+    # `provisioned` -- because ~/.local/bin goes in front of it.
     profile_lines = "\n".join(
         [
             _PROFILE_RESOLUTION,
-            'grep -q "\\.local/bin" "$PROFILE" 2>/dev/null || '
-            'echo \'export PATH="$HOME/.local/bin:$PATH"\' >> "$PROFILE"',
+            _profile_prepend("local-bin", 'export PATH="$HOME/.local/bin:$PATH"'),
         ]
     )
     return "\n".join(
@@ -613,11 +662,16 @@ def ensure_tools(workspace: str, runner) -> bool:
             #
             # Accepted residual: a container that keeps rejecting the lend --
             # a different libc or architecture -- while carrying a shim
-            # re-attempts a ~5s failing transfer on every `devpod up`. Breaking
-            # that loop needs per-container retry state persisted somewhere,
-            # which is more machinery than the case is worth, and ensure_tools
-            # never runs on the fast-attach path: this only ever rides an `up`
-            # that already took seconds to minutes.
+            # re-attempts one failing transfer on every `devpod up`, paying for
+            # the tar and the stream before the arch/libc gate refuses the
+            # binaries. What that costs end to end has not been measured; the
+            # figure this comment used to carry was inherited, not taken. The
+            # one part of it that has been measured is staging the tar (#158:
+            # ~0.13s warm, ~2.6s cold), which is a fraction of it. Breaking the
+            # loop needs per-container retry state persisted somewhere, which is
+            # more machinery than the case is worth, and ensure_tools never runs
+            # on the fast-attach path: this only ever rides an `up` that already
+            # took seconds to minutes.
             return True
 
         # ProbeResult.ABSENT: the cold flow, with a tool genuinely missing.

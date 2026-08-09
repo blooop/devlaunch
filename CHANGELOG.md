@@ -116,7 +116,27 @@ table and should be judged on its own merits.
   `lendable` container is quietly upgraded — the host streams in its own binary
   and the transfer's `~/.local/bin` `PATH` prepend is what makes it win from
   then on — so the *next* launch probes `provisioned` and the tar is paid once
-  rather than on every launch for the life of the workspace. If the host has
+  rather than on every launch for the life of the workspace.
+
+  That prepend only actually happens because the guard in front of it now asks
+  the right question. **Every line devlaunch appends to a container's login
+  profile is written under a `# devlaunch:` mark, and the "have I already done
+  this?" guard is an exact match on that mark** — not, as before, a search for
+  the directory being added. Searching for the directory made the answer a base
+  image's to give, and it gave the wrong one: Ubuntu's stock `~/.profile`
+  prepends `~/.local/bin` itself, near the top of the file, so on
+  `mcr.microsoft.com/devcontainers/base:ubuntu-24.04` — the image this repo's
+  own devcontainer builds on — the transfer read that block as its own work,
+  skipped the prepend, and left the shim ahead of the binary it had just lent.
+  The workspace never converged: it answered `lendable`, re-paid the whole
+  transfer, and answered `lendable` again, every `devpod up`, forever. The
+  convergence test now lets the profile decide `PATH` — sourced from a home
+  seeded with that image's stock file plus the lines this repo's devcontainer
+  appends — because a test that builds `PATH` itself cannot see the ordering
+  the lend depends on. A profile some earlier devlaunch already edited gains
+  one duplicate `PATH` entry the first time it is seen, and nothing after that.
+
+  If the host has
   nothing to lend, or the lent binaries do not run there, the container is
   accepted as it stands rather than falling through to the network install —
   that install decides what to do with its own `command -v` guards, which a

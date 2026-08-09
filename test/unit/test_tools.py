@@ -168,6 +168,60 @@ class TestProvisionScript:
         assert "command -v gh" not in script
 
 
+class TestProfileGuards:
+    """Every "have I already edited this profile?" question, in both scripts.
+
+    Asked once here rather than per script, because the property is the same
+    wherever it is asked and the answer decides whether a workspace ever stops
+    doing work it has already done.
+    """
+
+    @staticmethod
+    def _guards(script):
+        """The guard half of every line that appends to the login profile."""
+        guards = [
+            line.partition("||")[0] for line in script.splitlines() if '>> "$PROFILE"' in line
+        ]
+        assert guards, "a script that never edits the profile has nothing to guard"
+        return guards
+
+    @pytest.mark.parametrize("name", ["provision", "transfer"])
+    def test_a_guard_asks_about_devlaunchs_own_line_not_about_a_directory(self, name, tmp_path):
+        """The guard means "have *we* already prepended our directory here", and
+        the only evidence of that which devlaunch owns is the mark it writes.
+
+        Asking instead whether the directory is mentioned anywhere in the file
+        makes the answer a base image's to give. Ubuntu's stock ~/.profile
+        prepends ~/.local/bin itself -- so on this repo's own base image that
+        question answered "already done" about work nobody had done, the lent
+        binary never reached the front of PATH, and every launch re-paid the
+        transfer. A directory name may appear in what is appended; it may not
+        appear in what decides whether to append.
+        """
+        script = (
+            provision_script()
+            if name == "provision"
+            else tools.transfer_script(fake_payload(tmp_path))
+        )
+        for guard in self._guards(script):
+            assert tools.PROFILE_MARK in guard
+            for owned_by_the_image in (".local/bin", ".pixi/bin", "pixi/envs/claude-shim"):
+                assert owned_by_the_image not in guard
+
+    @pytest.mark.parametrize("name", ["provision", "transfer"])
+    def test_a_guard_matches_a_whole_line_not_a_fragment_of_one(self, name, tmp_path):
+        """A mark is only devlaunch's if nothing longer can pass for it: an
+        exact-line, fixed-string match, so neither a regex metacharacter nor a
+        longer line that happens to contain the mark counts as a hit."""
+        script = (
+            provision_script()
+            if name == "provision"
+            else tools.transfer_script(fake_payload(tmp_path))
+        )
+        for guard in self._guards(script):
+            assert guard.startswith("grep -qxF ")
+
+
 def fake_payload(tmp_path) -> tools.HostPayload:
     """A payload made of scratch files, so no test ships a real 300MB binary."""
     claude = tmp_path / "claude-2.0.1"
@@ -199,6 +253,52 @@ REPORT_LENDABLE = (
     "devlaunch-probe claude /ws/.pixi/envs/claude-shim/bin/claude\n"
 )
 
+# ~/.profile exactly as mcr.microsoft.com/devcontainers/base:ubuntu-24.04 ships
+# it -- the base image .devcontainer/Dockerfile builds on -- copied out of the
+# pulled image verbatim. The load-bearing part is the last block: Ubuntu's
+# default profile puts ~/.local/bin on PATH itself, near the top of the file,
+# long before anything devlaunch or the devcontainer feature appends. A guard
+# that looks for the *directory* rather than for its own line reads that block
+# as its own work and skips an append the workspace needs.
+UBUNTU_STOCK_PROFILE = """\
+# ~/.profile: executed by the command interpreter for login shells.
+# This file is not read by bash(1), if ~/.bash_profile or ~/.bash_login
+# exists.
+# see /usr/share/doc/bash/examples/startup-files for examples.
+# the files are located in the bash-doc package.
+
+# the default umask is set in /etc/profile; for setting the umask
+# for ssh logins, install and configure the libpam-umask package.
+#umask 022
+
+# if running bash
+if [ -n "$BASH_VERSION" ]; then
+    # include .bashrc if it exists
+    if [ -f "$HOME/.bashrc" ]; then
+\t. "$HOME/.bashrc"
+    fi
+fi
+
+# set PATH so it includes user's private bin if it exists
+if [ -d "$HOME/bin" ] ; then
+    PATH="$HOME/bin:$PATH"
+fi
+
+# set PATH so it includes user's private bin if it exists
+if [ -d "$HOME/.local/bin" ] ; then
+    PATH="$HOME/.local/bin:$PATH"
+fi
+"""
+
+# What .devcontainer/Dockerfile appends to that same file, verbatim, and in
+# this order. The shim directory is prepended *last*, so it wins over
+# everything above it -- including Ubuntu's own ~/.local/bin block.
+DEVCONTAINER_PROFILE_LINES = """\
+export PATH="$HOME/.pixi/bin:$PATH"
+# Workaround: pixi trampoline fails for bash scripts, so add env bin directly
+[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"
+"""
+
 
 class TestProbeScript:
     """The probe runs in someone else's container and decides whether to lend.
@@ -223,11 +323,13 @@ class TestProbeScript:
         external the probe uses is linked in by hand.
         """
         sysbin = tmp_path / "sysbin"
-        sysbin.mkdir()
+        sysbin.mkdir(exist_ok=True)
         for command in ("readlink",):
             found = shutil.which(command)
             assert found, f"the test host needs {command}"
-            (sysbin / command).symlink_to(found)
+            link = sysbin / command
+            if not link.exists():
+                link.symlink_to(found)
         return [sysbin]
 
     _KEEP_HOME = object()
@@ -258,6 +360,37 @@ class TestProbeScript:
         # Exit 0 in every state: "no tools here" is an answer, not a failure,
         # and a non-zero probe paints a red devpod `fatal` on the terminal of
         # every cold launch.
+        assert result.returncode == 0, result.stderr
+        return tools.ProbeResult.parse(result.stdout)
+
+    def _answer_after_login(self, tmp_path, home):
+        """The same answer, but with PATH built by the home's own login profile.
+
+        `_probe` runs the script under `bash -lc`, so in a real container every
+        directory the probe searches was put there by the profile -- the base
+        image's block, the devcontainer's appended lines and the transfer's
+        prepend, in whatever order they ended up in the file. Handing the probe
+        a PATH instead (as the other cases here do, to keep them hermetic)
+        hides exactly that ordering, which is the thing a lend depends on.
+
+        `$HOME/.profile` is sourced explicitly rather than using `bash -l`,
+        because `-l` would also source the *test host's* /etc/profile and drag
+        its system directories -- and whatever `claude` the developer has --
+        into a run that is meant to see only this scratch home. The user
+        profile is the file under test and the only one either script writes.
+        """
+        env = {
+            "HOME": str(home),
+            "PATH": ":".join(str(d) for d in self._bare_path(tmp_path)),
+        }
+        script = f'. "$HOME/.profile"\n{tools.probe_script()}'
+        result = subprocess.run(
+            [shutil.which("bash") or "/bin/bash", "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         assert result.returncode == 0, result.stderr
         return tools.ProbeResult.parse(result.stdout)
 
@@ -318,31 +451,31 @@ class TestProbeScript:
         self._official_claude(home)
         assert self._answer(tmp_path, home, [home / ".local/bin"]) is tools.ProbeResult.ABSENT
 
-    def test_the_layout_a_lend_leaves_behind_answers_provisioned(self, tmp_path):
-        """Convergence, run for real end to end: the transfer script unpacks
-        into a scratch $HOME, and the probe is then asked about that same home.
+    @staticmethod
+    def _lend(tmp_path, home, version="2.0.1"):
+        """Run the real transfer script against a scratch $HOME, for real.
 
-        The two scripts have to agree or the lending never terminates -- a lend
-        the next probe does not recognise means every `up` for the rest of that
-        workspace's life re-pays the transfer.
+        A host payload is built out of scratch binaries, tarred the way
+        `_transfer` tars it, and streamed into `transfer_script` on stdin --
+        so what lands in `home`, and what the script writes into that home's
+        login profile, is what a real lend leaves behind.
         """
-        home = self._home(tmp_path)
-        source = tmp_path / "host"
-        source.mkdir()
+        source = tmp_path / f"host-{version}"
+        source.mkdir(exist_ok=True)
         binaries = {}
-        for name in ("claude-2.0.1", "gh"):
+        for name in (f"claude-{version}", "gh"):
             binary = source / name
             binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             binary.chmod(0o755)
             binaries[name] = binary
         payload = tools.HostPayload(
-            claude_version="2.0.1",
+            claude_version=version,
             members=(
-                (binaries["claude-2.0.1"], ".local/share/claude/versions/2.0.1"),
+                (binaries[f"claude-{version}"], f".local/share/claude/versions/{version}"),
                 (binaries["gh"], ".local/bin/gh"),
             ),
         )
-        bundle = tmp_path / "tools.tar"
+        bundle = tmp_path / f"tools-{version}.tar"
         with tarfile.open(bundle, mode="w") as tar:
             for member_source, arcname in payload.members:
                 tar.add(member_source, arcname=arcname)
@@ -356,7 +489,52 @@ class TestProbeScript:
                 check=False,
             )
         assert lend.returncode == 0, lend.stderr
+
+    def test_the_layout_a_lend_leaves_behind_answers_provisioned(self, tmp_path):
+        """Convergence, run for real end to end: the transfer script unpacks
+        into a scratch $HOME, and the probe is then asked about that same home.
+
+        The two scripts have to agree or the lending never terminates -- a lend
+        the next probe does not recognise means every `up` for the rest of that
+        workspace's life re-pays the transfer.
+        """
+        home = self._home(tmp_path)
+        self._lend(tmp_path, home)
         assert self._answer(tmp_path, home, [home / ".local/bin"]) is tools.ProbeResult.PROVISIONED
+
+    def test_a_lend_converges_on_the_image_this_repo_ships(self, tmp_path):
+        """Convergence where it actually has to hold: a shim container whose
+        login profile is Ubuntu's stock one plus the lines this repo's own
+        devcontainer appends, with PATH decided by *sourcing that profile*
+        rather than handed to the probe by the test.
+
+        PATH order is the whole mechanism by which a lend takes effect -- the
+        lent binary only wins because the transfer prepends `~/.local/bin` to
+        the profile -- so a convergence test that builds PATH itself asserts a
+        world in which the profile edit cannot be wrong. This one lets the
+        profile decide, which is the only way the edit being skipped is
+        visible: skipped, the shim stays in front, every `up` re-pays the tar,
+        and the workspace never converges.
+        """
+        home = self._home(tmp_path)
+        (home / ".profile").write_text(
+            UBUNTU_STOCK_PROFILE + DEVCONTAINER_PROFILE_LINES, encoding="utf-8"
+        )
+        shim = home / ".pixi/envs/claude-shim/bin/claude"
+        shim.parent.mkdir(parents=True)
+        shim.write_text("#!/bin/sh\necho 'downloading 285MB' >&2\n", encoding="utf-8")
+        shim.chmod(0o755)
+        gh = home / ".pixi/bin/gh"
+        gh.parent.mkdir(parents=True)
+        gh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gh.chmod(0o755)
+
+        assert self._answer_after_login(tmp_path, home) is tools.ProbeResult.LENDABLE
+        self._lend(tmp_path, home)
+        assert self._answer_after_login(tmp_path, home) is tools.ProbeResult.PROVISIONED
+        # And the second lend never happens: converged means converged, not
+        # converged-then-drifting-back.
+        assert self._answer_after_login(tmp_path, home) is tools.ProbeResult.PROVISIONED
 
     @staticmethod
     def _nested_shim(home):
