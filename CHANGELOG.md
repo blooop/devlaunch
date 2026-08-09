@@ -30,6 +30,22 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **A workspace with no LFS content no longer forks git-lfs on every launch.**
+  Preparing a workspace always asked `git lfs ls-files` whether there was
+  anything to materialize, and git-lfs is a large binary whose startup dominates
+  that answer. The question is now settled first from the working tree: git-lfs
+  can only name a file that git tracks, so if no tracked file holds a pointer
+  there is nothing for it to report, and the fork is skipped. Measured on the
+  reference machine, ~33ms → ~4ms for this repo's own checkout and ~93ms → ~22ms
+  for a 3000-file repo; a workspace that really is holding pointers still pays
+  the probe and materializes exactly as before.
+
+  Deliberately a question about pointer content rather than about whether the
+  repo declares `filter=lfs`: a repo can hold committed pointers while declaring
+  nothing, and can be LFS-tracked through attributes git reads from outside the
+  clone. Either would have been read as "no LFS here" — leaving that workspace on
+  stub files on every launch, not just once.
+
 - **A launch is one `devpod status`, not a `devpod list` and then a status.**
   Every workspace command opened with `devpod list --output json` purely to ask
   whether devpod knew this workspace, then asked `devpod status` about the same

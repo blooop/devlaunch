@@ -33,10 +33,6 @@ from .storage import MetadataStorage
 # Every git-lfs pointer file starts with this; see the git-lfs pointer spec.
 _LFS_POINTER_PREFIX = b"version https://git-lfs"
 
-# LFS tracking exists only through a gitattributes line setting this filter
-# (`*.bin filter=lfs ...`), so its absence proves the repo cannot hold pointers.
-_LFS_ATTRIBUTE_MARKER = "filter=lfs"
-
 logger = logging.getLogger(__name__)
 
 
@@ -116,62 +112,53 @@ class WorkspaceCloneManager:
         return result.returncode == 0
 
     @staticmethod
-    def _mentions_lfs_filter(path: Path) -> bool:
-        """True if *path* is a readable attributes file mentioning filter=lfs."""
+    def _is_lfs_pointer(path: Path) -> bool:
+        """True if *path* holds an unmaterialized git-lfs pointer."""
         try:
-            return _LFS_ATTRIBUTE_MARKER in path.read_text(encoding="utf-8", errors="replace")
+            with open(path, "rb") as f:
+                return f.read(len(_LFS_POINTER_PREFIX)) == _LFS_POINTER_PREFIX
         except OSError:
             return False
 
     @classmethod
-    def _lfs_attributes_declared(cls, ws_path: Path) -> bool:
-        """True if the clone's gitattributes declare an LFS filter.
+    def _may_hold_lfs_pointers(cls, ws_path: Path) -> bool:
+        """True unless no tracked file in the clone holds a pointer.
 
-        Pointer files can only arise from a ``filter=lfs`` gitattributes line,
-        so a clone that declares none anywhere cannot need materialization and
-        the git-lfs fork is skipped entirely. The workspace is a full clone
-        with the branch already checked out, so declarations live in the
-        working tree. Checked cheapest-first:
+        A cheap necessary condition for _has_lfs_pointers, standing in front of
+        the git-lfs fork. Every path ``git lfs ls-files`` can name is a tracked
+        path, so if no tracked file holds a pointer the probe would answer False
+        anyway and forking git-lfs to hear it is pure cost — which the
+        overwhelmingly common non-LFS repo pays on every single launch.
 
-        1. Top-level ``.gitattributes`` — the file ``git lfs track`` writes,
-           i.e. virtually every real LFS repo — read directly, no fork.
-        2. Tracked ``.gitattributes`` at any depth, enumerated from the index
-           (``git ls-files`` matches ``*`` across slashes); one plain-git fork,
-           still cheaper than the git-lfs probe it replaces.
-        3. ``.git/info/attributes`` — local, untracked declarations.
+        Deliberately a question about pointer *content*, not about declarations:
+        a repo can hold committed pointers with no ``filter=lfs`` attribute of
+        its own, and can be LFS-tracked through attributes git reads from
+        outside the clone. Reading either as "no LFS here" would leave such a
+        workspace on stub files permanently. Content is the thing the caller
+        actually needs to know, and it is also the thing that stops being true
+        once materialization succeeds.
 
-        Fails open: an unlistable index means "can't tell", not "no LFS", so
-        the probe runs — skipping would silently strand a workspace on pointer
-        files, the same degradation _lfs_tracked_files refuses.
+        Fails open: an unlistable index means "can't tell", not "no LFS", so the
+        probe runs — the same degradation _lfs_tracked_files refuses.
         """
-        if cls._mentions_lfs_filter(ws_path / ".gitattributes"):
-            return True
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", "*.gitattributes"],
+            ["git", "ls-files", "-z"],
             cwd=ws_path,
             capture_output=True,
-            text=True,
             check=False,
         )
         if result.returncode != 0:
-            logger.warning(f"Could not list gitattributes files: {result.stderr.strip()}")
+            logger.warning(f"Could not list tracked files: {result.stderr.decode().strip()}")
             return True
-        if any(
-            cls._mentions_lfs_filter(ws_path / name) for name in result.stdout.split("\0") if name
-        ):
-            return True
-        return cls._mentions_lfs_filter(ws_path / ".git" / "info" / "attributes")
+        return any(
+            cls._is_lfs_pointer(ws_path / os.fsdecode(name))
+            for name in result.stdout.split(b"\0")
+            if name
+        )
 
-    @classmethod
-    def _lfs_tracked_files(cls, ws_path: Path) -> list[str]:
-        """Paths in the tree that git-lfs tracks, empty if lfs is absent."""
-        if shutil.which("git-lfs") is None:
-            return []
-        # Content gate, deliberately not a launch-history gate (see the caller):
-        # a repo that never mentions filter=lfs cannot hold pointer files, so
-        # the common non-LFS repo skips the git-lfs fork on every launch.
-        if not cls._lfs_attributes_declared(ws_path):
-            return []
+    @staticmethod
+    def _lfs_tracked_files(ws_path: Path) -> list[str]:
+        """Paths in the tree that git-lfs tracks."""
         result = subprocess.run(
             ["git", "lfs", "ls-files", "--name-only"],
             cwd=ws_path,
@@ -193,15 +180,16 @@ class WorkspaceCloneManager:
         Checked by content rather than by "did we just clone this", so an
         interrupted or failed materialization is retried on the next run instead
         of leaving the workspace on pointer files for good.
+
+        The cheap scan runs first and can only rule the answer out, never in, so
+        the git-lfs probe still decides which pointer-shaped files are really
+        LFS — the answer is what it always was, minus a fork nobody needed.
         """
-        for name in cls._lfs_tracked_files(ws_path):
-            try:
-                with open(ws_path / name, "rb") as f:
-                    if f.read(len(_LFS_POINTER_PREFIX)) == _LFS_POINTER_PREFIX:
-                        return True
-            except OSError:
-                continue
-        return False
+        if shutil.which("git-lfs") is None:
+            return False
+        if not cls._may_hold_lfs_pointers(ws_path):
+            return False
+        return any(cls._is_lfs_pointer(ws_path / name) for name in cls._lfs_tracked_files(ws_path))
 
     def _materialize_lfs(self, ws_path: Path) -> None:
         """Replace LFS pointer files with real content from the origin remote.
