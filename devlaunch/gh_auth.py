@@ -27,6 +27,7 @@ import subprocess
 import tempfile
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from devlaunch import timing
 from devlaunch.xdg import config_home
 
 # The variable set inside the container. gh consults it before its config file.
@@ -64,17 +65,18 @@ def _token_from_gh_cli() -> Optional[str]:
     if not shutil.which("gh"):
         return None
     try:
-        # nosec B603 B607 - list form, not shell=True; no command injection risk
-        result = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            text=True,
-            check=False,
-            # gh must not eat stdin that belongs to the command `dl` was asked
-            # to run, and must not leave the terminal in a state of its own.
-            stdin=subprocess.DEVNULL,
-            timeout=_GH_TIMEOUT_SECONDS,
-        )
+        with timing.span("gh auth token"):
+            # nosec B603 B607 - list form, not shell=True; no command injection risk
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True,
+                text=True,
+                check=False,
+                # gh must not eat stdin that belongs to the command `dl` was asked
+                # to run, and must not leave the terminal in a state of its own.
+                stdin=subprocess.DEVNULL,
+                timeout=_GH_TIMEOUT_SECONDS,
+            )
     except (OSError, subprocess.SubprocessError) as e:
         logging.warning(
             "Could not read a GitHub token from gh (%s), so this workspace opens "

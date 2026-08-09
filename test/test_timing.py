@@ -10,12 +10,15 @@ These tests pin behavior at the same boundaries as test_devpod_spawn_counts:
 the CLI entry point on one side, the subprocess module on the other.
 """
 
+import io
 import re
+import subprocess
 from unittest.mock import patch
 
 import pytest
 
-from devlaunch.dl import main
+from devlaunch import gh_auth, timing, workspace_state
+from devlaunch.dl import main, remote_branch_exists, run_ssh
 from test_devpod_spawn_counts import DevpodSpawns
 
 TIMING_LINE = re.compile(r"^dl-timing: (.+) \d+\.\d{3}s$", re.MULTILINE)
@@ -69,3 +72,63 @@ class TestDevpodRoundTripsAreNamed:
             "devpod ssh",
             "total",
         ]
+
+
+@pytest.fixture
+def recording(monkeypatch):
+    """An active timing recorder, emitted into a buffer for inspection.
+
+    These tests exercise helpers below main(), so the per-command begin/emit
+    that main() does is driven here instead.
+    """
+    monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+    timing.begin()
+    buffer = io.StringIO()
+    yield buffer
+    timing.emit(buffer)
+
+
+class TestTransportAndGitGhCallsAreNamed:
+    """The other launch chokepoints show up in the summary by name."""
+
+    def test_openssh_transport_is_named(self, recording):
+        done = subprocess.CompletedProcess(["ssh", "myws.devpod"], 0)
+        with patch("devlaunch.dl.subprocess.run", return_value=done):
+            run_ssh(["ssh", "myws.devpod"])
+        timing.emit(recording)
+        assert timing_labels(recording.getvalue()) == ["ssh", "total"]
+
+    def test_gh_token_round_trip_is_named(self, recording, monkeypatch):
+        monkeypatch.setenv(gh_auth.DISABLE_VAR, "0")
+        for var in gh_auth.HOST_TOKEN_VARS:
+            monkeypatch.delenv(var, raising=False)
+        gh_auth.resolve_token.cache_clear()
+        answered = subprocess.CompletedProcess(
+            ["gh", "auth", "token"], 0, stdout="gho_" + "a" * 36 + "\n", stderr=""
+        )
+        with patch("devlaunch.gh_auth.shutil.which", return_value="/usr/bin/gh"):
+            with patch("devlaunch.gh_auth.subprocess.run", return_value=answered):
+                assert gh_auth.resolve_token() is not None
+        gh_auth.resolve_token.cache_clear()
+        timing.emit(recording)
+        assert timing_labels(recording.getvalue()) == ["gh auth token", "total"]
+
+    def test_clone_state_git_reads_are_named(self, recording, tmp_path):
+        # A directory that is not a repository still costs the rev-parse and
+        # status round trips, and those are what the summary must name.
+        workspace_state.read_clone(tmp_path)
+        timing.emit(recording)
+        assert timing_labels(recording.getvalue()) == [
+            "git rev-parse",
+            "git status",
+            "total",
+        ]
+
+    def test_remote_branch_probe_is_named(self, recording):
+        answered = subprocess.CompletedProcess(
+            ["git", "ls-remote"], 0, stdout="deadbeef\trefs/heads/main\n", stderr=""
+        )
+        with patch("devlaunch.dl.subprocess.run", return_value=answered):
+            assert remote_branch_exists("owner/repo", "main")
+        timing.emit(recording)
+        assert timing_labels(recording.getvalue()) == ["git ls-remote", "total"]

@@ -1394,13 +1394,14 @@ def _git_ls_remote(owner_repo: str, *args: str) -> Optional[str]:
     """
     url = f"git@github.com:{owner_repo}.git"
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", url, *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
+        with timing.span("git ls-remote"):
+            result = subprocess.run(
+                ["git", "ls-remote", url, *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
@@ -2025,8 +2026,9 @@ def run_ssh(args: List[str], env: Optional[Dict[str, str]] = None) -> subprocess
     """
     logging.debug("Running: %s", " ".join(args))
     try:
-        # nosec B603 B607 - list form, not shell=True; no command injection risk
-        return subprocess.run(list(args), check=False, env=env)
+        with timing.span("ssh"):
+            # nosec B603 B607 - list form, not shell=True; no command injection risk
+            return subprocess.run(list(args), check=False, env=env)
     except FileNotFoundError as e:
         raise SshNotInstalled(SSH_MISSING_MESSAGE) from e
 
