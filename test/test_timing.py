@@ -11,6 +11,7 @@ the CLI entry point on one side, the subprocess module on the other.
 """
 
 import io
+import os
 import re
 import subprocess
 import sys
@@ -29,6 +30,33 @@ TIMING_LINE = re.compile(r"^dl-timing: (.+) \d+\.\d{3}s$", re.MULTILINE)
 def timing_labels(stderr: str):
     """The labels of every timing line in *stderr*, in order."""
     return TIMING_LINE.findall(stderr)
+
+
+REPO_ROOT = Path(__file__).parent.parent
+
+
+class TestSuiteIsHermeticAgainstTheSwitch:
+    """The suite must pass for a developer who has DEVLAUNCH_TIMING exported.
+
+    The people this instrument exists for are exactly the people who will leave
+    it on in their shell, and the next thing they do is run the tests. A switch
+    whose own suite goes red when the switch is on is a trap laid for the agent
+    debugging a launch a month from now, so the property is pinned by running a
+    slice of the suite in a child process with the variable exported -- the same
+    way a developer would meet it.
+    """
+
+    def test_suite_passes_with_the_switch_exported(self):
+        affected = "test/test_dl.py::TestMissingDevpodBinary"
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", affected, "-q", "-p", "no:randomly"],
+            cwd=REPO_ROOT,
+            env={**os.environ, "DEVLAUNCH_TIMING": "1"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout[-2000:]
 
 
 class TestSummaryGate:
