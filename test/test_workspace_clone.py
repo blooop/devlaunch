@@ -309,9 +309,11 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
 
-        # An existing workspace whose LFS file is still a pointer.
+        # An existing workspace whose LFS file is still a pointer. The
+        # gitattributes declaration is what makes such a pointer possible.
         ws_path = repo_root / leaf()
         (ws_path / ".git").mkdir(parents=True)
+        (ws_path / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
         big = ws_path / "big.bin"
         big.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
 
@@ -339,6 +341,7 @@ class TestEnsureWorkspace:
 
         ws_path = repo_root / leaf()
         (ws_path / ".git").mkdir(parents=True)
+        (ws_path / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
         (ws_path / "big.bin").write_bytes(b"\x00\x01real binary content")
 
         def run_side_effect(cmd, *args, **kwargs):
@@ -369,9 +372,12 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_bare_path.return_value = bare_path
 
         # git clone is mocked, so stand in for what it would have left behind:
-        # a tree whose LFS file is still a pointer (cloned with skip-smudge).
-        pointer = repo_root / leaf() / "assets" / "big.bin"
+        # a tree whose LFS file is still a pointer (cloned with skip-smudge),
+        # tracked by the gitattributes declaration that created it.
+        ws_root = repo_root / leaf()
+        pointer = ws_root / "assets" / "big.bin"
         pointer.parent.mkdir(parents=True)
+        (ws_root / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
         pointer.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
 
         def run_side_effect(cmd, *args, **kwargs):
@@ -386,6 +392,109 @@ class TestEnsureWorkspace:
         lfs_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:2] == ["git", "lfs"]]
         assert ["git", "lfs", "ls-files", "--name-only"] in lfs_calls
         assert ["git", "lfs", "pull", "origin"] in lfs_calls
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_repo_without_lfs_attributes_never_forks_git_lfs(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """A repo that declares no LFS filter must not pay a git-lfs fork.
+
+        git-lfs tracking exists only through a `filter=lfs` gitattributes
+        declaration, so a clone with no such declaration cannot hold pointer
+        files. Probing it with `git lfs ls-files` costs a fork on every launch
+        of the overwhelmingly common non-LFS repo, for an answer already
+        knowable from repo content.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        # An existing workspace with ordinary content and no gitattributes.
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "main.py").write_text("print('hi')\n")
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert not any(cmd[:2] == ["git", "lfs"] for cmd in issued)
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_nested_lfs_attributes_still_probe(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """A repo whose only filter=lfs declaration sits in a subdirectory probes.
+
+        `git lfs track` run inside a subdirectory writes that directory's
+        .gitattributes, so a repo can be LFS-tracked with nothing at the top
+        level. Gating on the top-level file alone would leave such a repo on
+        pointer files forever.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        nested = ws_path / "assets" / ".gitattributes"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+        (ws_path / "assets" / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "lfs", "ls-files"]:
+                return MagicMock(returncode=0, stdout="assets/big.bin\n", stderr="")
+            if cmd[:2] == ["git", "ls-files"]:
+                return MagicMock(returncode=0, stdout="assets/.gitattributes\0", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] in issued
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_unlistable_attributes_fail_open_to_probing(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """If gitattributes can't be enumerated, the probe runs anyway.
+
+        The gate exists to save a fork, not to decide LFS is absent: when the
+        listing fails, skipping would silently strand a workspace on pointer
+        files — the same degradation the probe itself refuses.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        def run_side_effect(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "lfs", "ls-files"]:
+                return MagicMock(returncode=0, stdout="big.bin\n", stderr="")
+            if cmd[:2] == ["git", "ls-files"]:
+                return MagicMock(returncode=128, stdout="", stderr="fatal: broken index")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] in issued
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")

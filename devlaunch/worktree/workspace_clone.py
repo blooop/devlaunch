@@ -33,6 +33,10 @@ from .storage import MetadataStorage
 # Every git-lfs pointer file starts with this; see the git-lfs pointer spec.
 _LFS_POINTER_PREFIX = b"version https://git-lfs"
 
+# LFS tracking exists only through a gitattributes line setting this filter
+# (`*.bin filter=lfs ...`), so its absence proves the repo cannot hold pointers.
+_LFS_ATTRIBUTE_MARKER = "filter=lfs"
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,9 +116,61 @@ class WorkspaceCloneManager:
         return result.returncode == 0
 
     @staticmethod
-    def _lfs_tracked_files(ws_path: Path) -> list[str]:
+    def _mentions_lfs_filter(path: Path) -> bool:
+        """True if *path* is a readable attributes file mentioning filter=lfs."""
+        try:
+            return _LFS_ATTRIBUTE_MARKER in path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+
+    @classmethod
+    def _lfs_attributes_declared(cls, ws_path: Path) -> bool:
+        """True if the clone's gitattributes declare an LFS filter.
+
+        Pointer files can only arise from a ``filter=lfs`` gitattributes line,
+        so a clone that declares none anywhere cannot need materialization and
+        the git-lfs fork is skipped entirely. The workspace is a full clone
+        with the branch already checked out, so declarations live in the
+        working tree. Checked cheapest-first:
+
+        1. Top-level ``.gitattributes`` — the file ``git lfs track`` writes,
+           i.e. virtually every real LFS repo — read directly, no fork.
+        2. Tracked ``.gitattributes`` at any depth, enumerated from the index
+           (``git ls-files`` matches ``*`` across slashes); one plain-git fork,
+           still cheaper than the git-lfs probe it replaces.
+        3. ``.git/info/attributes`` — local, untracked declarations.
+
+        Fails open: an unlistable index means "can't tell", not "no LFS", so
+        the probe runs — skipping would silently strand a workspace on pointer
+        files, the same degradation _lfs_tracked_files refuses.
+        """
+        if cls._mentions_lfs_filter(ws_path / ".gitattributes"):
+            return True
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.gitattributes"],
+            cwd=ws_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning(f"Could not list gitattributes files: {result.stderr.strip()}")
+            return True
+        if any(
+            cls._mentions_lfs_filter(ws_path / name) for name in result.stdout.split("\0") if name
+        ):
+            return True
+        return cls._mentions_lfs_filter(ws_path / ".git" / "info" / "attributes")
+
+    @classmethod
+    def _lfs_tracked_files(cls, ws_path: Path) -> list[str]:
         """Paths in the tree that git-lfs tracks, empty if lfs is absent."""
         if shutil.which("git-lfs") is None:
+            return []
+        # Content gate, deliberately not a launch-history gate (see the caller):
+        # a repo that never mentions filter=lfs cannot hold pointer files, so
+        # the common non-LFS repo skips the git-lfs fork on every launch.
+        if not cls._lfs_attributes_declared(ws_path):
             return []
         result = subprocess.run(
             ["git", "lfs", "ls-files", "--name-only"],
