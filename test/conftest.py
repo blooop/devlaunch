@@ -62,12 +62,33 @@ def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("xdg")
     monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+    # dl memoizes the clone manager because a real invocation is one short-lived
+    # command; the memo is bound to the cache directory that was current when it
+    # was built. A session that moves that directory per test has to move the
+    # memo with it, or one test reads and migrates the previous test's cache.
+    dl.reset_clone_manager()
+    yield
+    dl.reset_clone_manager()
 
 
 @pytest.fixture
 def home_cache_default(monkeypatch):
     """Drop XDG_CACHE_HOME so the home-relative fallback is what gets tested."""
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_interactive_git_credentials(monkeypatch):
+    """Make a git command that wants a password fail instead of waiting for one.
+
+    A test that reaches a real remote is already wrong, but the way it goes wrong
+    decides whether anyone finds out: prompting, it sits there until some
+    deadline elsewhere gives up, and the run reads as slow rather than as having
+    left the machine. Refusing to prompt turns that into an immediate failure at
+    the command that did it. Nothing here needs a prompt -- the suite's git work
+    is on local paths, and token auth is unaffected.
+    """
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
 
 
 @pytest.fixture(autouse=True)

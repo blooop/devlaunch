@@ -11,23 +11,35 @@ Pinned at the subprocess boundary, like test_devpod_spawn_counts.py, because
 what matters is which git commands the child actually runs — a sweep that
 fetched under a foreground launch's nose, or one that never fetched at all,
 both look fine from inside the code and are told apart only by the argv.
+
+**The boundary is replaced in this thread and nowhere else.** An earlier version
+ran the child on a daemon thread and entered `patch("subprocess.run")` inside it,
+so a thread that outlived its 20s join could restore the real `subprocess.run`
+underneath a later test — and a unit run that reaches the network is worthless
+whichever way it then goes. The updater runs inline here instead, with a signal
+deadline standing in for the join: the "does not block" property is still
+enforced, and the replacement cannot outlive the test that made it.
 """
 
+import contextlib
 import fcntl
+import json
 import os
+import signal
 import subprocess
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
-from unittest.mock import patch
 
 import pytest
 
 from devlaunch import dl
+from devlaunch.workspace_id import WorkspaceId
 from devlaunch.worktree.config import get_worktree_config
 from devlaunch.worktree.models import BaseRepository
-from devlaunch.worktree.storage import MetadataStorage
+from devlaunch.worktree.storage import SCHEMA_VERSION, MetadataStorage
+from devlaunch.xdg import devlaunch_cache
 
 BROAD_FETCH = ["git", "fetch", "origin", "+refs/heads/*:refs/heads/*", "--tags", "--prune"]
 
@@ -106,54 +118,73 @@ def cached_repo() -> CachedRepo:
     return CachedRepo()
 
 
-def run_updater(recorder: Subprocesses, timeout: float = 20.0) -> None:
-    """Run the detached child's command line, failing rather than hanging.
+@contextlib.contextmanager
+def deadline(seconds: float, note: str):
+    """Fail after *seconds* instead of hanging, without leaving this thread.
 
-    On a thread with a deadline because the behaviour under test includes *not
-    blocking*: a sweep that queued behind a held lock would otherwise wedge the
-    whole suite instead of failing one test.
+    A wall-clock alarm rather than a worker thread with a join: the property
+    under test is that the sweep never queues behind a held lock, and a sweep
+    that did queue must cost one failed test rather than a wedged suite. Doing
+    it with a signal keeps the whole run — including the subprocess boundary it
+    replaces — inside the test, which a thread could not promise.
+
+    Generous by design. This is a wedge guard, not a budget: the work it times
+    is entirely in-process once the boundary is replaced, so any value that a
+    loaded machine can miss would be trading one flake for another.
     """
-    outcome: List[int] = []
 
-    def child() -> None:
-        with patch("subprocess.run", side_effect=recorder.run):
-            outcome.append(dl.main(["--update-cache", "--force"]))
+    def fired(_signum, _frame):
+        raise AssertionError(note)
 
-    worker = threading.Thread(target=child, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    assert not worker.is_alive(), "the cache updater blocked instead of moving on"
-    assert outcome == [0]
+    previous = signal.signal(signal.SIGALRM, fired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def run_updater(monkeypatch, recorder: Subprocesses, timeout: float = 30.0) -> None:
+    """Run the detached child's command line inline, failing rather than hanging.
+
+    `monkeypatch` and not `mock.patch`: pytest undoes it at teardown of this very
+    test, in this thread, whatever the test did — so no later test can inherit a
+    real `subprocess.run` from a replacement that got away.
+    """
+    monkeypatch.setattr(subprocess, "run", recorder.run)
+    with deadline(timeout, "the cache updater blocked instead of moving on"):
+        assert dl.main(["--update-cache", "--force"]) == 0
 
 
 class TestTheUpdaterSweepsTheCache:
     """Freshness converges in the background, on the interval it always had."""
 
-    def test_a_repo_past_its_interval_is_fetched(self, cached_repo):
+    def test_a_repo_past_its_interval_is_fetched(self, cached_repo, monkeypatch):
         """The broad sweep the launch path used to pay for, run by the child."""
         cached_repo.last_fetched_at(datetime.now() - timedelta(hours=2))
         recorder = Subprocesses()
 
-        run_updater(recorder)
+        run_updater(monkeypatch, recorder)
 
         assert recorder.fetches == [BROAD_FETCH]
 
-    def test_fetching_advances_the_shared_fetch_clock(self, cached_repo):
+    def test_fetching_advances_the_shared_fetch_clock(self, cached_repo, monkeypatch):
         """`last_fetched` is shared with the launch path, so a sweep is what
         stops a launch reaching for the same fetch a second time."""
         stale = datetime.now() - timedelta(hours=2)
         cached_repo.last_fetched_at(stale)
 
-        run_updater(Subprocesses())
+        run_updater(monkeypatch, Subprocesses())
 
         assert cached_repo.last_fetched() > stale
 
-    def test_a_repo_within_its_interval_is_left_alone(self, cached_repo):
+    def test_a_repo_within_its_interval_is_left_alone(self, cached_repo, monkeypatch):
         """The interval is the whole point: this is not a fetch-every-command."""
         cached_repo.last_fetched_at(datetime.now())
         recorder = Subprocesses()
 
-        run_updater(recorder)
+        run_updater(monkeypatch, recorder)
 
         assert recorder.fetches == []
 
@@ -161,7 +192,7 @@ class TestTheUpdaterSweepsTheCache:
 class TestTheUpdaterYieldsToLaunches:
     """Background defers to foreground; never the other way round."""
 
-    def test_a_repo_another_run_is_holding_is_skipped(self, cached_repo):
+    def test_a_repo_another_run_is_holding_is_skipped(self, cached_repo, monkeypatch):
         """A launch holds the repo lock while it clones. The sweep must neither
         wait for it nor fetch behind its back — it just comes back next hour."""
         cached_repo.last_fetched_at(datetime.now() - timedelta(hours=2))
@@ -169,13 +200,13 @@ class TestTheUpdaterYieldsToLaunches:
         held = os.open(cached_repo.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            run_updater(recorder)
+            run_updater(monkeypatch, recorder)
         finally:
             os.close(held)
 
         assert recorder.fetches == []
 
-    def test_a_skipped_repo_keeps_its_fetch_clock(self, cached_repo):
+    def test_a_skipped_repo_keeps_its_fetch_clock(self, cached_repo, monkeypatch):
         """Nothing was fetched, so nothing may claim it was: moving the clock
         would buy the contended repo another hour of staleness."""
         stale = datetime.now() - timedelta(hours=2)
@@ -183,7 +214,7 @@ class TestTheUpdaterYieldsToLaunches:
         held = os.open(cached_repo.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            run_updater(Subprocesses())
+            run_updater(monkeypatch, Subprocesses())
         finally:
             os.close(held)
 
@@ -193,7 +224,7 @@ class TestTheUpdaterYieldsToLaunches:
 class TestTheSweepSurvivesABadRepo:
     """A detached child has nobody to complain to, so it complains to nobody."""
 
-    def test_a_failing_fetch_does_not_stop_the_next_repo(self, cached_repo):
+    def test_a_failing_fetch_does_not_stop_the_next_repo(self, cached_repo, monkeypatch):
         """One unreachable remote must not cost every other repo its refresh."""
         first = cached_repo
         first.last_fetched_at(datetime.now() - timedelta(hours=2))
@@ -202,7 +233,105 @@ class TestTheSweepSurvivesABadRepo:
 
         recorder = Subprocesses(fetch_fails_in=first.bare)
 
-        run_updater(recorder)
+        run_updater(monkeypatch, recorder)
 
         assert len(recorder.fetches) == 2
         assert second.last_fetched() > first.last_fetched()
+
+
+class TestTheChildMigratesLikeEveryOtherRun:
+    """The detached child reaches metadata the way the rest of dl does.
+
+    It is the process least able to afford its own construction path: nobody
+    reads its output, so a child writing records in a shape current dl no longer
+    looks for would go unnoticed until some later foreground command could not
+    find a workspace it owns.
+    """
+
+    def _legacy_cache(self) -> Path:
+        """A cache written by a pre-#64 devlaunch: old leaf name, old header."""
+        repos_dir = Path(get_worktree_config().repos_dir)
+        clone = repos_dir / "blooop" / "devlaunch" / "main"
+        (clone / ".git").mkdir(parents=True, exist_ok=True)
+        (repos_dir / "blooop" / "devlaunch" / ".bare").mkdir(parents=True, exist_ok=True)
+        metadata = devlaunch_cache() / "metadata.json"
+        metadata.parent.mkdir(parents=True, exist_ok=True)
+        metadata.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "repositories": {},
+                    "worktrees": {
+                        "blooop/devlaunch/main": {
+                            "owner": "blooop",
+                            "repo": "devlaunch",
+                            "branch": "main",
+                            "local_path": str(clone),
+                            "workspace_id": "devlaunch-main",
+                            "created_at": "2024-01-01T10:00:00",
+                            "last_used": "2024-01-01T12:00:00",
+                            "devpod_workspace_id": None,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return clone
+
+    def test_the_child_migrates_the_cache_before_touching_metadata(self, monkeypatch):
+        """The clone directory is renamed onto the current id scheme, which is
+        what any dl command run in the foreground would have done first."""
+        old_clone = self._legacy_cache()
+        new_clone = old_clone.parent / WorkspaceId("blooop", "devlaunch", "main").value
+
+        run_updater(monkeypatch, Subprocesses())
+
+        assert not old_clone.exists()
+        assert new_clone.is_dir()
+
+    def test_the_child_leaves_the_metadata_on_the_current_schema(self, monkeypatch):
+        """A header still claiming the old version means the next foreground run
+        migrates paths this child has already been writing to."""
+        self._legacy_cache()
+
+        run_updater(monkeypatch, Subprocesses())
+
+        on_disk = json.loads((devlaunch_cache() / "metadata.json").read_text(encoding="utf-8"))
+        assert on_disk["version"] == SCHEMA_VERSION
+
+
+class TestTheSubprocessBoundaryStaysInsideTheTest:
+    """A unit run must not be able to reach the network, ever.
+
+    Two runs of this file were seen failing with the recorder empty while the
+    code logged a successful fetch — the boundary had been un-replaced under a
+    running test. Nothing about that was ever reproduced on demand, so this pins
+    the property that made it possible rather than the mechanism: the updater
+    runs in the thread that replaced `subprocess.run`, and pytest puts the real
+    one back before the next test starts.
+    """
+
+    def test_the_updater_runs_in_the_thread_that_replaced_subprocess_run(
+        self, cached_repo, monkeypatch
+    ):
+        """If it ran anywhere else, a replacement could outlive its test."""
+        cached_repo.last_fetched_at(datetime.now() - timedelta(hours=2))
+        recorder = Subprocesses()
+        callers: List[int] = []
+
+        def record_caller(args, **kwargs):
+            callers.append(threading.get_ident())
+            return recorder.run(args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", record_caller)
+        with deadline(30.0, "the cache updater blocked instead of moving on"):
+            assert dl.main(["--update-cache", "--force"]) == 0
+
+        assert recorder.fetches == [BROAD_FETCH]
+        assert set(callers) == {threading.get_ident()}
+
+    def test_the_real_subprocess_run_is_back_once_a_test_ends(self):
+        """Every test above replaced it; this one, which did not, must see the
+        real thing — that is what "cannot outlive the test" means."""
+        assert subprocess.run.__module__ == "subprocess"

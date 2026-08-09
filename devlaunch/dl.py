@@ -21,6 +21,7 @@ Usage:
 import sys
 import subprocess
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -40,10 +41,8 @@ from . import devpod_ssh, disk_usage, gh_auth, tools, tty_session, workspace_sta
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
-from .worktree.locks import hold_lock, try_hold_lock
+from .worktree.locks import hold_lock, run_if_lock_free
 from .worktree.migration import migrate_cache
-from .worktree.repo_manager import RepositoryManager
-from .worktree.storage import MetadataStorage
 from .worktree.workspace_clone import WorkspaceCloneManager
 from .xdg import devlaunch_cache
 
@@ -463,28 +462,30 @@ def sweep_repo_fetches() -> None:
     (``last_fetched`` in metadata), which is what lets the launch path go on
     consulting it while it still does: whichever side fetches first, the other
     sees a fresh clock and does nothing.
+
+    It reaches metadata through ``_get_clone_manager`` like every other dl path
+    rather than building its own storage. That is where the one-shot cache
+    migration runs, and a detached child is the worst place to skip it: nobody
+    is watching it write records in a shape the rest of dl no longer reads, and
+    the damage would surface later, somewhere else.
     """
-    config = get_worktree_config()
-    storage = MetadataStorage()
-    repo_manager = RepositoryManager(
-        repos_dir=pathlib.Path(config.repos_dir), storage=storage, config=config
-    )
+    clone_mgr = _get_clone_manager()
+    storage = clone_mgr.storage
+    repo_manager = clone_mgr.repo_manager
+
+    def fetch_quietly(owner: str, repo: str) -> None:
+        """One repo's refresh, with whatever stopped it stepped over."""
+        try:
+            repo_manager.lazy_fetch(owner, repo)
+        except (ValueError, RuntimeError, OSError) as exc:
+            logging.debug("Background fetch of %s/%s failed: %s", owner, repo, exc)
+
     for base_repo in storage.list_repositories():
-        lock_path = repo_manager.lock_path(base_repo.owner, base_repo.repo)
-        with try_hold_lock(lock_path) as acquired:
-            if not acquired:
-                logging.debug(
-                    "Skipping fetch of %s/%s: another dl run holds it",
-                    base_repo.owner,
-                    base_repo.repo,
-                )
-                continue
-            try:
-                repo_manager.lazy_fetch(base_repo.owner, base_repo.repo)
-            except (ValueError, RuntimeError, OSError) as exc:
-                logging.debug(
-                    "Background fetch of %s/%s failed: %s", base_repo.owner, base_repo.repo, exc
-                )
+        owner, repo = base_repo.owner, base_repo.repo
+        if not run_if_lock_free(
+            repo_manager.lock_path(owner, repo), functools.partial(fetch_quietly, owner, repo)
+        ):
+            logging.debug("Skipping fetch of %s/%s: another dl run holds it", owner, repo)
 
 
 def _unsaved_work_in(workspace_id: str) -> workspace_state.Unsaved:
@@ -2373,6 +2374,16 @@ def _get_clone_manager() -> WorkspaceCloneManager:
             logging.warning(f"Could not migrate the workspace cache: {e}")
         _cache[_CLONE_MANAGER_KEY] = manager
     return _cache[_CLONE_MANAGER_KEY]
+
+
+def reset_clone_manager() -> None:
+    """Forget the memoized clone manager, so the next call rebuilds it (tests).
+
+    The memo is bound to the cache directory that was current when it was built,
+    which for one real invocation is the only one there is. A test session moves
+    that directory per test, so the memo has to move with it.
+    """
+    _cache.pop("clone_manager", None)
 
 
 # Commands that read the completion cache without changing what it describes.

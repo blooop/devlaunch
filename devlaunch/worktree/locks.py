@@ -23,20 +23,23 @@ Two deliberate limits, both load-bearing:
   past it. A few empty ``.lock`` files in the cache are the price of the
   guarantee; ``dl --purge`` sweeps them away with everything else.
 
-**Lock ordering is an invariant, not a habit.** There are two kinds of lock in
-the cache — the per-repo lock (``RepositoryManager.lock_path``) and the single
-metadata lock (``MetadataStorage.exclusive``) — and only one order between them
-is legal:
+**Lock ordering is an invariant, not a habit.** Only one order between the
+per-repo lock (``RepositoryManager.lock_path``) and the single metadata lock
+(``MetadataStorage.exclusive``) is legal:
 
     the metadata lock may be taken while a repo lock is held; never the reverse.
 
-Three call sites rely on it today (``fetch_repo`` and ``clone_repo`` writing
-their repository record, ``add_worktree`` writing a worktree record), and every
-one of them is repo-lock-then-metadata-lock. A single site taking them the other
-way round would be enough to deadlock two dl runs against each other, and
-nothing in the code would look wrong at either site. Together with the
-non-reentrancy above, the rule in full: no lock is taken while the same lock is
-held, and repo always precedes metadata.
+Every site that writes metadata while holding a repo lock takes them in that
+order, and a single site taking them the other way round would be enough to
+deadlock two dl runs against each other with nothing looking wrong at either
+site. There is a third lock — the per-workspace launch lock — but it is only
+ever the outermost one, so it does not participate in the ordering above.
+
+The enumeration of the sites deliberately lives in the code rather than here: a
+list in a docstring goes stale the first time someone adds a writer, and a stale
+list is worse than none because it is what the next reader trusts. Together with
+the non-reentrancy above, the rule in full: no lock is taken while the same lock
+is held, and repo always precedes metadata.
 """
 
 import contextlib
@@ -44,7 +47,7 @@ import fcntl
 import os
 import sys
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 
 @contextlib.contextmanager
@@ -80,13 +83,19 @@ def hold_lock(lock_path: Path, waiting_note: Optional[str] = None) -> Iterator[b
         os.close(fd)
 
 
-@contextlib.contextmanager
-def try_hold_lock(lock_path: Path) -> Iterator[bool]:
-    """Hold *lock_path* for the block if it is free right now, else don't.
+def run_if_lock_free(lock_path: Path, work: Callable[[], None]) -> bool:
+    """Run *work* holding *lock_path*, but only if the lock is free right now.
 
-    Yields whether the lock was **acquired**. The block always runs, so the
-    caller decides what a miss means; for the detached cache updater it means
-    "another dl run is already in this repo, come back next interval".
+    A plain function taking the work rather than a context manager yielding
+    "did I get it", because those are not the same guarantee. A block that runs
+    either way needs a guard the caller can forget, and forgetting it does the
+    protected work *unlocked* while reading exactly like the correct code. Here
+    the not-acquired case has no body to run: the lock is either held for the
+    whole of *work* or *work* never happens.
+
+    Returns whether *work* ran. Ignoring that answer is safe — it reports what
+    happened, it does not protect anything — so the only thing a caller can lose
+    by dropping it is the ability to say "skipped".
 
     This is what background work uses and ``hold_lock`` is what foreground work
     uses, and the difference is who is waiting on whom. A launch that waits for
@@ -103,8 +112,8 @@ def try_hold_lock(lock_path: Path) -> Iterator[bool]:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            yield False
-        else:
-            yield True
+            return False
+        work()
+        return True
     finally:
         os.close(fd)
