@@ -2310,11 +2310,16 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
 
         remote_url = f"git@github.com:{owner_repo}.git"
 
-        clone_mgr = _get_clone_manager()
+        # The clone manager is constructed where a path first needs it, never
+        # up front: building it reads config.toml, loads metadata.json under
+        # the metadata lock and runs the cache migration, and the warm path
+        # below attaches without using any of that (#145). _get_clone_manager
+        # memoizes, so the two arms that do need it still build it once.
         repo_ensured = False
 
         # Resolve branch early so we can compute workspace ID
         if not branch:
+            clone_mgr = _get_clone_manager()
             try:
                 clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
             except (RuntimeError, OSError) as e:
@@ -2341,6 +2346,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             custom_id = None
         else:
             # Full path: clone locally and pass local path to DevPod
+            clone_mgr = _get_clone_manager()
             if not repo_ensured:
                 try:
                     clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
