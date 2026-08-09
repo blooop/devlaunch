@@ -87,9 +87,40 @@ table and should be judged on its own merits.
   `claude` that could never run.
 
   The probe that decides all this is captured, unlike the trips that may follow
-  it. It reports nothing, and its everyday answer on a cold workspace ("tools
-  missing") reached the terminal as a red devpod
-  `fatal ... Process exited with status 1` describing the probe working.
+  it: what it prints is the answer the caller branches on rather than progress
+  anybody needs to watch.
+
+- **A baked `claude` counts as provisioned only if it is the real one.** The
+  probe used to ask `command -v claude` and believe the answer, which the
+  `claude-shim` downloader satisfies — so an image carrying the shim (including
+  any built from this repo's own `.devcontainer/claude-code/` feature) skipped
+  the lend and paid the ~285MB GCS download on first use, the exact cost the
+  lending exists to remove. It now answers one of three states: `provisioned`
+  when `gh` is on the login `PATH` **and** `claude` resolves into
+  `~/.local/share/claude/versions/` — the same definition of "a real claude"
+  the host already applies to decide what it may lend, now written down once
+  and used on both sides of the pipe; `lendable` when both answer but the
+  claude is a shim or wrapper; `absent` otherwise.
+
+  A `lendable` container is quietly upgraded: the host streams in its own
+  binary and the transfer's `~/.local/bin` `PATH` prepend is what makes it win
+  from then on, so the *next* launch probes `provisioned`. If the host has
+  nothing to lend, or the lent binaries do not run there, the container is
+  accepted as it stands rather than falling through to the network install —
+  that install decides what to do with its own `command -v` guards, which a
+  shim already satisfies, so the trip would install nothing.
+
+  The probe never executes the candidate `claude`; on a shim, *any* invocation
+  triggers the very download the probe exists to detect. It resolves the path
+  instead. It also exits 0 in all three states now, which retires the red
+  devpod `fatal ... Process exited with status 1` that the old probe's
+  everyday cold answer painted on the terminal.
+
+  Two things this deliberately does not do. It does not compare versions: a
+  real `claude` already in the container is left alone however old it is, since
+  keeping versions in sync would make this a package manager (the binary
+  self-updates, and a workspace rebuild re-provisions). And it does not make
+  the payload per-tool — an image with only `gh` still receives both.
 
 - **Two `up`s of one workspace serialize on a per-workspace lock.** Background
   prewarming makes concurrent `up`s of a single workspace an everyday event

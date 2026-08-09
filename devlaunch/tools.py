@@ -24,10 +24,20 @@ downloads) into a local copy. Only when the host has nothing to lend, or the
 lent binaries do not run there (a different arch or libc), does the old
 network path run: bootstrap pixi, `pixi global install` each tool.
 
-The round trips this costs, by path: a warm workspace pays one (the probe,
-which was always paid); a cold one pays two (probe, then transfer), or three
-when the transfer cannot help and the network fallback runs -- against a
-`devpod up` that already ran for seconds to minutes.
+What "lacks them" means is the probe's job, and it has three answers rather
+than two, because a `claude` on PATH is not necessarily a `claude` worth
+keeping: the shim this repo's own devcontainer feature bakes satisfies
+`command -v` while still owing the GCS download on first use. So the probe
+reports `provisioned` only for the official install layout, `lendable` for a
+container whose claude is something else, and `absent` when a tool is really
+missing -- and a lendable container is quietly upgraded to the host's real
+binary the next time it goes through `up`.
+
+The round trips this costs, by path: a provisioned workspace pays one (the
+probe, which was always paid); a lendable or cold one pays two (probe, then
+transfer), or three when the transfer cannot help a genuinely empty container
+and the network fallback runs -- against a `devpod up` that already ran for
+seconds to minutes.
 
 Two consequences worth knowing:
 
@@ -42,6 +52,7 @@ Two consequences worth knowing:
   make an exception of.
 """
 
+import enum
 import json
 import logging
 import os
@@ -60,6 +71,14 @@ _FALSEY = ("", "0", "false", "no")
 
 # The claude package lives in a personal channel rather than conda-forge.
 BLOOOP_CHANNEL = "https://prefix.dev/blooop"
+
+# Where the official claude installer keeps one binary per version, relative to
+# a home directory. This is the definition of "a real claude" on both sides of
+# the pipe -- the host reads it to decide what it may lend (`_claude_source`),
+# writes into it when it lends (`transfer_script`), and the container is asked
+# about it to decide whether it needs anything (`probe_script`). Stated once,
+# because two copies of that definition are two probes with different opinions.
+CLAUDE_VERSIONS_RELPATH = ".local/share/claude/versions"
 
 # Which file a bash login shell will actually read. bash tries ~/.bash_profile,
 # ~/.bash_login and ~/.profile in that order and sources only the first that
@@ -174,6 +193,84 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
     )
 
 
+class ProbeResult(enum.Enum):
+    """What one probe found in a workspace -- the whole answer, in one value.
+
+    Three states rather than a boolean, because "there is a claude" and "there
+    is a claude worth keeping" are different questions, and collapsing them is
+    the bug this replaced: a container carrying the shim answered yes to the
+    first and was left owing the ~285MB download the lending exists to avoid.
+    A boolean plus a flag would have been the same two questions with a fourth,
+    meaningless combination available; three named states have no illegal one.
+
+    The values are the tokens `probe_script` prints, so the protocol over the
+    ssh channel is written down once rather than once per side.
+    """
+
+    PROVISIONED = "provisioned"
+    LENDABLE = "lendable"
+    ABSENT = "absent"
+
+    @classmethod
+    def parse(cls, answer: str) -> "ProbeResult":
+        """Read a probe's answer. Total: anything unrecognised is ABSENT.
+
+        The last line, not the whole output: the probe runs under `bash -lc`,
+        so the container's login profile is sourced before the script and an
+        image whose profile prints a banner puts it on stdout ahead of the
+        token. The token is always the last thing printed.
+
+        A garbled, empty or truncated answer has to mean something, and ABSENT
+        is the only state whose worst case is harmless -- provisioning is
+        idempotent, so reading it wrongly costs a redundant round trip, where
+        a wrong PROVISIONED would silently skip the work the probe exists to
+        schedule.
+        """
+        lines = [line.strip() for line in answer.splitlines() if line.strip()]
+        if not lines:
+            return cls.ABSENT
+        try:
+            return cls(lines[-1])
+        except ValueError:
+            return cls.ABSENT
+
+
+def probe_script() -> str:
+    """The shell script that answers what provisioning a workspace still needs.
+
+    Prints exactly one token -- `provisioned`, `lendable` or `absent` -- and
+    exits 0 in every one of them: "this container has nothing" is an answer,
+    not a failure, and a probe that exits non-zero paints a red devpod
+    `fatal ... Process exited with status 1` on the terminal of every cold
+    launch, describing the probe working exactly as intended.
+
+    It asks about the fixed pair this module lends rather than an arbitrary
+    tool set, for the same reason `host_payload` does: what can be lent is
+    `gh` and `claude`, so those are what there is a three-state answer for.
+    """
+    present = " && ".join(
+        f"command -v {shlex.quote(tool.command)} >/dev/null 2>&1" for tool in REQUIRED_TOOLS
+    )
+    return "\n".join(
+        [
+            "set -u",
+            f"if ! {{ {present} ; }}; then echo {ProbeResult.ABSENT.value}; exit 0; fi",
+            # Resolved, never run. The shim on PATH answers `command -v` just
+            # as the real binary does, and telling them apart by asking either
+            # one for its version would trigger, on the shim, the very ~285MB
+            # download this answer exists to avoid. Where the name resolves to
+            # is the whole test. `readlink` failing (or missing) leaves this
+            # empty, which reads as `lendable` -- the answer that does more
+            # work, never the one that skips it.
+            'target=$(readlink -f "$(command -v claude)" 2>/dev/null || true)',
+            'case "$target" in',
+            f'  "$HOME/{CLAUDE_VERSIONS_RELPATH}/"*) echo {ProbeResult.PROVISIONED.value} ;;',
+            f"  *) echo {ProbeResult.LENDABLE.value} ;;",
+            "esac",
+        ]
+    )
+
+
 def _pixi_bootstrap() -> str:
     """Install pixi if the image has none, since every tool here comes from it.
 
@@ -222,7 +319,7 @@ def _claude_source() -> Optional[Tuple[str, pathlib.Path]]:
         target = link.resolve(strict=True)
     except OSError:
         return None
-    versions_dir = (pathlib.Path.home() / ".local/share/claude/versions").resolve()
+    versions_dir = (pathlib.Path.home() / CLAUDE_VERSIONS_RELPATH).resolve()
     if target.parent != versions_dir or not os.access(target, os.X_OK):
         return None
     return target.name, target
@@ -268,7 +365,7 @@ def host_payload() -> Optional[HostPayload]:
     return HostPayload(
         claude_version=version,
         members=(
-            (claude_binary, f".local/share/claude/versions/{version}"),
+            (claude_binary, f"{CLAUDE_VERSIONS_RELPATH}/{version}"),
             (gh, ".local/bin/gh"),
         ),
     )
@@ -284,7 +381,7 @@ def transfer_script(payload: HostPayload) -> str:
     the caller falls back to the network install.
     """
     version = payload.claude_version
-    claude_rel = f".local/share/claude/versions/{version}"
+    claude_rel = f"{CLAUDE_VERSIONS_RELPATH}/{version}"
     profile_lines = "\n".join(
         [
             _PROFILE_RESOLUTION,
@@ -318,7 +415,7 @@ def transfer_script(payload: HostPayload) -> str:
             f'"$STAGE/{claude_rel}" --version >/dev/null',
             '"$STAGE/.local/bin/gh" --version >/dev/null',
             # Proven. Now they can be moved into place.
-            'mkdir -p "$HOME/.local/bin" "$HOME/.local/share/claude/versions"',
+            f'mkdir -p "$HOME/.local/bin" "$HOME/{CLAUDE_VERSIONS_RELPATH}"',
             f'mv -f "$STAGE/{claude_rel}" "$HOME/{claude_rel}"',
             'mv -f "$STAGE/.local/bin/gh" "$HOME/.local/bin/gh"',
             # The host's own symlink points through the host's home, so the
@@ -341,22 +438,23 @@ def _write_payload_tar(payload: HostPayload, out: pathlib.Path) -> None:
             tar.add(source, arcname=arcname)
 
 
-def _probe(workspace: str, runner, tools: Sequence[Tool]) -> bool:
-    """One round trip: are all `tools` already on the workspace's PATH?
+def _probe(workspace: str, runner) -> ProbeResult:
+    """One round trip: what does this workspace still need?
 
-    Captured, unlike the two trips that may follow. A probe has no progress to
-    report -- it is a yes/no question -- and "no" is the everyday answer on a
-    cold workspace, which devpod renders on the terminal as a red
-    `fatal ... Process exited with status 1`. That line describes the probe
-    working exactly as intended, so it is not shown.
+    Captured, unlike the two trips that may follow -- here the output *is* the
+    answer the caller branches on, rather than progress a user needs to watch.
+
+    A trip that fails is not an answer: the script exits 0 in all three states,
+    so a non-zero status means the ssh itself did not get through, and the
+    reading that costs a redundant trip is preferred to the one that skips the
+    work.
     """
-    checks = " && ".join(
-        f"command -v {shlex.quote(tool.command)} >/dev/null 2>&1" for tool in tools
-    )
     result = runner(
-        ["ssh", workspace, "--command", f"bash -lc {shlex.quote(checks)}"], capture=True
+        ["ssh", workspace, "--command", f"bash -lc {shlex.quote(probe_script())}"], capture=True
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return ProbeResult.ABSENT
+    return ProbeResult.parse(result.stdout)
 
 
 def _transfer(workspace: str, runner, payload: HostPayload) -> bool:
@@ -392,7 +490,13 @@ def ensure_tools(workspace: str, runner, tools: Sequence[Tool] = REQUIRED_TOOLS)
     provisioned workspace ever pays), then the host lending its own binaries
     (see the module docstring for why that is the fast path), then the network
     install for a host with nothing to lend or a container the lent binaries
-    cannot run in.
+    cannot run in. Which of them run is decided by the probe's three-state
+    answer, and only a genuinely `absent` container ever reaches the third.
+
+    Version drift is deliberately not handled: a real claude already in the
+    container is left alone whatever its version. Keeping versions in sync
+    would make this a package manager, which the module docstring's "the host
+    first, the network second" is explicitly not.
 
     The network payload goes through `bash -lc` for the same reason
     workspace_ssh wraps its own: devpod runs --command under a shell that
@@ -414,13 +518,33 @@ def ensure_tools(workspace: str, runner, tools: Sequence[Tool] = REQUIRED_TOOLS)
         return False
 
     try:
-        if _probe(workspace, runner, tools):
+        found = _probe(workspace, runner)
+        if found is ProbeResult.PROVISIONED:
             return True
 
         payload = host_payload()
         if payload is not None and _transfer(workspace, runner, payload):
             return True
 
+        if found is ProbeResult.LENDABLE:
+            # Both tools already answer here; only the claude was the wrong
+            # one, and the lend that would have replaced it either had nothing
+            # to send or would not run in this container. The network fallback
+            # cannot help either way: it decides what to install with its own
+            # `command -v` guards (see provision_script), which both tools
+            # already satisfy, so the third trip would install nothing. Stop
+            # with what is there.
+            #
+            # Accepted residual: a container that keeps rejecting the lend --
+            # a different libc or architecture -- while carrying a shim
+            # re-attempts a ~5s failing transfer on every `devpod up`. Breaking
+            # that loop needs per-container retry state persisted somewhere,
+            # which is more machinery than the case is worth, and ensure_tools
+            # never runs on the fast-attach path: this only ever rides an `up`
+            # that already took seconds to minutes.
+            return True
+
+        # ProbeResult.ABSENT: the cold flow, with a tool genuinely missing.
         script = provision_script(tools)
         result = runner(["ssh", workspace, "--command", f"bash -lc {shlex.quote(script)}"])
     except OSError as e:

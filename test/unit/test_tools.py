@@ -1,7 +1,9 @@
 """What devlaunch installs into a workspace, and what it does when that fails."""
 
 import io
+import os
 import shlex
+import shutil
 import subprocess
 import tarfile
 from typing import List, Optional
@@ -181,23 +183,236 @@ def fake_payload(tmp_path) -> tools.HostPayload:
     )
 
 
+class TestProbeScript:
+    """The probe runs in someone else's container and decides whether to lend.
+
+    Checked as a string (what it may never do) and by running it for real
+    against scratch `$HOME`s (what it answers), because both halves matter: an
+    answer that is right for the wrong reason still costs a 285MB download.
+    """
+
+    @staticmethod
+    def _home(tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        return home
+
+    @staticmethod
+    def _bare_path(tmp_path):
+        """A PATH carrying the coreutils the probe needs and nothing else.
+
+        A test of "no claude here" must not find the developer's own claude,
+        so the real system directories are kept off PATH entirely and the one
+        external the probe uses is linked in by hand.
+        """
+        sysbin = tmp_path / "sysbin"
+        sysbin.mkdir()
+        for command in ("readlink",):
+            found = shutil.which(command)
+            assert found, f"the test host needs {command}"
+            (sysbin / command).symlink_to(found)
+        return [sysbin]
+
+    def _answer(self, tmp_path, home, path_dirs=()) -> str:
+        """Run the probe script for real and return the single token it printed."""
+        env = {
+            "HOME": str(home),
+            "PATH": ":".join(str(d) for d in [*path_dirs, *self._bare_path(tmp_path)]),
+        }
+        # bash by absolute path: the stripped PATH the probe is handed cannot
+        # also be the one that finds the shell running it.
+        result = subprocess.run(
+            [shutil.which("bash") or "/bin/bash", "-c", tools.probe_script()],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Exit 0 in every state: "no tools here" is an answer, not a failure,
+        # and a non-zero probe paints a red devpod `fatal` on the terminal of
+        # every cold launch.
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    @staticmethod
+    def _official_claude(home, version="2.0.1"):
+        """What the official installer leaves behind: one binary per version
+        under ~/.local/share/claude/versions, with ~/.local/bin/claude
+        pointing at the current one."""
+        binary = home / ".local/share/claude/versions" / version
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        link = home / ".local/bin/claude"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(binary)
+        return link.parent
+
+    @staticmethod
+    def _claude_shim(home):
+        """What .devcontainer/claude-code/install.sh bakes: something on PATH
+        answering to `claude` that fetches the real binary on first run."""
+        shim = home / ".local/bin/claude"
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/sh\necho 'downloading 285MB' >&2\n", encoding="utf-8")
+        shim.chmod(0o755)
+        return shim.parent
+
+    @staticmethod
+    def _gh(home):
+        gh = home / ".local/bin/gh"
+        gh.parent.mkdir(parents=True, exist_ok=True)
+        gh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gh.chmod(0o755)
+        return gh.parent
+
+    def test_a_container_with_neither_tool_answers_absent(self, tmp_path):
+        home = self._home(tmp_path)
+        assert self._answer(tmp_path, home) == "absent"
+
+    def test_the_official_claude_layout_answers_provisioned(self, tmp_path):
+        """The prebuilt-image jackpot: nothing to do, one round trip."""
+        home = self._home(tmp_path)
+        self._official_claude(home)
+        assert self._answer(tmp_path, home, [self._gh(home)]) == "provisioned"
+
+    def test_a_baked_shim_answers_lendable_rather_than_provisioned(self, tmp_path):
+        """The whole point of the three states. A `claude` that is a downloader
+        satisfies `command -v` while still owing the ~285MB the lending exists
+        to avoid, so it must not be mistaken for a provisioned workspace."""
+        home = self._home(tmp_path)
+        self._claude_shim(home)
+        assert self._answer(tmp_path, home, [self._gh(home)]) == "lendable"
+
+    def test_a_real_claude_with_no_gh_is_absent_not_lendable(self, tmp_path):
+        """`lendable` means "replace the claude"; a container missing gh
+        outright needs the cold flow, which the network fallback can finish."""
+        home = self._home(tmp_path)
+        self._official_claude(home)
+        assert self._answer(tmp_path, home, [home / ".local/bin"]) == "absent"
+
+    def test_the_layout_a_lend_leaves_behind_answers_provisioned(self, tmp_path):
+        """Convergence, run for real end to end: the transfer script unpacks
+        into a scratch $HOME, and the probe is then asked about that same home.
+
+        The two scripts have to agree or the lending never terminates -- a lend
+        the next probe does not recognise means every `up` for the rest of that
+        workspace's life re-pays the transfer.
+        """
+        home = self._home(tmp_path)
+        source = tmp_path / "host"
+        source.mkdir()
+        binaries = {}
+        for name in ("claude-2.0.1", "gh"):
+            binary = source / name
+            binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            binary.chmod(0o755)
+            binaries[name] = binary
+        payload = tools.HostPayload(
+            claude_version="2.0.1",
+            members=(
+                (binaries["claude-2.0.1"], ".local/share/claude/versions/2.0.1"),
+                (binaries["gh"], ".local/bin/gh"),
+            ),
+        )
+        bundle = tmp_path / "tools.tar"
+        with tarfile.open(bundle, mode="w") as tar:
+            for member_source, arcname in payload.members:
+                tar.add(member_source, arcname=arcname)
+        with open(bundle, "rb") as stream:
+            lend = subprocess.run(
+                [shutil.which("bash") or "/bin/bash", "-c", tools.transfer_script(payload)],
+                stdin=stream,
+                env={**os.environ, "HOME": str(home)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        assert lend.returncode == 0, lend.stderr
+        assert self._answer(tmp_path, home, [home / ".local/bin"]) == "provisioned"
+
+    def test_it_resolves_the_link_rather_than_trusting_the_path_entry(self):
+        """In the official layout `~/.local/bin/claude` is a symlink, so what
+        it points at is the only thing that says which install it belongs to."""
+        assert "readlink -f" in tools.probe_script()
+
+    def test_it_never_runs_the_candidate_claude(self):
+        """Shim-proofness is a property of the script's text, not of a run:
+        *any* invocation of the shim triggers the download the probe exists to
+        detect, so the only things the probe may do with `claude` are look its
+        path up and resolve it.
+        """
+        script = tools.probe_script()
+        scrubbed = script.replace("command -v claude", "").replace(
+            f'"$HOME/{tools.CLAUDE_VERSIONS_RELPATH}/"', ""
+        )
+        assert "claude" not in scrubbed
+        assert "--version" not in script
+
+    def test_the_official_layout_is_defined_once_for_both_sides_of_the_pipe(self, tmp_path):
+        """The container-side "is this the official install" and the host-side
+        one it mirrors must not be able to drift apart."""
+        assert tools.CLAUDE_VERSIONS_RELPATH == ".local/share/claude/versions"
+        assert f'"$HOME/{tools.CLAUDE_VERSIONS_RELPATH}/"' in tools.probe_script()
+        assert tools.CLAUDE_VERSIONS_RELPATH in tools.transfer_script(fake_payload(tmp_path))
+
+
+class TestProbeResult:
+    """The probe's answer is one value with three states, not a boolean."""
+
+    def test_every_token_the_script_can_print_is_a_state(self):
+        """The enum's values *are* the wire protocol, so the script and the
+        parser cannot disagree about what a token means."""
+        assert {result.value for result in tools.ProbeResult} == {
+            "provisioned",
+            "lendable",
+            "absent",
+        }
+
+    @pytest.mark.parametrize(
+        "answer, expected",
+        [
+            ("provisioned\n", tools.ProbeResult.PROVISIONED),
+            ("lendable\n", tools.ProbeResult.LENDABLE),
+            ("absent\n", tools.ProbeResult.ABSENT),
+        ],
+    )
+    def test_it_reads_the_token_the_probe_printed(self, answer, expected):
+        assert tools.ProbeResult.parse(answer) is expected
+
+    def test_a_chatty_login_profile_does_not_hide_the_answer(self):
+        """The probe runs under `bash -lc`, so the container's profile is
+        sourced first and an image whose profile prints a banner puts that on
+        stdout ahead of the token. Reading only the last line keeps such an
+        image on the one-trip path instead of re-provisioning it forever."""
+        answer = "Welcome to this image!\n\nprovisioned\n"
+        assert tools.ProbeResult.parse(answer) is tools.ProbeResult.PROVISIONED
+
+    @pytest.mark.parametrize("answer", ["", "bash: line 1: oh no", "PROVISIONED"])
+    def test_an_answer_it_cannot_read_means_absent(self, answer):
+        """Parsing is total, and it errs towards doing the work again:
+        provisioning is idempotent, so a wrong `absent` costs a redundant trip
+        where a wrong `provisioned` would silently skip the whole point."""
+        assert tools.ProbeResult.parse(answer) is tools.ProbeResult.ABSENT
+
+
 @pytest.mark.usefixtures("no_host_payload")
 class TestEnsureTools:
     """The three-trip flow: probe, host transfer, network install."""
 
     def test_a_provisioned_workspace_pays_one_probe_and_nothing_else(self):
         """The common path: every launch after the first is one round trip."""
-        runner = Runner(returncodes=(0,))
+        runner = Runner(returncodes=(0,), stdout="provisioned\n")
         assert ensure_tools("myws", runner) is True
         assert len(runner.calls) == 1
         assert runner.calls[0][:2] == ["ssh", "myws"]
         # A non-login shell has no ~/.pixi/bin, so every tool would look absent.
-        assert runner.script().startswith("bash -lc ")
-        assert "command -v gh" in runner.script()
-        assert "command -v claude" in runner.script()
+        argv = shlex.split(runner.script())
+        assert argv[:2] == ["bash", "-lc"]
+        assert argv[2] == tools.probe_script()
 
     def test_with_nothing_to_lend_a_cold_workspace_gets_the_network_install(self):
-        runner = Runner(returncodes=(1, 0))
+        runner = Runner(returncodes=(0, 0), stdout="absent\n")
         assert ensure_tools("myws", runner) is True
         assert len(runner.calls) == 2
         # shlex.split is the inverse of the quoting ensure_tools applies.
@@ -205,8 +420,17 @@ class TestEnsureTools:
         assert argv[:2] == ["bash", "-lc"]
         assert argv[2] == provision_script()
 
+    def test_a_probe_trip_that_fails_outright_is_read_as_absent(self):
+        """The script exits 0 in all three states, so a non-zero trip is the
+        trip failing rather than an answer -- and the cold flow is the safe
+        reading of no answer at all."""
+        runner = Runner(returncodes=(1, 0), stdout="provisioned\n")
+        assert ensure_tools("myws", runner) is True
+        assert len(runner.calls) == 2
+        assert shlex.split(runner.script(1))[2] == provision_script()
+
     def test_a_host_with_the_tools_lends_them_instead_of_the_network(self, tmp_path):
-        runner = Runner(returncodes=(1, 0))
+        runner = Runner(returncodes=(0, 0), stdout="absent\n")
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
             assert ensure_tools("myws", runner) is True
         assert len(runner.calls) == 2
@@ -217,22 +441,48 @@ class TestEnsureTools:
     def test_a_transfer_the_container_rejects_falls_back_to_the_network(self, tmp_path):
         """The lent binaries may not run there (arch, libc); the gate at the
         end of the transfer script reports it, and the old path still runs."""
-        runner = Runner(returncodes=(1, 1, 0))
+        runner = Runner(returncodes=(0, 1, 0), stdout="absent\n")
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
             assert ensure_tools("myws", runner) is True
         assert len(runner.calls) == 3
         assert shlex.split(runner.script(2))[2] == provision_script()
+
+    def test_a_shim_workspace_is_lent_the_hosts_real_claude(self, tmp_path):
+        """`lendable` is the state this whole ticket exists for: both tools
+        answer, but the claude is a downloader, so the host replaces it."""
+        runner = Runner(returncodes=(0, 0), stdout="lendable\n")
+        with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
+            assert ensure_tools("myws", runner) is True
+        assert len(runner.calls) == 2
+        assert [stream is not None for stream in runner.streams] == [False, True]
+        assert "tar xf -" in runner.script(1)
+
+    def test_a_shim_the_lend_could_not_replace_is_accepted_not_reinstalled(self, tmp_path):
+        """The container could not run the lent binaries, but it does have a
+        claude and a gh. The network fallback decides what to install with its
+        own `command -v` guards, which both already satisfy, so a third trip
+        would install nothing -- it is not taken."""
+        runner = Runner(returncodes=(0, 1), stdout="lendable\n")
+        with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
+            assert ensure_tools("myws", runner) is True
+        assert len(runner.calls) == 2
+
+    def test_a_shim_with_nothing_to_lend_stops_after_the_probe(self):
+        """Nothing on the host to replace it with, and the network fallback
+        would no-op, so the shim stands and the launch costs one trip."""
+        runner = Runner(returncodes=(0,), stdout="lendable\n")
+        assert ensure_tools("myws", runner) is True
+        assert len(runner.calls) == 1
 
     def test_the_install_output_reaches_the_user_but_the_probe_is_silent(self):
         """A cold install is tens of seconds; captured, it reads as a hung dl.
         The scripts' progress lines are the only thing on the terminal during
         it, so capturing them would be the same as having none.
 
-        The probe is the exception: it reports nothing, and its everyday
-        failure on a cold workspace reaches the terminal as a red devpod
-        `fatal` describing the probe doing its job.
+        The probe is the exception: its output is not progress but the answer
+        the caller branches on, which is exactly what has to be read back.
         """
-        runner = Runner(returncodes=(1, 0))
+        runner = Runner(returncodes=(0, 0), stdout="absent\n")
         ensure_tools("myws", runner)
         assert runner.captured == [True, False]
 
