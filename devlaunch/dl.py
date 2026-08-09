@@ -40,8 +40,10 @@ from . import devpod_ssh, disk_usage, gh_auth, tools, tty_session, workspace_sta
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
-from .worktree.locks import hold_lock
+from .worktree.locks import hold_lock, try_hold_lock
 from .worktree.migration import migrate_cache
+from .worktree.repo_manager import RepositoryManager
+from .worktree.storage import MetadataStorage
 from .worktree.workspace_clone import WorkspaceCloneManager
 from .xdg import devlaunch_cache
 
@@ -434,6 +436,55 @@ def update_cache_background(force: bool = False) -> None:
         )
     except OSError:
         pass
+
+
+def sweep_repo_fetches() -> None:
+    """Bring the bare-clone cache up to date, one repo at a time.
+
+    The freshness fetch — ``+refs/heads/*`` plus tags plus prune — is a network
+    call of unbounded duration, and it used to run on the launch path, under the
+    per-repo lock, whenever the interval had elapsed. Whoever drew that straw
+    paid for everyone's freshness, and any concurrent launch of the same repo
+    queued behind them. Out here it costs a launch nothing: this is the detached
+    child, spawned and forgotten, with nobody waiting on its exit.
+
+    Two rules make it safe to run alongside real work:
+
+    - **It never waits.** The repo lock is taken non-blockingly, so a repo some
+      launch is mid-clone in is skipped rather than queued for. Background
+      defers to foreground and never the reverse — a sweep that waited would be
+      taxing the path it exists to keep clear.
+    - **It never complains.** A failed fetch — unreachable remote, a cache entry
+      whose clone has been deleted underneath it — is logged and stepped over,
+      so one bad repo cannot cost the rest their refresh, and the interval
+      brings it round again anyway. There is no terminal attached to say more.
+
+    The interval itself is unchanged and still recorded in the one shared place
+    (``last_fetched`` in metadata), which is what lets the launch path go on
+    consulting it while it still does: whichever side fetches first, the other
+    sees a fresh clock and does nothing.
+    """
+    config = get_worktree_config()
+    storage = MetadataStorage()
+    repo_manager = RepositoryManager(
+        repos_dir=pathlib.Path(config.repos_dir), storage=storage, config=config
+    )
+    for base_repo in storage.list_repositories():
+        lock_path = repo_manager.lock_path(base_repo.owner, base_repo.repo)
+        with try_hold_lock(lock_path) as acquired:
+            if not acquired:
+                logging.debug(
+                    "Skipping fetch of %s/%s: another dl run holds it",
+                    base_repo.owner,
+                    base_repo.repo,
+                )
+                continue
+            try:
+                repo_manager.lazy_fetch(base_repo.owner, base_repo.repo)
+            except (ValueError, RuntimeError, OSError) as exc:
+                logging.debug(
+                    "Background fetch of %s/%s failed: %s", base_repo.owner, base_repo.repo, exc
+                )
 
 
 def _unsaved_work_in(workspace_id: str) -> workspace_state.Unsaved:
@@ -2435,6 +2486,11 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         if "--force" not in args[1:] and completion_cache_is_fresh():
             return 0
         update_completion_cache()
+        # Completions first, freshness second: the completion cache is what the
+        # user's next keystroke reads, while the fetch sweep is for the launch
+        # after that. Both are on the same hour, so a child that gets here does
+        # both or, when it exits early above, neither.
+        sweep_repo_fetches()
         return 0
 
     if args[0] == "--refresh":

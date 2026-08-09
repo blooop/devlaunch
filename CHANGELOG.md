@@ -290,6 +290,22 @@ table and should be judged on its own merits.
   settings to `devpod up` for an hour, a wrong answer nobody could connect to a
   cache they did not know existed.
 
+- **The hourly freshness fetch is now the background updater's job.** `dl
+  --update-cache` — the detached child dl already spawns to refresh completions
+  after a command — now also sweeps the bare-clone cache, fetching every repo
+  whose fetch interval has elapsed. It takes each repo lock non-blockingly, so a
+  repo some launch is mid-clone in is skipped and picked up next time: the sweep
+  defers to launches and never the other way round. A failed fetch is stepped
+  over rather than reported, since the interval brings it round again and a
+  detached child has no terminal to report to.
+
+  Nothing about freshness changes yet — the launch path still runs the same
+  interval fetch when it draws the short straw, and both sides read the same
+  `last_fetched` clock, so whichever gets there first spares the other. What
+  changes is that on most machines the background child gets there first, and
+  that launch never pays. Taking the fetch off the launch path for good is the
+  next step.
+
 ### Fixed
 
 - **`dl <workspace> rm` could delete a clone that held unsaved work, and say
