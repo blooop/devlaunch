@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, disk_usage, gh_auth, tools, tty_session, workspace_state
+from . import devpod_ssh, disk_usage, gh_auth, timing, tools, tty_session, workspace_state
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -2361,6 +2361,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # a caller that drives main() twice (a test, a shell wrapper) must not have
     # the first command's view of devpod answer the second command's questions.
     invalidate_workspace_list_cache()
+    # Timing is per-command, like the workspace-list snapshot: begin() here so
+    # a second main() in the same process starts a fresh summary, emit() in the
+    # finally so the summary lands on stderr however the command ended.
+    timing.begin()
     try:
         return _run_cli(argv)
     except MissingBinary as e:
@@ -2369,6 +2373,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except UnreadableWorkspaceList as e:
         print(f"error: {e}", file=sys.stderr)
         return UNREADABLE_WORKSPACE_LIST_EXIT_CODE
+    finally:
+        timing.emit()
 
 
 def _run_cli(argv: Optional[List[str]] = None) -> int:
