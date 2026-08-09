@@ -19,8 +19,10 @@ running as another user, so a directory this process cannot read is the normal
 case rather than the exotic one, and "at least N" is the truth about it.
 """
 
+import contextlib
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -29,6 +31,7 @@ from devlaunch.disk_usage import (
     PartlyUnreadable,
     describe_usage,
     exclusive_usage,
+    known_bytes,
     usage_as_json,
 )
 
@@ -164,6 +167,76 @@ class TestWhatCouldNotBeRead:
             (tmp_path / "tree" / "listed").chmod(0o700)
         assert isinstance(usage, PartlyUnreadable)
         assert tmp_path / "tree" / "listed" / "hidden.bin" in usage.unreadable
+
+
+class TestWhatVanishesMidWalk:
+    """A live cache changes under the walk, and that is not a closed door.
+
+    git repacks, a container writes, a sibling command deletes: between reading
+    a directory's names and weighing them, some of them stop existing. That is
+    the ordinary weather on a cache being used, and a walk that reported a floor
+    every time it happened would make `≥` the usual answer for no reason -- a
+    thing that is not there frees nothing, which is a measurement, and it is the
+    same answer the walk already gives for a clone that is not there at all.
+
+    `os.scandir` is the only seam where the race can be staged, so it is where
+    these tests stage it; the disappearing is real, only its timing is arranged.
+    """
+
+    def test_a_file_that_disappears_before_it_is_weighed_costs_nothing(self, tmp_path):
+        payload(tmp_path / "tree" / "stays.bin", 2)
+        payload(tmp_path / "tree" / "goes.bin", 4)
+        real_scandir = os.scandir
+
+        def racing(path):
+            entries = list(real_scandir(path))
+            (tmp_path / "tree" / "goes.bin").unlink(missing_ok=True)
+            return contextlib.nullcontext(entries)
+
+        with patch("devlaunch.disk_usage.os.scandir", racing):
+            usage = exclusive_usage(tmp_path / "tree")
+
+        # A total, not a floor -- and the 4 MiB that went away is not in it.
+        assert 2 * MIB <= measured_bytes(usage) < 3 * MIB
+
+    def test_a_directory_that_disappears_before_it_is_opened_costs_nothing(self, tmp_path):
+        payload(tmp_path / "tree" / "stays.bin", 2)
+        payload(tmp_path / "tree" / "goes" / "hidden.bin", 4)
+        real_scandir = os.scandir
+        gone = tmp_path / "tree" / "goes"
+
+        def racing(path):
+            if Path(path) == gone:
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+            return real_scandir(path)
+
+        with patch("devlaunch.disk_usage.os.scandir", racing):
+            usage = exclusive_usage(tmp_path / "tree")
+
+        assert 2 * MIB <= measured_bytes(usage) < 3 * MIB
+
+
+class TestComparingUsagesWhateverArmTheyAre:
+    """The accessor a caller that ranks or sums usages needs, so it does not
+    reach into the arms and hand-roll an `else` a third arm would walk through.
+
+    `dl --prune` (devlaunch#159) is the caller: "which of these is worth
+    reclaiming first" is answerable from a floor as well as from a total, and it
+    is the only question that is.
+    """
+
+    def test_a_measurement_offers_its_total(self):
+        assert known_bytes(Measured(1536)) == 1536
+
+    def test_a_floor_offers_the_floor(self):
+        assert known_bytes(PartlyUnreadable(1536, (Path("/x"),))) == 1536
+
+    def test_it_is_not_how_a_usage_is_reported(self):
+        # The same number from either arm, which is exactly why the renderings
+        # do not go through here: only they keep the floor visible as one.
+        floor = PartlyUnreadable(1536, (Path("/x"),))
+        assert known_bytes(floor) == known_bytes(Measured(1536))
+        assert describe_usage(floor) != describe_usage(Measured(1536))
 
 
 class TestHowAUsageReads:

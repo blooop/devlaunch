@@ -475,9 +475,11 @@ def workspaces_as_json(with_size: bool = False) -> int:
       leave the workspace alone instead of arguing with a refusal.
     - `state` is devpod's, one `devpod status` per workspace, which is why this
       is a command someone runs rather than something on the fast path.
-    - `disk` appears only when `--size` was asked for, and describes the
-      directory `path` names -- see :func:`_disk_report` for why it is a nested
-      object and why it is not answered by default.
+    - `disk` appears only when `--size` was asked for, and describes dl's own
+      clone for this workspace -- the same directory the `SIZE` column of the
+      table measures, and the same one `--purge` would delete. See
+      :func:`_disk_report` for why it is a nested object and why it is not
+      answered by default.
     """
     cache_dir = _get_cache_dir()
     workspaces = list_workspaces()
@@ -507,7 +509,16 @@ def workspaces_as_json(with_size: bool = False) -> int:
             # Absent unless asked, so a reader can never mistake "nobody asked"
             # for "nothing on disk"; null where there is no clone of dl's own,
             # the same way `repo` and `branch` already say "not mine".
-            row["disk"] = _disk_report(clone_path)
+            #
+            # The same _measurable_clone the table asks, and for the reason two
+            # answers to one question is a defect rather than a duplication:
+            # this used to gate on the metadata record while the table gated on
+            # the source directory, so a clone under the cache that dl had no
+            # record for printed a size in the table and `null` here -- and
+            # `null` is documented as "not dl's to measure", which that clone
+            # is not. A caller reading the JSON and a person reading the table
+            # now measure the same set of workspaces by construction.
+            row["disk"] = _disk_report(_measurable_clone(ws, cache_dir))
         report.append(row)
     print(json.dumps(report, indent=2))
     return 0
@@ -1214,7 +1225,14 @@ def _measurable_clone(workspace: Workspace, cache_dir: pathlib.Path) -> Optional
     and `dl <url>` opens a source devlaunch never cloned; walking either would
     put an unbounded stat of a stranger's tree behind a listing command, and the
     bytes would not be devlaunch's disk in any case. Measuring what devlaunch
-    put on disk is the scope, and this is where that boundary is kept.
+    put on disk is the scope, and this is the only place that boundary is kept:
+    the table and the JSON listing both ask here, so the two cannot come to
+    different conclusions about the same workspace.
+
+    Ownership is the same predicate `--purge` deletes by, not the presence of a
+    metadata record. A record can be missing from a cache that is very much on
+    disk, and a workspace dl reports as its own must not then be reported as
+    unmeasurable -- the disk it would free is the same either way.
     """
     source = workspace.source
     if isinstance(source, LocalFolder) and is_devlaunch_clone(workspace, cache_dir):
@@ -1598,8 +1616,10 @@ def print_workspaces(with_size: bool = False):
     repo's bare cache are billed to nobody rather than to everybody. It is asked
     for rather than always answered because the walk is O(files) with no
     ceiling, while this listing is otherwise one devpod round-trip and no
-    filesystem work at all: on a real cache a workspace clone measures 39-46 ms,
-    and an ordinary devcontainer builds its environment inside the clone.
+    filesystem work at all: measured on the machine in README's note, a
+    ~9,000-entry workspace clone walks in 17-28 ms and a 114,817-entry tree in
+    232-239 ms, and an ordinary devcontainer builds its environment inside the
+    clone.
     """
     workspaces = list_workspaces()
     if not workspaces:
@@ -1608,9 +1628,20 @@ def print_workspaces(with_size: bool = False):
 
     # Describe each source once, so the widths are measured on the same strings
     # that get printed -- sizes included, which is also why the walk happens
-    # here and not again in the print loop.
+    # here and not again in the print loop. An unasked-for column is an empty
+    # string per row rather than a cell value, because "there is no column" is
+    # a fact about the table and "nothing was measured" is a fact about a
+    # workspace; `sized` below drops the empties, and _size_cell never has to
+    # mean both things at once.
     cache_dir = _get_cache_dir() if with_size else None
-    rows = [(ws, *describe_source(ws.source), _size_cell(ws, cache_dir)) for ws in workspaces]
+    sizes = (
+        [""] * len(workspaces)
+        if cache_dir is None
+        else [_size_cell(ws, cache_dir) for ws in workspaces]
+    )
+    rows = [
+        (ws, *describe_source(ws.source), size) for ws, size in zip(workspaces, sizes, strict=True)
+    ]
 
     # Calculate column widths
     id_width = max(len(ws.id) for ws, _kind, _detail, _size in rows)
@@ -1640,14 +1671,12 @@ def print_workspaces(with_size: bool = False):
         )
 
 
-def _size_cell(workspace: Workspace, cache_dir: Optional[pathlib.Path]) -> str:
-    """What *workspace* costs on disk, for the table, or a dash if not asked.
+def _size_cell(workspace: Workspace, cache_dir: pathlib.Path) -> str:
+    """What *workspace* costs on disk, for the table's SIZE column.
 
     A workspace devlaunch did not make reads as `-` rather than `0 B`: nothing
     was measured there, and a zero would say the opposite of that.
     """
-    if cache_dir is None:
-        return ""
     clone = _measurable_clone(workspace, cache_dir)
     if clone is None:
         return "-"

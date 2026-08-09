@@ -9,12 +9,14 @@ more. Both want *what deleting this would free*, so both call
 **Exclusive, not apparent, and the difference is the whole point.** A repo's
 bare cache holds one copy of its git objects and every workspace clone hardlinks
 out of it (devlaunch#154), which is where most of the saving on a repo's second
-workspace comes from. Adding up the file sizes under one clone counts that
+workspace comes from. Walking one clone on its own and adding up the blocks its
+files occupy -- what `du` reports when pointed at one directory -- counts that
 shared pool in full, so three workspaces of one repo read as three times the
-disk they actually occupy -- the design's own saving, reported as if it had
-never happened. Measured on a real cache: one ROS workspace reads 755.0 MiB of
-apparent size against 488.8 MiB exclusive, and the three workspaces sharing that
-bare read as 2.48 GiB against the 1.70 GiB the disk really holds.
+disk they actually occupy: the design's own saving, reported as if it had never
+happened. Measured on a real cache: one ROS workspace reads 755.0 MiB that way
+against 488.8 MiB exclusive, and the three workspaces sharing that bare read as
+2.48 GiB against the 1.70 GiB `du` says the disk really holds when asked about
+all of them at once.
 
 So a file's bytes are billed to a tree only when **every one of its links lies
 inside that tree**. Two consequences worth stating plainly, because they are
@@ -104,6 +106,11 @@ def exclusive_usage(tree: Path) -> DiskUsage:
     at. Directories are always this tree's -- Linux does not hardlink them -- so
     their own blocks count without consulting the link count, which for a
     directory says how many children it has rather than whether it is shared.
+
+    A tree being used changes under the walk, so anything that stops existing
+    between being named and being weighed is worth nothing rather than unknown:
+    it frees nothing now, which is a measurement. Only a door that will not open
+    makes the answer a floor.
     """
     try:
         root = os.lstat(tree)
@@ -126,12 +133,24 @@ def exclusive_usage(tree: Path) -> DiskUsage:
         try:
             with os.scandir(directory) as entries:
                 found = list(entries)
+        except FileNotFoundError:
+            # Gone between being seen and being opened -- the same race as
+            # below, one level up, and answered the same way.
+            continue
         except OSError:
             unreadable.append(directory)
             continue
         for entry in found:
             try:
                 st = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                # The name came back from the directory and the entry was gone
+                # before it could be weighed. A live cache does that on its own
+                # -- git repacks, a container writes -- and something that is
+                # not there frees nothing, which is the same answer the root of
+                # a walk gets for a directory that is not there. Calling a race
+                # a closed door would turn an ordinary listing into a floor.
+                continue
             except OSError:
                 unreadable.append(Path(entry.path))
                 continue
@@ -169,6 +188,26 @@ def describe_usage(usage: DiskUsage) -> str:
         return _human(usage.exclusive_bytes)
     if isinstance(usage, PartlyUnreadable):
         return f"≥{_human(usage.at_least_bytes)}"
+    _unhandled_usage(usage)
+
+
+def known_bytes(usage: DiskUsage) -> int:
+    """The bytes this usage accounts for, whichever arm it is.
+
+    For the callers that have to put usages in an order or add them up --
+    "which of these is worth reclaiming first" -- where a floor and a total are
+    both usable because the question is comparative. Exported so a caller does
+    not reach into the arms and hand-roll an `else` that a third arm would
+    walk straight through; the exhaustiveness check lives here.
+
+    It is deliberately not how a usage is *reported*: printing this number
+    stripped of its arm is exactly how a floor gets read as a total, which is
+    what :func:`describe_usage` and :func:`usage_as_json` exist to prevent.
+    """
+    if isinstance(usage, Measured):
+        return usage.exclusive_bytes
+    if isinstance(usage, PartlyUnreadable):
+        return usage.at_least_bytes
     _unhandled_usage(usage)
 
 

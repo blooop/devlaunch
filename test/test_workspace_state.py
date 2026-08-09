@@ -208,23 +208,36 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
 
     Asked for rather than always answered, because the walk is O(files) with no
     ceiling and plain `--ls` is one devpod round-trip and no filesystem work at
-    all. Measured on a real cache, a workspace clone is 39-46 ms of walking, and
-    an ordinary devcontainer builds its environment *inside* the clone.
+    all. Measured on one machine, warm page cache: a real 8,309-entry clone
+    walked in 24-28 ms and a 114,817-entry tree in 232-239 ms, and an ordinary
+    devcontainer builds its environment *inside* the clone -- so the file count,
+    and with it the cost, is unbounded. README records the conditions.
     """
 
-    def _run(self, tmp_path, argv, capsys, payload_mib=2, unreadable=False, only_foreign=False):
+    def _run(
+        self,
+        tmp_path,
+        argv,
+        capsys,
+        payload_mib=2,
+        unreadable=False,
+        only_foreign=False,
+        recorded=True,
+    ):
         cache = tmp_path / "cache" / "devlaunch"
         clone = cache / "repos" / "blooop" / "r" / "r-feature-aaa"
-        clone.mkdir(parents=True)
+        clone.mkdir(parents=True, exist_ok=True)
         (clone / "payload.bin").write_bytes(b"\0" * (payload_mib * 1024 * 1024))
         if unreadable:
-            (clone / "locked").mkdir()
+            (clone / "locked").mkdir(exist_ok=True)
             (clone / "locked").chmod(0o000)
         entries = [_entry("someone-elses", tmp_path / "projects" / "other")]
         if not only_foreign:
             entries.insert(0, _entry("r-feature-aaa", clone))
         listing = json.dumps(entries)
-        records = {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))}
+        records = (
+            {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))} if recorded else {}
+        )
 
         def devpod(args, **kwargs):
             if args[:1] == ["list"]:
@@ -292,6 +305,27 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         _code, out = self._run(tmp_path, ["--ls", "--size"], capsys)
         foreign = next(line for line in out.splitlines() if line.startswith("someone-elses"))
         assert "-" in foreign.split()
+
+    def test_the_two_renderings_measure_the_same_workspaces(self, tmp_path, capsys):
+        """A clone with no metadata record is still `dl`'s clone on disk.
+
+        The table and the JSON used to answer "may we measure this" from
+        different things -- the source directory and the metadata record -- and
+        a clone under the cache that `dl` had no record for was sized in the
+        table and reported as `null` in the JSON. `null` is documented as "not
+        `dl`'s to measure", which that clone is not: `--purge` deletes it, and a
+        cleanup tool reading the JSON would leave behind disk a person reading
+        the table can see. Both now ask the same question, so both answer it the
+        same way.
+        """
+        report = self._json(tmp_path, ["--ls", "--json", "--size"], capsys, recorded=False)
+        ours = next(row for row in report if row["id"] == "r-feature-aaa")
+        assert ours["devlaunch"] is True
+        assert 2 * 1024 * 1024 <= ours["disk"]["exclusiveBytes"] < 3 * 1024 * 1024
+
+        _code, out = self._run(tmp_path, ["--ls", "--size"], capsys, recorded=False)
+        row = next(line for line in out.splitlines() if line.startswith("r-feature-aaa"))
+        assert "2.0 MiB" in row
 
     def test_the_size_column_lines_up_with_its_heading(self, tmp_path, capsys):
         # A dash is one character and "SIZE" is four, so a column sized only

@@ -499,10 +499,12 @@ my-own-checkout                local  /home/…/projects/scratch                
 prints.** Those differ, and the gap is the point of the design. A repo is cloned
 once into a bare cache and every workspace clone hardlinks its git objects out
 of that one copy, so the objects exist once on disk however many workspaces
-share them. A size that added up file lengths would bill each workspace for the
-whole shared pool — on a real cache, three workspaces of one repo read as
-2.48 GiB that way, against the 1.70 GiB the disk actually holds, and a single
-workspace reads 755.0 MiB where 488.8 MiB is what removing it frees.
+share them. A size that walked each workspace on its own — which is what `du`
+does when you point it at one directory, counting the blocks every file in it
+occupies — bills each workspace for the whole shared pool. On a real cache,
+three workspaces of one repo read as 2.48 GiB that way, against the 1.70 GiB
+`du` says the disk actually holds when asked about all of them together, and a
+single workspace reads 755.0 MiB where 488.8 MiB is what removing it frees.
 
 So `dl` counts a file only when every one of its hardlinks lies inside the
 workspace being measured. Two consequences, both deliberate:
@@ -517,19 +519,27 @@ workspace being measured. Two consequences, both deliberate:
 
 A workspace `dl` did not create reads `-` (`null` in JSON): there is no clone of
 `dl`'s there to measure, and walking your own project directory is not `dl`'s to
-do. Where a walk hits a directory it cannot read — a container writes into its
+do. The table and the JSON decide that from the same rule — is the clone one
+`dl` put in its own cache, the same question `--purge` deletes by — so the two
+always name the same set of workspaces as measurable. Where a walk hits a
+directory it cannot read — a container writes into its
 clone as its own user, so this happens — the answer is a floor rather than a
 total: `≥2.0 MiB` in the table, and `{"atLeastBytes": …, "unreadable": 1}` in
 JSON instead of `{"exclusiveBytes": …}`. A partial measurement never comes back
 looking like a complete one.
 
 **It is opt-in because it walks the whole clone.** Plain `dl --ls` is one devpod
-round-trip and no filesystem work at all; measured on a real cache, one
-workspace clone costs 39–46 ms to walk with a warm page cache, and the cost is
-O(files) with no ceiling — a devcontainer that builds its environment inside the
-clone (this repo's own does) adds a tree that measures 45 ms by itself, and a
-114,611-entry tree measured 224 ms warm and 707 ms on the first read. That is
-not a bill a listing should present unasked.
+round-trip and no filesystem work at all, and the walk is O(files) with no
+ceiling. Measured with the shipped code on one machine — Ubuntu 24.04, ext4,
+warm page cache, five runs after a warm-up, the machine otherwise busy — a real
+8,309-entry clone walked in 24–28 ms, this repo's own tree with its built
+environment inside it (9,124 entries) in 17–21 ms, and a 114,817-entry tree in
+232–239 ms. No cold-cache figure is quoted because none was taken: dropping the
+page cache needs root on that machine. Those are one machine's numbers on warm
+cache and yours will differ, but the shape is the point — it grows with the file
+count, and a devcontainer that builds its environment *inside* the clone (this
+repo's own does) is most of that count. That is not a bill a listing should
+present unasked.
 
 Docker images and named volumes are not counted: `dl` did not create the layer
 store and does not manage volumes. `docker system df` is the tool that knows.
