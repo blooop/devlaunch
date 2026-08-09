@@ -1616,7 +1616,9 @@ def print_workspaces(with_size: bool = False):
     id_width = max(len(ws.id) for ws, _kind, _detail, _size in rows)
     type_width = max(len(kind) for _ws, kind, _detail, _size in rows)
     source_width = max(len(detail) for _ws, _kind, detail, _size in rows)
-    size_width = max(len(size) for _ws, _kind, _detail, size in rows) if with_size else 0
+    # The heading counts as a cell, or a column of dashes leaves "SIZE" wider
+    # than the column it heads and every LAST USED after it shifted right.
+    size_width = max([len("SIZE"), *(len(size) for _ws, _kind, _detail, size in rows)])
 
     def sized(text: str) -> str:
         """*text* in the SIZE column, or nothing at all when it was not asked for."""
@@ -1627,7 +1629,7 @@ def print_workspaces(with_size: bool = False):
         f"{'WORKSPACE':<{id_width}}  {'TYPE':<{type_width}}  {'SOURCE':<{source_width}}  "
         f"{sized('SIZE')}LAST USED"
     )
-    print("-" * (id_width + type_width + source_width + size_width + 30))
+    print("-" * (id_width + type_width + source_width + len(sized("SIZE")) + 30))
 
     # Print rows
     for ws, kind, detail, size in rows:

@@ -63,6 +63,12 @@ class TestWhatATreeHolds:
         (tmp_path / "empty").mkdir()
         assert measured_bytes(exclusive_usage(tmp_path / "empty")) < MIB
 
+    def test_a_file_handed_in_instead_of_a_directory_is_worth_itself(self, tmp_path):
+        # The caller that classifies clone directories walks whatever it found;
+        # a stray file where a clone was expected is a measurement, not a crash.
+        payload(tmp_path / "stray.bin", 1)
+        assert MIB <= measured_bytes(exclusive_usage(tmp_path / "stray.bin")) < 2 * MIB
+
     def test_a_symlink_is_worth_its_own_size_not_its_targets(self, tmp_path):
         payload(tmp_path / "outside" / "big.bin", 4)
         (tmp_path / "tree").mkdir()
@@ -134,6 +140,30 @@ class TestWhatCouldNotBeRead:
             (tmp_path / "tree").chmod(0o700)
         assert isinstance(usage, PartlyUnreadable)
         assert usage.unreadable == (tmp_path / "tree",)
+
+    def test_a_tree_behind_a_closed_parent_reports_no_total_either(self, tmp_path):
+        # Not even the first `lstat` gets through -- that needs the parent to be
+        # traversable -- so there is nothing to report but the closed door.
+        payload(tmp_path / "outer" / "tree" / "file.bin", 1)
+        (tmp_path / "outer").chmod(0o000)
+        try:
+            usage = exclusive_usage(tmp_path / "outer" / "tree")
+        finally:
+            (tmp_path / "outer").chmod(0o700)
+        assert usage == PartlyUnreadable(0, (tmp_path / "outer" / "tree",))
+
+    def test_entries_that_can_be_named_but_not_stat_ed_are_named(self, tmp_path):
+        # Readable but not traversable: the names come back from the directory
+        # itself, and every `stat` on them is refused. The bytes behind them are
+        # unknown, so they are listed rather than quietly counted as nothing.
+        payload(tmp_path / "tree" / "listed" / "hidden.bin", 2)
+        (tmp_path / "tree" / "listed").chmod(0o444)
+        try:
+            usage = exclusive_usage(tmp_path / "tree")
+        finally:
+            (tmp_path / "tree" / "listed").chmod(0o700)
+        assert isinstance(usage, PartlyUnreadable)
+        assert tmp_path / "tree" / "listed" / "hidden.bin" in usage.unreadable
 
 
 class TestHowAUsageReads:

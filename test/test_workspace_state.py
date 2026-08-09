@@ -212,7 +212,7 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
     an ordinary devcontainer builds its environment *inside* the clone.
     """
 
-    def _run(self, tmp_path, argv, capsys, payload_mib=2, unreadable=False):
+    def _run(self, tmp_path, argv, capsys, payload_mib=2, unreadable=False, only_foreign=False):
         cache = tmp_path / "cache" / "devlaunch"
         clone = cache / "repos" / "blooop" / "r" / "r-feature-aaa"
         clone.mkdir(parents=True)
@@ -220,12 +220,10 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         if unreadable:
             (clone / "locked").mkdir()
             (clone / "locked").chmod(0o000)
-        listing = json.dumps(
-            [
-                _entry("r-feature-aaa", clone),
-                _entry("someone-elses", tmp_path / "projects" / "other"),
-            ]
-        )
+        entries = [_entry("someone-elses", tmp_path / "projects" / "other")]
+        if not only_foreign:
+            entries.insert(0, _entry("r-feature-aaa", clone))
+        listing = json.dumps(entries)
         records = {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))}
 
         def devpod(args, **kwargs):
@@ -294,6 +292,14 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         _code, out = self._run(tmp_path, ["--ls", "--size"], capsys)
         foreign = next(line for line in out.splitlines() if line.startswith("someone-elses"))
         assert "-" in foreign.split()
+
+    def test_the_size_column_lines_up_with_its_heading(self, tmp_path, capsys):
+        # A dash is one character and "SIZE" is four, so a column sized only
+        # from its cells leaves every date after it shifted.
+        _code, out = self._run(tmp_path, ["--ls", "--size"], capsys, only_foreign=True)
+        header, _rule, *body = out.splitlines()
+        for line in body:
+            assert line.index("2026-08-08") == header.index("LAST USED")
 
 
 class TestTheDeleteGuard:
