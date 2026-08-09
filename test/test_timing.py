@@ -11,8 +11,12 @@ the CLI entry point on one side, the subprocess module on the other.
 """
 
 import re
+from unittest.mock import patch
+
+import pytest
 
 from devlaunch.dl import main
+from test_devpod_spawn_counts import DevpodSpawns
 
 TIMING_LINE = re.compile(r"^dl-timing: (.+) \d+\.\d{3}s$", re.MULTILINE)
 
@@ -34,3 +38,34 @@ class TestSummaryGate:
         monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
         assert main(["--version"]) == 0
         assert timing_labels(capsys.readouterr().err) == ["total"]
+
+
+@pytest.fixture
+def spawns():
+    """A devpod stub at the subprocess boundary, background updater disabled."""
+    recorder = DevpodSpawns(["myws"])
+    with patch("devlaunch.dl.subprocess.run", side_effect=recorder):
+        with patch("devlaunch.dl.subprocess.Popen", side_effect=recorder.popen):
+            with patch("devlaunch.dl.update_cache_background"):
+                yield recorder
+
+
+class TestDevpodRoundTripsAreNamed:
+    """The summary names each devpod round trip, in the order it happened."""
+
+    def test_ls_names_its_single_list_round_trip(self, spawns, monkeypatch, capsys):
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+        assert main(["--ls"]) == 0
+        assert timing_labels(capsys.readouterr().err) == ["devpod list", "total"]
+
+    def test_attach_names_every_round_trip_in_order(self, spawns, monkeypatch, capsys):
+        """The attach chain from the spawn-count tests, seen as named timings:
+        one status, the hostname ssh, then the session ssh."""
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+        assert main(["myws"]) == 0
+        assert timing_labels(capsys.readouterr().err) == [
+            "devpod status",
+            "devpod ssh",
+            "devpod ssh",
+            "total",
+        ]

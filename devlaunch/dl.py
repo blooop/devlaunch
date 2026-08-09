@@ -1533,13 +1533,16 @@ def run_devpod(
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
     try:
-        if capture:
+        # Timed by subcommand, not full argv: the summary should name each
+        # round trip (status, ssh, up...) without leaking workspace ids into it.
+        with timing.span(" ".join(cmd[:2])):
+            if capture:
+                # nosec B603 - using list form, not shell=True; no command injection risk
+                return subprocess.run(
+                    cmd, capture_output=True, text=True, check=False, env=env, stdin=stdin_file
+                )
             # nosec B603 - using list form, not shell=True; no command injection risk
-            return subprocess.run(
-                cmd, capture_output=True, text=True, check=False, env=env, stdin=stdin_file
-            )
-        # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, check=False, env=env, stdin=stdin_file)
+            return subprocess.run(cmd, check=False, env=env, stdin=stdin_file)
     except FileNotFoundError as e:
         raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
@@ -1557,22 +1560,25 @@ def run_devpod_session(
     """
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
-    # nosec B603 - using list form, not shell=True; no command injection risk
-    with subprocess.Popen(
-        cmd,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-    ) as proc:
-        # proc.stderr is a pipe because PIPE was asked for, but Popen's type
-        # cannot express that, so the narrowing happens here rather than by
-        # widening filter_devpod_stderr to a None it would have no answer for.
-        pipe = proc.stderr
-        remote_status = (
-            devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe is not None else None
-        )
+    # The span covers the whole session: what the summary names is the round
+    # trip the user waited on, not just the process spawn.
+    with timing.span(" ".join(cmd[:2])):
+        # nosec B603 - using list form, not shell=True; no command injection risk
+        with subprocess.Popen(
+            cmd,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        ) as proc:
+            # proc.stderr is a pipe because PIPE was asked for, but Popen's type
+            # cannot express that, so the narrowing happens here rather than by
+            # widening filter_devpod_stderr to a None it would have no answer for.
+            pipe = proc.stderr
+            remote_status = (
+                devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe is not None else None
+            )
     return devpod_ssh.interpret(proc.returncode, remote_status)
 
 
