@@ -105,9 +105,73 @@ table and should be judged on its own merits.
   `claude` that could never run.
 
   The probe that decides all this is captured, unlike the trips that may follow
-  it. It reports nothing, and its everyday answer on a cold workspace ("tools
-  missing") reached the terminal as a red devpod
-  `fatal ... Process exited with status 1` describing the probe working.
+  it: what it prints is the answer the caller branches on rather than progress
+  anybody needs to watch.
+
+- **A baked `claude` counts as provisioned only if it is the real one.** The
+  probe used to ask `command -v claude` and believe the answer, which the
+  `claude-shim` downloader satisfies — so an image carrying the shim (including
+  any built from this repo's own `.devcontainer/claude-code/` feature) skipped
+  the lend and paid the ~285MB GCS download on first use, the exact cost the
+  lending exists to remove. It now answers one of three states: `provisioned`
+  when `gh` is on the login `PATH` **and** `claude` resolves to a binary the
+  official installer itself put in `~/.local/share/claude/versions/`;
+  `lendable` when both answer but the claude is a shim or wrapper; `absent`
+  otherwise.
+
+  "The official install" is one definition, asked from both ends of the pipe.
+  The container reports two facts only it can know — where its `claude`
+  resolves to, and where that directory in its own home resolves to — and
+  which state those mean is decided on the host, by the same code that decides
+  what the host may lend. Two copies of that rule, one per language, is what a
+  shared constant alone does not prevent: a downloader parked at
+  `versions/latest/bin/claude` satisfies "somewhere under the versions
+  directory" while failing "a binary the installer wrote", and a probe holding
+  the looser of the two opinions trusts it.
+
+  Both paths are compared fully resolved, which is what makes the upgrade
+  terminate on an image whose `$HOME` is reached through a symlink: a
+  `lendable` container is quietly upgraded — the host streams in its own binary
+  and the transfer's `~/.local/bin` `PATH` prepend is what makes it win from
+  then on — so the *next* launch probes `provisioned` and the tar is paid once
+  rather than on every launch for the life of the workspace.
+
+  That prepend only actually happens because the guard in front of it now asks
+  the right question. **Every line devlaunch appends to a container's login
+  profile is written under a `# devlaunch:` mark, and the "have I already done
+  this?" guard is an exact match on that mark** — not, as before, a search for
+  the directory being added. Searching for the directory made the answer a base
+  image's to give, and it gave the wrong one: Ubuntu's stock `~/.profile`
+  prepends `~/.local/bin` itself, near the top of the file, so on
+  `mcr.microsoft.com/devcontainers/base:ubuntu-24.04` — the image this repo's
+  own devcontainer builds on — the transfer read that block as its own work,
+  skipped the prepend, and left the shim ahead of the binary it had just lent.
+  The workspace never converged: it answered `lendable`, re-paid the whole
+  transfer, and answered `lendable` again, every `devpod up`, forever. The
+  convergence test now lets the profile decide `PATH` — sourced from a home
+  seeded with that image's stock file plus the lines this repo's devcontainer
+  appends — because a test that builds `PATH` itself cannot see the ordering
+  the lend depends on. A profile some earlier devlaunch already edited gains
+  one duplicate `PATH` entry the first time it is seen, and nothing after that.
+
+  If the host has
+  nothing to lend, or the lent binaries do not run there, the container is
+  accepted as it stands rather than falling through to the network install —
+  that install decides what to do with its own `command -v` guards, which a
+  shim already satisfies, so the trip would install nothing.
+
+  The probe never executes the candidate `claude`; on a shim, *any* invocation
+  triggers the very download the probe exists to detect. It resolves the path
+  instead. It also exits 0 in every state now — including in an image that
+  never set `HOME` — which retires the red devpod
+  `fatal ... Process exited with status 1` that the old probe's everyday cold
+  answer painted on the terminal.
+
+  Two things this deliberately does not do. It does not compare versions: a
+  real `claude` already in the container is left alone however old it is, since
+  keeping versions in sync would make this a package manager (the binary
+  self-updates, and a workspace rebuild re-provisions). And it does not make
+  the payload per-tool — an image with only `gh` still receives both.
 
 - **Two `up`s of one workspace serialize on a per-workspace lock.** Background
   prewarming makes concurrent `up`s of a single workspace an everyday event
