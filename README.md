@@ -319,6 +319,7 @@ existed — picks the tools up on its next `dl <workspace> restart`.
 |---------|-------------|
 | `dl --ls` | List all workspaces |
 | `dl --ls --json` | The same list as JSON, with each workspace's repo, branch, state and [unsaved work](#cleaning-up-workspaces) — for tools that decide what to clean up |
+| `dl --ls --size` | Add [what deleting each workspace would free](#how-much-disk-a-workspace-costs). Opt-in: it walks every file in the clone |
 | `dl --install` | Install shell completions |
 | `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
 | `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
@@ -432,8 +433,9 @@ from an abandoned one. So `dl` supplies the two halves a tool that *does* know
 needs, and that tool drives the cleanup:
 
 ```bash
-dl --ls --json     # what exists, and what each workspace holds
-dl <workspace> rm  # remove one
+dl --ls --json          # what exists, and what each workspace holds
+dl --ls --json --size   # ...and what removing each one would free
+dl <workspace> rm       # remove one
 ```
 
 The JSON reports, per workspace: `id`, `devlaunch` (did `dl` create it),
@@ -480,6 +482,57 @@ if you mean it.
 [`wf`](https://github.com/blooop/wayfinder) is the caller this was built for: it
 names its branches after its tickets, so it knows which workspaces belong to
 finished work and removes those.
+
+### How much disk a workspace costs
+
+`dl --ls --size` adds a `SIZE` column, and `dl --ls --json --size` adds a `disk`
+object beside the other per-workspace facts:
+
+```
+$ dl --ls --size
+WORKSPACE                      TYPE   SOURCE                                              SIZE  LAST USED
+kinisi-ros-main-lubadaha       local  /home/…/repos/kinisi-robotics/kinisi_ros/main   488.8 MiB  2026-08-08 11:43:27
+my-own-checkout                local  /home/…/projects/scratch                                -  2026-08-01 09:12:04
+```
+
+**The number is what deleting that workspace would give back, not what `du`
+prints.** Those differ, and the gap is the point of the design. A repo is cloned
+once into a bare cache and every workspace clone hardlinks its git objects out
+of that one copy, so the objects exist once on disk however many workspaces
+share them. A size that added up file lengths would bill each workspace for the
+whole shared pool — on a real cache, three workspaces of one repo read as
+2.48 GiB that way, against the 1.70 GiB the disk actually holds, and a single
+workspace reads 755.0 MiB where 488.8 MiB is what removing it frees.
+
+So `dl` counts a file only when every one of its hardlinks lies inside the
+workspace being measured. Two consequences, both deliberate:
+
+- **The sizes do not add up to the size of the cache.** Bytes shared between
+  workspaces belong to none of them, because deleting any one frees none of
+  them. They become the last workspace's the moment it is the last one — which
+  is exactly when deleting it *would* free them.
+- **A workspace's size can change without the workspace changing**, when a
+  sibling that was sharing with it goes away. That is the truth about shared
+  storage.
+
+A workspace `dl` did not create reads `-` (`null` in JSON): there is no clone of
+`dl`'s there to measure, and walking your own project directory is not `dl`'s to
+do. Where a walk hits a directory it cannot read — a container writes into its
+clone as its own user, so this happens — the answer is a floor rather than a
+total: `≥2.0 MiB` in the table, and `{"atLeastBytes": …, "unreadable": 1}` in
+JSON instead of `{"exclusiveBytes": …}`. A partial measurement never comes back
+looking like a complete one.
+
+**It is opt-in because it walks the whole clone.** Plain `dl --ls` is one devpod
+round-trip and no filesystem work at all; measured on a real cache, one
+workspace clone costs 39–46 ms to walk with a warm page cache, and the cost is
+O(files) with no ceiling — a devcontainer that builds its environment inside the
+clone (this repo's own does) adds a tree that measures 45 ms by itself, and a
+114,611-entry tree measured 224 ms warm and 707 ms on the first read. That is
+not a bill a listing should present unasked.
+
+Docker images and named volumes are not counted: `dl` did not create the layer
+store and does not manage volumes. `docker system df` is the tool that knows.
 
 ## Examples
 

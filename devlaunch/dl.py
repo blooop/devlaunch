@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, gh_auth, tools, tty_session, workspace_state
+from . import devpod_ssh, disk_usage, gh_auth, tools, tty_session, workspace_state
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -454,7 +454,7 @@ def _unsaved_work_in(workspace_id: str) -> Optional[str]:
     return workspace_state.holds_unsaved_work(Path(record.local_path))
 
 
-def workspaces_as_json() -> int:
+def workspaces_as_json(with_size: bool = False) -> int:
     """Print the workspace list as JSON: what exists, and what each one holds.
 
     The machine-readable half of cleanup. devlaunch does not decide which
@@ -475,6 +475,9 @@ def workspaces_as_json() -> int:
       leave the workspace alone instead of arguing with a refusal.
     - `state` is devpod's, one `devpod status` per workspace, which is why this
       is a command someone runs rather than something on the fast path.
+    - `disk` appears only when `--size` was asked for, and describes the
+      directory `path` names -- see :func:`_disk_report` for why it is a nested
+      object and why it is not answered by default.
     """
     cache_dir = _get_cache_dir()
     workspaces = list_workspaces()
@@ -485,25 +488,50 @@ def workspaces_as_json() -> int:
         record = clone_mgr.storage.get_worktree_by_workspace_id(ws.id) if mine else None
         clone_path = Path(record.local_path) if record else None
         state = workspace_state.read_clone(clone_path) if clone_path else None
-        report.append(
-            {
-                "id": ws.id,
-                "devlaunch": mine,
-                "repo": f"{record.owner}/{record.repo}" if record else None,
-                # The recorded branch is what the workspace was made for; the
-                # clone's current HEAD can differ (an agent checked something
-                # else out), so both are reported rather than one being made to
-                # stand for the other.
-                "branch": record.branch if record else None,
-                "checkedOut": state.branch if state else None,
-                "path": str(clone_path) if clone_path else None,
-                "state": get_workspace_state(ws.id),
-                "lastUsed": ws.last_used,
-                "unsaved": state.unsaved if state else None,
-            }
-        )
+        row: Dict[str, Any] = {
+            "id": ws.id,
+            "devlaunch": mine,
+            "repo": f"{record.owner}/{record.repo}" if record else None,
+            # The recorded branch is what the workspace was made for; the
+            # clone's current HEAD can differ (an agent checked something
+            # else out), so both are reported rather than one being made to
+            # stand for the other.
+            "branch": record.branch if record else None,
+            "checkedOut": state.branch if state else None,
+            "path": str(clone_path) if clone_path else None,
+            "state": get_workspace_state(ws.id),
+            "lastUsed": ws.last_used,
+            "unsaved": state.unsaved if state else None,
+        }
+        if with_size:
+            # Absent unless asked, so a reader can never mistake "nobody asked"
+            # for "nothing on disk"; null where there is no clone of dl's own,
+            # the same way `repo` and `branch` already say "not mine".
+            row["disk"] = _disk_report(clone_path)
+        report.append(row)
     print(json.dumps(report, indent=2))
     return 0
+
+
+def _disk_report(clone: Optional[Path]) -> Optional[Dict[str, Any]]:
+    """What *clone* would free, as JSON, or null when dl has no clone there.
+
+    A nested object with one key rather than a plain integer, because there are
+    two kinds of answer and they must not look alike: `exclusiveBytes` is a
+    total, `atLeastBytes` is a floor a walk stopped short of. A caller reading
+    an integer field has no way to tell those apart, and would report a
+    part-measured clone as small when it is not -- which is exactly the sentinel
+    this codebase refuses to write.
+
+    "Exclusive" is the choice devlaunch made and documents: bytes whose every
+    hardlink lies inside the clone, i.e. what deleting it would actually give
+    back. A repo's workspaces share their git objects with the bare cache on
+    purpose, so an apparent size bills each of them for the whole shared pool.
+    See :mod:`devlaunch.disk_usage`.
+    """
+    if clone is None:
+        return None
+    return disk_usage.usage_as_json(disk_usage.exclusive_usage(clone))
 
 
 @dataclass(frozen=True)
@@ -1179,6 +1207,21 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
     _unhandled_source(source)
 
 
+def _measurable_clone(workspace: Workspace, cache_dir: pathlib.Path) -> Optional[pathlib.Path]:
+    """The directory `--ls --size` may walk for *workspace*, or None.
+
+    Only devlaunch's own clones. `dl ./path` opens somebody's project directory
+    and `dl <url>` opens a source devlaunch never cloned; walking either would
+    put an unbounded stat of a stranger's tree behind a listing command, and the
+    bytes would not be devlaunch's disk in any case. Measuring what devlaunch
+    put on disk is the scope, and this is where that boundary is kept.
+    """
+    source = workspace.source
+    if isinstance(source, LocalFolder) and is_devlaunch_clone(workspace, cache_dir):
+        return pathlib.Path(source.path)
+    return None
+
+
 @dataclass(frozen=True)
 class WorkspaceOwnership:
     """A `devpod list` answer split by whether devlaunch created each workspace.
@@ -1547,32 +1590,66 @@ def get_workspace_ids() -> List[str]:
     return [ws.id for ws in list_workspaces()]
 
 
-def print_workspaces():
-    """Print workspace list in a nice format."""
+def print_workspaces(with_size: bool = False):
+    """Print workspace list in a nice format.
+
+    *with_size* adds a SIZE column holding the bytes deleting that workspace's
+    clone would free -- exclusive bytes, so the git objects it shares with the
+    repo's bare cache are billed to nobody rather than to everybody. It is asked
+    for rather than always answered because the walk is O(files) with no
+    ceiling, while this listing is otherwise one devpod round-trip and no
+    filesystem work at all: on a real cache a workspace clone measures 39-46 ms,
+    and an ordinary devcontainer builds its environment inside the clone.
+    """
     workspaces = list_workspaces()
     if not workspaces:
         print("No workspaces found.")
         return
 
     # Describe each source once, so the widths are measured on the same strings
-    # that get printed.
-    rows = [(ws, *describe_source(ws.source)) for ws in workspaces]
+    # that get printed -- sizes included, which is also why the walk happens
+    # here and not again in the print loop.
+    cache_dir = _get_cache_dir() if with_size else None
+    rows = [(ws, *describe_source(ws.source), _size_cell(ws, cache_dir)) for ws in workspaces]
 
     # Calculate column widths
-    id_width = max(len(ws.id) for ws, _kind, _detail in rows)
-    type_width = max(len(kind) for _ws, kind, _detail in rows)
-    source_width = max(len(detail) for _ws, _kind, detail in rows)
+    id_width = max(len(ws.id) for ws, _kind, _detail, _size in rows)
+    type_width = max(len(kind) for _ws, kind, _detail, _size in rows)
+    source_width = max(len(detail) for _ws, _kind, detail, _size in rows)
+    size_width = max(len(size) for _ws, _kind, _detail, size in rows) if with_size else 0
+
+    def sized(text: str) -> str:
+        """*text* in the SIZE column, or nothing at all when it was not asked for."""
+        return f"{text:>{size_width}}  " if with_size else ""
 
     # Print header
     print(
-        f"{'WORKSPACE':<{id_width}}  {'TYPE':<{type_width}}  {'SOURCE':<{source_width}}  LAST USED"
+        f"{'WORKSPACE':<{id_width}}  {'TYPE':<{type_width}}  {'SOURCE':<{source_width}}  "
+        f"{sized('SIZE')}LAST USED"
     )
-    print("-" * (id_width + type_width + source_width + 30))
+    print("-" * (id_width + type_width + source_width + size_width + 30))
 
     # Print rows
-    for ws, kind, detail in rows:
+    for ws, kind, detail, size in rows:
         last_used = ws.last_used[:19].replace("T", " ") if ws.last_used else "never"
-        print(f"{ws.id:<{id_width}}  {kind:<{type_width}}  {detail:<{source_width}}  {last_used}")
+        print(
+            f"{ws.id:<{id_width}}  {kind:<{type_width}}  {detail:<{source_width}}  "
+            f"{sized(size)}{last_used}"
+        )
+
+
+def _size_cell(workspace: Workspace, cache_dir: Optional[pathlib.Path]) -> str:
+    """What *workspace* costs on disk, for the table, or a dash if not asked.
+
+    A workspace devlaunch did not make reads as `-` rather than `0 B`: nothing
+    was measured there, and a zero would say the opposite of that.
+    """
+    if cache_dir is None:
+        return ""
+    clone = _measurable_clone(workspace, cache_dir)
+    if clone is None:
+        return "-"
+    return disk_usage.describe_usage(disk_usage.exclusive_usage(clone))
 
 
 def fuzzy_select_workspace() -> Optional[str]:
@@ -2049,6 +2126,18 @@ Global commands:
                                      branch, state, and what it holds that is
                                      not pushed anywhere ("unsaved"). For tools
                                      that decide which workspaces to clean up.
+    dl --ls --size                   Add what deleting each workspace's clone
+                                     would free. Off by default: it walks every
+                                     file in the clone, which a listing should
+                                     not do unasked. The number is *exclusive*
+                                     bytes -- a repo's workspaces share their
+                                     git objects with its bare cache, so those
+                                     shared bytes are billed to none of them
+                                     and freed only with the last one. It is
+                                     therefore what you get back, not what `du`
+                                     would print, and the figures do not add up
+                                     to the size of the cache. Works with
+                                     --json, where the field is `disk`.
     dl --install                     Install shell completions
     dl --refresh                     Refresh completion cache
     dl --purge [-y]                  Remove devlaunch's workspaces and caches
@@ -2191,9 +2280,10 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args[0] == "--ls":
+        with_size = "--size" in args[1:]
         if "--json" in args[1:]:
-            return workspaces_as_json()
-        print_workspaces()
+            return workspaces_as_json(with_size)
+        print_workspaces(with_size)
         return 0
 
     if args[0] == "--repos":

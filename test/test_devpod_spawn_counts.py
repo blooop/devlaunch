@@ -162,6 +162,17 @@ class TestHotCommandSpawnCounts:
         assert _run_dl("--ls") == 0
         assert spawns.devpod_commands == [["list", "--output", "json"]]
 
+    def test_ls_with_sizes_spawns_nothing_extra(self, spawns):
+        """`dl --ls --size` costs a filesystem walk and not one more process.
+
+        Sizes come from `lstat`, never from `du` and never from docker: adding a
+        subprocess per workspace to a listing command is the thing this file
+        exists to catch.
+        """
+        assert _run_dl("--ls", "--size") == 0
+        assert spawns.devpod_commands == [["list", "--output", "json"]]
+        assert spawns.commands == [["devpod", "list", "--output", "json"]]
+
     def test_purge_reads_the_workspace_list_exactly_once(self, spawns, tmp_path):
         """`dl --purge -y` used to read the list twice: once to print the count
         it asks the user to confirm, once again inside purge_all_data.

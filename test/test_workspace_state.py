@@ -19,6 +19,7 @@ invisible to everything except a real `git log`.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -200,6 +201,99 @@ class TestTheJsonListing:
         ours = next(w for w in report if w["id"] == "r-feature-aaa")
         assert ours["branch"] == "feature"
         assert ours["checkedOut"] == "sidequest"
+
+
+class TestReportingWhatAWorkspaceCostsOnDisk:
+    """`dl --ls --size`: the bytes deleting a workspace's clone would free.
+
+    Asked for rather than always answered, because the walk is O(files) with no
+    ceiling and plain `--ls` is one devpod round-trip and no filesystem work at
+    all. Measured on a real cache, a workspace clone is 39-46 ms of walking, and
+    an ordinary devcontainer builds its environment *inside* the clone.
+    """
+
+    def _run(self, tmp_path, argv, capsys, payload_mib=2, unreadable=False):
+        cache = tmp_path / "cache" / "devlaunch"
+        clone = cache / "repos" / "blooop" / "r" / "r-feature-aaa"
+        clone.mkdir(parents=True)
+        (clone / "payload.bin").write_bytes(b"\0" * (payload_mib * 1024 * 1024))
+        if unreadable:
+            (clone / "locked").mkdir()
+            (clone / "locked").chmod(0o000)
+        listing = json.dumps(
+            [
+                _entry("r-feature-aaa", clone),
+                _entry("someone-elses", tmp_path / "projects" / "other"),
+            ]
+        )
+        records = {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))}
+
+        def devpod(args, **kwargs):
+            if args[:1] == ["list"]:
+                return subprocess.CompletedProcess(args, 0, listing, "")
+            if args[:1] == ["status"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"state": "Stopped"}), "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        try:
+            with (
+                patch("devlaunch.dl._get_cache_dir", return_value=cache),
+                patch("devlaunch.dl.run_devpod", side_effect=devpod),
+                patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)),
+            ):
+                code = main(argv)
+        finally:
+            if unreadable:
+                (clone / "locked").chmod(0o700)
+        return code, capsys.readouterr().out
+
+    def _json(self, tmp_path, argv, capsys, **kwargs):
+        code, out = self._run(tmp_path, argv, capsys, **kwargs)
+        assert code == 0
+        return json.loads(out)
+
+    def test_the_listing_says_nothing_about_disk_unless_asked(self, tmp_path, capsys):
+        report = self._json(tmp_path, ["--ls", "--json"], capsys)
+        assert all("disk" not in row for row in report)
+
+    def test_asking_reports_the_bytes_the_clone_would_free(self, tmp_path, capsys):
+        report = self._json(tmp_path, ["--ls", "--json", "--size"], capsys)
+        ours = next(row for row in report if row["id"] == "r-feature-aaa")
+        # Two MiB of payload plus its directory, and nothing else claimed.
+        assert 2 * 1024 * 1024 <= ours["disk"]["exclusiveBytes"] < 3 * 1024 * 1024
+
+    def test_a_workspace_devlaunch_did_not_make_is_not_walked(self, tmp_path, capsys):
+        # Its source is somebody's own project directory. dl has no clone there
+        # to measure and no business walking one.
+        report = self._json(tmp_path, ["--ls", "--json", "--size"], capsys)
+        foreign = next(row for row in report if row["id"] == "someone-elses")
+        assert foreign["devlaunch"] is False
+        assert foreign["disk"] is None
+
+    def test_what_could_not_be_read_is_reported_as_a_floor_not_a_total(self, tmp_path, capsys):
+        if os.geteuid() == 0:
+            pytest.skip("root is refused by nothing, so the closed door would open")
+        report = self._json(tmp_path, ["--ls", "--json", "--size"], capsys, unreadable=True)
+        ours = next(row for row in report if row["id"] == "r-feature-aaa")
+        # A container writes into a clone as another user, so this is ordinary.
+        # The one thing that must not happen is a floor read as a total.
+        assert "exclusiveBytes" not in ours["disk"]
+        assert ours["disk"]["atLeastBytes"] >= 2 * 1024 * 1024
+        assert ours["disk"]["unreadable"] == 1
+
+    def test_the_table_gains_a_size_column_when_asked(self, tmp_path, capsys):
+        _code, out = self._run(tmp_path, ["--ls", "--size"], capsys)
+        assert "SIZE" in out
+        assert "2.0 MiB" in out
+
+    def test_the_table_says_nothing_about_disk_unless_asked(self, tmp_path, capsys):
+        _code, out = self._run(tmp_path, ["--ls"], capsys)
+        assert "SIZE" not in out
+
+    def test_the_table_leaves_a_foreign_workspace_unmeasured(self, tmp_path, capsys):
+        _code, out = self._run(tmp_path, ["--ls", "--size"], capsys)
+        foreign = next(line for line in out.splitlines() if line.startswith("someone-elses"))
+        assert "-" in foreign.split()
 
 
 class TestTheDeleteGuard:
