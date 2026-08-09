@@ -118,6 +118,29 @@ def fresh_workspace_list_cache():
     dl.invalidate_workspace_list_cache()
 
 
+@pytest.fixture(autouse=True)
+def fresh_clone_manager():
+    """Give every test its own clone manager, bound to its own cache.
+
+    _get_clone_manager() memoizes for the life of the process, and the manager
+    it holds is bound to the XDG_CACHE_HOME that isolated_devlaunch_cache set
+    up for whichever test built it first. Left alone, every later test's reads
+    and writes of the cache go to a directory that belongs to a test that has
+    already finished -- and, worse, a test asserting that some code path did
+    *not* touch the cache passes for the wrong reason, because the memo makes
+    the construction free no matter where it is called from. That is not a
+    hypothetical: it silently neutered the warm-launch guard in
+    test_devpod_spawn_counts.py, which was green in file order with the
+    regression it guards against fully reintroduced.
+
+    This is autouse rather than something a test asks for because the test that
+    must not forget it is the one nobody has written yet.
+    """
+    dl.invalidate_clone_manager()
+    yield
+    dl.invalidate_clone_manager()
+
+
 def pytest_configure():
     """Scope this run's devpod state.
 
