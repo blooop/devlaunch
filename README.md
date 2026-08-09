@@ -626,7 +626,7 @@ $ DEVLAUNCH_TIMING=1 dl myws -- true
 dl-timing: devpod status 0.412s
 dl-timing: devpod ssh 0.583s
 dl-timing: devpod ssh 1.102s
-dl-timing: total 2.201s
+dl-timing: total 2.201s (in-process, excluding interpreter startup)
 ```
 
 With the variable unset (or `0`) there is no output and nothing is recorded.
@@ -662,6 +662,16 @@ the bench's own workspace rather than one you are working in. If a reset exits
 non-zero the bench stops and prints no median: a run whose cold state was never
 established is not a cold measurement, and a number labelled cold has to have
 been taken cold.
+
+### The two numbers are not the same quantity
+
+`dl-timing: total` starts at the top of `main()`; the bench's wall clock starts
+outside the process, so it also contains interpreter startup and this package's
+imports. Measured here on `dl --version`, `total` reported `0.001s` against a
+bench median of `0.056s` over 5 runs — the ~55 ms difference is startup, not
+launch work. Both lines say which clock they are. Quote one instrument on both
+sides of a change; don't compare a `total` on one side with a bench median on
+the other.
 
 ## Worktree Backend
 

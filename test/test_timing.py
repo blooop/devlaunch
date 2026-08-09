@@ -25,7 +25,9 @@ from devlaunch import gh_auth, timing, workspace_state
 from devlaunch.dl import main, remote_branch_exists, run_ssh
 from test_devpod_spawn_counts import DevpodSpawns
 
-TIMING_LINE = re.compile(r"^dl-timing: (.+) \d+\.\d{3}s$", re.MULTILINE)
+# The `total` line carries a trailing note naming which clock it is; the
+# per-round-trip lines do not, so the note is optional here.
+TIMING_LINE = re.compile(r"^dl-timing: (.+?) \d+\.\d{3}s(?: \(.*\))?$", re.MULTILINE)
 
 
 def timing_labels(stderr: str):
@@ -72,6 +74,18 @@ class TestSummaryGate:
         monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
         assert main(["--version"]) == 0
         assert timing_labels(capsys.readouterr().err) == ["total"]
+
+    def test_total_says_which_clock_it_is(self, monkeypatch, capsys):
+        """`total` is measured from inside main(), so it is smaller than the
+        wall time the bench harness reports for the same command. The line says
+        so, so a reader quoting both does not take them for one number."""
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+        assert main(["--version"]) == 0
+        assert re.search(
+            r"^dl-timing: total \d+\.\d{3}s \(in-process, excluding interpreter startup\)$",
+            capsys.readouterr().err,
+            re.M,
+        )
 
 
 @pytest.fixture
@@ -182,7 +196,20 @@ class TestBenchHarness:
         result = run_bench("-n", "3", "--", sys.executable, "-c", "pass")
         assert result.returncode == 0
         assert len(re.findall(r"^run \d+/3: \d+\.\d{3}s$", result.stdout, re.M)) == 3
-        assert re.search(r"^median of 3: \d+\.\d{3}s$", result.stdout, re.M)
+        assert re.search(r"^median of 3: \d+\.\d{3}s", result.stdout, re.M)
+
+    def test_the_median_says_which_clock_it_is(self):
+        """Two instruments time the same launch and do not measure the same
+        span: this one runs the clock from outside the process, so interpreter
+        startup and imports are in the number; dl's own `total` starts inside
+        main() and they are not. Downstream tickets will quote both side by
+        side, so each number names its own epoch where it is printed."""
+        result = run_bench("-n", "1", "--", sys.executable, "-c", "pass")
+        assert re.search(
+            r"^median of 1: \d+\.\d{3}s \(wall clock, including interpreter startup\)$",
+            result.stdout,
+            re.M,
+        )
 
     def test_fails_loudly_when_the_command_fails(self):
         """A failing launch's time is not a number to compare against, so the

@@ -18,6 +18,12 @@ and the median is a warm number under a cold label. If a reset fails the bench
 stops with no median, for the same reason a failing run reports none — a run
 whose starting condition was never established is not a measurement of it.
 
+The wall time here is measured from outside the process, so it includes
+interpreter startup and imports. dl's own `dl-timing: total` line starts inside
+main() and excludes them, so the two numbers are close but not the same
+quantity; each line says which it is, and a before/after comparison should
+quote one instrument on both sides.
+
 Standard library only, on purpose: the instrument must not cost the project
 a dependency.
 """
@@ -64,7 +70,7 @@ def bench(n: int, command: List[str], before: Optional[List[str]] = None) -> int
         print(f"run {i}/{n}: {elapsed:.3f}s")
         durations.append(elapsed)
     median = statistics.median(durations)
-    print(f"median of {n}: {median:.3f}s")
+    print(f"median of {n}: {median:.3f}s (wall clock, including interpreter startup)")
     return 0
 
 

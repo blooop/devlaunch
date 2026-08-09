@@ -24,6 +24,14 @@ from typing import List, Optional, TextIO, Tuple
 
 ENV_VAR = "DEVLAUNCH_TIMING"
 
+# `total` runs from the top of main(), so it is a smaller quantity than the wall
+# time an outside stopwatch (`scripts/bench_launch.py`, `/usr/bin/time`) reports
+# for the same command: the interpreter's own startup and this package's imports
+# happen before main() is entered and are outside it. The two get quoted side by
+# side in perf write-ups, so each line carries its epoch rather than leaving the
+# reader to assume they are the same measurement.
+TOTAL_EPOCH = "in-process, excluding interpreter startup"
+
 
 @dataclass
 class _Recorder:
@@ -113,4 +121,4 @@ def emit(stream: Optional[TextIO] = None) -> None:
     total = time.perf_counter() - recorder.started
     for label, seconds in recorder.entries:
         print(f"dl-timing: {label} {seconds:.3f}s", file=out)
-    print(f"dl-timing: total {total:.3f}s", file=out)
+    print(f"dl-timing: total {total:.3f}s ({TOTAL_EPOCH})", file=out)
