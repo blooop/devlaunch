@@ -237,6 +237,37 @@ class TestHotCommandSpawnCounts:
             ["ssh", ws_id, "--command", "bash -lc 'echo hi'"],
         ]
 
+    def test_a_warm_git_spec_launch_does_no_metadata_io(self, spawns):
+        """A warm launch never opens metadata.json and never takes its lock.
+
+        The clone manager is cold-path machinery: it reads config.toml, loads
+        metadata.json under the metadata lock, and runs the cache migration.
+        A launch that attaches to a workspace devpod already reports as
+        Running uses none of that, so it must pay for none of it (#145).
+
+        No mocks at the storage layer — the seam is observed on disk. The
+        cache is seeded with an unparsable metadata.json: any code path that
+        reads it quarantines it to metadata.json.corrupt and warns, and any
+        path that takes the metadata lock leaves metadata.json.lock behind.
+        A launch that did no metadata I/O leaves the garbage byte-identical
+        and creates neither sibling file.
+        """
+        from devlaunch.workspace_id import WorkspaceId
+        from devlaunch.xdg import devlaunch_cache
+
+        ws_id = WorkspaceId("blooop", "devlaunch", "wayfinder/devlaunch-7").value
+        spawns.workspace_ids = [ws_id]
+        cache = devlaunch_cache()
+        cache.mkdir(parents=True, exist_ok=True)
+        marker = cache / "metadata.json"
+        marker.write_text("not json", encoding="utf-8")
+
+        assert _run_dl("blooop/devlaunch@wayfinder/devlaunch-7", "--", "echo", "hi") == 0
+
+        assert marker.read_text(encoding="utf-8") == "not json"
+        assert not (cache / "metadata.json.corrupt").exists()
+        assert not (cache / "metadata.json.lock").exists()
+
     def test_an_unknown_bare_name_is_refused_after_asking_devpod_twice(self, spawns):
         """A typo'd workspace name costs a status and then a listing.
 

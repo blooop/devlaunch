@@ -30,6 +30,24 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **A warm launch no longer builds the clone manager it never uses.** Every
+  `dl owner/repo@branch -- cmd` read `config.toml`, loaded `metadata.json` twice
+  under its flock, created `repos_dir` and ran the id-scheme migration — and
+  then attached to the running workspace without touching any of it.
+  Construction now happens in the two arms that need it: resolving the default
+  branch for a bare `owner/repo`, and the cold clone. The cold path is
+  unaffected and the pinned devpod argv sequences are unchanged.
+
+  Measured on the reference machine, the removed work is **~0.29ms** (median of
+  25 fresh processes, 4-worktree `metadata.json`, already migrated) — real, but
+  small next to the two devpod round trips a launch spends. The reason to do it
+  is that a warm attach now touches no shared cache state at all.
+
+  The consequence worth knowing: on that one shape, the one-shot cache
+  migration and the quarantine of an unreadable `metadata.json` no longer run.
+  They run on the next command that does build the manager, which is any cold
+  launch, any bare `owner/repo`, and every workspace-management command.
+
 - **A launch is one `devpod status`, not a `devpod list` and then a status.**
   Every workspace command opened with `devpod list --output json` purely to ask
   whether devpod knew this workspace, then asked `devpod status` about the same
