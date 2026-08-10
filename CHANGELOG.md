@@ -19,6 +19,34 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.25] - 2026-08-10
+
+### Added
+
+- `docs/rust-port-scope.md` — a scoping note reconciling three records that
+  disagreed about how wayfinder should consume devlaunch: [#53](https://github.com/blooop/devlaunch/issues/53)
+  decided **GO** on a Rust `devlaunch-core` crate for `wf` to link and rejected
+  subprocess-on-PATH, this changelog then deferred the rewrite, and
+  [blooop/wayfinder#80](https://github.com/blooop/wayfinder/issues/80) — with no
+  crate to consume — chose subprocess-on-PATH and recorded the rewrite as out of
+  scope, reinforced. Neither cited the other.
+
+  It adds the measurements both arguments were missing: the 370 MB environment is
+  275 MB of CPython, 118 MB of devpod and 84 KiB of devlaunch, so a Rust port
+  lands near 120 MB and devpod is 118 MB of that — the floor is devpod, not the
+  language. The port is 7,373 lines of source against 18,039 lines of tests, of
+  which the 61 mock-free acceptance tests carry over.
+
+  It also records the one prediction #53 made that has since been tested: that
+  the crate wins because a breaking change fails `wf`'s build where subprocess
+  drift is silent until runtime. `dl <workspace> up` shipping in `wf` 0.14.0
+  before 0.0.24 carried it was exactly that, and neither repo's CI noticed. `wf`
+  0.15.0 now holds the `dl` it finds to a version floor, which is the strongest
+  thing a subprocess seam can do.
+
+  No decision is taken there. The live question is narrowed to #53's own
+  falsifier — whether `wf` renders per-ticket workspace state.
+
 ## [0.0.24] - 2026-08-10
 
 ### Added
