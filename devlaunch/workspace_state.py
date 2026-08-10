@@ -52,6 +52,8 @@ Both halves are fixed here and neither is sufficient alone:
 """
 
 import logging
+import os
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,8 +164,18 @@ class CloneState:
     """What one workspace clone holds, as far as git can tell.
 
     ``branch`` is what the clone has checked out, or ``None`` when git could not
-    say — which is every case where ``unsaved`` is a :class:`CouldNotTell`, and
-    also an unborn HEAD. It is reported beside the recorded branch rather than
+    say — an unusable ``.git``, or an unborn HEAD.
+
+    The two fields are independent, and an earlier draft of this docstring said
+    otherwise ("``None`` in every case where ``unsaved`` is a
+    :class:`CouldNotTell`"). A clone git *can* read as a repository but whose
+    remote-tracking refs are broken gives ``CloneState(branch='feature',
+    unsaved=CouldNotTell(...))``: ``git status`` answered, so the branch is
+    known, and only the later ``git log … --not --remotes`` refused. That is the
+    shape ``test_a_readable_repo_whose_remote_refs_are_broken_is_could_not_tell``
+    builds, and the behaviour is right — it was the invariant that was wrong.
+
+    ``branch`` is reported beside the recorded branch rather than
     instead of it (``dl --ls --json`` prints both), so a clone an agent moved
     off its branch is visible as such.
     """
@@ -207,10 +219,27 @@ def _git(repo: Path, *args: str) -> GitAnswer:
     Verified against real git (2.55.0) rather than assumed, on each shape a
     broken clone actually takes: a ``.git`` directory holding garbage, an empty
     ``.git`` directory, a ``.git`` with HEAD and nothing else, a real clone with
-    its object store deleted, and a truncated gitfile. All five refuse here;
-    all five answered about the ancestor under plain ``cwd=``. A healthy clone
-    and a *linked worktree* (whose ``.git`` is a gitfile, which git follows)
-    both still answer normally, so pinning the clone down costs nothing.
+    its object store deleted, and a truncated gitfile. All five refuse here.
+    **Four of the five** answered about the ancestor under plain ``cwd=``: the
+    truncated gitfile did not, because git treats an unreadable gitfile as a
+    hard error (``fatal: invalid gitfile format``) rather than continuing
+    discovery upward, so that one shape was never part of the bug — it is listed
+    because it is a shape a broken clone takes, not because ``cwd=`` mishandled
+    it. A healthy clone and a *linked worktree* (whose ``.git`` is a gitfile,
+    which git follows) both still answer normally, so pinning the clone down
+    costs nothing.
+
+    ``--work-tree`` earns its place separately from ``--git-dir``, and the suite
+    goes red without it. ``core.worktree`` in the clone's own config points the
+    work tree at another directory, and ``--git-dir`` alone honours it: on a
+    clone holding an untracked file, ``git status --porcelain`` then prints
+    **nothing at rc 0** — "nothing to lose", about a directory nobody asked
+    about. That is devlaunch#171's failure class reached by a second route, and
+    it is the fail-*open* one. ``core.bare = true`` is the neighbouring shape and
+    fails closed instead (``fatal: this operation must be run in a work tree``,
+    which is a refusal), which is why only the ``core.worktree`` shape
+    demonstrates the flag is load-bearing. Pinned by
+    ``TestGitIsPinnedToItsWorkTreeToo`` in ``test/test_workspace_state.py``.
 
     ``GIT_CEILING_DIRECTORIES`` was the other candidate and is not used: it
     bounds discovery instead of switching it off, so it has to be an absolute
@@ -262,8 +291,33 @@ def read_clone(clone: Path) -> CloneState:
     are in it, and with no repository to consult nothing has established that
     they exist anywhere else — so it is a :class:`CouldNotTell`, and the delete
     stops. See this module's docstring for what that cost before it did.
+
+    A directory dl cannot even *look at* is a third answer, and ``Path.is_dir()``
+    has no way to give it — which is why the ``os.stat`` below is written out
+    rather than left as ``clone.is_dir()``. ``is_dir()`` collapses every failure
+    into ``False``, and it does not even do that consistently across the
+    versions this package supports: on Python ≤3.12 it swallows ENOENT, ENOTDIR,
+    EBADF and ELOOP and *re-raises* the rest, so a clone whose parent is mode
+    ``000`` raised ``PermissionError`` straight out of here (``dl <ws> rm``
+    failed closed by crashing; ``dl --ls --json`` became a traceback for the
+    whole listing because of one workspace). On 3.13+ the same call returns
+    ``False`` instead, which read as "not there, so nothing to lose" — a clone
+    that may be full of work, reported as free to delete, because dl was not
+    allowed to look. One sentinel each way, from the same expression.
+
+    ``os.stat`` raises for all of them and the errno says which: ENOENT and
+    ENOTDIR mean there is no directory there to hold anything, and everything
+    else means dl was stopped before it could find out, which is exactly a
+    :class:`CouldNotTell`. The answer is now the same on every supported Python.
     """
-    if not clone.is_dir():
+    try:
+        present = stat.S_ISDIR(os.stat(clone).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return CloneState(branch=None, unsaved=NothingToLose())
+    except OSError as e:
+        logger.debug(f"could not look at {clone}: {e}")
+        return CloneState(branch=None, unsaved=CouldNotTell(f"could not look at {clone}: {e}"))
+    if not present:
         return CloneState(branch=None, unsaved=NothingToLose())
     head = _git(clone, "rev-parse", "--abbrev-ref", "HEAD")
     branch = head.output or None if isinstance(head, GitSaid) else None

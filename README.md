@@ -470,10 +470,13 @@ looks: a devcontainer that runs a package install in its `postCreateCommand` can
 leave a tracked lockfile modified in *every* workspace it builds — this repo's
 own does — and as a bare count that is indistinguishable from an hour of unsaved
 work. A cleanup tool believing the count would then never clean anything. Named,
-it is judgeable. A workspace `dl` did not create reports `devlaunch: false` with
-no repo, branch or `unsaved` — `unsaved` is `null` there, and only there: there
-is no clone of `dl`'s to protect, and it has no business inspecting your
-checkout.
+it is judgeable. A workspace `dl` did not create reports `devlaunch: false` and
+no `unsaved` — `unsaved` is `null` exactly where `devlaunch` is `false`, and
+nowhere else: there is no clone of `dl`'s to protect, and it has no business
+inspecting your checkout. (`repo` and `branch` are a weaker test and not the
+same set: they come from `dl`'s metadata record, and a clone `dl` owns can have
+lost its record while the clone and the work in it are still on disk. That clone
+is inspected and reported like any other.)
 
 **`dl <workspace> rm` refuses when the clone holds unsaved work — and when it
 cannot tell**, so a caller that forgets to read the field is still caught:

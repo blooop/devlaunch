@@ -266,10 +266,29 @@ table and should be judged on its own merits.
   **Breaking, in `dl --ls --json`:** `unsaved` was a string or `null` and is now
   an object with exactly one key — `{"nothingToLose": true}`,
   `{"wouldLose": "<what>"}` or `{"couldNotTell": "<why>"}` — the shape `disk`
-  already uses. It is `null` only where `repo` and `branch` are: a workspace
+  already uses. It is `null` exactly where `devlaunch` is `false`: a workspace
   `dl` did not create. The break is the safe way round: a reader that tested the
   old field for truthiness now sees a truthy object for every arm, so it leaves
   workspaces alone rather than deleting them.
+
+  `unsaved`, `checkedOut` and `path` are answered for every workspace `dl` owns,
+  not only for the ones it still has a metadata record for. They used to gate on
+  the record while `devlaunch` and `disk` gated on the clone directory, so a
+  clone under the cache whose record had gone reported `devlaunch: true` with a
+  measured `disk` and `unsaved: null` beside them — `null` documented as "not
+  `dl`'s clone", on a clone `dl` had just called its own. That is the same
+  sentinel this entry is about, one layer out, and the same divergence
+  [PR #165](https://github.com/blooop/devlaunch/pull/165) closed for `disk`.
+
+  A clone dl cannot even look at — a parent directory it has no search
+  permission on — is a "could not tell" too, and `Path.is_dir()` had no way to
+  say so. It gave a different wrong answer on each supported Python: on ≤3.12 it
+  re-raised `PermissionError`, so `dl <ws> rm` failed closed by crashing and
+  `dl --ls --json` became a traceback for the whole listing because of one
+  workspace; on 3.13+ it returns `False`, which read as "not there, so nothing
+  to lose" — a clone that may be full of work, reported as free to delete. The
+  errno is now read directly: ENOENT and ENOTDIR mean there is no clone there,
+  and everything else means dl was not allowed to find out.
 
 - A cold `devpod up` no longer prints a red `fatal ... Process exited with
   status 1` from the tools probe. The probe asks a yes/no question and reports

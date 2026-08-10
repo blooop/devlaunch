@@ -63,16 +63,33 @@ def remote(tmp_path: Path) -> Path:
     return origin
 
 
-@pytest.fixture
-def clone(remote: Path, tmp_path: Path) -> Path:
+def _make_clone(remote: Path, work: Path) -> Path:
     """A workspace clone on a pushed branch, as `dl` would leave one."""
-    work = tmp_path / "ws"
-    git("clone", str(remote), str(work), cwd=tmp_path)
+    work.parent.mkdir(parents=True, exist_ok=True)
+    git("clone", str(remote), str(work), cwd=work.parent)
     git("checkout", "-b", "feature", cwd=work)
     (work / "feature.txt").write_text("work\n")
     commit(work, "feature")
     git("push", "-u", "origin", "feature", cwd=work)
     return work
+
+
+@pytest.fixture
+def clone(remote: Path, tmp_path: Path) -> Path:
+    return _make_clone(remote, tmp_path / "ws")
+
+
+@pytest.fixture
+def clone_in_the_cache(remote: Path, tmp_path: Path) -> Path:
+    """The same clone, at the path `dl` actually puts one: under its own cache.
+
+    Ownership is established from the source path devpod kept, so this is a clone
+    `dl` can prove is its own with or without a metadata record of it. It is the
+    path `TestTheJsonListing` hands devpod as the workspace source.
+    """
+    return _make_clone(
+        remote, tmp_path / "cache" / "devlaunch" / "repos" / "blooop" / "r" / "r-feature-aaa"
+    )
 
 
 @pytest.fixture
@@ -158,6 +175,20 @@ class TestWhatACloneHolds:
         # A half-finished delete, or a directory removed by hand. There is no
         # work in it to lose, and nothing here may crash on it.
         assert read_clone(tmp_path / "absent") == CloneState(branch=None, unsaved=NothingToLose())
+
+    def test_a_path_with_a_file_at_it_rather_than_a_clone_also_holds_nothing(self, tmp_path):
+        # Neither a clone nor a directory: the same answer as nothing at all,
+        # which is what this gave before the errno was read directly.
+        (tmp_path / "ws").write_text("not a clone\n")
+        assert read_clone(tmp_path / "ws") == CloneState(branch=None, unsaved=NothingToLose())
+
+    def test_a_clone_under_something_that_is_not_a_directory_holds_nothing(self, tmp_path):
+        # ENOTDIR rather than ENOENT: a parent component is a file. Still no
+        # clone at that path, so still nothing in it to lose.
+        (tmp_path / "file").write_text("not a directory\n")
+        assert read_clone(tmp_path / "file" / "ws") == CloneState(
+            branch=None, unsaved=NothingToLose()
+        )
 
     def test_a_clone_nested_in_a_repository_still_answers_about_itself(self, ancestor, remote):
         """A healthy clone under a repository is not confused with its ancestor.
@@ -271,6 +302,64 @@ class TestWhenGitCannotBeAsked:
         assert isinstance(unsaved, CouldNotTell) and "no git" in unsaved.reason
 
 
+class TestGitIsPinnedToItsWorkTreeToo:
+    """`--git-dir` names the repository; `--work-tree` names the files.
+
+    The flags are not one belt and one brace. `core.worktree` in a clone's own
+    config points the work tree at another directory, and `--git-dir` alone
+    honours it: `git status --porcelain` then reports on *that* directory, which
+    on a clone holding an untracked file means empty output at rc 0 -- "nothing
+    to lose", about a directory nobody asked about. Devlaunch#171's failure
+    class reached by a second route, and the fail-*open* one.
+
+    Dropping `--work-tree` and keeping `--git-dir` left the rest of this suite
+    green, so this class exists to make that mutation red. Its neighbour
+    `core.bare = true` does not: with it, `--git-dir` alone says `fatal: this
+    operation must be run in a work tree`, which is a refusal and therefore
+    already safe. Only the `core.worktree` shape shows the flag is load-bearing.
+    """
+
+    def test_a_clone_pointed_at_another_work_tree_still_reports_its_own_files(
+        self, clone, tmp_path
+    ):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        git("config", "core.worktree", str(elsewhere), cwd=clone)
+        (clone / "an-hour-of-work.md").write_text("half a plan\n")
+        unsaved = holds_unsaved_work(clone)
+        assert isinstance(unsaved, WouldLose), unsaved
+        assert "an-hour-of-work.md" in unsaved.description
+
+
+class TestADirectoryThatCannotBeLookedAt:
+    """Not knowing whether the clone is there is not knowing what it holds.
+
+    A clone whose parent directory `dl` has no search permission on. This used
+    to be `clone.is_dir()`, which gave two different wrong answers depending on
+    which Python was running it: on ≤3.12 it re-raised `PermissionError`, so
+    `dl <ws> rm` failed closed by crashing and `dl --ls --json` became a
+    traceback for the whole listing because of one workspace; on 3.13+ the same
+    call returns `False`, which read as "not there, so nothing to lose" -- a
+    clone that may be full of work, reported as free to delete. This suite runs
+    on both, so a version-independent assertion is the point of this class.
+    """
+
+    def test_a_clone_behind_a_closed_door_is_could_not_tell(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root is refused by nothing, so the closed door would open")
+        parent = tmp_path / "locked"
+        clone = parent / "ws"
+        clone.mkdir(parents=True)
+        (clone / "an-hour-of-work.md").write_text("half a plan\n")
+        parent.chmod(0o000)
+        try:
+            state = read_clone(clone)
+        finally:
+            parent.chmod(0o700)
+        assert isinstance(state.unsaved, CouldNotTell), state
+        assert str(clone) in state.unsaved.reason
+
+
 class TestTheAnswersAreTotal:
     """Nothing may reach a caller as an answer the caller does not name.
 
@@ -322,7 +411,7 @@ def _clone_manager(records: dict) -> MagicMock:
 class TestTheJsonListing:
     """`dl --ls --json`: the facts a cleanup tool decides from."""
 
-    def _run(self, tmp_path, clone, capsys):
+    def _run(self, tmp_path, clone, capsys, recorded=True):
         cache = tmp_path / "cache" / "devlaunch"
         listing = json.dumps(
             [
@@ -330,7 +419,9 @@ class TestTheJsonListing:
                 _entry("someone-elses", tmp_path / "projects" / "other"),
             ]
         )
-        records = {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))}
+        records = (
+            {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))} if recorded else {}
+        )
 
         def devpod(args, **kwargs):
             if args[:1] == ["list"]:
@@ -380,6 +471,55 @@ class TestTheJsonListing:
         assert str(broken_clone_under_ancestor) in ours["unsaved"]["couldNotTell"]
         # And not the ancestor's branch, reported as this clone's.
         assert ours["checkedOut"] is None
+
+    def test_a_clone_dl_owns_but_has_no_record_for_is_still_inspected(
+        self, tmp_path, clone_in_the_cache, capsys
+    ):
+        """`unsaved: null` must mean "not `dl`'s clone", and only that.
+
+        A clone under the cache that `dl` has no metadata record for -- a
+        metadata write that failed, a record pruned, a cache restored without
+        one -- is still `dl`'s clone: `devlaunch: true` says so, `--size`
+        measures it, and `--purge` deletes it. This used to gate on the record
+        while its neighbours gated on the clone directory, so that row read
+        `devlaunch: true` with a measured `disk` and `unsaved: null` beside
+        them, and `null` is documented as "no clone of `dl`'s here to inspect".
+        That is devlaunch#171's own sentinel surviving one layer out: `null`
+        carrying both "not mine" and "mine, never examined". Exactly the
+        divergence PR #165 closed for `disk`, which `unsaved` was left behind
+        by.
+        """
+        (clone_in_the_cache / "an-hour-of-work.md").write_text("half a plan\n")
+        _code, report = self._run(tmp_path, clone_in_the_cache, capsys, recorded=False)
+        ours = next(w for w in report if w["id"] == "r-feature-aaa")
+        assert ours["devlaunch"] is True
+        # No record, so nothing to report for the two fields that come from one.
+        assert ours["repo"] is None and ours["branch"] is None
+        # But the clone is there, and so is the work in it.
+        assert "an-hour-of-work.md" in ours["unsaved"]["wouldLose"]
+        assert ours["path"] == str(clone_in_the_cache)
+        assert ours["checkedOut"] == "feature"
+        # And on the same listing, `null` still means the one thing it means.
+        foreign = next(w for w in report if w["id"] == "someone-elses")
+        assert foreign["devlaunch"] is False and foreign["unsaved"] is None
+
+    def test_one_unreachable_clone_does_not_take_the_whole_listing_down(
+        self, tmp_path, clone_in_the_cache, capsys
+    ):
+        # The harm `read_clone`'s stat guard prevents, at the surface it was
+        # visible from: one workspace behind a closed door used to raise out of
+        # the loop and the caller got a traceback instead of a listing.
+        if os.geteuid() == 0:
+            pytest.skip("root is refused by nothing, so the closed door would open")
+        clone_in_the_cache.parent.chmod(0o000)
+        try:
+            _code, report = self._run(tmp_path, clone_in_the_cache, capsys)
+        finally:
+            clone_in_the_cache.parent.chmod(0o700)
+        ours = next(w for w in report if w["id"] == "r-feature-aaa")
+        assert "couldNotTell" in ours["unsaved"], ours["unsaved"]
+        # And the rest of the listing is still there.
+        assert next(w for w in report if w["id"] == "someone-elses")["devlaunch"] is False
 
     def test_a_workspace_devlaunch_did_not_make_says_so_instead_of_guessing(
         self, tmp_path, clone, capsys
@@ -521,6 +661,11 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         ours = next(row for row in report if row["id"] == "r-feature-aaa")
         assert ours["devlaunch"] is True
         assert 2 * 1024 * 1024 <= ours["disk"]["exclusiveBytes"] < 3 * 1024 * 1024
+        # And the field a cleanup tool must not ignore is answered on the same
+        # row, for the same reason: `unsaved: null` beside a measured `disk` on
+        # a row that says `devlaunch: true` is `null` meaning two things again.
+        # (This clone is a plain directory, so the answer is a refusal.)
+        assert "couldNotTell" in ours["unsaved"]
 
         _code, out = self._run(tmp_path, ["--ls", "--size"], capsys, recorded=False)
         row = next(line for line in out.splitlines() if line.startswith("r-feature-aaa"))
