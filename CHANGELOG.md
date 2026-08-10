@@ -242,6 +242,35 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **`dl <workspace> rm` could delete a clone that held unsaved work, and say
+  nothing** ([#171](https://github.com/blooop/devlaunch/issues/171)). The guard
+  ran `git` in the clone directory with nothing pinning it there — no
+  `--git-dir`, no `--work-tree`, no ceiling — so git's repository discovery
+  walked up the parent chain. A clone whose `.git` was unusable (half-removed by
+  an interrupted delete, truncated, never finished) did not make git refuse: it
+  made git find an **ancestor** repository and answer about that one. With
+  `dl`'s cache under `$XDG_CACHE_HOME` and a dotfiles repository in `$HOME`,
+  that ancestor is ordinary — and when it was clean and fully pushed, the guard
+  reported "nothing would be lost" about somebody else's repository and the
+  clone went, untracked scratch files and all. Only a *tidy* host could hit it:
+  a dirty ancestor made the guard fire for the wrong reason and hid the bug.
+
+  Git is now asked about one directory and cannot leave it, and "could not tell"
+  is an answer of its own that refuses the delete exactly as "would lose" does
+  — previously both were `None` and `None` meant delete freely. A directory that
+  is *there* but is not a repository git can read is now a refusal rather than a
+  clean bill of health; a directory that is *not* there still holds nothing, so
+  clearing up after a half-finished delete needs no `--force`. `--force` still
+  overrides, in both cases.
+
+  **Breaking, in `dl --ls --json`:** `unsaved` was a string or `null` and is now
+  an object with exactly one key — `{"nothingToLose": true}`,
+  `{"wouldLose": "<what>"}` or `{"couldNotTell": "<why>"}` — the shape `disk`
+  already uses. It is `null` only where `repo` and `branch` are: a workspace
+  `dl` did not create. The break is the safe way round: a reader that tested the
+  old field for truthiness now sees a truthy object for every arm, so it leaves
+  workspaces alone rather than deleting them.
+
 - A cold `devpod up` no longer prints a red `fatal ... Process exited with
   status 1` from the tools probe. The probe asks a yes/no question and reports
   nothing; "no" is its everyday answer on a fresh workspace, and devpod

@@ -450,24 +450,33 @@ cleanup tool must not ignore — `unsaved`:
   "repo": "blooop/devlaunch",
   "branch": "wayfinder/devlaunch-80",
   "state": "Stopped",
-  "unsaved": "2 uncommitted change(s) (pixi.lock, notes.md) and 1 unpushed commit(s)"
+  "unsaved": {
+    "wouldLose": "2 uncommitted change(s) (pixi.lock, notes.md) and 1 unpushed commit(s)"
+  }
 }
 ```
 
-`unsaved` is a description of what deleting would destroy, or `null` when the
-clone holds nothing that does not also exist on a remote — uncommitted changes
-(untracked files included) and commits no remote has. The changed paths are
-named, not just counted, and that matters more than it looks: a devcontainer
-that runs a package install in its `postCreateCommand` can leave a tracked
-lockfile modified in *every* workspace it builds — this repo's own does — and as
-a bare count that is indistinguishable from an hour of unsaved work. A cleanup
-tool believing the count would then never clean anything. Named, it is
-judgeable. A workspace `dl` did not
-create reports `devlaunch: false` with no repo, branch or `unsaved`: there is no
-clone of `dl`'s to protect, and it has no business inspecting your checkout.
+`unsaved` is an object with exactly one key, and the key says which of three
+answers it is:
 
-**`dl <workspace> rm` refuses when the clone holds unsaved work**, so a caller
-that forgets to read the field is still caught:
+| `unsaved` | Meaning |
+| --- | --- |
+| `{"nothingToLose": true}` | Everything in the clone exists on a remote too. Deleting it costs nothing. |
+| `{"wouldLose": "<what>"}` | Uncommitted changes (untracked files included), commits no remote has, or both. |
+| `{"couldNotTell": "<why>"}` | `git` could not read the clone as a repository — a half-removed `.git`, an interrupted delete. The files are still there and nothing has established that they exist anywhere else. |
+
+The changed paths are named, not just counted, and that matters more than it
+looks: a devcontainer that runs a package install in its `postCreateCommand` can
+leave a tracked lockfile modified in *every* workspace it builds — this repo's
+own does — and as a bare count that is indistinguishable from an hour of unsaved
+work. A cleanup tool believing the count would then never clean anything. Named,
+it is judgeable. A workspace `dl` did not create reports `devlaunch: false` with
+no repo, branch or `unsaved` — `unsaved` is `null` there, and only there: there
+is no clone of `dl`'s to protect, and it has no business inspecting your
+checkout.
+
+**`dl <workspace> rm` refuses when the clone holds unsaved work — and when it
+cannot tell**, so a caller that forgets to read the field is still caught:
 
 ```
 $ dl blooop/repo@feature rm
@@ -475,9 +484,16 @@ error: devlaunch-repo-feature-xyz holds 1 unpushed commit(s).
        Push or commit it, or run: dl blooop/repo@feature rm --force
 ```
 
+```
+$ dl blooop/repo@feature rm
+error: devlaunch-repo-feature-xyz: git could not read /home/…/repo/feature:
+       fatal: not a git repository. devlaunch will not delete a clone it cannot
+       check. Look at it, or run: dl blooop/repo@feature rm --force
+```
+
 That refusal is the only judgement `dl` makes here, and it is not about finished
-work — it is `dl` declining to destroy the only copy of something. Say `--force`
-if you mean it.
+work — it is `dl` declining to destroy the only copy of something, including
+when it cannot prove there is another copy. Say `--force` if you mean it.
 
 [`wf`](https://github.com/blooop/wayfinder) is the caller this was built for: it
 names its branches after its tickets, so it knows which workspaces belong to
