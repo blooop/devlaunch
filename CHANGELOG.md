@@ -19,6 +19,8 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+## [0.0.24] - 2026-08-10
+
 ### Added
 
 - `dl <workspace> up` starts or creates a workspace **without attaching**. The
