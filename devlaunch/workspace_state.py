@@ -231,15 +231,29 @@ def _git(repo: Path, *args: str) -> GitAnswer:
 
     ``--work-tree`` earns its place separately from ``--git-dir``, and the suite
     goes red without it. ``core.worktree`` in the clone's own config points the
-    work tree at another directory, and ``--git-dir`` alone honours it: on a
-    clone holding an untracked file, ``git status --porcelain`` then prints
-    **nothing at rc 0** — "nothing to lose", about a directory nobody asked
-    about. That is devlaunch#171's failure class reached by a second route, and
-    it is the fail-*open* one. ``core.bare = true`` is the neighbouring shape and
-    fails closed instead (``fatal: this operation must be run in a work tree``,
-    which is a refusal), which is why only the ``core.worktree`` shape
-    demonstrates the flag is load-bearing. Pinned by
-    ``TestGitIsPinnedToItsWorkTreeToo`` in ``test/test_workspace_state.py``.
+    work tree at another directory, and ``--git-dir`` alone honours it — so
+    ``git status --porcelain`` compares the clone's index against *that*
+    directory. What comes back depends on what is in it, and only one of the two
+    outcomes is a fail-open. Both were run against git 2.55.0 on the fixture the
+    tests build (a clone on a pushed branch, ``README.md`` and ``feature.txt``
+    tracked, an untracked ``an-hour-of-work.md`` in the clone):
+
+    - the other directory does **not** hold HEAD's files — an empty directory is
+      the easiest case — and git prints ``" D README.md\\n D feature.txt"`` at
+      rc 0. That is a :class:`WouldLose` naming two files that are not missing,
+      about a directory nobody asked about: wrong, and worth fixing, but it is a
+      *refusal*, so it does not destroy anything.
+    - the other directory **mirrors HEAD** — a second checkout of the same
+      commit, which is what ``core.worktree`` is normally pointed at — and git
+      prints **nothing at rc 0**. A :class:`NothingToLose` on a clone holding an
+      hour of work that exists nowhere else. That is devlaunch#171's failure
+      class reached by a second route, and it is the fail-*open* one.
+
+    So the mirrored shape is the one that makes ``--work-tree`` load-bearing,
+    and it is the one ``TestGitIsPinnedToItsWorkTreeToo`` builds in
+    ``test/test_workspace_state.py``. ``core.bare = true`` is the neighbouring
+    shape and fails closed as well (``fatal: this operation must be run in a
+    work tree``, a refusal).
 
     ``GIT_CEILING_DIRECTORIES`` was the other candidate and is not used: it
     bounds discovery instead of switching it off, so it has to be an absolute
@@ -296,25 +310,42 @@ def read_clone(clone: Path) -> CloneState:
     has no way to give it — which is why the ``os.stat`` below is written out
     rather than left as ``clone.is_dir()``. ``is_dir()`` collapses every failure
     into ``False``, and it does not even do that consistently across the
-    versions this package supports: on Python ≤3.12 it swallows ENOENT, ENOTDIR,
-    EBADF and ELOOP and *re-raises* the rest, so a clone whose parent is mode
-    ``000`` raised ``PermissionError`` straight out of here (``dl <ws> rm``
-    failed closed by crashing; ``dl --ls --json`` became a traceback for the
-    whole listing because of one workspace). On 3.13+ the same call returns
-    ``False`` instead, which read as "not there, so nothing to lose" — a clone
-    that may be full of work, reported as free to delete, because dl was not
-    allowed to look. One sentinel each way, from the same expression.
+    versions this package supports: up to and including Python 3.13 it swallows
+    ENOENT, ENOTDIR, EBADF and ELOOP and *re-raises* the rest, so a clone whose
+    parent is mode ``000`` raised ``PermissionError`` straight out of here
+    (``dl <ws> rm`` failed closed by crashing; ``dl --ls --json`` became a
+    traceback for the whole listing because of one workspace). On 3.14 the same
+    call returns ``False`` instead, which read as "not there, so nothing to
+    lose" — a clone that may be full of work, reported as free to delete,
+    because dl was not allowed to look. One sentinel each way, from the same
+    expression.
+
+    The boundary is 3.14, and it is written from execution rather than from the
+    changelog: the mode-``000`` parent was run on this repo's own environments,
+    **3.10.20, 3.11.15, 3.12.13 and 3.13.14 raise; 3.14.6 returns ``False``**.
+    Patch levels between those were not run, so "3.13 and earlier" is the
+    minor-version claim those five interpreters support, not a claim about every
+    release. Every one of them is now in the ``ci`` matrix, 3.14 included — it
+    was not, which is how a boundary off by a whole minor version survived here
+    for two rounds of review.
 
     ``os.stat`` raises for all of them and the errno says which: ENOENT and
     ENOTDIR mean there is no directory there to hold anything, and everything
     else means dl was stopped before it could find out, which is exactly a
     :class:`CouldNotTell`. The answer is now the same on every supported Python.
+
+    ``ValueError`` is caught alongside ``OSError`` because ``os.stat`` is total
+    over the first and not over the second: a path with a NUL byte in it — which
+    a hand-edited or truncated ``metadata.json`` can put in a record — is not an
+    errno, it is a ``ValueError`` raised before the syscall. Uncaught it takes
+    down the whole of ``dl --ls --json`` for one bad record, which is the exact
+    harm the stat guard was written to stop.
     """
     try:
         present = stat.S_ISDIR(os.stat(clone).st_mode)
     except (FileNotFoundError, NotADirectoryError):
         return CloneState(branch=None, unsaved=NothingToLose())
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.debug(f"could not look at {clone}: {e}")
         return CloneState(branch=None, unsaved=CouldNotTell(f"could not look at {clone}: {e}"))
     if not present:

@@ -21,6 +21,7 @@ a real git.
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -307,28 +308,70 @@ class TestGitIsPinnedToItsWorkTreeToo:
 
     The flags are not one belt and one brace. `core.worktree` in a clone's own
     config points the work tree at another directory, and `--git-dir` alone
-    honours it: `git status --porcelain` then reports on *that* directory, which
-    on a clone holding an untracked file means empty output at rc 0 -- "nothing
-    to lose", about a directory nobody asked about. Devlaunch#171's failure
-    class reached by a second route, and the fail-*open* one.
+    honours it -- so `git status --porcelain` compares the clone's index against
+    *that* directory. Dropping `--work-tree` and keeping `--git-dir` left the
+    rest of this suite green, so this class exists to make that mutation red.
 
-    Dropping `--work-tree` and keeping `--git-dir` left the rest of this suite
-    green, so this class exists to make that mutation red. Its neighbour
-    `core.bare = true` does not: with it, `--git-dir` alone says `fatal: this
-    operation must be run in a work tree`, which is a refusal and therefore
-    already safe. Only the `core.worktree` shape shows the flag is load-bearing.
+    What the mutation does depends on what the other directory holds, and the
+    first version of this class pinned the wrong one of the two. Run against git
+    2.55.0:
+
+    - the other directory does not hold HEAD's files (an empty directory) and
+      git prints `" D README.md\\n D feature.txt"` at rc 0 -- a `WouldLose`
+      naming two files that are not missing. Wrong, but a *refusal*: it destroys
+      nothing, and a test that only checks which filenames appear is red under
+      the mutation for a reason that is not the safety property.
+    - the other directory mirrors HEAD (a second checkout of the same commit,
+      which is what `core.worktree` is normally pointed at) and git prints
+      nothing at rc 0 -- `NothingToLose()` on a clone holding an hour of work
+      that exists nowhere else. Devlaunch#171's failure class reached by a
+      second route, and the fail-*open* one.
+
+    `test_a_clone_whose_other_work_tree_mirrors_head...` builds the second shape,
+    so it goes red on the arm rather than on a filename. Its neighbour
+    `core.bare = true` is not a third case: with it, `--git-dir` alone says
+    `fatal: this operation must be run in a work tree` at rc 128, which is a
+    refusal and therefore already safe.
     """
 
-    def test_a_clone_pointed_at_another_work_tree_still_reports_its_own_files(
+    @staticmethod
+    def _pointed_elsewhere(clone: Path, elsewhere: Path, mirror_head: bool) -> None:
+        elsewhere.mkdir()
+        if mirror_head:
+            # A checkout of the same commit, built from what git says is tracked
+            # rather than from a list written here, so it mirrors HEAD by
+            # construction and stays mirrored if the fixture gains a file.
+            for tracked in git("ls-files", cwd=clone).splitlines():
+                (elsewhere / tracked).write_bytes((clone / tracked).read_bytes())
+        git("config", "core.worktree", str(elsewhere), cwd=clone)
+
+    def test_a_clone_whose_other_work_tree_mirrors_head_still_reports_its_own_work(
         self, clone, tmp_path
     ):
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        git("config", "core.worktree", str(elsewhere), cwd=clone)
+        """The fail-open, and the assertion that matters is the arm.
+
+        Without `--work-tree` git looks at the mirror, finds it identical to the
+        index, and says nothing at rc 0: `NothingToLose()` on the clone below,
+        which holds a file that exists nowhere else. `isinstance` is what goes
+        red; the filename is checked afterwards because a `WouldLose` about the
+        wrong directory would be a different defect.
+        """
+        self._pointed_elsewhere(clone, tmp_path / "elsewhere", mirror_head=True)
         (clone / "an-hour-of-work.md").write_text("half a plan\n")
         unsaved = holds_unsaved_work(clone)
         assert isinstance(unsaved, WouldLose), unsaved
         assert "an-hour-of-work.md" in unsaved.description
+
+    def test_a_clean_clone_is_not_made_dirty_by_the_other_work_trees_absences(
+        self, clone, tmp_path
+    ):
+        # The other outcome, pinned so it cannot be mistaken for the one above:
+        # an empty other work tree makes `--git-dir` alone report HEAD's files as
+        # deleted, so this clone -- which is clean -- would be refused for work
+        # it does not hold. Also red under the mutation, and for the complaint a
+        # user would actually file.
+        self._pointed_elsewhere(clone, tmp_path / "elsewhere", mirror_head=False)
+        assert isinstance(holds_unsaved_work(clone), NothingToLose)
 
 
 class TestADirectoryThatCannotBeLookedAt:
@@ -336,12 +379,23 @@ class TestADirectoryThatCannotBeLookedAt:
 
     A clone whose parent directory `dl` has no search permission on. This used
     to be `clone.is_dir()`, which gave two different wrong answers depending on
-    which Python was running it: on ≤3.12 it re-raised `PermissionError`, so
-    `dl <ws> rm` failed closed by crashing and `dl --ls --json` became a
-    traceback for the whole listing because of one workspace; on 3.13+ the same
-    call returns `False`, which read as "not there, so nothing to lose" -- a
-    clone that may be full of work, reported as free to delete. This suite runs
-    on both, so a version-independent assertion is the point of this class.
+    which Python was running it: up to and including 3.13 it re-raised
+    `PermissionError`, so `dl <ws> rm` failed closed by crashing and
+    `dl --ls --json` became a traceback for the whole listing because of one
+    workspace; on 3.14 the same call returns `False`, which read as "not there,
+    so nothing to lose" -- a clone that may be full of work, reported as free to
+    delete. A version-independent assertion is the point of this class.
+
+    The boundary is 3.14 and it was executed, not read off a changelog: the
+    mode-`000` parent below was run on this repo's own environments and
+    **3.10.20, 3.11.15, 3.12.13 and 3.13.14 raise; 3.14.6 returns `False`**. It
+    was written here as "3.13+" for two rounds of review, which is a whole minor
+    version out, and this suite could not catch that because the `ci` matrix in
+    `.github/workflows/ci.yml` ran py310 through py313 only -- the leg that
+    returns `False`, the fail-*open* one this class exists for, was exercised by
+    no CI job. The matrix now includes the `default` environment, which is 3.14,
+    so "this suite runs on both sides of the boundary" is true of GitHub rather
+    than only of whoever ran it locally.
     """
 
     def test_a_clone_behind_a_closed_door_is_could_not_tell(self, tmp_path):
@@ -358,6 +412,15 @@ class TestADirectoryThatCannotBeLookedAt:
             parent.chmod(0o700)
         assert isinstance(state.unsaved, CouldNotTell), state
         assert str(clone) in state.unsaved.reason
+
+    def test_a_recorded_path_that_is_not_a_path_at_all_is_could_not_tell(self, tmp_path):
+        # `os.stat` is total over `OSError` and not over `ValueError`: a NUL byte
+        # in the path is rejected before the syscall, and a hand-edited or
+        # truncated `metadata.json` is how one gets into a record. Uncaught it
+        # takes the whole of `dl --ls --json` down for one bad row, which is the
+        # harm the stat guard was written to stop.
+        state = read_clone(Path(f"{tmp_path / 'ws'}\0truncated"))
+        assert isinstance(state.unsaved, CouldNotTell), state
 
 
 class TestTheAnswersAreTotal:
@@ -405,13 +468,31 @@ class FakeRecord:
 def _clone_manager(records: dict) -> MagicMock:
     manager = MagicMock()
     manager.storage.get_worktree_by_workspace_id.side_effect = records.get
+
+    def remove_workspace_by_id(workspace_id: str) -> bool:
+        """What `WorkspaceCloneManager.remove_workspace_by_id` does, and only that.
+
+        Both halves, because the interesting one is the refusal: with no record
+        it removes nothing and returns False (`worktree/workspace_clone.py`), so
+        a workspace dl has no record for keeps its clone whatever `rm` returns.
+        A `MagicMock` returns a truthy `Mock` there and deletes nothing, which
+        makes "the clone is still on disk" true of every test for the wrong
+        reason.
+        """
+        record = records.get(workspace_id)
+        if record is None:
+            return False
+        shutil.rmtree(record.local_path, ignore_errors=True)
+        return True
+
+    manager.remove_workspace_by_id.side_effect = remove_workspace_by_id
     return manager
 
 
 class TestTheJsonListing:
     """`dl --ls --json`: the facts a cleanup tool decides from."""
 
-    def _run(self, tmp_path, clone, capsys, recorded=True):
+    def _run(self, tmp_path, clone, capsys, recorded=True, foreign_recorded=False):
         cache = tmp_path / "cache" / "devlaunch"
         listing = json.dumps(
             [
@@ -422,6 +503,14 @@ class TestTheJsonListing:
         records = (
             {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))} if recorded else {}
         )
+        if foreign_recorded:
+            # dl wrote a record and the workspace still reads as someone else's.
+            # `is_devlaunch_clone`'s docstring names the way in: a `config.toml`
+            # pointing `repos_dir` outside the cache puts dl's clones somewhere
+            # `--purge` does not reach, so they are foreign by the only test that
+            # keeps ownership and deletion answering to the same directory --
+            # and the record dl wrote for them outlives the config change.
+            records["someone-elses"] = FakeRecord("blooop", "other", "main", str(clone))
 
         def devpod(args, **kwargs):
             if args[:1] == ["list"]:
@@ -530,6 +619,38 @@ class TestTheJsonListing:
         assert foreign["repo"] is None and foreign["branch"] is None
         # And nothing inspected it: dl has no clone of its own to protect there.
         assert foreign["unsaved"] is None
+
+    def test_a_leftover_record_cannot_make_a_foreign_workspace_dls_own(
+        self, tmp_path, clone, capsys
+    ):
+        """`unsaved: null` iff `devlaunch: false`, on the input that can break it.
+
+        The two fields used to come from two questions -- `is_devlaunch_clone`
+        for `devlaunch`, the metadata record for the directory `unsaved`
+        describes -- and the claim that they name the same set was a claim that
+        the two agree. They do not have to: a record can outlive the reason its
+        workspace counts as dl's, so a `devlaunch: false` row with a record
+        behind it reported a `wouldLose` about a directory the same row called
+        `path: null`, on a checkout dl has no business inspecting. Nothing here
+        caught that -- deleting the ownership gate on the record lookup left the
+        suite green.
+
+        `mine` is now defined as "there is a clone dl owns here", and the record
+        can only move the row from one directory of dl's to another, so this row
+        cannot be reached by a record at all.
+        """
+        _code, report = self._run(tmp_path, clone, capsys, foreign_recorded=True)
+        foreign = next(w for w in report if w["id"] == "someone-elses")
+        assert foreign["devlaunch"] is False
+        assert foreign["unsaved"] is None
+        # And none of the fields a record would have filled in, either -- above
+        # all `path`, which is what `unsaved` would have been about.
+        assert foreign["path"] is None
+        assert foreign["repo"] is None and foreign["branch"] is None
+        assert foreign["checkedOut"] is None
+        # The row that is dl's is unaffected: this is not "inspect nothing".
+        ours = next(w for w in report if w["id"] == "r-feature-aaa")
+        assert ours["devlaunch"] is True and ours["unsaved"] == {"nothingToLose": True}
 
     def test_a_checked_out_branch_that_differs_from_the_record_is_reported_too(
         self, tmp_path, clone, capsys
@@ -683,12 +804,14 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
 class TestTheDeleteGuard:
     """`dl <ws> rm` refuses to destroy the only copy of something."""
 
-    def _run(self, tmp_path, clone, argv, record_read_raises=None):
+    def _run(self, tmp_path, clone, argv, record_read_raises=None, recorded=True):
         cache = tmp_path / "cache" / "devlaunch"
         listing = json.dumps(
             [_entry("r-feature-aaa", cache / "repos" / "blooop" / "r" / "r-feature-aaa")]
         )
-        records = {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))}
+        records = (
+            {"r-feature-aaa": FakeRecord("blooop", "r", "feature", str(clone))} if recorded else {}
+        )
         deleted = []
 
         def devpod(args, **kwargs):
@@ -794,6 +917,39 @@ class TestTheDeleteGuard:
         with patch("devlaunch.dl._unsaved_work_in", return_value="looks empty to me"):
             with pytest.raises(AssertionError, match="Unhandled unsaved-work answer"):
                 self._run(tmp_path, clone, ["r-feature-aaa", "rm"])
+
+    def test_a_clone_dl_has_no_record_for_is_left_alone_rather_than_refused(
+        self, tmp_path, clone_in_the_cache, caplog
+    ):
+        """What the guard does *not* cover, pinned so README cannot overstate it.
+
+        A clone under dl's cache with no metadata record. `dl --ls --json`
+        reports what it holds -- `wouldLose`, correctly -- but `rm` does not
+        refuse: the guard reads the record, there is none, and "dl has no record
+        of a clone here" is answered `NothingToLose`. So the workspace goes and
+        the clone stays, exit 0, no `--force` asked for.
+
+        No work is destroyed, which is why this is not a fail-open and not fixed
+        here: the delete reads the same absent record and removes nothing
+        (`worktree/workspace_clone.py`). But it is not a refusal either, and
+        README said it was. What is asserted below is exactly what happens.
+        """
+        (clone_in_the_cache / "an-hour-of-work.md").write_text("half a plan\n")
+        code, deleted = self._run(
+            tmp_path, clone_in_the_cache, ["r-feature-aaa", "rm"], recorded=False
+        )
+        assert code == 0
+        assert deleted == ["r-feature-aaa"]
+        assert "--force" not in caplog.text
+        # The work is still there, and now nothing dl records points at it.
+        assert (clone_in_the_cache / "an-hour-of-work.md").read_text() == "half a plan\n"
+
+    def test_a_recorded_clone_is_removed_with_the_workspace(self, tmp_path, clone):
+        # The other half, so the assertion above is a fact about the record and
+        # not about a fake that never removes anything.
+        code, deleted = self._run(tmp_path, clone, ["r-feature-aaa", "rm"])
+        assert code == 0 and deleted == ["r-feature-aaa"]
+        assert not clone.exists()
 
     def test_a_clone_already_removed_by_hand_is_still_deleted(self, tmp_path, clone):
         # The reason the "not there" arm answers `NothingToLose` rather than

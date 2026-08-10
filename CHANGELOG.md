@@ -282,13 +282,22 @@ table and should be judged on its own merits.
 
   A clone dl cannot even look at — a parent directory it has no search
   permission on — is a "could not tell" too, and `Path.is_dir()` had no way to
-  say so. It gave a different wrong answer on each supported Python: on ≤3.12 it
-  re-raised `PermissionError`, so `dl <ws> rm` failed closed by crashing and
-  `dl --ls --json` became a traceback for the whole listing because of one
-  workspace; on 3.13+ it returns `False`, which read as "not there, so nothing
-  to lose" — a clone that may be full of work, reported as free to delete. The
-  errno is now read directly: ENOENT and ENOTDIR mean there is no clone there,
-  and everything else means dl was not allowed to find out.
+  say so. It gave a different wrong answer on each supported Python: up to and
+  including 3.13 it re-raised `PermissionError`, so `dl <ws> rm` failed closed
+  by crashing and `dl --ls --json` became a traceback for the whole listing
+  because of one workspace; on 3.14 it returns `False`, which read as "not
+  there, so nothing to lose" — a clone that may be full of work, reported as
+  free to delete. The errno is now read directly: ENOENT and ENOTDIR mean there
+  is no clone there, and everything else means dl was not allowed to find out.
+  A path with a NUL byte in it — a record a hand-edited `metadata.json` can
+  produce — is a "could not tell" as well rather than a `ValueError` out of the
+  listing.
+
+  The boundary above was executed on 3.10.20, 3.11.15, 3.12.13, 3.13.14 and
+  3.14.6, and the `ci` matrix now runs every one of those minor versions. It
+  previously stopped at 3.13, so the leg that returned `False` — the fail-open
+  one — was exercised by no CI job, and this entry said "3.13+" for two rounds
+  of review.
 
 - A cold `devpod up` no longer prints a red `fatal ... Process exited with
   status 1` from the tools probe. The probe asks a yes/no question and reports

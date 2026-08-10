@@ -507,26 +507,35 @@ def workspaces_as_json(with_size: bool = False) -> int:
     clone_mgr = _get_clone_manager()
     report: List[Dict[str, Any]] = []
     for ws in workspaces:
-        mine = is_devlaunch_clone(ws, cache_dir)
+        # One question asked once, and `devlaunch`, `path` and `unsaved` all read
+        # its answer. `_measurable_clone` returns dl's own clone directory and
+        # returns None exactly when the workspace is not dl's, so `mine` is
+        # derived from the same value the other two are rather than computed
+        # beside them -- which is what makes "`unsaved: null` iff `devlaunch:
+        # false`" hold by construction instead of by a second gate that has to
+        # agree with the first. It was two gates, and dropping either one of them
+        # left the whole suite green.
+        clone_path = _measurable_clone(ws, cache_dir)
+        mine = clone_path is not None
         record = clone_mgr.storage.get_worktree_by_workspace_id(ws.id) if mine else None
-        # Which directory this row is about. The record's path when there is a
-        # record -- that is the one `dl <ws> rm`'s guard reads, and a listing
-        # that described a different directory from the guard would be worse
-        # than useless to the caller deciding whether to call it. Otherwise the
-        # clone dl owns on disk, which is the same directory `disk` measures
-        # below and the same one `--purge` deletes.
-        #
-        # Gating this on the record alone was the sentinel bug of devlaunch#171
-        # surviving one layer out. A clone under the cache that dl has no record
-        # for -- a metadata write that failed, a record pruned, a cache restored
-        # without one -- reported `devlaunch: true` and a measured `disk`, and
-        # `unsaved: null` beside them. `null` is documented as "not dl's clone",
-        # which that clone is not: dl says it is its own in the same object. So
-        # `null` still meant both "not mine" and "mine, never examined", which
-        # is the conflation this ticket exists to remove. This is the identical
-        # divergence #165 fixed for `disk` (see the comment on `_measurable_clone`
-        # below); `unsaved` was left behind by it.
-        clone_path = Path(record.local_path) if record else _measurable_clone(ws, cache_dir)
+        if record is not None:
+            # A record moves the row onto the recorded directory -- that is the
+            # one `dl <ws> rm`'s guard reads, and a listing that described a
+            # different directory from the guard would be worse than useless to
+            # the caller deciding whether to call it. It never makes the row
+            # about a workspace dl does not own, because there is no record to
+            # read unless `mine` already said so.
+            #
+            # Reading the record *first* and falling back to the clone was the
+            # sentinel bug of devlaunch#171 surviving one layer out. A clone
+            # under the cache that dl has no record for -- a metadata write that
+            # failed, a record pruned, a cache restored without one -- reported
+            # `devlaunch: true` and a measured `disk`, and `unsaved: null` beside
+            # them. `null` is documented as "not dl's clone", which that clone is
+            # not: dl says it is its own in the same object. This is the
+            # identical divergence #165 fixed for `disk` (see the comment on
+            # `_measurable_clone` below); `unsaved` was left behind by it.
+            clone_path = Path(record.local_path)
         state = workspace_state.read_clone(clone_path) if clone_path else None
         row: Dict[str, Any] = {
             "id": ws.id,
@@ -544,8 +553,9 @@ def workspaces_as_json(with_size: bool = False) -> int:
             # A nested object with one key, and the key says which kind of
             # answer it is -- the shape `disk` uses, for the same reason
             # (devlaunch#171). `null` keeps only its other meaning, and keeps it
-            # exactly: `clone_path` above is None precisely when `mine` is
-            # false, so `unsaved: null` and `devlaunch: false` are the same set.
+            # exactly: `mine` above is defined as `clone_path is not None`, so
+            # `unsaved: null` and `devlaunch: false` are the same set by
+            # construction rather than by agreement.
             "unsaved": workspace_state.unsaved_as_json(state.unsaved) if state else None,
         }
         if with_size:

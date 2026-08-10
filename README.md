@@ -12,7 +12,7 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
 [![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/downloads/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
 ## Installation
@@ -478,8 +478,9 @@ same set: they come from `dl`'s metadata record, and a clone `dl` owns can have
 lost its record while the clone and the work in it are still on disk. That clone
 is inspected and reported like any other.)
 
-**`dl <workspace> rm` refuses when the clone holds unsaved work — and when it
-cannot tell**, so a caller that forgets to read the field is still caught:
+**`dl <workspace> rm` refuses to delete a clone it would lose work from — when
+the clone holds unsaved work, and when it cannot tell**, so a caller that forgets
+to read the field is still caught:
 
 ```
 $ dl blooop/repo@feature rm
@@ -497,6 +498,16 @@ error: devlaunch-repo-feature-xyz: git could not read /home/…/repo/feature:
 That refusal is the only judgement `dl` makes here, and it is not about finished
 work — it is `dl` declining to destroy the only copy of something, including
 when it cannot prove there is another copy. Say `--force` if you mean it.
+
+The guard reads `dl`'s metadata record, because the recorded directory is the
+one the delete would remove. One case is therefore neither a refusal nor a
+delete: a clone under `dl`'s cache that has **no** record — a metadata write
+that failed, a record pruned, a cache restored without one. The listing still
+reports what that clone holds, so `unsaved` is the field to read; but `rm`
+removes the devpod workspace, exits `0` without asking for `--force`, and leaves
+the clone on disk, because there is no recorded directory for it to remove
+either. Nothing is destroyed, and nothing then points at the clone: it is yours
+to keep or to `rm -rf` by hand.
 
 [`wf`](https://github.com/blooop/wayfinder) is the caller this was built for: it
 names its branches after its tickets, so it knows which workspaces belong to
