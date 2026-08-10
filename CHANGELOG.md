@@ -242,6 +242,65 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **`dl <workspace> rm` could delete a clone that held unsaved work, and say
+  nothing** ([#171](https://github.com/blooop/devlaunch/issues/171)). The guard
+  ran `git` in the clone directory with nothing pinning it there — no
+  `--git-dir`, no `--work-tree`, no ceiling — so git's repository discovery
+  walked up the parent chain. A clone whose `.git` was unusable (half-removed by
+  an interrupted delete, truncated, never finished) did not make git refuse: it
+  made git find an **ancestor** repository and answer about that one. With
+  `dl`'s cache under `$XDG_CACHE_HOME` and a dotfiles repository in `$HOME`,
+  that ancestor is ordinary — and when it was clean and fully pushed, the guard
+  reported "nothing would be lost" about somebody else's repository and the
+  clone went, untracked scratch files and all. Only a *tidy* host could hit it:
+  a dirty ancestor made the guard fire for the wrong reason and hid the bug.
+
+  Git is now asked about one directory and cannot leave it, and "could not tell"
+  is an answer of its own that refuses the delete exactly as "would lose" does
+  — previously both were `None` and `None` meant delete freely. A directory that
+  is *there* but is not a repository git can read is now a refusal rather than a
+  clean bill of health; a directory that is *not* there still holds nothing, so
+  clearing up after a half-finished delete needs no `--force`. `--force` still
+  overrides, in both cases.
+
+  **Breaking, in `dl --ls --json`:** `unsaved` was a string or `null` and is now
+  an object with exactly one key — `{"nothingToLose": true}`,
+  `{"wouldLose": "<what>"}` or `{"couldNotTell": "<why>"}` — the shape `disk`
+  already uses. It is `null` exactly where `devlaunch` is `false`: a workspace
+  `dl` did not create. The break is the safe way round: a reader that tested the
+  old field for truthiness now sees a truthy object for every arm, so it leaves
+  workspaces alone rather than deleting them.
+
+  `unsaved`, `checkedOut` and `path` are answered for every workspace `dl` owns,
+  not only for the ones it still has a metadata record for. They used to gate on
+  the record while `devlaunch` and `disk` gated on the clone directory, so a
+  clone under the cache whose record had gone reported `devlaunch: true` with a
+  measured `disk` and `unsaved: null` beside them — `null` documented as "not
+  `dl`'s clone", on a clone `dl` had just called its own. That is the same
+  sentinel this entry is about, one layer out, and the same divergence
+  [PR #165](https://github.com/blooop/devlaunch/pull/165) closed for `disk`.
+
+  A clone dl cannot even look at — a parent directory it has no search
+  permission on — is a "could not tell" too, and `Path.is_dir()` had no way to
+  say so. It gave a different wrong answer on each supported Python: up to and
+  including 3.13 it re-raised `PermissionError`, so `dl <ws> rm` failed closed
+  by crashing and `dl --ls --json` became a traceback for the whole listing
+  because of one workspace; on 3.14 it returns `False`, which read as "not
+  there, so nothing to lose" — a clone that may be full of work, reported as
+  free to delete. The errno is now read directly: ENOENT and ENOTDIR mean there
+  is no clone there, and everything else means dl was not allowed to find out.
+  A path with a NUL byte in it — a record a hand-edited `metadata.json` can
+  produce — is a "could not tell" as well rather than a `ValueError` out of the
+  listing.
+
+  The boundary above was executed on 3.10.20, 3.11.15, 3.12.13, 3.13.14 and
+  3.14.6, and the `ci` matrix now runs every one of those minor versions; it
+  previously stopped at 3.13, so `pixi run ci` never ran on the newest Python
+  this project supports. This entry said "3.13+" for two rounds of review, and
+  no test would have said otherwise — what they assert is the same on every
+  version, so they are green either side of wherever the prose puts the line.
+  Somebody running it is what corrected it.
+
 - A cold `devpod up` no longer prints a red `fatal ... Process exited with
   status 1` from the tools probe. The probe asks a yes/no question and reports
   nothing; "no" is its everyday answer on a fresh workspace, and devpod

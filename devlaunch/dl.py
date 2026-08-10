@@ -436,21 +436,30 @@ def update_cache_background(force: bool = False) -> None:
         pass
 
 
-def _unsaved_work_in(workspace_id: str) -> Optional[str]:
-    """What deleting *workspace_id* would destroy, or None if nothing would be.
+def _unsaved_work_in(workspace_id: str) -> workspace_state.Unsaved:
+    """What deleting *workspace_id* would destroy, as far as dl can establish.
 
-    Answers None for a workspace devlaunch has no record of, which is the honest
-    answer rather than a permissive one: those are workspaces opened from a path
-    or a URL that dl never cloned and does not manage, so it has no clone of its
-    own to protect and no business inspecting someone's checkout to find one.
+    Answers `NothingToLose` for a workspace devlaunch has no record of, which is
+    the honest answer rather than a permissive one: those are workspaces opened
+    from a path or a URL that dl never cloned and does not manage, so it has no
+    clone of its own to protect and no business inspecting someone's checkout to
+    find one.
+
+    A record dl cannot *read* is a different matter and gets a different answer
+    (devlaunch#171). Both used to be None, and None meant delete freely -- the
+    same conflation the clone-level guard had, one level up: dl does not know
+    where the clone is, so it has not established that anything is safe, and the
+    delete stops until somebody says `--force`.
     """
     try:
         record = _get_clone_manager().storage.get_worktree_by_workspace_id(workspace_id)
     except (OSError, RuntimeError) as e:
         logging.debug(f"could not read the workspace record for {workspace_id}: {e}")
-        return None
+        return workspace_state.CouldNotTell(
+            f"could not read the workspace record for {workspace_id}: {e}"
+        )
     if record is None:
-        return None
+        return workspace_state.NothingToLose()
     return workspace_state.holds_unsaved_work(Path(record.local_path))
 
 
@@ -469,10 +478,22 @@ def workspaces_as_json(with_size: bool = False) -> int:
     - `repo` and `branch` come from the record dl wrote when it made the clone;
       a workspace dl did not make has neither, and says so with `devlaunch:
       false` rather than a guess.
-    - `unsaved` is the field a caller must not ignore: a description of what
-      deleting would destroy, or null. `dl <ws> rm` refuses on it too, so a
-      caller that forgets is still caught -- but a caller that reads it can
-      leave the workspace alone instead of arguing with a refusal.
+    - `unsaved` is the field a caller must not ignore: an object with exactly
+      one key, and the key says which of three answers it is --
+      `{"nothingToLose": true}`, `{"wouldLose": "<what>"}`, or
+      `{"couldNotTell": "<why>"}`. It is null exactly where `devlaunch` is
+      false: there is no clone of dl's own here to inspect. `dl <ws> rm`
+      refuses on the last two as well, so a caller that forgets is still
+      caught -- but a caller that reads it can leave the workspace alone
+      instead of arguing with a refusal.
+
+      It used to be a string or null, and null carried "nothing would be lost"
+      as well as "could not find out" -- which is how a broken clone got
+      deleted with work in it (devlaunch#171). The break is deliberate and it
+      breaks the safe way: a reader that tested the old field for truthiness
+      now sees a truthy object for every arm, so it leaves workspaces alone.
+    - `path` is the directory `unsaved` and `checkedOut` describe, and is null
+      on the same workspaces `unsaved` is.
     - `state` is devpod's, one `devpod status` per workspace, which is why this
       is a command someone runs rather than something on the fast path.
     - `disk` appears only when `--size` was asked for, and describes dl's own
@@ -486,9 +507,35 @@ def workspaces_as_json(with_size: bool = False) -> int:
     clone_mgr = _get_clone_manager()
     report: List[Dict[str, Any]] = []
     for ws in workspaces:
-        mine = is_devlaunch_clone(ws, cache_dir)
+        # One question asked once, and `devlaunch`, `path` and `unsaved` all read
+        # its answer. `_measurable_clone` returns dl's own clone directory and
+        # returns None exactly when the workspace is not dl's, so `mine` is
+        # derived from the same value the other two are rather than computed
+        # beside them -- which is what makes "`unsaved: null` iff `devlaunch:
+        # false`" hold by construction instead of by a second gate that has to
+        # agree with the first. It was two gates, and dropping either one of them
+        # left the whole suite green.
+        clone_path = _measurable_clone(ws, cache_dir)
+        mine = clone_path is not None
         record = clone_mgr.storage.get_worktree_by_workspace_id(ws.id) if mine else None
-        clone_path = Path(record.local_path) if record else None
+        if record is not None:
+            # A record moves the row onto the recorded directory -- that is the
+            # one `dl <ws> rm`'s guard reads, and a listing that described a
+            # different directory from the guard would be worse than useless to
+            # the caller deciding whether to call it. It never makes the row
+            # about a workspace dl does not own, because there is no record to
+            # read unless `mine` already said so.
+            #
+            # Reading the record *first* and falling back to the clone was the
+            # sentinel bug of devlaunch#171 surviving one layer out. A clone
+            # under the cache that dl has no record for -- a metadata write that
+            # failed, a record pruned, a cache restored without one -- reported
+            # `devlaunch: true` and a measured `disk`, and `unsaved: null` beside
+            # them. `null` is documented as "not dl's clone", which that clone is
+            # not: dl says it is its own in the same object. This is the
+            # identical divergence #165 fixed for `disk` (see the comment on
+            # `_measurable_clone` below); `unsaved` was left behind by it.
+            clone_path = Path(record.local_path)
         state = workspace_state.read_clone(clone_path) if clone_path else None
         row: Dict[str, Any] = {
             "id": ws.id,
@@ -503,7 +550,13 @@ def workspaces_as_json(with_size: bool = False) -> int:
             "path": str(clone_path) if clone_path else None,
             "state": get_workspace_state(ws.id),
             "lastUsed": ws.last_used,
-            "unsaved": state.unsaved if state else None,
+            # A nested object with one key, and the key says which kind of
+            # answer it is -- the shape `disk` uses, for the same reason
+            # (devlaunch#171). `null` keeps only its other meaning, and keeps it
+            # exactly: `mine` above is defined as `clone_path is not None`, so
+            # `unsaved: null` and `devlaunch: false` are the same set by
+            # construction rather than by agreement.
+            "unsaved": workspace_state.unsaved_as_json(state.unsaved) if state else None,
         }
         if with_size:
             # Absent unless asked, so a reader can never mistake "nobody asked"
@@ -1217,15 +1270,22 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
 
 
 def _measurable_clone(workspace: Workspace, cache_dir: pathlib.Path) -> Optional[pathlib.Path]:
-    """The directory `--ls --size` may walk for *workspace*, or None.
+    """Devlaunch's own clone directory for *workspace*, or None when it has none.
+
+    Where the boundary "is this dl's to touch?" is kept, for every surface that
+    needs it. `--ls --size` and the table's `SIZE` column walk it, and a
+    `--ls --json` row derives three more fields from this one answer:
+    `devlaunch` (there is a clone of dl's), `path` (which directory) and
+    `unsaved` (what is in it). Asking once is what stops those from disagreeing
+    about the same workspace -- `disk` and then `unsaved` each used to ask a
+    question of their own and each came apart from its neighbours in turn
+    (devlaunch#165, then #171).
 
     Only devlaunch's own clones. `dl ./path` opens somebody's project directory
     and `dl <url>` opens a source devlaunch never cloned; walking either would
-    put an unbounded stat of a stranger's tree behind a listing command, and the
-    bytes would not be devlaunch's disk in any case. Measuring what devlaunch
-    put on disk is the scope, and this is the only place that boundary is kept:
-    the table and the JSON listing both ask here, so the two cannot come to
-    different conclusions about the same workspace.
+    put an unbounded stat of a stranger's tree behind a listing command, the
+    bytes would not be devlaunch's disk in any case, and dl has no business
+    reporting on the state of a checkout it did not make.
 
     Ownership is the same predicate `--purge` deletes by, not the presence of a
     metadata record. A record can be missing from a cache that is very much on
@@ -2142,7 +2202,8 @@ Workspace commands:
     dl <user/repo> up                Start the workspace without attaching
     dl <user/repo> stop              Stop the workspace
     dl <user/repo> rm, prune         Delete the workspace. Refuses if its clone
-                                     holds uncommitted or unpushed work; add
+                                     holds uncommitted or unpushed work, or if
+                                     git cannot read the clone to find out; add
                                      --force to delete it anyway.
     dl <user/repo> code              Open in VS Code
     dl <user/repo> restart           Stop and start (no rebuild)
@@ -2561,13 +2622,29 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         # does (a ticket tool, a script, a person), and this is what keeps a
         # confident caller from destroying an hour of somebody's afternoon.
         if "--force" not in args[2:]:
+            # Three answers, and only one of them is permission (devlaunch#171).
+            # Matched arm by arm rather than tested for truth, so that an answer
+            # this code does not know about stops the delete instead of sliding
+            # through an `else`.
             unsaved = _unsaved_work_in(workspace_id)
-            if unsaved:
+            if isinstance(unsaved, workspace_state.WouldLose):
                 logging.error(
-                    f"{workspace_id} holds {unsaved}. Push or commit it, or run: "
+                    f"{workspace_id} holds {unsaved.description}. Push or commit it, or run: "
                     f"dl {raw_spec} rm --force"
                 )
                 return 1
+            if isinstance(unsaved, workspace_state.CouldNotTell):
+                # Refused for not knowing, and it says which. The work is still
+                # on disk, and nothing has established that it exists anywhere
+                # else -- which is the same standing as unpushed work, and gets
+                # the same refusal and the same way past it.
+                logging.error(
+                    f"{workspace_id}: {unsaved.reason}. devlaunch will not delete a clone it "
+                    f"cannot check. Look at it, or run: dl {raw_spec} rm --force"
+                )
+                return 1
+            if not isinstance(unsaved, workspace_state.NothingToLose):
+                workspace_state.unhandled_unsaved(unsaved)
         return workspace_delete(workspace_id)
 
     if subcommand == "up":

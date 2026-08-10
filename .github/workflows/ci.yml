@@ -40,7 +40,32 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        environment: [py310, py311, py312, py313]
+        # `default` is in here as the newest interpreter, and it is the entry
+        # that was missing. The pinned legs stopped at py313 while `default`
+        # resolves the unpinned `python = ">=3.10"` -- 3.14 today -- so the
+        # newest Python this project supports ran only `test-e2e`, and `pixi run
+        # ci`, the command README's Development section tells a developer to
+        # run, was the one selection no CI job ran.
+        #
+        # The interpreter that matters is not hypothetical:
+        # `workspace_state.read_clone` exists because `Path.is_dir()` raises on
+        # 3.13 and earlier and returns `False` on 3.14, and `False` is the
+        # fail-open answer. What this leg is for is the reversion -- somebody
+        # writing `clone.is_dir()` back in -- on the one interpreter where that
+        # call fails open rather than raising. It is not what catches a boundary
+        # written down wrongly: those tests assert the same answer on every
+        # version, so they are green on both sides of it.
+        #
+        # `default` rather than a `py314` feature on purpose: it needs no new
+        # environment in the lockfile, and it keeps tracking whatever the newest
+        # solvable Python is instead of pinning a version somebody has to
+        # remember to bump. The cost of that choice is worth knowing: `default`
+        # is the only leg here whose Python is not pinned, so `pixi update`
+        # moves it without anyone choosing to, and the day 3.15 solves this
+        # matrix stops covering 3.14 rather than adding to it. `frozen: true`
+        # below keeps each commit reproducible against its lockfile, so this is
+        # a thing to notice at lockfile review, not a hole in the gate.
+        environment: [py310, py311, py312, py313, default]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -66,8 +91,8 @@ jobs:
   # a pixi dependency, already in the lockfile setup-pixi restores.
   #
   # Outside the matrix above, because what it exercises is devpod and Docker
-  # rather than a Python version; four copies would buy nothing and cost four
-  # image pulls.
+  # rather than a Python version; one copy per matrix leg would buy nothing and
+  # cost one image pull each.
   #
   # Per-PR rather than nightly. It costs a few minutes against a matrix that
   # already costs some and runs beside it, so it does not lengthen the wait by
@@ -103,14 +128,14 @@ jobs:
   # One name for a branch ruleset to require, standing for every job above it.
   #
   # A ruleset names required checks as literal strings, so requiring the jobs
-  # individually means `ci (py310)`, `ci (py311)`, `ci (py312)`, `ci (py313)`
-  # and `e2e` written out in a repository setting -- a list that says nothing
-  # about why, that nobody reviews, and that goes stale the moment a matrix leg
-  # or a job is added or renamed here. The stale case is the dangerous one,
-  # because a required check that no longer exists is not a red tick: it is a
-  # merge that sails through ungated. Requiring `gate` instead puts the decision
-  # in this file, next to the jobs it is about, where a pull request that adds a
-  # job also adds it to `needs` under review.
+  # individually means `ci (py310)`, `ci (py311)`, `ci (py312)`, `ci (py313)`,
+  # `ci (default)` and `e2e` written out in a repository setting -- a list that
+  # says nothing about why, that nobody reviews, and that goes stale the moment
+  # a matrix leg or a job is added or renamed here. The stale case is the
+  # dangerous one, because a required check that no longer exists is not a red
+  # tick: it is a merge that sails through ungated. Requiring `gate` instead
+  # puts the decision in this file, next to the jobs it is about, where a pull
+  # request that adds a job also adds it to `needs` under review.
   #
   # It covers this workflow and only this workflow: `needs` cannot reach across
   # files, so the lint workflow's `prek` job is not in here and has to be
