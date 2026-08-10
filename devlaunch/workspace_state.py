@@ -325,9 +325,12 @@ def read_clone(clone: Path) -> CloneState:
     **3.10.20, 3.11.15, 3.12.13 and 3.13.14 raise; 3.14.6 returns ``False``**.
     Patch levels between those were not run, so "3.13 and earlier" is the
     minor-version claim those five interpreters support, not a claim about every
-    release. Every one of them is now in the ``ci`` matrix, 3.14 included — it
-    was not, which is how a boundary off by a whole minor version survived here
-    for two rounds of review.
+    release. Every one of them is now in the ``ci`` matrix, 3.14 included; it
+    was not. The wrong boundary stood here for two rounds of review and what
+    corrected it was somebody running the mode-``000`` parent rather than
+    reading about it: this function's tests assert the same answer on every
+    version, which is the point of them, so they are green on both sides of the
+    line wherever this paragraph puts it.
 
     ``os.stat`` raises for all of them and the errno says which: ENOENT and
     ENOTDIR mean there is no directory there to hold anything, and everything
@@ -335,11 +338,12 @@ def read_clone(clone: Path) -> CloneState:
     :class:`CouldNotTell`. The answer is now the same on every supported Python.
 
     ``ValueError`` is caught alongside ``OSError`` because ``os.stat`` is total
-    over the first and not over the second: a path with a NUL byte in it — which
-    a hand-edited or truncated ``metadata.json`` can put in a record — is not an
-    errno, it is a ``ValueError`` raised before the syscall. Uncaught it takes
-    down the whole of ``dl --ls --json`` for one bad record, which is the exact
-    harm the stat guard was written to stop.
+    over ``OSError`` and not over ``ValueError``: a path with a NUL byte in it
+    — which a hand-edited or truncated ``metadata.json`` can put in a record —
+    is not an errno, it is a ``ValueError`` raised before the syscall, so no
+    errno arm can be written that catches it. Uncaught it takes down the whole
+    of ``dl --ls --json`` for one bad record, which is the exact harm the stat
+    guard was written to stop.
     """
     try:
         present = stat.S_ISDIR(os.stat(clone).st_mode)

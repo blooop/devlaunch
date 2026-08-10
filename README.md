@@ -479,8 +479,10 @@ lost its record while the clone and the work in it are still on disk. That clone
 is inspected and reported like any other.)
 
 **`dl <workspace> rm` refuses to delete a clone it would lose work from — when
-the clone holds unsaved work, and when it cannot tell**, so a caller that forgets
-to read the field is still caught:
+the recorded clone holds unsaved work, and when it cannot tell what that clone
+holds**, so a caller that forgets to read the field is still caught. (Recorded,
+because the guard reads the directory the delete would remove; the case with no
+record is neither, and is described below.)
 
 ```
 $ dl blooop/repo@feature rm

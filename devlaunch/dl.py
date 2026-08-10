@@ -1270,15 +1270,22 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
 
 
 def _measurable_clone(workspace: Workspace, cache_dir: pathlib.Path) -> Optional[pathlib.Path]:
-    """The directory `--ls --size` may walk for *workspace*, or None.
+    """Devlaunch's own clone directory for *workspace*, or None when it has none.
+
+    Where the boundary "is this dl's to touch?" is kept, for every surface that
+    needs it. `--ls --size` and the table's `SIZE` column walk it, and a
+    `--ls --json` row derives three more fields from this one answer:
+    `devlaunch` (there is a clone of dl's), `path` (which directory) and
+    `unsaved` (what is in it). Asking once is what stops those from disagreeing
+    about the same workspace -- `disk` and then `unsaved` each used to ask a
+    question of their own and each came apart from its neighbours in turn
+    (devlaunch#165, then #171).
 
     Only devlaunch's own clones. `dl ./path` opens somebody's project directory
     and `dl <url>` opens a source devlaunch never cloned; walking either would
-    put an unbounded stat of a stranger's tree behind a listing command, and the
-    bytes would not be devlaunch's disk in any case. Measuring what devlaunch
-    put on disk is the scope, and this is the only place that boundary is kept:
-    the table and the JSON listing both ask here, so the two cannot come to
-    different conclusions about the same workspace.
+    put an unbounded stat of a stranger's tree behind a listing command, the
+    bytes would not be devlaunch's disk in any case, and dl has no business
+    reporting on the state of a checkout it did not make.
 
     Ownership is the same predicate `--purge` deletes by, not the presence of a
     metadata record. A record can be missing from a cache that is very much on

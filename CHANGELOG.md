@@ -294,10 +294,12 @@ table and should be judged on its own merits.
   listing.
 
   The boundary above was executed on 3.10.20, 3.11.15, 3.12.13, 3.13.14 and
-  3.14.6, and the `ci` matrix now runs every one of those minor versions. It
-  previously stopped at 3.13, so the leg that returned `False` — the fail-open
-  one — was exercised by no CI job, and this entry said "3.13+" for two rounds
-  of review.
+  3.14.6, and the `ci` matrix now runs every one of those minor versions; it
+  previously stopped at 3.13, so `pixi run ci` never ran on the newest Python
+  this project supports. This entry said "3.13+" for two rounds of review, and
+  no test would have said otherwise — what they assert is the same on every
+  version, so they are green either side of wherever the prose puts the line.
+  Somebody running it is what corrected it.
 
 - A cold `devpod up` no longer prints a red `fatal ... Process exited with
   status 1` from the tools probe. The probe asks a yes/no question and reports

@@ -390,12 +390,14 @@ class TestADirectoryThatCannotBeLookedAt:
     mode-`000` parent below was run on this repo's own environments and
     **3.10.20, 3.11.15, 3.12.13 and 3.13.14 raise; 3.14.6 returns `False`**. It
     was written here as "3.13+" for two rounds of review, which is a whole minor
-    version out, and this suite could not catch that because the `ci` matrix in
-    `.github/workflows/ci.yml` ran py310 through py313 only -- the leg that
-    returns `False`, the fail-*open* one this class exists for, was exercised by
-    no CI job. The matrix now includes the `default` environment, which is 3.14,
-    so "this suite runs on both sides of the boundary" is true of GitHub rather
-    than only of whoever ran it locally.
+    version out. No test here would have said so: what this class asserts is the
+    same on every version -- that is the point of it -- so it is green whichever
+    side of the boundary the prose names, and what corrected it was somebody
+    running the mode-`000` parent on 3.14 rather than reading about it. The `ci`
+    matrix in `.github/workflows/ci.yml` ran py310 through py313 only and now
+    includes the `default` environment, which is 3.14, so "this suite runs on
+    both sides of the boundary" is true of GitHub rather than only of whoever
+    ran it locally.
     """
 
     def test_a_clone_behind_a_closed_door_is_could_not_tell(self, tmp_path):
@@ -591,6 +593,30 @@ class TestTheJsonListing:
         # And on the same listing, `null` still means the one thing it means.
         foreign = next(w for w in report if w["id"] == "someone-elses")
         assert foreign["devlaunch"] is False and foreign["unsaved"] is None
+
+    def test_a_clone_that_is_simply_gone_is_still_read_rather_than_assumed(self, tmp_path, capsys):
+        """An absent clone is an answer `read_clone` gives, not one a caller may skip.
+
+        `dl <ws> rm` clears away a workspace whose clone was removed by hand
+        precisely because an absent directory is `NothingToLose()` rather than a
+        refusal, and this row has to say the same thing about it. Not calling
+        `read_clone` for a directory that is not on disk -- a plausible "don't
+        shell out to git for something that isn't there" edit, and the one
+        mutation of `dl.py`'s single-question restructure that the rest of this
+        class leaves green -- writes `unsaved: null` onto a row that says
+        `devlaunch: true` and names a `path` on the lines above it. That is
+        devlaunch#171's sentinel again: `null` meaning "mine, not examined"
+        rather than "not mine".
+        """
+        gone = tmp_path / "cache" / "devlaunch" / "repos" / "blooop" / "r" / "r-feature-aaa"
+        assert not gone.exists()
+        _code, report = self._run(tmp_path, gone, capsys)
+        ours = next(w for w in report if w["id"] == "r-feature-aaa")
+        assert ours["devlaunch"] is True
+        assert ours["path"] == str(gone)
+        assert ours["unsaved"] == {"nothingToLose": True}
+        # Nothing there to have a branch checked out, and no guess about one.
+        assert ours["checkedOut"] is None
 
     def test_one_unreachable_clone_does_not_take_the_whole_listing_down(
         self, tmp_path, clone_in_the_cache, capsys
