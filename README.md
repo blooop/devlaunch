@@ -481,8 +481,8 @@ is inspected and reported like any other.)
 **`dl <workspace> rm` refuses to delete a clone it would lose work from — when
 the recorded clone holds unsaved work, and when it cannot tell what that clone
 holds**, so a caller that forgets to read the field is still caught. (Recorded,
-because the guard reads the directory the delete would remove; the case with no
-record is neither, and is described below.)
+because that is the directory the guard reads; the case with no record is
+neither, and is described below.)
 
 ```
 $ dl blooop/repo@feature rm
@@ -501,9 +501,11 @@ That refusal is the only judgement `dl` makes here, and it is not about finished
 work — it is `dl` declining to destroy the only copy of something, including
 when it cannot prove there is another copy. Say `--force` if you mean it.
 
-The guard reads `dl`'s metadata record, because the recorded directory is the
-one the delete would remove. One case is therefore neither a refusal nor a
-delete: a clone under `dl`'s cache that has **no** record — a metadata write
+The guard reads `dl`'s metadata record, so the recorded directory is the one it
+asks about. (The delete does not always remove that same directory: when the
+recorded path is not on disk it falls back to a derived one. That divergence is
+older than this guard and is tracked as devlaunch#174.) One case is therefore
+neither a refusal nor a delete: a clone under `dl`'s cache that has **no** record — a metadata write
 that failed, a record pruned, a cache restored without one. The listing still
 reports what that clone holds, so `unsaved` is the field to read; but `rm`
 removes the devpod workspace, exits `0` without asking for `--force`, and leaves
