@@ -43,7 +43,7 @@ def spawn_driver(driver: str, args: list, tmp_path: Path, name: str) -> subproce
     to keep it out of.
     """
     script = tmp_path / f"{name}.py"
-    script.write_text(driver)
+    script.write_text(driver, encoding="utf-8")
     return subprocess.Popen(
         [sys.executable, str(script), *[str(a) for a in args]],
         stdout=subprocess.PIPE,
@@ -110,7 +110,7 @@ def await_blocked_on_lock(proc: subprocess.Popen, settle: float = 0.5) -> None:
     deadline = time.monotonic() + DRIVER_TIMEOUT
     while time.monotonic() < deadline:
         try:
-            if "lock" in wchan.read_text():
+            if "lock" in wchan.read_text(encoding="utf-8"):
                 return
         except OSError:
             # /proc is not readable the way this expects. Nothing to observe;
