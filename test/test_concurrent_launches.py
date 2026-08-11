@@ -13,14 +13,13 @@ subprocess tests drive the real clone paths from separate processes the way two
 concurrent ``dl owner/repo@branch`` runs do.
 """
 
-import os
-import subprocess
-import sys
 import time
+import subprocess
 from pathlib import Path
 
 from devlaunch.worktree.models import BaseRepository
 from devlaunch.worktree.storage import MetadataStorage
+from fixtures.subprocess_drivers import await_flags, finish, spawn_driver
 
 # The repo-preparation lock every dl process must take before mutating
 # repos/<owner>/<repo>. The tests spell the path out rather than asking the
@@ -134,29 +133,14 @@ os.close(fd)
 """
 
 
-def _spawn(driver: str, args: list, tmp_path: Path, name: str) -> subprocess.Popen:
-    script = tmp_path / f"{name}.py"
-    script.write_text(driver)
-    return subprocess.Popen(
-        [sys.executable, str(script), *[str(a) for a in args]],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=os.environ.copy(),
-    )
+# How long a driver that runs a real `git clone --bare` gets. Longer than the
+# harness default, which sizes a driver that only takes a lock: a clone of a
+# fixture repo on a cold CI runner is slow rather than hung.
+CLONE_TIMEOUT = 120
 
 
 def _finish(proc: subprocess.Popen, label: str) -> str:
-    out, err = proc.communicate(timeout=120)
-    assert proc.returncode == 0, f"{label} failed (rc={proc.returncode}):\n{err}"
-    return out
-
-
-def _await_flags(*flags: Path) -> None:
-    deadline = time.monotonic() + 60
-    while not all(flag.exists() for flag in flags):
-        assert time.monotonic() < deadline, f"drivers never became ready: {flags}"
-        time.sleep(0.01)
+    return finish(proc, label, timeout=CLONE_TIMEOUT)
 
 
 def _git_ok(path: Path, *args: str) -> bool:
@@ -190,10 +174,10 @@ class TestSimultaneousProcesses:
         lock_path = repos_dir / "caseowner" / "caserepo" / REPO_LOCK_LEAF
         held, release = tmp_path / "held", tmp_path / "release"
 
-        holder = _spawn(_LOCK_HOLDER_DRIVER, [lock_path, held, release], tmp_path, "holder")
+        holder = spawn_driver(_LOCK_HOLDER_DRIVER, [lock_path, held, release], tmp_path, "holder")
         try:
-            _await_flags(held)
-            contender = _spawn(
+            await_flags(held)
+            contender = spawn_driver(
                 _ENSURE_REPO_DRIVER,
                 [repos_dir, tmp_path / "metadata.json", local_git_repo["remote_url"]],
                 tmp_path,
@@ -223,7 +207,7 @@ class TestSimultaneousProcesses:
         gate.mkdir()
 
         procs = [
-            _spawn(
+            spawn_driver(
                 _ENSURE_WORKSPACE_DRIVER,
                 [repos_dir, metadata, local_git_repo["remote_url"], branch, gate, branch],
                 tmp_path,
@@ -231,7 +215,7 @@ class TestSimultaneousProcesses:
             )
             for branch in ("tmp-a", "tmp-b")
         ]
-        _await_flags(gate / "ready-tmp-a", gate / "ready-tmp-b")
+        await_flags(gate / "ready-tmp-a", gate / "ready-tmp-b")
         (gate / "go").touch()
         outputs = [_finish(proc, f"launch {i}") for i, proc in enumerate(procs)]
 
@@ -257,7 +241,7 @@ class TestSimultaneousProcesses:
         gate.mkdir()
 
         procs = [
-            _spawn(
+            spawn_driver(
                 _ENSURE_WORKSPACE_DRIVER,
                 [repos_dir, metadata, local_git_repo["remote_url"], "main", gate, tag],
                 tmp_path,
@@ -265,7 +249,7 @@ class TestSimultaneousProcesses:
             )
             for tag in ("one", "two")
         ]
-        _await_flags(gate / "ready-one", gate / "ready-two")
+        await_flags(gate / "ready-one", gate / "ready-two")
         (gate / "go").touch()
         outputs = [_finish(proc, f"launch {i}") for i, proc in enumerate(procs)]
 
