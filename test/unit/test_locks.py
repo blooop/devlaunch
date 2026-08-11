@@ -136,7 +136,7 @@ class TestMutualExclusion:
                     "the contender entered the critical section while the holder was inside it"
                 )
                 release.touch()
-                out, err = contender.communicate(timeout=READY_TIMEOUT)
+                _, err = contender.communicate(timeout=READY_TIMEOUT)
                 assert contender.returncode == 0, err
                 assert entered.exists(), "the contender never got the lock after it was released"
             finally:
