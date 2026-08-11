@@ -612,3 +612,171 @@ class TestWiring:
 
         assert (repos_dir / "blooop" / "devlaunch" / "main").is_dir()
         assert on_disk(metadata_path)["version"] == 1
+
+
+class TestWhatTheFilesystemRefuses:
+    """The three ``except OSError`` arms, driven by a filesystem that says no.
+
+    Nothing here is exotic: a cache on a read-only mount, a directory whose
+    permissions someone tightened, a disk with nothing left on it. What they
+    have in common is that the migration is a *whole-cache* operation running
+    before the command the user typed — so the standard it is held to is that
+    one refusal costs the run one directory, never the run.
+
+    Refusals are arranged with real permissions and real inode types rather
+    than a patched ``os.rename``, because what is being tested is precisely
+    that the arm catching them catches what the operating system actually
+    raises. The permission ones go through ``refuses_writes``/``refuses_reads``,
+    which *verify* the refusal and skip where the filesystem does not enforce
+    modes — a `geteuid` check would leave contributors on a Docker Desktop
+    bind mount with two red tests and no defect.
+    """
+
+    def test_a_rename_the_filesystem_refuses_costs_one_directory(
+        self, simple_cache, capsys, refuses_writes
+    ):
+        metadata_path, repos_dir = simple_cache
+        repo_root = repos_dir / "blooop" / "devlaunch"
+        before = leaves(repo_root)
+        refuses_writes(repo_root)
+
+        report = run_migration(metadata_path, repos_dir)
+
+        assert len(report.failed) == 3, "every rename in the locked directory was refused"
+        assert not report.renamed
+        for src, dest, exc in report.failed:
+            assert isinstance(exc, OSError)
+            assert src.parent == dest.parent == repo_root
+
+        # The directories are still where they were, which is the whole point:
+        # a clone that could not be renamed holds work, and the migration would
+        # rather leave it under a name nothing looks for than lose track of it.
+        assert leaves(repo_root) == before
+
+        # And the record still points at the directory that is really there. A
+        # record repointed at a name the rename did not produce would send the
+        # next `dl ... rm` at a path with nothing in it.
+        stored = on_disk(metadata_path)["worktrees"]
+        for record in stored.values():
+            assert Path(record["local_path"]).is_dir()
+
+        said = capsys.readouterr().err
+        assert said.count("could not rename") == 3
+        assert "it was left where it is" in said
+
+    def test_a_refused_rename_leaves_records_no_later_run_will_revisit(
+        self, simple_cache, capsys, refuses_writes
+    ):
+        # The consequence the test above stops one line short of, written down
+        # because it is a **defect and not a design**: `migrate_cache` saves the
+        # new schema header even when renames failed, so those records keep
+        # their pre-#64 `workspace_id` forever and the migration never runs
+        # again to fix them. `remove_workspace_by_id` matches on exactly the id
+        # dl derives today, so `dl blooop/devlaunch@main rm` can never find
+        # them — the container goes and the clone and its record are orphaned.
+        #
+        # Pinned rather than fixed here: the fix is a choice between two
+        # imperfect options (retry the migration on every future invocation, or
+        # advance the header per-record) and belongs to whoever makes it
+        # deliberately, not to a testing change. Tracked in blooop/devlaunch#180.
+        # When it is fixed, this test is the one that should go red.
+        metadata_path, repos_dir = simple_cache
+        refuses_writes(repos_dir / "blooop" / "devlaunch")
+
+        report = run_migration(metadata_path, repos_dir)
+        assert len(report.failed) == 3
+
+        cache = on_disk(metadata_path)
+        assert cache["version"] == SCHEMA_VERSION, (
+            "the header is advanced despite the failures — the defect this pins"
+        )
+        stranded = sorted(record["workspace_id"] for record in cache["worktrees"].values())
+        assert stranded == ["devlaunch-aid-auto-2", "devlaunch-feature-auth", "devlaunch-main"], (
+            "the ids are the pre-migration ones"
+        )
+        for record in cache["worktrees"].values():
+            derived = new_leaf(record["owner"], record["repo"], record["branch"])
+            assert record["workspace_id"] != derived, "an id dl could still look up"
+
+        # And it is permanent: nothing runs a second time.
+        capsys.readouterr()
+        assert run_migration(metadata_path, repos_dir) is None
+
+    def test_a_corner_of_the_cache_that_cannot_be_scanned_costs_only_that_corner(
+        self, tmp_path, capsys, refuses_reads
+    ):
+        # The scan for record-less directories runs after the renames and over
+        # the *whole* cache, so it reaches owners this run has no business with.
+        # One unreadable directory there must not cost the migration the work it
+        # has already done -- the renames are on disk by this point and the
+        # version header has not been written yet.
+        #
+        # The unreadable owner is named to sort **before** the real one, and
+        # that is the entire point of the name. Owners are walked in sorted
+        # order, and while the whole three-level walk sat under one `try` the
+        # first refusal ended the scan for every owner after it: with the
+        # unreadable directory sorting last the test passed against code that
+        # silently abandoned every unmigrated clone in the cache.
+        metadata_path, repos_dir = build_legacy_cache(
+            tmp_path,
+            {("blooop", "devlaunch"): ["main"]},
+            unrecorded=[("blooop", "devlaunch", "stray-clone")],
+        )
+        unreadable = repos_dir / "aaa-corp"
+        unreadable.mkdir()
+        refuses_reads(unreadable)
+
+        report = run_migration(metadata_path, repos_dir)
+
+        assert report is not None
+        assert len(report.renamed) == 1, "the readable half migrated"
+        assert (
+            repos_dir / "blooop" / "devlaunch" / new_leaf("blooop", "devlaunch", "main")
+        ).is_dir()
+        assert on_disk(metadata_path)["version"] == SCHEMA_VERSION
+
+        # The scan carried on past the refusal and still found what it was for.
+        assert [p.name for p in report.unmigrated] == ["stray-clone"]
+        said = capsys.readouterr().err
+        assert f"could not scan {unreadable}" in said
+        assert "1 clone directory could not be renamed" in said
+
+    def test_a_listing_that_cannot_be_written_still_leaves_a_usable_notice(self, tmp_path, capsys):
+        # The orphaned-id listing exists to turn "12 containers are orphaned"
+        # into a command the user can paste. When it cannot be written the
+        # notice has to degrade to an instruction rather than to a path that is
+        # not there -- naming a file that does not exist is worse than naming
+        # none, because the user runs the pasted command against nothing.
+        #
+        # The refusal is a directory sitting where the file goes, so this needs
+        # no permissions at all and holds on every filesystem.
+        metadata_path, repos_dir = build_legacy_cache(tmp_path, {("blooop", "devlaunch"): ["main"]})
+        (metadata_path.parent / ORPHAN_LIST_NAME).mkdir()
+
+        report = run_migration(metadata_path, repos_dir)
+
+        assert report.orphaned_ids, "there was something to list"
+        said = capsys.readouterr().err
+        assert f"could not write {metadata_path.parent / ORPHAN_LIST_NAME}" in said
+        assert "devpod delete <old-id>, one per workspace" in said
+        assert f"xargs -r -n1 devpod delete < {metadata_path.parent}" not in said
+
+    def test_an_unmigrated_listing_that_cannot_be_written_still_names_the_count(
+        self, tmp_path, capsys
+    ):
+        # The same degradation on the other listing. Both notices interpolate
+        # `listing` and both have to read as sentences without it.
+        metadata_path, repos_dir = build_legacy_cache(
+            tmp_path,
+            {("blooop", "devlaunch"): ["main"]},
+            unrecorded=[("blooop", "devlaunch", "stray-clone")],
+        )
+        (metadata_path.parent / UNMIGRATED_LIST_NAME).mkdir()
+
+        report = run_migration(metadata_path, repos_dir)
+
+        assert len(report.unmigrated) == 1
+        said = capsys.readouterr().err
+        assert f"could not write {metadata_path.parent / UNMIGRATED_LIST_NAME}" in said
+        assert "1 clone directory could not be renamed" in said
+        assert "listed in" not in said

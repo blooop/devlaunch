@@ -20,11 +20,14 @@ returning the wrong answer, and an unbounded wait turns that into a job that
 sits until the CI runner's own timeout kills it with no output.
 """
 
+import contextlib
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional, Sequence
 
 # How long a driver may take to reach a flag, or to finish, before the wait is
 # called a hang. Generous on purpose: this bounds a failure, it does not time
@@ -50,6 +53,11 @@ def spawn_driver(driver: str, args: list, tmp_path: Path, name: str) -> subproce
         stderr=subprocess.PIPE,
         text=True,
         env=os.environ.copy(),
+        # Its own process group, so `stop` can signal the driver *and* whatever
+        # it started. A driver that shells out to `git clone` and is then killed
+        # on its own leaves that clone running against a tmp_path pytest is
+        # about to delete.
+        start_new_session=True,
     )
 
 
@@ -69,13 +77,52 @@ def finish(proc: subprocess.Popen, label: str, timeout: int = DRIVER_TIMEOUT) ->
     return out
 
 
-def await_flags(*flags: Path) -> None:
-    """Block until every one of *flags* exists, or fail saying which did not."""
+def await_flags(*flags: Path, watching: Sequence[subprocess.Popen] = ()) -> None:
+    """Block until every one of *flags* exists, or fail saying which did not.
+
+    Pass the drivers as *watching* and a child that dies before signalling ends
+    the wait immediately, with its stderr in the message. Without that, the most
+    common way to break a driver -- an ImportError from a renamed module, or a
+    child interpreter that cannot see ``devlaunch`` -- means no flag is ever
+    written, the wait burns the full timeout, and the failure reads "drivers
+    never became ready" with the traceback that explains it discarded. One
+    self-diagnosing second instead of a two-minute mystery.
+    """
     deadline = time.monotonic() + DRIVER_TIMEOUT
     while not all(flag.exists() for flag in flags):
+        for proc in watching:
+            if proc.poll() is not None:
+                _, err = proc.communicate()
+                raise AssertionError(
+                    f"a driver exited (rc={proc.returncode}) before signalling:\n{err}"
+                )
         missing = [str(f) for f in flags if not f.exists()]
         assert time.monotonic() < deadline, f"drivers never became ready: {missing}"
         time.sleep(0.01)
+
+
+def stop(proc: Optional[subprocess.Popen]) -> None:
+    """Kill a driver that is still running, and *reap* it.
+
+    A bare ``kill()`` is what a cleanup block usually does and it is not enough
+    here. It returns before the child is gone, so nothing waits on it; and
+    SIGKILL to the driver never reaches the ``git clone`` the driver started,
+    which is reparented and goes on writing into ``tmp_path`` while pytest tears
+    that directory down -- surfacing as teardown errors that bury the real
+    failure, and as one orphan git per wedged run on CI.
+
+    So: kill the process group, then drain and wait. Draining matters on its own
+    -- the pipes hold the stderr that says why the driver was stuck, and closing
+    them unread throws it away.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    with contextlib.suppress(OSError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError, ValueError):
+        proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired, ValueError):
+        proc.communicate(timeout=10)
 
 
 def await_blocked_on_lock(proc: subprocess.Popen, settle: float = 0.5) -> None:
