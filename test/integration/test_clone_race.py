@@ -15,8 +15,18 @@ being excluded, because that needs a real ``git clone`` racing another real
 and one GIL between them means a threaded version proves something about a lock
 that is not the one shipping.
 
-So both processes here are real, started with ``sys.executable``, and the
-"remote" they clone is a bare repository in the same ``tmp_path`` — a real
+**Both tests here are staged, and that is deliberate.** The obvious version of
+this file starts two processes at once and asserts they converge on one clone.
+That test was written, and then measured: with the ``flock`` acquisition removed
+entirely it still passed 8 runs out of 30, because when the two happen to
+serialize by luck the second one's stale metadata sends it down the adoption
+path and every assertion holds. A guard that greens a quarter of the time under
+the defect it names is worse than no guard, and it gets *more* likely to green on
+the loaded single-core runner where the lock matters most. So the schedule is
+forced instead — one process is made to arrive while the other holds the lock —
+and both tests below fail on every run when the lock stops excluding.
+
+The "remote" they clone is a bare repository in the same ``tmp_path``: a real
 clone, no network.
 """
 
@@ -31,6 +41,7 @@ from fixtures.subprocess_drivers import (
     await_flags,
     finish,
     spawn_driver,
+    stop,
 )
 
 # A driver that runs `git clone --bare` is slow rather than hung. The lock-only
@@ -83,10 +94,8 @@ if role == "winner":
         marker.write_text("x", encoding="utf-8")
     print(manager.get_bare_path("test", "repo"))
 else:
-    ready, = flags
+    (ready,) = flags
     ready.write_text("ready", encoding="utf-8")
-    if role == "racer":
-        wait_for(ready.parent / "go")
     got = manager.ensure_repo("test", "repo", remote, auto_fetch=False)
     print(got.local_path)
 """
@@ -108,48 +117,16 @@ def head_of(bare_path: Path) -> str:
 
 @pytest.mark.integration
 class TestTwoProcessesPreparingOneRepo:
-    def test_a_simultaneous_start_produces_one_clone_and_two_winners(
-        self, isolated_devlaunch_env, local_git_repo, tmp_path
-    ):
-        # Both processes released at once, which is the shape the bug arrived
-        # in. Which of them clones is genuinely undecided and the assertions do
-        # not care: what has to hold either way is that one clone exists, both
-        # callers were handed it, and neither was handed an error.
-        env = isolated_devlaunch_env
-        args = [env["repos_dir"], env["metadata_path"], local_git_repo["remote_url"]]
-        first_ready = tmp_path / "first-ready"
-        second_ready = tmp_path / "second-ready"
+    """One holds the repo lock and clones; the other arrives while it does."""
 
-        first = spawn_driver(DRIVER, ["racer", *args, first_ready], tmp_path, "racer_one")
-        second = spawn_driver(DRIVER, ["racer", *args, second_ready], tmp_path, "racer_two")
-        try:
-            await_flags(first_ready, second_ready)
-            (tmp_path / "go").write_text("go", encoding="utf-8")
-            said_first = finish(first, "the first racer", timeout=CLONE_TIMEOUT).strip()
-            said_second = finish(second, "the second racer", timeout=CLONE_TIMEOUT).strip()
-        finally:
-            for proc in (first, second):
-                if proc.poll() is None:
-                    proc.kill()
+    @staticmethod
+    def stage(env, local_git_repo, tmp_path):
+        """Start the winner, wait until it holds the lock, then start the loser.
 
-        bare_path = env["repos_dir"] / "test" / "repo" / ".bare"
-        assert said_first == said_second == str(bare_path), "the two runs disagree on the cache"
-        assert head_of(bare_path), "the surviving clone is not a working repository"
-
-        repo_dir = env["repos_dir"] / "test" / "repo"
-        assert sorted(p.name for p in repo_dir.iterdir()) == [".bare", ".lock"]
-        assert list(cache_of(env["metadata_path"])["repositories"]) == ["test/repo"]
-
-    def test_the_waiting_process_adopts_the_clone_it_waited_for(
-        self, isolated_devlaunch_env, local_git_repo, tmp_path
-    ):
-        # The same race, staged so the interesting ordering happens every time
-        # rather than sometimes. The loser loads its metadata *before* the
-        # winner writes any, so when it finally gets the lock it is looking at a
-        # `.bare` on disk that its own records have never heard of — which is
-        # exactly the "another process just made it" case `clone_repo` adopts.
-        # Reached here across two interpreters instead of by deleting a record.
-        env = isolated_devlaunch_env
+        Returns ``(winner, loser, clone_now)``: two running drivers with the
+        loser parked on the lock, and the flag that releases the winder into its
+        clone. The caller is responsible for stopping both.
+        """
         args = [env["repos_dir"], env["metadata_path"], local_git_repo["remote_url"]]
         held = tmp_path / "held"
         clone_now = tmp_path / "clone-now"
@@ -158,20 +135,34 @@ class TestTwoProcessesPreparingOneRepo:
         winner = spawn_driver(DRIVER, ["winner", *args, held, clone_now], tmp_path, "winner")
         loser = None
         try:
-            await_flags(held)
-
+            await_flags(held, watching=[winner])
             loser = spawn_driver(DRIVER, ["loser", *args, loaded], tmp_path, "loser")
-            await_flags(loaded)
+            await_flags(loaded, watching=[winner, loser])
             await_blocked_on_lock(loser)
             assert loser.poll() is None, "the loser walked straight past a held lock"
+        except BaseException:
+            stop(winner)
+            stop(loser)
+            raise
+        return winner, loser, clone_now
 
+    def test_the_waiting_process_adopts_the_clone_it_waited_for(
+        self, isolated_devlaunch_env, local_git_repo, tmp_path
+    ):
+        # The loser loads its metadata *before* the winner writes any, so when
+        # it finally gets the lock it is looking at a `.bare` on disk that its
+        # own records have never heard of — exactly the "another process just
+        # made it" case `clone_repo` adopts, reached across two interpreters
+        # instead of by deleting a record.
+        env = isolated_devlaunch_env
+        winner, loser, clone_now = self.stage(env, local_git_repo, tmp_path)
+        try:
             clone_now.write_text("go", encoding="utf-8")
             said_winner = finish(winner, "the winner", timeout=CLONE_TIMEOUT).strip()
             said_loser = finish(loser, "the loser", timeout=CLONE_TIMEOUT).strip()
         finally:
-            for proc in (winner, loser):
-                if proc is not None and proc.poll() is None:
-                    proc.kill()
+            stop(winner)
+            stop(loser)
 
         bare_path = env["repos_dir"] / "test" / "repo" / ".bare"
         assert said_winner == said_loser == str(bare_path)
@@ -181,3 +172,31 @@ class TestTwoProcessesPreparingOneRepo:
         assert (bare_path / "winner-was-here").exists(), "the loser destroyed the winner's clone"
         assert head_of(bare_path)
         assert list(cache_of(env["metadata_path"])["repositories"]) == ["test/repo"]
+
+        repo_dir = env["repos_dir"] / "test" / "repo"
+        assert sorted(p.name for p in repo_dir.iterdir()) == [".bare", ".lock"]
+
+    def test_the_waiting_process_is_told_what_it_is_waiting_for(
+        self, isolated_devlaunch_env, local_git_repo, tmp_path
+    ):
+        # A first launch of a large repo can sit for a minute behind a sibling's
+        # clone, and the two look identical from outside: a dl that has printed
+        # nothing. `hold_lock` takes a `waiting_note` so the second one says
+        # why, and `ensure_repo` is the caller that passes it. Nothing checked
+        # that the note names the repo, or that it reaches stderr rather than
+        # the stdout the completion machinery parses.
+        env = isolated_devlaunch_env
+        winner, loser, clone_now = self.stage(env, local_git_repo, tmp_path)
+        try:
+            clone_now.write_text("go", encoding="utf-8")
+            finish(winner, "the winner", timeout=CLONE_TIMEOUT)
+            out, err = loser.communicate(timeout=CLONE_TIMEOUT)
+        finally:
+            stop(winner)
+            stop(loser)
+
+        assert loser.returncode == 0, err
+        assert "dl: waiting for another dl run preparing test/repo" in err, (
+            f"the waiting run said nothing about why it was waiting:\n{err}"
+        )
+        assert "waiting for" not in out, "the note belongs on stderr, which is not parsed"

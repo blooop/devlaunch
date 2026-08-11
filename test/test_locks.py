@@ -130,7 +130,7 @@ def a_holder(tmp_path: Path, lock: Path):
     held, release = tmp_path / "held", tmp_path / "release"
     holder = spawn_driver(_HOLDER, [lock, held, release], tmp_path, "holder")
     try:
-        await_flags(held)
+        await_flags(held, watching=[holder])
         yield holder, release
     finally:
         release.touch()

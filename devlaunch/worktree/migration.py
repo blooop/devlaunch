@@ -81,19 +81,30 @@ def _clone_dirs(repos_dir: Path) -> List[Path]:
     The layout is exactly three levels deep, so this is a bounded walk rather than
     an ``rglob``: descending into the clones themselves would traverse every
     checked-out working tree in the cache.
+
+    **One unreadable directory costs that directory and no more.** The refusal is
+    caught at each level rather than around the whole walk, because a single
+    ``try`` around all three meant the first unreadable owner ended the scan for
+    every owner after it -- and since the owners are walked in sorted order, an
+    unreadable ``acme`` silently abandoned every unmigrated clone under ``blooop``
+    with no notice naming them. What the caller does with this list is decide
+    which directories to *report* as left behind, so a short list is not a
+    smaller job, it is a quieter one.
     """
     found: List[Path] = []
+
+    def children(directory: Path) -> List[Path]:
+        try:
+            return sorted(p for p in directory.iterdir() if p.is_dir())
+        except OSError as exc:
+            _notice(f"could not scan {directory} for old workspace clones ({exc})")
+            return []
+
     if not repos_dir.is_dir():
         return found
-    try:
-        owner_dirs = sorted(p for p in repos_dir.iterdir() if p.is_dir())
-        for owner_dir in owner_dirs:
-            for repo_dir in sorted(p for p in owner_dir.iterdir() if p.is_dir()):
-                found.extend(
-                    sorted(p for p in repo_dir.iterdir() if p.is_dir() and p.name != BARE_DIR_NAME)
-                )
-    except OSError as exc:
-        _notice(f"could not scan {repos_dir} for old workspace clones ({exc})")
+    for owner_dir in children(repos_dir):
+        for repo_dir in children(owner_dir):
+            found.extend(p for p in children(repo_dir) if p.name != BARE_DIR_NAME)
     return found
 
 

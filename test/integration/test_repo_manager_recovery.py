@@ -14,7 +14,6 @@ before the code does. So these run real git against real directories, with no
 network: the "remote" is a bare repository in the same ``tmp_path``.
 """
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,6 +46,27 @@ def refs_of(bare_path: Path) -> list:
     return sorted(listed.stdout.split())
 
 
+def a_remote_headed_at(tmp_path: Path, branch: str, name: str) -> str:
+    """A bare repository whose HEAD is *branch*, with one commit on it."""
+    remote = tmp_path / f"{name}.git"
+    subprocess.run(
+        ["git", "init", "--bare", f"--initial-branch={branch}", str(remote)],
+        check=True,
+        capture_output=True,
+    )
+    work = tmp_path / name
+    subprocess.run(["git", "clone", str(remote), str(work)], check=True, capture_output=True)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "T")):
+        subprocess.run(["git", "config", key, value], cwd=work, check=True, capture_output=True)
+    (work / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=work, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "first"], cwd=work, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "push", "-u", "origin", branch], cwd=work, check=True, capture_output=True
+    )
+    return str(remote)
+
+
 @pytest.mark.integration
 class TestABareCloneWithNoRecord:
     """The clone is on disk and ``metadata.json`` has never heard of it.
@@ -59,12 +79,15 @@ class TestABareCloneWithNoRecord:
     is running out of.
     """
 
-    def test_the_clone_on_disk_is_adopted_rather_than_cloned_over(
-        self, real_managers, local_git_repo
-    ):
+    def test_the_clone_on_disk_is_adopted_rather_than_cloned_over(self, real_managers, tmp_path):
         manager: RepositoryManager = real_managers["repo_manager"]
         storage = real_managers["storage"]
-        remote_url = local_git_repo["remote_url"]
+        # Headed at `master`, not `main`. The rebuilt record has to carry a
+        # branch read off the adopted clone, and `main` is what
+        # `_get_default_branch` returns when it could read nothing at all --
+        # so against a main-headed remote the assertion below is satisfied by
+        # the fallback and pins nothing about the adoption path.
+        remote_url = a_remote_headed_at(tmp_path, "master", "adopted")
 
         manager.clone_repo("test", "repo", remote_url)
         bare_path = manager.get_bare_path("test", "repo")
@@ -90,7 +113,9 @@ class TestABareCloneWithNoRecord:
         assert refs_of(bare_path) == before, "the clone was rebuilt instead of adopted"
         assert adopted.local_path == bare_path
         assert adopted.remote_url == remote_url
-        assert adopted.default_branch == "main", "the branch was read off the clone"
+        assert adopted.default_branch == "master", (
+            "the rebuilt record fell back to `main` instead of reading the clone"
+        )
         assert storage.get_repository("test", "repo") is not None, "the record was rebuilt"
 
     def test_a_partial_clone_with_no_head_is_cleared_and_replaced(
@@ -185,32 +210,29 @@ class TestACloneThatFails:
 class TestTheDefaultBranchIsReadOffTheClone:
     """``main`` is the fallback, not the assumption."""
 
-    def test_a_master_headed_remote_is_recorded_as_master(self, real_managers, tmp_path):
-        # `_get_default_branch` falls back to "main" through three layers of
-        # `except`, so a repo whose default really is `master` and a repo the
-        # function could not read produce the same answer. Only a real clone of
-        # a real master-headed remote tells the two apart.
-        remote = tmp_path / "old_style.git"
-        subprocess.run(
-            ["git", "init", "--bare", "--initial-branch=master", str(remote)],
-            check=True,
-            capture_output=True,
-        )
-        work = tmp_path / "old_style"
-        subprocess.run(["git", "clone", str(remote), str(work)], check=True, capture_output=True)
-        for key, value in (("user.email", "t@example.com"), ("user.name", "T")):
-            subprocess.run(["git", "config", key, value], cwd=work, check=True, capture_output=True)
-        (work / "README.md").write_text("old\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=work, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "first"], cwd=work, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "push", "-u", "origin", "master"], cwd=work, check=True, capture_output=True
-        )
+    # `master` because a repo whose default really is master and a repo the
+    # function could not read otherwise give the same answer -- there are three
+    # layers of `except` above a literal `return "main"`.
+    #
+    # `release/1.0` because a branch name may contain slashes and the reading
+    # used to take the segment after the last one, so a real default branch was
+    # silently recorded as a ref the repository does not have. `master` cannot
+    # catch that: it has no slash and passes either way.
+    @pytest.mark.parametrize("branch", ["master", "release/1.0", "feature/auth"])
+    def test_the_recorded_branch_is_the_one_the_remote_actually_heads_at(
+        self, real_managers, tmp_path, branch
+    ):
+        remote = a_remote_headed_at(tmp_path, branch, branch.replace("/", "-"))
 
         cloned = real_managers["repo_manager"].ensure_repo(
-            "test", "old-style", str(remote), auto_fetch=False
+            "test", "headed", remote, auto_fetch=False
         )
-        assert cloned.default_branch == "master"
+
+        assert cloned.default_branch == branch
+        # And it names a ref that is really there, which is the property the
+        # equality above is a proxy for.
+        bare = real_managers["repo_manager"].get_bare_path("test", "headed")
+        assert f"refs/heads/{branch}" in refs_of(bare)
 
 
 @pytest.mark.integration
@@ -249,33 +271,38 @@ class TestARecordWhoseCloneIsGone:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(os.geteuid() == 0, reason="root is not refused by directory permissions")
-class TestAnUnwritableCache:
-    """The cache directory the user cannot write to."""
+class TestACacheTheUserCannotWriteTo:
+    """A read-only mount, a full disk, a directory someone tightened.
 
-    def test_a_clone_into_an_unwritable_repos_dir_raises_rather_than_half_succeeding(
-        self, real_managers, local_git_repo, tmp_path
+    The first version of this test made the whole `repos_dir` unwritable, and
+    that never reached the code it was about: `ensure_repo` takes the repo lock
+    first, and `hold_lock` opens with `lock_path.parent.mkdir(...)`, so the call
+    died there with the clone, its cleanup and every storage write unexecuted.
+    Both of its post-assertions were then true before the call as well as after.
+
+    So the directories the lock needs are made first and only the *clone* is
+    blocked, which puts the failure in `clone_repo` where the claim lives.
+    """
+
+    def test_a_clone_that_cannot_be_written_leaves_no_record_behind(
+        self, real_managers, local_git_repo, refuses_writes
     ):
-        # A full disk and a read-only mount both arrive here, and the arm that
-        # handles them is the same `except OSError` the failed-clone cleanup
-        # runs under. What must not happen is a `BaseRepository` handed back
-        # for a clone that is not there: every caller treats a returned record
-        # as "the cache is ready".
-        locked = tmp_path / "locked-cache"
-        locked.mkdir()
-        blocked = RepositoryManager(
-            repos_dir=locked,
-            storage=real_managers["storage"],
-            config=real_managers["config"],
-        )
-        locked.chmod(0o500)
-        try:
-            with pytest.raises((RuntimeError, OSError, PermissionError)):
-                blocked.ensure_repo("test", "repo", local_git_repo["remote_url"], auto_fetch=False)
-        finally:
-            locked.chmod(0o700)
+        manager: RepositoryManager = real_managers["repo_manager"]
+        # Everything up to the clone exists and is writable...
+        repo_dir = manager.get_repo_path("test", "repo")
+        repo_dir.mkdir(parents=True)
+        manager.lock_path("test", "repo").touch()
+        # ...and then the directory the clone must create `.bare` in is not.
+        refuses_writes(repo_dir)
 
+        with pytest.raises(RuntimeError, match="Failed to clone repository"):
+            manager.ensure_repo("test", "repo", local_git_repo["remote_url"], auto_fetch=False)
+
+        # The residue that would actually hurt: every caller reads a returned
+        # record as "the cache is ready", so a record for a clone that did not
+        # materialize sends the next launch to an empty path.
         assert real_managers["storage"].get_repository("test", "repo") is None, (
             "a record was written for a clone that does not exist"
         )
-        assert not (locked / "test" / "repo" / ".bare" / "HEAD").exists()
+        assert not manager.get_bare_path("test", "repo").exists()
+        assert manager.lock_path("test", "repo").exists()

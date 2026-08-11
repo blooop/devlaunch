@@ -17,6 +17,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _branch_of(ref: str) -> str:
+    """The branch a symbolic ref names, with its namespace prefix removed.
+
+    Not the last path segment: `release/1.0` and `feature/auth` are ordinary
+    branch names, and taking the segment after the final slash renames them to
+    `1.0` and `auth` -- refs the repository does not have.
+    """
+    for prefix in ("refs/remotes/origin/", "refs/heads/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref.rsplit("/", maxsplit=1)[-1]
+
+
 class RepositoryManager:
     """Manages base git repositories."""
 
@@ -265,9 +278,12 @@ class RepositoryManager:
                 text=True,
                 check=True,
             )
-            # Output is like "refs/heads/main"
-            branch = result.stdout.strip().split("/")[-1]
-            return branch
+            # Output is like "refs/heads/main". The prefix is stripped rather
+            # than the last path segment taken: a branch name may contain
+            # slashes, so `split("/")[-1]` turned a default branch of
+            # `release/1.0` into `1.0` -- a ref the repository does not have,
+            # recorded as the one every later operation targets.
+            return _branch_of(result.stdout.strip())
         except subprocess.CalledProcessError:
             pass
 
@@ -280,8 +296,7 @@ class RepositoryManager:
                 text=True,
                 check=True,
             )
-            branch = result.stdout.strip().split("/")[-1]
-            return branch
+            return _branch_of(result.stdout.strip())
         except subprocess.CalledProcessError:
             # Fallback to main or master
             try:
