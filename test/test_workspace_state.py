@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -469,7 +470,7 @@ class FakeRecord:
         self.owner, self.repo, self.branch, self.local_path = owner, repo, branch, local_path
 
 
-def _clone_manager(records: dict, repos_dir: Path = None) -> MagicMock:
+def _clone_manager(records: dict, repos_dir: Optional[Path] = None) -> MagicMock:
     manager = MagicMock()
     manager.storage.get_worktree_by_workspace_id.side_effect = records.get
 
