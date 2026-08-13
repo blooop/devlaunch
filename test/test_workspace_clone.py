@@ -4,6 +4,8 @@
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import os
+
 import pytest
 
 from devlaunch.workspace_id import WorkspaceId
@@ -845,6 +847,40 @@ class TestTheGuardAndTheDeleteNameOneDirectory:
         resolved = clone_manager.resolve_clone_path(wt_info)
         assert resolved == derived
         assert resolved.is_absolute()
+
+    def test_a_recorded_path_dl_cannot_look_at_is_kept_not_derived_away(
+        self, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """ "Could not look" is not "not there", and only one of them may derive.
+
+        `Path.exists()` swallows ENOENT/ENOTDIR/EBADF/ELOOP and re-raises the
+        rest, so this raised `PermissionError` out of the resolver on 3.10-3.13
+        and returned False on 3.14 -- and False is the answer that sends the
+        resolver off to name a *different* directory, which is the defect. The
+        record is kept instead; `read_clone` then answers `CouldNotTell` about
+        it and the delete stops.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("root is refused by nothing, so the closed door would open")
+
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        shut = repo_root / "behind-a-closed-door"
+        shut.mkdir(parents=True)
+        recorded = shut / "clone"
+        recorded.mkdir()
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = recorded
+
+        shut.chmod(0o000)
+        try:
+            resolved = clone_manager.resolve_clone_path(wt_info)
+        finally:
+            shut.chmod(0o700)
+
+        assert resolved == recorded
 
     def test_a_record_with_no_path_at_all_still_resolves(
         self, clone_manager, mock_repo_manager, tmp_repos_dir

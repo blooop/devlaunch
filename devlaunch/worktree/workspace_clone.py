@@ -36,6 +36,28 @@ _LFS_POINTER_PREFIX = b"version https://git-lfs"
 logger = logging.getLogger(__name__)
 
 
+def _on_disk(path: Path) -> Optional[bool]:
+    """Whether *path* is there: True, False, or None for "could not look".
+
+    Written out rather than left as ``Path.exists()`` for the reason
+    :func:`read_clone` gives at length about ``Path.is_dir()``, which this
+    repeated one layer out and got caught by the Python matrix rather than
+    locally: ``exists()`` swallows ENOENT, ENOTDIR, EBADF and ELOOP and
+    **re-raises everything else**, so a clone whose parent is mode ``000``
+    raised ``PermissionError`` straight out of here on 3.10-3.13 while
+    3.14 returned False. One expression, two behaviours, and the 3.14 one is
+    the dangerous half: "not there" is what sends this method off to derive
+    a different directory.
+    """
+    try:
+        os.stat(path)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
 class WorkspaceCloneManager:
     """Manages local workspace clones for DevPod.
 
@@ -119,7 +141,13 @@ class WorkspaceCloneManager:
         exists to prevent, one layer out.
         """
         recorded = None if wt_info.local_path is None else Path(wt_info.local_path)
-        if recorded is not None and recorded.is_absolute() and recorded.exists():
+        if recorded is not None and recorded.is_absolute() and _on_disk(recorded) is not False:
+            # True, or "dl was not allowed to look". Both keep the record: a
+            # path dl cannot stat is not a path it has established the absence
+            # of, and deriving a *different* directory off the back of that
+            # would put the guard and the delete back on two answers -- which is
+            # the whole defect. `read_clone` then answers `CouldNotTell` for it
+            # and the delete stops, which is the right end for both.
             return recorded
         try:
             return self.get_workspace_path(wt_info.owner, wt_info.repo, wt_info.branch)

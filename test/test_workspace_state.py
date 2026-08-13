@@ -494,6 +494,14 @@ def _clone_manager(records: dict, repos_dir: Optional[Path] = None) -> MagicMock
     # its rule. devlaunch#174 was two places naming one directory and drifting
     # apart; a test double holding a third copy is the same mistake again, and
     # it would go on passing after the rule changed under it.
+    #
+    # The catch, which cost a CI round: anything the real method reaches through
+    # `self` resolves against this MagicMock, not against the class. A helper
+    # written as a `@staticmethod` and called as `self._on_disk(...)` came back
+    # as a truthy `Mock` here and quietly inverted the rule. Helpers that carry
+    # part of the rule live at module scope in `workspace_clone.py` for that
+    # reason -- module scope is the part of the real method a double cannot
+    # stand in front of.
     manager.resolve_clone_path.side_effect = lambda record: (
         WorkspaceCloneManager.resolve_clone_path(manager, record)
     )
