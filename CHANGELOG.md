@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dl <ws> rm` could destroy unsaved work without being asked for `--force`**
+  ([#174](https://github.com/blooop/devlaunch/issues/174)). The guard read the
+  clone directory off `local_path` while the delete fell back to the derived path
+  whenever that one was not on disk, so a record pointing somewhere stale had the
+  guard clearing an *absent* directory — nothing absent holds anything — and the
+  delete then removing the derived one, which was the directory holding the work.
+  Exit 0, nothing logged. `dl --ls --json` read the record the same way, so its
+  `path` and `unsaved` could describe a third directory again.
+
+  All three now resolve through one method, `WorkspaceCloneManager.resolve_clone_path`.
+
+  A second face of the same field: `WorktreeInfo.from_dict` builds `local_path`
+  with `Path(data["local_path"])`, and `Path("")` is `Path(".")` — truthy, and
+  its `exists()` is True. An empty recorded path therefore passed both of the old
+  tests and handed `shutil.rmtree` **dl's own working directory**, which it
+  emptied, `.git` included, before failing on `os.rmdir(".")`. A recorded path is
+  now honoured only when it is absolute.
+
 The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
 itself the last release of the Python implementation, on the go decision recorded in
 [#53](https://github.com/blooop/devlaunch/issues/53); 0.0.12 and 0.0.13 have shipped
