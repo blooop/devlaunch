@@ -914,6 +914,30 @@ class TestTheGuardAndTheDeleteNameOneDirectory:
 
         assert clone_manager.resolve_clone_path(wt_info) == old_path
 
+    def test_a_record_dl_cannot_derive_from_names_no_directory_and_deletes_none(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """A record that survives neither route is a refusal, not an empty answer.
+
+        `get_workspace_path` raises `ValueError` on an unsafe ref, and a
+        hand-edited or truncated `metadata.json` can hold one. Letting that
+        propagate would take down the whole of `dl --ls --json` for one bad
+        record -- the harm `read_clone`'s stat guard exists to prevent -- so it
+        becomes None, and None has to mean "remove nothing" at the delete.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        repo_root.mkdir(parents=True)
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo = "owner", "repo"
+        wt_info.branch = "--evil"  # refused by WorkspaceId's validator
+        wt_info.local_path = repo_root / "not-on-disk"
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        assert clone_manager.resolve_clone_path(wt_info) is None
+        assert clone_manager.remove_workspace_by_id("repo-evil") is False
+
     def test_the_delete_removes_exactly_what_resolve_named(
         self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
     ):

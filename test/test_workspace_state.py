@@ -962,6 +962,51 @@ class TestTheDeleteGuard:
         assert derived.exists(), "the work the guard did not look at is gone"
         assert "unpushed" in caplog.text and "--force" in caplog.text
 
+    def test_a_record_no_directory_can_be_derived_from_stops_the_delete(
+        self, tmp_path, remote, caplog
+    ):
+        """The guard's arm for "dl cannot say which directory this even is".
+
+        A record holding a ref the id validator refuses -- a hand-edited or
+        truncated `metadata.json` -- resolves to no directory at all. That is not
+        `NothingToLose`: dl has established nothing about it, which is
+        devlaunch#171's rule one layer further out, so it refuses and names
+        `--force` like every other thing it could not establish.
+        """
+        cache = tmp_path / "cache" / "devlaunch"
+        (cache / "repos" / "blooop" / "r").mkdir(parents=True)
+        stale = cache / "repos" / "blooop" / "r" / "not-on-disk"
+
+        records = {"r-feature-aaa": FakeRecord("blooop", "r", "--evil", str(stale))}
+        listing = json.dumps(
+            [_entry("r-feature-aaa", cache / "repos" / "blooop" / "r" / "r-feature-aaa")]
+        )
+        deleted = []
+
+        def devpod(args, **kwargs):
+            if args[:1] == ["list"]:
+                return subprocess.CompletedProcess(args, 0, listing, "")
+            if args[:1] == ["status"]:
+                return subprocess.CompletedProcess(args, 0, '{"state": "Stopped"}', "")
+            if args[:1] == ["delete"]:
+                deleted.append(args[1])
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with (
+            patch("devlaunch.dl._get_cache_dir", return_value=cache),
+            patch("devlaunch.dl.run_devpod", side_effect=devpod),
+            patch(
+                "devlaunch.dl._get_clone_manager",
+                return_value=_clone_manager(records, repos_dir=cache / "repos"),
+            ),
+            patch("devlaunch.dl.update_cache_background"),
+        ):
+            code = main(["r-feature-aaa", "rm"])
+
+        assert code == 1
+        assert deleted == []
+        assert "--force" in caplog.text
+
     def test_force_deletes_it_anyway(self, tmp_path, clone):
         (clone / "more.txt").write_text("more\n")
         commit(clone, "more")

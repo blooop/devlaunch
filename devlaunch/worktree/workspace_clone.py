@@ -152,7 +152,13 @@ class WorkspaceCloneManager:
         try:
             return self.get_workspace_path(wt_info.owner, wt_info.repo, wt_info.branch)
         except ValueError as e:
-            logger.warning(f"cannot name the clone directory for {wt_info.workspace_id}: {e}")
+            # Named by the triple the derivation refused rather than by the
+            # workspace id: that triple *is* what failed, and it is the field
+            # a hand-edited metadata.json would have to be fixed in.
+            logger.warning(
+                f"cannot name the clone directory for "
+                f"{wt_info.owner}/{wt_info.repo}@{wt_info.branch}: {e}"
+            )
             return None
 
     def workspace_exists(self, owner: str, repo: str, branch: str) -> bool:
