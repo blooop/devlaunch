@@ -24,11 +24,14 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from devlaunch.dl import main
+from devlaunch.workspace_id import WorkspaceId
+from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 from devlaunch.workspace_state import (
     CloneState,
     CouldNotTell,
@@ -467,9 +470,41 @@ class FakeRecord:
         self.owner, self.repo, self.branch, self.local_path = owner, repo, branch, local_path
 
 
-def _clone_manager(records: dict) -> MagicMock:
+def _clone_manager(records: dict, repos_dir: Optional[Path] = None) -> MagicMock:
     manager = MagicMock()
     manager.storage.get_worktree_by_workspace_id.side_effect = records.get
+
+    def get_workspace_path(owner: str, repo: str, branch: str) -> Path:
+        """The derived clone directory, for the tests that reach the fallback.
+
+        Raises rather than returning a `Mock` when a test has not said where the
+        cache is: a `Mock` would flow into `read_clone` and be reported as an
+        unreadable directory, which is a plausible-looking answer to a question
+        the test never meant to ask.
+        """
+        if repos_dir is None:
+            raise AssertionError(
+                "this test reached the path derivation; pass repos_dir to _clone_manager"
+            )
+        return Path(repos_dir) / owner / repo / WorkspaceId(owner, repo, branch).value
+
+    manager.get_workspace_path.side_effect = get_workspace_path
+
+    # The real method, called with the double as `self`, rather than a copy of
+    # its rule. devlaunch#174 was two places naming one directory and drifting
+    # apart; a test double holding a third copy is the same mistake again, and
+    # it would go on passing after the rule changed under it.
+    #
+    # The catch, which cost a CI round: anything the real method reaches through
+    # `self` resolves against this MagicMock, not against the class. A helper
+    # written as a `@staticmethod` and called as `self._on_disk(...)` came back
+    # as a truthy `Mock` here and quietly inverted the rule. Helpers that carry
+    # part of the rule live at module scope in `workspace_clone.py` for that
+    # reason -- module scope is the part of the real method a double cannot
+    # stand in front of.
+    manager.resolve_clone_path.side_effect = lambda record: (
+        WorkspaceCloneManager.resolve_clone_path(manager, record)
+    )
 
     def remove_workspace_by_id(workspace_id: str) -> bool:
         """What `WorkspaceCloneManager.remove_workspace_by_id` does, and only that.
@@ -524,7 +559,10 @@ class TestTheJsonListing:
         with (
             patch("devlaunch.dl._get_cache_dir", return_value=cache),
             patch("devlaunch.dl.run_devpod", side_effect=devpod),
-            patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)),
+            patch(
+                "devlaunch.dl._get_clone_manager",
+                return_value=_clone_manager(records, repos_dir=cache / "repos"),
+            ),
         ):
             code = main(["--ls", "--json"])
         return code, json.loads(capsys.readouterr().out)
@@ -613,7 +651,22 @@ class TestTheJsonListing:
         _code, report = self._run(tmp_path, gone, capsys)
         ours = next(w for w in report if w["id"] == "r-feature-aaa")
         assert ours["devlaunch"] is True
-        assert ours["path"] == str(gone)
+        # Not `gone` itself. The recorded path is not on disk, so the row names
+        # the directory `dl <ws> rm` would actually act on -- which is the whole
+        # point of devlaunch#174: `path`, `unsaved` and the delete are one
+        # directory or they are a trap. In production these two strings are the
+        # same, because a clone's leaf *is* its workspace id; only this fixture
+        # gives the workspace a shorter id than the derivation would.
+        derived = (
+            tmp_path
+            / "cache"
+            / "devlaunch"
+            / "repos"
+            / "blooop"
+            / "r"
+            / WorkspaceId("blooop", "r", "feature").value
+        )
+        assert ours["path"] == str(derived)
         assert ours["unsaved"] == {"nothingToLose": True}
         # Nothing there to have a branch checked out, and no guess about one.
         assert ours["checkedOut"] is None
@@ -736,7 +789,10 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
             with (
                 patch("devlaunch.dl._get_cache_dir", return_value=cache),
                 patch("devlaunch.dl.run_devpod", side_effect=devpod),
-                patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager(records)),
+                patch(
+                    "devlaunch.dl._get_clone_manager",
+                    return_value=_clone_manager(records, repos_dir=cache / "repos"),
+                ),
             ):
                 code = main(argv)
         finally:
@@ -850,7 +906,7 @@ class TestTheDeleteGuard:
                 deleted.append(args[1])
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        manager = _clone_manager(records)
+        manager = _clone_manager(records, repos_dir=cache / "repos")
         if record_read_raises is not None:
             manager.storage.get_worktree_by_workspace_id.side_effect = record_read_raises
 
@@ -875,6 +931,81 @@ class TestTheDeleteGuard:
         assert code == 1
         assert deleted == []
         assert "unpushed" in caplog.text and "--force" in caplog.text
+
+    def test_a_stale_record_does_not_let_the_delete_past_the_guard(self, tmp_path, remote, caplog):
+        """devlaunch#174, at the surface it destroys things from.
+
+        The guard read the recorded path; the delete fell back to the derived one
+        when that path was not on disk. So a record pointing somewhere stale had
+        the guard answering `NothingToLose` about an absent directory --
+        correctly, nothing absent holds anything -- while the delete removed the
+        derived directory, which held an unpushed commit. Exit 0, no `--force`,
+        nothing logged.
+
+        Reproduced before the fix, and this is the shape it was reproduced in:
+        the guard and the delete must resolve the *same* directory, so the only
+        assertion that pins it is one where those two would differ.
+        """
+        cache = tmp_path / "cache" / "devlaunch"
+        derived = cache / "repos" / "blooop" / "r" / WorkspaceId("blooop", "r", "feature").value
+        _make_clone(remote, derived)
+        (derived / "more.txt").write_text("more\n")
+        commit(derived, "more")
+
+        stale = cache / "repos" / "blooop" / "r" / "moved-away"
+        assert not stale.exists(), "the fixture's premise is that the record is stale"
+
+        code, deleted = self._run(tmp_path, stale, ["r-feature-aaa", "rm"])
+
+        assert code == 1, "the guard cleared a delete that destroys an unpushed commit"
+        assert deleted == []
+        assert derived.exists(), "the work the guard did not look at is gone"
+        assert "unpushed" in caplog.text and "--force" in caplog.text
+
+    def test_a_record_no_directory_can_be_derived_from_stops_the_delete(
+        self, tmp_path, remote, caplog
+    ):
+        """The guard's arm for "dl cannot say which directory this even is".
+
+        A record holding a ref the id validator refuses -- a hand-edited or
+        truncated `metadata.json` -- resolves to no directory at all. That is not
+        `NothingToLose`: dl has established nothing about it, which is
+        devlaunch#171's rule one layer further out, so it refuses and names
+        `--force` like every other thing it could not establish.
+        """
+        cache = tmp_path / "cache" / "devlaunch"
+        (cache / "repos" / "blooop" / "r").mkdir(parents=True)
+        stale = cache / "repos" / "blooop" / "r" / "not-on-disk"
+
+        records = {"r-feature-aaa": FakeRecord("blooop", "r", "--evil", str(stale))}
+        listing = json.dumps(
+            [_entry("r-feature-aaa", cache / "repos" / "blooop" / "r" / "r-feature-aaa")]
+        )
+        deleted = []
+
+        def devpod(args, **kwargs):
+            if args[:1] == ["list"]:
+                return subprocess.CompletedProcess(args, 0, listing, "")
+            if args[:1] == ["status"]:
+                return subprocess.CompletedProcess(args, 0, '{"state": "Stopped"}', "")
+            if args[:1] == ["delete"]:
+                deleted.append(args[1])
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with (
+            patch("devlaunch.dl._get_cache_dir", return_value=cache),
+            patch("devlaunch.dl.run_devpod", side_effect=devpod),
+            patch(
+                "devlaunch.dl._get_clone_manager",
+                return_value=_clone_manager(records, repos_dir=cache / "repos"),
+            ),
+            patch("devlaunch.dl.update_cache_background"),
+        ):
+            code = main(["r-feature-aaa", "rm"])
+
+        assert code == 1
+        assert deleted == []
+        assert "--force" in caplog.text
 
     def test_force_deletes_it_anyway(self, tmp_path, clone):
         (clone / "more.txt").write_text("more\n")

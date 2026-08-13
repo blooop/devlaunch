@@ -4,6 +4,8 @@
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import os
+
 import pytest
 
 from devlaunch.workspace_id import WorkspaceId
@@ -781,6 +783,184 @@ class TestRemoveWorkspaceById:
 
         assert clone_manager.remove_workspace_by_id("repo-nb4") is True
         assert not ws_path.exists()
+
+
+class TestTheGuardAndTheDeleteNameOneDirectory:
+    """devlaunch#174: `dl <ws> rm`'s guard must inspect what the delete removes.
+
+    The guard read `local_path` unconditionally while the delete fell back to the
+    derivation whenever that path was not on disk. Every test here is about the
+    gap between those two, so each one asserts on
+    :meth:`WorkspaceCloneManager.resolve_clone_path` -- the single answer both
+    now go through -- rather than on the delete alone. A test that only checked
+    the delete would stay green if the guard drifted back.
+    """
+
+    def test_a_stale_record_resolves_to_the_directory_that_holds_the_work(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """A recorded path that is no longer on disk must not clear the delete.
+
+        Reproduced before the fix: the guard answered `NothingToLose` about the
+        absent recorded directory -- correctly, nothing absent holds anything --
+        and the delete then removed the derived one, which held an uncommitted
+        file. Exit 0 and no `--force`.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        derived = repo_root / leaf("nb4")
+        derived.mkdir(parents=True)
+        (derived / ".git").mkdir()
+
+        stale = repo_root / "moved-away"
+        assert not stale.exists(), "the fixture's point is that this is gone"
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = stale
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        assert clone_manager.resolve_clone_path(wt_info) == derived
+
+    def test_an_empty_recorded_path_is_not_the_working_directory(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """`Path("")` is `Path(".")`: truthy, and `exists()` is True.
+
+        So it passed the old `if wt_info.local_path` test *and* the old
+        `.exists()` test, and `shutil.rmtree` was handed dl's own working
+        directory -- which it emptied, `.git` included, before failing on
+        `os.rmdir(".")`. Absolute is the property that rules it out; truthiness
+        does not.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        derived = repo_root / leaf("nb4")
+        derived.mkdir(parents=True)
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = Path("")  # what an empty metadata field parses to
+        assert wt_info.local_path.exists(), "the hazard is that this is True"
+
+        resolved = clone_manager.resolve_clone_path(wt_info)
+        assert resolved == derived
+        assert resolved.is_absolute()
+
+    def test_a_recorded_path_dl_cannot_look_at_is_kept_not_derived_away(
+        self, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """ "Could not look" is not "not there", and only one of them may derive.
+
+        `Path.exists()` swallows ENOENT/ENOTDIR/EBADF/ELOOP and re-raises the
+        rest, so this raised `PermissionError` out of the resolver on 3.10-3.13
+        and returned False on 3.14 -- and False is the answer that sends the
+        resolver off to name a *different* directory, which is the defect. The
+        record is kept instead; `read_clone` then answers `CouldNotTell` about
+        it and the delete stops.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("root is refused by nothing, so the closed door would open")
+
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        shut = repo_root / "behind-a-closed-door"
+        shut.mkdir(parents=True)
+        recorded = shut / "clone"
+        recorded.mkdir()
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = recorded
+
+        shut.chmod(0o000)
+        try:
+            resolved = clone_manager.resolve_clone_path(wt_info)
+        finally:
+            shut.chmod(0o700)
+
+        assert resolved == recorded
+
+    def test_a_record_with_no_path_at_all_still_resolves(
+        self, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """`None` used to reach `Path(None)` in the guard, which is a TypeError."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        derived = repo_root / leaf("nb4")
+        derived.mkdir(parents=True)
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = None
+
+        assert clone_manager.resolve_clone_path(wt_info) == derived
+
+    def test_a_usable_recorded_path_still_wins(
+        self, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """The pre-#64 clones this fallback exists for must stay removable."""
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        old_path = repo_root / "nb4"  # the bare-branch-name leaf
+        old_path.mkdir(parents=True)
+        assert old_path.name != leaf("nb4")
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = old_path
+
+        assert clone_manager.resolve_clone_path(wt_info) == old_path
+
+    def test_a_record_dl_cannot_derive_from_names_no_directory_and_deletes_none(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """A record that survives neither route is a refusal, not an empty answer.
+
+        `get_workspace_path` raises `ValueError` on an unsafe ref, and a
+        hand-edited or truncated `metadata.json` can hold one. Letting that
+        propagate would take down the whole of `dl --ls --json` for one bad
+        record -- the harm `read_clone`'s stat guard exists to prevent -- so it
+        becomes None, and None has to mean "remove nothing" at the delete.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        repo_root.mkdir(parents=True)
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo = "owner", "repo"
+        wt_info.branch = "--evil"  # refused by WorkspaceId's validator
+        wt_info.local_path = repo_root / "not-on-disk"
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        assert clone_manager.resolve_clone_path(wt_info) is None
+        assert clone_manager.remove_workspace_by_id("repo-evil") is False
+
+    def test_the_delete_removes_exactly_what_resolve_named(
+        self, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """The binding itself: one resolution, and the delete uses that one.
+
+        Without this, the two could be made to disagree again by editing
+        `remove_workspace_by_id` alone and every test above would stay green.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+
+        derived = repo_root / leaf("nb4")
+        derived.mkdir(parents=True)
+        (derived / ".git").mkdir()
+
+        wt_info = MagicMock()
+        wt_info.owner, wt_info.repo, wt_info.branch = "owner", "repo", "nb4"
+        wt_info.local_path = repo_root / "moved-away"
+        mock_storage.get_worktree_by_workspace_id.return_value = wt_info
+
+        named = clone_manager.resolve_clone_path(wt_info)
+        assert clone_manager.remove_workspace_by_id("repo-nb4") is True
+        assert not named.exists(), "the delete removed something else"
 
 
 class TestRefsReachingGit:

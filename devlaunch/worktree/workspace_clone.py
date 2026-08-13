@@ -36,6 +36,28 @@ _LFS_POINTER_PREFIX = b"version https://git-lfs"
 logger = logging.getLogger(__name__)
 
 
+def _on_disk(path: Path) -> Optional[bool]:
+    """Whether *path* is there: True, False, or None for "could not look".
+
+    Written out rather than left as ``Path.exists()`` for the reason
+    :func:`read_clone` gives at length about ``Path.is_dir()``, which this
+    repeated one layer out and got caught by the Python matrix rather than
+    locally: ``exists()`` swallows ENOENT, ENOTDIR, EBADF and ELOOP and
+    **re-raises everything else**, so a clone whose parent is mode ``000``
+    raised ``PermissionError`` straight out of here on 3.10-3.13 while
+    3.14 returned False. One expression, two behaviours, and the 3.14 one is
+    the dangerous half: "not there" is what sends this method off to derive
+    a different directory.
+    """
+    try:
+        os.stat(path)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
 class WorkspaceCloneManager:
     """Manages local workspace clones for DevPod.
 
@@ -82,6 +104,62 @@ class WorkspaceCloneManager:
         workspace = WorkspaceId(owner, repo, branch)
         repo_root = self.repo_manager.get_repo_path(workspace.owner, workspace.repo)
         return repo_root / workspace.value
+
+    def resolve_clone_path(self, wt_info: WorktreeInfo) -> Optional[Path]:
+        """The one directory *wt_info*'s clone lives in, or None if dl cannot say.
+
+        Every caller that has to name a record's clone comes through here: the
+        `dl <ws> rm` guard, the `--ls --json` row, and the delete itself. They
+        used to name it separately and could disagree (devlaunch#174). The guard
+        read ``local_path`` unconditionally while the delete fell back to the
+        derivation whenever that path was not on disk, so a record left pointing
+        somewhere stale had the guard clearing an *absent* directory -- "nothing
+        there holds anything", per :func:`read_clone` -- while the delete removed
+        the derived one, which was the one holding the work. Exit 0, no
+        ``--force``, nothing said. A guard is only a guard if it inspects what
+        the delete will actually remove.
+
+        The recorded path wins when it is usable, which is what keeps clones
+        made before the current id scheme removable with no migration.
+
+        **Usable has to mean absolute, not merely truthy.**
+        :meth:`WorktreeInfo.from_dict` builds this field with
+        ``Path(data["local_path"])``, and ``Path("")`` is ``Path(".")`` -- which
+        is truthy, and whose ``exists()`` is True. An empty recorded path
+        therefore passed both of the old tests and sent ``shutil.rmtree`` at
+        dl's own working directory: it emptied the directory, including its
+        ``.git``, and only then failed on ``os.rmdir(".")``. A clone path is
+        always absolute, so anything relative is a record dl cannot honour.
+
+        **None means dl cannot name a directory at all**, which happens when the
+        recorded path is unusable *and* the derivation refuses the record's own
+        owner/repo/branch. Every caller has to treat that as a refusal rather
+        than as an empty answer, which is why it is None rather than an
+        exception: :meth:`get_workspace_path` raises ``ValueError`` on an unsafe
+        ref, and one hand-edited record must not be able to take down the whole
+        of ``dl --ls --json`` -- the same harm :func:`read_clone`'s stat guard
+        exists to prevent, one layer out.
+        """
+        recorded = None if wt_info.local_path is None else Path(wt_info.local_path)
+        if recorded is not None and recorded.is_absolute() and _on_disk(recorded) is not False:
+            # True, or "dl was not allowed to look". Both keep the record: a
+            # path dl cannot stat is not a path it has established the absence
+            # of, and deriving a *different* directory off the back of that
+            # would put the guard and the delete back on two answers -- which is
+            # the whole defect. `read_clone` then answers `CouldNotTell` for it
+            # and the delete stops, which is the right end for both.
+            return recorded
+        try:
+            return self.get_workspace_path(wt_info.owner, wt_info.repo, wt_info.branch)
+        except ValueError as e:
+            # Named by the triple the derivation refused rather than by the
+            # workspace id: that triple *is* what failed, and it is the field
+            # a hand-edited metadata.json would have to be fixed in.
+            logger.warning(
+                f"cannot name the clone directory for "
+                f"{wt_info.owner}/{wt_info.repo}@{wt_info.branch}: {e}"
+            )
+            return None
 
     def workspace_exists(self, owner: str, repo: str, branch: str) -> bool:
         """Check if a workspace clone exists."""
@@ -448,8 +526,10 @@ class WorkspaceCloneManager:
     def remove_workspace_by_id(self, workspace_id: str) -> bool:
         """Remove a workspace clone by its workspace ID.
 
-        Looks the workspace up in metadata and removes the directory the record
-        points at, falling back to the derived path only when the record has none.
+        Looks the workspace up in metadata and removes the directory
+        :meth:`resolve_clone_path` names — the same one the `dl <ws> rm` guard
+        inspected before deciding this was safe to call. Resolving it in one
+        place is what makes those two the same directory (devlaunch#174).
 
         Following the record matters because the derivation has changed: every
         workspace created before the current id scheme has a bare branch name as its
@@ -464,9 +544,11 @@ class WorkspaceCloneManager:
         wt_info = self.storage.get_worktree_by_workspace_id(workspace_id)
         if not wt_info:
             return False
-        ws_path = Path(wt_info.local_path) if wt_info.local_path else None
-        if ws_path is None or not ws_path.exists():
-            ws_path = self.get_workspace_path(wt_info.owner, wt_info.repo, wt_info.branch)
+        ws_path = self.resolve_clone_path(wt_info)
+        if ws_path is None:
+            # dl cannot name the directory, so it must not delete one. Same
+            # answer as "no record": removes nothing, says so.
+            return False
         return self._remove_clone(ws_path, wt_info.owner, wt_info.repo, wt_info.branch)
 
     def _remove_clone(self, ws_path: Path, owner: str, repo: str, branch: str) -> bool:

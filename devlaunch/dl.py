@@ -451,8 +451,9 @@ def _unsaved_work_in(workspace_id: str) -> workspace_state.Unsaved:
     where the clone is, so it has not established that anything is safe, and the
     delete stops until somebody says `--force`.
     """
+    clone_manager = _get_clone_manager()
     try:
-        record = _get_clone_manager().storage.get_worktree_by_workspace_id(workspace_id)
+        record = clone_manager.storage.get_worktree_by_workspace_id(workspace_id)
     except (OSError, RuntimeError) as e:
         logging.debug(f"could not read the workspace record for {workspace_id}: {e}")
         return workspace_state.CouldNotTell(
@@ -460,7 +461,17 @@ def _unsaved_work_in(workspace_id: str) -> workspace_state.Unsaved:
         )
     if record is None:
         return workspace_state.NothingToLose()
-    return workspace_state.holds_unsaved_work(Path(record.local_path))
+    # Resolved rather than read straight off the record, because this has to be
+    # the directory the delete will remove and those were two answers
+    # (devlaunch#174). See :meth:`WorkspaceCloneManager.resolve_clone_path`.
+    clone_path = clone_manager.resolve_clone_path(record)
+    if clone_path is None:
+        # A record dl cannot turn into a directory is a record it has not
+        # established anything about -- the devlaunch#171 rule, one layer out.
+        return workspace_state.CouldNotTell(
+            f"could not work out which directory {workspace_id}'s clone is in"
+        )
+    return workspace_state.holds_unsaved_work(clone_path)
 
 
 def workspaces_as_json(with_size: bool = False) -> int:
@@ -535,7 +546,16 @@ def workspaces_as_json(with_size: bool = False) -> int:
             # not: dl says it is its own in the same object. This is the
             # identical divergence #165 fixed for `disk` (see the comment on
             # `_measurable_clone` below); `unsaved` was left behind by it.
-            clone_path = Path(record.local_path)
+            #
+            # Resolved, not read straight off the record: the sentence above is
+            # the whole point of this row, and it was not true when the recorded
+            # path was stale or empty -- the guard and the delete then named
+            # different directories and this row named a third (devlaunch#174).
+            # None means dl could not name a directory for this record at all.
+            # Keeping the measured clone rather than dropping to `null` is what
+            # holds the row's own invariant: `unsaved: null` means "not dl's",
+            # and dl has already said this one is its own on the line above.
+            clone_path = clone_mgr.resolve_clone_path(record) or clone_path
         state = workspace_state.read_clone(clone_path) if clone_path else None
         row: Dict[str, Any] = {
             "id": ws.id,
