@@ -295,9 +295,14 @@ def stage(name: str):
     recorder = _recorder
     if recorder is None:
         return contextlib.nullcontext()
+    _check_stage(name)
+    return _record_stage(recorder, name)
+
+
+def _check_stage(name: str) -> None:
+    """Refuse a name the vocabulary does not have."""
     if name not in STAGES:
         raise ValueError(f"{name!r} is not a timing stage; expected one of {STAGES}")
-    return _record_stage(recorder, name)
 
 
 def span(label: str):
@@ -316,7 +321,14 @@ def staged(name: str) -> Callable[[_F], _F]:
     lend the tools in, attach — and marking them where they are defined puts
     the stage next to the thing it names, rather than at each of the call
     sites that would all have to agree.
+
+    *name* is checked here, as the decorator is applied, rather than left to
+    :func:`stage` at call time: the call-time check runs only while recording,
+    so a typo would pass a suite that runs with timing off — every suite — and
+    then crash the first launch anyone actually measured. Import is the one
+    moment the check costs nothing per launch and still happens.
     """
+    _check_stage(name)
 
     def decorate(func: _F) -> _F:
         @functools.wraps(func)
