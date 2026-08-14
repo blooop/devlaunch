@@ -624,11 +624,39 @@ class TestProbeScript:
         it points at is the only thing that says which install it belongs to."""
         assert "readlink -f" in tools.probe_script()
 
-    def test_it_never_runs_the_candidate_claude(self):
-        """Shim-proofness is a property of the script's text, not of a run:
+    def test_it_never_runs_the_candidate_claude(self, tmp_path):
+        """Shim-proofness, asked of a run rather than of the script's text:
         *any* invocation of the shim triggers the download the probe exists to
-        detect, so the only things the probe may do with `claude` are look its
-        path up and resolve it.
+        detect, so the probe runs here against a claude that records being
+        invoked, and the record must stay empty.
+
+        The recorder is shell builtins only -- `:` and a redirection -- because
+        the probe runs on a stripped PATH carrying nothing but `readlink`. A
+        marker that needed an external binary (`touch`, `date`) would fail to
+        record the very invocation it exists to catch, and this test would
+        pass for the wrong reason.
+        """
+        home = self._home(tmp_path)
+        shim = home / ".local/bin/claude"
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text('#!/bin/sh\n: > "$HOME/shim-was-executed"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        answer = self._answer(tmp_path, home, [self._gh(home)])
+        # The answer proves the run reached the end of the script: a probe
+        # that crashed before resolving the claude would leave the record
+        # empty too, and this test would be guarding a script that never ran.
+        assert answer is tools.ProbeResult.LENDABLE
+        assert not (home / "shim-was-executed").exists()
+
+    def test_the_script_text_confines_claude_to_the_known_lookups(self):
+        """A complement to the behavioural test above, not the guard itself.
+
+        The run above proves that one real probe executed nothing; this scrub
+        confines where the name may appear at all, which is what catches an
+        invocation parked on a branch that run does not take. Alone it is
+        weaker than it reads -- an execution spelled `"$(command -v claude)"`
+        contains no literal `claude` once the lookup is scrubbed, and walks
+        straight past it -- which is why it no longer stands alone.
         """
         script = tools.probe_script()
         scrubbed = (
