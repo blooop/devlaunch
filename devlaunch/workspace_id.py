@@ -37,8 +37,9 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-# Total id budget. devpod's own ceiling is 48, but ``setup_hostname`` sets the
-# container hostname to the workspace id and downstream tooling stacks prefixes and
+# Total id budget. devpod's own ceiling is 48, but the setup pass's hostname stage
+# (``tools.setup_stages``) names the container after the workspace id, and downstream
+# tooling stacks prefixes and
 # suffixes on it against a 64-byte limit (kinisi-robotics/kinisi_ros#9766 already sat
 # at 62/64). 48 is a ceiling others eat into, not a budget to fill, so aim at 38.
 TARGET_LENGTH = 38

@@ -296,7 +296,15 @@ would not be a guarantee.
 
 On `devpod up`, at most three round trips, each one earning the next.
 
-**1. A probe — the only trip a ready workspace ever pays.** The container reports
+**1. The setup pass — the only trip a ready workspace ever pays.** One trip
+carries everything the host wants done on the way into a running container: the
+stages first, then the probe. Naming the container — the hostname your shell
+prompt shows — is the one stage today, and it costs nothing extra because the
+probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
+exit status, or *not reached*; one that fails stops neither the stages behind it
+nor the probe, and `dl` says which one it was.
+
+The probe is the tail of that trip. The container reports
 what only it can know: whether both tools answer at all, where its `claude`
 resolves to, and where `~/.local/share/claude/versions` in its own home resolves
 to. It reports those and names no verdict; the host reads them, so "a real
@@ -388,7 +396,7 @@ DEVLAUNCH_NO_TOOLS=1 dl someone/repo
 
 | Variable | Description |
 |----------|-------------|
-| `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude` into workspaces |
+| `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude` into workspaces. The setup pass still runs — one trip per `up`, which still names the container; only the installing is skipped |
 
 Attaching to a workspace that is *already running* skips `devpod up`, and so skips
 this too. A workspace started by something other than `dl` — or created before this
@@ -790,7 +798,7 @@ dl blooop/devlaunch stop         # Stop workspace
 - **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
 - **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
-- **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and `dl <ws> -- <cmd>` skips the extra round-trip that names an interactive prompt, since a one-shot command has none
+- **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and everything a container needs on the way in (naming it, then the tools probe) rides one setup pass, so an interactive `dl <ws>` and a one-shot `dl <ws> -- <cmd>` cost the same trips
 
 ## Measuring launch time
 

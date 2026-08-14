@@ -1,6 +1,7 @@
 """What devlaunch installs into a workspace, and what it does when that fails."""
 
 import io
+import logging
 import os
 import pathlib
 import shlex
@@ -317,6 +318,13 @@ REPORT_LENDABLE = (
     "devlaunch-probe versions /ws/.local/share/claude/versions\n"
     "devlaunch-probe claude /ws/.pixi/envs/claude-shim/bin/claude\n"
 )
+
+# The two outcome lines a stage of the setup pass can print, written out as the
+# composer prints them for the same reason the reports above are: a fixture
+# rebuilt from the module would agree with any format the pass drifted into.
+# The third outcome has no line -- that is what makes it the third outcome.
+STAGE_OK = "devlaunch-probe stage hostname ok\n"
+STAGE_FAILED = "devlaunch-probe stage hostname failed 1\n"
 
 # ~/.profile exactly as mcr.microsoft.com/devcontainers/base:ubuntu-24.04 ships
 # it -- the base image .devcontainer/Dockerfile builds on -- copied out of the
@@ -806,12 +814,170 @@ class TestProbeResult:
         assert tools.ProbeResult.parse(report) is tools.ProbeResult.ABSENT
 
 
+class TestSetupPassScript:
+    """The cold path's one setup pass: stages, then the probe, in one trip.
+
+    Checked as a string (what the composition may never do to the probe it
+    carries) and by running it for real against scratch `$HOME`s (that a stage
+    failing does not cost the probe its answer), for the same reason
+    TestProbeScript is checked both ways.
+    """
+
+    def test_it_carries_the_probe_script_verbatim(self):
+        """Composed *from* the probe, never a re-expression of it.
+
+        The relation the probe reports on is stated once, in
+        `_is_official_claude`, and asked from both ends. A composition that
+        rewrote or trimmed the probe would be the second copy — so the pass
+        contains the shipped script character for character, and an edit to the
+        probe that this pass did not inherit cannot happen.
+        """
+        assert tools.probe_script() in tools.setup_script("myws")
+
+    def test_the_stages_run_in_front_of_the_probe(self):
+        """Order, and it is not cosmetic: the probe exits early when a tool is
+        missing, which is the commonest cold-path answer, so a stage placed
+        behind it would report `not reached` on the very launches the fold
+        exists for."""
+        script = tools.setup_script("myws")
+        for stage in tools.setup_stages("myws"):
+            assert script.index(stage.command) < script.index(tools.probe_script())
+
+    def test_no_set_e_spans_the_stages(self):
+        """One stage's failure is contained to that stage. `-e` anywhere in the
+        pass would make the first failing stage take the probe's answer with
+        it, which is why the transfer — correctly `set -eu` for the
+        all-or-nothing sequence it is — is not a stage in this pass."""
+        assert "set -e" not in tools.setup_script("myws")
+
+    def test_a_workspace_name_cannot_run_a_command_of_its_own(self):
+        """The name is interpolated into a shell script, so it is quoted."""
+        name = "myws; touch /tmp/pwned"
+        script = tools.setup_script(name)
+        assert f"hostname {shlex.quote(name)}" in script
+        assert "hostname myws;" not in script
+
+    @staticmethod
+    def _run(tmp_path, workspace: str, sudo_exit: Optional[int] = None):
+        """Run the whole pass for real, and read it the way the host reads it.
+
+        `sudo_exit` puts a `sudo` on PATH that exits with that status; None
+        leaves the stripped PATH with no `sudo` at all, which is what an image
+        without it does. Never the host's real sudo — this must not be able to
+        prompt, and must not be able to rename the machine running the tests.
+        """
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        sysbin = tmp_path / "sysbin"
+        sysbin.mkdir(exist_ok=True)
+        readlink = shutil.which("readlink")
+        assert readlink, "the test host needs readlink"
+        link = sysbin / "readlink"
+        if not link.exists():
+            link.symlink_to(readlink)
+        if sudo_exit is not None:
+            sudo = sysbin / "sudo"
+            sudo.write_text(f"#!/bin/sh\nexit {sudo_exit}\n", encoding="utf-8")
+            sudo.chmod(0o755)
+        result = subprocess.run(
+            [shutil.which("bash") or "/bin/bash", "-c", tools.setup_script(workspace)],
+            env={"HOME": str(home), "PATH": str(sysbin)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Exits 0 whatever the stages did: a non-zero `devpod ssh` has to keep
+        # meaning the transport failed, which is the discrimination the probe
+        # already relies on.
+        assert result.returncode == 0, result.stderr
+        return home, result.stdout
+
+    def test_a_failing_stage_does_not_cost_the_probe_its_answer(self, tmp_path):
+        """The legibility claim, run rather than argued: the stage fails, names
+        itself with its status, and the probe still answers in the same trip."""
+        home, report = self._run(tmp_path, "myws", sudo_exit=1)
+        assert tools.ProbeResult.parse(report) is tools.ProbeResult.ABSENT
+        assert tools.stage_outcomes(report, tools.setup_stages("myws")) == (
+            tools.StageFailed(name=tools.HOSTNAME_STAGE, returncode=1),
+        )
+        assert home.exists()
+
+    def test_a_stage_the_image_cannot_even_run_reports_its_status(self, tmp_path):
+        """No `sudo` in the image at all: 127, not silence."""
+        _, report = self._run(tmp_path, "myws")
+        assert tools.stage_outcomes(report, tools.setup_stages("myws")) == (
+            tools.StageFailed(name=tools.HOSTNAME_STAGE, returncode=127),
+        )
+
+    def test_a_stage_that_worked_says_so(self, tmp_path):
+        """The privileged-image case, which is the one the user can see."""
+        _, report = self._run(tmp_path, "myws", sudo_exit=0)
+        assert tools.stage_outcomes(report, tools.setup_stages("myws")) == (
+            tools.StageOk(name=tools.HOSTNAME_STAGE),
+        )
+
+
+class TestStageOutcomes:
+    """A stage's outcome is three-valued, and the third value is an absence."""
+
+    @staticmethod
+    def _hostname(report: str):
+        return tools.stage_outcomes(report, tools.setup_stages("myws"))
+
+    def test_a_stage_that_worked_reads_ok(self):
+        assert self._hostname(STAGE_OK) == (tools.StageOk(name=tools.HOSTNAME_STAGE),)
+
+    def test_a_stage_that_failed_carries_its_status(self):
+        assert self._hostname(STAGE_FAILED) == (
+            tools.StageFailed(name=tools.HOSTNAME_STAGE, returncode=1),
+        )
+
+    def test_a_report_truncated_before_a_stage_reads_not_reached(self):
+        """What a mid-script death or a cut-off report looks like. It must not
+        read as `ok`: "never ran" and "ran fine" are the two states this whole
+        value exists to keep apart."""
+        assert self._hostname(REPORT_ABSENT) == (tools.StageNotReached(name=tools.HOSTNAME_STAGE),)
+
+    @pytest.mark.parametrize(
+        "report",
+        [
+            "devlaunch-probe stage hostname\n",
+            "devlaunch-probe stage hostname failed\n",
+            "devlaunch-probe stage hostname failed sideways\n",
+            "devlaunch-probe stage hostname yes\n",
+            "stage hostname ok\n",
+        ],
+    )
+    def test_an_outcome_it_cannot_read_is_never_read_as_ok(self, report):
+        """Total, and it errs the way the report is used: anything that is not
+        a readable outcome is the absence of one, and the host names every
+        outcome that is not `ok` — so an unreadable line is reported rather
+        than passed over."""
+        assert self._hostname(report) == (tools.StageNotReached(name=tools.HOSTNAME_STAGE),)
+
+    def test_a_chatty_login_profile_does_not_hide_an_outcome(self):
+        """The pass runs under `bash -lc` exactly as the probe does, so the
+        container's banner lands on the same stdout."""
+        report = "Welcome to this image!\n\n" + STAGE_OK
+        assert self._hostname(report) == (tools.StageOk(name=tools.HOSTNAME_STAGE),)
+
+    def test_the_probe_is_inert_to_the_outcome_lines(self):
+        """The container gains stage outcomes and gains no opinions: the probe
+        parser reads only the keys it always read, so the stage lines are the
+        same shape of noise as a login banner."""
+        assert tools.ProbeResult.parse(STAGE_OK + REPORT_PROVISIONED) is (
+            tools.ProbeResult.PROVISIONED
+        )
+        assert tools.ProbeResult.parse(STAGE_FAILED + REPORT_ABSENT) is tools.ProbeResult.ABSENT
+
+
 @pytest.mark.usefixtures("no_host_payload")
 class TestEnsureTools:
     """The three-trip flow: probe, host transfer, network install."""
 
-    def test_a_provisioned_workspace_pays_one_probe_and_nothing_else(self):
-        """The common path: every launch after the first is one round trip."""
+    def test_a_provisioned_workspace_pays_one_setup_pass_and_nothing_else(self):
+        """The common path: every launch after the first is one round trip, and
+        that trip is the whole setup pass -- stages and probe together."""
         runner = Runner(returncodes=(0,), stdout=REPORT_PROVISIONED)
         assert ensure_tools("myws", runner) is True
         assert len(runner.calls) == 1
@@ -819,7 +985,16 @@ class TestEnsureTools:
         # A non-login shell has no ~/.pixi/bin, so every tool would look absent.
         argv = shlex.split(runner.script())
         assert argv[:2] == ["bash", "-lc"]
-        assert argv[2] == tools.probe_script()
+        assert argv[2] == tools.setup_script("myws")
+
+    def test_the_container_is_never_named_by_a_trip_of_its_own(self):
+        """The saving, stated as the thing that must not appear: on no probe
+        answer does a trip go out whose whole payload is the hostname. Inside
+        the pass's own script it is expected -- that is the fold."""
+        for report in (REPORT_PROVISIONED, REPORT_LENDABLE, REPORT_ABSENT):
+            runner = Runner(returncodes=(0, 0), stdout=report)
+            ensure_tools("myws", runner)
+            assert not any("sudo hostname myws" in call for call in runner.calls)
 
     def test_with_nothing_to_lend_a_cold_workspace_gets_the_network_install(self):
         runner = Runner(returncodes=(0, 0), stdout=REPORT_ABSENT)
@@ -907,17 +1082,81 @@ class TestEnsureTools:
 
         assert ensure_tools("myws", explode) is False
 
-    def test_the_opt_out_skips_devpod_entirely(self, monkeypatch):
+    def test_the_opt_out_installs_nothing_and_still_names_the_container(self, monkeypatch):
+        """Whether the pass runs and whether the tools work runs are two
+        questions, and the opt-out answers only the second. Riding the hostname
+        inside a gate called "no tools" would mean turning tools off silently
+        turned container naming off with it -- a coupling nobody would find
+        again for a year.
+        """
         monkeypatch.setenv(tools.DISABLE_VAR, "1")
-        runner = Runner()
+        runner = Runner(returncodes=(0,), stdout=REPORT_ABSENT)
         assert ensure_tools("myws", runner) is False
-        assert runner.calls == []
+        assert len(runner.calls) == 1
+        assert shlex.split(runner.script())[2] == tools.setup_script("myws")
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no", "NO"])
     def test_falsey_opt_out_values_leave_provisioning_on(self, monkeypatch, value):
         monkeypatch.setenv(tools.DISABLE_VAR, value)
         runner = Runner()
         assert ensure_tools("myws", runner) is True
+
+
+@pytest.mark.usefixtures("no_host_payload")
+class TestTheHostNamesEveryStageThatIsNotOk:
+    """The legibility that makes the fold allowed at all.
+
+    Three trips gave three distinguishable errors only in principle: the
+    hostname trip's failure was a boolean the attach threw away, so today one of
+    the three is silence. One trip that names its stages is more legible than
+    that, not less.
+    """
+
+    @staticmethod
+    def _report(caplog, stdout: str, returncode: int = 0) -> List[tuple]:
+        with caplog.at_level(logging.INFO, logger=""):
+            ensure_tools("myws", Runner(returncodes=(returncode, 0), stdout=stdout))
+        return [
+            (record.levelno, record.getMessage())
+            for record in caplog.records
+            if tools.HOSTNAME_STAGE in record.getMessage()
+        ]
+
+    def test_a_failing_stage_is_named_with_its_status(self, caplog):
+        reported = self._report(caplog, STAGE_FAILED + REPORT_ABSENT)
+        assert len(reported) == 1
+        level, message = reported[0]
+        assert "myws" in message
+        assert "1" in message
+        # Info, not warning, and only for this stage: `sudo hostname` cannot
+        # succeed without CAP_SYS_ADMIN, which Docker drops by default, so a
+        # warning here would fire on the majority of cold launches.
+        assert level == logging.INFO
+
+    def test_a_stage_that_worked_is_not_reported_at_all(self, caplog):
+        assert self._report(caplog, STAGE_OK + REPORT_PROVISIONED) == []
+
+    def test_a_stage_that_was_never_reached_is_named_too(self, caplog):
+        """The state that used to be unrepresentable. A report with no line for
+        the stage is not the stage working."""
+        reported = self._report(caplog, REPORT_PROVISIONED)
+        assert len(reported) == 1
+        assert reported[0][0] == logging.INFO
+
+    def test_a_trip_that_never_got_through_reports_no_stage_as_ok(self, caplog):
+        """A non-zero `devpod ssh` is the transport, not a stage -- so nothing
+        may be read as having run."""
+        reported = self._report(caplog, "", returncode=1)
+        assert len(reported) == 1
+
+    def test_a_stage_warns_by_name_unless_it_asks_to_be_quieter(self):
+        """Warning is the default a new stage gets: naming a stage that did not
+        work is the whole point of the composition, and the hostname's info
+        level is an exception it has to declare, measured (#167), rather than
+        the rule."""
+        assert tools.Stage(name="x", command="true").failure_level == logging.WARNING
+        levels = {stage.name: stage.failure_level for stage in tools.setup_stages("myws")}
+        assert levels == {tools.HOSTNAME_STAGE: logging.INFO}
 
 
 class TestHostPayload:

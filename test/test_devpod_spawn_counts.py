@@ -13,6 +13,7 @@ redundant round-trip fails here instead of quietly costing half a second.
 
 import io
 import json
+import shlex
 import subprocess
 import sys
 from typing import List, Optional
@@ -20,6 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
+from devlaunch import tools
 from devlaunch.dl import (
     DevpodNotInstalled,
     UnreadableWorkspaceList,
@@ -253,19 +255,19 @@ class TestHotCommandSpawnCounts:
         assert spawns.devpod_commands == [["list", "--output", "json"]]
 
     def test_attaching_to_a_running_workspace(self, spawns):
-        """The interactive attach chain, pinned call by call.
+        """The interactive attach chain, pinned call by call: two trips.
 
         One `status` answers both questions dl has -- does devpod know this
         workspace, and is it running -- so the `list` that used to precede it
-        is gone. The hostname round-trip is kept deliberately: bash reads the
-        hostname when the shell starts, so it has to be set before the session
-        dl hands over, and devpod ssh has no hook inside that session to fold
-        it into.
+        is gone. The hostname round-trip that used to sit between the status and
+        the session is gone too, and it did not merely die: naming the container
+        is a stage of the setup pass every entry into Running already pays
+        (#167), so a Running workspace arrives here already named and a trip
+        here would be a second ~1.7s spent re-answering that.
         """
         assert _run_dl("myws") == 0
         assert spawns.devpod_commands == [
             ["status", "myws", "--output", "json"],
-            ["ssh", "myws", "--command", "sudo hostname myws"],
             ["ssh", "myws"],
         ]
 
@@ -361,6 +363,96 @@ class TestHotCommandSpawnCounts:
         with patch("devlaunch.dl._get_clone_manager"):
             assert _run_dl("broken-ws", "rm", "--force") == 0
         assert ["delete", "broken-ws", "--ignore-not-found"] in spawns.devpod_commands
+
+
+class TestColdLaunchSpawnCounts:
+    """The cold path's trips, which had no pin here at all until #168.
+
+    Every pin above this is warm, which is why the cold trip count could move
+    without anything failing — and it is the path with the trips on it: the
+    warm chain is a `status` and a session, while a cold one runs `devpod up`
+    and then talks to the container it built.
+
+    Two things are stubbed, and both would otherwise make this assert a
+    different sequence per developer rather than a property of dl:
+
+    - **`host_payload`**, because what a host has to lend decides which arm the
+      setup takes. A machine with a claude and a gh takes the transfer; a
+      machine with neither takes the network install instead.
+    - **the GitHub token**, because `devpod up` carries a
+      `--workspace-env-file` flag only on a host that is logged in, and the
+      path in it is a fresh temporary file every run.
+    """
+
+    @staticmethod
+    def _payload(tmp_path) -> tools.HostPayload:
+        """A lendable payload made of scratch files, not the host's real 300MB."""
+        claude = tmp_path / "claude-2.0.1"
+        claude.write_bytes(b"#!/bin/sh\n")
+        gh = tmp_path / "gh"
+        gh.write_bytes(b"\x7fELF")
+        return tools.HostPayload(
+            claude_version="2.0.1",
+            members=((claude, ".local/share/claude/versions/2.0.1"), (gh, ".local/bin/gh")),
+        )
+
+    @staticmethod
+    def _up(spawns):
+        with patch("devlaunch.gh_auth.resolve_token", return_value=None):
+            workspace_up("brand-new", workspace_id="brand-new", workspace_identity="brand-new")
+        return spawns.devpod_commands
+
+    def test_a_cold_launch_with_a_host_that_can_lend(self, spawns, tmp_path):
+        """Two trips into the container, and the first one carries the naming.
+
+        The `up` builds the container; the setup pass then asks what it has and
+        names it in the same trip; the transfer lends the host's binaries. There
+        is no third trip setting a hostname, which is the ~1.9s this ticket
+        saves (#157, measured against real devpod against a real container).
+        """
+        with patch("devlaunch.tools.host_payload", return_value=self._payload(tmp_path)):
+            commands = self._up(spawns)
+        assert commands == [
+            ["context", "options", "--output", "json"],
+            [
+                "up",
+                "brand-new",
+                "--id",
+                "brand-new",
+                "--ide",
+                "none",
+                "--init-env",
+                "DEVLAUNCH_WORKSPACE_ID=brand-new",
+            ],
+            [
+                "ssh",
+                "brand-new",
+                "--command",
+                f"bash -lc {shlex.quote(tools.setup_script('brand-new'))}",
+            ],
+            [
+                "ssh",
+                "brand-new",
+                "--command",
+                f"bash -c {shlex.quote(tools.transfer_script(self._payload(tmp_path)))}",
+            ],
+        ]
+
+    def test_a_cold_launch_with_nothing_to_lend(self, spawns):
+        """The other arm, pinned for the same reason: the network install is a
+        third trip, and the naming still costs none of its own."""
+        with patch("devlaunch.tools.host_payload", return_value=None):
+            commands = self._up(spawns)
+        assert [argv[:1] for argv in commands] == [["context"], ["up"], ["ssh"], ["ssh"]]
+        assert commands[2][3] == f"bash -lc {shlex.quote(tools.setup_script('brand-new'))}"
+        assert commands[3][3] == f"bash -lc {shlex.quote(tools.provision_script())}"
+
+    def test_no_trip_of_the_launch_is_a_hostname_of_its_own(self, spawns, tmp_path):
+        """Stated as the absence it is, so a reintroduced trip fails here."""
+        with patch("devlaunch.tools.host_payload", return_value=self._payload(tmp_path)):
+            commands = self._up(spawns)
+        assert not any("sudo hostname brand-new" in argv for argv in commands)
+        assert tools.setup_script("brand-new").count("sudo hostname brand-new") == 1
 
 
 class TestWorkspaceListMemoization:
@@ -487,19 +579,25 @@ class TestMemoizationCannotHideAMissingDevpod:
 
 
 class TestAttachHelper:
-    """attach_workspace is the one place that decides the hostname round-trip."""
+    """The attach is one trip now, and the same one trip either way.
+
+    It used to branch: an interactive attach paid a hostname round-trip in
+    front of the session and a one-shot `-- cmd` skipped it, because a one-shot
+    renders no prompt for a hostname to appear in. With the naming folded into
+    the setup pass there is nothing left to skip, so the branch is gone and both
+    shapes cost exactly the session.
+    """
 
     @staticmethod
-    def _hostname_calls(shell_command: Optional[str]) -> int:
-        """How many hostname round-trips one attach costs."""
-        with patch("devlaunch.dl.setup_hostname") as hostname:
+    def _trips(shell_command: Optional[str]) -> int:
+        with patch("devlaunch.dl.run_devpod") as run_devpod:
             with patch("devlaunch.dl.workspace_ssh", return_value=0) as ssh:
                 assert attach_workspace("myws", shell_command) == 0
         ssh.assert_called_once_with("myws", shell_command)
-        return hostname.call_count
+        return run_devpod.call_count
 
-    def test_an_interactive_attach_sets_the_hostname(self):
-        assert self._hostname_calls(None) == 1
+    def test_an_interactive_attach_spawns_nothing_but_the_session(self):
+        assert self._trips(None) == 0
 
-    def test_a_one_shot_command_does_not(self):
-        assert self._hostname_calls("echo hi") == 0
+    def test_a_one_shot_command_spawns_nothing_but_the_session(self):
+        assert self._trips("echo hi") == 0
