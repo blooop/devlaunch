@@ -85,7 +85,7 @@ class TestMetadataLostUpdates:
 # both processes construct their managers, declare ready, and block until the
 # parent drops the "go" file.
 
-_ENSURE_WORKSPACE_DRIVER = """
+_PREPARE_COLD_DRIVER = """
 import sys, time
 from pathlib import Path
 from devlaunch.worktree.config import WorktreeConfig
@@ -101,7 +101,7 @@ manager = WorkspaceCloneManager(
 (gate / f"ready-{tag}").touch()
 while not (gate / "go").exists():
     time.sleep(0.001)
-print(manager.ensure_workspace("caseowner", "caserepo", branch, remote_url))
+print(manager.prepare_cold("caseowner", "caserepo", branch, remote_url))
 """
 
 _ENSURE_REPO_DRIVER = """
@@ -208,7 +208,7 @@ class TestSimultaneousProcesses:
 
         procs = [
             spawn_driver(
-                _ENSURE_WORKSPACE_DRIVER,
+                _PREPARE_COLD_DRIVER,
                 [repos_dir, metadata, local_git_repo["remote_url"], branch, gate, branch],
                 tmp_path,
                 f"launch-{branch}",
@@ -242,7 +242,7 @@ class TestSimultaneousProcesses:
 
         procs = [
             spawn_driver(
-                _ENSURE_WORKSPACE_DRIVER,
+                _PREPARE_COLD_DRIVER,
                 [repos_dir, metadata, local_git_repo["remote_url"], "main", gate, tag],
                 tmp_path,
                 f"launch-{tag}",

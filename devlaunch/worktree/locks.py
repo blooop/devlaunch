@@ -15,8 +15,11 @@ Two deliberate limits, both load-bearing:
 
 - **Not reentrant.** Acquiring a path twice in one process deadlocks (the second
   open file description blocks on the first). Call sites are structured so no
-  lock is ever taken while the same lock is held — see the acquisition comments
-  at each site.
+  lock is ever taken while the same lock is held. For the per-repo lock that is
+  now stated rather than remembered: ``RepositoryManager.hold_repo_lock`` is the
+  one scope that takes it, and everything running under it requires the
+  ``RepoLock`` token that scope mints, so a step that tried to lock again could
+  not be written without saying so in its signature.
 - **The lock file is never deleted.** Unlinking an flock'd file is the classic
   self-defeating move: a process that opened the old inode still "holds" a lock
   nobody else can see, while new arrivals lock a fresh file and walk straight

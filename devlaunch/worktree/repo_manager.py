@@ -1,5 +1,7 @@
 """Repository manager for worktree backend."""
 
+import contextlib
+import dataclasses
 import logging
 import os
 import shutil
@@ -7,11 +9,11 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import NoReturn, Optional, TYPE_CHECKING, Union
+from typing import Iterator, NoReturn, Optional, TYPE_CHECKING, Union
 
 from .. import timing
 from ..workspace_id import validate_ref_name
-from .locks import hold_lock
+from . import locks
 from .models import BaseRepository
 from .storage import MetadataStorage
 
@@ -90,6 +92,67 @@ def unhandled_fetch_outcome(outcome: NoReturn) -> NoReturn:
     one of the existing three.
     """
     raise AssertionError(f"Unhandled fetch outcome: {outcome!r}")
+
+
+# The one value that turns a RepoLock constructor call into a real token, held
+# privately by this module so that :meth:`RepositoryManager.hold_repo_lock` is
+# the only place able to pass it.
+_MINTED_INSIDE_THE_LOCK = object()
+
+
+@dataclass(frozen=True)
+class RepoLock:
+    """Evidence that the per-repo lock for ``(owner, repo)`` is held right now.
+
+    The same proof-carrying pattern as :class:`devlaunch.workspace_id.WorkspaceId`
+    -- holding it *is* the evidence -- applied to a different kind of fact. A
+    method that takes one cannot be called without the lock, so the rule
+    ``hold_lock`` needs from its callers is stated by the signature instead of
+    begged for in a comment at each site. Three such comments used to stand in
+    front of the acquisitions on the cold path, and a comment is not read by the
+    caller who is about to deadlock against it.
+
+    **It carries the pair, and that is not decoration.** A bare marker type would
+    let a lock taken on ``owner/repo`` vouch for work on ``owner/other``: the
+    lock genuinely held, the wrong repository genuinely unserialized, and nothing
+    in the signature able to tell. Every method that takes a token checks it
+    against the repository it is about to touch -- see :meth:`covers`.
+
+    Minted only by :meth:`RepositoryManager.hold_repo_lock`; constructing one by
+    hand raises. A token anybody could build would prove nothing, which is the
+    whole of what this type is for.
+    """
+
+    owner: str
+    repo: str
+    #: Not data: the sentinel the lock scope passes to prove it is the minter.
+    #: An ``InitVar`` so it is checked and then forgotten, leaving a token that
+    #: carries the pair and nothing else.
+    mint: dataclasses.InitVar[object] = None
+
+    def __post_init__(self, mint: object) -> None:
+        if mint is not _MINTED_INSIDE_THE_LOCK:
+            raise TypeError(
+                "A RepoLock is proof that the repo lock is held, so it is minted "
+                "only by RepositoryManager.hold_repo_lock()."
+            )
+
+    def covers(self, owner: str, repo: str) -> bool:
+        """Whether this token is evidence about *owner*/*repo* specifically."""
+        return (self.owner, self.repo) == (owner, repo)
+
+    def require(self, owner: str, repo: str) -> None:
+        """Raise unless this token is evidence about *owner*/*repo*.
+
+        ``ValueError`` rather than an assertion: it is a caller mistake of the
+        same kind as an unsafe ref, and the launch path already treats a
+        ``ValueError`` out of this layer as the launch failing rather than as a
+        crash to report.
+        """
+        if not self.covers(owner, repo):
+            raise ValueError(
+                f"repo lock held for {self.owner}/{self.repo} cannot vouch for {owner}/{repo}"
+            )
 
 
 class RepositoryManager:
@@ -286,8 +349,9 @@ class RepositoryManager:
         whole interval on the strength of having fetched one branch. Not writing
         it also keeps the repo-lock→metadata-lock nesting off this path.
 
-        Assumes the caller holds the repo lock (``hold_lock`` is not reentrant);
-        it writes a ref in the shared bare repo, so it must not run unserialized.
+        Writes a ref in the shared bare repo, so it must not run unserialized.
+        Its one caller, :meth:`WorkspaceCloneManager.ensure_branch`, holds a
+        :class:`RepoLock` for this repository, which is what says so.
         """
         # The branch is interpolated into a refspec that reaches git as argv, so
         # it is checked here rather than trusted. ensure_branch's caller usually
@@ -356,9 +420,36 @@ class RepositoryManager:
             return True
         return False
 
-    @timing.staged("host-prep")
-    def ensure_repo(self, owner: str, repo: str, remote_url: str) -> BaseRepository:
-        """Ensure repo exists locally, clone if needed.
+    @contextlib.contextmanager
+    def hold_repo_lock(self, owner: str, repo: str) -> Iterator[RepoLock]:
+        """Hold the per-repo lock for the block, and hand out the proof.
+
+        The only place a :class:`RepoLock` is minted, which is what makes the
+        token mean something: every method that takes one is reachable only from
+        inside a scope like this one.
+
+        One scope per launch is the shape devlaunch#200 settled on. The
+        alternatives were an outer ``with`` in the command layer, which leaks the
+        lock-ordering doctrine into code that has no business knowing it, and a
+        reentrant lock, which makes ownership invisible -- with nothing in a
+        signature to say who holds what, "is this call already under the lock?"
+        becomes a question answered by reading upwards through call sites.
+
+        The contended flag ``hold_lock`` yields is deliberately not surfaced
+        here. A launch that waited may well find the world changed, but nothing
+        under this lock acts on that: every step below is idempotent and
+        re-checks the disk itself.
+        """
+        with locks.hold_lock(
+            self.lock_path(owner, repo),
+            waiting_note=f"another dl run preparing {owner}/{repo}",
+        ):
+            yield RepoLock(owner, repo, _MINTED_INSIDE_THE_LOCK)
+
+    def clone_if_missing(
+        self, lock: RepoLock, owner: str, repo: str, remote_url: str
+    ) -> BaseRepository:
+        """Clone the bare cache for *owner*/*repo* if it is not already there.
 
         Clone-if-missing and nothing else. It deliberately does **not** refresh a
         cache that is already there, however stale: the broad sweep that used to
@@ -372,26 +463,39 @@ class RepositoryManager:
         Freshness is not lost, it moved: see the staleness contract on
         :meth:`WorkspaceCloneManager.ensure_branch`.
 
-        The whole exists-check-then-clone sequence runs under the repo lock:
-        without it, two processes launching the same repo at once both saw no
-        clone and both ran ``git clone --bare`` into the same path — and the
-        loser's cleanup in clone_repo deleted the winner's half-written cache.
-        Serialized, the loser just waits and then reuses the winner's clone.
-        clone_repo relies on this lock rather than taking it itself (hold_lock is
-        not reentrant).
+        Takes the *lock* rather than acquiring one, because the whole
+        exists-check-then-clone sequence has to be serialized and the cold path
+        wants it serialized together with what follows it: without the lock, two
+        processes launching the same repo at once both saw no clone and both ran
+        ``git clone --bare`` into the same path — and the loser's cleanup in
+        clone_repo deleted the winner's half-written cache. Serialized, the loser
+        just waits and then reuses the winner's clone.
         """
-        with hold_lock(
-            self.lock_path(owner, repo),
-            waiting_note=f"another dl run preparing {owner}/{repo}",
-        ):
-            if self.repo_exists(owner, repo):
-                existing_repo = self.get_repo(owner, repo)
-                if existing_repo:
-                    return existing_repo
-                # Metadata doesn't exist but repo exists - fall through to clone
-                # (which will add metadata)
+        lock.require(owner, repo)
+        if self.repo_exists(owner, repo):
+            existing_repo = self.get_repo(owner, repo)
+            if existing_repo:
+                return existing_repo
+            # Metadata doesn't exist but repo exists - fall through to clone
+            # (which will add metadata)
 
-            return self.clone_repo(owner, repo, remote_url)
+        return self.clone_repo(owner, repo, remote_url)
+
+    @timing.staged("host-prep")
+    def ensure_repo(self, owner: str, repo: str, remote_url: str) -> BaseRepository:
+        """Clone-if-missing in a lock scope of its own.
+
+        What a bare ``owner/repo`` spec needs before it can name the default
+        branch, and the one repo-lock cycle the launch path takes outside
+        :meth:`WorkspaceCloneManager.prepare_cold`. Folding it into that scope
+        would mean holding this lock across the fast-attach ``devpod status``
+        that comes between them, so every sibling launch of the repo would queue
+        behind a subprocess — a far worse trade than the uncontended flock it
+        saves (devlaunch#200). Only the branch *name* crosses the gap, and the
+        collapsed scope re-verifies clone-if-missing under its own lock.
+        """
+        with self.hold_repo_lock(owner, repo) as lock:
+            return self.clone_if_missing(lock, owner, repo, remote_url)
 
     def repo_exists(self, owner: str, repo: str) -> bool:
         """Check if repository exists locally."""

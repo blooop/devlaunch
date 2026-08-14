@@ -3648,8 +3648,6 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
 
         remote_url = f"git@github.com:{owner_repo}.git"
 
-        repo_ensured = False
-
         # Resolve branch early so we can compute workspace ID
         if not branch:
             # Constructed here rather than above the branch, because building it
@@ -3665,7 +3663,6 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             except (RuntimeError, OSError) as e:
                 logging.error(f"Repository '{owner_repo}': {e}")
                 return 1
-            repo_ensured = True
             branch = clone_mgr.repo_manager.get_default_branch(owner, repo)
 
         # Compute workspace ID with resolved branch. Constructing the WorkspaceId is
@@ -3689,32 +3686,26 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             # path is the other place that needs the manager, so it is the other
             # place that builds it.
             clone_mgr = _get_clone_manager()
-            if not repo_ensured:
-                try:
-                    clone_mgr.repo_manager.ensure_repo(owner, repo, remote_url)
-                except (RuntimeError, OSError) as e:
-                    logging.error(f"Repository '{owner_repo}': {e}")
-                    return 1
-
-            # Ensure branch exists in bare repo (create on remote if needed)
-            try:
-                clone_mgr.ensure_branch(owner, repo, branch)
-            except (RuntimeError, OSError) as e:
-                logging.error(f"Failed to ensure branch '{branch}': {e}")
-                return 1
-
             custom_id = workspace_id
 
-            # Create workspace clone
+            # One call, and one repo lock behind it: the clone, the fetch, the
+            # branch and the workspace are prepared in a single scope that owns
+            # the lock throughout (devlaunch#200). The lock-ordering doctrine
+            # stays where it is enforced -- nothing here knows which locks that
+            # takes, which is exactly why the scope is not opened at this layer.
             try:
-                workspace_path = clone_mgr.ensure_workspace(owner, repo, branch, remote_url)
+                workspace_path = clone_mgr.prepare_cold(owner, repo, branch, remote_url)
                 workspace_spec = str(workspace_path)
             # ValueError: the branch resolved above does go through WorkspaceId, but
-            # ensure_workspace may fall back to the default branch recorded in the
+            # the checkout may fall back to the default branch recorded in the
             # repo's stored metadata, and that value reaches git unproven. It is
             # checked where it enters argv, which raises from in here.
+            # Named by the workspace being prepared, because one message now
+            # covers what three used to: the clone, the branch and the workspace
+            # clone all fail out of the one call, and "which repo, which branch"
+            # is what the old per-step messages carried and the user still needs.
             except (RuntimeError, OSError, ValueError) as e:
-                logging.error(f"Failed to prepare workspace: {e}")
+                logging.error(f"Failed to prepare workspace '{owner_repo}@{branch}': {e}")
                 return 1
     elif is_path_spec(raw_spec) or is_git_spec(raw_spec):
         workspace_spec = expand_workspace_spec(raw_spec)
