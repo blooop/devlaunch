@@ -511,6 +511,28 @@ class TestRunningItAgain:
         assert "Nothing to prune." in out
 
 
+class TestTheDiskThisCommandDoesNotFree:
+    """A run that really removed clones still ends at the Docker boundary.
+
+    The empty-cache run is held in test_docker_boundary.py, together with
+    `--purge`'s and the property that the two say it in the same words. This one
+    is here because the fixture that removes something real is here, and the
+    removal path is the one a person is reading a freed figure on: 1.4 GiB back
+    from the clones, and the images those workspaces built untouched and unnamed
+    unless this line names them.
+    """
+
+    def test_a_run_that_removed_clones_still_names_the_docker_disk_it_does_not_manage(
+        self, world, capsys
+    ):
+        code, _devpod = run_prune(world, "-y")
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Removed 1 clone director(ies)" in out
+        assert "devlaunch does not manage Docker images or volumes" in out
+        assert "docker system df" in out
+
+
 class TestTheRecordsFollowTheDirectories:
     """metadata.json is append-mostly, and this is where that stops."""
 

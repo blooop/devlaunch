@@ -884,8 +884,55 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
     return tuple(refused)
 
 
+DOCKER_BOUNDARY = (
+    "devlaunch does not manage Docker images or volumes: the containers these workspaces "
+    "used may still hold disk, and `docker system df` shows what Docker is holding."
+)
+
+
+def print_docker_boundary() -> None:
+    """Name the disk a cleanup did not free, and the one tool that measures it.
+
+    Both cleanup commands end here, from this one sentence, because a command
+    that has just reported freeing a few gigabytes is exactly where a person
+    reads "and that is all of it". It is not: on the host devlaunch#160 was
+    worked on, `docker system df` read 86.5 GB of reclaimable images, 43.18 GB
+    of volumes and 13.88 GB of build cache -- an order of magnitude more than
+    either command can free, and none of it devlaunch's to delete.
+
+    **A sentence, not a measurement.** Nothing here runs `docker`, so there is
+    nothing to fail on a machine where Docker is absent, stopped, or reachable
+    only as another user -- and nothing that takes a moment on a command whose
+    work is already done. The figures above are the ticket's, from the host it
+    was decided on, not this run's.
+
+    **And it points rather than offers.** devpod's images carry no devlaunch or
+    devpod label -- verified while devlaunch#160 was decided -- so any list this
+    could print would be a guess at which images belong to these workspaces, and
+    a guess is the wrong thing to paste into `docker image rm`. `docker image
+    prune -a` is worse: it is unscoped, and would take images devlaunch never
+    built, which is the footgun PR #129 removed from `--purge`. `docker system
+    df` is information about disk Docker holds, and what to do about it is the
+    user's to decide with a tool that is theirs rather than devlaunch's.
+    """
+    print(DOCKER_BOUNDARY)
+
+
 def purge_all_data() -> int:
-    """Purge devlaunch's data: the workspaces it created, and its caches.
+    """Purge devlaunch's data, then name the disk devlaunch never had.
+
+    The boundary line is printed here rather than at each of the outcomes below,
+    so that "a purge ends by naming what it did not free" holds for every way a
+    purge can end -- including the one where there was nothing to purge, which is
+    where somebody whose disk is full is most likely to be reading.
+    """
+    status = _purge_devlaunch_data()
+    print_docker_boundary()
+    return status
+
+
+def _purge_devlaunch_data() -> int:
+    """Delete the workspaces devlaunch created, and its caches.
 
     This:
     1. Deletes the DevPod workspaces devlaunch created -- see
@@ -2337,6 +2384,13 @@ def prune_command(flags: Sequence[str]) -> int:
     measured 1017 ms on the reference host -- about two warm launches -- and it
     gets slower exactly as the problem it is for gets worse, so it is a command
     somebody runs, and `dl --prune` answered `n` is how you read the report.
+
+    It ends where `--purge` ends, in the same words: see print_docker_boundary
+    for the disk neither of them frees. Printed for every way the run below can
+    end -- including the two that remove nothing, since answering `n` is this
+    command's read-only view and a report is exactly where the boundary belongs
+    -- but not for the option it refuses above, which never got as far as
+    looking at a directory.
     """
     unknown = [flag for flag in flags if flag not in _PRUNE_FLAGS]
     if unknown:
@@ -2346,6 +2400,13 @@ def prune_command(flags: Sequence[str]) -> int:
         # find out about afterwards.
         logging.error(f"Unknown option(s) for --prune: {' '.join(unknown)}")
         return 1
+    status = _prune_clone_directories(flags)
+    print_docker_boundary()
+    return status
+
+
+def _prune_clone_directories(flags: Sequence[str]) -> int:
+    """Build the plan, report it, ask, and remove what survives the second pass."""
     force = "--force" in flags
     clone_mgr = _get_clone_manager()
     root = clone_root(clone_mgr)
@@ -3337,7 +3398,12 @@ Global commands:
                                      alone; a clone holding uncommitted or
                                      unpushed work is named and kept unless
                                      --force. Prints the plan and asks first.
-    dl --purge [-y]                  Remove devlaunch's workspaces and caches
+    dl --purge [-y]                  Remove devlaunch's workspaces and caches.
+                                     Like --prune it never removes a Docker
+                                     image, volume or build cache -- devlaunch
+                                     does not manage those -- so both commands
+                                     end by pointing at `docker system df`,
+                                     which is what knows what Docker holds.
     dl --help, -h                    Show this help
     dl --version                     Show version (editable installs name their tree)
 
