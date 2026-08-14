@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -192,3 +192,36 @@ class TestBenchHarness:
         assert marker.read_text() == "xx"
         runs = re.findall(r"^run \d+/2: (\d+\.\d{3})s$", result.stdout, re.M)
         assert runs and all(float(seconds) < 0.15 for seconds in runs), result.stdout
+
+
+class TestTheDocumentedColdReset:
+    """The cold recipe in --help names a reset dl actually accepts.
+
+    This exact defect shipped twice: a README recipe whose reset was a
+    subcommand dl does not have, then the same recipe moved into --help
+    unfixed. So the documented reset is exercised rather than read: extracted
+    from the epilog and run against a devpod that has nothing to delete —
+    the state every cold bench's first reset meets.
+    """
+
+    def test_the_documented_reset_succeeds_from_the_absent_state(self):
+        recipe = re.search(r"--before '([^']+)'", BENCH.read_text())
+        assert recipe, "the cold recipe documents no --before reset"
+        # dl-next is this working tree's install of main() (see dev.sh).
+        argv = shlex.split(recipe.group(1))[1:]
+
+        def devpod(args, **_kwargs):
+            # Real devpod v0.26.1 against the recipe's starting state: nothing
+            # exists, so everything fails except an ignore-not-found delete.
+            if args[:1] == ["delete"] and "--ignore-not-found" in args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 1, "", "workspace not found")
+
+        manager = MagicMock()
+        manager.repo_manager.get_default_branch.return_value = "main"
+        with (
+            patch("devlaunch.dl.run_devpod", side_effect=devpod),
+            patch("devlaunch.dl._get_clone_manager", return_value=manager),
+            patch("devlaunch.dl.update_cache_background"),
+        ):
+            assert main(argv) == 0

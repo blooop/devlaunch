@@ -17,19 +17,34 @@ from typing import List, Optional
 
 EPILOG = """\
 warm:  bench_launch.py -n 5 -- dl-next owner/repo -- true
-cold:  XDG_CACHE_HOME=/tmp/dl-bench/cache bench_launch.py -n 5 \\
-         --before 'dl-next owner/repo delete' -- dl-next owner/repo -- true
+
+cold:  export DEVPOD_HOME=/tmp/dl-bench/devpod \\
+              DEVPOD_SSH_CONFIG=/tmp/dl-bench/ssh_config \\
+              XDG_CACHE_HOME=/tmp/dl-bench/cache
+       pixi run dev-add-docker    # a fresh devpod home has no provider
+       bench_launch.py -n 5 --before 'dl-next owner/repo rm --force' \\
+              -- dl-next owner/repo -- true
 
 A cold median needs the reset per *run*: delete once and bench five times and
-runs 2..5 are warm, so the median is a warm number under a cold label. Scope
-XDG_CACHE_HOME (that variable only, see dev.sh) so the reset deletes the
-bench's own workspace, not one you are using. A failed reset stops with no
+runs 2..5 are warm, so the median is a warm number under a cold label. The
+reset is `rm --force`, which also succeeds when there is nothing to remove
+yet -- the state the first run starts from. A failed reset stops with no
 median, like a failed run: a run whose starting condition was never
 established is not a measurement of it.
 
+What the scoping does and does not do: the workspace id is derived from
+owner/repo@branch alone, so the bench's workspace is the SAME id as your real
+one -- no cache variable changes that. What keeps the bench's workspaces in a
+namespace of their own is DEVPOD_HOME (plus DEVPOD_SSH_CONFIG, which `devpod
+up` writes outside that home) -- the same two variables the test suite scopes
+in test/devpod_scoping.py. XDG_CACHE_HOME moves only devlaunch's clone cache
+and bookkeeping. The containers are still real docker containers on this
+machine. The bare-repo cache survives the reset on purpose: "cold" here means
+no workspace, no worktree, no container -- not a fresh network clone per run.
+
 This clock starts outside the process, so it includes interpreter startup and
 imports; dl's own `dl-timing: total` starts inside main() and excludes them
-(on `dl --version`: 0.001s total against a 0.056s median here). Quote one
+(on `dl --version`: 0.001s total against a 0.061s median here). Quote one
 instrument on both sides of a change.
 """
 

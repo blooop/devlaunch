@@ -360,7 +360,7 @@ class TestHotCommandSpawnCounts:
         spawns.undescribable = {"broken-ws"}
         with patch("devlaunch.dl._get_clone_manager"):
             assert _run_dl("broken-ws", "rm", "--force") == 0
-        assert ["delete", "broken-ws"] in spawns.devpod_commands
+        assert ["delete", "broken-ws", "--ignore-not-found"] in spawns.devpod_commands
 
 
 class TestWorkspaceListMemoization:
