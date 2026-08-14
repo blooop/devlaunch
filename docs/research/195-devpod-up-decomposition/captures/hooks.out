@@ -1,0 +1,21 @@
+{"time":"2026-08-14T19:04:39.296775127+01:00","message":"creating devcontainer","level":"info"}
+{"time":"2026-08-14T19:04:40.443511807+01:00","message":"inspecting image: image=alpine:3.19","level":"info"}
+{"time":"2026-08-14T19:04:40.500087462+01:00","message":"running docker command: command=docker, args=run --sig-proxy=false --mount type=bind,src=/tmp/dl-195-scratch/proj4,dst=/workspaces/dl195hooks -e DEVPOD=true -e REMOTE_CONTAINERS=true -e DEVPOD_WORKSPACE_ID=dl195hooks -e DEVPOD_WORKSPACE_UID=default-dl-12612 -l dev.containers.id=default-dl-12612 -l devcontainer.metadata=[{\"onCreateCommand\":{\"\":[\"sh -c 'sleep 1; echo ONCREATE'\"]},\"updateContentCommand\":{\"\":[\"sh -c 'sleep 1; echo UPDATECONTENT'\"]},\"postCreateCommand\":{\"\":[\"sh -c 'sleep 2; echo POSTCREATE'\"]},\"postStartCommand\":{\"\":[\"sh -c 'sleep 1; echo POSTSTART'\"]},\"postAttachCommand\":{\"\":[\"sh -c 'echo POSTATTACH'\"]}}] -l devpod.user= -d --entrypoint /bin/sh alpine:3.19 -c echo Container started\ntrap \"exit 0\" 15\nexec \"$@\"\n\nwhile ! command -v /usr/local/bin/devpod \u003e/dev/null 2\u003e\u00261; do\n  echo \"waiting for devpod agent to be available\"\n  sleep 1\ndone\nexec /usr/local/bin/devpod agent container daemon\n -, cwd=/tmp/dl-195-scratch/proj4","level":"info"}
+{"time":"2026-08-14T19:04:40.571896596+01:00","message":"bf7c2b833aff0e65deef1f756428e2aebf9a82a6b2015fd89a0a5cf812e86770","level":"info"}
+{"time":"2026-08-14T19:04:41.325838065+01:00","message":"setting up container","level":"info"}
+{"time":"2026-08-14T19:04:41.493202343+01:00","message":"chown workspace: user=root, workspaceRoot=/workspaces","level":"info"}
+{"time":"2026-08-14T19:04:41.494602544+01:00","message":"chown workspace recursively: user=root, workspaceFolder=/workspaces/dl195hooks","level":"info"}
+{"time":"2026-08-14T19:04:41.4958637+01:00","message":"setup KubeConfig","level":"info"}
+{"time":"2026-08-14T19:04:41.497986026+01:00","message":"running onCreateCommands lifecycle hook:  sh -c 'sleep 1; echo ONCREATE'","level":"info"}
+{"time":"2026-08-14T19:04:42.500209491+01:00","message":"ONCREATE","level":"info"}
+{"time":"2026-08-14T19:04:42.502599221+01:00","message":"ran command: command=, args=sh -c 'sleep 1; echo ONCREATE'","level":"info"}
+{"time":"2026-08-14T19:04:42.50445431+01:00","message":"running updateContentCommands lifecycle hook:  sh -c 'sleep 1; echo UPDATECONTENT'","level":"info"}
+{"time":"2026-08-14T19:04:43.502741549+01:00","message":"UPDATECONTENT","level":"info"}
+{"time":"2026-08-14T19:04:43.50420893+01:00","message":"ran command: command=, args=sh -c 'sleep 1; echo UPDATECONTENT'","level":"info"}
+{"time":"2026-08-14T19:04:43.505105863+01:00","message":"running postCreateCommands lifecycle hook:  sh -c 'sleep 2; echo POSTCREATE'","level":"info"}
+{"time":"2026-08-14T19:04:45.504414555+01:00","message":"POSTCREATE","level":"info"}
+{"time":"2026-08-14T19:04:45.505614925+01:00","message":"ran command: command=, args=sh -c 'sleep 2; echo POSTCREATE'","level":"info"}
+{"time":"2026-08-14T19:04:45.506341637+01:00","message":"running postStartCommands lifecycle hook:  sh -c 'sleep 1; echo POSTSTART'","level":"info"}
+{"time":"2026-08-14T19:04:46.506549799+01:00","message":"POSTSTART","level":"info"}
+{"time":"2026-08-14T19:04:46.508007314+01:00","message":"ran command: command=, args=sh -c 'sleep 1; echo POSTSTART'","level":"info"}
+{"time":"2026-08-14T19:04:46.523140036+01:00","message":"SSH configuration completed in workspace","level":"info"}

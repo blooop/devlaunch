@@ -1,0 +1,10 @@
+{"time":"2026-08-14T19:06:01.681076232+01:00","message":"creating devcontainer","level":"info"}
+{"time":"2026-08-14T19:06:02.8898256+01:00","message":"inspecting image: image=alpine:3.19","level":"info"}
+{"time":"2026-08-14T19:06:02.945041004+01:00","message":"running docker command: command=docker, args=run --sig-proxy=false --mount type=bind,src=/tmp/dl-195-scratch/proj5,dst=/workspaces/dl195fail -e REMOTE_CONTAINERS=true -e DEVPOD_WORKSPACE_ID=dl195fail -e DEVPOD_WORKSPACE_UID=default-dl-bf3d1 -e DEVPOD=true -l dev.containers.id=default-dl-bf3d1 -l devcontainer.metadata=[{\"postCreateCommand\":{\"\":[\"sh -c 'echo about-to-fail; sleep 1; exit 7'\"]}}] -l devpod.user= -d --entrypoint /bin/sh alpine:3.19 -c echo Container started\ntrap \"exit 0\" 15\nexec \"$@\"\n\nwhile ! command -v /usr/local/bin/devpod \u003e/dev/null 2\u003e\u00261; do\n  echo \"waiting for devpod agent to be available\"\n  sleep 1\ndone\nexec /usr/local/bin/devpod agent container daemon\n -, cwd=/tmp/dl-195-scratch/proj5","level":"info"}
+{"time":"2026-08-14T19:06:03.062623375+01:00","message":"39c591c6af0cac9912dff5aaa2a404a1355294ac6a2b1ee57d907a1fa3368d05","level":"info"}
+{"time":"2026-08-14T19:06:03.808253301+01:00","message":"setting up container","level":"info"}
+{"time":"2026-08-14T19:06:03.946798761+01:00","message":"chown workspace: user=root, workspaceRoot=/workspaces","level":"info"}
+{"time":"2026-08-14T19:06:03.947441121+01:00","message":"chown workspace recursively: user=root, workspaceFolder=/workspaces/dl195fail","level":"info"}
+{"time":"2026-08-14T19:06:03.948354508+01:00","message":"setup KubeConfig","level":"info"}
+{"time":"2026-08-14T19:06:03.950404301+01:00","message":"running postCreateCommands lifecycle hook:  sh -c 'echo about-to-fail; sleep 1; exit 7'","level":"info"}
+{"time":"2026-08-14T19:06:03.951261276+01:00","message":"about-to-fail","level":"info"}

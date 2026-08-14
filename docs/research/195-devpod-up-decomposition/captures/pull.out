@@ -1,0 +1,14 @@
+{"time":"2026-08-14T19:00:32.528262246+01:00","message":"creating devcontainer","level":"info"}
+{"time":"2026-08-14T19:00:34.803063566+01:00","message":"inspecting image: image=alpine:3.19","level":"info"}
+{"time":"2026-08-14T19:00:34.81557577+01:00","message":"image not found, pulling image: image=alpine:3.19","level":"info"}
+{"time":"2026-08-14T19:00:40.332278499+01:00","message":"running docker command: command=docker, args=run --sig-proxy=false --mount type=bind,src=/tmp/dl-195-scratch/proj2,dst=/workspaces/dl195pull -e DEVPOD=true -e REMOTE_CONTAINERS=true -e DEVPOD_WORKSPACE_ID=dl195pull -e DEVPOD_WORKSPACE_UID=default-dl-548ff -l dev.containers.id=default-dl-548ff -l devcontainer.metadata=[{\"postCreateCommand\":{\"\":[\"sh -c 'echo PC-START; sleep 3; echo PC-END'\"]}}] -l devpod.user= -d --entrypoint /bin/sh alpine:3.19 -c echo Container started\ntrap \"exit 0\" 15\nexec \"$@\"\n\nwhile ! command -v /usr/local/bin/devpod \u003e/dev/null 2\u003e\u00261; do\n  echo \"waiting for devpod agent to be available\"\n  sleep 1\ndone\nexec /usr/local/bin/devpod agent container daemon\n -, cwd=/tmp/dl-195-scratch/proj2","level":"info"}
+{"time":"2026-08-14T19:00:40.479811508+01:00","message":"26a63e07c8d192bb872ec39f3fb81726c0b6e0ff262a4c2b0e8d987c67582dfc","level":"info"}
+{"time":"2026-08-14T19:00:41.548847391+01:00","message":"setting up container","level":"info"}
+{"time":"2026-08-14T19:00:41.697916847+01:00","message":"chown workspace: user=root, workspaceRoot=/workspaces","level":"info"}
+{"time":"2026-08-14T19:00:41.698692986+01:00","message":"chown workspace recursively: user=root, workspaceFolder=/workspaces/dl195pull","level":"info"}
+{"time":"2026-08-14T19:00:41.699134686+01:00","message":"setup KubeConfig","level":"info"}
+{"time":"2026-08-14T19:00:41.701538369+01:00","message":"running postCreateCommands lifecycle hook:  sh -c 'echo PC-START; sleep 3; echo PC-END'","level":"info"}
+{"time":"2026-08-14T19:00:41.702226027+01:00","message":"PC-START","level":"info"}
+{"time":"2026-08-14T19:00:44.703478701+01:00","message":"PC-END","level":"info"}
+{"time":"2026-08-14T19:00:44.704555845+01:00","message":"ran command: command=, args=sh -c 'echo PC-START; sleep 3; echo PC-END'","level":"info"}
+{"time":"2026-08-14T19:00:44.719684991+01:00","message":"SSH configuration completed in workspace","level":"info"}

@@ -1,0 +1,4 @@
+{"time":"2026-08-14T19:01:01.543049396+01:00","message":"creating devcontainer","level":"info"}
+{"time":"2026-08-14T19:01:03.643599158+01:00","message":"setting up container","level":"info"}
+{"time":"2026-08-14T19:01:03.807620102+01:00","message":"setup KubeConfig","level":"info"}
+{"time":"2026-08-14T19:01:03.823471644+01:00","message":"SSH configuration completed in workspace","level":"info"}

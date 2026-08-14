@@ -1,0 +1,13 @@
+{"time":"2026-08-14T18:59:55.639497787+01:00","message":"creating devcontainer","level":"info"}
+{"time":"2026-08-14T18:59:56.761376469+01:00","message":"inspecting image: image=debian:bookworm-slim","level":"info"}
+{"time":"2026-08-14T18:59:56.813270447+01:00","message":"running docker command: command=docker, args=run --sig-proxy=false --mount type=bind,src=/tmp/dl-195-scratch/proj,dst=/workspaces/dl195json -e DEVPOD_WORKSPACE_UID=default-dl-6d685 -e DEVPOD=true -e REMOTE_CONTAINERS=true -e DEVPOD_WORKSPACE_ID=dl195json -l dev.containers.id=default-dl-6d685 -l devcontainer.metadata=[{\"postCreateCommand\":{\"\":[\"sh -c 'echo POSTCREATE-START; sleep 4; echo POSTCREATE-END'\"]}}] -l devpod.user= -d --entrypoint /bin/sh debian:bookworm-slim -c echo Container started\ntrap \"exit 0\" 15\nexec \"$@\"\n\nwhile ! command -v /usr/local/bin/devpod \u003e/dev/null 2\u003e\u00261; do\n  echo \"waiting for devpod agent to be available\"\n  sleep 1\ndone\nexec /usr/local/bin/devpod agent container daemon\n -, cwd=/tmp/dl-195-scratch/proj","level":"info"}
+{"time":"2026-08-14T18:59:58.210394387+01:00","message":"30e9b710600d2f64db4deec3add59eb8147c2ae6d8a4bd706231e1167c0e8555","level":"info"}
+{"time":"2026-08-14T19:00:02.389459903+01:00","message":"setting up container","level":"info"}
+{"time":"2026-08-14T19:00:02.577359156+01:00","message":"chown workspace: user=root, workspaceRoot=/workspaces","level":"info"}
+{"time":"2026-08-14T19:00:02.579875762+01:00","message":"chown workspace recursively: user=root, workspaceFolder=/workspaces/dl195json","level":"info"}
+{"time":"2026-08-14T19:00:02.580647839+01:00","message":"setup KubeConfig","level":"info"}
+{"time":"2026-08-14T19:00:02.584672895+01:00","message":"running postCreateCommands lifecycle hook:  sh -c 'echo POSTCREATE-START; sleep 4; echo POSTCREATE-END'","level":"info"}
+{"time":"2026-08-14T19:00:02.585978443+01:00","message":"POSTCREATE-START","level":"info"}
+{"time":"2026-08-14T19:00:06.587197114+01:00","message":"POSTCREATE-END","level":"info"}
+{"time":"2026-08-14T19:00:06.588754511+01:00","message":"ran command: command=, args=sh -c 'echo POSTCREATE-START; sleep 4; echo POSTCREATE-END'","level":"info"}
+{"time":"2026-08-14T19:00:06.605528409+01:00","message":"SSH configuration completed in workspace","level":"info"}

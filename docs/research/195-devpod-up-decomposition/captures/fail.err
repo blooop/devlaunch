@@ -1,0 +1,1 @@
+{"time":"2026-08-14T19:06:05.327960233+01:00","message":"run agent command failed: exit status 1: Process exited with status 1\nlifecycle hooks pre-attach: failed to run: sh -c 'echo about-to-fail; sleep 1; exit 7', error: exit status 7","level":"fatal"}

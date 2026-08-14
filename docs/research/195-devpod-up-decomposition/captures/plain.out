@@ -1,0 +1,22 @@
+[0;1;37m18:59:28[0m [0;1;36minfo[0m creating devcontainer [0;90mup.go:581[0m
+[0;1;37m18:59:29[0m [0;1;36minfo[0m inspecting image: image=debian:bookworm-slim [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:29[0m [0;1;36minfo[0m running docker command: command=docker, args=run --sig-proxy=false --mount type=bind,src=/tmp/dl-195-scratch/proj,dst=/workspaces/dl195plain -e DEVPOD=true -e REMOTE_CONTAINERS=true -e DEVPOD_WORKSPACE_ID=dl195plain -e DEVPOD_WORKSPACE_UID=default-dl-f71e2 -l dev.containers.id=default-dl-f71e2 -l devcontainer.metadata=[{"postCreateCommand":{"":["sh -c 'echo POSTCREATE-START; sleep 4; echo POSTCREATE-END'"]}}] -l devpod.user= -d --entrypoint /bin/sh debian:bookworm-slim -c echo Container started
+trap "exit 0" 15
+exec "$@"
+
+while ! command -v /usr/local/bin/devpod >/dev/null 2>&1; do
+  echo "waiting for devpod agent to be available"
+  sleep 1
+done
+exec /usr/local/bin/devpod agent container daemon
+ -, cwd=/tmp/dl-195-scratch/proj [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:30[0m [0;1;36minfo[0m b0d748c7660b2e6e64453ecaaf9c36c8250d8307db36e0d2effee862d35f0636 [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:33[0m [0;1;36minfo[0m setting up container [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:33[0m [0;1;36minfo[0m chown workspace: user=root, workspaceRoot=/workspaces [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:33[0m [0;1;36minfo[0m chown workspace recursively: user=root, workspaceFolder=/workspaces/dl195plain [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:33[0m [0;1;36minfo[0m setup KubeConfig [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:33[0m [0;1;36minfo[0m running postCreateCommands lifecycle hook:  sh -c 'echo POSTCREATE-START; sleep 4; echo POSTCREATE-END' [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:33[0m [0;1;36minfo[0m POSTCREATE-START [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:37[0m [0;1;36minfo[0m POSTCREATE-END [0;90mtunnelserver.go:426[0m
+[0;1;37m18:59:37[0m [0;1;32mdone[0m ran command: command=, args=sh -c 'echo POSTCREATE-START; sleep 4; echo POSTCREATE-END' [0;90mtunnelserver.go:432[0m
+[0;1;37m18:59:37[0m [0;1;36minfo[0m SSH configuration completed in workspace [0;90mup.go:368[0m
