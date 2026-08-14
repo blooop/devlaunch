@@ -428,6 +428,36 @@ class TestFetchRef:
 
         assert repo_manager.storage.get_repository("owner", "repo").last_fetched is None
 
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_ref_missing_answer_survives_a_translated_git(
+        self, mock_run, repo_manager, cached_repo, monkeypatch
+    ):
+        """The three-way outcome must hold on a host whose git speaks German.
+
+        The ref-missing arm is classified from git's stderr text, and git marks
+        that message for translation — so the classification is only sound if
+        git is always addressed in the C locale, whatever the host env says.
+        Pinned at the env handed to the subprocess: on a host with git
+        translations installed, a wrong env sends an ordinary "start a new
+        branch" launch down the FetchFailed arm instead.
+        """
+        monkeypatch.setenv("LANG", "de_DE.UTF-8")
+        monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+        monkeypatch.setenv("LANGUAGE", "de_DE:de")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/sentinel-agent.sock")
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        repo_manager.fetch_ref("owner", "repo", "main")
+
+        env = mock_run.call_args[1].get("env")
+        assert env is not None, "git must get an explicit env pinning its message locale"
+        assert env["LC_ALL"] == "C"
+        # LANGUAGE outranks LC_ALL under gettext unless LC_ALL is C; pinned
+        # anyway so the guarantee does not hang on that one glibc rule.
+        assert env["LANGUAGE"] == "C"
+        # The rest of the environment must survive — losing it breaks ssh auth.
+        assert env["SSH_AUTH_SOCK"] == "/tmp/sentinel-agent.sock"
+
     def test_rejects_a_ref_that_would_reach_git_as_an_option(self, repo_manager, cached_repo):
         """The branch is interpolated into a refspec, so it is checked first."""
         with pytest.raises(ValueError, match="Invalid git ref"):

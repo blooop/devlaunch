@@ -1,6 +1,7 @@
 """Repository manager for worktree backend."""
 
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -306,6 +307,13 @@ class RepositoryManager:
                 capture_output=True,
                 text=True,
                 check=True,
+                # The ref-missing arm below is classified from git's stderr
+                # text, which git translates -- so git is addressed in the C
+                # locale, or a German host would collapse the three-way outcome
+                # to two. LANGUAGE is pinned too: under gettext it outranks a
+                # non-C LC_ALL, and the guarantee should not hang on the one
+                # glibc rule that exempts C.
+                env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
             )
             return Updated()
         except subprocess.CalledProcessError as e:
