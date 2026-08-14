@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emptied, `.git` included, before failing on `os.rmdir(".")`. A recorded path is
   now honoured only when it is absolute.
 
+### Changed
+
+- **The 0.0.24 lending entry no longer claims the transfer is "checksum-verified"**
+  ([#152](https://github.com/blooop/devlaunch/issues/152)). Nothing in `devlaunch/`
+  computes a checksum, and nothing ever did: the only gate is that both lent
+  binaries are run in a staging directory, and nothing moves into place until they
+  do. The entry now says that instead. The `5.1s` beside it is gone as well — it
+  was an inherited working number that nobody measured, unlike the 342MB, which
+  [#158](https://github.com/blooop/devlaunch/issues/158) reproduced and which is
+  now attributed there.
+
+  Noted here rather than corrected silently, because the edit changes a section
+  that has already shipped: anyone who read the 0.0.24 notes before this was
+  relying on an integrity check the lend does not perform, and a released claim
+  about verification is not one to withdraw without saying so.
+
 The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
 itself the last release of the Python implementation, on the go decision recorded in
 [#53](https://github.com/blooop/devlaunch/issues/53); 0.0.12 and 0.0.13 have shipped
@@ -163,8 +179,9 @@ table and should be judged on its own merits.
   network, per container, on the critical path of every cold launch. The host
   running `dl` almost always has both tools already, and the container is one
   pipe away on the same disk, so they are now streamed in as a tar over the
-  `devpod ssh` channel dl already holds. Measured here: 342MB in **5.1s**,
-  checksum-verified, with both lent binaries running in the container.
+  `devpod ssh` channel dl already holds. The payload is **342MB**, measured in
+  [#158](https://github.com/blooop/devlaunch/issues/158), with both lent binaries
+  proved to run in a staging directory before anything was moved into place.
 
   The network install is still there and still correct — it runs when the host
   has nothing to lend (no official `claude` install, no resolvable `gh`) or
