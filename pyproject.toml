@@ -30,6 +30,14 @@ shellcheck = ">=0.10.0,<0.11"
 devpod = ">=0.26.1,<0.27"
 gh = ">=2.83.0,<3.0"
 
+# Conda-side tools the suite needs, alongside the `test` feature's PyPI half in
+# [project.optional-dependencies]. git-lfs is not a devlaunch runtime dependency
+# -- `dl` treats it as optional and skips LFS work when it is absent -- but the
+# tests that pin the cache-as-LFS-store behaviour need the real thing, and would
+# otherwise *skip*, which is the failure mode that looks like a pass.
+[tool.pixi.feature.test.dependencies]
+git-lfs = ">=3.4,<4"
+
 [tool.pixi.feature.py310.dependencies]
 python = "3.10.*"
 [tool.pixi.feature.py311.dependencies]

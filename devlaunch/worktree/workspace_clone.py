@@ -305,17 +305,124 @@ class WorkspaceCloneManager:
             return False
         return any(cls._is_lfs_pointer(ws_path / name) for name in cls._lfs_tracked_files(ws_path))
 
-    def _materialize_lfs(self, ws_path: Path) -> None:
-        """Replace LFS pointer files with real content from the origin remote.
+    @staticmethod
+    def _fill_cache_lfs_store(bare_path: Path, ref: str) -> None:
+        """Fetch *ref*'s LFS objects into the bare cache's own store.
+
+        A bare clone arrives with an **empty** ``lfs/`` directory — git-lfs has
+        no bare-clone hook — so this call is what actually makes the cache the
+        repo's store. It runs with the bare as cwd, which is the only thing that
+        decides where the objects land: git-lfs writes them under the git
+        directory it was invoked in, so no ``lfs.storage`` override is needed,
+        which is the point (see :meth:`_materialize_lfs`).
+
+        The two ``fetchrecent`` knobs bound what this costs. ``git lfs fetch``
+        otherwise also walks recent refs and recent commits, so a repo with many
+        branches would download several branches' payloads to launch one — the
+        exact per-launch cost this whole path exists to remove. Zeroed, it
+        fetches the named ref and nothing else.
+
+        Passed with ``-c`` rather than written into the cache's config, because
+        this is a property of *this fetch* and not of the repository, and
+        because the cache's config is shared by every workspace of the repo.
+
+        Best-effort, and the caller must treat it as such: offline, or against a
+        remote that has gone away, this exits non-zero and the workspace falls
+        through to the network phase, which is exactly the behaviour that was
+        there before the cache existed.
+
+        Writes into the shared bare repo, so it must not run unserialized; its
+        one caller runs under the repo lock ``_prepare_workspace`` holds.
+        """
+        logger.info("Fetching git-lfs objects into the cache")
+        try:
+            with timing.span("git lfs fetch (cache)"):
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "lfs.fetchrecentrefsdays=0",
+                        "-c",
+                        "lfs.fetchrecentcommitsdays=0",
+                        "lfs",
+                        "fetch",
+                        "origin",
+                        ref,
+                    ],
+                    cwd=bare_path,
+                    check=True,
+                )
+        except (subprocess.CalledProcessError, OSError) as e:
+            logger.warning(f"Could not fill the cache's git-lfs store: {e}")
+
+    @staticmethod
+    def _pull_lfs_from_cache(ws_path: Path, bare_path: Path) -> None:
+        """Materialize the workspace's LFS content out of the bare cache.
+
+        ``file://<bare>`` as the remote, given on the command line. That is the
+        whole mechanism, and each half of it is load-bearing:
+
+        - **As a URL rather than a configured remote.** The clone directory is
+          bind-mounted into the devcontainer and ``.bare`` is not, so a host path
+          persisted into the clone — an added remote, an ``lfs.storage`` entry —
+          names a directory that does not exist inside the container, and git-lfs
+          reads it on every checkout. An argument is gone when the command is.
+        - **``file://`` rather than ``-c lfs.storage=<bare>/lfs``**, which would
+          share the objects with no transfer at all and was measured to break
+          against local-path remotes outright: ``-c`` reaches children through
+          ``GIT_CONFIG_PARAMETERS``, and the remote-side git-lfs then reads the
+          *local* store as its own.
+
+        Measured (git-lfs 3.7.1, ext4): this **hardlinks**, so the workspace's
+        ``.git/lfs/objects`` entry is the same ``(st_dev, st_ino)`` as the
+        cache's and costs zero bytes, and it succeeds with ``origin`` pointing at
+        a URL that does not resolve — zero network. The worktree copy git-lfs
+        then writes is real bytes and is the one per-workspace cost that remains.
+
+        Best-effort for the same reason as the cache fill: an object the cache
+        does not hold makes this exit non-zero, and the caller's next question is
+        whether any pointer survived.
+        """
+        try:
+            with timing.span("git lfs pull (cache)"):
+                subprocess.run(
+                    ["git", "lfs", "pull", f"file://{bare_path}"], cwd=ws_path, check=True
+                )
+        except (subprocess.CalledProcessError, OSError) as e:
+            logger.warning(f"Could not materialize git-lfs objects from the cache: {e}")
+
+    def _materialize_lfs(self, ws_path: Path, bare_path: Path, ref: str) -> None:
+        """Replace LFS pointer files with real content, cache first, origin second.
 
         The workspace is cloned from the local bare cache with
-        GIT_LFS_SKIP_SMUDGE=1 (the cache has no LFS objects), so after the origin
-        URL is fixed to point at the real remote the pointers must be materialized
-        explicitly — a same-commit checkout won't rewrite them.
+        GIT_LFS_SKIP_SMUDGE=1, so after the origin URL is fixed to point at the
+        real remote the pointers must be materialized explicitly — a same-commit
+        checkout won't rewrite them.
+
+        **Two phases, and the second one is the network.** The cache phase fills
+        ``<bare>/lfs`` and hardlinks out of it, which makes the payload a
+        per-*repo* cost instead of a per-*workspace* one: before it, every
+        workspace of an LFS repo downloaded the whole payload from the forge and
+        kept a private copy of it in ``.git/lfs/objects`` (devlaunch#154). The
+        origin phase is what ran before this existed, unchanged, and it is
+        entered only if a pointer survived the cache phase — which is asked by
+        the same content predicate that opened the method, not by whether the
+        cache commands exited zero. An object the cache could not supply is the
+        case that matters, and only the pointers say so.
+
+        Neither cache-phase step can fail the launch. Both degrade to the origin
+        pull, so the offline-and-uncached path raises exactly the ``RuntimeError``
+        it always did, and the retry contract is unchanged: the workspace is left
+        holding pointers, and the next run tries again because the gate is
+        content and not "did we just clone this".
 
         Output is not captured: a multi-gigabyte fetch has to be able to show
         progress rather than look like a hang.
         """
+        if not self._has_lfs_pointers(ws_path):
+            return
+        self._fill_cache_lfs_store(bare_path, ref)
+        self._pull_lfs_from_cache(ws_path, bare_path)
         if not self._has_lfs_pointers(ws_path):
             return
         logger.info("Fetching git-lfs objects from origin")
@@ -596,7 +703,9 @@ class WorkspaceCloneManager:
         # Materialize LFS content. Not gated on is_new_workspace: a failed pull
         # leaves a workspace that already "exists", and gating here would take the
         # existing-workspace path forever after, silently building against pointers.
-        self._materialize_lfs(ws_path)
+        # The bare is passed because it is the repo's LFS store, and the ref
+        # because it is what bounds what gets fetched into it.
+        self._materialize_lfs(ws_path, bare_repo_path, workspace.ref)
 
         # Step 4: Track in metadata
         try:

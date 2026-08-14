@@ -14,6 +14,7 @@ import pytest
 from devlaunch.worktree.config import WorktreeConfig
 from devlaunch.worktree.repo_manager import RepositoryManager
 from devlaunch.worktree.storage import MetadataStorage
+from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 
 
 @pytest.fixture
@@ -258,3 +259,18 @@ def real_managers(
         "repo_manager": repo_manager,
         "env": env,
     }
+
+
+@pytest.fixture
+def clone_manager(real_managers: Dict[str, Any]) -> WorkspaceCloneManager:  # pylint: disable=redefined-outer-name
+    """A real WorkspaceCloneManager over the isolated cache and real git.
+
+    Lives here rather than in each integration module because every test that
+    drives the real cold path needs exactly this object, built exactly this way,
+    and three private copies of it were three places for the wiring to drift.
+    """
+    return WorkspaceCloneManager(
+        config=real_managers["config"],
+        repo_manager=real_managers["repo_manager"],
+        storage=real_managers["storage"],
+    )

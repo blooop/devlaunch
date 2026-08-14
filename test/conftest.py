@@ -22,6 +22,7 @@ if str(test_dir) not in sys.path:
 # noqa: E402 - imports must come after sys.path modification
 from devlaunch import dl, gh_auth, timing  # noqa: E402
 from fixtures.git_fixtures import (  # noqa: E402
+    clone_manager,
     isolated_devlaunch_env,
     local_git_repo,
     local_git_repo_with_devcontainer,
@@ -217,6 +218,7 @@ __all__ = [
     "isolated_devlaunch_cache",
     "home_cache_default",
     "isolated_devlaunch_env",
+    "clone_manager",
     "local_git_repo",
     "local_git_repo_with_devcontainer",
     "real_managers",

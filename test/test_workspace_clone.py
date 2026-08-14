@@ -7,6 +7,7 @@ from unittest.mock import call, patch, MagicMock
 
 import logging
 import os
+import subprocess
 
 import pytest
 
@@ -583,6 +584,211 @@ class TestPrepareCold:
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_the_cache_store_is_filled_in_the_bare_for_the_launched_ref(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """The bare-side fetch runs in the bare, names the ref, and is bounded.
+
+        Three things this pins, each of which is silently losable:
+
+        - **cwd is the bare.** That, and nothing else, is what puts the objects
+          in `<bare>/lfs` and makes the cache the repo's store. Run in the
+          workspace, the same command fills the workspace's own store and shares
+          nothing — every assertion about disk would still pass, for one
+          workspace.
+        - **The ref is named.** A bare `git lfs fetch origin` fetches the default
+          ref set, not the branch being launched.
+        - **Both `fetchrecent` knobs are zero.** Left at their defaults, git-lfs
+          also walks recent refs and recent commits, so launching one branch of a
+          busy repo downloads several branches' payloads — the per-launch cost
+          this whole path exists to remove, reintroduced at the cache.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        fetches = [c for c in mock_run.call_args_list if "fetch" in c[0][0]]
+        assert len(fetches) == 1
+        assert fetches[0][0][0] == [
+            "git",
+            "-c",
+            "lfs.fetchrecentrefsdays=0",
+            "-c",
+            "lfs.fetchrecentcommitsdays=0",
+            "lfs",
+            "fetch",
+            "origin",
+            "nb4",
+        ]
+        assert fetches[0][1]["cwd"] == bare_path
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_the_workspace_pulls_from_the_cache_before_it_pulls_from_origin(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """The cache is asked first, by `file://` URL, in the workspace.
+
+        Order is the property, not merely presence: a cache pull issued *after*
+        the origin pull would leave every launch paying the download it was
+        added to avoid, and every disk assertion would still hold. The remote is
+        a bare `file://` argument rather than a configured one because the clone
+        is bind-mounted into the devcontainer and the bare is not — a host path
+        written into the clone's config breaks every in-container checkout.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        pulls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:3] == ["git", "lfs", "pull"]]
+        assert pulls == [
+            ["git", "lfs", "pull", f"file://{bare_path}"],
+            ["git", "lfs", "pull", "origin"],
+        ]
+        cache_pull = next(
+            c for c in mock_run.call_args_list if c[0][0][:3] == ["git", "lfs", "pull"]
+        )
+        assert cache_pull[1]["cwd"] == ws_path
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_origin_is_not_pulled_when_the_cache_materialized_everything(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """The network phase is entered on surviving pointers, not on exit codes.
+
+        This is the saving, stated as a command that does not run: the cache
+        supplied the content, so the forge is never contacted. Deciding it from
+        the cache pull's exit status instead would be wrong in both directions —
+        git-lfs exits zero having fetched only some objects, and a partial
+        failure must still fall through — so the same content predicate that
+        opened materialization is what closes it, and this test is the one that
+        holds that. The stub materializes the pointer on the cache pull, which
+        is exactly what the real command does.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        bare_path = repo_root / ".bare"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = bare_path
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        pointer = ws_path / "big.bin"
+        pointer.write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n")
+
+        base = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        def run(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "lfs", "pull"] and cmd[3].startswith("file://"):
+                pointer.write_bytes(b"real content, no longer a pointer")
+            return base(cmd, *args, **kwargs)
+
+        mock_run.side_effect = run
+
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", f"file://{bare_path}"] in issued
+        assert ["git", "lfs", "pull", "origin"] not in issued
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_a_failing_cache_phase_degrades_to_origin_rather_than_failing_the_launch(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Neither cache step may take a launch down with it.
+
+        Both of them exit non-zero in ordinary conditions — offline, or an object
+        this repo's cache has never held — and both are speculative: the network
+        pull behind them is the thing that was always there. Letting either
+        failure out would turn a working offline-ish launch of an LFS repo into a
+        traceback, which is a *worse* outcome than the state before the cache
+        existed.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        base = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        def run(cmd, *args, **kwargs):
+            if "lfs" in cmd and cmd[-1] != "origin" and "ls-files" not in cmd:
+                raise subprocess.CalledProcessError(2, cmd)
+            return base(cmd, *args, **kwargs)
+
+        mock_run.side_effect = run
+
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        issued = [c[0][0] for c in mock_run.call_args_list]
+        assert ["git", "lfs", "pull", "origin"] in issued
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_a_launch_that_cannot_materialize_at_all_still_says_so(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """When the cache cannot help and neither can origin, the launch fails loudly.
+
+        The other side of the degradation above, and the contract the cache phase
+        was not allowed to weaken: a workspace whose pointers nothing could
+        resolve must not be handed over as though it were complete, because a
+        build against stub files fails much further from the cause. The message
+        names the retry, which is real — the gate is pointer content, so the next
+        launch tries again.
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        ws_path = repo_root / leaf()
+        (ws_path / ".git").mkdir(parents=True)
+        (ws_path / "big.bin").write_bytes(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:x\n"
+        )
+
+        base = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
+
+        def run(cmd, *args, **kwargs):
+            if "lfs" in cmd and "ls-files" not in cmd:
+                raise subprocess.CalledProcessError(2, cmd)
+            return base(cmd, *args, **kwargs)
+
+        mock_run.side_effect = run
+
+        with pytest.raises(RuntimeError, match="re-run to retry"):
+            clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_workspace_without_pointer_files_never_forks_git_lfs(
         self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
@@ -590,7 +796,11 @@ class TestPrepareCold:
 
         The overwhelmingly common repo has no LFS content at all, and probing it
         with `git lfs ls-files` costs a fork on every single launch for an answer
-        already sitting in the working tree.
+        already sitting in the working tree. Since the cache phase landed there
+        are three commands behind this gate rather than one, and the cache fetch
+        reaches git as `git -c ... -c ... lfs fetch` — so the assertion looks for
+        the word anywhere in the argv rather than at a fixed position, which a
+        prefix check would have missed entirely.
         """
         repo_root = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = repo_root
@@ -606,7 +816,7 @@ class TestPrepareCold:
         clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
-        assert not any(cmd[:2] == ["git", "lfs"] for cmd in issued)
+        assert not any("lfs" in cmd for cmd in issued)
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
