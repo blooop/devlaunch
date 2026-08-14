@@ -484,7 +484,12 @@ Removed what was permitted under /home/you/.cache/devlaunch. These refused:
 Usually this means a container wrote them as a different user, and:
   sudo rm -rf '/home/you/.cache/devlaunch'
 clears them. Check the reasons above first -- it does not fix all of them.
+devlaunch does not manage Docker images or volumes: the containers these workspaces used may still hold disk, and `docker system df` shows what Docker is holding.
 ```
+
+That last line ends every purge, including one that found nothing to purge —
+`dl --prune` ends on the same one, in the same words. See
+[the disk neither command frees](#the-disk-neither-command-frees).
 
 Exit status is `1`, because a clone you were told would go is still on disk. It
 used to be `1` with the *whole* cache still standing: the first refusal stopped
@@ -597,6 +602,40 @@ approved can shrink between the report and the act. It can never grow.
 It also drops the `metadata.json` records of directories that are already gone.
 That file was append-only in practice — 49 records for 17 live workspaces on the
 same host — and this is the first thing that prunes it.
+
+#### The disk neither command frees
+
+Both commands end on the same line, in the same words:
+
+```
+$ dl --prune -y
+...
+Removed 2 clone director(ies) -- 1.4 GiB.
+devlaunch does not manage Docker images or volumes: the containers these workspaces used may still hold disk, and `docker system df` shows what Docker is holding.
+```
+
+The gigabytes a cleanup reports are usually not the ones you are looking for. On
+the host this was measured, `--prune` had 4.00 GB of stale clones to give back
+while `docker system df` read **86.5 GB of reclaimable images, 43.18 GB of
+volumes and 13.88 GB of build cache** — an order of magnitude more, sitting
+behind a command that had just said "Removed". Saying nothing is what makes a
+freed figure read as *all* of it, so both commands say this instead, whether they
+removed 40 clones or nothing at all.
+
+**It is a sentence, not a measurement.** `dl` runs no `docker` command to print
+it, so there is nothing to be slow and nothing to fail where Docker is absent,
+stopped, or reachable only as another user. The figures above are this README's,
+from the host it was measured on, not from your machine — `docker system df` is
+where yours are.
+
+**And it points rather than offers.** There is deliberately no `dl` flag that
+removes an image, and no list of image ids here to paste into `docker image rm`.
+Images devpod builds carry no devlaunch or devpod label, so any list `dl` printed
+would be a guess at which of them belong to these workspaces, and `docker image
+prune -a` is not scoped to devlaunch at all — it would take images built by
+everything else on the machine. Deleting them is a decision with your own
+containers on the other side of it, and `docker system df` is the tool that shows
+you what it costs.
 
 ### Cleaning up workspaces
 
@@ -776,7 +815,9 @@ repo's own does) is most of that count. That is not a bill a listing should
 present unasked.
 
 Docker images and named volumes are not counted: `dl` did not create the layer
-store and does not manage volumes. `docker system df` is the tool that knows.
+store and does not manage volumes. `docker system df` is the tool that knows —
+the same boundary [`--prune` and `--purge` name](#the-disk-neither-command-frees)
+when they finish.
 
 ## Examples
 

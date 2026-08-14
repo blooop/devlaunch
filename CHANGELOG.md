@@ -108,6 +108,23 @@ table and should be judged on its own merits.
   workspace opens any more, and nothing else
   ([#159](https://github.com/blooop/devlaunch/issues/159)).
 
+- **`--prune` and `--purge` now end by naming the disk they do not free**
+  ([#160](https://github.com/blooop/devlaunch/issues/160)) — one line, the same
+  in both: devlaunch does not manage Docker images or volumes, the containers
+  these workspaces used may still hold disk, and `docker system df` shows what
+  Docker is holding. On the host this was measured a prune had 4.00 GB of stale
+  clones to give back while `docker system df` read 86.5 GB of reclaimable
+  images, 43.18 GB of volumes and 13.88 GB of build cache — so a freed figure
+  printed on its own reads as all of it, and is off by an order of magnitude.
+
+  A sentence, not a measurement: no `docker` process is started, so there is
+  nothing to be slow and nothing to fail where Docker is absent or stopped. It
+  points and never offers — no image ids to paste into `docker image rm`, and no
+  `docker image prune -a`, which is unscoped and would take images devlaunch
+  never built (the footgun [#129](https://github.com/blooop/devlaunch/pull/129)
+  removed from `--purge`). devpod's images carry no devlaunch or devpod label, so
+  a list of "yours" would be a guess.
+
 ### Changed
 
 - Launch and update timing: the interval fetch moved into the detached updater, and
