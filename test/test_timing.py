@@ -7,6 +7,7 @@ timing output at all. Pinned at the same boundaries as test_devpod_spawn_counts:
 the CLI entry point on one side, the subprocess module on the other.
 """
 
+import importlib.util
 import io
 import json
 import re
@@ -695,3 +696,249 @@ class TestTheDocumentedColdReset:
             patch("devlaunch.dl.update_cache_background"),
         ):
             assert main(argv) == 0
+
+
+def a_document(stages, total: float = 0.3) -> str:
+    """One launch's timing document, exactly as dl's json mode writes the line."""
+    return f"{timing.JSON_PREFIX} " + json.dumps(
+        {
+            "total": total,
+            "total_epoch": timing.TOTAL_EPOCH,
+            "stages": [
+                {"stage": name, "seconds": seconds, "outcome": "ok", "spans": []}
+                for name, seconds in stages
+            ],
+        }
+    )
+
+
+def a_launch(tmp_path, *runs, exit_code: int = 0) -> list[str]:
+    """A stand-in launch reporting one of *runs*' documents per invocation.
+
+    It reports a document only when the environment asks for one, the way dl
+    does, so a bench that never asked gets what the real thing would have
+    given it: nothing to record. Runs past the last one described repeat it,
+    and *exit_code* is how a launch that reported its stages and then failed
+    anyway is asked for.
+    """
+    lines = [a_document(stages, total) for stages, total in runs]
+    counted = tmp_path / "launches"
+    counted.mkdir()
+    source = (
+        "import os, sys\n"
+        f"lines = {lines!r}\n"
+        f"counted = {str(counted)!r}\n"
+        "run = len(os.listdir(counted))\n"
+        "open(os.path.join(counted, str(run)), 'w').close()\n"
+        f"if os.environ.get({timing.ENV_VAR!r}) == {timing.JSON_VALUE!r}:\n"
+        "    print(lines[min(run, len(lines) - 1)], file=sys.stderr)\n"
+        f"sys.exit({exit_code})\n"
+    )
+    return [sys.executable, "-c", source]
+
+
+class TestBenchRecordsEachRunsStages:
+    """#196: the bench writes one machine-readable record per invocation, so a
+    published number stops being hand-copied out of prose."""
+
+    def test_a_record_names_the_command_the_run_count_and_every_run(self, tmp_path):
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("host-prep", 0.10), ("attach", 0.20)), 0.30))
+        result = run_bench("-n", "3", "--record", str(record), "--", *command)
+        assert result.returncode == 0, result.stderr
+        written = json.loads(record.read_text())
+        assert written["command"] == command
+        assert written["n"] == 3
+        assert len(written["runs"]) == 3
+
+    def test_each_run_carries_the_stage_seconds_that_run_reported(self, tmp_path):
+        """The record's point: the stages the launch itself measured, not one
+        outside wall time a reader has to decompose by hand."""
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("host-prep", 0.10), ("attach", 0.20)), 0.30))
+        result = run_bench("-n", "2", "--record", str(record), "--", *command)
+        assert result.returncode == 0, result.stderr
+        runs = json.loads(record.read_text())["runs"]
+        assert [run["stages"] for run in runs] == [{"host-prep": 0.10, "attach": 0.20}] * 2
+        assert [run["total_seconds"] for run in runs] == [0.30, 0.30]
+
+    def test_a_run_that_reported_no_document_is_not_a_record(self, tmp_path):
+        """A wall time with no stages behind it is a silent contract break —
+        an older dl, or a command that is not a launch at all. Better a loud
+        failure at the bench than an empty point in the trend."""
+        record = tmp_path / "bench.json"
+        result = run_bench("-n", "2", "--record", str(record), "--", sys.executable, "-c", "pass")
+        assert result.returncode != 0
+        assert not record.exists()
+        assert "Traceback" not in result.stderr
+
+    def test_the_committed_point_is_the_median_of_the_runs(self, tmp_path):
+        """The trend compares a point against the immediately previous point
+        only (#197), so one bench invocation is one point: the median, with
+        the runs kept underneath it as the evidence it was taken over."""
+        record = tmp_path / "bench.json"
+        command = a_launch(
+            tmp_path,
+            ((("devpod-up", 0.50),), 1.00),
+            ((("devpod-up", 0.10),), 3.00),
+            ((("devpod-up", 0.30),), 2.00),
+        )
+        result = run_bench("-n", "3", "--record", str(record), "--", *command)
+        assert result.returncode == 0, result.stderr
+        median = json.loads(record.read_text())["median"]
+        assert median["stages"]["devpod-up"] == {"seconds": 0.30, "runs": 3}
+        assert median["total_seconds"] == 2.00
+
+    def test_a_stage_no_run_reported_is_absent_rather_than_zero(self, tmp_path):
+        """A warm launch legitimately has no cold-path stages (#195), and a
+        zero there would claim the work happened instantly instead of not at
+        all — a fiction the trend has no way to tell from a reading."""
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("devpod-up", 0.50), ("attach", 1.20)), 1.70))
+        result = run_bench("-n", "2", "--record", str(record), "--", *command)
+        assert result.returncode == 0, result.stderr
+        written = json.loads(record.read_text())
+        assert set(written["median"]["stages"]) == {"devpod-up", "attach"}
+        assert all(set(run["stages"]) == {"devpod-up", "attach"} for run in written["runs"])
+
+    def test_a_stage_only_some_runs_reported_is_a_median_over_those_runs(self, tmp_path):
+        """Counting the missing runs as zero would drag the median toward a
+        number no run measured, so the median is over the runs that reported
+        the stage and says how many that was — a median of two and a median
+        of five are not the same claim."""
+        record = tmp_path / "bench.json"
+        command = a_launch(
+            tmp_path,
+            ((("attach", 1.00),), 1.00),
+            ((("attach", 1.00), ("tools", 4.00)), 5.00),
+            ((("attach", 1.00), ("tools", 6.00)), 7.00),
+        )
+        result = run_bench("-n", "3", "--record", str(record), "--", *command)
+        assert result.returncode == 0, result.stderr
+        stages = json.loads(record.read_text())["median"]["stages"]
+        assert stages["tools"] == {"seconds": 5.00, "runs": 2}
+        assert stages["attach"] == {"seconds": 1.00, "runs": 3}
+
+    def test_a_failed_run_writes_no_record_even_having_reported_stages(self, tmp_path):
+        """The record is the artifact of a completed measurement, so the "no
+        median over a failing command" discipline covers it: a launch that
+        reported stages and then failed measured a failure."""
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("attach", 1.00),), 1.00), exit_code=7)
+        result = run_bench("-n", "2", "--record", str(record), "--", *command)
+        assert result.returncode == 7
+        assert not record.exists()
+
+    def test_a_failed_reset_writes_no_record(self, tmp_path):
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("attach", 1.00),), 1.00))
+        result = run_bench("-n", "2", "--record", str(record), "--before", FAILING, "--", *command)
+        assert result.returncode != 0
+        assert not record.exists()
+
+    def test_without_the_flag_nothing_about_the_run_changes(self, tmp_path):
+        """Recording asks the launch for a document it would not otherwise
+        emit, so an unrecorded bench must not be paying for the instrument —
+        including on stdout, which #140's callers still read."""
+        report = tmp_path / "asked"
+        command = [
+            sys.executable,
+            "-c",
+            f"import os; open({str(report)!r}, 'w').write(os.environ.get({timing.ENV_VAR!r}, '<unset>'))",
+        ]
+        result = run_bench("-n", "2", "--", *command)
+        assert result.returncode == 0, result.stderr
+        assert report.read_text() == "<unset>"
+        assert re.search(r"^median of 2: \d+\.\d{3}s", result.stdout, re.M)
+
+    def test_a_record_reads_a_document_the_timing_module_itself_wrote(self, tmp_path):
+        """Every other test here hands the bench a document built to look like
+        the launch's. This one has the launch's own emitter write it, so a
+        field renamed in the document cannot leave the bench parsing a shape
+        nothing emits any more."""
+        record = tmp_path / "bench.json"
+        emitting = (
+            "from devlaunch import timing\n"
+            "timing.begin()\n"
+            "with timing.stage('devpod-up'):\n"
+            "    pass\n"
+            "timing.emit()\n"
+        )
+        result = run_bench("-n", "2", "--record", str(record), "--", sys.executable, "-c", emitting)
+        assert result.returncode == 0, result.stderr
+        written = json.loads(record.read_text())
+        assert set(written["median"]["stages"]) == {"devpod-up"}
+        assert written["median"]["stages"]["devpod-up"]["runs"] == 2
+        assert written["median"]["total_seconds"] >= 0
+
+    def test_the_record_names_the_shape_the_caller_benched(self, tmp_path):
+        """warm and cold-recreate are two trend lines over the same command —
+        the `--before` reset is what separates them, so the shape is a label
+        the caller carries rather than something the runs reveal."""
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("attach", 1.00),), 1.00))
+        result = run_bench(
+            "-n", "2", "--record", str(record), "--shape", "cold-recreate", "--", *command
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(record.read_text())["shape"] == "cold-recreate"
+
+    def test_an_unnamed_shape_is_absent_rather_than_guessed(self, tmp_path):
+        record = tmp_path / "bench.json"
+        command = a_launch(tmp_path, ((("attach", 1.00),), 1.00))
+        assert run_bench("-n", "2", "--record", str(record), "--", *command).returncode == 0
+        assert "shape" not in json.loads(record.read_text())
+
+    def test_a_shape_with_nothing_to_record_it_in_is_refused(self, tmp_path):
+        """Otherwise the label is silently dropped, which is how a trend line
+        ends up unnamed at the far end of a CI job nobody watched."""
+        command = a_launch(tmp_path, ((("attach", 1.00),), 1.00))
+        result = run_bench("-n", "2", "--shape", "warm", "--", *command)
+        assert result.returncode == 2
+        assert "--record" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
+class TestAMistypedStageNameFailsWhereItIsWritten:
+    """The vocabulary is read from outside this repo, so a name that drifted
+    out of it must fail at the site that wrote it — not on the first launch
+    somebody happened to measure. A suite that runs with timing off, which is
+    every suite, is exactly the run a typo used to survive."""
+
+    def test_decorating_with_a_name_outside_the_vocabulary_is_refused(self):
+        with pytest.raises(ValueError):
+
+            @timing.staged("host_prep")
+            def _launch():
+                pass
+
+    def test_every_name_in_the_vocabulary_decorates_and_calls_through(self):
+        for name in timing.STAGES:
+            assert timing.staged(name)(lambda: "ran")() == "ran"
+
+
+def bench_module():
+    """The bench script, imported by path — it is a script, not a package."""
+    spec = importlib.util.spec_from_file_location("bench_launch", BENCH)
+    assert spec is not None and spec.loader is not None, BENCH
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestEveryDocumentedInvocationParses:
+    """Sibling of the cold-reset guard, for the flags rather than the reset.
+
+    Same lesson from the same lineage (#192): every documented-command defect
+    in this script's history was a command nobody had fed to the thing that
+    reads it. So each invocation the epilog shows is handed to the real parser
+    — a flag that was renamed, or documented before it existed, fails here.
+    """
+
+    def test_the_epilog_shows_invocations_the_parser_accepts(self):
+        module = bench_module()
+        joined = re.sub(r"\\\n\s+", " ", module.EPILOG)
+        documented = re.findall(r"bench_launch\.py (.+)$", joined, re.M)
+        assert len(documented) >= 3, documented
+        for invocation in documented:
+            module.build_parser().parse_args(shlex.split(invocation))
