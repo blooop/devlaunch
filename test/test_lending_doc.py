@@ -31,8 +31,8 @@ explanation, and is left alone for the same reason most of AGENTS.md is. The one
 exception is the set of readings a probe can produce, because that set is not
 prose: it is an enum, and the section has to keep covering all of it.
 
-The changelog claim is guarded the other way round: the unreleased entry may not
-advertise a verification of the payload that the lend does not perform.
+The changelog claim is guarded the other way round: the entry describing the lend
+may not advertise a verification of the payload that the lend does not perform.
 """
 
 import re
@@ -62,7 +62,6 @@ CLAUDE_FEATURE_INSTALLER = Path(".devcontainer") / "claude-code" / "install.sh"
 NARRATIVE_HEADING = "### How they get there"
 BAKE_HEADING = "### What to bake so a launch does no work at all"
 NON_GOALS_HEADING = "### What this deliberately does not do"
-UNRELEASED_HEADING = "## [Unreleased]"
 
 
 def _section(document: Path, heading: str) -> str:
@@ -345,11 +344,22 @@ def test_the_section_keeps_stating_the_non_goals_it_committed_to(non_goal):
     )
 
 
-# How the unreleased entry about the lend introduces itself. Scoped to that one
-# entry rather than to the whole `[Unreleased]` section, because the claim being
-# guarded is this entry's: a future entry about something else is entitled to
-# talk about signatures and checksums, and a guard that failed on it would be a
-# guard people delete.
+# How the entry about the lend introduces itself. Located by this lead across the
+# whole changelog rather than under a section heading, and scoped to the one entry
+# rather than to the section holding it.
+#
+# Not under `## [Unreleased]`, which is where the entry was written and where an
+# earlier version of this guard looked for it: cutting a release inserts a
+# `## [<version>] - <date>` heading *above* the existing text, so 0.0.24 sealed
+# this entry into a released section without changing a word of it. A guard
+# anchored on the unreleased heading stops guarding anything the first time the
+# project releases -- and stops silently, because the entry it watches has not
+# been edited, only re-parented. What is being guarded is a property of this
+# entry, and the entry keeps it wherever it lives.
+#
+# Scoped to the one entry because the claim being guarded is this entry's: another
+# entry is entitled to talk about signatures and checksums, and a guard that
+# failed on it would be a guard people delete.
 LEND_ENTRY_LEAD = "A cold container is lent the host's own"
 
 # The vocabulary of a claim about the payload's *bytes* -- the class of check a
@@ -374,16 +384,21 @@ UNPERFORMED_INTEGRITY_CLAIMS = (
 )
 
 
-def _unreleased_lend_entry() -> str:
-    """The unreleased changelog entry that describes the lend, and only that one."""
+def _lend_entry() -> str:
+    """The changelog entry that describes the lend, wherever it now lives.
+
+    Required to be unique across the document, so that an entry which was
+    reworded, split or duplicated fails here saying so rather than matching
+    nothing and leaving every assertion below vacuously true.
+    """
     matching = [
         entry
-        for entry in _bullets(_section(CHANGELOG, UNRELEASED_HEADING))
+        for entry in _bullets(CHANGELOG.read_text(encoding="utf-8"))
         if LEND_ENTRY_LEAD in entry
     ]
     assert len(matching) == 1, (
-        f"expected exactly one unreleased entry containing {LEND_ENTRY_LEAD!r}, "
-        f"found {len(matching)} -- it was reworded, split or released"
+        f"expected exactly one changelog entry containing {LEND_ENTRY_LEAD!r}, "
+        f"found {len(matching)} -- it was reworded, split or deleted"
     )
     return matching[0]
 
@@ -397,7 +412,7 @@ def _transfer_gates_on_execution() -> bool:
 
 
 @pytest.mark.unit
-def test_the_unreleased_entry_describes_the_gate_the_transfer_actually_has():
+def test_the_changelog_entry_describes_the_gate_the_transfer_actually_has():
     """The positive half: what the entry says happened is what the script does.
 
     The entry earns the word "proved" only while the generated script really
@@ -408,17 +423,17 @@ def test_the_unreleased_entry_describes_the_gate_the_transfer_actually_has():
     """
     assert _transfer_gates_on_execution(), (
         "the transfer no longer runs the lent binaries before moving them into place; "
-        "the unreleased entry says it does"
+        "the changelog entry says it does"
     )
-    assert "proved to run in a staging directory" in _unreleased_lend_entry(), (
-        "the unreleased lend entry no longer describes the staging gate, which is the only "
+    assert "proved to run in a staging directory" in _lend_entry(), (
+        "the lend entry no longer describes the staging gate, which is the only "
         "verification the lend performs"
     )
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("claim", UNPERFORMED_INTEGRITY_CLAIMS)
-def test_the_unreleased_entry_advertises_no_integrity_check_the_lend_does_not_perform(claim):
+def test_the_changelog_entry_advertises_no_integrity_check_the_lend_does_not_perform(claim):
     """The negative half: no check on the bytes may be advertised, in any wording.
 
     Stated as a failing assertion and never as a skip. An earlier version of
@@ -427,7 +442,7 @@ def test_the_unreleased_entry_advertises_no_integrity_check_the_lend_does_not_pe
     guard is how a broken run looks clean; `test/fixtures/e2e_guard.py` writes
     the repo's rule down. There is nothing here this test needs and cannot get.
     """
-    assert not re.search(rf"\b{re.escape(claim)}", _unreleased_lend_entry(), re.IGNORECASE), (
-        f"the unreleased lend entry advertises {claim!r}; the lend verifies nothing about the "
+    assert not re.search(rf"\b{re.escape(claim)}", _lend_entry(), re.IGNORECASE), (
+        f"the lend entry advertises {claim!r}; the lend verifies nothing about the "
         "bytes it sends -- its only gate is running both binaries in a staging directory"
     )
