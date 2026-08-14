@@ -3180,6 +3180,39 @@ def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> 
     return workspace_ssh(workspace_id, shell_command)
 
 
+def dotfiles_update(workspace_id: str) -> int:
+    """Refresh dotfiles inside a running workspace.
+
+    Runs chezmoi update + pixi global sync. Falls back to running install.sh
+    if chezmoi is not available (e.g. workspace predates dotfiles setup).
+    """
+    ctx = get_context_options()
+    dotfiles_url = ctx.get("DOTFILES_URL", "")
+
+    if dotfiles_url:
+        fallback = (
+            f'echo "chezmoi not found, running full install..." && '
+            f"DOTFILES_DIR=$(mktemp -d) && "
+            f'git clone {shlex.quote(dotfiles_url)} "$DOTFILES_DIR" && '
+            f'cd "$DOTFILES_DIR" && bash install.sh && '
+            f'rm -rf "$DOTFILES_DIR" && '
+            f'echo "Dotfiles installed successfully"'
+        )
+    else:
+        fallback = 'echo "chezmoi not found and no DOTFILES_URL configured" && exit 1'
+
+    update_cmd = (
+        "if command -v chezmoi >/dev/null 2>&1; then "
+        'echo "Updating dotfiles..." && '
+        "chezmoi update --force && "
+        'echo "Syncing pixi global packages..." && '
+        "pixi global sync && "
+        'echo "Dotfiles updated successfully"; '
+        f"else {fallback}; fi"
+    )
+    return workspace_ssh(workspace_id, command=update_cmd)
+
+
 def workspace_stop(workspace: str) -> int:
     """Stop a workspace."""
     result = run_devpod(["stop", workspace])
@@ -3274,6 +3307,7 @@ Workspace commands:
     dl <user/repo> restart           Stop and start (no rebuild)
     dl <user/repo> recreate          Recreate container
     dl <user/repo> reset             Clean slate (remove all, recreate)
+    dl <user/repo> dotfiles          Refresh dotfiles (chezmoi update)
     dl <user/repo> -- <command>      Run shell command in workspace
 
 Global commands:
@@ -3816,6 +3850,16 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         ret = attach_workspace(workspace_id)
         update_cache_background(force=True)
         return ret
+
+    if subcommand == "dotfiles":
+        # Ensure workspace is running before refreshing dotfiles
+        state = get_workspace_state(workspace_id)
+        if state != "Running":
+            logging.info(f"Starting workspace {workspace_id}...")
+            result = workspace_up(workspace_spec, workspace_id=custom_id)
+            if result.returncode != 0:
+                return result.returncode
+        return dotfiles_update(workspace_id)
 
     # Check for shell command (after --)
     shell_command = None
