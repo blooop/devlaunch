@@ -616,10 +616,9 @@ dl blooop/devlaunch stop         # Stop workspace
 
 ## Measuring launch time
 
-Every `dl` process can account for its own wall time. Set `DEVLAUNCH_TIMING=1`
-and the command ends with one summary on stderr, naming each subprocess round
-trip (`devpod status`, `devpod ssh`, `gh auth token`, `git ls-remote`, ...) and
-the total:
+Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
+naming each subprocess round trip and the total. Unset (or `0`) records nothing
+and prints nothing.
 
 ```bash
 $ DEVLAUNCH_TIMING=1 dl myws -- true
@@ -629,10 +628,6 @@ dl-timing: devpod ssh 1.102s
 dl-timing: total 2.201s (in-process, excluding interpreter startup)
 ```
 
-With the variable unset (or `0`) there is no output and nothing is recorded.
-The summary goes to stderr, after the command's own output, so it composes
-with one-shot commands.
-
 For before/after numbers, `scripts/bench_launch.py` runs a command N times and
 reports the median — one command per side of a change:
 
@@ -640,38 +635,10 @@ reports the median — one command per side of a change:
 python scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true   # warm launch
 ```
 
-(`pixi run bench -n 5 -- ...` inside the devcontainer.) The bench refuses to
-report a median if any run fails, so a broken launch cannot pass as a fast one.
-
-### A cold median needs a reset per run
-
-A cold launch measured once is one sample, and a cold launch deleted once and
-then benched five times is one cold run plus four warm ones — a warm median
-under a cold label. `--before` runs a reset command before every timed run and
-does not count its time, so all N runs start cold:
-
-```bash
-XDG_CACHE_HOME=/tmp/dl-bench/cache \
-python scripts/bench_launch.py -n 5 \
-  --before 'dl-next owner/repo delete' \
-  -- dl-next owner/repo -- true                                     # cold launch
-```
-
-Scope `XDG_CACHE_HOME` (that variable only — see `dev.sh`) so the reset deletes
-the bench's own workspace rather than one you are working in. If a reset exits
-non-zero the bench stops and prints no median: a run whose cold state was never
-established is not a cold measurement, and a number labelled cold has to have
-been taken cold.
-
-### The two numbers are not the same quantity
-
-`dl-timing: total` starts at the top of `main()`; the bench's wall clock starts
-outside the process, so it also contains interpreter startup and this package's
-imports. Measured here on `dl --version`, `total` reported `0.001s` against a
-bench median of `0.056s` over 5 runs — the ~55 ms difference is startup, not
-launch work. Both lines say which clock they are. Quote one instrument on both
-sides of a change; don't compare a `total` on one side with a bench median on
-the other.
+(`pixi run bench -n 5 -- ...` in the devcontainer.) It reports no median if any
+run fails, so a broken launch cannot pass as a fast one. See `bench_launch.py
+--help` for `--before` — the per-run reset that makes a *cold* median cold —
+and for why its wall clock and `dl-timing: total` are not the same quantity.
 
 ## Worktree Backend
 

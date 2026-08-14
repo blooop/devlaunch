@@ -1,31 +1,10 @@
 #!/usr/bin/env python3
-"""Run a command N times and report the median wall time.
+"""Run a command N times and report the median wall time (ticket #140).
 
-The repeatable half of the timing instrument (ticket #140): a before/after
-perf comparison is this script run once on each side of a change, e.g.
-
-    python scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true
-
-Wall time per run and the median go to stdout; the command's own output is
-left on the terminal so a hung launch is visible. If any run exits non-zero
-the bench stops with that run's exit code and reports no median — a failing
-launch's time is not a number to compare against.
-
-`--before` runs a reset command before each timed run, without counting its
-time. That is what makes a *cold* median possible: the state a cold launch
-starts from has to be re-established before every run, or runs 2..N are warm
-and the median is a warm number under a cold label. If a reset fails the bench
-stops with no median, for the same reason a failing run reports none — a run
-whose starting condition was never established is not a measurement of it.
-
-The wall time here is measured from outside the process, so it includes
-interpreter startup and imports. dl's own `dl-timing: total` line starts inside
-main() and excludes them, so the two numbers are close but not the same
-quantity; each line says which it is, and a before/after comparison should
-quote one instrument on both sides.
-
-Standard library only, on purpose: the instrument must not cost the project
-a dependency.
+The repeatable half of the timing instrument: a before/after perf comparison is
+this script run once on each side of a change. Stdlib only, on purpose — the
+instrument must not cost the project a dependency. See --help for the two
+traps: cold medians, and which clock each number is on.
 """
 
 import argparse
@@ -36,14 +15,30 @@ import sys
 import time
 from typing import List, Optional
 
+EPILOG = """\
+warm:  bench_launch.py -n 5 -- dl-next owner/repo -- true
+cold:  XDG_CACHE_HOME=/tmp/dl-bench/cache bench_launch.py -n 5 \\
+         --before 'dl-next owner/repo delete' -- dl-next owner/repo -- true
+
+A cold median needs the reset per *run*: delete once and bench five times and
+runs 2..5 are warm, so the median is a warm number under a cold label. Scope
+XDG_CACHE_HOME (that variable only, see dev.sh) so the reset deletes the
+bench's own workspace, not one you are using. A failed reset stops with no
+median, like a failed run: a run whose starting condition was never
+established is not a measurement of it.
+
+This clock starts outside the process, so it includes interpreter startup and
+imports; dl's own `dl-timing: total` starts inside main() and excludes them
+(on `dl --version`: 0.001s total against a 0.056s median here). Quote one
+instrument on both sides of a change.
+"""
+
 
 def bench(n: int, command: List[str], before: Optional[List[str]] = None) -> int:
     """Run *command* *n* times, print each wall time and the median.
 
-    *before*, when given, runs before each timed run and is not timed.
-
-    Returns the exit code for the process: 0 after n clean runs, otherwise the
-    exit code of the first run — or reset — that failed.
+    Returns 0 after n clean runs, otherwise the exit code of the first run --
+    or untimed *before* reset -- that failed.
     """
     durations = []
     for i in range(1, n + 1):
@@ -84,7 +79,9 @@ def positive_int(text: str) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run a command N times and report the median wall time."
+        description="Run a command N times and report the median wall time.",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-n", type=positive_int, default=5, help="number of runs (default: 5)")
     parser.add_argument(
