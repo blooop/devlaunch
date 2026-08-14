@@ -959,7 +959,7 @@ python3 scripts/bench_points.py warm.json cold-recreate.json --out bench.json \
 
 (`pixi run bench-points ...` in the devcontainer.) One case per stage the shape
 reported, plus that shape's own total: `warm / host-prep`,
-`cold-recreate / devpod-up`, `warm / total`. Five properties of it are
+`cold-recreate / devpod-up`, `warm / total`. Six properties of it are
 load-bearing:
 
 - **The published value is the median, and the case name is a key.** The trend
@@ -980,6 +980,10 @@ load-bearing:
   lost one publishes nothing and goes red. Naming a shape that was not benched
   fails too — an assertion that covers nothing reads exactly like one that
   passed.
+- **A record that is missing or unreadable refuses the same way.** The step
+  that writes the records can exit 0 without having written one, so the absence
+  arrives here — and it prints `bench_points: <reason>` naming the file and
+  writes nothing, like every other refusal, rather than a traceback.
 - **A regression alerts; it never gates.** The workflow is deliberately not a
   job in `ci.yml`: a job there would join the CI gate's `needs` by house
   convention and turn a noisy wall-clock measurement into a merge gate. A point

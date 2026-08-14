@@ -44,6 +44,11 @@ reach a chart looking like measurements:
     changed shape, and a red job says so where a flattening trend line does
     not. Naming a shape that was not benched is itself a failure, for the
     same reason: an assertion that covers nothing reads like one that passed.
+
+A record that is missing, unreadable or not a bench record takes the same
+exit: `bench_points: <reason>`, and no output file. The step that writes the
+records can go green without having written one, so that absence is the first
+thing this reads and the first thing it can report.
 """
 
 UNIT = "s"
@@ -127,6 +132,45 @@ def shape_of(record: Dict[str, Any]) -> str:
             "belong to; re-run the bench with --shape"
         )
     return str(shape)
+
+
+def load_record(path: str) -> Dict[str, Any]:
+    """The bench record at *path*, or a refusal saying which one and why.
+
+    Reading is a refusal like every other one here, and it earns that the same
+    way: the bench step upstream can go green without writing its record at all
+    -- a mangled `--before` exited the bench 2 and the step passed anyway (run
+    31840842480) -- and what this script printed then was a raw traceback whose
+    first readable line named a Python builtin rather than the absent file. A
+    missing record is a fact about the step before this one, so it is reported
+    like one instead of raised through it.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except OSError as unreadable:
+        raise Refused(
+            f"cannot read the record {path}: {unreadable.strerror}. The bench step that "
+            "writes it can exit 0 without having written it, so this is a report about "
+            "that step rather than about this one"
+        ) from unreadable
+    except ValueError as unparsable:
+        raise Refused(
+            f"the record {path} is not readable JSON ({unparsable}); a bench interrupted "
+            "mid-write leaves exactly this"
+        ) from unparsable
+    if not isinstance(document, dict):
+        raise Refused(
+            f"the record {path} is a {type(document).__name__}, not the one JSON object "
+            "per bench invocation this reads"
+        )
+    missing = [key for key in ("median", "runs") if key not in document]
+    if missing:
+        raise Refused(
+            f"the record {path} carries no {' and no '.join(missing)}, which is what its "
+            "points are made of -- so there is no point in it to publish"
+        )
+    return document
 
 
 def check_one_record_per_shape(records: List[Dict[str, Any]]) -> None:
@@ -246,11 +290,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    records = []
-    for path in args.records:
-        with open(path, encoding="utf-8") as handle:
-            records.append(json.load(handle))
     try:
+        records = [load_record(path) for path in args.records]
         check_one_record_per_shape(records)
         check_required(
             records, args.require_stages_on, [s for s in args.require_stages.split(",") if s]

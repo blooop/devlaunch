@@ -326,6 +326,50 @@ class TestWhatItRefusesToPublish:
         assert "Traceback" not in result.stderr
         assert not out.exists()
 
+    def test_a_record_that_was_never_written_names_the_file_it_wanted(self, tmp_path):
+        """The step before this one can pass without writing its record — run
+        31840842480 is a bench whose arguments were mangled, whose script
+        exited 2, and whose step went green anyway. This converter is where
+        that surfaces, so it has to surface as a sentence naming the missing
+        record, like every other refusal, rather than as a traceback."""
+        out = tmp_path / "bench.json"
+        result = run_points(str(tmp_path / "cold-recreate.json"), "--out", str(out))
+        assert result.returncode != 0
+        assert "cold-recreate.json" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert result.stderr.startswith("bench_points:")
+        assert not out.exists()
+
+    def test_a_record_that_is_not_readable_json_is_refused(self, tmp_path):
+        """A truncated record is what an interrupted bench leaves behind, and
+        it is an absence like any other."""
+        record = tmp_path / "warm.json"
+        record.write_text('{"shape": "warm", "runs": [', encoding="utf-8")
+        out = tmp_path / "bench.json"
+        result = run_points(str(record), "--out", str(out))
+        assert result.returncode != 0
+        assert "warm.json" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert result.stderr.startswith("bench_points:")
+        assert not out.exists()
+
+    def test_a_record_without_the_runs_and_median_it_publishes_is_refused(self, tmp_path):
+        """Readable JSON is not yet a bench record. These two keys are what
+        every point is made of, so a document missing either has nothing to
+        publish and says so once — rather than raising a KeyError further in,
+        at a line that names neither the file nor the reason."""
+        for missing in ("median", "runs"):
+            record = write_record(
+                tmp_path / f"{missing}.json", {k: v for k, v in WARM.items() if k != missing}
+            )
+            out = tmp_path / f"{missing}-bench.json"
+            result = run_points(record, "--out", str(out))
+            assert result.returncode != 0, missing
+            assert missing in result.stderr
+            assert "Traceback" not in result.stderr
+            assert result.stderr.startswith("bench_points:")
+            assert not out.exists()
+
     def test_two_records_of_the_same_shape_would_collide(self, tmp_path):
         """The case name is the trend's key. Two records both labelled `warm`
         publish two points per case in one commit, and the chart has no way to

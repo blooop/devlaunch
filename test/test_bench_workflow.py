@@ -14,12 +14,14 @@ below is a thing somebody could plausibly write, with the reason it must not be
 written.
 """
 
+import os
 from pathlib import Path
 
 WORKFLOWS = Path(__file__).parent.parent / ".github" / "workflows"
 BENCH = WORKFLOWS / "bench.yml"
 CI = WORKFLOWS / "ci.yml"
 BENCH_JOB = "bench"
+RESET = Path(__file__).parent.parent / "scripts" / "bench_cold_reset.sh"
 
 
 def bench_workflow() -> str:
@@ -49,6 +51,17 @@ def cold_reset() -> str:
     lines = [line for line in bench_settings().splitlines() if "--before" in line]
     assert len(lines) == 1, "the cold-recreate shape is the only one that resets between runs"
     return lines[0]
+
+
+def reset_script() -> str:
+    """What the cold reset actually does, which is a file rather than a string.
+
+    The step names a script and the script holds the reset; both halves are
+    asserted below, because a reset that is named but does nothing and a reset
+    that does the right thing but is never named fail identically in CI.
+    """
+    assert RESET.is_file(), f"{RESET.name} is what re-establishes the cold state"
+    return RESET.read_text(encoding="utf-8")
 
 
 class TestItCannotBecomeAMergeGate:
@@ -125,10 +138,30 @@ class TestTheColdResetSurvivesAContainerWrittenClone:
     in a clone it does not own (run 31838698495, follow-up to #198). The runner
     has passwordless sudo, so the reset takes the clone back before removing
     it. This is a property of a CI runner, not of `dl`, which is why the
-    recovery lives here."""
+    recovery lives here — in a script, for the reason the first test gives."""
+
+    def test_the_reset_is_a_script_the_step_names_rather_than_quoting_inside_quoting(self):
+        """`--before` reaches the bench through `pixi run bench`, and pixi's
+        task shell re-joins and re-parses the arguments appended to a task —
+        so a `bash -c '...'` nested inside the step's own quotes arrives with
+        its inner quotes gone. Run 31840842480 is what that costs: argparse
+        saw `-d` as a stray argument and exited 2, pixi's shell ran the tail
+        after the `;` as a command of its own, and the STEP still passed with
+        no record written. A bare path plus one argument has nothing left to
+        re-parse."""
+        reset = cold_reset()
+        assert RESET.name in reset
+        assert "bash -c" not in reset, "a nested shell is the quoting that did not survive"
+        assert "'" not in reset, "a second level of quotes is what pixi's task shell eats"
+        assert ";" not in reset, "pixi's shell reads a `;` in the argument as its own separator"
+
+    def test_the_script_is_executable_so_the_bench_can_run_it_directly(self):
+        """The bench splits `--before` and runs the list without a shell, so
+        the file has to be runnable on its own."""
+        assert os.access(RESET, os.X_OK), f"{RESET.name} is run as a command, not sourced"
 
     def test_the_reset_takes_the_clone_back_before_removing_it(self):
-        reset = cold_reset()
+        reset = reset_script()
         assert "sudo chown" in reset
         assert "rm --force" in reset
         assert reset.index("sudo chown") < reset.index("rm --force"), (
@@ -139,15 +172,23 @@ class TestTheColdResetSurvivesAContainerWrittenClone:
         """Scoped to the cache the job already scoped to `/tmp`. A recursive
         chown is a blunt instrument and a wider one would take ownership of
         things this job did not create."""
-        assert "XDG_CACHE_HOME" in cold_reset()
+        assert "XDG_CACHE_HOME" in reset_script()
+
+    def test_the_script_says_why_it_exists_where_somebody_would_delete_it(self):
+        """A three-line script that chowns a cache reads like leftover
+        scaffolding unless the uid mismatch that forces it is written down
+        beside it."""
+        assert "uid" in reset_script()
 
     def test_the_recovery_runs_per_run_rather_than_once_before_the_bench(self):
         """Every run recreates those files, so a one-time step before the bench
         recovers run 1 and leaves runs 2..5 with exactly the clone that broke
-        it. `--before` is the only place with the right cardinality."""
-        assert bench_settings().count("chown") == 1, (
-            "a second chown is a one-time step doing per-run work"
+        it. `--before` is the only place with the right cardinality — so the
+        script is named once in the workflow, and that once is there."""
+        assert bench_settings().count(RESET.name) == 1, (
+            "a second mention is a one-time step doing per-run work"
         )
+        assert RESET.name in cold_reset()
 
 
 class TestTheExclusionsSayWhyInTheFile:
