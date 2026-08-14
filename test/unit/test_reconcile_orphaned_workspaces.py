@@ -31,6 +31,7 @@ published diagnostic.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch
@@ -348,3 +349,123 @@ class TestTheReportComesBeforeTheChange:
         reconcile(world, "-y")
 
         assert "recreate" in capsys.readouterr().out
+
+
+# root is refused by nothing, so under root these would pass with the behaviour
+# they guard fully reverted. Same reasoning as test_prune_orphaned_clones.py's.
+needs_an_unprivileged_user = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root can write any directory, so nothing here can refuse"
+)
+
+
+class TestARepairThatCannotBeMadeIsNotHalfMade:
+    """The record is only told about a workspace devpod's record now agrees with.
+
+    devpod's file is rewritten first and metadata's id second, so a failure
+    stops before the second. The other order would leave `dl` following a record
+    to a workspace still sourced at a dead path -- which is the fault this
+    command exists to clear, reintroduced by the command itself.
+    """
+
+    def test_a_devpod_record_that_is_not_there_is_reported_and_nothing_is_claimed(self, world):
+        """devpod lists the workspace; its own file for it is gone.
+
+        A partially-removed devpod home, which is exactly the kind of state a
+        machine needing this command is already in.
+        """
+        clone = world.clone("main")
+        world.record("main", clone)
+        path = world.workspace("devlaunch-main", world.repo_dir / "main")
+        path.unlink()
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 1
+        assert world.stored_id("main") is None
+
+    def test_a_record_shaped_in_a_way_dl_cannot_read_is_left_alone(self, world):
+        """A `source` that is not an object is not one dl can safely replace."""
+        clone = world.clone("main")
+        world.record("main", clone)
+        path = world.workspace("devlaunch-main", world.repo_dir / "main")
+        path.write_text(json.dumps({"id": "devlaunch-main", "source": "somewhere"}))
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 1
+        assert json.loads(path.read_text())["source"] == "somewhere"
+        assert world.stored_id("main") is None
+
+    @needs_an_unprivileged_user
+    def test_a_write_that_is_refused_leaves_devpods_record_whole(self, world, refuses_writes):
+        """The rename is over a temp file in the same directory, so a refusal
+        cannot truncate what devpod had."""
+        clone = world.clone("main")
+        world.record("main", clone)
+        path = world.workspace("devlaunch-main", world.repo_dir / "main")
+        before = path.read_text()
+        refuses_writes(path.parent)
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 1
+        assert path.read_text() == before
+        assert world.stored_id("main") is None
+
+
+class TestSourcesThisCommandCannotFollow:
+    """A source dl cannot read is passed over, not guessed at."""
+
+    def test_a_local_folder_devpod_filled_with_an_object_is_skipped(self, world):
+        world.listed.append({"id": "unreadable", "source": {"localFolder": {"nested": True}}})
+
+        status, devpod = reconcile(world, "-y")
+
+        assert status == 0
+        assert "delete" not in devpod.subcommands()
+
+    def test_a_source_no_filesystem_call_will_accept_is_skipped(self, world):
+        world.listed.append({"id": "unusable", "source": {"localFolder": "/no\0such/path"}})
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 0
+
+    def test_a_record_dl_cannot_name_a_directory_for_is_no_candidate(self, world, capsys):
+        """An empty path and a branch the derivation refuses: no directory at
+        all, so nothing can be adopted into it."""
+        from devlaunch.worktree.models import WorktreeInfo  # pylint: disable=import-outside-toplevel
+        from devlaunch.worktree.storage import (  # pylint: disable=import-outside-toplevel
+            MetadataStorage,
+        )
+
+        MetadataStorage(world.cache / "metadata.json").add_worktree(
+            WorktreeInfo(
+                owner=OWNER,
+                repo=REPO,
+                branch="--evil",
+                local_path=Path(""),
+                workspace_id="whatever",
+            )
+        )
+        world.workspace("devlaunch-main", world.repo_dir / "main")
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 0
+        assert "devlaunch-main" in capsys.readouterr().out
+
+
+class TestOptionsAreRefusedRatherThanIgnored:
+    """`--prune`'s rule: an option that reads as a rehearsal must not act."""
+
+    def test_an_unknown_option_stops_the_command(self, world):
+        clone = world.clone("main")
+        world.record("main", clone)
+        world.workspace("devlaunch-main", world.repo_dir / "main")
+
+        status, devpod = reconcile(world, "--dry-run", "-y")
+
+        assert status == 1
+        assert devpod.subcommands() == []
+        assert world.sourced_at("devlaunch-main") == str(world.repo_dir / "main")

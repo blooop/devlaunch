@@ -19,6 +19,7 @@ catch.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -260,3 +261,26 @@ class TestTheWarmPathStillReadsNoMetadata:
             dl.main([f"{OWNER}/{REPO}@{BRANCH}", "stop"])
 
         assert dl._CLONE_MANAGER_KEY not in dl._cache  # pylint: disable=protected-access
+
+
+# root is refused by nothing, so under root this would pass with the fallback
+# fully reverted. Same reasoning as test_prune_orphaned_clones.py's.
+needs_an_unprivileged_user = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root can read any directory, so nothing here can refuse"
+)
+
+
+class TestALookupThatFailedIsNotAnAnswer:
+    """A cache dl cannot read must not be able to stop a working command.
+
+    The record is a second opinion about which workspace this is, and a second
+    opinion that cannot be obtained leaves the first one standing. Raising here
+    would take out `dl <ws> stop` on a machine whose cache has the wrong owner --
+    a command that has no need of the cache at all once devpod has answered.
+    """
+
+    @needs_an_unprivileged_user
+    def test_an_unreadable_cache_falls_back_to_the_derivation(self, cache, refuses_reads):
+        refuses_reads(cache)
+
+        assert resolve({}) == dl.KnownWorkspace(derived_id(), None)
