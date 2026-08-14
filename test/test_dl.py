@@ -2436,9 +2436,7 @@ class TestFastAttach:
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.update_cache_background")
-    def test_existing_id_running_skips_workspace_up(
-        self, _cache, mock_ssh, mock_up, mock_state
-    ):
+    def test_existing_id_running_skips_workspace_up(self, _cache, mock_ssh, mock_up, mock_state):
         """Test existing raw workspace ID with Running state skips workspace_up()."""
         mock_state.return_value = "Running"
         mock_ssh.return_value = 0
@@ -3324,9 +3322,7 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_starting_a_workspace_refreshes_once(
-        self, mock_popen, _mock_state, mock_up, _mock_ssh
-    ):
+    def test_starting_a_workspace_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws"]):
             assert main() == 0

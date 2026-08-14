@@ -35,11 +35,21 @@ binary the next time it goes through `up`. The container reports what it
 found and the host says what that means, so "the official install layout" is
 one definition asked from both ends rather than one per side.
 
+The probe does not travel alone. It is the tail of one **setup pass** composed
+on the host (`setup_script`) -- independent stages, then the shipped probe
+verbatim -- so the work a cold launch has to do inside the container it just
+built rides the trip the probe was paying anyway. Naming the container is the
+one stage today, and it used to be a `devpod ssh` of its own: ~1.73s, of which
+~99% is connection and process setup, so folding it in saves very nearly a whole
+trip (#157, #168). Each stage reports `ok` / `failed(rc)` / `not reached` on a
+marked line the host reads and names, which is more than the separate trip ever
+gave -- its result was a boolean the attach discarded.
+
 The round trips this costs, by path: a provisioned workspace pays one (the
-probe, which was always paid); a lendable or cold one pays two (probe, then
-transfer), or three when the transfer cannot help a genuinely empty container
-and the network fallback runs -- against a `devpod up` that already ran for
-seconds to minutes.
+setup pass, which was always paid as the probe); a lendable or cold one pays two
+(pass, then transfer), or three when the transfer cannot help a genuinely empty
+container and the network fallback runs -- against a `devpod up` that already
+ran for seconds to minutes.
 
 Two consequences worth knowing:
 
@@ -488,7 +498,9 @@ def setup_script(workspace: str) -> str:
     Exits 0 in every state, like the probe it carries, so a non-zero `devpod
     ssh` keeps meaning the transport failed and never that a stage did.
     """
-    return "\n".join([*(_stage_snippet(stage) for stage in setup_stages(workspace)), probe_script()])
+    return "\n".join(
+        [*(_stage_snippet(stage) for stage in setup_stages(workspace)), probe_script()]
+    )
 
 
 @dataclass(frozen=True)

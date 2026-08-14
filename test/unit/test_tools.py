@@ -877,7 +877,7 @@ class TestSetupPassScript:
             link.symlink_to(readlink)
         if sudo_exit is not None:
             sudo = sysbin / "sudo"
-            sudo.write_text(f'#!/bin/sh\nexit {sudo_exit}\n', encoding="utf-8")
+            sudo.write_text(f"#!/bin/sh\nexit {sudo_exit}\n", encoding="utf-8")
             sudo.chmod(0o755)
         result = subprocess.run(
             [shutil.which("bash") or "/bin/bash", "-c", tools.setup_script(workspace)],
@@ -936,9 +936,7 @@ class TestStageOutcomes:
         """What a mid-script death or a cut-off report looks like. It must not
         read as `ok`: "never ran" and "ran fine" are the two states this whole
         value exists to keep apart."""
-        assert self._hostname(REPORT_ABSENT) == (
-            tools.StageNotReached(name=tools.HOSTNAME_STAGE),
-        )
+        assert self._hostname(REPORT_ABSENT) == (tools.StageNotReached(name=tools.HOSTNAME_STAGE),)
 
     @pytest.mark.parametrize(
         "report",

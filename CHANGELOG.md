@@ -50,6 +50,47 @@ table and should be judged on its own merits.
   so can only stamp its own past action. No stamp means no field at all — not a zero, and
   not a `miss`.
 
+### Changed
+
+- **One setup pass on the way into a running container, and one fewer `devpod ssh` on
+  both the cold and the warm path** ([#168](https://github.com/blooop/devlaunch/issues/168),
+  deciding [#157](https://github.com/blooop/devlaunch/issues/157) and
+  [#167](https://github.com/blooop/devlaunch/issues/167)). Naming the container — the
+  hostname the shell prompt shows — was a `devpod ssh` of its own. It is now a named
+  stage in front of the tools probe, in the trip the probe already pays, composed on the
+  host from the shipped probe script verbatim so there is still exactly one definition of
+  what the probe asks.
+
+  **Measured, on this machine and this date**: the two steps composed into one trip take
+  **1.64s** against **3.56s** run as two sequential trips — medians of 5, `/usr/bin/time`
+  around real `devpod` against a real container under a throwaway `DEVPOD_HOME`. **~1.92s
+  saved per cold launch.** A `devpod ssh --command` trip is ~1.73s and is ~99% connection
+  and process setup, so collapsing two trips into one saves a whole trip, near exactly.
+  (The ~0.45–0.56s figure elsewhere in this file belongs to `devpod list` / `devpod
+  status`, which never enter a container, and understates this shape by ~3.5x.)
+
+  The warm interactive attach drops the same trip and does not replace it: every entry
+  into Running goes through the pass, so a workspace you attach to is already named.
+  `dl <ws>` is now two devpod processes (`status`, `ssh`) instead of three, a further
+  ~1.75s off the warm path.
+
+- **A cold `dl <ws> -- cmd` and a cold `dl <ws> up` now name their container too**, where
+  before they left it nameless until somebody attached interactively. It costs them
+  nothing — the trip was already being paid.
+
+- **Each stage of the pass reports itself**: `ok`, `failed` with its exit status, or *not
+  reached* when no outcome came back at all, and dl names any stage that is not `ok`
+  rather than discarding it. The hostname's failure reports at **info** level, because it
+  fails by design on every unprivileged image — setting a hostname needs `CAP_SYS_ADMIN`,
+  which Docker drops by default — so it is the majority case and a warning would erode
+  the signal. Until now that failure was a boolean nothing looked at, which is why
+  containers that could never be named looked exactly like containers that were.
+
+- **`DEVLAUNCH_NO_TOOLS` no longer switches off container naming.** It opts a machine out
+  of installing tools, and the pass that carries the naming now runs either way — whether
+  the pass runs and whether the tools work runs are two questions. A machine with the
+  opt-out set pays one round trip per `up` that it did not pay before.
+
 ## [0.0.26] - 2026-08-14
 
 ### Added
