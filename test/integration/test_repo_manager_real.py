@@ -377,8 +377,14 @@ class TestStalenessContract:
 
         clone_manager.repo_manager.ensure_repo("test", "empty", str(empty_remote))
 
+        # On the launch path ensure_branch runs first, so its branch creation is
+        # where the empty cache is actually discovered.
         with pytest.raises(RuntimeError):
             clone_manager.ensure_branch("test", "empty", "nosuch")
+
+        # And a caller that reaches the workspace step anyway still fails there
+        # rather than getting a workspace built on nothing.
+        with pytest.raises(RuntimeError):
             clone_manager.ensure_workspace("test", "empty", "nosuch", str(empty_remote))
 
     def test_an_unreachable_remote_launches_from_the_cache(self, clone_manager, local_git_repo):

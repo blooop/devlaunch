@@ -4,6 +4,7 @@
 from pathlib import Path
 from unittest.mock import call, patch, MagicMock
 
+import logging
 import os
 
 import pytest
@@ -260,6 +261,31 @@ class TestEnsureBranch:
 
         assert mock_repo_manager.fetch_ref.call_count == 2
 
+    def test_a_failed_default_branch_fetch_warns_with_its_reason(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, caplog
+    ):
+        """Losing the base-branch fetch is reported the way losing any fetch is.
+
+        The reason is carried so it can be printed; a FetchFailed on the
+        default-branch fetch that vanished silently would cut the new branch
+        from a stale cache with nothing telling the user why it is old.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [
+            RefMissingOnRemote(),
+            FetchFailed("no such host"),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            clone_manager.ensure_branch("owner", "repo", "newbranch")
+
+        assert "no such host" in caplog.text
+        # Still proceeds: the cache's own default branch is the best remaining
+        # start point, exactly as when the first fetch fails.
+        mock_branch_manager.ensure_branch_exists.assert_called_once()
+
     def test_an_unsafe_recorded_default_branch_does_not_escape_as_a_valueerror(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
     ):
@@ -294,8 +320,8 @@ class TestEnsureBranch:
 
         Proceeding is the point: an unreachable remote must not stop a launch of a
         branch already in the cache. The error for "there is nothing to launch
-        from" is raised later, by the checkout, where the cache is actually
-        consulted.
+        from" comes from the branch creation below, the first thing that actually
+        consults the cache.
         """
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path

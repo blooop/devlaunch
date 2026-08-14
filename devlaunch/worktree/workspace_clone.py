@@ -339,9 +339,10 @@ class WorkspaceCloneManager:
           than one.
         - **Offline, or any other fetch failure:** warn and carry on with
           whatever the cache holds. The launch of an already-cached branch still
-          works. When there is nothing to launch from at all, the checkout in
-          :meth:`_prepare_workspace` raises — that is where the cache is actually
-          consulted, so that is where its emptiness is discovered.
+          works. When there is nothing to launch from at all, the branch
+          creation at the end of this method raises — it is the first thing
+          that actually consults the cache, so that is where its emptiness is
+          discovered.
         - **Every other ref** (other branches, tags, prunes) converges within
           ``fetch_interval`` via the detached updater sweep, blocking nobody.
 
@@ -378,7 +379,7 @@ class WorkspaceCloneManager:
                 # cache's own default branch is the best remaining start point.
                 if default_branch:
                     try:
-                        self.repo_manager.fetch_ref(owner, repo, default_branch)
+                        base_outcome = self.repo_manager.fetch_ref(owner, repo, default_branch)
                     except ValueError as e:
                         # Unlike `branch`, this name is read back from metadata.json
                         # and carries no proof. Caught rather than propagated so a
@@ -386,6 +387,16 @@ class WorkspaceCloneManager:
                         # dl's launch path guards it with (RuntimeError, OSError),
                         # so a ValueError here would surface as a traceback.
                         logger.warning(f"Cannot fetch recorded default branch: {e}")
+                    else:
+                        if isinstance(base_outcome, FetchFailed):
+                            # Same condition as the arm below, warned the same
+                            # way: the new branch is about to be cut from a
+                            # possibly stale cache, and the reason is carried
+                            # precisely so it can be printed here.
+                            logger.warning(
+                                f"Could not fetch {default_branch} for {owner}/{repo}: "
+                                f"{base_outcome.reason}"
+                            )
             elif isinstance(outcome, FetchFailed):
                 # Not an error here: a cached branch still launches. Deliberately
                 # no default-branch fetch -- nothing was learned about the remote,
