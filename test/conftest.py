@@ -170,12 +170,17 @@ def timing_switch_off(monkeypatch):
     scrubs it rather than going red in their shell. A test that wants the switch
     on sets it itself.
 
-    The handoff stamp goes with it: it is exported by whatever hands off to
-    dl, and a developer whose shell carries one would otherwise see a handoff
-    stage in every test that asks for the summary.
+    Both seam stamps go with it: they are exported by whatever hands off to
+    dl, and a developer whose shell carries them would otherwise see a handoff
+    stage, or a prewarm report, in tests that ask for the summary and have no
+    reason to expect either. The pair is scrubbed together because they are
+    one seam — scrubbing the handoff stamp alone leaves the trap set for the
+    next test that observes an attach shape without stamping the environment
+    itself.
     """
     monkeypatch.delenv(timing.ENV_VAR, raising=False)
     monkeypatch.delenv(timing.HANDOFF_VAR, raising=False)
+    monkeypatch.delenv(timing.PREWARM_VAR, raising=False)
 
 
 def pytest_configure():

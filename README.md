@@ -913,6 +913,35 @@ build the image pays more, by an amount this recipe does not measure — but the
 gap is large: an earlier 3-run median on this same host, reported as its first
 real launch, was 33.204s.
 
+Every number in the two paragraphs above was copied into this prose by hand.
+`--record` is how that stops: it writes the same invocation as one JSON object
+a trend job can upload without anyone reading it.
+
+```bash
+python3 scripts/bench_launch.py -n 5 --record warm.json --shape warm \
+    -- dl-next owner/repo -- true
+```
+
+The record holds the command, the run count, each run's wall time and
+per-stage seconds, and the medians of those — and nothing else, because a CI
+job stamps its own commit, clock and host better than this script can. Four
+things about it are load-bearing:
+
+- **The median is the point, the runs are its evidence.** A trend compares a
+  point against the immediately previous one, so N runs published as N points
+  would read ordinary spread as a regression.
+- **A stage no run reported is absent, not zero.** A warm launch legitimately
+  has no cold-path stages; a zero would claim the work happened instantly
+  rather than not at all. A stage only *some* runs reported is a median over
+  those runs, carrying a count of how many — a median of two and a median of
+  five are not the same claim.
+- **Recording asks the launch for its stages** (`DEVLAUNCH_TIMING=json`), so a
+  run that reports no timing document is an error and no record — same
+  discipline as no median over a failed run.
+- **`--shape` labels the trend line** (`warm`, `cold-recreate`). It is the
+  caller's to say: the same command benches either shape depending on
+  `--before`, and a wrong label is worse in a trend than a missing one.
+
 ## Worktree Backend
 
 For git repositories, devlaunch uses an efficient worktree backend by default:
