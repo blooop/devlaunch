@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
+itself the last release of the Python implementation, on the go decision recorded in
+[#53](https://github.com/blooop/devlaunch/issues/53); 0.0.12 and 0.0.13 have shipped
+since, and there is no cutoff to plan around now. Nothing about how you install or run
+`dl` changes, and no release is withdrawn — this only retires an expectation the
+changelog had set.
+
+What it does change is what is worth doing to this codebase. Work that was ruled out as
+wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was gating,
+and paying down anything scoped as "the Rust version will fix it" — is back on the
+table and should be judged on its own merits.
+
+## [0.0.26] - 2026-08-14
+
+### Added
+
+- `dl <workspace> dotfiles` refreshes dotfiles inside a workspace that is already
+  provisioned — `chezmoi update --force && pixi global sync` over one `devpod ssh`,
+  falling back to cloning `DOTFILES_URL` and running `install.sh` when `chezmoi` is
+  not on the image. devpod applies dotfiles only when it *provisions* a workspace,
+  and attaching to a Running one deliberately skips `devpod up` altogether, so a
+  long-lived workspace otherwise keeps whatever dotfiles it was born with. The
+  subcommand starts the workspace first if it is not Running.
+
+- `dl --prune [-y] [--force]` removes exactly the clone directories no live
+  workspace opens any more, and nothing else
+  ([#159](https://github.com/blooop/devlaunch/issues/159)).
+
+### Changed
+
+- Launch and update timing: the interval fetch moved into the detached updater, and
+  an env-gated launch timing summary plus a median bench harness now make the
+  remaining cost measurable rather than argued about.
+
+- **The 0.0.24 lending entry no longer claims the transfer is "checksum-verified"**
+  ([#152](https://github.com/blooop/devlaunch/issues/152)). Nothing in `devlaunch/`
+  computes a checksum, and nothing ever did: the only gate is that both lent
+  binaries are run in a staging directory, and nothing moves into place until they
+  do. The entry now says that instead. The `5.1s` beside it is gone as well — it
+  was an inherited working number that nobody measured, unlike the 342MB, which
+  [#158](https://github.com/blooop/devlaunch/issues/158) reproduced and which is
+  now attributed there.
+
+  Noted here rather than corrected silently, because the edit changes a section
+  that has already shipped: anyone who read the 0.0.24 notes before this was
+  relying on an integrity check the lend does not perform, and a released claim
+  about verification is not one to withdraw without saying so.
+
 ### Fixed
 
 - **`dl <ws> rm` could destroy unsaved work without being asked for `--force`**
@@ -26,34 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests and handed `shutil.rmtree` **dl's own working directory**, which it
   emptied, `.git` included, before failing on `os.rmdir(".")`. A recorded path is
   now honoured only when it is absolute.
-
-### Changed
-
-- **The 0.0.24 lending entry no longer claims the transfer is "checksum-verified"**
-  ([#152](https://github.com/blooop/devlaunch/issues/152)). Nothing in `devlaunch/`
-  computes a checksum, and nothing ever did: the only gate is that both lent
-  binaries are run in a staging directory, and nothing moves into place until they
-  do. The entry now says that instead. The `5.1s` beside it is gone as well — it
-  was an inherited working number that nobody measured, unlike the 342MB, which
-  [#158](https://github.com/blooop/devlaunch/issues/158) reproduced and which is
-  now attributed there.
-
-  Noted here rather than corrected silently, because the edit changes a section
-  that has already shipped: anyone who read the 0.0.24 notes before this was
-  relying on an integrity check the lend does not perform, and a released claim
-  about verification is not one to withdraw without saying so.
-
-The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
-itself the last release of the Python implementation, on the go decision recorded in
-[#53](https://github.com/blooop/devlaunch/issues/53); 0.0.12 and 0.0.13 have shipped
-since, and there is no cutoff to plan around now. Nothing about how you install or run
-`dl` changes, and no release is withdrawn — this only retires an expectation the
-changelog had set.
-
-What it does change is what is worth doing to this codebase. Work that was ruled out as
-wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was gating,
-and paying down anything scoped as "the Rust version will fix it" — is back on the
-table and should be judged on its own merits.
 
 ## [0.0.25] - 2026-08-10
 
