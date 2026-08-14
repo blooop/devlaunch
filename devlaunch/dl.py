@@ -1863,11 +1863,25 @@ def _is_populated_clone(path: pathlib.Path) -> bool:
     devpod record that still describes something from one the id-scheme change
     left behind -- a folder that is gone, or the config-only stub devpod
     reconstitutes from its cache, neither of which any clone can be matched to.
+
+    `os.stat` rather than `Path.exists()`, for the reason
+    :func:`devlaunch.worktree.workspace_clone._on_disk` gives at length:
+    `exists()` swallows ENOENT, ENOTDIR, EBADF and ELOOP and re-raises the rest
+    on Python 3.10-3.13 while 3.14 returns False, so an expression that looks
+    like one question is two behaviours across the versions in the `ci` matrix.
+
+    A door this process cannot open reads as **not** a populated clone, and that
+    is the safe direction rather than the tidy one. Answering "yes" would say
+    devpod's workspace is at *this* clone and nowhere else, which leaves the
+    repository's other clones prunable; answering "no" says which clone of the
+    repository the workspace wants cannot be established, which disputes all of
+    them and keeps them. The second is what a refusal has actually established.
     """
     try:
-        return (path / ".git").exists()
-    except OSError:
+        os.stat(path / ".git")
+    except (OSError, ValueError):
         return False
+    return True
 
 
 def _subdirectories(path: pathlib.Path) -> List[pathlib.Path]:

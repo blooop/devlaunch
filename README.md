@@ -450,8 +450,13 @@ the next clone of a repo fast), and never looks outside
   names the record to go and fix. `--force` does not move any of them.
 
 Note that *every* directory two levels under `<cache>/devlaunch/repos` is a
-candidate — a stray directory somebody left there is an orphan like any other.
+candidate — a stray directory somebody left there is looked at like any other.
 The cache is `dl`'s to manage; things that are not clones do not belong in it.
+But `git` cannot say what a directory that is not a repository holds, and
+"cannot say" is kept rather than removed, so clearing junk out of the cache
+takes `--force`. That is the same refusal a clone with a half-written `.git`
+gets, and deliberately so: telling the two apart would mean `--prune` forming
+its own opinion about a directory `dl <workspace> rm` already refuses on.
 
 ```
 $ dl --prune

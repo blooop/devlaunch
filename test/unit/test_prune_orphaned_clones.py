@@ -40,6 +40,7 @@ from unittest.mock import patch
 import pytest
 
 from devlaunch.dl import main
+from devlaunch.workspace_id import WorkspaceId
 from devlaunch.worktree.models import WorktreeInfo
 from devlaunch.worktree.storage import MetadataStorage
 from devlaunch.xdg import devlaunch_cache
@@ -70,8 +71,10 @@ class World:
     every one of them was made from.
     """
 
-    def __init__(self, cache: Path):
+    def __init__(self, cache: Path, tmp_path: Path):
         self.cache = cache
+        self.tmp_path = tmp_path
+        self.origin = tmp_path / "origin.git"
         self.repo_dir = cache / "repos" / "o" / "r"
         self.bare = self.repo_dir / ".bare"
         self.clones: Dict[str, Path] = {}
@@ -85,6 +88,31 @@ class World:
     def record_branches(self) -> List[str]:
         """The branches metadata.json still holds a worktree record for."""
         return sorted(record.branch for record in self.storage.list_worktrees())
+
+    def spare_clone(self, path: Path, branch: str) -> Path:
+        """One more real clone, fully pushed, that `--prune` may remove.
+
+        A test that needs *something removable* has to build a repository git
+        can answer about, and cannot use a bare directory with a file in it as a
+        stand-in. Since devlaunch#171 a directory git cannot read as a
+        repository is a :class:`CouldNotTell` rather than "holds nothing", so a
+        plain directory is now the arm that *refuses* -- which is the right
+        answer for it and the wrong fixture for a deletion test. Written the
+        other way round, three of the tests below asserted a refusal path that
+        nothing ever reached.
+
+        Made the way the fixture's own four clones are, from the same bare and
+        pushed to the same origin, so the git objects hardlink out of the bare
+        and `git log --not --remotes` really has nothing to report.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        git("clone", str(self.bare), str(path), cwd=self.tmp_path)
+        git("remote", "set-url", "origin", str(self.origin), cwd=path)
+        git("checkout", "-b", branch, cwd=path)
+        (path / f"{branch}.txt").write_text("work\n")
+        commit(path, branch)
+        git("push", "-u", "origin", branch, cwd=path)
+        return path
 
 
 def _entry(workspace_id: str, source) -> dict:
@@ -154,10 +182,10 @@ def world(tmp_path) -> World:
     them. `disputed` has a metadata record naming a workspace devpod still lists
     but sources somewhere else entirely, which is devlaunch#88's shape.
     """
-    world = World(devlaunch_cache())
+    world = World(devlaunch_cache(), tmp_path)
     world.repo_dir.mkdir(parents=True)
 
-    origin = tmp_path / "origin.git"
+    origin = world.origin
     seed = tmp_path / "seed"
     git("init", "-b", "main", str(seed), cwd=tmp_path)
     (seed / "README.md").write_text("seed\n")
@@ -536,6 +564,83 @@ class TestTheRecordsFollowTheDirectories:
             sealed.chmod(0o700)
 
 
+class TestWhichDirectoryARecordNames:
+    """One resolver answers it, and asking a second way is a deletion.
+
+    A record gives *two* answers about where its clone is -- the path written in
+    it, and the one derived from its owner/repo/branch -- and devlaunch#174 was
+    those two answers disagreeing between the guard and the delete.
+    :meth:`WorkspaceCloneManager.resolve_clone_path` is the single place that
+    settles it, and `--prune` reads records in two places: to decide which
+    directory a record disputes, and to decide which record describes nothing.
+    Both go through it.
+    """
+
+    @staticmethod
+    def _derived(world: World, branch: str) -> Path:
+        """Where dl would put `o/r@branch`'s clone if no path were recorded."""
+        return world.repo_dir / WorkspaceId("o", "r", branch).value
+
+    def test_a_disputed_clone_whose_record_lost_its_path_is_still_disputed(self, world, capsys):
+        """The unheld guard, held. A record whose `local_path` is empty --
+        hand-edited, or truncated on a metadata write -- still names its clone
+        perfectly well through owner/repo/branch, and the clone it names is one
+        devpod disputes.
+
+        Read raw, `Path("")` is `Path(".")`: truthy, existing, and canonicalising
+        to whatever directory `dl` was run from. The record is filed under that,
+        the real clone is left with no record at all, and a clone that should be
+        `Disputed` falls through to `Orphaned` -- which is a deletion, with no
+        `--force` and nothing said.
+        """
+        clone = world.spare_clone(self._derived(world, "lost"), "lost")
+        world.storage.add_worktree(
+            WorktreeInfo(
+                owner="o",
+                repo="r",
+                branch="lost",
+                local_path=Path(""),
+                workspace_id="a-live-one",
+            )
+        )
+        # devpod still lists that workspace, and sources it somewhere else.
+        world.listed.append(_entry("a-live-one", world.tmp_path / "somewhere" / "else"))
+        code, _devpod = run_prune(world, "-y", "--force")
+        out = capsys.readouterr().out
+        assert code == 0
+        assert clone.exists()
+        assert "devlaunch#88" in reported(out, clone)
+
+    def test_a_record_whose_clone_is_at_the_derived_path_is_not_called_gone(self, world, capsys):
+        """The same resolver, on the other reader.
+
+        A record left pointing somewhere stale is devlaunch#174's own shape --
+        the recorded path is not on disk and the clone is at the derived one,
+        which is exactly the case `resolve_clone_path` exists to settle. Read
+        raw, the record describes nothing and gets dropped, and the note of
+        where a clone that is *right there* lives goes with it. `--prune` is the
+        only thing that has ever removed a record, so there is nothing to put it
+        back.
+        """
+        derived = self._derived(world, "lost")
+        derived.mkdir()
+        (derived / "work.txt").write_text("still here\n")
+        world.storage.add_worktree(
+            WorktreeInfo(
+                owner="o",
+                repo="r",
+                branch="lost",
+                # Where the clone used to be, before an id scheme moved it.
+                local_path=world.repo_dir / "r-lost-oldscheme",
+                workspace_id="a-live-one",
+            )
+        )
+        run_prune(world, "-y")
+        capsys.readouterr()
+        assert derived.exists()
+        assert "lost" in world.record_branches()
+
+
 class TestACacheReachedThroughASymlink:
     """The total-loss regression, and the reason it gets a test of its own."""
 
@@ -604,10 +709,20 @@ class TestWhenADirectoryWillNotComeAway:
 
     @staticmethod
     def _seal(world: World) -> Path:
-        """A second orphan with a door in it this process cannot open."""
-        leftover = world.repo_dir / "leftover"
-        (leftover / "locked").mkdir(parents=True)
+        """A second orphan with a door in it this process cannot open.
+
+        A real clone rather than a bare directory, and the difference is whether
+        these tests reach the refusal path at all: git answers "nothing to lose"
+        about a repository whose subdirectory it cannot open (a warning on
+        stderr, rc 0, no output -- executed against git 2.55.0), so the clone is
+        classified removable and `remove_tree` gets to refuse. A plain directory
+        is a :class:`CouldNotTell` since devlaunch#171 and is *kept*, so nothing
+        would ever be removed and there would be no refusal to report.
+        """
+        leftover = world.spare_clone(world.repo_dir / "leftover", "leftover")
+        (leftover / "locked").mkdir()
         (leftover / "locked" / "payload.bin").write_bytes(b"\0" * 512 * 1024)
+        (leftover / ".git" / "info" / "exclude").write_text("locked/\n")
         (leftover / "locked").chmod(0o000)
         return leftover
 
@@ -811,15 +926,42 @@ class TestADevpodRecordThatPointsAtNothing:
         which is what keeps this command useful on #88's host rather than merely
         safe on it: seven repositories were affected there and the rest of the
         cache is still somebody's dead disk."""
-        elsewhere = world.cache / "repos" / "other" / "project" / "stale"
-        elsewhere.mkdir(parents=True)
-        (elsewhere / "payload.bin").write_bytes(b"\0" * 1024)
+        elsewhere = world.spare_clone(world.cache / "repos" / "other" / "project" / "stale", "old")
         world.listed[0] = _entry("r-main", world.repo_dir / "main")
         code, _devpod = run_prune(world, "-y")
         capsys.readouterr()
         assert code == 0
         assert not elsewhere.exists()
         assert world.clones["referenced"].exists()
+
+    @needs_an_unprivileged_user
+    def test_a_source_directory_dl_may_not_look_into_disputes_the_repository(self, world, capsys):
+        """A closed door is not an answer, and the arm that says so had no test.
+
+        `_is_populated_clone` asks whether devpod's recorded source is a real
+        checkout, and it can be refused rather than answered -- a clone a
+        container made mode 000, which is the machine this command exists for.
+        Reading the refusal as "yes, a populated clone" says the live workspace
+        is at this one directory and nowhere else, which leaves the
+        repository's *other* clones prunable while a workspace dl could not
+        inspect is open on the repository. Reading it as "no" disputes the
+        repository, which is what a refusal has actually established.
+
+        Asserted on the reason rather than on survival: every clone here also
+        carries a record, so one that stopped being disputed for this reason
+        would still be kept for another and the assertion would not notice.
+        """
+        sealed = world.clones["referenced"]
+        world.listed[0] = _entry("r-main", sealed)
+        sealed.chmod(0o000)
+        try:
+            code, _devpod = run_prune(world, "-y")
+            out = capsys.readouterr().out
+        finally:
+            sealed.chmod(0o755)
+        assert code == 0
+        assert world.clones["orphan-clean"].exists()
+        assert "devlaunch#88" in reported(out, world.clones["orphan-clean"])
 
 
 class TestAWorkspaceThatAppearedWhileTheQuestionWasOpen:
@@ -979,15 +1121,43 @@ class TestACloneGitWillNotAnswerAbout:
         assert code == 0
         assert not clone.exists()
 
-    def test_a_directory_that_was_never_a_repository_is_still_removed(self, world, capsys):
-        """The distinction the arm rests on. Left-behind notes under the cache
-        really do hold nothing git could lose; a repository that will not open
-        does not, and the two must not be told apart by asking git, which
-        refuses identically for both."""
+    def test_a_directory_that_was_never_a_repository_is_kept_and_named(self, world, capsys):
+        """A directory git cannot read as a repository gets the same answer as a
+        repository that will not open, and this file used to assert the
+        opposite.
+
+        The earlier reading was that left-behind notes under the cache "really
+        do hold nothing git could lose", and told the two apart with a `.git`
+        probe of `--prune`'s own. devlaunch#171 settled it the other way and
+        settled it in the resolver every caller shares: nothing has established
+        that `plan.md` exists anywhere else, and a probe that answers "empty"
+        for a directory dl never looked inside is the same sentinel one layer
+        out. So the stray directory is kept, it is named with why, and `--force`
+        is the sentence that removes it -- which is the arm `dl <ws> rm` already
+        refuses on and the answer this command should not have had a second
+        opinion about.
+
+        The cost is real and is the right way round: a cache with junk in it
+        needs `--force` to clear the junk. The alternative costs an hour of
+        somebody's work on a clone whose `.git` a container half-wrote.
+        """
         stray = world.repo_dir / "notes-i-left-here"
         stray.mkdir()
         (stray / "plan.md").write_text("half a plan\n")
         code, _devpod = run_prune(world, "-y")
+        out = capsys.readouterr().out
+        assert code == 0
+        assert (stray / "plan.md").exists()
+        line = reported(out, stray)
+        assert "could not" in line and "--force" in line, line
+
+    def test_force_removes_a_directory_that_was_never_a_repository_too(self, world, capsys):
+        """The other half: kept is not unremovable, and a cache full of stray
+        directories is still clearable in one command."""
+        stray = world.repo_dir / "notes-i-left-here"
+        stray.mkdir()
+        (stray / "plan.md").write_text("half a plan\n")
+        code, _devpod = run_prune(world, "-y", "--force")
         capsys.readouterr()
         assert code == 0
         assert not stray.exists()
