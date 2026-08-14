@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Two guards around the tools lend were weaker than what was claimed of them**
+  ([#166](https://github.com/blooop/devlaunch/issues/166)) — the follow-ups the
+  final re-verdict on [#164](https://github.com/blooop/devlaunch/pull/164) judged
+  non-blocking, worked once. "The probe never executes the candidate `claude`"
+  was asserted by scrubbing the rendered script's text for an invocation, and a
+  probe that executed `"$(command -v claude)"` walked straight past it — once the
+  lookup is scrubbed, no literal `claude` remains in the execution. The property
+  is now proven behaviourally: the probe runs against a claude that records
+  being invoked (shell builtins only, so the recorder cannot silently fail on
+  the probe's stripped `PATH`), and the record must stay empty. The shipped
+  probe passes — it never did execute the candidate — so this hardens a guard
+  rather than fixing a live defect; the text scrub stays as a complement under
+  a docstring that no longer overclaims.
+
+  The `# devlaunch:` marks guarding profile edits used hand-picked tags, and
+  nothing kept the tags distinct: two lines under one mark silently drop
+  whichever is appended second, with every script still exiting 0. The tag is
+  now derived from the content of the line it guards, so a collision is
+  unrepresentable rather than asserted. A profile marked by an older devlaunch
+  gains one duplicate `PATH` entry the first time it is seen — the cost the
+  module already accepts for any mark change — and nothing after.
+
+  `.devcontainer/claude-code/install.sh` now carries the same guards. It was
+  excluded from the #164 sweep on the stated grounds that it guards its own
+  line in its own file; that reason was wrong — `$TARGET_HOME/.profile` is the
+  *user's* login profile, and the installer's guards substring-matched
+  `.pixi/bin` and `pixi/envs/claude-shim`, the very strings that sweep stopped
+  matching. Latent rather than live (the stock base-image profile contains
+  neither string), and corrected along with the record. Its two edits are now
+  devlaunch's own rendered fragments verbatim, marks included, so the installer
+  (at image build) and the provision script (at `up`) recognise each other's
+  work instead of each appending its own copy of the same line.
+
 - **`dl <ws> rm` could destroy unsaved work without being asked for `--force`**
   ([#174](https://github.com/blooop/devlaunch/issues/174)). The guard read the
   clone directory off `local_path` while the delete fell back to the derived path
