@@ -16,13 +16,16 @@ mode exists for a trend job that wants stage seconds without scraping prose;
 """
 
 import contextlib
+import functools
 import json
 import math
 import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional, TextIO, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, TextIO, Tuple, TypeVar, cast
+
+_F = TypeVar("_F", bound=Callable[..., object])
 
 ENV_VAR = "DEVLAUNCH_TIMING"
 
@@ -54,12 +57,41 @@ STAGES = (HANDOFF_STAGE, "host-prep", "devpod-up", "tools", "attach")
 # monotonic counter because the two ends are different processes, and there is
 # no clock they share whose zero survives an exec.
 #
+# The stage it produces is the only one that lies *outside* `total`: it ends
+# where `total` begins, so it is the one measurement of the exec and the
+# interpreter start that this process could not have taken from inside itself.
+# The rest of the stages add up to `total`; this one is added to it.
+#
 # Unset is the ordinary case (dl launched by a human), and it reports **no
 # handoff stage at all** — never a zero, which would claim an instant handoff
 # that never happened. So does a stamp that cannot be read as a number, or one
 # in the future: neither is a measurement, and inventing one from it would put
 # a fiction into a trend.
 HANDOFF_VAR = "DEVLAUNCH_HANDOFF_T0"
+
+# The stamp's other half, same format: when a prewarm was fired for this
+# workspace, if one was. Absent means nothing was prewarmed.
+#
+# It carries a past action and never a claim about how that action turned out.
+# A prewarm is fired and forgotten — the firer is gone before the container
+# finishes — so whether it helped is a fact only this process can witness, from
+# the launch it then had to run. That is what :func:`observe_attach` records
+# and what the document's `prewarm.shape` reports.
+PREWARM_VAR = "DEVLAUNCH_PREWARM_FIRED_AT"
+
+# What the prewarm turned out to be worth, decided from the arm this launch
+# took rather than from anything the firer said:
+#
+# - `hit`: the workspace was already up when this launch asked. Nothing was
+#   built and nothing was waited for; the prewarm did the whole job.
+# - `partial`: the prewarm was still running, so this launch queued behind it
+#   and then found the workspace up. It was spared the build and paid the wait.
+# - `miss`: this launch ran `devpod up` itself. Whatever the prewarm did, it
+#   did not save this launch from the container lifecycle.
+HIT = "hit"
+PARTIAL = "partial"
+MISS = "miss"
+ATTACH_SHAPES = (HIT, PARTIAL, MISS)
 
 # A stage's outcome, two-valued *because the third is absence*: a stage that
 # was never reached has no record here at all, which is what keeps "ran fine"
@@ -117,6 +149,12 @@ class _Recorder:
     entries: List[Tuple[str, float]] = field(default_factory=list)
     stages: Dict[str, _Stage] = field(default_factory=dict)
     open: List[_Open] = field(default_factory=list)
+    # The two stamps as read, kept rather than folded away: the handoff stage
+    # needs one of them and the head start needs both, and a difference cannot
+    # be recovered from a difference.
+    keystroke: Optional[float] = None
+    prewarm_fired: Optional[float] = None
+    attach_shape: Optional[str] = None
 
 
 # On/off is this one optional recorder, not a flag plus fields that would have
@@ -137,34 +175,62 @@ def begin() -> None:
         _recorder = None
         return
     _recorder = _Recorder(started=time.perf_counter(), document=asked.lower() == JSON_VALUE)
-    _read_handoff(_recorder)
+    _read_stamps(_recorder)
 
 
-def _read_handoff(recorder: _Recorder) -> None:
-    """Record the `handoff` stage from the stamp, if there is one to read.
+def _stamp(var: str) -> Optional[float]:
+    """The wall-clock instant *var* holds, or None if it holds no instant.
+
+    Unset, blank, not a number, or not a finite one all answer None: none of
+    them is a measurement, and a stand-in derived from one would be a fiction
+    that a trend has no way to tell from a reading.
+    """
+    stamped = os.environ.get(var, "").strip()
+    if not stamped:
+        return None
+    try:
+        instant = float(stamped)
+    except ValueError:
+        return None
+    return instant if math.isfinite(instant) else None
+
+
+def _read_stamps(recorder: _Recorder) -> None:
+    """Read the seam's two stamps, and open the `handoff` stage if one is due.
 
     Read here, at the top of main(), because that is dl's own end of the gap —
     the same epoch `total` starts from, and the same caveat: the interpreter
     starting and this package importing happen before it, so they land on the
     handoff's side of the boundary rather than being lost between the two.
 
-    Nothing readable means no stage. See :data:`HANDOFF_VAR` for why silence
-    is the only honest answer to a stamp that is missing, malformed, or ahead
-    of this clock.
+    A handoff stage needs the keystroke stamp *and* a non-negative gap from
+    it; a stamp ahead of this clock describes two clocks that disagree, not a
+    handoff that took negative time.
     """
-    stamped = os.environ.get(HANDOFF_VAR, "").strip()
-    if not stamped:
+    recorder.keystroke = _stamp(HANDOFF_VAR)
+    recorder.prewarm_fired = _stamp(PREWARM_VAR)
+    if recorder.keystroke is None:
         return
-    try:
-        started = float(stamped)
-    except ValueError:
-        return
-    if not math.isfinite(started):
-        return
-    seconds = time.time() - started
+    seconds = time.time() - recorder.keystroke
     if seconds < 0:
         return
     recorder.stages[HANDOFF_STAGE] = _Stage(name=HANDOFF_STAGE, seconds=seconds)
+
+
+def observe_attach(shape: str) -> None:
+    """Record which arm the launch took, as :data:`ATTACH_SHAPES` names them.
+
+    Called from the launch itself, where the answer is observed rather than
+    inferred — dl is the only party that can see whether it had to run the
+    `up`. What it means for a prewarm is decided at emit time: with no prewarm
+    fired there is no prewarm outcome to report, however this launch went.
+    """
+    recorder = _recorder
+    if recorder is None:
+        return
+    if shape not in ATTACH_SHAPES:
+        raise ValueError(f"{shape!r} is not an attach shape; expected one of {ATTACH_SHAPES}")
+    recorder.attach_shape = shape
 
 
 @contextlib.contextmanager
@@ -195,24 +261,24 @@ def _record_stage(recorder: _Recorder, name: str) -> Iterator[None]:
         yield
         return
     paused = recorder.open[-1] if recorder.open else None
-    stage = recorder.stages.get(name)
-    if stage is None:
-        stage = recorder.stages[name] = _Stage(name=name)
+    charged = recorder.stages.get(name)
+    if charged is None:
+        charged = recorder.stages[name] = _Stage(name=name)
     now = time.perf_counter()
     if paused is not None:
         paused.stage.seconds += now - paused.since
-    recorder.open.append(_Open(stage=stage, since=now))
+    recorder.open.append(_Open(stage=charged, since=now))
     try:
         yield
     except BaseException:
-        stage.outcome = FAILED
+        charged.outcome = FAILED
         raise
     finally:
         # Same discipline as a span's: an arm that died still held the launch
         # for as long as it did, and the failure is the reading, not a reason
         # to drop it.
         ended = time.perf_counter()
-        stage.seconds += ended - recorder.open.pop().since
+        charged.seconds += ended - recorder.open.pop().since
         if paused is not None:
             paused.since = ended
 
@@ -241,6 +307,26 @@ def span(label: str):
     if recorder is None:
         return contextlib.nullcontext()
     return _record(recorder, label)
+
+
+def staged(name: str) -> Callable[[_F], _F]:
+    """Charge a whole function's call to the stage *name*.
+
+    The launch's arms are mostly whole functions — bring the workspace up,
+    lend the tools in, attach — and marking them where they are defined puts
+    the stage next to the thing it names, rather than at each of the call
+    sites that would all have to agree.
+    """
+
+    def decorate(func: _F) -> _F:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with stage(name):
+                return func(*args, **kwargs)
+
+        return cast(_F, wrapper)
+
+    return decorate
 
 
 def emit(stream: Optional[TextIO] = None) -> None:
@@ -279,11 +365,34 @@ def _emit_document(recorder: _Recorder, total: float, out: TextIO) -> None:
                 "seconds": round(stage.seconds, 6),
                 "outcome": stage.outcome,
                 "spans": [
-                    {"label": label, "seconds": round(seconds, 6)}
-                    for label, seconds in stage.spans
+                    {"label": label, "seconds": round(seconds, 6)} for label, seconds in stage.spans
                 ],
             }
             for stage in recorder.stages.values()
         ],
     }
+    prewarm = _prewarm_report(recorder)
+    if prewarm:
+        document["prewarm"] = prewarm
     print(f"{JSON_PREFIX} {json.dumps(document)}", file=out)
+
+
+def _prewarm_report(recorder: _Recorder) -> Dict[str, object]:
+    """What this launch can say about the prewarm that preceded it.
+
+    Empty unless a prewarm was actually fired: with no firing stamp there is
+    no prewarm whose head start or outcome could be reported, and reporting
+    one anyway would invent the thing being measured. Each field then appears
+    only if it is known — a head start needs both stamps, and a shape needs a
+    launch that reached one of the arms :func:`observe_attach` marks.
+    """
+    report: Dict[str, object] = {}
+    if recorder.prewarm_fired is None:
+        return report
+    if recorder.keystroke is not None:
+        head_start = recorder.keystroke - recorder.prewarm_fired
+        if head_start >= 0:
+            report["head_start_seconds"] = round(head_start, 6)
+    if recorder.attach_shape is not None:
+        report["shape"] = recorder.attach_shape
+    return report

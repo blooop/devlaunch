@@ -65,7 +65,10 @@ def _token_from_gh_cli() -> Optional[str]:
     if not shutil.which("gh"):
         return None
     try:
-        with timing.span("gh auth token"):
+        # Host prep wherever it lands: the token is the host's to produce, and
+        # the trip is charged to that owner even when it happens in the middle
+        # of the attach that needed it.
+        with timing.stage("host-prep"), timing.span("gh auth token"):
             # nosec B603 B607 - list form, not shell=True; no command injection risk
             result = subprocess.run(
                 ["gh", "auth", "token"],

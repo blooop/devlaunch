@@ -19,6 +19,37 @@ wasted motion in front of a rewrite — the `dl.py` structural refactor #53 was 
 and paying down anything scoped as "the Rust version will fix it" — is back on the
 table and should be judged on its own merits.
 
+### Added
+
+- **`DEVLAUNCH_TIMING=json` reports a launch as one machine-readable document**, decomposed
+  into five ownership-boundary stages — `handoff`, `host-prep`, `devpod-up`, `tools`,
+  `attach` — with the finer per-subprocess spans nested inside the stage that paid for
+  them, plus the total ([#194](https://github.com/blooop/devlaunch/issues/194)). A stage
+  is total over its whole arm rather than over its round trips alone, so the host-side
+  work between two spawns is attributed rather than lost. `DEVLAUNCH_TIMING=1` is
+  untouched: the same flat prose summary, the same labels.
+
+  A stage that never ran is **absent** from the document, never a `0.000s` that would
+  claim it ran and cost nothing; a stage that raised on its way out is present, timed up
+  to the failure, and marked `failed`. `worktree/` (the bare clone and its fetches, the
+  lock waits, the LFS probe) and `tools.py` (the payload tar) gained spans, which the
+  unmeasured launch still pays nothing for — with the switch off, both `span` and `stage`
+  are the stdlib no-op.
+
+- **Two env vars naming the hand-off seam**, read by dl and written by whatever launches
+  it. `DEVLAUNCH_HANDOFF_T0` is the keystroke that resolved to this exec, as Unix epoch
+  seconds (what `date +%s.%N` prints); the gap from it to dl starting becomes the
+  `handoff` stage, which is the only measurement of exec plus interpreter startup that
+  exists — `dl-timing: total` begins after both. `DEVLAUNCH_PREWARM_FIRED_AT` is when a
+  prewarm was fired for this workspace, if one was.
+
+  From the pair, the document reports what the prewarm was worth: the head start it
+  bought, and which shape the launch then took — `hit` (already up), `partial` (queued
+  behind a prewarm still running), or `miss` (this launch ran the `up` itself). The
+  outcome is derived here rather than claimed by the firer, which fires and forgets and
+  so can only stamp its own past action. No stamp means no field at all — not a zero, and
+  not a `miss`.
+
 ## [0.0.26] - 2026-08-14
 
 ### Added

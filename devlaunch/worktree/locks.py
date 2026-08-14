@@ -49,6 +49,8 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+from .. import timing
+
 
 @contextlib.contextmanager
 def hold_lock(lock_path: Path, waiting_note: Optional[str] = None) -> Iterator[bool]:
@@ -76,7 +78,12 @@ def hold_lock(lock_path: Path, waiting_note: Optional[str] = None) -> Iterator[b
             waited = True
             if waiting_note:
                 print(f"dl: waiting for {waiting_note}", file=sys.stderr)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            # Only the blocking acquisition is spanned, not the holding: an
+            # uncontended lock costs nothing and records nothing, and what the
+            # summary should show is the time this process spent queued behind
+            # a sibling rather than the time its own work then took.
+            with timing.span("lock wait"):
+                fcntl.flock(fd, fcntl.LOCK_EX)
         yield waited
     finally:
         # Closing the descriptor releases the lock; nothing is unlinked.
