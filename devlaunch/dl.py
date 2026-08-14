@@ -1099,28 +1099,6 @@ def expand_workspace_spec(spec: str) -> str:
     return spec
 
 
-def setup_hostname(workspace_id: str) -> bool:
-    """Set the container hostname so the terminal prompt shows the project/branch.
-
-    The hostname appears in the bash prompt (user@hostname:path$), giving users
-    a clear indicator of which project and branch they're in.
-
-    Best-effort: silently ignores failures (e.g. if sudo is unavailable via
-    devpod ssh). The workspace path already contains the workspace ID.
-
-    Args:
-        workspace_id: The DevPod workspace ID (e.g. 'bencher-ws5')
-
-    Returns:
-        True if hostname was set successfully, False otherwise
-    """
-    result = run_devpod(
-        ["ssh", workspace_id, "--command", f"sudo hostname {workspace_id}"],
-        capture=True,
-    )
-    return result.returncode == 0
-
-
 def spec_to_workspace_id(spec: str) -> str:
     """Derive the workspace ID for a given spec.
 
@@ -3171,20 +3149,24 @@ def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> 
 
 @timing.staged("attach")
 def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
-    """Hand the workspace to the user: name its prompt, then ssh in.
+    """Hand the workspace to the user: ssh in, and nothing else.
 
-    Setting the hostname is a whole extra `devpod ssh` (~0.5s) in front of every
-    attach, and it cannot be folded into the attach itself: bash reads the
-    hostname once when the shell starts, so it has to be set before the session
-    dl hands over begins, and `devpod ssh` exposes no hook inside that session.
+    One trip, and it is the session. This used to pay a `devpod ssh` of its own
+    in front of the session to name the container — measured at ~1.73s, of which
+    ~99% is connection and process setup — and skip it for a one-shot
+    `dl <ws> -- cmd` that renders no prompt for a hostname to appear in.
 
-    It is skipped for a one-shot `dl <ws> -- cmd`, which renders no prompt for
-    the hostname to appear in — the round-trip would buy that command nothing.
-    An interactive attach later still names the container, so nothing the user
-    can see depends on having paid for it here.
+    Naming the container is a stage of the setup pass now (tools.setup_script),
+    and every entry into Running goes through that pass: a cold create, a
+    restart of a stopped container, and `dl <ws> up` on a running one. So a
+    workspace reached here is already named, in a trip that was being paid
+    anyway, and re-naming it would be ~1.7s spent on an answer dl already has.
+    Whether the naming worked is reported by the pass rather than discarded as a
+    boolean here (#167, #168).
+
+    Kept as a function despite being one line: it is where the `attach` timing
+    stage is declared, and the stage belongs on the thing it names.
     """
-    if shell_command is None:
-        setup_hostname(workspace_id)
     return workspace_ssh(workspace_id, shell_command)
 
 

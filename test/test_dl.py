@@ -50,7 +50,6 @@ from devlaunch.dl import (
     run_devpod,
     extract_devcontainer_flag,
     workspace_up,
-    setup_hostname,
     get_workspace_state,
     DevpodNotInstalled,
     get_cache_path,
@@ -1385,12 +1384,11 @@ class TestGhTokenForwarding:
         assert mock_popen.call_args[1].get("env") is None
 
     @patch("devlaunch.dl.update_cache_background")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.gh_auth.resolve_token", return_value="gho_hosttoken")
     @patch("devlaunch.dl.subprocess.Popen")
     def test_an_already_running_workspace_still_gets_the_token(
-        self, mock_popen, _mock_token, _mock_state, _mock_host, _mock_cache
+        self, mock_popen, _mock_token, _mock_state, _mock_cache
     ):
         """Attaching to a running workspace skips `devpod up` and its workspace env."""
         stub_devpod_session(mock_popen)
@@ -1809,9 +1807,8 @@ class TestMainCLI:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_workspace_shell_command(self, _cache, _hostname, mock_ssh, mock_up, mock_state):
+    def test_main_workspace_shell_command(self, _cache, mock_ssh, mock_up, mock_state):
         """Test running shell command with -- separator."""
         mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
@@ -1824,9 +1821,8 @@ class TestMainCLI:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
-    def test_main_workspace_default(self, _cache, _hostname, mock_ssh, mock_up, mock_state):
+    def test_main_workspace_default(self, _cache, mock_ssh, mock_up, mock_state):
         """Test default workspace start and attach."""
         mock_state.return_value = "Stopped"
         mock_up.return_value = MagicMock(returncode=0)
@@ -1841,10 +1837,9 @@ class TestMainCLI:
     @patch("devlaunch.dl._get_clone_manager")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_main_new_workspace_from_repo(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_clone_mgr, mock_state
+        self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
         """Test creating workspace from owner/repo resolves default branch."""
         mock_state.return_value = None  # Not existing
@@ -2189,13 +2184,12 @@ class TestPurgeFunctionality:
         assert "No data to purge" in captured.out or "Removed" in captured.out
 
 
-class TestHostnameAndWorkdir:
-    """Tests for hostname setup and container workdir."""
+class TestContainerWorkdir:
+    """Where a devpod ssh session lands, which is devpod's business and not dl's."""
 
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.run_devpod_session")
-    def test_attach_does_not_override_workdir(self, mock_session, _mock_host, _mock_state):
+    def test_attach_does_not_override_workdir(self, mock_session, _mock_state):
         """devpod ssh already starts in devcontainer.json's workspaceFolder.
 
         Asserted through main(), because that is where the guessed
@@ -2208,24 +2202,6 @@ class TestHostnameAndWorkdir:
         ssh_calls = [c for c in mock_session.call_args_list if c[0][0][:1] == ["ssh"]]
         assert ssh_calls, "expected a devpod ssh call"
         assert "--workdir" not in ssh_calls[0][0][0]
-
-    @patch("devlaunch.dl.run_devpod")
-    def test_setup_hostname_success(self, mock_run):
-        """Test setup_hostname sets container hostname via SSH."""
-        mock_run.return_value = MagicMock(returncode=0)
-        result = setup_hostname("my-workspace")
-        assert result is True
-        mock_run.assert_called_once_with(
-            ["ssh", "my-workspace", "--command", "sudo hostname my-workspace"],
-            capture=True,
-        )
-
-    @patch("devlaunch.dl.run_devpod")
-    def test_setup_hostname_failure_is_silent(self, mock_run):
-        """Test setup_hostname returns False on failure (best-effort, no output)."""
-        mock_run.return_value = MagicMock(returncode=1)
-        result = setup_hostname("my-workspace")
-        assert result is False
 
 
 class TestWorkspaceSsh:
@@ -2411,10 +2387,9 @@ class TestFastAttach:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_git_spec_running_workspace_skips_workspace_up(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr
     ):
         """Test git spec with Running workspace skips workspace_up()."""
         main_id = WorkspaceId("owner", "repo", "main").value
@@ -2460,10 +2435,9 @@ class TestFastAttach:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_existing_id_running_skips_workspace_up(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_state
+        self, _cache, mock_ssh, mock_up, mock_state
     ):
         """Test existing raw workspace ID with Running state skips workspace_up()."""
         mock_state.return_value = "Running"
@@ -2480,10 +2454,9 @@ class TestFastAttach:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.workspace_ssh")
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.update_cache_background")
     def test_git_spec_no_branch_existing_workspace_skips_clone_manager(
-        self, _cache, _hostname, mock_ssh, mock_up, mock_state, mock_clone_mgr
+        self, _cache, mock_ssh, mock_up, mock_state, mock_clone_mgr
     ):
         """Test owner/repo (no branch) with existing workspace skips full clone pipeline."""
         mock_mgr = MagicMock()
@@ -3337,37 +3310,34 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
         mock_popen.assert_called_once()
         assert mock_popen.call_args[0][0][-1] == "--force"
 
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.get_workspace_state", return_value="Running")
     @patch("devlaunch.dl.subprocess.Popen")
     def test_attaching_to_a_running_workspace_refreshes_once(
-        self, mock_popen, _mock_state, _mock_ssh, _mock_host
+        self, mock_popen, _mock_state, _mock_ssh
     ):
         with patch.object(sys, "argv", ["dl", "myws"]):
             assert main() == 0
         mock_popen.assert_called_once()
 
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
     def test_starting_a_workspace_refreshes_once(
-        self, mock_popen, _mock_state, mock_up, _mock_ssh, _mock_host
+        self, mock_popen, _mock_state, mock_up, _mock_ssh
     ):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws"]):
             assert main() == 0
         mock_popen.assert_called_once()
 
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.run_devpod")
     @patch("devlaunch.dl.subprocess.Popen")
     def test_restart_stops_and_starts_but_still_refreshes_once(
-        self, mock_popen, mock_devpod, mock_up, _mock_ssh, _mock_host
+        self, mock_popen, mock_devpod, mock_up, _mock_ssh
     ):
         """The old code spawned twice here: once up front and once from stop."""
         mock_devpod.return_value = MagicMock(returncode=0, stdout='{"state": "Stopped"}')
@@ -3385,23 +3355,21 @@ class TestWorkspaceCommandsRefreshOnceAfterwards:
             assert main() == 0
         mock_popen.assert_called_once()
 
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_recreate_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh, _mock_host):
+    def test_recreate_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "recreate"]):
             assert main() == 0
         mock_popen.assert_called_once()
 
-    @patch("devlaunch.dl.setup_hostname")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
     @patch("devlaunch.dl.workspace_up")
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.subprocess.Popen")
-    def test_reset_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh, _mock_host):
+    def test_reset_refreshes_once(self, mock_popen, _mock_state, mock_up, _mock_ssh):
         mock_up.return_value = MagicMock(returncode=0)
         with patch.object(sys, "argv", ["dl", "myws", "reset"]):
             assert main() == 0

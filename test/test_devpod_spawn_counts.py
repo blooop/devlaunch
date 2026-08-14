@@ -253,19 +253,19 @@ class TestHotCommandSpawnCounts:
         assert spawns.devpod_commands == [["list", "--output", "json"]]
 
     def test_attaching_to_a_running_workspace(self, spawns):
-        """The interactive attach chain, pinned call by call.
+        """The interactive attach chain, pinned call by call: two trips.
 
         One `status` answers both questions dl has -- does devpod know this
         workspace, and is it running -- so the `list` that used to precede it
-        is gone. The hostname round-trip is kept deliberately: bash reads the
-        hostname when the shell starts, so it has to be set before the session
-        dl hands over, and devpod ssh has no hook inside that session to fold
-        it into.
+        is gone. The hostname round-trip that used to sit between the status and
+        the session is gone too, and it did not merely die: naming the container
+        is a stage of the setup pass every entry into Running already pays
+        (#167), so a Running workspace arrives here already named and a trip
+        here would be a second ~1.7s spent re-answering that.
         """
         assert _run_dl("myws") == 0
         assert spawns.devpod_commands == [
             ["status", "myws", "--output", "json"],
-            ["ssh", "myws", "--command", "sudo hostname myws"],
             ["ssh", "myws"],
         ]
 
@@ -487,19 +487,25 @@ class TestMemoizationCannotHideAMissingDevpod:
 
 
 class TestAttachHelper:
-    """attach_workspace is the one place that decides the hostname round-trip."""
+    """The attach is one trip now, and the same one trip either way.
+
+    It used to branch: an interactive attach paid a hostname round-trip in
+    front of the session and a one-shot `-- cmd` skipped it, because a one-shot
+    renders no prompt for a hostname to appear in. With the naming folded into
+    the setup pass there is nothing left to skip, so the branch is gone and both
+    shapes cost exactly the session.
+    """
 
     @staticmethod
-    def _hostname_calls(shell_command: Optional[str]) -> int:
-        """How many hostname round-trips one attach costs."""
-        with patch("devlaunch.dl.setup_hostname") as hostname:
+    def _trips(shell_command: Optional[str]) -> int:
+        with patch("devlaunch.dl.run_devpod") as run_devpod:
             with patch("devlaunch.dl.workspace_ssh", return_value=0) as ssh:
                 assert attach_workspace("myws", shell_command) == 0
         ssh.assert_called_once_with("myws", shell_command)
-        return hostname.call_count
+        return run_devpod.call_count
 
-    def test_an_interactive_attach_sets_the_hostname(self):
-        assert self._hostname_calls(None) == 1
+    def test_an_interactive_attach_spawns_nothing_but_the_session(self):
+        assert self._trips(None) == 0
 
-    def test_a_one_shot_command_does_not(self):
-        assert self._hostname_calls("echo hi") == 0
+    def test_a_one_shot_command_spawns_nothing_but_the_session(self):
+        assert self._trips("echo hi") == 0

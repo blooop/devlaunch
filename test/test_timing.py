@@ -144,7 +144,10 @@ class TestDevpodRoundTripsAreNamed:
         "argv, labels",
         [
             (["--ls"], ["devpod list"]),
-            (["myws"], ["devpod status", "devpod ssh", "devpod ssh"]),
+            # Two trips, not three: the hostname round trip that used to sit
+            # between the status and the session is a stage of the setup pass
+            # every entry into Running already pays (#168).
+            (["myws"], ["devpod status", "devpod ssh"]),
         ],
     )
     def test_the_chain_is_named_in_order(self, argv, labels, monkeypatch, capsys):
@@ -525,7 +528,11 @@ class TestAWarmLaunchReportsItsStages:
         assert main(["myws"]) == 0
         document = timing_document(capsys.readouterr().err)
         assert span_labels(stage_named(document, "devpod-up")) == ["devpod status"]
-        assert span_labels(stage_named(document, "attach")) == ["devpod ssh", "devpod ssh"]
+        # One trip in the attach, and the one it lost did not move to another
+        # stage -- it was deleted. The container is named by the setup pass that
+        # `tools` pays for on the way into Running, so a warm attach has nothing
+        # to name (#168).
+        assert span_labels(stage_named(document, "attach")) == ["devpod ssh"]
 
     def test_the_stages_account_for_the_bulk_of_the_total(self, monkeypatch, capsys):
         """A decomposition that leaves the launch's time somewhere else is not
