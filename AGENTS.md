@@ -72,6 +72,12 @@ Two things to know about it:
   `~/.devpod`. `DEVPOD_HOME` is still what scopes devpod itself, and is what
   `test/conftest.py` sets for the suite.
 
+  **`dl --prune`** is scoped by the same variable and more narrowly: it removes
+  clone directories under `repos_dir` and never touches a devpod workspace at
+  all, so a scratch cache leaves it with nothing to find. It prints its plan and
+  asks before removing anything, and `-y` is what skips the question — so a
+  scratch run of it is a read-only way to see the classification.
+
 ### Inside the devcontainer: one build, and it is `pixi run dl`
 
 Everything above is about the host. This repo's devcontainer already installs the

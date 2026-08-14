@@ -29,6 +29,7 @@ import pytest
 from devlaunch.dl import (
     GitRepository,
     LocalFolder,
+    UnreadableLocalFolder,
     UnreadableWorkspaceList,
     UnrecognisedSource,
     Workspace,
@@ -96,16 +97,38 @@ class TestEachArmCarriesOnlyWhatItHas:
         assert _listed(source).source == UnrecognisedSource(source)
 
     @pytest.mark.parametrize("value", [{"str_of_a_dict": "is back"}, 7, ["/home/dev"], None])
-    @pytest.mark.parametrize("key", ["localFolder", "gitRepository"])
-    def test_a_key_whose_value_is_not_text_is_not_a_readable_source(self, key, value):
+    def test_a_git_url_that_is_not_text_is_not_a_readable_source(self, value):
         """Otherwise the sentinel comes back one level in.
 
-        `{"localFolder": {...}}` would build a `LocalFolder` whose `path` is a
-        dict -- the same dict-where-a-path-belongs this whole change removed --
-        and the two readers that treat it as a path raise `TypeError` on it.
-        An arm's field is only honest if the value going into it is checked.
+        `{"gitRepository": {...}}` would build a `GitRepository` whose `url` is
+        a dict -- the same dict-where-a-path-belongs this whole change removed
+        -- and the readers that treat it as text raise `TypeError` on it. An
+        arm's field is only honest if the value going into it is checked.
         """
-        assert _listed({key: value}).source == UnrecognisedSource({key: value})
+        assert _listed({"gitRepository": value}).source == UnrecognisedSource(
+            {"gitRepository": value}
+        )
+
+    @pytest.mark.parametrize("value", [{"str_of_a_dict": "is back"}, 7, ["/home/dev"]])
+    def test_a_folder_devpod_named_and_devlaunch_cannot_read_is_its_own_arm(self, value):
+        """The same rejection, and *not* the same answer.
+
+        A `localFolder` this unreadable is still devpod saying the workspace
+        opens a directory on this machine. Sharing an arm with `image` and
+        `container` -- which open none -- made the two indistinguishable to the
+        one reader where the difference is a deletion: `dl --prune` treats "no
+        folder here" as nothing to compare and proceeds, which is right for an
+        image workspace and wrong for a folder it merely could not read.
+        """
+        assert _listed({"localFolder": value}).source == UnreadableLocalFolder(
+            {"localFolder": value}
+        )
+
+    def test_a_folder_key_devpod_left_null_claims_no_folder_at_all(self):
+        """`null` is devpod saying there is no local folder, which is what an
+        image or container workspace has -- not a folder that could not be
+        read. The empty string is pinned the same way above."""
+        assert _listed({"localFolder": None}).source == UnrecognisedSource({"localFolder": None})
 
     def test_a_source_carrying_both_keys_is_read_as_a_folder(self):
         """Key precedence, pinned. Nothing obligates it: a reader that misses an

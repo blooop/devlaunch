@@ -58,7 +58,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, NoReturn, Tuple, Union
+from typing import Any, Dict, Iterable, List, NoReturn, Tuple, Union
 
 # st_blocks is counted in 512-byte units by POSIX, whatever the filesystem's own
 # block size is.
@@ -228,6 +228,37 @@ def known_bytes(usage: DiskUsage) -> int:
     if isinstance(usage, PartlyUnreadable):
         return usage.at_least_bytes
     _unhandled_usage(usage)
+
+
+def _unreadable_in(usage: DiskUsage) -> Tuple[Path, ...]:
+    """The doors this usage could not open -- none, for a complete walk."""
+    if isinstance(usage, Measured):
+        return ()
+    if isinstance(usage, PartlyUnreadable):
+        return usage.unreadable
+    _unhandled_usage(usage)
+
+
+def total_usage(usages: Iterable[DiskUsage]) -> DiskUsage:
+    """What removing all of *usages*' trees together would free.
+
+    A sum with one floor in it is a floor, and this returns the arm that says
+    so. That is the whole reason a total lives here rather than in the caller:
+    adding :func:`known_bytes` up gives an integer that has lost which kind of
+    answer it is, and an integer printed as a size is a floor read as a total --
+    the one mistake every other function in this module is shaped to prevent.
+
+    Which bytes these are, and why they do not add up to the disk a cache holds,
+    is the module docstring's business and is not restated here.
+    """
+    known = 0
+    unreadable: List[Path] = []
+    for usage in usages:
+        known += known_bytes(usage)
+        unreadable.extend(_unreadable_in(usage))
+    if unreadable:
+        return PartlyUnreadable(known, tuple(unreadable))
+    return Measured(known)
 
 
 def usage_as_json(usage: DiskUsage) -> Dict[str, Any]:

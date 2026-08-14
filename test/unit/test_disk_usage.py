@@ -26,6 +26,7 @@ from devlaunch.disk_usage import (
     describe_usage,
     exclusive_usage,
     known_bytes,
+    total_usage,
     usage_as_json,
 )
 
@@ -231,6 +232,38 @@ class TestComparingUsagesWhateverArmTheyAre:
         floor = PartlyUnreadable(1536, (Path("/x"),))
         assert known_bytes(floor) == known_bytes(Measured(1536))
         assert describe_usage(floor) != describe_usage(Measured(1536))
+
+
+class TestAddingUsagesUp:
+    """A total is an answer of the same two kinds, and says which it is.
+
+    The caller is `dl --prune`, which prints "removing N directories -- X".
+    Adding known_bytes up gives an integer that has forgotten whether any part
+    of it was a floor, and an integer rendered as a size is a floor read as a
+    total -- a cleanup tool telling somebody 4 GB when the true figure is more.
+    """
+
+    def test_complete_walks_add_up_to_a_complete_total(self):
+        assert total_usage([Measured(1024), Measured(512)]) == Measured(1536)
+
+    def test_nothing_at_all_adds_up_to_nothing_measured(self):
+        assert total_usage([]) == Measured(0)
+
+    def test_one_floor_among_them_makes_the_total_a_floor(self):
+        total = total_usage([Measured(1024), PartlyUnreadable(512, (Path("/x"),))])
+        assert total == PartlyUnreadable(1536, (Path("/x"),))
+        assert describe_usage(total) == "≥1.5 KiB"
+
+    def test_every_closed_door_is_carried_into_the_total(self):
+        """The paths are what makes the caveat actionable rather than a warning:
+        a person told which directories were not counted can go and look."""
+        total = total_usage(
+            [
+                PartlyUnreadable(512, (Path("/x"),)),
+                PartlyUnreadable(512, (Path("/y"),)),
+            ]
+        )
+        assert total == PartlyUnreadable(1024, (Path("/x"), Path("/y")))
 
 
 class TestHowAUsageReads:

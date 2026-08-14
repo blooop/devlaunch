@@ -208,6 +208,50 @@ class TestHotCommandSpawnCounts:
             ["delete", "ws2", "--force"],
         ]
 
+    def test_prune_lists_workspaces_once_per_pass_and_asks_no_status(self, spawns):
+        """`dl --prune` costs one `devpod list` per pass and nothing else.
+
+        A workspace's *state* has no bearing on whether a clone directory is
+        referenced -- a stopped workspace still opens the one it was made from
+        -- so a `devpod status` per workspace here would be half a second each
+        to learn something the answer does not depend on. That is the cost this
+        pins, and the reason this command is never on a launch path and never on
+        `--ls`: the whole scan was measured at 1017 ms on the reference host,
+        most of it the listing and the git probes, and it gets slower exactly as
+        the cache it is for gets fuller.
+
+        Two listings, not one, and the second is not an oversight. Everything a
+        plan rests on can move while the user is reading it, and whether a clone
+        became *referenced* is the one thing that cannot be re-derived from
+        disk: a launch that completes in that window registers a workspace for
+        the very directory in the plan, because the clone path for
+        `(owner, repo, branch)` is deterministic. One extra O(1) listing, paid
+        only after somebody has said yes to a deletion, buys the re-check.
+
+        The clone goes under the cache dl actually resolves, and the assertion
+        that it was removed comes first: a fixture whose directories sit
+        somewhere the command never looks would leave these counts describing a
+        scan that classified nothing at all.
+        """
+        from devlaunch.xdg import devlaunch_cache
+
+        stale = devlaunch_cache() / "repos" / "o" / "r" / "r-main-abcdefgh"
+        stale.mkdir(parents=True)
+        (stale / "payload.bin").write_bytes(b"\0" * 1024)
+        assert _run_dl("--prune", "-y") == 0
+        assert not stale.exists()
+        assert spawns.devpod_commands == [
+            ["list", "--output", "json"],
+            ["list", "--output", "json"],
+        ]
+
+    def test_prune_lists_nothing_twice_when_there_is_nothing_to_do(self, spawns):
+        """The second listing belongs to the pass that acts, so a run that does
+        not act does not pay for it -- `dl --prune` answered `n`, or a cache
+        with nothing in it, is one listing."""
+        assert _run_dl("--prune", "-y") == 0
+        assert spawns.devpod_commands == [["list", "--output", "json"]]
+
     def test_attaching_to_a_running_workspace(self, spawns):
         """The interactive attach chain, pinned call by call.
 

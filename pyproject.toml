@@ -162,6 +162,7 @@ exclude_also = [
   # is reachable, so in a build that type-checks these lines cannot be executed
   # -- the same reason `raise AssertionError` is already on this list.
   "_unhandled_source\\(",
+  "_unhandled_status\\(",
   "_unhandled_usage\\(",
   "if __name__ == .__main__.:",
   "pass",
