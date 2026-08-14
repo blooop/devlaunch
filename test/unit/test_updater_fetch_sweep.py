@@ -38,6 +38,7 @@ from devlaunch import dl
 from devlaunch.workspace_id import WorkspaceId
 from devlaunch.worktree.config import get_worktree_config
 from devlaunch.worktree.models import BaseRepository
+from devlaunch.worktree.repo_manager import RepositoryManager
 from devlaunch.worktree.storage import SCHEMA_VERSION, MetadataStorage
 from devlaunch.xdg import devlaunch_cache
 
@@ -52,22 +53,29 @@ class Subprocesses:
     assertions look at `fetches` alone.
     """
 
-    def __init__(self, fetch_fails_in: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        fetch_fails_in: Optional[Path] = None,
+        fetch_hangs_in: Optional[Path] = None,
+    ) -> None:
         self.commands: List[List[str]] = []
+        self.kwargs: List[dict] = []
         # A remote this recorder cannot reach, named by the bare repo it would
         # be fetched into — how `git fetch` reports an unreachable origin.
         self.fetch_fails_in = fetch_fails_in
+        # A remote that accepts the connection and then says nothing — how a
+        # fetch reaches its timeout rather than its error.
+        self.fetch_hangs_in = fetch_hangs_in
 
     def run(self, args, **kwargs) -> subprocess.CompletedProcess:
         argv = [str(a) for a in args]
         self.commands.append(argv)
+        self.kwargs.append(kwargs)
         cwd = kwargs.get("cwd")
-        if (
-            argv[:2] == ["git", "fetch"]
-            and self.fetch_fails_in is not None
-            and cwd is not None
-            and Path(cwd) == self.fetch_fails_in
-        ):
+        is_fetch = argv[:2] == ["git", "fetch"]
+        if is_fetch and cwd is not None and Path(cwd) == self.fetch_hangs_in:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout") or 0)
+        if is_fetch and self.fetch_fails_in is not None and Path(cwd or "") == self.fetch_fails_in:
             raise subprocess.CalledProcessError(128, argv, stderr="no route to host")
         stdout = ""
         if argv[:1] == ["devpod"]:
@@ -79,6 +87,11 @@ class Subprocesses:
         """Every `git fetch`, whoever ran it."""
         return [c for c in self.commands if c[:2] == ["git", "fetch"]]
 
+    @property
+    def fetch_kwargs(self) -> List[dict]:
+        """The keyword arguments each `git fetch` was run with."""
+        return [k for c, k in zip(self.commands, self.kwargs) if c[:2] == ["git", "fetch"]]
+
 
 class CachedRepo:
     """One repo in the bare-clone cache, with a fetch clock the test sets."""
@@ -86,6 +99,7 @@ class CachedRepo:
     def __init__(self, owner: str = "owner", repo: str = "repo") -> None:
         self.owner = owner
         self.repo = repo
+        self.remote_url = f"https://github.com/{owner}/{repo}.git"
         repos_dir = Path(get_worktree_config().repos_dir)
         self.root = repos_dir / owner / repo
         self.bare = self.root / ".bare"
@@ -99,7 +113,7 @@ class CachedRepo:
             BaseRepository(
                 owner=self.owner,
                 repo=self.repo,
-                remote_url=f"https://github.com/{self.owner}/{self.repo}.git",
+                remote_url=self.remote_url,
                 local_path=self.bare,
                 last_fetched=when,
             )
@@ -232,6 +246,76 @@ class TestTheSweepSurvivesABadRepo:
         second.last_fetched_at(datetime.now() - timedelta(hours=2))
 
         recorder = Subprocesses(fetch_fails_in=first.bare)
+
+        run_updater(monkeypatch, recorder)
+
+        assert len(recorder.fetches) == 2
+        assert second.last_fetched() > first.last_fetched()
+
+
+class TestTheSweepBoundsHowLongItHoldsARepo:
+    """The sweep never queues for a launch — but a launch can queue for it.
+
+    `run_if_lock_free` only promises the *sweep* does not wait. The lock it takes
+    is the same one `ensure_repo` blocks on, and it is held for the whole of the
+    fetch, so a launch of that repo waits for however long the fetch takes. That
+    was reproduced with two real processes: a sweep holding the lock across an
+    8s fetch made a foreground `hold_lock` wait 6.51s, printing `dl: waiting for
+    another dl run preparing owner/repo` — a run the user cannot see, and cannot
+    Ctrl-C either, because the child is spawned with `start_new_session=True`.
+
+    Untimed, that wait has no upper bound: a `git fetch` against a remote that
+    accepts the connection and then goes silent sits in the kernel's TCP
+    keepalive, not in any deadline of git's. Bounding the background fetch is
+    what turns "possibly forever" into a number, and it costs the sweep nothing
+    it cannot make up on the next hour's pass.
+    """
+
+    def test_the_background_fetch_cannot_hold_a_repo_indefinitely(self, cached_repo, monkeypatch):
+        """The fetch the sweep runs under the lock is given a deadline."""
+        cached_repo.last_fetched_at(datetime.now() - timedelta(hours=2))
+        recorder = Subprocesses()
+
+        run_updater(monkeypatch, recorder)
+
+        assert [k.get("timeout") for k in recorder.fetch_kwargs] == [
+            dl.BACKGROUND_FETCH_TIMEOUT_SECONDS
+        ]
+
+    def test_the_launch_path_keeps_its_untimed_fetch(self, cached_repo, monkeypatch):
+        """The bound is the background's, not a change to the foreground.
+
+        A launch's own fetch is one the user is watching and can interrupt, and
+        #150 — not this — is what decides its future. It stays as it was.
+        """
+        cached_repo.last_fetched_at(datetime.now() - timedelta(hours=2))
+        recorder = Subprocesses()
+        config = get_worktree_config()
+        manager = RepositoryManager(repos_dir=Path(config.repos_dir), config=config)
+        monkeypatch.setattr(subprocess, "run", recorder.run)
+
+        # The launch path proper: what ensure_repo does for an already-cloned
+        # repo whose interval has elapsed.
+        manager.ensure_repo("owner", "repo", cached_repo.remote_url)
+
+        assert [k.get("timeout") for k in recorder.fetch_kwargs] == [None]
+
+    def test_a_fetch_that_hits_its_deadline_does_not_stop_the_next_repo(
+        self, cached_repo, monkeypatch
+    ):
+        """A timeout is one more thing to step over, not a way to end the sweep.
+
+        It arrives as `subprocess.TimeoutExpired`, which is a `SubprocessError`
+        and not an `OSError`, so a sweep that only caught the families it already
+        knew would propagate it out of the loop and every later repo would lose
+        its refresh to the first slow remote.
+        """
+        first = cached_repo
+        first.last_fetched_at(datetime.now() - timedelta(hours=2))
+        second = CachedRepo(owner="owner", repo="other")
+        second.last_fetched_at(datetime.now() - timedelta(hours=2))
+
+        recorder = Subprocesses(fetch_hangs_in=first.bare)
 
         run_updater(monkeypatch, recorder)
 

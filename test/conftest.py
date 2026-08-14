@@ -62,13 +62,6 @@ def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("xdg")
     monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
-    # dl memoizes the clone manager because a real invocation is one short-lived
-    # command; the memo is bound to the cache directory that was current when it
-    # was built. A session that moves that directory per test has to move the
-    # memo with it, or one test reads and migrates the previous test's cache.
-    dl.reset_clone_manager()
-    yield
-    dl.reset_clone_manager()
 
 
 @pytest.fixture

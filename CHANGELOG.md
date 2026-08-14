@@ -295,9 +295,15 @@ table and should be judged on its own merits.
   after a command — now also sweeps the bare-clone cache, fetching every repo
   whose fetch interval has elapsed. It takes each repo lock non-blockingly, so a
   repo some launch is mid-clone in is skipped and picked up next time: the sweep
-  defers to launches and never the other way round. A failed fetch is stepped
-  over rather than reported, since the interval brings it round again and a
-  detached child has no terminal to report to.
+  never queues behind a launch. It is worth being exact about the other
+  direction, since it is the one that can cost somebody time — a launch *can*
+  still queue behind the sweep, because the lock is held for the length of the
+  fetch, and the wait is reported only as "waiting for another dl run" even
+  though the holder is a detached child nothing on screen accounts for. The
+  background fetch is therefore capped at five minutes, so that wait has a
+  ceiling that is dl's rather than the network's. A failed or timed-out fetch is
+  stepped over rather than reported, since the interval brings it round again
+  and a detached child has no terminal to report to.
 
   Nothing about freshness changes yet — the launch path still runs the same
   interval fetch when it draws the short straw, and both sides read the same

@@ -100,8 +100,15 @@ def run_if_lock_free(lock_path: Path, work: Callable[[], None]) -> bool:
     This is what background work uses and ``hold_lock`` is what foreground work
     uses, and the difference is who is waiting on whom. A launch that waits for
     a sibling's clone gets the clone; a sweep that waited for a launch would be
-    taxing the very path it exists to keep clear. So the sweep never queues:
-    it defers to the foreground, and the foreground never defers to it.
+    taxing the very path it exists to keep clear.
+
+    Note what this does **not** buy, because the asymmetry is easy to overstate:
+    it makes the caller never queue, not the lock cheap to hold. Once *work* has
+    started, this holds an ordinary exclusive lock, and anything taking the same
+    path with ``hold_lock`` blocks for the whole of *work* — so background work
+    still owes the foreground a bound on how long *work* can run. The guarantee
+    in one line: **the caller never queues for anyone, and anyone may still
+    queue for the caller.**
 
     Like ``hold_lock`` it is not reentrant and never unlinks the lock file — and
     a miss releases nothing, because there was nothing here to release.

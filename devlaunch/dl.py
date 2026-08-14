@@ -437,6 +437,17 @@ def update_cache_background(force: bool = False) -> None:
         pass
 
 
+# How long the background sweep may spend fetching one repo before it gives up
+# and leaves that repo to the next pass. This is not a performance budget -- an
+# incremental fetch of an already-cloned repo is seconds -- it is the ceiling on
+# how long a foreground launch of the same repo can be made to wait behind the
+# sweep's repo lock. Generous enough that a slow but working remote finishes,
+# short enough that a hung one costs one pass rather than the hour until the
+# next. The interval itself is 3600s, so a repo that times out every time is
+# no worse off than one that is simply unreachable.
+BACKGROUND_FETCH_TIMEOUT_SECONDS = 300.0
+
+
 def sweep_repo_fetches() -> None:
     """Bring the bare-clone cache up to date, one repo at a time.
 
@@ -447,16 +458,27 @@ def sweep_repo_fetches() -> None:
     queued behind them. Out here it costs a launch nothing: this is the detached
     child, spawned and forgotten, with nobody waiting on its exit.
 
-    Two rules make it safe to run alongside real work:
+    Three rules make it safe to run alongside real work:
 
     - **It never waits.** The repo lock is taken non-blockingly, so a repo some
-      launch is mid-clone in is skipped rather than queued for. Background
-      defers to foreground and never the reverse — a sweep that waited would be
-      taxing the path it exists to keep clear.
+      launch is mid-clone in is skipped rather than queued for. A sweep that
+      waited would be taxing the path it exists to keep clear.
+    - **It never holds a repo for long.** The other half of that is not free,
+      and saying "background defers to foreground" would overstate it: the lock
+      this takes is the one ``ensure_repo`` *blocks* on, so while the sweep is
+      fetching, a launch of that same repo waits — and is told only that it is
+      "waiting for another dl run", which here is a detached child in its own
+      session that the user can neither see nor Ctrl-C. So the honest statement
+      is the asymmetric one: **the sweep never queues for a launch, but a launch
+      can queue for the sweep.** What keeps that survivable is that the wait has
+      an upper bound rather than the network's — hence the timeout below,
+      without which a remote that accepts a connection and then goes quiet holds
+      the repo for as long as the kernel keeps the socket.
     - **It never complains.** A failed fetch — unreachable remote, a cache entry
-      whose clone has been deleted underneath it — is logged and stepped over,
-      so one bad repo cannot cost the rest their refresh, and the interval
-      brings it round again anyway. There is no terminal attached to say more.
+      whose clone has been deleted underneath it, a fetch that ran out of time —
+      is logged and stepped over, so one bad repo cannot cost the rest their
+      refresh, and the interval brings it round again anyway. There is no
+      terminal attached to say more.
 
     The interval itself is unchanged and still recorded in the one shared place
     (``last_fetched`` in metadata), which is what lets the launch path go on
@@ -476,7 +498,7 @@ def sweep_repo_fetches() -> None:
     def fetch_quietly(owner: str, repo: str) -> None:
         """One repo's refresh, with whatever stopped it stepped over."""
         try:
-            repo_manager.lazy_fetch(owner, repo)
+            repo_manager.lazy_fetch(owner, repo, timeout=BACKGROUND_FETCH_TIMEOUT_SECONDS)
         except (ValueError, RuntimeError, OSError) as exc:
             logging.debug("Background fetch of %s/%s failed: %s", owner, repo, exc)
 
@@ -2374,16 +2396,6 @@ def _get_clone_manager() -> WorkspaceCloneManager:
             logging.warning(f"Could not migrate the workspace cache: {e}")
         _cache[_CLONE_MANAGER_KEY] = manager
     return _cache[_CLONE_MANAGER_KEY]
-
-
-def reset_clone_manager() -> None:
-    """Forget the memoized clone manager, so the next call rebuilds it (tests).
-
-    The memo is bound to the cache directory that was current when it was built,
-    which for one real invocation is the only one there is. A test session moves
-    that directory per test, so the memo has to move with it.
-    """
-    _cache.pop("clone_manager", None)
 
 
 # Commands that read the completion cache without changing what it describes.
