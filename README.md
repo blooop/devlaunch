@@ -401,8 +401,8 @@ existed — picks the tools up on its next `dl <workspace> restart`.
 | `dl --ls --json` | The same list as JSON, with each workspace's repo, branch, state and [unsaved work](#cleaning-up-workspaces) — for tools that decide what to clean up |
 | `dl --ls --size` | Add [what deleting each workspace would free](#how-much-disk-a-workspace-costs). Opt-in: it walks every file in the clone |
 | `dl --install` | Install shell completions |
+| `dl --prune [-y] [--force]` | Remove [the clone directories no workspace opens any more](#pruning-the-clones-nothing-opens) — and nothing else |
 | `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
-| `dl --prune-worktrees [days]` | Remove unused worktrees (default: 30 days) |
 | `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
 | `dl --version` | Show version (an editable install also names the tree it runs from) |
@@ -498,6 +498,96 @@ purge refuses it and names the target rather than following it. Remove the real
 directory yourself if you meant to: following the link would empty a directory
 you never named, and removing just the link would report a clean sweep while
 your clones sat on the other volume.
+
+### Pruning the clones nothing opens
+
+A workspace per branch means clone directories accumulate under the cache, and
+until now nothing removed them: measured on one host, **52 clone directories for
+17 live devpod workspaces — 37 of them attached to nothing, 4.00 GB, against
+7.86 GB still in use.** `--purge` is the wrong tool for that, being
+all-or-nothing: the only way to get the 4 GB back was to destroy the 7.86 GB
+too, and every bare cache with it.
+
+`dl --prune` removes exactly the clone directories no live workspace opens. It
+never deletes a devpod workspace, a container, an image or a volume, never
+touches a repo's `.bare` cache (0.08 GB for seven repos, and it is what makes
+the next clone of a repo fast), and never looks outside
+`<cache>/devlaunch/repos`. Every directory it finds is one of three things:
+
+- **a live workspace opens it** — kept, and named with the workspace that has
+  it. "Opens" means at *or under*: a workspace opened on a subdirectory of a
+  clone still needs the clone;
+- **nothing opens it** — removed, unless it holds work that exists nowhere else,
+  or `git` would not say what it holds. A clone a container wrote as another
+  user is unreadable rather than empty, and "cannot tell" is kept, not removed;
+- **`dl`'s records and devpod's disagree about it** — kept, always. This is
+  [#88](https://github.com/blooop/devlaunch/issues/88)'s shape. On that ticket's
+  host, 36 devpod workspaces out of 39 recorded a source folder that was gone or
+  was a config-only stub, while the real checkout sat beside it under a newer
+  naming scheme — so a perfectly healthy clone was opened by nobody, and the
+  stub was the only thing anything pointed at. `--prune` will not guess which
+  clone such a workspace needs: it keeps every clone of that repository and
+  names the record to go and fix. `--force` does not move any of them.
+
+Note that *every* directory two levels under `<cache>/devlaunch/repos` is a
+candidate — a stray directory somebody left there is looked at like any other.
+The cache is `dl`'s to manage; things that are not clones do not belong in it.
+But `git` cannot say what a directory that is not a repository holds, and
+"cannot say" is kept rather than removed, so clearing junk out of the cache
+takes `--force`. That is the same refusal a clone with a half-written `.git`
+gets, and deliberately so: telling the two apart would mean `--prune` forming
+its own opinion about a directory `dl <workspace> rm` already refuses on.
+
+```
+$ dl --prune
+Clone directories under /home/you/.cache/devlaunch/repos:
+
+Removing 2 that nothing references -- 1.4 GiB:
+  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-test1-pipagito (1.1 GiB)
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-t1-vebilote (317.0 MiB)
+
+Leaving 3:
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo: workspace devlaunch-main-zovomobo still opens it
+  - /home/you/.cache/devlaunch/repos/blooop/wayfinder/wayfinder-devlaunch-kilarabo: holds 2 unpushed commit(s) -- add --force to remove it anyway
+  - /home/you/.cache/devlaunch/repos/blooop/rockerc/rockerc-main-ludomane: devpod lists workspace rockerc-main-ludomane and sources it at /home/you/.cache/devlaunch/repos/blooop/rockerc/main; see devlaunch#88
+
+Dropping 12 record(s) of directories already gone.
+
+Are you sure? [y/N]
+```
+
+`-y` skips the question. **A clone holding uncommitted or unpushed work is kept
+and named**, in the same words [`dl <workspace> rm`](#cleaning-up-workspaces)
+refuses in — 13 of those 37 stale clones did, two of them with real unpushed
+commits, so this is load-bearing rather than a formality. `--force` promotes
+that one case and nothing else. Erring this way costs you a flag; erring the
+other way costs work that cannot be recovered.
+
+The sizes are the same *exclusive* bytes `dl --ls --size` reports, and they mean
+[the same thing](#how-much-disk-a-workspace-costs): what removing that directory
+would actually free, not what `du` would print. Where a walk could not read
+something the figure reads `≥` and so does the total, because a floor printed as
+a total is a cleanup tool telling you a directory is small when it is not.
+
+Directories that will not come away are named the same way [a purge names
+them](#when-part-of-the-cache-will-not-go), the rest still go, and the exit
+status is `1`.
+
+**Nothing here runs on its own.** A full scan measured 1017 ms on that host —
+about two warm launches — and it gets slower exactly as the cache gets fuller,
+so it is never on a launch path and never folded into `dl --ls`. Answering `n`
+*is* the read-only view; there is no separate flag for it. It costs one
+`devpod list` to build the plan and no `devpod status` at all, because whether a
+workspace is running has no bearing on whether a directory is opened by one. A
+run you say yes to pays a second `devpod list` before it removes anything, and
+classifies every directory again: a launch that finishes while the report is on
+screen registers a workspace for one of the directories in the plan, and that is
+the one thing the plan cannot be re-checked against from disk. The set you
+approved can shrink between the report and the act. It can never grow.
+
+It also drops the `metadata.json` records of directories that are already gone.
+That file was append-only in practice — 49 records for 17 live workspaces on the
+same host — and this is the first thing that prunes it.
 
 ### Cleaning up workspaces
 

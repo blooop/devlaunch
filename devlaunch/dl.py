@@ -42,6 +42,7 @@ from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id,
 from .worktree.config import get_worktree_config
 from .worktree.locks import hold_lock
 from .worktree.migration import migrate_cache
+from .worktree.models import WorktreeInfo
 from .worktree.workspace_clone import WorkspaceCloneManager
 from .xdg import devlaunch_cache
 
@@ -859,21 +860,38 @@ def purge_all_data() -> int:
     # either -- an exit code cannot distinguish "removed most of it" from
     # "removed none of it", and the difference is the whole news, so the report
     # carries it and the exit code only says the job is unfinished.
-    print(f"Removed what was permitted under {cache_dir}. These refused:")
+    report_refusals(
+        refused,
+        f"Removed what was permitted under {cache_dir}. These refused:",
+        (cache_dir,),
+    )
+    return 1
+
+
+def report_refusals(
+    refused: Sequence[Refusal], headline: str, remove_by_hand: Sequence[pathlib.Path]
+) -> None:
+    """Print what would not come away, and the one thing that usually clears it.
+
+    Shared by the two commands that remove directories, because a second copy of
+    this advice is a second copy to keep true -- and the advice is the part most
+    likely to change, being the only part that is a guess.
+
+    Hedged, because the cause is not knowable from here. A container writing as
+    another user is the common one, but a read-only mount, `chattr +i` and a busy
+    mountpoint all land in the same report -- and for the last two this command
+    does not help either. Saying so flatly would be wrong more often than the
+    errno beside each path is.
+    """
+    print(headline)
     for refusal in refused:
         print(f"  - {refusal.path}: {refusal.reason}")
     print()
-    # Hedged, because the cause is not knowable from here. A container writing
-    # as another user is the common one, but a read-only mount, `chattr +i` and
-    # a busy mountpoint all land in the same report -- and for the last two this
-    # command does not help either. Saying so flatly would be wrong more often
-    # than the errno above is.
     print("Usually this means a container wrote them as a different user, and:")
-    # Quoted: cache_dir comes from $XDG_CACHE_HOME or $HOME, and a space in it
-    # turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
-    print(f"  sudo rm -rf {shlex.quote(str(cache_dir))}")
+    # Quoted: these paths descend from $XDG_CACHE_HOME or $HOME, and a space in
+    # one turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
+    print(f"  sudo rm -rf {' '.join(shlex.quote(str(path)) for path in remove_by_hand)}")
     print("clears them. Check the reasons above first -- it does not fix all of them.")
-    return 1
 
 
 # Regex to match owner/repo[@branch] format (not a path, not already a URL)
@@ -1112,7 +1130,7 @@ class GitRepository:
 
 @dataclass(frozen=True)
 class UnrecognisedSource:
-    """A `devpod list` source devlaunch has no reading for, kept verbatim.
+    """A `devpod list` source that opens no directory on this machine.
 
     Reachable rather than defensive: devpod's workspace source also carries
     `image` and `container`, so `devpod up ubuntu:24.04` lands here. Holding the
@@ -1120,14 +1138,36 @@ class UnrecognisedSource:
     replaced was typed as a path and filled with `str(the dict)`, so the one
     thing a caller could not do with it was read what devpod had said.
 
-    It deliberately has no path and no URL. There is nothing to make it say
-    where the source lives, because devlaunch does not know.
+    It deliberately has no path and no URL, and that is a *fact about the
+    workspace* rather than a gap in devlaunch's reading: an image workspace
+    mounts no folder here, so no clone directory can be at risk from it. A
+    source that does name a folder and could not be read is the opposite answer
+    to that same question and is :class:`UnreadableLocalFolder`.
     """
 
     payload: Mapping[str, Any]
 
 
-WorkspaceSource = LocalFolder | GitRepository | UnrecognisedSource
+@dataclass(frozen=True)
+class UnreadableLocalFolder:
+    """devpod says this workspace opens a folder, and devlaunch cannot say which.
+
+    Split from UnrecognisedSource because the two are opposite answers to the
+    one question a deletion has to ask, and sharing an arm made the dangerous
+    one silent: `--prune` reads "no path" as "contributes no path and no alarm",
+    which is right for an image workspace and wrong for this -- a live workspace
+    really is opening a directory, and while devlaunch cannot say which, there
+    is no clone it can honestly call unreferenced.
+
+    Reached by a `localFolder` devpod filled with something that is not a
+    non-empty string: an object, a number, a list. The payload is kept whole so
+    the report can show what devpod actually said.
+    """
+
+    payload: Mapping[str, Any]
+
+
+WorkspaceSource = LocalFolder | GitRepository | UnrecognisedSource | UnreadableLocalFolder
 
 
 def _unhandled_source(source: NoReturn) -> NoReturn:
@@ -1174,7 +1214,12 @@ def parse_workspace_source(source: Mapping[str, Any]) -> WorkspaceSource:
 
     Neither is an unreadable *listing*, unlike a `source` that is not an object
     at all: the object is right here and can be kept whole. It is a source dl
-    cannot read, which is an arm.
+    cannot read, which is an arm -- and *which* arm turns on whether devpod
+    claimed a folder here at all. A `localFolder` holding an object or a number
+    is a workspace that opens a directory devlaunch cannot name; a source with
+    no `localFolder` key, or an empty one, opens no directory here, which is
+    what an `image` or `container` workspace is. Only the first can put a clone
+    at risk, so only the first is an alarm.
 
     Note this is the one link in the chain the type checker cannot stand in for
     a test. A *reader* that misses an arm is a build failure, but this is a
@@ -1184,6 +1229,9 @@ def parse_workspace_source(source: Mapping[str, Any]) -> WorkspaceSource:
     path = _readable_text(source, "localFolder")
     if path is not None:
         return LocalFolder(path)
+    claimed = source.get("localFolder")
+    if claimed is not None and claimed != "":
+        return UnreadableLocalFolder(dict(source))
     url = _readable_text(source, "gitRepository")
     if url is not None:
         return GitRepository(url)
@@ -1205,7 +1253,7 @@ def describe_source(source: WorkspaceSource) -> Tuple[str, str]:
         return "local", source.path
     if isinstance(source, GitRepository):
         return "git", source.url
-    if isinstance(source, UnrecognisedSource):
+    if isinstance(source, (UnrecognisedSource, UnreadableLocalFolder)):
         return "unknown", json.dumps(source.payload)
     _unhandled_source(source)
 
@@ -1284,7 +1332,7 @@ def is_devlaunch_clone(workspace: Workspace, cache_dir: pathlib.Path) -> bool:
         # Purely lexical, so a clone whose directory has already been removed is
         # still recognisable from the source devpod kept.
         return path != pathlib.PurePath(cache_dir) and path.is_relative_to(cache_dir)
-    if isinstance(source, (GitRepository, UnrecognisedSource)):
+    if isinstance(source, (GitRepository, UnrecognisedSource, UnreadableLocalFolder)):
         return False
     _unhandled_source(source)
 
@@ -1348,6 +1396,921 @@ def workspace_ownership(
         # arms cannot be built from two different answers to the same question.
         (mine if is_devlaunch_clone(ws, cache_dir) else foreign).append(ws)
     return WorkspaceOwnership(mine=tuple(mine), foreign=tuple(foreign))
+
+
+@dataclass(frozen=True)
+class Referenced:
+    """A live devpod workspace opens this exact clone directory."""
+
+    workspace_id: str
+
+
+@dataclass(frozen=True)
+class Orphaned:
+    """Nothing opens this directory and no record ties it to a live workspace.
+
+    *unsaved* is what deleting it would destroy, in the words `dl <ws> rm`
+    already refuses in -- and it is a three-armed answer rather than a
+    description-or-None, because "git would not say" is not "nothing to say".
+    It sits inside this arm rather than beside the classification because it is
+    only ever actionable here: "unsaved work on a clone that is staying anyway"
+    is a sentence this type cannot say.
+
+    *usage* is here for the same reason, and it earns its place twice over. The
+    walk behind it is O(files) with no ceiling, and this is the only arm whose
+    bytes anybody is going to get back -- so putting it here is what keeps the
+    other two arms from being walked at all.
+    """
+
+    unsaved: workspace_state.Unsaved
+    usage: disk_usage.DiskUsage
+
+
+@dataclass(frozen=True)
+class Disputed:
+    """devpod lists the workspace this directory's record names, elsewhere.
+
+    devlaunch#88's shape, and the reason `--prune` does not wait on #88: 36 of
+    39 devpod records on that ticket's host pointed at folders that no longer
+    existed, and under that state a healthy clone at the *new* path is sourced
+    by nobody. Read as an orphan it would be deleted; read as referenced it
+    would silently hide disk. It is neither -- it is two records disagreeing,
+    and the answer to a disagreement is to keep the directory and say so.
+    """
+
+    workspace_id: str
+    sourced_at: str
+
+
+CloneStatus = Referenced | Orphaned | Disputed
+
+
+def _unhandled_status(status: NoReturn) -> NoReturn:
+    """Reject a clone status nobody handled -- at type-check time, not at runtime.
+
+    The same device as _unhandled_source, and it matters more here: the function
+    it guards is the only place a directory becomes deletable, so an arm that
+    fell through it would fall through into a deletion.
+    """
+    raise AssertionError(f"Unhandled clone status: {status!r}")
+
+
+@dataclass(frozen=True)
+class Unopposed:
+    """Nothing objected to removing this directory."""
+
+
+@dataclass(frozen=True)
+class Insisted:
+    """`--force` carried this directory past an objection, named in *despite*.
+
+    Carried on the decision rather than read from the plan's `--force` flag, and
+    that difference is a deletion. A plan-wide boolean says "the user insisted"
+    about every directory in the plan, including the ones nothing objected to --
+    so the later re-probe, which exists to catch work written while the user was
+    reading the report, was skipped for clones `--force` had not promoted at
+    all. A promotion belongs to the directory it promoted.
+    """
+
+    despite: str
+
+
+Promotion = Unopposed | Insisted
+
+
+def _unhandled_promotion(promotion: NoReturn) -> NoReturn:
+    """Reject a promotion nobody handled -- at type-check time, not at runtime."""
+    raise AssertionError(f"Unhandled promotion: {promotion!r}")
+
+
+@dataclass(frozen=True)
+class Remove:
+    """This directory goes, this is what it gives back, and this is what was
+    insisted past to get here.
+
+    The bytes travel with the decision rather than beside it, so "what this run
+    reclaims" is a total over the things it is actually removing and cannot be
+    assembled from a different set than the one that dies. The promotion travels
+    with it for the same reason one layer down: it is the only record that
+    `--force` answered *this* directory's objection, and the report and the
+    second pass both need to know which.
+    """
+
+    usage: disk_usage.DiskUsage
+    promotion: Promotion
+
+
+@dataclass(frozen=True)
+class Keep:
+    """This directory stays, and *because* says why, for a person to read."""
+
+    because: str
+
+
+Decision = Remove | Keep
+
+
+def _objection(unsaved: workspace_state.Unsaved) -> Optional[str]:
+    """What deleting a clone in this state would destroy or risk, or ``None``.
+
+    The one place `--prune` turns devlaunch#171's three answers into the two
+    :func:`decide` acts on: something to say, or nothing. ``None`` is safe here
+    in a way it was not on the raw probe, because "could not tell" arrives as
+    words rather than as an absence -- and it arrives as words that *object*,
+    so the clone is kept for the same reason unpushed work keeps one.
+
+    Total over the arms, with :func:`workspace_state.unhandled_unsaved` behind
+    it: a fourth answer stops the build rather than falling through into a
+    deletion. The clause reads after "holds", so ``--prune``'s report builds its
+    own sentence around it -- the same clause ``dl <ws> rm``'s refusal renders
+    from the arms directly.
+    """
+    if isinstance(unsaved, workspace_state.NothingToLose):
+        return None
+    if isinstance(unsaved, workspace_state.WouldLose):
+        return unsaved.description
+    if isinstance(unsaved, workspace_state.CouldNotTell):
+        return f"work git could not be asked about ({unsaved.reason})"
+    workspace_state.unhandled_unsaved(unsaved)
+
+
+def decide(status: CloneStatus, force: bool) -> Decision:
+    """What `--prune` does about one clone directory. The only such place.
+
+    Total over the arms, and deliberately the single point at which anything
+    becomes deletable: there is no boolean beside a status that a later caller
+    could read without having answered which arm it is, and no path from a
+    directory devlaunch could not classify to one it would remove. A fourth arm
+    added to CloneStatus stops this build rather than defaulting to a deletion.
+
+    `--force` promotes exactly one arm. It is not a general override:
+    Referenced and Disputed are not "refusals to be insisted past", they are
+    devlaunch saying the directory is still in use or that its own records
+    disagree, and there is nothing for a user to mean by insisting.
+    """
+    if isinstance(status, Referenced):
+        return Keep(f"workspace {status.workspace_id} still opens it")
+    if isinstance(status, Orphaned):
+        objection = _objection(status.unsaved)
+        if objection is None:
+            return Remove(status.usage, Unopposed())
+        if force:
+            return Remove(status.usage, Insisted(f"holds {objection}"))
+        return Keep(f"holds {objection} -- add --force to remove it anyway")
+    if isinstance(status, Disputed):
+        return Keep(
+            f"devpod lists workspace {status.workspace_id} and sources it at "
+            f"{status.sourced_at}; see devlaunch#88"
+        )
+    _unhandled_status(status)
+
+
+@dataclass(frozen=True)
+class Reclaimable:
+    """One clone directory this run will remove, what it frees, and why it may.
+
+    *promotion* is how the second pass knows whether `--force` was answering
+    *this* directory. Without it the flag is plan-wide and turns off the
+    re-probe for every directory in the plan.
+    """
+
+    path: pathlib.Path
+    owner: str
+    repo: str
+    usage: disk_usage.DiskUsage
+    promotion: Promotion
+
+
+@dataclass(frozen=True)
+class Kept:
+    """One clone directory this run will leave standing, and why."""
+
+    path: pathlib.Path
+    because: str
+
+
+@dataclass(frozen=True)
+class PrunePlan:
+    """Everything one `dl --prune` will do, settled before anything is asked.
+
+    A value, for the reason WorkspaceOwnership is one: the report a user answers
+    and the set that actually dies must come from the same object, and here the
+    difference between them is somebody's directory. The two tuples are built by
+    one pass over one `decide` call each, so a directory cannot be in both and
+    cannot be in neither.
+
+    There is deliberately no `force` here. It was a field, and a plan-wide
+    boolean is exactly the shape `decide` refuses to have beside a status: the
+    pass that acts read it and skipped its safety re-check for every directory,
+    including the ones `--force` had promoted nothing about. What `--force`
+    answered rides on each `Reclaimable` instead.
+    """
+
+    root: pathlib.Path
+    removing: Tuple[Reclaimable, ...]
+    keeping: Tuple[Kept, ...]
+    stale_records: Tuple[WorktreeInfo, ...]
+
+    @property
+    def nothing_to_do(self) -> bool:
+        """Whether this run would change nothing at all."""
+        return not self.removing and not self.stale_records
+
+
+def _canonical(path: str) -> Optional[pathlib.Path]:
+    """*path* with every symlink resolved, or None if it could not be followed.
+
+    None means "cannot tell", never "somewhere else": every caller here is
+    deciding whether a directory is referenced, and answering that from a lookup
+    that failed is how a live clone becomes an orphan.
+
+    A path that is not *there* is not a failure -- resolving canonicalises as
+    much of it as exists and leaves the rest, which is the right answer for a
+    workspace whose source has been deleted, and there are hosts where that is
+    most of them (devlaunch#88). What lands here is a path that could not be
+    read as one at all: text devpod's JSON carried that no filesystem call will
+    accept (ValueError), and, on Python 3.10 only, a symlink loop, which later
+    versions resolve as far as they can instead of raising. All three are
+    caught, because the package supports both versions and the difference
+    between them must not decide what gets deleted.
+    """
+    try:
+        return pathlib.Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class Placeable:
+    """Every place on this machine a source could name -- possibly none.
+
+    Empty is a real answer and not a shrug: an image or container workspace
+    opens no directory on this disk, so there is nothing to compare and no clone
+    it could be holding.
+    """
+
+    paths: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Unplaceable:
+    """The source opens a folder here and devlaunch cannot say which one."""
+
+    detail: str
+
+
+SourcePlaces = Placeable | Unplaceable
+
+
+def source_places(source: WorkspaceSource) -> SourcePlaces:
+    """Where on this machine *source* could be. Total over the arms.
+
+    A `gitRepository` counts, even though devlaunch only ever hands devpod a
+    local path, and the reason is which way the mistake runs. `devpod up
+    <path-to-a-repo>` records that arm with a path in it, and a path this
+    function does not return is a directory `--prune` will call unreferenced.
+    is_devlaunch_clone refuses the same arm on purpose -- but refusing there
+    means declining to delete somebody else's *workspace*, which is the opposite
+    direction, so its answer must not be reused here. That is what the review of
+    the disk-size surface meant by "not as-is": the predicate is right for
+    reporting and for purging, and this question is neither.
+
+    The two answers that carry no path are kept apart, because reading them
+    alike is how a live workspace contributed no path *and* no alarm while the
+    command printed that it stops for exactly that. An image or container
+    workspace is `Placeable(())` -- nothing here, nothing at risk. A `localFolder`
+    devpod filled with something unreadable is `Unplaceable`, and it stops the
+    command the same way a source that will not resolve does.
+    """
+    if isinstance(source, LocalFolder):
+        return Placeable((source.path,))
+    if isinstance(source, GitRepository):
+        return Placeable((source.url,))
+    if isinstance(source, UnrecognisedSource):
+        return Placeable(())
+    if isinstance(source, UnreadableLocalFolder):
+        return Unplaceable(json.dumps(source.payload))
+    _unhandled_source(source)
+
+
+@dataclass(frozen=True)
+class Misplaced:
+    """A live workspace devpod records inside a repository's clone tree, at
+    something that is not a clone.
+
+    devlaunch#88's measured shape, and the reason it needs a name of its own.
+    On that ticket's host 36 of 39 devpod records named a folder that was gone
+    (35) or a config-only stub devpod itself wrote from cache (1), while the
+    real checkout sat beside it under the new id scheme. The two records cannot
+    be joined by workspace id -- the id is exactly what changed -- so the join
+    is made from the path instead: devpod points into `<root>/<owner>/<repo>/`
+    at a directory that holds no `.git`, and which of that repository's clones
+    the workspace actually needs is unanswerable.
+    """
+
+    workspace_id: str
+    sourced_at: str
+
+
+@dataclass(frozen=True)
+class WorkspaceLocations:
+    """Where devpod's workspaces are on this disk, and which ones are unknown.
+
+    *unlocatable* is not an empty result with a note on it. A live workspace
+    whose source cannot be followed is a directory that might be *any* of the
+    candidates, so while one exists there is no honest answer to "is this clone
+    referenced" -- and `--prune` says so instead of guessing.
+
+    *misplaced* is the same refusal made narrow. A workspace devpod records at a
+    non-clone *inside one repository's clone tree* can only be confused with
+    that repository's clones, so it disputes those and leaves every other
+    repository prunable -- which is what keeps this command usable on the host
+    devlaunch#88 describes rather than merely safe on it.
+    """
+
+    by_path: Mapping[pathlib.Path, str]
+    unlocatable: Tuple[str, ...]
+    misplaced: Mapping[Tuple[str, str], Misplaced]
+
+    def holder(self, candidate: pathlib.Path) -> Optional[str]:
+        """The live workspace *candidate* holds the checkout for, if any.
+
+        At **or under**, not equal to, and the direction matters in the only way
+        this command's mistakes matter. `devpod up <clone>/subproject` records
+        the subdirectory, and a clone whose subdirectory a live workspace opens
+        is a clone that live workspace needs -- deleting it takes the workspace
+        with it. Equality answered no and deleted the parent.
+
+        The containment is between two canonical paths, which is what keeps it
+        from being the lexical prefix test the reporting surface uses:
+        `<clone>-scratch` is not under `<clone>`, and a symlinked source has
+        already been resolved before it gets here.
+        """
+        workspace_id = self.by_path.get(candidate)
+        if workspace_id is not None:
+            return workspace_id
+        for source, held_by in self.by_path.items():
+            if candidate in source.parents:
+                return held_by
+        return None
+
+
+@dataclass(frozen=True)
+class Outside:
+    """The source is not in devlaunch's clone tree, so no clone answers for it."""
+
+
+@dataclass(frozen=True)
+class InAClone:
+    """The source is at or under *clone*, a directory that holds a checkout."""
+
+    clone: pathlib.Path
+
+
+@dataclass(frozen=True)
+class InARepositoryOnly:
+    """The source is in *(owner, repo)*'s clone tree but at no clone of it."""
+
+    owner: str
+    repo: str
+
+
+@dataclass(frozen=True)
+class TooShallow:
+    """The source is in the clone tree above any repository, so it names none."""
+
+
+SourceSite = Outside | InAClone | InARepositoryOnly | TooShallow
+
+
+def _site_of(source: pathlib.Path, root: pathlib.Path) -> SourceSite:
+    """Where a resolved source sits with respect to devlaunch's clone tree.
+
+    Read off the path rather than derived from an id, because on devlaunch#88's
+    host the id is what went wrong and the path is what survived: devpod's stale
+    record still says `<root>/blooop/devlaunch/<old-leaf>`, which names the
+    repository exactly even though the leaf and the workspace id match nothing
+    any more.
+
+    The clone is the *third* component under the root and the source may be
+    deeper -- `devpod up <clone>/subproject` is a live workspace whose source is
+    inside a clone, and the clone is what answers for it.
+    """
+    try:
+        parts = source.relative_to(root).parts
+    except ValueError:
+        return Outside()
+    if len(parts) < 3:
+        return TooShallow() if len(parts) < 2 else InARepositoryOnly(parts[0], parts[1])
+    clone = root / parts[0] / parts[1] / parts[2]
+    if _is_populated_clone(clone):
+        return InAClone(clone)
+    return InARepositoryOnly(parts[0], parts[1])
+
+
+def workspace_locations(workspaces: Sequence[Workspace], root: pathlib.Path) -> WorkspaceLocations:
+    """Resolve every live workspace's source to a real directory on this disk.
+
+    Both sides of the comparison this feeds are canonical, and that is the whole
+    point rather than tidiness. A cache reached through a symlink -- somebody
+    moved theirs, or `/tmp` is a link on their machine -- makes a lexical
+    comparison say that *no* clone is referenced, which is a total-loss bug in
+    the one direction that cannot be undone. The candidates are canonical by
+    construction (see prune_plan); this canonicalises the other side.
+
+    Three ways a workspace fails to place itself, and they are not one thing:
+    a source devlaunch cannot read at all, and a source that named a folder no
+    filesystem call will accept, both mean the workspace could be opening *any*
+    candidate and stop the command; a source that lands inside a repository's
+    clone tree on something with no `.git` in it means the workspace could be
+    opening any of *that repository's* clones, and disputes only those.
+    """
+    by_path: Dict[pathlib.Path, str] = {}
+    unlocatable: List[str] = []
+    misplaced: Dict[Tuple[str, str], Misplaced] = {}
+    for workspace in workspaces:
+        places = source_places(workspace.source)
+        if isinstance(places, Unplaceable):
+            unlocatable.append(f"{workspace.id}: {places.detail}")
+            continue
+        for source in places.paths:
+            resolved = _canonical(source)
+            if resolved is None:
+                unlocatable.append(f"{workspace.id}: {source}")
+                continue
+            site = _site_of(resolved, root)
+            if isinstance(site, (Outside, InAClone)):
+                by_path[resolved] = workspace.id
+            elif isinstance(site, InARepositoryOnly):
+                misplaced[(site.owner, site.repo)] = Misplaced(workspace.id, str(resolved))
+            elif isinstance(site, TooShallow):
+                unlocatable.append(f"{workspace.id}: {source}")
+            else:
+                _unhandled_site(site)
+    return WorkspaceLocations(by_path=by_path, unlocatable=tuple(unlocatable), misplaced=misplaced)
+
+
+def _unhandled_site(site: NoReturn) -> NoReturn:
+    """Reject a source site nobody handled -- at type-check time, not at runtime."""
+    raise AssertionError(f"Unhandled source site: {site!r}")
+
+
+def _is_populated_clone(path: pathlib.Path) -> bool:
+    """Whether *path* is a checkout rather than a place one used to be.
+
+    The same question `workspace_exists` asks, and devlaunch#88's own published
+    diagnostic (`[ -d "$p/.git" ] || echo BROKEN`). It is what separates a
+    devpod record that still describes something from one the id-scheme change
+    left behind -- a folder that is gone, or the config-only stub devpod
+    reconstitutes from its cache, neither of which any clone can be matched to.
+
+    `os.stat` rather than `Path.exists()`, for the reason
+    :func:`devlaunch.worktree.workspace_clone._on_disk` gives at length:
+    `exists()` swallows ENOENT, ENOTDIR, EBADF and ELOOP and re-raises the rest
+    on Python 3.10-3.13 while 3.14 returns False, so an expression that looks
+    like one question is two behaviours across the versions in the `ci` matrix.
+
+    A door this process cannot open reads as **not** a populated clone, and that
+    is the safe direction rather than the tidy one. Answering "yes" would say
+    devpod's workspace is at *this* clone and nowhere else, which leaves the
+    repository's other clones prunable; answering "no" says which clone of the
+    repository the workspace wants cannot be established, which disputes all of
+    them and keeps them. The second is what a refusal has actually established.
+    """
+    try:
+        os.stat(path / ".git")
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _subdirectories(path: pathlib.Path) -> List[pathlib.Path]:
+    """The real directories directly under *path*, sorted, symlinks not followed.
+
+    A symlinked entry is skipped rather than followed. Following one would put a
+    candidate outside the cache entirely, and unlinking the link instead would
+    report a clone as reclaimed while it sat on another volume -- the same two
+    wrong answers remove_tree already refuses for a symlinked root. Skipping is
+    that refusal, one step earlier, and it is also what keeps every candidate's
+    path canonical without a resolve() that could fail.
+
+    A directory that cannot be listed yields nothing: there is no such thing as
+    a clone this process can delete but not see, so the safe reading of a closed
+    door is that there is nothing behind it to remove.
+    """
+    try:
+        with os.scandir(path) as entries:
+            found = [entry for entry in entries if entry.is_dir(follow_symlinks=False)]
+    except OSError:
+        return []
+    return sorted(pathlib.Path(entry.path) for entry in found)
+
+
+def _clone_status(
+    clone: pathlib.Path,
+    owner: str,
+    repo: str,
+    locations: WorkspaceLocations,
+    record_for: Mapping[pathlib.Path, WorktreeInfo],
+    listed_at: Mapping[str, str],
+) -> CloneStatus:
+    """Which arm *clone* is, asked in the order that fails towards keeping it.
+
+    devpod's own listing is consulted first, and by containment rather than
+    containment-in-the-cache: the question is whether any live workspace's
+    source is at or under *this* directory, which the lexical predicate the
+    reporting surface uses cannot answer at all.
+
+    Then the two ways devpod's records and devlaunch's can disagree, and both
+    are devlaunch#88's shape:
+
+    - devpod has a live workspace somewhere in *this repository's* clone tree
+      that is not a clone -- a folder that is gone, or the config-only stub
+      devpod rebuilds from cache. 36 of 39 workspaces on #88's host. Which of
+      this repository's clones it needs cannot be answered, so none of them is
+      unreferenced.
+    - this directory's own record names a workspace devpod still lists and
+      sources elsewhere. The narrower shape, and the one that survives when the
+      ids still line up.
+
+    A record naming a workspace devpod has forgotten is not a disagreement, it
+    is the ordinary stale clone this command exists for -- 34 of the reference
+    host's 37.
+
+    The unsaved probe and the disk walk run last and only on the arm that could
+    be removed. Together they are the expensive half of a scan (593 ms of git
+    over 37 clones on the reference host, plus a walk with no ceiling), and
+    asking them about a directory no answer could affect is time spent to learn
+    nothing.
+    """
+    workspace_id = locations.holder(clone)
+    if workspace_id is not None:
+        return Referenced(workspace_id)
+    misplaced = locations.misplaced.get((owner, repo))
+    if misplaced is not None:
+        return Disputed(misplaced.workspace_id, misplaced.sourced_at)
+    record = record_for.get(clone)
+    if record is not None:
+        elsewhere = listed_at.get(record.workspace_id)
+        if elsewhere is not None:
+            return Disputed(record.workspace_id, elsewhere)
+    return Orphaned(
+        workspace_state.holds_unsaved_work(clone),
+        disk_usage.exclusive_usage(clone),
+    )
+
+
+def _records_by_directory(
+    clone_mgr: WorkspaceCloneManager,
+) -> Dict[pathlib.Path, WorktreeInfo]:
+    """metadata.json's worktree records, keyed by the directory each names.
+
+    Which directory a record names is :meth:`resolve_clone_path`'s question and
+    not this function's, and asking it here instead was the shape devlaunch#174
+    was: `local_path` read raw is one of *two* answers a record can give, and the
+    other one is what the delete acts on. The consequence here is the dangerous
+    direction rather than the merely inconsistent one -- a record that missed
+    its clone leaves that clone with no record at all, which drops it out of
+    :class:`Disputed` and into :class:`Orphaned`, which is a deletion.
+
+    An empty recorded path is the case that makes this concrete: `Path("")` is
+    `Path(".")`, which is truthy and which exists, so it canonicalised to
+    whatever directory dl happened to be run from and the record was filed under
+    that. :meth:`resolve_clone_path` refuses anything not absolute and derives
+    the real directory from the record's own owner/repo/branch instead.
+
+    A record dl cannot name a directory for at all is left out. It cannot be
+    matched to a candidate by definition, and there is no path it could be filed
+    under that would not be a guess.
+    """
+    records: Dict[pathlib.Path, WorktreeInfo] = {}
+    for record in clone_mgr.storage.list_worktrees():
+        directory = clone_mgr.resolve_clone_path(record)
+        if directory is None:
+            continue
+        resolved = _canonical(str(directory))
+        if resolved is not None:
+            records[resolved] = record
+    return records
+
+
+def _repo_lock(clone_mgr: WorkspaceCloneManager, owner: str, repo: str):
+    """The lock a launch of *owner/repo* holds while it fills a clone.
+
+    `--prune` takes the same one, and for the same span it looks at and removes
+    that repository's clones: workspace_clone populates a clone fully before it
+    returns, so without this a scan can weigh -- or delete -- a directory that
+    `git clone` is still writing into.
+
+    It closes that window and not a wider one, and the difference is worth being
+    plain about: devpod only learns about a clone *after* the lock is released,
+    so a clone whose launch has finished cloning and not yet registered a
+    workspace is briefly indistinguishable from a stale one. Closing that would
+    take a record devlaunch does not keep (devlaunch#88's ticket is where the
+    id it would need is meant to start being written down).
+    """
+    return hold_lock(
+        clone_mgr.repo_manager.lock_path(owner, repo),
+        waiting_note=f"another dl run preparing {owner}/{repo}",
+    )
+
+
+def clone_root(clone_mgr: WorkspaceCloneManager) -> pathlib.Path:
+    """The directory `--prune` scans, canonicalised once.
+
+    `repos_dir` as the clone manager reports it. Taking it from there rather
+    than rebuilding `<cache>/repos` is what keeps the directories scanned, the
+    locks taken and the workspace sources compared answering to the same
+    configuration: a `config.toml` that moves `repos_dir` moves all three, and
+    they cannot drift into scanning one tree while serialising against another
+    or comparing against a third.
+
+    Resolved directly rather than through _canonical: a repos_dir this could
+    fail on is one RepositoryManager's own mkdir has already refused, so a clone
+    manager existing at all is evidence the path is usable. Absent is not a
+    failure -- a fresh install has no repos directory yet and resolving one that
+    is not there is what says so.
+    """
+    return pathlib.Path(clone_mgr.repo_manager.repos_dir).resolve()
+
+
+def prune_plan(
+    clone_mgr: WorkspaceCloneManager,
+    workspaces: Sequence[Workspace],
+    locations: WorkspaceLocations,
+    root: pathlib.Path,
+    force: bool,
+) -> PrunePlan:
+    """Classify every clone directory under the cache, one repository at a time.
+
+    Every candidate path is canonical without ever being resolved individually
+    -- a resolved root (see :func:`clone_root`) plus real directory names,
+    symlinks skipped.
+    """
+    removing: List[Reclaimable] = []
+    keeping: List[Kept] = []
+    record_for = _records_by_directory(clone_mgr)
+    listed_at = {ws.id: describe_source(ws.source)[1] for ws in workspaces}
+    for owner_dir in _subdirectories(root):
+        for repo_dir in _subdirectories(owner_dir):
+            owner, repo = owner_dir.name, repo_dir.name
+            bare = _canonical(str(clone_mgr.repo_manager.get_bare_path(owner, repo)))
+            with _repo_lock(clone_mgr, owner, repo):
+                for clone in _subdirectories(repo_dir):
+                    if clone == bare:
+                        # Never a candidate and never reported. Nothing sources
+                        # it and no record names it, so every rule above would
+                        # call it an orphan -- and it is the copy every clone of
+                        # this repo hardlinks its git objects out of, 0.08 GB
+                        # for all seven repos on the reference host, and the
+                        # reason the next clone is fast.
+                        continue
+                    status = _clone_status(clone, owner, repo, locations, record_for, listed_at)
+                    decision = decide(status, force)
+                    if isinstance(decision, Remove):
+                        removing.append(
+                            Reclaimable(clone, owner, repo, decision.usage, decision.promotion)
+                        )
+                    else:
+                        keeping.append(Kept(clone, decision.because))
+    return PrunePlan(
+        root=root,
+        # Biggest first: the report's job is to be acted on, and "which of these
+        # is worth reclaiming" is the comparative question known_bytes exists
+        # for. Path breaks ties so two runs over an unchanged cache read alike.
+        removing=tuple(sorted(removing, key=lambda r: (-disk_usage.known_bytes(r.usage), r.path))),
+        keeping=tuple(keeping),
+        stale_records=_records_for_absent_directories(clone_mgr),
+    )
+
+
+def _records_for_absent_directories(
+    clone_mgr: WorkspaceCloneManager,
+) -> Tuple[WorktreeInfo, ...]:
+    """The worktree records whose directory is definitively not there any more.
+
+    metadata.json is append-mostly and nothing has ever pruned it: 49 records
+    for 17 live workspaces on the reference host. These are the ones that
+    describe nothing at all.
+
+    "Definitively" is _present's distinction and it is load-bearing here too: a
+    directory this process is not allowed to look at is still a directory, and
+    dropping its record would lose the only note of where a clone lives.
+
+    Which directory the record describes is asked of
+    :meth:`resolve_clone_path`, the same resolver the classification, the
+    listing and the delete all go through (devlaunch#174). Reading `local_path`
+    raw asks about a directory that may not be the one the clone is in: a record
+    written before the current id scheme, or one whose recorded path is empty --
+    `Path("")` is `Path(".")`, present by construction -- gets an answer about
+    somewhere else, and a record dropped for a clone that is still there is the
+    only note of where that clone lives, gone.
+
+    A record dl cannot name a directory for is not dropped. "dl could not work
+    out where this is" is not "this is not there", and only the second is a
+    reason to forget it.
+    """
+    stale: List[WorktreeInfo] = []
+    for record in clone_mgr.storage.list_worktrees():
+        directory = clone_mgr.resolve_clone_path(record)
+        if directory is not None and not _present(directory):
+            stale.append(record)
+    return tuple(stale)
+
+
+def print_prune_plan(plan: PrunePlan) -> None:
+    """Say what is going, what is staying and why, before anything is asked.
+
+    Printed whether or not there is anything to do, and in that order, because
+    the reason a directory is *staying* is the half a person cannot get anywhere
+    else -- `dl --ls` lists workspaces, and a clone with no workspace has no row
+    there to appear in.
+    """
+    print(f"Clone directories under {plan.root}:")
+    print()
+    if plan.removing:
+        freed = disk_usage.describe_usage(disk_usage.total_usage(r.usage for r in plan.removing))
+        print(f"Removing {len(plan.removing)} that nothing references -- {freed}:")
+        for reclaimable in plan.removing:
+            line = f"  - {reclaimable.path} ({disk_usage.describe_usage(reclaimable.usage)})"
+            promotion = reclaimable.promotion
+            if isinstance(promotion, Insisted):
+                # What --force is answering, on the line of the directory it
+                # answers for. Without it the plan reads the same for a clone
+                # holding an afternoon's uncommitted work as for an empty one,
+                # and the confirmation cannot say what it costs.
+                line = f"{line} -- {promotion.despite}, removing anyway"
+            elif not isinstance(promotion, Unopposed):
+                _unhandled_promotion(promotion)
+            print(line)
+        print()
+    if plan.keeping:
+        print(f"Leaving {len(plan.keeping)}:")
+        for kept in plan.keeping:
+            print(f"  - {kept.path}: {kept.because}")
+        print()
+    if plan.stale_records:
+        print(f"Dropping {len(plan.stale_records)} record(s) of directories already gone.")
+        print()
+    if plan.nothing_to_do:
+        print("Nothing to prune.")
+
+
+def report_unlocatable(locations: WorkspaceLocations) -> None:
+    """Say which live workspaces could not be placed, and that nothing went.
+
+    Not a warning above a report. A workspace whose source cannot be followed --
+    text no filesystem call will accept, or a `localFolder` devpod filled with
+    something that is not a path -- could be opening any of the candidates, so
+    while one exists there is no directory this command can honestly call
+    unreferenced. Printed by both passes, because both have to be able to stop.
+    """
+    print("dl --prune cannot follow these live workspaces' sources:")
+    for source in locations.unlocatable:
+        print(f"  - {source}")
+    print()
+    print("Nothing was removed: no clone is unreferenced while a workspace is unaccounted for.")
+
+
+def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathlib.Path) -> int:
+    """Carry out *plan*: remove the directories, then forget them.
+
+    **Every directory is classified again, under the lock, immediately before it
+    goes**, and only what this pass *also* finds removable is removed. The report
+    a user answered was taken before they answered it, and everything it rests on
+    can have moved in between: a container writes into a clone, or a launch that
+    was mid-clone when the plan was printed finishes and registers a workspace
+    for one of these exact directories -- the clone path for `(owner, repo,
+    branch)` is deterministic, so a concurrent launch reuses the very directory
+    in the plan. Re-asking only "has it grown unsaved work" caught the first and
+    not the second, and the difference was somebody's running workspace.
+
+    That is why this pass pays a second `devpod list`. It is the one question
+    whose answer cannot be re-derived from disk, it is O(1) rather than per
+    workspace, and it is paid only after a user has said yes to a deletion.
+
+    `--force` is re-applied per directory, from the promotion the plan recorded
+    for that directory rather than from a flag over the whole run, so insisting
+    past one clone's unsaved work does not turn the re-probe off for the others.
+    Referenced and Disputed are not promotable on either pass, so a directory
+    that became either since the plan is kept whatever was typed.
+
+    The approved set can therefore shrink between the report and the act, and can
+    never grow -- the direction that costs a command rather than a morning's work.
+
+    Classifying again means walking again, since the disk figure lives inside
+    the arm that could be removed. That is one extra walk of each directory this
+    run is about to delete, and none of the others -- and the bytes reported
+    stay the plan's, so what a person is told they got back is what they said
+    yes to.
+    """
+    removed: List[Reclaimable] = []
+    refused: List[Refusal] = []
+    withheld: List[Tuple[pathlib.Path, str]] = []
+    workspaces = list_workspaces(refresh=True)
+    locations = workspace_locations(workspaces, root)
+    if locations.unlocatable:
+        report_unlocatable(locations)
+        return 1
+    listed_at = {ws.id: describe_source(ws.source)[1] for ws in workspaces}
+    record_for = _records_by_directory(clone_mgr)
+    by_repo: Dict[Tuple[str, str], List[Reclaimable]] = {}
+    for reclaimable in plan.removing:
+        by_repo.setdefault((reclaimable.owner, reclaimable.repo), []).append(reclaimable)
+    for (owner, repo), reclaimables in sorted(by_repo.items()):
+        with _repo_lock(clone_mgr, owner, repo):
+            for reclaimable in reclaimables:
+                decision = decide(
+                    _clone_status(reclaimable.path, owner, repo, locations, record_for, listed_at),
+                    isinstance(reclaimable.promotion, Insisted),
+                )
+                if isinstance(decision, Keep):
+                    withheld.append((reclaimable.path, decision.because))
+                    continue
+                refusals = remove_tree(reclaimable.path)
+                if refusals:
+                    refused.extend(refusals)
+                    continue
+                removed.append(reclaimable)
+                _forget_clone(clone_mgr, record_for.get(reclaimable.path))
+    for record in plan.stale_records:
+        _forget_clone(clone_mgr, record)
+    freed = disk_usage.describe_usage(disk_usage.total_usage(r.usage for r in removed))
+    print(f"Removed {len(removed)} clone director(ies) -- {freed}.")
+    for path, because in withheld:
+        print(f"Left {path}: {because}. That was not so when the plan above was printed.")
+    if not refused:
+        return 0
+    # Not 0: a directory the user was told would go is still on disk. The
+    # clones that did go are still gone, which is why this is a report and not
+    # an abort.
+    report_refusals(
+        refused,
+        "Some directories would not come away. These refused:",
+        tuple(refusal.path for refusal in refused),
+    )
+    return 1
+
+
+def _forget_clone(clone_mgr: WorkspaceCloneManager, record: Optional[WorktreeInfo]) -> None:
+    """Drop one worktree record, if there was one to drop.
+
+    Removing a clone without this is what left metadata.json describing
+    workspaces that stopped existing years ago; a record kept for a directory
+    that is gone is not a safety margin, it is the thing that made the file
+    unreadable as a description of anything.
+    """
+    if record is None:
+        return
+    try:
+        clone_mgr.storage.remove_worktree(record.owner, record.repo, record.branch)
+    except OSError as e:
+        logging.warning(f"Could not drop the record for {record.local_path}: {e}")
+
+
+_PRUNE_FLAGS = ("-y", "--yes", "--force")
+
+
+def prune_command(flags: Sequence[str]) -> int:
+    """`dl --prune`: report the clone directories nothing references, then act.
+
+    Shaped like `--purge` on purpose -- print the plan, name what is left
+    standing and why, confirm, `-y` to skip -- because a user who has run one
+    has already learned this one. What it does is the opposite of `--purge`'s
+    all-or-nothing: it removes only the clone directories no live workspace
+    opens, leaves every bare cache alone, and never touches a devpod workspace,
+    a container, an image or a volume.
+
+    Nothing here runs on its own or on the way to anything else. A full scan
+    measured 1017 ms on the reference host -- about two warm launches -- and it
+    gets slower exactly as the problem it is for gets worse, so it is a command
+    somebody runs, and `dl --prune` answered `n` is how you read the report.
+    """
+    unknown = [flag for flag in flags if flag not in _PRUNE_FLAGS]
+    if unknown:
+        # Refused rather than ignored. An ignored option fails safe here by
+        # luck rather than by design -- but `dl --prune --dry-run -y` reads as a
+        # rehearsal and would have been a deletion, and that is not a mistake to
+        # find out about afterwards.
+        logging.error(f"Unknown option(s) for --prune: {' '.join(unknown)}")
+        return 1
+    force = "--force" in flags
+    clone_mgr = _get_clone_manager()
+    root = clone_root(clone_mgr)
+    workspaces = list_workspaces()
+    locations = workspace_locations(workspaces, root)
+    if locations.unlocatable:
+        report_unlocatable(locations)
+        return 1
+    plan = prune_plan(clone_mgr, workspaces, locations, root, force)
+    print_prune_plan(plan)
+    if plan.nothing_to_do:
+        return 0
+    if not any(flag in ("-y", "--yes") for flag in flags):
+        if input("Are you sure? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+    return prune_clones(clone_mgr, plan, root)
 
 
 # Regex patterns for parsing git URLs
@@ -1441,7 +2404,7 @@ def discover_repos_from_workspaces(workspaces: List[Workspace]) -> Dict[str, Lis
             if remote_url:
                 owner_repo = parse_owner_repo_from_url(remote_url)
 
-        elif isinstance(source, UnrecognisedSource):
+        elif isinstance(source, (UnrecognisedSource, UnreadableLocalFolder)):
             logging.warning(
                 f"Not looking for a repo in workspace '{ws.id}': "
                 f"devpod describes its source as {json.dumps(source.payload)}, "
@@ -2251,6 +3214,13 @@ Global commands:
                                      --json, where the field is `disk`.
     dl --install                     Install shell completions
     dl --refresh                     Refresh completion cache
+    dl --prune [-y] [--force]        Remove the clone directories no workspace
+                                     opens any more, and forget the records of
+                                     directories already gone. Bare caches, live
+                                     clones and every devpod workspace are left
+                                     alone; a clone holding uncommitted or
+                                     unpushed work is named and kept unless
+                                     --force. Prints the plan and asks first.
     dl --purge [-y]                  Remove devlaunch's workspaces and caches
     dl --help, -h                    Show this help
     dl --version                     Show version (editable installs name their tree)
@@ -2462,6 +3432,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         # Generate cache so completions work immediately
         update_completion_cache()
         return install_completions(rc_path)
+
+    if args[0] == "--prune":
+        return prune_command(args[1:])
 
     if args[0] == "--purge":
         # Check for -y flag to skip confirmation

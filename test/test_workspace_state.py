@@ -762,6 +762,7 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         unreadable=False,
         only_foreign=False,
         recorded=True,
+        hand_removed=False,
     ):
         cache = tmp_path / "cache" / "devlaunch"
         clone = cache / "repos" / "blooop" / "r" / "r-feature-aaa"
@@ -770,6 +771,8 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         if unreadable:
             (clone / "locked").mkdir(exist_ok=True)
             (clone / "locked").chmod(0o000)
+        if hand_removed:
+            shutil.rmtree(clone)
         entries = [_entry("someone-elses", tmp_path / "projects" / "other")]
         if not only_foreign:
             entries.insert(0, _entry("r-feature-aaa", clone))
@@ -822,6 +825,31 @@ class TestReportingWhatAWorkspaceCostsOnDisk:
         foreign = next(row for row in report if row["id"] == "someone-elses")
         assert foreign["devlaunch"] is False
         assert foreign["disk"] is None
+
+    def test_a_clone_removed_by_hand_measures_nothing_rather_than_going_unmeasured(
+        self, tmp_path, capsys
+    ):
+        """Zero and "not measured" are different answers, and the difference is
+        what a cleanup tool acts on.
+
+        `-` and `null` mean "there is no clone of `dl`'s here to measure" -- a
+        workspace opened from somebody's own project directory. A clone `dl`
+        made and somebody then deleted by hand is `dl`'s, and what removing it
+        would free is nothing, which is a measurement. A reader that saw `null`
+        for it would leave the workspace alone as somebody else's; a reader that
+        sees zero knows it is `dl`'s and costs nothing to clean up.
+
+        These are precisely the directories `dl --prune` is about, and until now
+        the case had no test on either rendering.
+        """
+        report = self._json(tmp_path, ["--ls", "--json", "--size"], capsys, hand_removed=True)
+        ours = next(row for row in report if row["id"] == "r-feature-aaa")
+        assert ours["devlaunch"] is True
+        assert ours["disk"] == {"exclusiveBytes": 0}
+
+        _code, out = self._run(tmp_path, ["--ls", "--size"], capsys, hand_removed=True)
+        row = next(line for line in out.splitlines() if line.startswith("r-feature-aaa"))
+        assert "0 B" in row
 
     def test_what_could_not_be_read_is_reported_as_a_floor_not_a_total(self, tmp_path, capsys):
         if os.geteuid() == 0:
