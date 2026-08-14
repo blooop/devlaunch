@@ -238,9 +238,7 @@ class TestProfileGuards:
         appends = []
         for name in self.SCRIPTS:
             script = self._script(name, tmp_path)
-            appends.extend(
-                line.strip() for line in script.splitlines() if '>> "$PROFILE"' in line
-            )
+            appends.extend(line.strip() for line in script.splitlines() if '>> "$PROFILE"' in line)
         assert len(appends) == 5, "a new PATH line belongs in this test's expectations"
         for _ in range(2):
             subprocess.run(
