@@ -8,10 +8,12 @@ the CLI entry point on one side, the subprocess module on the other.
 """
 
 import io
+import json
 import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,10 +27,32 @@ from test_devpod_spawn_counts import DevpodSpawns
 # per-round-trip lines do not, so the note is optional here.
 TIMING_LINE = re.compile(r"^dl-timing: (.+?) \d+\.\d{3}s(?: \(.*\))?$", re.MULTILINE)
 
+# The machine-readable mode's one line: a marker, then the document.
+JSON_LINE = re.compile(r"^dl-timing-json: (\{.*\})$", re.MULTILINE)
+
 
 def timing_labels(stderr: str):
     """The labels of every timing line in *stderr*, in order."""
     return TIMING_LINE.findall(stderr)
+
+
+def timing_document(stderr: str) -> dict:
+    """The one timing document in *stderr*, parsed. Exactly one, or fail."""
+    found = JSON_LINE.findall(stderr)
+    assert len(found) == 1, f"expected one timing document, got {len(found)} in: {stderr!r}"
+    return json.loads(found[0])
+
+
+def stage_names(document: dict):
+    """The names of the stages in *document*, in the order reported."""
+    return [stage["stage"] for stage in document["stages"]]
+
+
+def stage_named(document: dict, name: str) -> dict:
+    """The one stage called *name*. Fails if the stage is absent."""
+    found = [stage for stage in document["stages"] if stage["stage"] == name]
+    assert len(found) == 1, f"expected one {name!r} stage, got {found} in {document}"
+    return found[0]
 
 
 class TestSummaryGate:
@@ -48,6 +72,44 @@ class TestSummaryGate:
         monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
         assert main(["--version"]) == 0
         assert timing_labels(capsys.readouterr().err) == ["total"]
+
+
+class TestMachineReadableMode:
+    """`DEVLAUNCH_TIMING=json` reports the same run as one parseable document.
+
+    The mode exists so a trend job can read stage seconds without scraping
+    prose; the prose mode is what a human still gets from `=1`.
+    """
+
+    def test_json_asks_for_one_document_and_no_prose(self, monkeypatch, capsys):
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "json")
+        assert main(["--version"]) == 0
+        err = capsys.readouterr().err
+        document = timing_document(err)
+        assert document["total"] >= 0
+        assert document["stages"] == []
+        assert "dl-timing: " not in err
+
+    def test_the_document_names_the_clock_its_total_came_from(self, monkeypatch, capsys):
+        """The prose total carries that caveat inline; a consumer of the
+        document must not have to know it out of band."""
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "json")
+        assert main(["--version"]) == 0
+        assert timing_document(capsys.readouterr().err)["total_epoch"] == timing.TOTAL_EPOCH
+
+    def test_prose_mode_emits_no_document(self, monkeypatch, capsys):
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+        assert main(["--version"]) == 0
+        assert "dl-timing-json:" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("value", [None, "", "0"])
+    def test_off_emits_neither_shape(self, value, monkeypatch, capsys):
+        if value is None:
+            monkeypatch.delenv("DEVLAUNCH_TIMING", raising=False)
+        else:
+            monkeypatch.setenv("DEVLAUNCH_TIMING", value)
+        assert main(["--version"]) == 0
+        assert "dl-timing" not in capsys.readouterr().err
 
 
 @pytest.fixture
@@ -76,6 +138,193 @@ class TestDevpodRoundTripsAreNamed:
         monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
         assert main(argv) == 0
         assert timing_labels(capsys.readouterr().err) == [*labels, "total"]
+
+
+@pytest.fixture
+def documenting(monkeypatch):
+    """An active recorder in document mode, emitted into a buffer.
+
+    The stage tests drive begin/emit themselves for the same reason the
+    `recording` fixture does: they exercise the recorder below main().
+    """
+    monkeypatch.setenv("DEVLAUNCH_TIMING", "json")
+    monkeypatch.delenv(timing.HANDOFF_VAR, raising=False)
+    timing.begin()
+    buffer = io.StringIO()
+    yield buffer
+    timing.emit(buffer)
+
+
+class TestStageVocabulary:
+    """The named stages are one per actionable owner, and they are the
+    contract a consumer outside this repo reads the document against."""
+
+    def test_the_vocabulary_is_the_ownership_boundary_stages(self):
+        assert timing.STAGES == ("handoff", "host-prep", "devpod-up", "tools", "attach")
+
+    def test_a_stage_carries_the_spans_recorded_inside_it(self, documenting):
+        with timing.stage("tools"):
+            with timing.span("devpod ssh"):
+                pass
+        timing.emit(documenting)
+        stage = stage_named(timing_document(documenting.getvalue()), "tools")
+        assert [span["label"] for span in stage["spans"]] == ["devpod ssh"]
+
+    def test_a_stage_totals_over_its_arm_not_just_over_its_spans(self, documenting):
+        """The stage is the arm's whole cost — the host-side work between the
+        round trips is time the owner spent too, and a trend that dropped it
+        would show parts that never add up to the total."""
+        with timing.stage("host-prep"):
+            with timing.span("git ls-remote"):
+                pass
+            time.sleep(0.05)
+        timing.emit(documenting)
+        stage = stage_named(timing_document(documenting.getvalue()), "host-prep")
+        assert stage["seconds"] >= sum(span["seconds"] for span in stage["spans"]) + 0.05
+
+    def test_a_stage_entered_again_totals_over_both_of_its_arms(self, documenting):
+        """One owner's work is not always one contiguous region — the token
+        fetch is host prep whenever it happens — so a stage accumulates rather
+        than reporting only its last visit."""
+        for _ in range(2):
+            with timing.stage("host-prep"):
+                time.sleep(0.03)
+        timing.emit(documenting)
+        document = timing_document(documenting.getvalue())
+        assert stage_names(document) == ["host-prep"]
+        assert stage_named(document, "host-prep")["seconds"] >= 0.06
+
+    def test_a_stage_inside_another_is_charged_to_the_inner_owner(self, documenting):
+        """Nesting must not double-count: `tools` runs inside the launch that
+        `devpod-up` brackets, and the seconds belong to one of them."""
+        with timing.stage("devpod-up"):
+            with timing.stage("tools"):
+                time.sleep(0.05)
+        timing.emit(documenting)
+        document = timing_document(documenting.getvalue())
+        assert stage_named(document, "tools")["seconds"] >= 0.05
+        assert stage_named(document, "devpod-up")["seconds"] < 0.05
+
+    def test_a_stage_that_never_ran_is_absent_rather_than_zero(self, documenting):
+        """Absence is the "not reached" of the three-valued outcome: a stage
+        reporting 0.000s claims it ran and cost nothing, which is a different
+        and false statement."""
+        with timing.stage("attach"):
+            pass
+        timing.emit(documenting)
+        assert stage_names(timing_document(documenting.getvalue())) == ["attach"]
+
+    def test_a_stage_that_failed_reports_its_span_up_to_the_failure(self, documenting):
+        with pytest.raises(RuntimeError):
+            with timing.stage("devpod-up"):
+                time.sleep(0.03)
+                raise RuntimeError("up blew up")
+        timing.emit(documenting)
+        stage = stage_named(timing_document(documenting.getvalue()), "devpod-up")
+        assert stage["outcome"] == "failed"
+        assert stage["seconds"] >= 0.03
+
+    def test_a_stage_that_returned_is_reported_ok(self, documenting):
+        with timing.stage("attach"):
+            pass
+        timing.emit(documenting)
+        assert stage_named(timing_document(documenting.getvalue()), "attach")["outcome"] == "ok"
+
+    def test_prose_mode_keeps_its_flat_span_lines_through_a_stage(self, monkeypatch, capsys):
+        """Constraint 1: `=1` is the summary it always was. A stage wrapper
+        around a span must not add a line to it or rename one."""
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+        timing.begin()
+        with timing.stage("tools"):
+            with timing.span("devpod ssh"):
+                pass
+        timing.emit()
+        assert timing_labels(capsys.readouterr().err) == ["devpod ssh", "total"]
+
+    def test_a_stage_costs_nothing_and_records_nothing_when_timing_is_off(
+        self, monkeypatch, capsys
+    ):
+        """The off state stays free: new stages on the launch path must not
+        make an unmeasured run pay for them."""
+        monkeypatch.delenv("DEVLAUNCH_TIMING", raising=False)
+        timing.begin()
+        ran = False
+        with timing.stage("tools"):
+            ran = True
+        timing.emit()
+        assert ran
+        assert capsys.readouterr().err == ""
+
+
+def document_after_begin(monkeypatch, stamp) -> dict:
+    """The document of a run that began with *stamp* in the handoff variable.
+
+    None means the variable is unset — the ordinary case, a dl a human
+    launched.
+    """
+    monkeypatch.setenv("DEVLAUNCH_TIMING", "json")
+    if stamp is None:
+        monkeypatch.delenv(timing.HANDOFF_VAR, raising=False)
+    else:
+        monkeypatch.setenv(timing.HANDOFF_VAR, stamp)
+    timing.begin()
+    buffer = io.StringIO()
+    timing.emit(buffer)
+    return timing_document(buffer.getvalue())
+
+
+class TestTheHandoffStamp:
+    """`DEVLAUNCH_HANDOFF_T0` is the seam: whoever hands off to dl stamps it,
+    dl reads it, and the gap between them becomes the `handoff` stage.
+
+    It is the one stage nothing in this process runs, so it is also the one
+    that can only be absent or measured — never zero.
+    """
+
+    def test_a_stamp_reports_the_gap_between_the_stamp_and_dl_starting(self, monkeypatch):
+        handoff = stage_named(document_after_begin(monkeypatch, str(time.time() - 5)), "handoff")
+        assert 5 <= handoff["seconds"] < 60
+        assert handoff["outcome"] == "ok"
+        assert handoff["spans"] == []
+
+    def test_the_handoff_is_reported_ahead_of_the_stages_dl_ran(self, monkeypatch):
+        """It is the earliest thing the document describes, and a reader
+        should meet the stages in the order the launch met them."""
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "json")
+        monkeypatch.setenv(timing.HANDOFF_VAR, str(time.time() - 1))
+        timing.begin()
+        with timing.stage("host-prep"):
+            pass
+        buffer = io.StringIO()
+        timing.emit(buffer)
+        assert stage_names(timing_document(buffer.getvalue())) == ["handoff", "host-prep"]
+
+    @pytest.mark.parametrize(
+        "stamp",
+        [
+            pytest.param(None, id="unset"),
+            pytest.param("", id="empty"),
+            pytest.param("   ", id="blank"),
+            pytest.param("a while ago", id="not-a-number"),
+            pytest.param("nan", id="nan"),
+            pytest.param("inf", id="inf"),
+        ],
+    )
+    def test_no_readable_stamp_reports_no_handoff_stage_at_all(self, stamp, monkeypatch):
+        """Absent, not zero: reporting 0.000s would claim an instantaneous
+        handoff, and a trend cannot tell that apart from a real one."""
+        assert stage_names(document_after_begin(monkeypatch, stamp)) == []
+
+    def test_a_stamp_in_the_future_reports_no_handoff_stage(self, monkeypatch):
+        """Two clocks that disagree produce a negative gap, which is not a
+        measurement of anything — so it is reported as the absence it is."""
+        assert stage_names(document_after_begin(monkeypatch, str(time.time() + 60))) == []
+
+    def test_the_prose_summary_is_untouched_by_a_stamp(self, monkeypatch, capsys):
+        monkeypatch.setenv("DEVLAUNCH_TIMING", "1")
+        monkeypatch.setenv(timing.HANDOFF_VAR, str(time.time() - 5))
+        assert main(["--version"]) == 0
+        assert timing_labels(capsys.readouterr().err) == ["total"]
 
 
 @pytest.fixture
