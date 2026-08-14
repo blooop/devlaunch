@@ -3224,7 +3224,7 @@ def workspace_stop(workspace: str) -> int:
     return result.returncode
 
 
-def workspace_delete(workspace: str) -> int:
+def workspace_delete(workspace: str, ignore_missing: bool = False) -> int:
     """Delete a workspace and its local clone (if any).
 
     The clone is removed only once devpod has actually let go of the workspace.
@@ -3232,8 +3232,15 @@ def workspace_delete(workspace: str) -> int:
     down, so a config that has since moved or been renamed makes deletion fail —
     and removing the clone regardless strands the workspace for good, because
     devpod can then never find the config to retry with.
+
+    ``ignore_missing`` makes a workspace devpod does not have count as deleted
+    (devpod's own --ignore-not-found), so a forced remove is "ensure absent"
+    the way `rm -f` is. The clone cleanup below still runs on that path: a
+    stale clone with no workspace is exactly what a half-finished delete
+    leaves, and what a cold-bench reset (ticket #140) must clear.
     """
-    result = run_devpod(["delete", workspace])
+    argv = ["delete", workspace] + (["--ignore-not-found"] if ignore_missing else [])
+    result = run_devpod(argv)
     # Unconditionally: a delete that reports failure may still have got far
     # enough to change what devpod lists.
     invalidate_workspace_list_cache()
@@ -3741,7 +3748,8 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         # Cleanup is expected to be driven by something that knows more than dl
         # does (a ticket tool, a script, a person), and this is what keeps a
         # confident caller from destroying an hour of somebody's afternoon.
-        if "--force" not in args[2:]:
+        forced = "--force" in args[2:]
+        if not forced:
             # Three answers, and only one of them is permission (devlaunch#171).
             # Matched arm by arm rather than tested for truth, so that an answer
             # this code does not know about stops the delete instead of sliding
@@ -3765,7 +3773,10 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
                 return 1
             if not isinstance(unsaved, workspace_state.NothingToLose):
                 workspace_state.unhandled_unsaved(unsaved)
-        return workspace_delete(workspace_id)
+        # `--force` also makes "already absent" a success (`rm -f` semantics):
+        # a bench reset runs this before every timed run, including the first,
+        # where there is nothing to remove yet.
+        return workspace_delete(workspace_id, ignore_missing=forced)
 
     if subcommand == "up":
         # Start (or create) the workspace without attaching: the warm half of

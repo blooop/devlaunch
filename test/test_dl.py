@@ -1714,7 +1714,7 @@ class TestMainCLI:
         with patch.object(sys, "argv", ["dl", "myws", "rm"]):
             result = main()
         assert result == 0
-        mock_delete.assert_called_once_with("myws")
+        mock_delete.assert_called_once_with("myws", ignore_missing=False)
 
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl.workspace_delete")

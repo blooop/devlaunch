@@ -1146,6 +1146,56 @@ class TestTheDeleteGuard:
         assert deleted == ["r-feature-aaa"]
 
 
+class TestForcedRemoveIsEnsureAbsent:
+    """`dl <spec> rm --force` succeeds when devpod has no such workspace.
+
+    POSIX `rm` semantics: `rm file` may complain that there is nothing to
+    remove, `rm -f file` must not — its contract is the state afterwards, not
+    the work done. The caller this exists for is a cold-launch bench reset
+    (ticket #140), which runs `rm --force` before *every* timed run to
+    establish "absent", including the first run, where nothing exists yet.
+    """
+
+    def _run(self, argv):
+        deleted = []
+
+        def devpod(args, **kwargs):
+            # Real devpod v0.26.1: deleting a workspace it does not have is
+            # fatal (exit 1) unless --ignore-not-found is passed.
+            if args[:1] == ["status"]:
+                return subprocess.CompletedProcess(args, 1, "", "workspace not found")
+            if args[:1] == ["delete"]:
+                deleted.append(args)
+                if "--ignore-not-found" in args:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                return subprocess.CompletedProcess(
+                    args, 1, "", f"fatal workspace {args[1]} not found"
+                )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with (
+            patch("devlaunch.dl.run_devpod", side_effect=devpod),
+            patch("devlaunch.dl._get_clone_manager", return_value=_clone_manager({})),
+            patch("devlaunch.dl.update_cache_background"),
+        ):
+            code = main(argv)
+        return code, deleted
+
+    def test_force_remove_succeeds_when_devpod_has_no_such_workspace(self):
+        code, deleted = self._run(["blooop/r@feature", "rm", "--force"])
+        ws = WorkspaceId("blooop", "r", "feature").value
+        assert code == 0
+        assert deleted == [["delete", ws, "--ignore-not-found"]]
+
+    def test_plain_remove_still_reports_a_delete_devpod_refused(self):
+        # The unforced path keeps its meaning: devpod refusing the delete is
+        # an error the user hears about, not a state to shrug at.
+        code, deleted = self._run(["blooop/r@feature", "rm"])
+        ws = WorkspaceId("blooop", "r", "feature").value
+        assert code == 1
+        assert deleted == [["delete", ws]]
+
+
 class TestNamingWhatIsUnsaved:
     """A count cannot be judged; a name can.
 
