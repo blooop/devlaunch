@@ -96,7 +96,7 @@ if role == "winner":
 else:
     (ready,) = flags
     ready.write_text("ready", encoding="utf-8")
-    got = manager.ensure_repo("test", "repo", remote, auto_fetch=False)
+    got = manager.ensure_repo("test", "repo", remote)
     print(got.local_path)
 """
 

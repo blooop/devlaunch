@@ -1,12 +1,15 @@
 """Repository manager for worktree backend."""
 
 import logging
+import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import NoReturn, Optional, TYPE_CHECKING, Union
 
+from ..workspace_id import validate_ref_name
 from .locks import hold_lock
 from .models import BaseRepository
 from .storage import MetadataStorage
@@ -28,6 +31,64 @@ def _branch_of(ref: str) -> str:
         if ref.startswith(prefix):
             return ref[len(prefix) :]
     return ref.rsplit("/", maxsplit=1)[-1]
+
+
+@dataclass(frozen=True)
+class Updated:
+    """The requested ref in the cache now matches the remote's.
+
+    Carries no payload: "it is current" is the whole message. A distinct type
+    rather than True so that the three answers cannot collapse into a bool that
+    reads "fetched / did not fetch" and loses the difference between the two ways
+    of not fetching -- which is the difference the caller acts on.
+    """
+
+
+@dataclass(frozen=True)
+class RefMissingOnRemote:
+    """The remote has no such ref, and answered to say so.
+
+    Not a failure. This is what an ordinary "start a new branch" launch gets, and
+    the caller's response is to base the branch on the default branch instead. A
+    reachable remote is *evidence* here -- the ref's absence is established
+    rather than assumed, which is what makes basing a new branch on the default
+    branch the right move rather than a guess.
+    """
+
+
+@dataclass(frozen=True)
+class FetchFailed:
+    """The remote could not be asked, and *reason* is what git said.
+
+    Distinct from :class:`RefMissingOnRemote` because nothing was learned about
+    the remote: the ref may well exist. So the caller may only fall back to
+    whatever the cache already holds, and must not invent a branch off the
+    default branch on the strength of an answer it never got.
+
+    The reason is carried rather than reconstructed at the print site, following
+    :class:`devlaunch.workspace_state.CouldNotTell`: no such host, a refused
+    connection, an expired credential and a bare cache that is not there all
+    arrive here and read differently to whoever has to fix it.
+    """
+
+    reason: str
+
+
+# Three arms and no fourth. "The cache is not on disk" is a FetchFailed rather
+# than a fourth arm: nothing was learned about the remote, which is exactly the
+# property that decides what a caller may do next.
+FetchOutcome = Union[Updated, RefMissingOnRemote, FetchFailed]
+
+
+def unhandled_fetch_outcome(outcome: NoReturn) -> NoReturn:
+    """Reject a fetch outcome nobody handled -- at type-check time, not at runtime.
+
+    The same shape as :func:`devlaunch.workspace_state.unhandled_unsaved`, and
+    exported for the same reason: the arms are read outside this module, and an
+    ``else`` hand-rolled at a call site is how a fourth arm gets silently read as
+    one of the existing three.
+    """
+    raise AssertionError(f"Unhandled fetch outcome: {outcome!r}")
 
 
 class RepositoryManager:
@@ -204,6 +265,66 @@ class RepositoryManager:
             logger.debug(f"Failed to fetch repository: {e.stderr}")
             raise RuntimeError(f"Failed to fetch repository: {e.stderr}") from e
 
+    def fetch_ref(self, owner: str, repo: str, branch: str) -> FetchOutcome:
+        """Fetch exactly one branch into the bare cache, and say what happened.
+
+        The launch path's entire network budget. Where :meth:`fetch_repo` sweeps
+        every head and tag, this moves one ref, so the time it can hold the repo
+        lock is bounded by one branch's worth of objects rather than by the size
+        of the repository's whole history of branches.
+
+        Unconditional by design -- no interval gate. The conditional version is
+        more code and yields a mushy contract (fresh for branches you have not
+        seen, stale for the ones you have); one single-ref fetch is noise next to
+        the clone and `devpod up` this path already pays for.
+
+        Deliberately does **not** write ``last_fetched``: that is the broad
+        sweep's bookkeeping, and claiming it here would suppress the sweep for a
+        whole interval on the strength of having fetched one branch. Not writing
+        it also keeps the repo-lock→metadata-lock nesting off this path.
+
+        Assumes the caller holds the repo lock (``hold_lock`` is not reentrant);
+        it writes a ref in the shared bare repo, so it must not run unserialized.
+        """
+        # The branch is interpolated into a refspec that reaches git as argv, so
+        # it is checked here rather than trusted. ensure_branch's caller usually
+        # holds a WorkspaceId proving it, but the default-branch retry arrives
+        # from stored metadata unproven -- and this is a public method besides.
+        validate_ref_name(branch)
+        bare_path = self.get_bare_path(owner, repo)
+
+        if not bare_path.exists():
+            # Not RefMissingOnRemote: nothing was asked of the remote, so nothing
+            # is known about it. Sending the caller off to base a branch on the
+            # default branch would be basing it in a cache that is equally absent.
+            return FetchFailed(f"Repository {owner}/{repo} does not exist locally")
+
+        logger.info(f"Fetching {branch} for {owner}/{repo}")
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/heads/{branch}"],
+                cwd=bare_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                # The ref-missing arm below is classified from git's stderr
+                # text, which git translates -- so git is addressed in the C
+                # locale, or a German host would collapse the three-way outcome
+                # to two. LANGUAGE is pinned too: under gettext it outranks a
+                # non-C LC_ALL, and the guarantee should not hang on the one
+                # glibc rule that exempts C.
+                env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
+            )
+            return Updated()
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr or ""
+            if "couldn't find remote ref" in stderr:
+                # git reached the remote and was told the ref is not there. This
+                # is the one case where a non-zero exit is an *answer*.
+                logger.debug(f"Remote has no ref {branch} for {owner}/{repo}")
+                return RefMissingOnRemote()
+            return FetchFailed(stderr.strip() or f"git fetch exited {e.returncode}")
+
     def _should_fetch(self, repo: BaseRepository) -> bool:
         """Check if repository should be fetched based on fetch_interval.
 
@@ -231,20 +352,28 @@ class RepositoryManager:
             return True
         return False
 
-    def ensure_repo(
-        self, owner: str, repo: str, remote_url: str, auto_fetch: bool = True
-    ) -> BaseRepository:
+    def ensure_repo(self, owner: str, repo: str, remote_url: str) -> BaseRepository:
         """Ensure repo exists locally, clone if needed.
 
-        Uses lazy fetch: only fetches if fetch_interval has elapsed since last fetch.
+        Clone-if-missing and nothing else. It deliberately does **not** refresh a
+        cache that is already there, however stale: the broad sweep that used to
+        run from here is the detached updater's job now (devlaunch#149), and the
+        launch path's entire network budget is the one targeted ref fetch in
+        :meth:`WorkspaceCloneManager.ensure_branch`. A fetch here would be
+        unbounded network *under the repo lock*, so the launch that drew the short
+        straw paid for everyone's freshness and every concurrent launch of the
+        same repo queued behind it — the defect devlaunch#144 resolved.
+
+        Freshness is not lost, it moved: see the staleness contract on
+        :meth:`WorkspaceCloneManager.ensure_branch`.
 
         The whole exists-check-then-clone sequence runs under the repo lock:
         without it, two processes launching the same repo at once both saw no
         clone and both ran ``git clone --bare`` into the same path — and the
         loser's cleanup in clone_repo deleted the winner's half-written cache.
         Serialized, the loser just waits and then reuses the winner's clone.
-        clone_repo and fetch_repo rely on this lock rather than taking it
-        themselves (hold_lock is not reentrant).
+        clone_repo relies on this lock rather than taking it itself (hold_lock is
+        not reentrant).
         """
         with hold_lock(
             self.lock_path(owner, repo),
@@ -253,12 +382,6 @@ class RepositoryManager:
             if self.repo_exists(owner, repo):
                 existing_repo = self.get_repo(owner, repo)
                 if existing_repo:
-                    # Only fetch if interval has elapsed (lazy fetch)
-                    if auto_fetch and self._should_fetch(existing_repo):
-                        try:
-                            self.fetch_repo(owner, repo)
-                        except Exception as e:
-                            logger.warning(f"Failed to fetch updates: {e}")
                     return existing_repo
                 # Metadata doesn't exist but repo exists - fall through to clone
                 # (which will add metadata)

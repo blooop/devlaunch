@@ -27,7 +27,13 @@ from .branch_manager import BranchManager
 from .config import WorktreeConfig, get_worktree_config
 from .locks import hold_lock
 from .models import WorktreeInfo
-from .repo_manager import RepositoryManager
+from .repo_manager import (
+    FetchFailed,
+    RefMissingOnRemote,
+    RepositoryManager,
+    Updated,
+    unhandled_fetch_outcome,
+)
 from .storage import MetadataStorage
 
 # Every git-lfs pointer file starts with this; see the git-lfs pointer spec.
@@ -319,32 +325,85 @@ class WorkspaceCloneManager:
             ) from e
 
     def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
-        """Ensure a branch exists in the bare repo.
+        """Ensure a branch exists in the bare repo, at the remote's current tip.
 
-        Fetches latest refs, then uses BranchManager to create the branch
-        locally if needed. Does not push to the remote.
+        This is the whole of the launch path's network use, and the staleness
+        contract devlaunch#144 settled is stated here because this is the code
+        that keeps it:
+
+        - **Push upstream, then immediately dl the branch → you get the pushed
+          tip.** One targeted fetch of the requested ref, every time, no interval
+          gate.
+        - **A branch that exists nowhere yet** is created from the default
+          branch's freshly fetched tip — one more targeted fetch, and no more
+          than one.
+        - **Offline, or any other fetch failure:** warn and carry on with
+          whatever the cache holds. The launch of an already-cached branch still
+          works. When there is nothing to launch from at all, the branch
+          creation at the end of this method raises — it is the first thing
+          that actually consults the cache, so that is where its emptiness is
+          discovered.
+        - **Every other ref** (other branches, tags, prunes) converges within
+          ``fetch_interval`` via the detached updater sweep, blocking nobody.
+
+        Does not push to the remote.
 
         Runs under the repo lock: the fetch and the branch creation both write
         refs in the shared bare repo, and two processes doing so at once trip
         over git's own ref locks. (hold_lock is not reentrant; no callee here
-        takes the repo lock.)
+        takes the repo lock -- `fetch_ref` documents that it expects to be
+        called with it held.)
         """
         bare_path = self.repo_manager.get_bare_path(owner, repo)
         with hold_lock(
             self.repo_manager.lock_path(owner, repo),
             waiting_note=f"another dl run preparing {owner}/{repo}",
         ):
-            # Lazy-fetch: only hits the network when the fetch interval has elapsed
-            try:
-                self.repo_manager.lazy_fetch(owner, repo)
-            except (RuntimeError, ValueError, OSError) as e:
-                logger.warning(f"Failed to fetch before branch ensure: {e}")
+            outcome = self.repo_manager.fetch_ref(owner, repo, branch)
 
             try:
                 default_branch = self.repo_manager.get_default_branch(owner, repo)
             except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
                 logger.warning(f"Failed to resolve default branch: {e}")
                 default_branch = None
+
+            # Each arm named, so a fourth one cannot be silently read as one of
+            # these three.
+            if isinstance(outcome, Updated):
+                pass
+            elif isinstance(outcome, RefMissingOnRemote):
+                # The remote answered, so the branch really is new: base it on the
+                # default branch, and fetch *that* so it is based on something
+                # current. Whatever this second fetch answers, the branch creation
+                # below proceeds -- there is no third ref to fall back to, and the
+                # cache's own default branch is the best remaining start point.
+                if default_branch:
+                    try:
+                        base_outcome = self.repo_manager.fetch_ref(owner, repo, default_branch)
+                    except ValueError as e:
+                        # Unlike `branch`, this name is read back from metadata.json
+                        # and carries no proof. Caught rather than propagated so a
+                        # hand-edited record cannot change what this method raises:
+                        # dl's launch path guards it with (RuntimeError, OSError),
+                        # so a ValueError here would surface as a traceback.
+                        logger.warning(f"Cannot fetch recorded default branch: {e}")
+                    else:
+                        if isinstance(base_outcome, FetchFailed):
+                            # Same condition as the arm below, warned the same
+                            # way: the new branch is about to be cut from a
+                            # possibly stale cache, and the reason is carried
+                            # precisely so it can be printed here.
+                            logger.warning(
+                                f"Could not fetch {default_branch} for {owner}/{repo}: "
+                                f"{base_outcome.reason}"
+                            )
+            elif isinstance(outcome, FetchFailed):
+                # Not an error here: a cached branch still launches. Deliberately
+                # no default-branch fetch -- nothing was learned about the remote,
+                # so nothing licenses treating this branch as new.
+                logger.warning(f"Could not fetch {branch} for {owner}/{repo}: {outcome.reason}")
+            else:
+                unhandled_fetch_outcome(outcome)
 
             self.branch_manager.ensure_branch_exists(
                 bare_path,
@@ -366,9 +425,8 @@ class WorkspaceCloneManager:
         1. Ensure the bare reference repo is cloned/fetched
         2. Clone from bare repo to workspace path (if not already there)
         3. Fix remote URL to point to GitHub (not the bare repo)
-        4. Fetch from origin to get all remote branches
-        5. Checkout the requested branch
-        6. Track workspace in metadata for deletion
+        4. Checkout the requested branch
+        5. Track workspace in metadata for deletion
 
         The workspace id written to metadata is derived here rather than passed in.
         It has to equal the clone directory's leaf name for later lookups to find
@@ -383,7 +441,7 @@ class WorkspaceCloneManager:
 
         ws_path = self.get_workspace_path(owner, repo, branch)
 
-        # Steps 2-6 mutate the workspace clone, so they run under the repo
+        # Steps 2-5 mutate the workspace clone, so they run under the repo
         # lock: fire the same workspace twice at once and, unserialized, each
         # process saw no clone, both cloned into the same path, and the loser's
         # cleanup deleted the winner's. The lock is taken only after
@@ -402,7 +460,7 @@ class WorkspaceCloneManager:
         ws_path: Path,
         remote_url: str,
     ) -> Path:
-        """Steps 2-6 of ensure_workspace; the caller holds the repo lock."""
+        """Steps 2-5 of ensure_workspace; the caller holds the repo lock."""
         owner, repo, branch = workspace.owner, workspace.repo, workspace.ref
         is_new_workspace = False
         if not self.workspace_exists(owner, repo, branch):
@@ -444,21 +502,14 @@ class WorkspaceCloneManager:
                 logger.error(f"Failed to set remote URL: {e.stderr}")
                 raise RuntimeError(f"Failed to set remote URL: {e.stderr}") from e
 
-        # Step 4: Fetch from origin — skip for newly-created workspaces since
-        # they were just cloned from a freshly-fetched bare repo.
-        if not is_new_workspace:
-            try:
-                subprocess.run(
-                    ["git", "fetch", "origin"],
-                    cwd=ws_path,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to fetch in workspace: {e.stderr}")
+        # No fetch in the workspace clone. A new one was just cloned from a bare
+        # cache that ensure_branch had already fetched the requested ref into, and
+        # for an existing one the fetch's output was never read: the checkout
+        # below is a plain `git checkout <branch>` against the local branch and
+        # consults no remote-tracking ref. It was a network round-trip per launch
+        # that bought nothing (devlaunch#144).
 
-        # Step 5: Checkout branch
+        # Step 4: Checkout branch
         try:
             if is_new_workspace:
                 # For new workspaces, reset the branch to the remote ref to
@@ -501,7 +552,7 @@ class WorkspaceCloneManager:
         # existing-workspace path forever after, silently building against pointers.
         self._materialize_lfs(ws_path)
 
-        # Step 6: Track in metadata
+        # Step 5: Track in metadata
         try:
             wt_info = WorktreeInfo(
                 owner=owner,

@@ -282,11 +282,15 @@ class TestTheSweepBoundsHowLongItHoldsARepo:
             dl.BACKGROUND_FETCH_TIMEOUT_SECONDS
         ]
 
-    def test_the_launch_path_keeps_its_untimed_fetch(self, cached_repo, monkeypatch):
-        """The bound is the background's, not a change to the foreground.
+    def test_the_broad_fetch_is_the_sweep_s_alone(self, cached_repo, monkeypatch):
+        """The launch path has no broad fetch left to bound.
 
-        A launch's own fetch is one the user is watching and can interrupt, and
-        #150 — not this — is what decides its future. It stays as it was.
+        This test used to assert the foreground kept an *untimed* version of the
+        same fetch, deferring its future to devlaunch#150. #150 landed and the
+        answer was to delete it: ensure_repo is now clone-if-missing only, so the
+        question of what deadline to give its fetch has no subject. What a cold
+        launch does fetch — one targeted ref — is pinned in
+        test/test_cold_launch_fetches.py.
         """
         cached_repo.last_fetched_at(datetime.now() - timedelta(hours=2))
         recorder = Subprocesses()
@@ -298,7 +302,7 @@ class TestTheSweepBoundsHowLongItHoldsARepo:
         # repo whose interval has elapsed.
         manager.ensure_repo("owner", "repo", cached_repo.remote_url)
 
-        assert [k.get("timeout") for k in recorder.fetch_kwargs] == [None]
+        assert recorder.fetch_kwargs == []
 
     def test_a_fetch_that_hits_its_deadline_does_not_stop_the_next_repo(
         self, cached_repo, monkeypatch

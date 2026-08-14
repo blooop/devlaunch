@@ -2,13 +2,15 @@
 # pylint: disable=redefined-outer-name,protected-access,unused-argument
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import call, patch, MagicMock
 
+import logging
 import os
 
 import pytest
 
 from devlaunch.workspace_id import WorkspaceId
+from devlaunch.worktree.repo_manager import FetchFailed, RefMissingOnRemote, Updated
 from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 from devlaunch.worktree.config import WorktreeConfig
 
@@ -72,6 +74,11 @@ def mock_repo_manager(tmp_repos_dir):
     # A real path, not a MagicMock: ensure_workspace/ensure_branch flock this.
     mgr.lock_path.return_value = repo_root / ".lock"
     mgr.ensure_repo.return_value = MagicMock()
+    # A real outcome arm, not a MagicMock: ensure_branch dispatches on the type
+    # and rejects anything that is not one of the three, so a bare mock here
+    # would fail every test with "unhandled fetch outcome" rather than with
+    # whatever the test is actually about.
+    mgr.fetch_ref.return_value = Updated()
     return mgr
 
 
@@ -182,18 +189,24 @@ class TestWorkspaceExists:
 class TestEnsureBranch:
     """Tests for ensure_branch."""
 
-    def test_fetches_then_ensures(
+    def test_fetches_the_requested_ref_then_ensures(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
     ):
-        """Test that ensure_branch lazy-fetches then delegates to BranchManager."""
+        """The requested branch is fetched by name, then the branch is ensured.
+
+        By name and unconditionally: this one call is what makes "push upstream,
+        immediately dl the branch" land on the pushed tip, and it replaced an
+        interval-gated fetch of every ref in the repository.
+        """
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
         mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = Updated()
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
-        mock_repo_manager.lazy_fetch.assert_called_once_with("owner", "repo")
-        mock_repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
+        mock_repo_manager.fetch_ref.assert_called_once_with("owner", "repo", "newbranch")
+        mock_repo_manager.lazy_fetch.assert_not_called()
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
             bare_path,
             "newbranch",
@@ -202,18 +215,124 @@ class TestEnsureBranch:
             use_local_refs=True,
         )
 
-    def test_continues_if_fetch_fails(
+    def test_ref_absent_upstream_fetches_the_default_branch_to_base_on(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
     ):
-        """Test that ensure_branch continues even if fetch fails."""
+        """A brand-new branch is based on a *freshly fetched* default branch.
+
+        Without the second targeted fetch the new branch would be cut from
+        whatever the cache happened to hold, so a branch created today could start
+        from last week's main — the staleness the whole change exists to remove.
+        """
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
-        mock_repo_manager.lazy_fetch.side_effect = RuntimeError("network error")
         mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [RefMissingOnRemote(), Updated()]
 
         clone_manager.ensure_branch("owner", "repo", "newbranch")
 
-        mock_repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
+        assert mock_repo_manager.fetch_ref.call_args_list == [
+            call("owner", "repo", "newbranch"),
+            call("owner", "repo", "main"),
+        ]
+        mock_branch_manager.ensure_branch_exists.assert_called_once_with(
+            bare_path,
+            "newbranch",
+            create_remote=False,
+            start_point="main",
+            use_local_refs=True,
+        )
+
+    def test_absent_ref_costs_exactly_one_extra_fetch(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
+        """The default-branch fetch is not retried when it too finds nothing.
+
+        Pins the bound the contract states — at most two narrow calls on the cold
+        path — so a later "just fetch the fallback's fallback" cannot turn one
+        launch into a chain of round-trips.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = RefMissingOnRemote()
+
+        clone_manager.ensure_branch("owner", "repo", "newbranch")
+
+        assert mock_repo_manager.fetch_ref.call_count == 2
+
+    def test_a_failed_default_branch_fetch_warns_with_its_reason(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, caplog
+    ):
+        """Losing the base-branch fetch is reported the way losing any fetch is.
+
+        The reason is carried so it can be printed; a FetchFailed on the
+        default-branch fetch that vanished silently would cut the new branch
+        from a stale cache with nothing telling the user why it is old.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [
+            RefMissingOnRemote(),
+            FetchFailed("no such host"),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            clone_manager.ensure_branch("owner", "repo", "newbranch")
+
+        assert "no such host" in caplog.text
+        # Still proceeds: the cache's own default branch is the best remaining
+        # start point, exactly as when the first fetch fails.
+        mock_branch_manager.ensure_branch_exists.assert_called_once()
+
+    def test_an_unsafe_recorded_default_branch_does_not_escape_as_a_valueerror(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
+        """A corrupt default_branch in metadata must not change what ensure_branch raises.
+
+        The requested branch reaches here proven by a WorkspaceId, but the default
+        branch is read back from metadata.json and is unproven — so fetch_ref
+        rejects it, and the rejection is a ValueError. dl's launch path guards
+        ensure_branch with (RuntimeError, OSError), so letting that out turns a
+        hand-edited record into a traceback instead of an error message.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "--upload-pack=evil"
+
+        def reject_unsafe(_owner, _repo, ref):
+            if ref.startswith("-"):
+                raise ValueError(f"Invalid git ref: {ref}")
+            return RefMissingOnRemote()
+
+        mock_repo_manager.fetch_ref.side_effect = reject_unsafe
+
+        clone_manager.ensure_branch("owner", "repo", "newbranch")
+
+        # Still ensures the branch, leaving the failure to git as it did before.
+        mock_branch_manager.ensure_branch_exists.assert_called_once()
+
+    def test_continues_from_cache_when_the_fetch_fails(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+    ):
+        """Offline still launches, from whatever the cache holds.
+
+        Proceeding is the point: an unreachable remote must not stop a launch of a
+        branch already in the cache. The error for "there is nothing to launch
+        from" comes from the branch creation below, the first thing that actually
+        consults the cache.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = FetchFailed("no such host")
+
+        clone_manager.ensure_branch("owner", "repo", "newbranch")
+
+        # No default-branch fetch: nothing was learned about the remote, so there
+        # is no basis for treating the branch as new.
+        mock_repo_manager.fetch_ref.assert_called_once_with("owner", "repo", "newbranch")
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
             bare_path,
             "newbranch",
@@ -318,6 +437,36 @@ class TestEnsureWorkspace:
 
         # Should track in metadata
         mock_storage.add_worktree.assert_called_once()
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_re_registering_an_existing_clone_runs_no_fetch(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """Re-registration touches the network not at all.
+
+        The clone is on disk but devpod has forgotten the workspace. This path used
+        to run an unconditional `git fetch origin` in the clone whose output
+        nothing then read: the checkout below is a plain `git checkout <branch>`
+        against the local branch and never consults a remote-tracking ref. So it
+        was a whole network round-trip per re-registration, bought nothing, and is
+        gone.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        # A workspace clone already on disk — workspace_exists looks for .git
+        ws_path = repo_root / leaf()
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        assert [c[0][0] for c in mock_run.call_args_list] == [
+            ["git", "checkout", "nb4"],
+        ]
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value="/usr/bin/git-lfs")
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
@@ -568,9 +717,10 @@ class TestEnsureWorkspace:
 
         clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
-        # Should only call fetch + checkout (no clone, no remote set-url, no show-ref)
-        assert mock_run.call_count == 2
-        checkout_call = mock_run.call_args_list[1]
+        # Checkout and nothing else (no clone, no remote set-url, no show-ref,
+        # and no fetch)
+        assert mock_run.call_count == 1
+        checkout_call = mock_run.call_args_list[0]
         assert checkout_call[0][0] == ["git", "checkout", "nb4"]
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
@@ -591,11 +741,9 @@ class TestEnsureWorkspace:
 
         clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
-        # Should only call fetch + checkout (no clone, no remote set-url)
-        assert mock_run.call_count == 2
-        fetch_call = mock_run.call_args_list[0]
-        assert fetch_call[0][0] == ["git", "fetch", "origin"]
-        checkout_call = mock_run.call_args_list[1]
+        # Should only call checkout (no clone, no remote set-url, no fetch)
+        assert mock_run.call_count == 1
+        checkout_call = mock_run.call_args_list[0]
         assert checkout_call[0][0] == ["git", "checkout", "nb4"]
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
@@ -651,25 +799,9 @@ class TestEnsureWorkspace:
         fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
         assert fetch_calls == []
 
-    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
-    def test_existing_workspace_still_fetches(
-        self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
-    ):
-        """Existing (stale) workspaces should still run ``git fetch origin``."""
-        repo_root = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = repo_root
-
-        # Create existing workspace
-        ws_path = repo_root / leaf()
-        ws_path.mkdir(parents=True)
-        (ws_path / ".git").mkdir()
-
-        mock_run.return_value = MagicMock(returncode=0)
-
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
-
-        fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]
-        assert len(fetch_calls) == 1
+    # The companion that asserted an *existing* workspace still fetches is gone
+    # with the fetch itself; TestEnsureWorkspace's re-registration test now pins
+    # the opposite, which is the contract devlaunch#144 settled.
 
 
 class TestRemoveWorkspace:

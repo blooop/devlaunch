@@ -3,10 +3,14 @@
 These tests run real git commands against temporary local repositories.
 They verify that git command construction, cloning, and fetching work correctly.
 """
+# pylint: disable=redefined-outer-name
 
 import subprocess
+from pathlib import Path
 
 import pytest
+
+from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 
 
 @pytest.mark.integration
@@ -180,7 +184,7 @@ class TestRepoManagerEnsure:
         marker.write_text("marker")
 
         # Ensure repo (should return existing, not re-clone)
-        result = repo_manager.ensure_repo("test", "repo", remote_url, auto_fetch=False)
+        result = repo_manager.ensure_repo("test", "repo", remote_url)
 
         assert result is not None
         assert marker.exists()  # Directory wasn't replaced
@@ -217,3 +221,187 @@ class TestRepoManagerDefaultBranch:
             check=True,
         )
         assert "main" in result.stdout
+
+
+def _commit_on(work_dir, branch, filename, message, push=True):
+    """Add one commit to *branch* in the working copy and push it.
+
+    Returns the pushed commit sha, which is what a workspace's HEAD is compared
+    against — the sha is the contract, not the file content.
+    """
+    subprocess.run(
+        ["git", "checkout", "-B", branch],
+        cwd=work_dir,
+        check=True,
+        capture_output=True,
+    )
+    (work_dir / filename).write_text(f"{message}\n")
+    subprocess.run(["git", "add", filename], cwd=work_dir, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=work_dir, check=True, capture_output=True)
+    if push:
+        subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=work_dir,
+            check=True,
+            capture_output=True,
+        )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _head_sha(path):
+    """The commit a clone is actually sitting on."""
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def clone_manager(real_managers):
+    """A real WorkspaceCloneManager over the isolated cache and real git."""
+    return WorkspaceCloneManager(
+        config=real_managers["config"],
+        repo_manager=real_managers["repo_manager"],
+        storage=real_managers["storage"],
+    )
+
+
+@pytest.mark.integration
+class TestStalenessContract:
+    """What you get when you push upstream and immediately launch the branch.
+
+    The user-facing half of devlaunch#144, over real git against a local
+    file-path "remote". These are the tests that would notice if the targeted
+    fetch were dropped or made conditional: the unit pins say which git commands
+    run, and these say the commands add up to the promise.
+    """
+
+    def test_a_commit_pushed_after_the_cache_was_built_is_what_you_launch(
+        self, clone_manager, local_git_repo
+    ):
+        """Push, then immediately dl the branch → the workspace is on the pushed tip.
+
+        The headline promise. The cache is deliberately built *first* and its
+        interval left unelapsed, which is exactly the state in which the old
+        lazy-fetch path would have skipped the network and handed back a workspace
+        one commit behind the remote.
+        """
+        remote_url = local_git_repo["remote_url"]
+        work_dir = local_git_repo["work_dir"]
+
+        # A cache built before the push exists — the stale-cache starting state.
+        clone_manager.repo_manager.ensure_repo("test", "repo", remote_url)
+
+        pushed = _commit_on(work_dir, "main", "after_cache.txt", "Pushed after the cache")
+
+        clone_manager.ensure_branch("test", "repo", "main")
+        ws_path = clone_manager.ensure_workspace("test", "repo", "main", remote_url)
+
+        assert _head_sha(ws_path) == pushed
+
+    def test_a_branch_that_reached_the_remote_after_the_cache_still_launches(
+        self, clone_manager, local_git_repo
+    ):
+        """A branch the cache has never heard of launches, at its own tip.
+
+        Distinct from the previous case: there the ref existed in the cache and
+        moved, here it is absent from the cache entirely, which is the path that
+        used to depend on the broad sweep having happened to run.
+        """
+        remote_url = local_git_repo["remote_url"]
+        work_dir = local_git_repo["work_dir"]
+
+        clone_manager.repo_manager.ensure_repo("test", "repo", remote_url)
+
+        pushed = _commit_on(work_dir, "feature/late", "late.txt", "Pushed later")
+
+        clone_manager.ensure_branch("test", "repo", "feature/late")
+        ws_path = clone_manager.ensure_workspace("test", "repo", "feature/late", remote_url)
+
+        assert _head_sha(ws_path) == pushed
+
+    def test_a_brand_new_branch_starts_from_the_current_default_branch(
+        self, clone_manager, local_git_repo
+    ):
+        """A branch nobody has pushed is cut from main's *fresh* tip.
+
+        The RefMissingOnRemote arm end to end. main moves after the cache is
+        built, and the new branch must still start from the moved tip — otherwise
+        every branch created on a cold cache silently starts from history.
+        """
+        remote_url = local_git_repo["remote_url"]
+        work_dir = local_git_repo["work_dir"]
+
+        clone_manager.repo_manager.ensure_repo("test", "repo", remote_url)
+
+        main_tip = _commit_on(work_dir, "main", "moved.txt", "main moved on")
+
+        clone_manager.ensure_branch("test", "repo", "brand/new")
+        ws_path = clone_manager.ensure_workspace("test", "repo", "brand/new", remote_url)
+
+        assert _head_sha(ws_path) == main_tip
+        assert (
+            subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=ws_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            == "brand/new"
+        )
+
+    def test_a_ref_that_exists_nowhere_at_all_still_fails(self, clone_manager, tmp_path):
+        """With nothing to launch from, the launch fails rather than inventing one.
+
+        An empty remote: neither the requested branch nor a default branch to base
+        it on. Pinned because the three-way outcome deliberately keeps
+        "the remote says no" separate from "the remote did not answer", and neither
+        of them is licence to hand back a workspace built on nothing.
+        """
+        empty_remote = tmp_path / "empty_remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(empty_remote)],
+            check=True,
+            capture_output=True,
+        )
+
+        clone_manager.repo_manager.ensure_repo("test", "empty", str(empty_remote))
+
+        # On the launch path ensure_branch runs first, so its branch creation is
+        # where the empty cache is actually discovered.
+        with pytest.raises(RuntimeError):
+            clone_manager.ensure_branch("test", "empty", "nosuch")
+
+        # And a caller that reaches the workspace step anyway still fails there
+        # rather than getting a workspace built on nothing.
+        with pytest.raises(RuntimeError):
+            clone_manager.ensure_workspace("test", "empty", "nosuch", str(empty_remote))
+
+    def test_an_unreachable_remote_launches_from_the_cache(self, clone_manager, local_git_repo):
+        """Offline, a branch already in the cache still launches.
+
+        The FetchFailed arm's whole point: the fetch is best-effort, so losing the
+        network costs you freshness and not the workspace. The remote is made
+        unreachable by moving it, which is indistinguishable to git from a host
+        that is not answering.
+        """
+        remote_url = local_git_repo["remote_url"]
+        cached_tip = _head_sha(local_git_repo["work_dir"])
+
+        clone_manager.repo_manager.ensure_repo("test", "repo", remote_url)
+        Path(remote_url).rename(Path(remote_url).with_name("moved_away.git"))
+
+        clone_manager.ensure_branch("test", "repo", "main")
+        ws_path = clone_manager.ensure_workspace("test", "repo", "main", remote_url)
+
+        assert _head_sha(ws_path) == cached_tip
