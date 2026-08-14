@@ -208,6 +208,39 @@ class TestProfileGuards:
             for owned_by_the_image in (".local/bin", ".pixi/bin", "pixi/envs/claude-shim"):
                 assert owned_by_the_image not in guard
 
+    def test_every_line_lands_exactly_once_however_often_the_scripts_run(self, tmp_path):
+        """Two different lines may never share a mark, and a rerun may never
+        append again. Both are the same property -- the mark is what decides
+        "already done" -- and both failure modes are silent: two lines under
+        one mark drop whichever comes second (its guard finds the first
+        line's mark and reads it as its own work), and a missed dedupe grows
+        the profile on every launch. Nothing exits non-zero either way.
+
+        Run for real rather than compared as text, and across *both* scripts
+        into one profile, because that is where the lines meet: a provision
+        and a lend edit the same file over a workspace's life, so a
+        collision between their marks is just as fatal as one within either.
+        """
+        profile = tmp_path / "profile"
+        appends = []
+        for script in (provision_script(), tools.transfer_script(fake_payload(tmp_path))):
+            appends.extend(line for line in script.splitlines() if '>> "$PROFILE"' in line)
+        assert len(appends) == 3, "a fourth PATH line belongs in this test's expectations"
+        for _ in range(2):
+            subprocess.run(
+                [shutil.which("bash") or "/bin/bash", "-c", "\n".join(appends)],
+                env={**os.environ, "PROFILE": str(profile)},
+                check=True,
+            )
+        written = profile.read_text(encoding="utf-8").splitlines()
+        for line in (
+            'export PATH="$HOME/.pixi/bin:$PATH"',
+            '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
+            'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
+            'export PATH="$HOME/.local/bin:$PATH"',
+        ):
+            assert written.count(line) == 1, f"{line!r} appended {written.count(line)} times"
+
     @pytest.mark.parametrize("name", ["provision", "transfer"])
     def test_a_guard_matches_a_whole_line_not_a_fragment_of_one(self, name, tmp_path):
         """A mark is only devlaunch's if nothing longer can pass for it: an
