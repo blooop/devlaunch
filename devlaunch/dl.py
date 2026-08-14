@@ -3309,7 +3309,9 @@ Workspace commands:
     dl <user/repo> rm, prune         Delete the workspace. Refuses if its clone
                                      holds uncommitted or unpushed work, or if
                                      git cannot read the clone to find out; add
-                                     --force to delete it anyway.
+                                     --force to delete it anyway. --force also
+                                     counts an already-absent workspace as
+                                     deleted, like rm -f.
     dl <user/repo> code              Open in VS Code
     dl <user/repo> restart           Stop and start (no rebuild)
     dl <user/repo> recreate          Recreate container

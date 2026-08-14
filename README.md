@@ -791,12 +791,15 @@ Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
 naming each subprocess round trip and the total. Unset (or `0`) records nothing
 and prints nothing.
 
+Captured from a real warm launch (the launch's own output elided):
+
 ```bash
-$ DEVLAUNCH_TIMING=1 dl myws -- true
-dl-timing: devpod status 0.412s
-dl-timing: devpod ssh 0.583s
-dl-timing: devpod ssh 1.102s
-dl-timing: total 2.201s (in-process, excluding interpreter startup)
+$ DEVLAUNCH_TIMING=1 dl-next blooop/mcp-devtasks -- true
+...
+dl-timing: devpod status 0.454s
+dl-timing: gh auth token 0.036s
+dl-timing: devpod ssh 1.952s
+dl-timing: total 2.444s (in-process, excluding interpreter startup)
 ```
 
 For before/after numbers, `scripts/bench_launch.py` runs a command N times and
@@ -808,8 +811,12 @@ python scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true   # warm launc
 
 (`pixi run bench -n 5 -- ...` in the devcontainer.) It reports no median if any
 run fails, so a broken launch cannot pass as a fast one. See `bench_launch.py
---help` for `--before` — the per-run reset that makes a *cold* median cold —
-and for why its wall clock and `dl-timing: total` are not the same quantity.
+--help` for `--before` — the per-run reset that makes a *cold* median cold and
+whose `rm --force` also succeeds on the first run, when there is nothing to
+remove yet — and for why its wall clock and `dl-timing: total` are not the
+same quantity. For scale, on the host the session above was captured on, the
+warm median over 5 runs was 2.176s and the cold median (container recreated
+per run) over 3 runs was 33.204s.
 
 ## Worktree Backend
 
