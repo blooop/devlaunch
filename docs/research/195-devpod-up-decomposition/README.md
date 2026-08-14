@@ -63,6 +63,12 @@ correctly, since none of that work happened.
    one line and every `level:"fatal"` line go to **stderr**. A parser that
    reads only stdout sees a truncated log with a dangling hook start and no
    error at all.
+5. **Substring markers collide under `--debug`.** The source also carries
+   `"begin setting up container"` and `"done setting up container"` at debug
+   level, so `"setting up container" in msg` matches three lines in a
+   `--debug` capture and one otherwise. Markers whose message is fixed text
+   are therefore compared with `==`, not `in`; only markers with an
+   interpolated tail are matched as prefixes.
 
 ## Failure semantics
 
@@ -107,6 +113,49 @@ not run end to end.)
 The reason not to make json the default for everyday launches is the same
 inheritance: today a human watching `dl` sees devpod's readable progress, and
 json mode would replace it with NDJSON.
+
+## Which devpod this actually is, and why the output is not a contract
+
+The pinned `devpod v0.26.1` is **not** `loft-sh/devpod` (whose tags stop at
+`v0.6.15`). `go version -m` on the binary reports `github.com/skevetter/devpod
+v0.26.1` — a hard fork — installed from the `blooop` prefix.dev channel. So the
+strings below belong to that fork, and its release cadence is the one that
+matters (v0.22.1 → v0.26.1 inside ~10 weeks).
+
+The output announces its own instability. In plain mode devpod prints the Go
+source location of every log call:
+
+```
+18:59:28 info creating devcontainer up.go:581
+18:59:33 info setting up container tunnelserver.go:426
+```
+
+and `cmd/up.go:581` in the fork is exactly `log.Info("creating devcontainer")`.
+Output that reports where in the source it came from is a logger's rendering,
+not an interface.
+
+The json shape is the private serialization of `skevetter/log` (a fork of
+`loft-sh/log`), whose `Line` struct carries `omitempty` on **every** field —
+which is why `message` disappears, and why `level` could too. Nothing in the
+fork's docs mentions `--log-output`'s schema; `devpod up` has no `--output
+json` result interface, and its telemetry records no durations.
+
+The decisive precedent: commit `f0b243ec` (2026-04-14, first released in
+**v0.22.1**) moved this very data *out of* a structured `fields` object and
+*into* the message string, in an ordinary refactor titled "replace WithFields
+with format strings":
+
+```diff
+-	d.Log.WithFields(logrus.Fields{"image": options.Image}).Info("inspecting image")
++	d.Log.Infof("inspecting image: image=%s", options.Image)
+```
+
+The structured form existed, and was deleted two months before the pinned
+release. Marker strings are rewritten in routine refactors, with no
+deprecation. (The fork's author has also moved on to a successor project whose
+logger renames the json keys `time`→`ts` and `message`→`msg` and changes
+`--log-output`'s enum to `text|json|logfmt` — so `plain` would be rejected
+outright.)
 
 ## Provenance
 

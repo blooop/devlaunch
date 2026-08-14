@@ -29,6 +29,7 @@ import sys
 from datetime import datetime
 
 RUN_ARGS = "running docker command: command=docker, args=run "
+CREATE_END = "setting up container"
 HOOK_PREFIX = "running "
 HOOK_SUFFIX = "Commands lifecycle hook"
 HOOK_END = "ran command: command="
@@ -81,7 +82,12 @@ def decompose(events):
                 break
         if create_start is None and RUN_ARGS in msg:
             create_start = ts
-        elif create_end is None and create_start is not None and "setting up container" in msg:
+        # Exact match, not substring: the source also carries
+        # "begin setting up container" and "done setting up container" at
+        # debug level, so under --debug a substring test matches three lines.
+        # Anything whose message is fixed text is compared exactly here; only
+        # markers with an interpolated tail are matched as prefixes.
+        elif create_end is None and create_start is not None and msg == CREATE_END:
             create_end = ts
         if msg.startswith(HOOK_PREFIX) and HOOK_SUFFIX in msg:
             name = msg[len(HOOK_PREFIX):msg.index(HOOK_SUFFIX)]
