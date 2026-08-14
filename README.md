@@ -779,6 +779,26 @@ by `git clone` from the bare in `dl`'s own cache:
 difference is a single 270,823,424-byte pack file with one link in the clone and
 one in the bare, so removing either end frees none of it.
 
+**That sharing is a promise, not a coincidence, and a test holds it to that.**
+`git clone <path> <path>` hardlinks pack files by default, and the default is
+all that was ever keeping it true — a `file://` URL, an intermediate copy, or an
+explicit `--no-hardlinks` would each forfeit it with nothing failing and no
+warning printed. Measured on this repo — `du -sc` over the cache and each
+clone's `.git`, ext4, git 2.55.0 — that is 2400 KB for the cache plus one
+workspace against 4472 KB unshared, and 196 KB rather than 2268 KB of `.git` for
+every workspace after the first. So an integration test asserts the pack files are
+the cache's — same inode, more than one link — and that assertion goes red on
+all three. No clone flag is used to guard it: `--local` is already the default
+and does not even reject a `file://` source, and `--shared`/`--reference` were
+measured to leave a workspace that fails `git fsck` once the cache has fetched
+and gc'd, for a 2 KB saving.
+
+Sharing does erode, in one measured way that is a safety property rather than a
+fault: when the cache repacks, an existing workspace's pack loses its second
+link and becomes that workspace's own complete copy, still passing `git fsck`.
+The workspace stops being cheap and never stops being valid — which is the trade
+`--shared` and `--reference` get wrong, and the reason they are not used.
+
 So `dl` counts a file only when every one of its hardlinks lies inside the
 workspace being measured. Two consequences, both deliberate:
 
