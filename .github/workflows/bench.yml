@@ -136,9 +136,29 @@ jobs:
         # image layers and the bare clone the priming step left behind survive
         # on purpose, which is what makes this "recreate" rather than "first
         # ever".
+        #
+        # THE CHOWN IS WHAT MAKES THE REMOVE POSSIBLE, on a runner. A launch
+        # leaves its clone owned by the container's user -- uid 1000 in the
+        # standard devcontainer base image -- and a GitHub runner's own user is
+        # not that uid, which is the "when part of the cache will not go" case
+        # README.md describes. `dl rm` then deletes the workspace, warns that
+        # the clone would not go, and exits 0; the next launch dies writing
+        # `.git/index.lock` into a clone it does not own, and the shape reports
+        # a failed run instead of a time (run 31838698495). Nothing about `dl`
+        # is wrong there -- it cannot unlink what it does not own -- so the
+        # recovery belongs to the environment that creates the mismatch, and
+        # passwordless sudo is a property of GitHub-hosted runners. This step is
+        # the only place in the repo that assumes it.
+        #
+        # It sits INSIDE `--before`, which is the only place with the right
+        # cardinality: every run recreates those files, so a one-time step
+        # before the bench would recover run 1 and hand runs 2..5 exactly the
+        # clone that broke it. `test -d` because a reset also runs before the
+        # first launch, when there may be nothing there yet.
         run: |
           pixi run bench -n 5 --record cold-recreate.json --shape cold-recreate \
-            --before "dl $TARGET rm --force" -- dl "$TARGET" -- true
+            --before "bash -c 'test -d $XDG_CACHE_HOME/devlaunch/repos && sudo chown -R $(id -u):$(id -g) $XDG_CACHE_HOME/devlaunch/repos; dl $TARGET rm --force'" \
+            -- dl "$TARGET" -- true
 
       - name: Turn the records into this commit's trend points
         # `--require-stages-on cold-recreate` is the load-bearing flag: a cold

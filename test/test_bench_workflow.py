@@ -39,6 +39,18 @@ def bench_settings() -> str:
     )
 
 
+def cold_reset() -> str:
+    """The command the cold-recreate shape runs before every timed run.
+
+    A line rather than a parse: `--before` takes one shell-quoted command and
+    the step writes it on its own continuation line, so what this returns is
+    that command and the properties below are about what it does.
+    """
+    lines = [line for line in bench_settings().splitlines() if "--before" in line]
+    assert len(lines) == 1, "the cold-recreate shape is the only one that resets between runs"
+    return lines[0]
+
+
 class TestItCannotBecomeAMergeGate:
     """Three independent ways this could turn into a required check, and the
     reason each stays shut."""
@@ -103,6 +115,39 @@ class TestTheRunnerStateIsScoped:
         text = bench_settings()
         assert "DEVPOD_HOME:" in text
         assert "XDG_CACHE_HOME:" in text
+
+
+class TestTheColdResetSurvivesAContainerWrittenClone:
+    """A launch leaves its clone owned by the container's user — uid 1000 in
+    the standard devcontainer base image — and a GitHub runner's own user is
+    not that uid. `dl rm` then deletes the workspace, warns that the clone
+    would not go, and exits 0; the next launch dies writing `.git/index.lock`
+    in a clone it does not own (run 31838698495, follow-up to #198). The runner
+    has passwordless sudo, so the reset takes the clone back before removing
+    it. This is a property of a CI runner, not of `dl`, which is why the
+    recovery lives here."""
+
+    def test_the_reset_takes_the_clone_back_before_removing_it(self):
+        reset = cold_reset()
+        assert "sudo chown" in reset
+        assert "rm --force" in reset
+        assert reset.index("sudo chown") < reset.index("rm --force"), (
+            "chowning after the remove recovers nothing: the remove is what fails"
+        )
+
+    def test_the_reset_only_reclaims_this_jobs_own_clone_cache(self):
+        """Scoped to the cache the job already scoped to `/tmp`. A recursive
+        chown is a blunt instrument and a wider one would take ownership of
+        things this job did not create."""
+        assert "XDG_CACHE_HOME" in cold_reset()
+
+    def test_the_recovery_runs_per_run_rather_than_once_before_the_bench(self):
+        """Every run recreates those files, so a one-time step before the bench
+        recovers run 1 and leaves runs 2..5 with exactly the clone that broke
+        it. `--before` is the only place with the right cardinality."""
+        assert bench_settings().count("chown") == 1, (
+            "a second chown is a one-time step doing per-run work"
+        )
 
 
 class TestTheExclusionsSayWhyInTheFile:
