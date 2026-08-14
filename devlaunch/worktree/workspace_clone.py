@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from .. import timing
 from ..workspace_id import WorkspaceId, validate_ref_name
 from .branch_manager import BranchManager
 from .config import WorktreeConfig, get_worktree_config
@@ -251,12 +252,13 @@ class WorkspaceCloneManager:
         refuses. An unborn HEAD lands there too, and pays one probe to be told
         that a repo with no commits holds nothing.
         """
-        result = subprocess.run(
-            ["git", "ls-files", "-z", "--with-tree=HEAD"],
-            cwd=ws_path,
-            capture_output=True,
-            check=False,
-        )
+        with timing.span("git ls-files"):
+            result = subprocess.run(
+                ["git", "ls-files", "-z", "--with-tree=HEAD"],
+                cwd=ws_path,
+                capture_output=True,
+                check=False,
+            )
         if result.returncode != 0:
             logger.warning(f"Could not list tracked files: {result.stderr.decode().strip()}")
             return True
@@ -269,13 +271,14 @@ class WorkspaceCloneManager:
     @staticmethod
     def _lfs_tracked_files(ws_path: Path) -> list[str]:
         """Paths in the tree that git-lfs tracks."""
-        result = subprocess.run(
-            ["git", "lfs", "ls-files", "--name-only"],
-            cwd=ws_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with timing.span("git lfs ls-files"):
+            result = subprocess.run(
+                ["git", "lfs", "ls-files", "--name-only"],
+                cwd=ws_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if result.returncode != 0:
             # Don't degrade silently to "no LFS here" — that would ship a tree of
             # pointer files as though it were complete.
@@ -317,13 +320,15 @@ class WorkspaceCloneManager:
             return
         logger.info("Fetching git-lfs objects from origin")
         try:
-            subprocess.run(["git", "lfs", "pull", "origin"], cwd=ws_path, check=True)
+            with timing.span("git lfs pull"):
+                subprocess.run(["git", "lfs", "pull", "origin"], cwd=ws_path, check=True)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"Failed to pull git-lfs objects (exit {e.returncode}). The workspace "
                 f"still holds pointer files; re-run to retry."
             ) from e
 
+    @timing.staged("host-prep")
     def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
         """Ensure a branch exists in the bare repo, at the remote's current tip.
 
@@ -413,6 +418,7 @@ class WorkspaceCloneManager:
                 use_local_refs=True,
             )
 
+    @timing.staged("host-prep")
     def ensure_workspace(
         self,
         owner: str,
@@ -476,13 +482,14 @@ class WorkspaceCloneManager:
                 # real remote after the origin URL is fixed (see below).
                 clone_env = os.environ.copy()
                 clone_env["GIT_LFS_SKIP_SMUDGE"] = "1"
-                subprocess.run(
-                    ["git", "clone", str(bare_repo_path), str(ws_path)],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    env=clone_env,
-                )
+                with timing.span("git clone"):
+                    subprocess.run(
+                        ["git", "clone", str(bare_repo_path), str(ws_path)],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        env=clone_env,
+                    )
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to clone workspace: {e.stderr}")
                 if ws_path.exists():

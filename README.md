@@ -809,6 +809,87 @@ dl-timing: devpod ssh 1.952s
 dl-timing: total 2.444s (in-process, excluding interpreter startup)
 ```
 
+### The same launch, machine-readable
+
+`DEVLAUNCH_TIMING=json` swaps that prose for one document on a single
+`dl-timing-json:` line, so a trend job can read a launch without scraping
+prose. It decomposes the launch into five **ownership-boundary stages** — one
+per party that could actually make it faster — with the round trips nested
+inside the stage that paid for them:
+
+| stage | what it owns |
+|---|---|
+| `handoff` | the gap between the keystroke that resolved to this exec and dl starting (see the stamps below) |
+| `host-prep` | the host's own git work — the bare clone and its fetches, the lock waits, the LFS probe — and the `gh auth token` trip, wherever on the launch it falls |
+| `devpod-up` | the arm that gets a container running: the existence probe and, when it is not running, the `up` itself. On a warm launch that arm is the probe alone |
+| `tools` | the probe trip and the conditional lend, including staging the payload tar |
+| `attach` | the last trip, into the running command |
+
+Two rules are worth knowing before reading one:
+
+- **A stage that never ran is absent, not zero.** A warm launch reports no
+  `host-prep` at all, because it did none. A stage that failed is present,
+  timed up to the failure, and marked `failed`.
+- **A stage totals over its whole arm**, not just over its round trips, so the
+  host-side work between two spawns is attributed rather than lost. Stages
+  never double-count each other: `tools` runs inside the launch `devpod-up`
+  brackets, and those seconds are charged to `tools` alone. The in-process
+  stages therefore add up to the total — measured on a real cold launch below,
+  they came to 20.834s against a 20.834s total.
+
+`handoff` is the exception to that sum, and the only one: it ends where
+`total` begins, so it is time the process could not have measured from inside
+itself. A consumer adding stages up against the total leaves it out.
+
+Two optional environment variables let whatever launches `dl` — a shell
+function, an agent front-end — close the loop on the time before dl existed.
+Both are Unix epoch seconds, which is what `date +%s.%N` prints:
+
+| variable | meaning |
+|---|---|
+| `DEVLAUNCH_HANDOFF_T0` | the keystroke that resolved to this exec. Becomes the `handoff` stage — the only measurement of exec plus interpreter startup there is, since `total` begins after both |
+| `DEVLAUNCH_PREWARM_FIRED_AT` | when a prewarm (`dl <ws> up`) was fired for this workspace, if one was |
+
+With the prewarm stamp set, the document also reports what that prewarm was
+worth: the head start it bought, and which shape the launch then took — `hit`
+(the workspace was already up), `partial` (this launch queued behind a prewarm
+still running) or `miss` (this launch ran the `up` itself). dl decides that,
+not the firer: a prewarm is fired and forgotten, so only the launch that
+followed can see whether it helped. **A stamp that is missing, unreadable, or
+ahead of this clock reports nothing** rather than a zero — an absent handoff
+and an instantaneous one are different facts, and a trend cannot tell them
+apart once one is written as the other.
+
+Captured from a real warm launch with both stamps set (one line, wrapped and
+elided here for reading):
+
+```bash
+$ DEVLAUNCH_TIMING=json DEVLAUNCH_HANDOFF_T0=$(date +%s.%N) \
+    DEVLAUNCH_PREWARM_FIRED_AT=... dl-next blooop/mcp-devtasks -- true
+...
+dl-timing-json: {"total": 2.210768, "total_epoch": "in-process, excluding interpreter startup",
+  "stages": [{"stage": "handoff",   "seconds": 0.130542, "outcome": "ok", "spans": []},
+             {"stage": "host-prep", "seconds": 0.027799, "outcome": "ok",
+              "spans": [{"label": "gh auth token", "seconds": 0.02747}]},
+             {"stage": "devpod-up", "seconds": 0.455188, "outcome": "ok",
+              "spans": [{"label": "devpod status", "seconds": 0.455158}]},
+             {"stage": "attach",    "seconds": 1.726961, "outcome": "ok",
+              "spans": [{"label": "devpod ssh", "seconds": 1.72661}]}],
+  "prewarm": {"head_start_seconds": 42.489243, "shape": "hit"}}
+```
+
+Stages appear in the order the launch first entered them, and only the ones it
+reached appear at all — this warm launch built nothing and lent nothing, so
+there is no `tools` stage and no `devpod up` inside `devpod-up`. That
+`handoff: 0.131s` is the exec and the interpreter start, which nothing else
+measures.
+
+The cold launch of the same repo, same host and session, decomposed as:
+`host-prep` 2.257s (`git clone --bare` 1.602 + `git fetch` 0.427 + workspace
+`git clone` 0.065 + LFS probe 0.002 + token 0.034), `devpod-up` 5.848s (`devpod
+up` 5.113 of it), `tools` 10.224s (probe trip 1.584 + `tools tar` 0.111 +
+transfer 8.445), `attach` 2.505s — 20.834s of stages against a 20.834s total.
+
 For before/after numbers, `scripts/bench_launch.py` runs a command N times and
 reports the median — one command per side of a change:
 

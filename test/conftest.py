@@ -169,8 +169,13 @@ def timing_switch_off(monkeypatch):
     the ones who will have it exported when they run the suite, so the suite
     scrubs it rather than going red in their shell. A test that wants the switch
     on sets it itself.
+
+    The handoff stamp goes with it: it is exported by whatever hands off to
+    dl, and a developer whose shell carries one would otherwise see a handoff
+    stage in every test that asks for the summary.
     """
     monkeypatch.delenv(timing.ENV_VAR, raising=False)
+    monkeypatch.delenv(timing.HANDOFF_VAR, raising=False)
 
 
 def pytest_configure():

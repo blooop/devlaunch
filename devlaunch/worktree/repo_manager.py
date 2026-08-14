@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn, Optional, TYPE_CHECKING, Union
 
+from .. import timing
 from ..workspace_id import validate_ref_name
 from .locks import hold_lock
 from .models import BaseRepository
@@ -165,12 +166,13 @@ class RepositoryManager:
 
         try:
             # Clone as bare repo - no working directory, all branches available for worktrees
-            result = subprocess.run(
-                ["git", "clone", "--bare", remote_url, str(bare_path)],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+            with timing.span("git clone --bare"):
+                result = subprocess.run(
+                    ["git", "clone", "--bare", remote_url, str(bare_path)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
             logger.debug(f"Clone output: {result.stdout}")
 
             # Get default branch
@@ -237,14 +239,15 @@ class RepositoryManager:
 
         try:
             # Fetch all branches and tags
-            result = subprocess.run(
-                ["git", "fetch", "origin", "+refs/heads/*:refs/heads/*", "--tags", "--prune"],
-                cwd=bare_path,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout,
-            )
+            with timing.span("git fetch"):
+                result = subprocess.run(
+                    ["git", "fetch", "origin", "+refs/heads/*:refs/heads/*", "--tags", "--prune"],
+                    cwd=bare_path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=timeout,
+                )
             logger.debug(f"Fetch output: {result.stdout}")
 
             # Update metadata
@@ -301,20 +304,21 @@ class RepositoryManager:
 
         logger.info(f"Fetching {branch} for {owner}/{repo}")
         try:
-            subprocess.run(
-                ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/heads/{branch}"],
-                cwd=bare_path,
-                capture_output=True,
-                text=True,
-                check=True,
-                # The ref-missing arm below is classified from git's stderr
-                # text, which git translates -- so git is addressed in the C
-                # locale, or a German host would collapse the three-way outcome
-                # to two. LANGUAGE is pinned too: under gettext it outranks a
-                # non-C LC_ALL, and the guarantee should not hang on the one
-                # glibc rule that exempts C.
-                env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
-            )
+            with timing.span("git fetch"):
+                subprocess.run(
+                    ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/heads/{branch}"],
+                    cwd=bare_path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    # The ref-missing arm below is classified from git's stderr
+                    # text, which git translates -- so git is addressed in the C
+                    # locale, or a German host would collapse the three-way outcome
+                    # to two. LANGUAGE is pinned too: under gettext it outranks a
+                    # non-C LC_ALL, and the guarantee should not hang on the one
+                    # glibc rule that exempts C.
+                    env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
+                )
             return Updated()
         except subprocess.CalledProcessError as e:
             stderr = e.stderr or ""
@@ -352,6 +356,7 @@ class RepositoryManager:
             return True
         return False
 
+    @timing.staged("host-prep")
     def ensure_repo(self, owner: str, repo: str, remote_url: str) -> BaseRepository:
         """Ensure repo exists locally, clone if needed.
 
@@ -457,6 +462,7 @@ class RepositoryManager:
 
         return "main"  # Default fallback
 
+    @timing.staged("host-prep")
     def get_default_branch(self, owner: str, repo: str) -> str:
         """Get the default branch for a repository.
 

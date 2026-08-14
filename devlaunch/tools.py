@@ -67,6 +67,8 @@ import tempfile
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
+from . import timing
+
 # Set this to opt a machine out of installing tools into workspaces.
 DISABLE_VAR = "DEVLAUNCH_NO_TOOLS"
 
@@ -564,9 +566,13 @@ def _write_payload_tar(payload: HostPayload, out: pathlib.Path) -> None:
     on the same disk, where gzip would cost seconds of CPU to save transfer
     time nobody is paying.
     """
-    with tarfile.open(out, mode="w") as tar:
-        for source, arcname in payload.members:
-            tar.add(source, arcname=arcname)
+    # The one part of the lend that is neither a round trip nor free: the
+    # payload runs to hundreds of megabytes, and the trips either side of it
+    # already name themselves through run_devpod.
+    with timing.span("tools tar"):
+        with tarfile.open(out, mode="w") as tar:
+            for source, arcname in payload.members:
+                tar.add(source, arcname=arcname)
 
 
 def _probe(workspace: str, runner) -> ProbeResult:
@@ -611,6 +617,7 @@ def _transfer(workspace: str, runner, payload: HostPayload) -> bool:
     return result.returncode == 0
 
 
+@timing.staged("tools")
 def ensure_tools(workspace: str, runner) -> bool:
     """Make REQUIRED_TOOLS available in `workspace`. Returns whether they now are.
 

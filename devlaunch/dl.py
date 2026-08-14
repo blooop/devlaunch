@@ -2925,6 +2925,7 @@ def get_context_options() -> dict:
     return options
 
 
+@timing.staged("devpod-up")
 def workspace_up(
     workspace: str,
     ide: Optional[str] = None,
@@ -3018,6 +3019,9 @@ def workspace_up(
             # the user the default container while they asked for another one
             # and say nothing about it.
             logging.info(f"Workspace {identity} was brought up by another dl run.")
+            # Spared the container lifecycle, but only after waiting out the
+            # sibling still walking it -- the half-won case.
+            timing.observe_attach(timing.PARTIAL)
             invalidate_workspace_list_cache()
             # The tools are still this call's business. "Running" says the
             # sibling's `devpod up` finished, not that its ensure_tools did:
@@ -3033,6 +3037,9 @@ def workspace_up(
         # devcontainer.json does or doesn't set up for itself.
         with gh_auth.up_args() as token_args:
             args.extend(token_args)
+            # This launch is the one paying for the `up`, so no prewarm saved
+            # it from anything -- whether or not one was fired.
+            timing.observe_attach(timing.MISS)
             result = run_devpod(args)
         # `up` creates and starts workspaces, so any snapshot of `devpod list`
         # taken before it is now out of date.
@@ -3162,6 +3169,7 @@ def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> 
     return run_ssh(args, env=env).returncode
 
 
+@timing.staged("attach")
 def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
     """Hand the workspace to the user: name its prompt, then ssh in.
 
@@ -3265,6 +3273,7 @@ def workspace_delete(workspace: str, ignore_missing: bool = False) -> int:
     return result.returncode
 
 
+@timing.staged("devpod-up")
 def get_workspace_state(workspace_id: str) -> Optional[str]:
     """Get workspace state from devpod (e.g., 'Running', 'Stopped')."""
     result = run_devpod(["status", workspace_id, "--output", "json"], capture=True)
@@ -3382,6 +3391,7 @@ def invalidate_clone_manager() -> None:
     _cache.pop(_CLONE_MANAGER_KEY, None)
 
 
+@timing.staged("host-prep")
 def _get_clone_manager() -> WorkspaceCloneManager:
     """Lazy factory for WorkspaceCloneManager, migrating the cache on first use.
 
@@ -3889,6 +3899,10 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
     # known_state is the status fetched during spec resolution above; every
     # path that leaves custom_id None filled it in.
     if custom_id is None and known_state == "Running":
+        # Whatever brought this workspace up finished before this launch
+        # asked: nothing to build and nothing to wait for. If a prewarm was
+        # fired for it, this is what a prewarm that paid off looks like.
+        timing.observe_attach(timing.HIT)
         logging.info(f"Workspace {workspace_id} is already running, attaching...")
         if devcontainer:
             logging.warning(
