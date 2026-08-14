@@ -71,6 +71,20 @@ def home_cache_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_interactive_git_credentials(monkeypatch):
+    """Make a git command that wants a password fail instead of waiting for one.
+
+    A test that reaches a real remote is already wrong, but the way it goes wrong
+    decides whether anyone finds out: prompting, it sits there until some
+    deadline elsewhere gives up, and the run reads as slow rather than as having
+    left the machine. Refusing to prompt turns that into an immediate failure at
+    the command that did it. Nothing here needs a prompt -- the suite's git work
+    is on local paths, and token auth is unaffected.
+    """
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
+@pytest.fixture(autouse=True)
 def no_gh_token_forwarding(monkeypatch):
     """Keep the suite away from the host's real GitHub credentials.
 

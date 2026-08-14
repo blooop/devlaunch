@@ -156,8 +156,17 @@ class RepositoryManager:
         self.storage.add_repository(base_repo)
         return base_repo
 
-    def fetch_repo(self, owner: str, repo: str) -> None:
-        """Fetch latest changes from remote."""
+    def fetch_repo(self, owner: str, repo: str, timeout: Optional[float] = None) -> None:
+        """Fetch latest changes from remote.
+
+        *timeout* bounds the fetch, and matters because this runs under the repo
+        lock: whoever holds that lock for the length of a fetch is somebody every
+        other dl run wanting the same repo has to wait for. A launch is watched
+        and interruptible, so it passes None and keeps the behaviour it had. The
+        background sweep is neither -- it is a detached child in its own session,
+        so a fetch of it that never returns is a repo wedged until reboot -- and
+        it passes a bound. Reaching the bound raises like any other failure.
+        """
         bare_path = self.get_bare_path(owner, repo)
 
         if not bare_path.exists():
@@ -173,6 +182,7 @@ class RepositoryManager:
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=timeout,
             )
             logger.debug(f"Fetch output: {result.stdout}")
 
@@ -184,6 +194,12 @@ class RepositoryManager:
 
             logger.info(f"Successfully fetched updates for {owner}/{repo}")
 
+        except subprocess.TimeoutExpired as e:
+            # subprocess has already killed the child. git writes new objects to
+            # a temp pack and moves refs only at the end, so a fetch cut off
+            # partway leaves the clone usable and the next pass redoes the work.
+            logger.debug(f"Fetch of {owner}/{repo} exceeded {timeout}s")
+            raise RuntimeError(f"Fetch of {owner}/{repo} timed out after {timeout}s") from e
         except subprocess.CalledProcessError as e:
             logger.debug(f"Failed to fetch repository: {e.stderr}")
             raise RuntimeError(f"Failed to fetch repository: {e.stderr}") from e
@@ -200,17 +216,18 @@ class RepositoryManager:
         elapsed = (datetime.now() - repo.last_fetched).total_seconds()
         return elapsed > self.fetch_interval
 
-    def lazy_fetch(self, owner: str, repo: str) -> bool:
+    def lazy_fetch(self, owner: str, repo: str, timeout: Optional[float] = None) -> bool:
         """Fetch only if the fetch interval has elapsed since the last fetch.
 
         Returns True if a fetch was performed, False if skipped.
         Raises ValueError if the repository is not in metadata.
+        *timeout* is passed straight to fetch_repo; see there for why.
         """
         base_repo = self.storage.get_repository(owner, repo)
         if not base_repo:
             raise ValueError(f"Repository {owner}/{repo} not found in metadata")
         if self._should_fetch(base_repo):
-            self.fetch_repo(owner, repo)
+            self.fetch_repo(owner, repo, timeout=timeout)
             return True
         return False
 

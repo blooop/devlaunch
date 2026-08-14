@@ -21,6 +21,7 @@ Usage:
 import sys
 import subprocess
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -40,7 +41,7 @@ from . import devpod_ssh, disk_usage, gh_auth, tools, tty_session, workspace_sta
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
-from .worktree.locks import hold_lock
+from .worktree.locks import hold_lock, run_if_lock_free
 from .worktree.migration import migrate_cache
 from .worktree.models import WorktreeInfo
 from .worktree.workspace_clone import WorkspaceCloneManager
@@ -435,6 +436,79 @@ def update_cache_background(force: bool = False) -> None:
         )
     except OSError:
         pass
+
+
+# How long the background sweep may spend fetching one repo before it gives up
+# and leaves that repo to the next pass. This is not a performance budget -- an
+# incremental fetch of an already-cloned repo is seconds -- it is the ceiling on
+# how long a foreground launch of the same repo can be made to wait behind the
+# sweep's repo lock. Generous enough that a slow but working remote finishes,
+# short enough that a hung one costs one pass rather than the hour until the
+# next. The interval itself is 3600s, so a repo that times out every time is
+# no worse off than one that is simply unreachable.
+BACKGROUND_FETCH_TIMEOUT_SECONDS = 300.0
+
+
+def sweep_repo_fetches() -> None:
+    """Bring the bare-clone cache up to date, one repo at a time.
+
+    The freshness fetch — ``+refs/heads/*`` plus tags plus prune — is a network
+    call of unbounded duration, and it used to run on the launch path, under the
+    per-repo lock, whenever the interval had elapsed. Whoever drew that straw
+    paid for everyone's freshness, and any concurrent launch of the same repo
+    queued behind them. Out here it costs a launch nothing: this is the detached
+    child, spawned and forgotten, with nobody waiting on its exit.
+
+    Three rules make it safe to run alongside real work:
+
+    - **It never waits.** The repo lock is taken non-blockingly, so a repo some
+      launch is mid-clone in is skipped rather than queued for. A sweep that
+      waited would be taxing the path it exists to keep clear.
+    - **It never holds a repo for long.** The other half of that is not free,
+      and saying "background defers to foreground" would overstate it: the lock
+      this takes is the one ``ensure_repo`` *blocks* on, so while the sweep is
+      fetching, a launch of that same repo waits — and is told only that it is
+      "waiting for another dl run", which here is a detached child in its own
+      session that the user can neither see nor Ctrl-C. So the honest statement
+      is the asymmetric one: **the sweep never queues for a launch, but a launch
+      can queue for the sweep.** What keeps that survivable is that the wait has
+      an upper bound rather than the network's — hence the timeout below,
+      without which a remote that accepts a connection and then goes quiet holds
+      the repo for as long as the kernel keeps the socket.
+    - **It never complains.** A failed fetch — unreachable remote, a cache entry
+      whose clone has been deleted underneath it, a fetch that ran out of time —
+      is logged and stepped over, so one bad repo cannot cost the rest their
+      refresh, and the interval brings it round again anyway. There is no
+      terminal attached to say more.
+
+    The interval itself is unchanged and still recorded in the one shared place
+    (``last_fetched`` in metadata), which is what lets the launch path go on
+    consulting it while it still does: whichever side fetches first, the other
+    sees a fresh clock and does nothing.
+
+    It reaches metadata through ``_get_clone_manager`` like every other dl path
+    rather than building its own storage. That is where the one-shot cache
+    migration runs, and a detached child is the worst place to skip it: nobody
+    is watching it write records in a shape the rest of dl no longer reads, and
+    the damage would surface later, somewhere else.
+    """
+    clone_mgr = _get_clone_manager()
+    storage = clone_mgr.storage
+    repo_manager = clone_mgr.repo_manager
+
+    def fetch_quietly(owner: str, repo: str) -> None:
+        """One repo's refresh, with whatever stopped it stepped over."""
+        try:
+            repo_manager.lazy_fetch(owner, repo, timeout=BACKGROUND_FETCH_TIMEOUT_SECONDS)
+        except (ValueError, RuntimeError, OSError) as exc:
+            logging.debug("Background fetch of %s/%s failed: %s", owner, repo, exc)
+
+    for base_repo in storage.list_repositories():
+        owner, repo = base_repo.owner, base_repo.repo
+        if not run_if_lock_free(
+            repo_manager.lock_path(owner, repo), functools.partial(fetch_quietly, owner, repo)
+        ):
+            logging.debug("Skipping fetch of %s/%s: another dl run holds it", owner, repo)
 
 
 def _unsaved_work_in(workspace_id: str) -> workspace_state.Unsaved:
@@ -3405,6 +3479,11 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         if "--force" not in args[1:] and completion_cache_is_fresh():
             return 0
         update_completion_cache()
+        # Completions first, freshness second: the completion cache is what the
+        # user's next keystroke reads, while the fetch sweep is for the launch
+        # after that. Both are on the same hour, so a child that gets here does
+        # both or, when it exits early above, neither.
+        sweep_repo_fetches()
         return 0
 
     if args[0] == "--refresh":
