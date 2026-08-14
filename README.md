@@ -799,6 +799,32 @@ link and becomes that workspace's own complete copy, still passing `git fsck`.
 The workspace stops being cheap and never stops being valid — which is the trade
 `--shared` and `--reference` get wrong, and the reason they are not used.
 
+**Large files are shared the same way, but nothing about `git clone` does it for
+you.** git-lfs objects are not git objects: the clone does not carry them at
+all, so a workspace of an LFS repo used to download the entire payload from the
+forge and keep a private copy of it in `.git/lfs/objects` — every workspace,
+every time, on top of the worktree copy. `dl` now makes the bare cache the
+repo's LFS store as well: the payload is fetched once into `<repo>/.bare/lfs`
+for the branch being launched, and each workspace materializes out of *that*,
+which git-lfs does by hardlinking. Measured with git-lfs 3.7.1 on ext4: the
+workspace's object file is the same `(st_dev, st_ino)` as the cache's, so its
+store costs nothing, and the materialization succeeds with the remote deleted
+from disk — the second workspace of an LFS repo touches the network for its
+large files not at all. What remains per workspace is the worktree copy, which
+is real bytes and cannot be shared: a container build has to be able to read
+them. If the cache cannot supply an object — a first launch offline, a payload
+the branch alone introduces — the old download from `origin` still runs, and a
+workspace left holding pointer files is retried on the next launch rather than
+written off.
+
+Nothing about that is written into the workspace's `.git/config`, and that
+restraint is load-bearing rather than tidy: `dl` bind-mounts the *clone*
+directory into the devcontainer and `.bare` is a sibling that is not mounted, so
+an `lfs.storage` entry or an added remote naming a host path would break every
+`git checkout` of an LFS repo inside the container while working perfectly on
+the host. A test asserts the clone keeps exactly one remote, still pointing at
+the forge, and no `lfs.storage` at all.
+
 So `dl` counts a file only when every one of its hardlinks lies inside the
 workspace being measured. Two consequences, both deliberate:
 
@@ -891,7 +917,7 @@ inside the stage that paid for them:
 | stage | what it owns |
 |---|---|
 | `handoff` | the gap between the keystroke that resolved to this exec and dl starting (see the stamps below) |
-| `host-prep` | the host's own git work — the bare clone and its fetches, the lock waits, the LFS probe — and the `gh auth token` trip, wherever on the launch it falls |
+| `host-prep` | the host's own git work — the bare clone and its fetches, the lock waits, the LFS probe and, for an LFS repo, the cache's LFS fetch and the workspace's materialization out of it — and the `gh auth token` trip, wherever on the launch it falls |
 | `devpod-up` | the arm that gets a container running: the existence probe and, when it is not running, the `up` itself. On a warm launch that arm is the probe alone |
 | `tools` | the probe trip and the conditional lend, including staging the payload tar |
 | `attach` | the last trip, into the running command |

@@ -10,8 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
-
 
 @pytest.mark.integration
 class TestRepoManagerRealClone:
@@ -263,16 +261,6 @@ def _head_sha(path):
         text=True,
         check=True,
     ).stdout.strip()
-
-
-@pytest.fixture
-def clone_manager(real_managers):
-    """A real WorkspaceCloneManager over the isolated cache and real git."""
-    return WorkspaceCloneManager(
-        config=real_managers["config"],
-        repo_manager=real_managers["repo_manager"],
-        storage=real_managers["storage"],
-    )
 
 
 @pytest.mark.integration

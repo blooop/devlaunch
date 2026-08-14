@@ -27,18 +27,6 @@ from pathlib import Path
 
 import pytest
 
-from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
-
-
-@pytest.fixture
-def clone_manager(real_managers):
-    """A real WorkspaceCloneManager over the isolated cache and real git."""
-    return WorkspaceCloneManager(
-        config=real_managers["config"],
-        repo_manager=real_managers["repo_manager"],
-        storage=real_managers["storage"],
-    )
-
 
 def _packed_bare_cache(clone_manager, remote_url: str) -> Path:
     """Build the bare cache for test/repo and leave its objects in a pack file.
@@ -75,10 +63,13 @@ class TestCloneSharesObjectsWithTheCache:
     ):
         """Each pack in the workspace is the *same file* as the cache's.
 
-        Same inode, and a link count that proves at least two directory entries
-        point at it. Both halves are needed: the inode alone would still be
-        satisfied by a filesystem that reused a number, and the link count alone
-        says two entries exist somewhere without saying they are these two.
+        Same file identity — `(st_dev, st_ino)`, the pair this repo already
+        counts hardlinks by in `disk_usage.py` — and a link count that proves at
+        least two directory entries point at it. Both halves are needed: an
+        inode number is only unique within its filesystem, so on its own it is
+        satisfied by a copy that landed on another device and happened to reuse
+        the number; and the link count alone says two entries exist somewhere
+        without saying they are these two.
 
         This is the assertion that goes red on a `file://` URL, an intermediate
         copy, or an explicit `--no-hardlinks` -- each of which is a silent
@@ -97,9 +88,10 @@ class TestCloneSharesObjectsWithTheCache:
         for name, cache_pack in cache_packs.items():
             cache_stat = cache_pack.stat()
             workspace_stat = workspace_packs[name].stat()
-            assert workspace_stat.st_ino == cache_stat.st_ino, (
-                f"{name} is a copy, not a shared object file"
-            )
+            assert (workspace_stat.st_dev, workspace_stat.st_ino) == (
+                cache_stat.st_dev,
+                cache_stat.st_ino,
+            ), f"{name} is a copy, not a shared object file"
             assert workspace_stat.st_nlink >= 2, (
                 f"{name} has {workspace_stat.st_nlink} link(s); a shared pack has at least 2"
             )

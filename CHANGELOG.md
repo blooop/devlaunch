@@ -71,6 +71,41 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **The bare cache is now the repo's git-lfs store, and workspaces hardlink out of it**
+  ([#163](https://github.com/blooop/devlaunch/issues/163), deciding
+  [#154](https://github.com/blooop/devlaunch/issues/154)). git-lfs objects are not git
+  objects, so the cache that makes a workspace's history free carried none of the large
+  files: every workspace of an LFS repo downloaded the whole payload from the forge and
+  kept a private copy of it in `.git/lfs/objects`, on top of the worktree copy. `dl` now
+  fetches the launched branch's LFS objects once into `<repo>/.bare/lfs` — with the bare
+  as cwd, and with `lfs.fetchrecentrefsdays`/`lfs.fetchrecentcommitsdays` zeroed so one
+  branch does not drag several branches' payloads down with it — and materializes each
+  workspace with `git lfs pull "file://<bare>"`.
+
+  **Measured** (git-lfs 3.7.1, ext4): that pull **hardlinks**, so the workspace's object
+  file is the same `(st_dev, st_ino)` as the cache's and its store costs zero bytes, and
+  it completes with the remote **deleted from disk** — the second workspace of an LFS
+  repo touches the network for its large files not at all. The worktree copy git-lfs
+  writes is the one per-workspace cost that remains, and is not shareable: a container
+  build has to read those bytes.
+
+  **Nothing host-specific is persisted into the clone** — no `lfs.storage`, no added
+  remote — and that is the constraint the design is shaped around rather than a detail.
+  `dl` bind-mounts the clone into the devcontainer while `.bare` is a sibling that is
+  not mounted, so a host path in the clone's config breaks every in-container
+  `git checkout` of an LFS repo while working perfectly on the host. (`-c lfs.storage`
+  was rejected on top of that: it was measured to break against local-path remotes
+  outright, because `GIT_CONFIG_PARAMETERS` is inherited by the remote-side git-lfs
+  child.) An integration test holds the clone to exactly one remote, still the forge.
+
+  **The old behaviour is unchanged as the fallback.** The `origin` pull still runs when
+  a pointer survives the cache phase — a first launch offline, an object the cache
+  cannot supply — decided by the same pointer-content predicate that opens
+  materialization rather than by the cache commands' exit codes, since git-lfs can exit
+  zero having fetched only some objects. Neither cache step can fail a launch, the
+  `RuntimeError`-and-retry contract is the one it always was, and materialization is
+  still not gated on "did we just clone this".
+
 - **One setup pass on the way into a running container, and one fewer `devpod ssh` on
   both the cold and the warm path** ([#168](https://github.com/blooop/devlaunch/issues/168),
   deciding [#157](https://github.com/blooop/devlaunch/issues/157) and
