@@ -925,6 +925,11 @@ def purge_all_data() -> int:
     so that "a purge ends by naming what it did not free" holds for every way a
     purge can end -- including the one where there was nothing to purge, which is
     where somebody whose disk is full is most likely to be reading.
+
+    One purge ends without reaching this function at all: the confirmation
+    answered `n`, which main() refuses before calling here. That path prints the
+    same line through print_docker_boundary, so the claim holds there too -- see
+    the comment beside it for why an abort is a place the sentence belongs.
     """
     status = _purge_devlaunch_data()
     print_docker_boundary()
@@ -3653,6 +3658,13 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         if confirm in ("y", "yes"):
             return purge_all_data()
         print("Aborted.")
+        # An abort is one of the ways a purge ends, so it ends where the rest of
+        # them do. The listing above is a report of what a purge would take, and
+        # a report is exactly where the disk it would not take is worth naming --
+        # more so here than after a deletion, since somebody who just said `n` is
+        # still looking for the gigabytes. `--prune` answered `n` already ends
+        # this way; printed through the wrapper so there is one sentence, not two.
+        print_docker_boundary()
         return 0
 
     # Workspace commands: dl <workspace> [subcommand] [-- command]

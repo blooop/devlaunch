@@ -82,6 +82,16 @@ def run_purge(cache: pathlib.Path) -> RecordedProcesses:
     return recorder
 
 
+def run_aborted_purge(cache: pathlib.Path) -> RecordedProcesses:
+    """A whole `dl --purge` against *cache*, with the confirmation answered `n`."""
+    recorder = RecordedProcesses()
+    with patch("devlaunch.dl.subprocess.run", side_effect=recorder):
+        with patch("devlaunch.dl._get_cache_dir", return_value=cache):
+            with patch("builtins.input", return_value="n"):
+                assert main(["--purge"]) == 0
+    return recorder
+
+
 def run_prune() -> RecordedProcesses:
     """A whole `dl --prune -y` against the suite's own scratch cache."""
     recorder = RecordedProcesses()
@@ -123,6 +133,37 @@ class TestWhatAPruneSaysAboutTheDiskItDidNotFree:
     def test_it_points_at_the_command_that_measures_it(self, capsys):
         run_prune()
         assert THE_TOOL_THAT_KNOWS in capsys.readouterr().out
+
+
+class TestAPurgeAnsweredNoEndsThereToo:
+    """Saying `n` is a way a purge ends, so it ends the way the others do.
+
+    What precedes the prompt is a report of what a purge would take, and a
+    report is where the disk it would *not* take is worth naming -- somebody
+    who has just declined is still looking for the gigabytes. `dl --prune`
+    answered `n` already ends this way; this pins `--purge` to the same shape,
+    since its confirmation lives in `main()` rather than in the wrapper that
+    prints the line, and so is the one purge outcome that could drift.
+    """
+
+    def test_declining_still_names_the_docker_disk(self, cache, capsys):
+        run_aborted_purge(cache)
+        out = capsys.readouterr().out
+        assert "Aborted." in out
+        assert NOT_OURS in out
+        assert STILL_HOLDING in out
+        assert THE_TOOL_THAT_KNOWS in out
+
+    def test_it_is_the_line_a_completed_purge_ends_on(self, cache, capsys):
+        run_aborted_purge(cache)
+        declined = boundary_line(capsys.readouterr().out)
+        run_purge(cache)
+        completed = boundary_line(capsys.readouterr().out)
+        assert declined == completed
+
+    def test_declining_removed_nothing(self, cache):
+        run_aborted_purge(cache)
+        assert (cache / "completions.json").exists()
 
 
 class TestTheTwoCommandsCannotDriftApart:

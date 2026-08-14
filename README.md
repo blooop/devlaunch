@@ -487,9 +487,9 @@ clears them. Check the reasons above first -- it does not fix all of them.
 devlaunch does not manage Docker images or volumes: the containers these workspaces used may still hold disk, and `docker system df` shows what Docker is holding.
 ```
 
-That last line ends every purge, including one that found nothing to purge —
-`dl --prune` ends on the same one, in the same words. See
-[the disk neither command frees](#the-disk-neither-command-frees).
+That last line ends every purge, including one that found nothing to purge and
+one you answered `n` to — `dl --prune` ends on the same one, in the same words.
+See [the disk neither command frees](#the-disk-neither-command-frees).
 
 Exit status is `1`, because a clone you were told would go is still on disk. It
 used to be `1` with the *whole* cache still standing: the first refusal stopped
@@ -620,7 +620,9 @@ while `docker system df` read **86.5 GB of reclaimable images, 43.18 GB of
 volumes and 13.88 GB of build cache** — an order of magnitude more, sitting
 behind a command that had just said "Removed". Saying nothing is what makes a
 freed figure read as *all* of it, so both commands say this instead, whether they
-removed 40 clones or nothing at all.
+removed 40 clones, found nothing to remove, or were answered `n` at the
+confirmation. The report you get for saying `n` is a reason to print it, not an
+exception: that is where somebody is deciding what is worth deleting.
 
 **It is a sentence, not a measurement.** `dl` runs no `docker` command to print
 it, so there is nothing to be slow and nothing to fail where Docker is absent,
