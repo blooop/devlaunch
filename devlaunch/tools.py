@@ -412,6 +412,20 @@ class Stage:
     itself, so a stage is an ordinary command rather than something that has to
     know about this protocol.
 
+    Two constraints on what a stage may be, both unenforced, because the
+    protocol shares the stage's stdout:
+
+    - `name` must contain no space. It is interpolated raw into the outcome
+      line, which `stage_outcomes` splits on the first space; a two-word name
+      makes every stage's outcome unreadable.
+    - A stage's own stdout is *not* redirected -- `probe_script`'s `exec >&2`
+      runs behind the stages, not in front of them -- so a stage that prints a
+      `PROBE_MARK` line of its own is read as protocol. Both readers keep the
+      last value for a key, and both this stage's own outcome line and every
+      probe line come after it, so neither can be overwritten from here -- but
+      an *earlier* stage's outcome can be. Keep stages silent, or redirect
+      their output.
+
     `failure_level` is how loudly *this* stage's failure is worth saying. Most
     stages warrant a warning -- naming a stage that did not work is the whole
     legibility claim of folding them into one trip. The hostname does not:

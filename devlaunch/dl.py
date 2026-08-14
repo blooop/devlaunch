@@ -3006,8 +3006,8 @@ def workspace_up(
             # it may have been interrupted between the two, its `up` may have
             # failed after the container started, or it may have run with
             # DEVLAUNCH_NO_TOOLS set where this one does not. ensure_tools is
-            # idempotent and costs one probe round trip against a workspace
-            # that is already up, which is the cheap way to stop a skipped
+            # idempotent and costs one setup-pass round trip against a
+            # workspace that is already up, which is the cheap way to stop a skipped
             # `up` from meaning a session with no tools.
             tools.ensure_tools(identity, run_devpod)
             return subprocess.CompletedProcess(args=["devpod"] + args, returncode=0)
@@ -3774,9 +3774,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             # names as how a workspace that missed provisioning -- started by
             # something other than dl, or created before provisioning existed
             # -- gets it, and returning here without them would make the
-            # documented recovery the one path that cannot recover. It is a
-            # probe round trip against a running workspace, and silent when
-            # there is nothing to do.
+            # documented recovery the one path that cannot recover. It is one
+            # setup-pass round trip against a running workspace, and silent
+            # when there is nothing to do.
             tools.ensure_tools(workspace_id, run_devpod)
             return 0
         result = workspace_up(
@@ -3901,7 +3901,8 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
     if result.returncode != 0:
         return result.returncode
 
-    # Attach to workspace (naming its prompt first, for an interactive shell)
+    # Attach to workspace. Already named: the `up` above ran the setup pass,
+    # whose hostname stage sets what the prompt shows.
     ret = attach_workspace(workspace_id, shell_command)
 
     # Update cache after workspace operations: this path may have created the

@@ -66,8 +66,9 @@ table and should be judged on its own merits.
   around real `devpod` against a real container under a throwaway `DEVPOD_HOME`. **~1.92s
   saved per cold launch.** A `devpod ssh --command` trip is ~1.73s and is ~99% connection
   and process setup, so collapsing two trips into one saves a whole trip, near exactly.
-  (The ~0.45–0.56s figure elsewhere in this file belongs to `devpod list` / `devpod
-  status`, which never enter a container, and understates this shape by ~3.5x.)
+  (The per-call figure quoted elsewhere for `devpod list` / `devpod status` does not
+  apply here: those never enter a container, and they cost a fraction of a trip that
+  does.)
 
   The warm interactive attach drops the same trip and does not replace it: every entry
   into Running goes through the pass, so a workspace you attach to is already named.
