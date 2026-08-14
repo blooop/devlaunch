@@ -55,6 +55,7 @@ Two consequences worth knowing:
 """
 
 import enum
+import hashlib
 import json
 import logging
 import os
@@ -182,15 +183,26 @@ def _is_official_claude(versions_dir: str, claude_binary: str) -> bool:
     return pathlib.PurePosixPath(claude_binary).parent == pathlib.PurePosixPath(versions_dir)
 
 
-def _profile_prepend(tag: str, line: str, on_failure: str = "") -> str:
+def _profile_prepend(line: str, on_failure: str = "") -> str:
     """One PATH line appended to `$PROFILE` at most once, ever.
 
-    The line is written under a `PROFILE_MARK` comment naming `tag`, and the
-    guard is an exact-line match on that comment -- so what decides whether the
+    The line is written under a `PROFILE_MARK` comment, and the guard is an
+    exact-line match on that comment -- so what decides whether the
     edit has already been made is a line only these scripts ever write.
     Substring-matching the directory being added cannot do that job: a base
     image is free to mention, or even prepend, the same directory for its own
     reasons, and then the guard skips an append the workspace still needs.
+
+    The mark names the line by a hash of its content rather than by a
+    hand-picked tag, so two different lines cannot share a mark: under a
+    shared mark, whichever line is appended second is silently dropped --
+    its guard finds the first line's mark and reads it as its own work
+    already done -- and every script involved still exits 0. Hand-picked
+    tags left that collision one edit away and guarded by nothing;
+    derivation makes it unrepresentable rather than asserted. Identical
+    lines sharing one mark is not a collision but the dedupe itself, and
+    twelve hex characters of SHA-256 cannot collide across the handful of
+    lines devlaunch will ever append.
 
     Exact-line (`-x`) and fixed-string (`-F`) rather than a pattern, so nothing
     in the mark is read as a regex and a longer line that merely contains it
@@ -199,9 +211,10 @@ def _profile_prepend(tag: str, line: str, on_failure: str = "") -> str:
     Appending under a *new* mark to a profile some older devlaunch already
     edited duplicates one PATH entry, once: harmless (a directory twice on PATH
     resolves the same), self-limiting (the mark is there from then on), and the
-    price of the guard no longer being able to lie.
+    price of the guard no longer being able to lie. Renaming the marks --
+    which switching them to hashes did once -- costs exactly that.
     """
-    mark = f"{PROFILE_MARK} {tag}"
+    mark = f"{PROFILE_MARK} {hashlib.sha256(line.encode('utf-8')).hexdigest()[:12]}"
     tail = f" || {on_failure}" if on_failure else ""
     return (
         f'grep -qxF {shlex.quote(mark)} "$PROFILE" 2>/dev/null || '
@@ -246,11 +259,8 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
             # (since the check above is `command -v`) reinstalled from scratch
             # on every single launch.
             _PROFILE_RESOLUTION,
+            _profile_prepend('export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"),
             _profile_prepend(
-                "pixi-bin", 'export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"
-            ),
-            _profile_prepend(
-                "claude-shim-bin",
                 '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
                 'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
                 on_failure="failed=1",
@@ -507,7 +517,7 @@ def transfer_script(payload: HostPayload) -> str:
     profile_lines = "\n".join(
         [
             _PROFILE_RESOLUTION,
-            _profile_prepend("local-bin", 'export PATH="$HOME/.local/bin:$PATH"'),
+            _profile_prepend('export PATH="$HOME/.local/bin:$PATH"'),
         ]
     )
     return "\n".join(

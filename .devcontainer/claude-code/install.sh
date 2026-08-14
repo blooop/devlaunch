@@ -81,23 +81,26 @@ install_claude_code() {
         pixi global install --channel https://prefix.dev/blooop claude-shim
     fi
 
-    # Add pixi bin path to user's profile if not already there
-    local profile="$TARGET_HOME/.profile"
-    local pixi_path_line='export PATH="$HOME/.pixi/bin:$PATH"'
-    if [ -f "$profile" ] && ! grep -q '\.pixi/bin' "$profile"; then
-        echo "$pixi_path_line" >> "$profile"
-    elif [ ! -f "$profile" ]; then
-        echo "$pixi_path_line" > "$profile"
-        chown "$TARGET_USER:$TARGET_USER" "$profile" 2>/dev/null || true
-    fi
-
-    # Workaround: pixi trampoline fails for bash scripts, so add env bin directly
-    # This conditionally adds the path only if the env exists
-    local env_path_line='[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"'
-    if [ -f "$profile" ] && ! grep -q 'pixi/envs/claude-shim' "$profile"; then
-        echo "# Workaround: pixi trampoline fails for bash scripts" >> "$profile"
-        echo "$env_path_line" >> "$profile"
-    fi
+    # Put pixi's bin directory on the user's login PATH, and the claude-shim
+    # env's bin beside it (the pixi trampoline fails for packages that ship a
+    # shell script -- the same workaround devlaunch's provision script
+    # carries). Each line goes in under a `# devlaunch:` mark, and the guard
+    # is an exact-line match on that mark: this file is the *user's* profile,
+    # not this feature's, and a guard that asks about a directory name reads
+    # a base image's own PATH block as work already done -- the misread that
+    # cost devlaunch a re-paid transfer on every launch (#164).
+    #
+    # Both edits are devlaunch's _profile_prepend output, verbatim. The marks
+    # are content hashes of the lines they guard, which sh cannot rederive,
+    # so they are pasted rather than computed -- and matching them is what
+    # lets this installer (at image build) and devlaunch's provision script
+    # (at `up`) recognise each other's work instead of each appending its own
+    # copy of the same line. A test pins these fragments byte-for-byte;
+    # regenerate with devlaunch.tools._profile_prepend if a line changes.
+    PROFILE="$TARGET_HOME/.profile"
+    grep -qxF '# devlaunch: 6b593c3a6327' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 6b593c3a6327' 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$PROFILE"
+    grep -qxF '# devlaunch: 12897b113bea' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 12897b113bea' '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE"
+    chown "$TARGET_USER:$TARGET_USER" "$PROFILE" 2>/dev/null || true
 
     # Verify installation by checking the trampoline exists (don't run it - that triggers download)
     local pixi_bin_path="$TARGET_HOME/.pixi/bin"

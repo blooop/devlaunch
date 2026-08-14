@@ -2,6 +2,7 @@
 
 import io
 import os
+import pathlib
 import shlex
 import shutil
 import subprocess
@@ -134,13 +135,6 @@ class TestProvisionScript:
         assert script.index(".bash_profile") < script.index(".bash_login")
         assert script.index(".bash_login") < script.index('PROFILE="$HOME/.profile"')
 
-    def test_the_profile_is_not_appended_to_twice(self):
-        """Every profile edit is guarded, so relaunching cannot grow the file."""
-        script = provision_script()
-        profile_writes = [line for line in script.splitlines() if '>> "$PROFILE"' in line]
-        assert profile_writes
-        assert all(line.startswith("grep -q") for line in profile_writes)
-
     def test_a_profile_that_cannot_be_written_is_a_failure(self):
         """Installed but not on PATH is not the guarantee this module makes."""
         script = provision_script()
@@ -168,24 +162,47 @@ class TestProvisionScript:
         assert "command -v gh" not in script
 
 
+# The devcontainer feature's installer edits the same file the scripts above
+# do -- `$TARGET_HOME/.profile` is the *user's* login profile, not a file the
+# feature owns -- so its guards are held to the same properties. It was
+# excluded from the #164 sweep on the stated grounds that it guards its own
+# line in its own file; that reason was wrong, which is why it is covered here
+# rather than trusted.
+FEATURE_INSTALLER = (
+    pathlib.Path(__file__).resolve().parents[2] / ".devcontainer/claude-code/install.sh"
+)
+
+
 class TestProfileGuards:
-    """Every "have I already edited this profile?" question, in both scripts.
+    """Every "have I already edited this profile?" question, in every script.
 
     Asked once here rather than per script, because the property is the same
     wherever it is asked and the answer decides whether a workspace ever stops
     doing work it has already done.
     """
 
+    SCRIPTS = ["provision", "transfer", "feature"]
+
+    @staticmethod
+    def _script(name, tmp_path):
+        if name == "provision":
+            return provision_script()
+        if name == "transfer":
+            return tools.transfer_script(fake_payload(tmp_path))
+        return FEATURE_INSTALLER.read_text(encoding="utf-8")
+
     @staticmethod
     def _guards(script):
         """The guard half of every line that appends to the login profile."""
         guards = [
-            line.partition("||")[0] for line in script.splitlines() if '>> "$PROFILE"' in line
+            line.strip().partition("||")[0]
+            for line in script.splitlines()
+            if '>> "$PROFILE"' in line or '>> "$profile"' in line
         ]
         assert guards, "a script that never edits the profile has nothing to guard"
         return guards
 
-    @pytest.mark.parametrize("name", ["provision", "transfer"])
+    @pytest.mark.parametrize("name", SCRIPTS)
     def test_a_guard_asks_about_devlaunchs_own_line_not_about_a_directory(self, name, tmp_path):
         """The guard means "have *we* already prepended our directory here", and
         the only evidence of that which devlaunch owns is the mark it writes.
@@ -198,28 +215,76 @@ class TestProfileGuards:
         transfer. A directory name may appear in what is appended; it may not
         appear in what decides whether to append.
         """
-        script = (
-            provision_script()
-            if name == "provision"
-            else tools.transfer_script(fake_payload(tmp_path))
-        )
+        script = self._script(name, tmp_path)
         for guard in self._guards(script):
             assert tools.PROFILE_MARK in guard
             for owned_by_the_image in (".local/bin", ".pixi/bin", "pixi/envs/claude-shim"):
                 assert owned_by_the_image not in guard
 
-    @pytest.mark.parametrize("name", ["provision", "transfer"])
+    def test_every_line_lands_exactly_once_however_often_the_scripts_run(self, tmp_path):
+        """Two different lines may never share a mark, and a rerun may never
+        append again. Both are the same property -- the mark is what decides
+        "already done" -- and both failure modes are silent: two lines under
+        one mark drop whichever comes second (its guard finds the first
+        line's mark and reads it as its own work), and a missed dedupe grows
+        the profile on every launch. Nothing exits non-zero either way.
+
+        Run for real rather than compared as text, and across *both* scripts
+        into one profile, because that is where the lines meet: a provision
+        and a lend edit the same file over a workspace's life, so a
+        collision between their marks is just as fatal as one within either.
+        """
+        profile = tmp_path / "profile"
+        appends = []
+        for name in self.SCRIPTS:
+            script = self._script(name, tmp_path)
+            appends.extend(line.strip() for line in script.splitlines() if '>> "$PROFILE"' in line)
+        assert len(appends) == 5, "a new PATH line belongs in this test's expectations"
+        for _ in range(2):
+            subprocess.run(
+                [shutil.which("bash") or "/bin/bash", "-c", "\n".join(appends)],
+                env={**os.environ, "PROFILE": str(profile)},
+                check=True,
+            )
+        written = profile.read_text(encoding="utf-8").splitlines()
+        for line in (
+            'export PATH="$HOME/.pixi/bin:$PATH"',
+            '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
+            'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
+            'export PATH="$HOME/.local/bin:$PATH"',
+        ):
+            assert written.count(line) == 1, f"{line!r} appended {written.count(line)} times"
+
+    @pytest.mark.parametrize("name", SCRIPTS)
     def test_a_guard_matches_a_whole_line_not_a_fragment_of_one(self, name, tmp_path):
         """A mark is only devlaunch's if nothing longer can pass for it: an
         exact-line, fixed-string match, so neither a regex metacharacter nor a
         longer line that happens to contain the mark counts as a hit."""
-        script = (
-            provision_script()
-            if name == "provision"
-            else tools.transfer_script(fake_payload(tmp_path))
-        )
-        for guard in self._guards(script):
+        for guard in self._guards(self._script(name, tmp_path)):
             assert guard.startswith("grep -qxF ")
+
+    def test_the_feature_installer_writes_the_very_fragments_devlaunch_renders(self):
+        """The installer's two profile edits are `_profile_prepend`'s own
+        output, verbatim -- same derived mark, same guard, same line.
+
+        Pinned byte-for-byte rather than by shape, because the marks are
+        content hashes a shell script cannot derive for itself: hardcoded,
+        they drift the moment either side's line changes, and a drifted mark
+        quietly costs a workspace one duplicate PATH entry per line -- the
+        installer runs at image build, the provision script at `up`, and only
+        matching marks let the second writer recognise the first's work.
+        """
+        installer = FEATURE_INSTALLER.read_text(encoding="utf-8")
+        for line in (
+            'export PATH="$HOME/.pixi/bin:$PATH"',
+            '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
+            'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
+        ):
+            fragment = tools._profile_prepend(line)  # pylint: disable=protected-access
+            assert fragment in installer, (
+                f"the feature installer no longer carries the rendered append for {line!r}; "
+                "regenerate it with tools._profile_prepend"
+            )
 
 
 def fake_payload(tmp_path) -> tools.HostPayload:
@@ -624,11 +689,39 @@ class TestProbeScript:
         it points at is the only thing that says which install it belongs to."""
         assert "readlink -f" in tools.probe_script()
 
-    def test_it_never_runs_the_candidate_claude(self):
-        """Shim-proofness is a property of the script's text, not of a run:
+    def test_it_never_runs_the_candidate_claude(self, tmp_path):
+        """Shim-proofness, asked of a run rather than of the script's text:
         *any* invocation of the shim triggers the download the probe exists to
-        detect, so the only things the probe may do with `claude` are look its
-        path up and resolve it.
+        detect, so the probe runs here against a claude that records being
+        invoked, and the record must stay empty.
+
+        The recorder is shell builtins only -- `:` and a redirection -- because
+        the probe runs on a stripped PATH carrying nothing but `readlink`. A
+        marker that needed an external binary (`touch`, `date`) would fail to
+        record the very invocation it exists to catch, and this test would
+        pass for the wrong reason.
+        """
+        home = self._home(tmp_path)
+        shim = home / ".local/bin/claude"
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text('#!/bin/sh\n: > "$HOME/shim-was-executed"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        answer = self._answer(tmp_path, home, [self._gh(home)])
+        # The answer proves the run reached the end of the script: a probe
+        # that crashed before resolving the claude would leave the record
+        # empty too, and this test would be guarding a script that never ran.
+        assert answer is tools.ProbeResult.LENDABLE
+        assert not (home / "shim-was-executed").exists()
+
+    def test_the_script_text_confines_claude_to_the_known_lookups(self):
+        """A complement to the behavioural test above, not the guard itself.
+
+        The run above proves that one real probe executed nothing; this scrub
+        confines where the name may appear at all, which is what catches an
+        invocation parked on a branch that run does not take. Alone it is
+        weaker than it reads -- an execution spelled `"$(command -v claude)"`
+        contains no literal `claude` once the lookup is scrubbed, and walks
+        straight past it -- which is why it no longer stands alone.
         """
         script = tools.probe_script()
         scrubbed = (
@@ -976,12 +1069,6 @@ class TestTransferScript:
         script = self._script(tmp_path)
         assert "exec >&2" in script
         assert script.index("exec >&2") < script.index("echo")
-
-    def test_the_profile_edit_is_guarded_like_the_network_installs(self, tmp_path):
-        script = self._script(tmp_path)
-        profile_writes = [line for line in script.splitlines() if '>> "$PROFILE"' in line]
-        assert profile_writes
-        assert all(line.startswith("grep -q") for line in profile_writes)
 
     def test_the_stream_the_container_receives_is_that_tar(self, tmp_path):
         """End to end: what `tar xf -` reads on the other side has to be a
