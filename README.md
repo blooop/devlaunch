@@ -817,7 +817,22 @@ For git repositories, devlaunch uses an efficient worktree backend by default:
 
 - **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
 - **Shared Git Objects**: All branches share git objects, saving disk space
-- **Lazy Fetch**: Remote updates are only fetched if the configured interval has elapsed (default: 1 hour)
+- **Targeted Fetch**: A launch fetches only the one branch it is launching, so no launch waits on a repo-wide refresh
+
+### What you get when you push and immediately launch
+
+- **Attaching to a workspace devpod already knows**: no git at all. The workspace
+  is exactly as you left it; freshness inside it is your own `git pull`.
+- **A cold launch** (first time this branch is launched on this machine, or a
+  clone devpod has forgotten): one targeted fetch of that branch, every time.
+  Push upstream and immediately `dl` the branch and you get the pushed tip.
+- **A branch that does not exist yet**: created from the default branch's freshly
+  fetched tip.
+- **Offline**: a warning, and the launch proceeds from whatever the cache holds.
+  It only fails when there is nothing cached to launch from.
+- **Everything else** (other branches, tags, prunes) is refreshed by the
+  background updater within the configured interval (default: 1 hour), which
+  never blocks a launch.
 
 ### Container Sharing Mode
 
@@ -850,7 +865,7 @@ After running `dl --install`, you get intelligent tab completion:
 The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
 building it means a `git ls-remote` per known repo — seconds of work. So it is
 rebuilt in the background at most once an hour (the same interval the worktree
-backend uses for lazy fetches), and at most once per `dl` invocation. Commands
+backend's background fetch sweep uses), and at most once per `dl` invocation. Commands
 that change your workspaces (starting, stopping or deleting one) rebuild it as
 soon as they finish, regardless of when it was last built. Commands with no use
 for it — `dl --help`, `dl --version` — do not touch it at all.

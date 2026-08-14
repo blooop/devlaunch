@@ -1,6 +1,7 @@
 """Tests for worktree repository manager."""
 # pylint: disable=redefined-outer-name,unused-argument,protected-access,unused-variable
 
+import inspect
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,7 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from devlaunch.worktree.models import BaseRepository
-from devlaunch.worktree.repo_manager import RepositoryManager
+from devlaunch.worktree.repo_manager import (
+    FetchFailed,
+    RefMissingOnRemote,
+    RepositoryManager,
+    Updated,
+)
 from devlaunch.worktree.storage import MetadataStorage
 
 
@@ -182,54 +188,43 @@ class TestRepositoryManager:
         assert result.owner == "owner"
 
     @patch("devlaunch.worktree.repo_manager.subprocess.run")
-    def test_ensure_repo_fetches_if_exists(self, mock_run, repo_manager):
-        """Test ensure_repo fetches if repo exists."""
-        # Create repo directory
+    def test_ensure_repo_never_fetches_an_existing_clone(self, mock_run, repo_manager):
+        """A cache that is already there is returned as-is, however stale.
+
+        ensure_repo is the clone-if-missing primitive and nothing else: freshness
+        is the background sweep's job, and the launch path's one network call is
+        the targeted ref fetch in ensure_branch. A fetch here would put an
+        unbounded network round-trip back under the repo lock, which is the whole
+        defect devlaunch#144 resolved.
+        """
         bare_path = repo_manager.get_bare_path("owner", "repo")
         bare_path.mkdir(parents=True)
         (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
 
-        # Add to storage
-        repo = BaseRepository(
-            owner="owner",
-            repo="repo",
-            remote_url="https://github.com/owner/repo.git",
-            local_path=bare_path,
+        # last_fetched=None is the strongest form of "the interval has elapsed":
+        # the old lazy-fetch gate fetched unconditionally in this state.
+        repo_manager.storage.add_repository(
+            BaseRepository(
+                owner="owner",
+                repo="repo",
+                remote_url="https://github.com/owner/repo.git",
+                local_path=bare_path,
+                last_fetched=None,
+            )
         )
-        repo_manager.storage.add_repository(repo)
-
-        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
 
         result = repo_manager.ensure_repo("owner", "repo", "https://github.com/owner/repo.git")
 
         assert result is not None
-        assert mock_run.called
-        call_args = mock_run.call_args[0][0]
-        assert "fetch" in call_args
-
-    @patch("devlaunch.worktree.repo_manager.subprocess.run")
-    def test_ensure_repo_no_auto_fetch(self, mock_run, repo_manager):
-        """Test ensure_repo with auto_fetch=False skips fetch."""
-        # Create repo directory
-        bare_path = repo_manager.get_bare_path("owner", "repo")
-        bare_path.mkdir(parents=True)
-        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
-
-        # Add to storage
-        repo = BaseRepository(
-            owner="owner",
-            repo="repo",
-            remote_url="https://github.com/owner/repo.git",
-            local_path=bare_path,
-        )
-        repo_manager.storage.add_repository(repo)
-
-        result = repo_manager.ensure_repo(
-            "owner", "repo", "https://github.com/owner/repo.git", auto_fetch=False
-        )
-
-        assert result is not None
         assert not mock_run.called
+
+    def test_ensure_repo_takes_no_fetch_flag(self, repo_manager):
+        """The auto_fetch knob is gone rather than defaulted.
+
+        Pinned as a signature, because a parameter left in place accepting True
+        would let a caller ask for the foreground fetch that no longer exists.
+        """
+        assert "auto_fetch" not in inspect.signature(repo_manager.ensure_repo).parameters
 
     def test_get_repo_returns_none_if_dir_missing(self, repo_manager):
         """Test get_repo returns None if directory is missing."""
@@ -338,6 +333,124 @@ class TestRepositoryManager:
 
         assert repo_manager.storage.get_repository("owner", "repo") is None
         assert repo_path.exists()  # Directory should still exist
+
+
+class TestFetchRef:
+    """Tests for fetch_ref — the launch path's one network call."""
+
+    @pytest.fixture
+    def cached_repo(self, repo_manager):
+        """A bare cache on disk with a metadata record, never fetched."""
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
+        repo_manager.storage.add_repository(
+            BaseRepository(
+                owner="owner",
+                repo="repo",
+                remote_url="https://github.com/owner/repo.git",
+                local_path=bare_path,
+                last_fetched=None,
+            )
+        )
+        return bare_path
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_fetches_only_the_one_requested_ref(self, mock_run, repo_manager, cached_repo):
+        """The refspec names the branch and nothing else.
+
+        The point of the whole change: a wildcard here is an unbounded fetch of
+        every head and tag on the launch path.
+        """
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        outcome = repo_manager.fetch_ref("owner", "repo", "feature/x")
+
+        assert isinstance(outcome, Updated)
+        argv = mock_run.call_args[0][0]
+        assert argv == [
+            "git",
+            "fetch",
+            "origin",
+            "+refs/heads/feature/x:refs/heads/feature/x",
+        ]
+        assert mock_run.call_args[1]["cwd"] == cached_repo
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_ref_absent_from_the_remote_is_its_own_answer(
+        self, mock_run, repo_manager, cached_repo
+    ):
+        """A branch nobody has pushed is not a failure.
+
+        Distinct from FetchFailed because the caller does something different with
+        it — bases a new branch on the default branch — and reporting it as a
+        failure would send an ordinary "start a new branch" launch down the
+        offline path.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(
+            128, "git fetch", stderr="fatal: couldn't find remote ref refs/heads/nosuch\n"
+        )
+
+        outcome = repo_manager.fetch_ref("owner", "repo", "nosuch")
+
+        assert isinstance(outcome, RefMissingOnRemote)
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_unreachable_remote_carries_its_reason(self, mock_run, repo_manager, cached_repo):
+        """Offline is a third answer, and it keeps what git said.
+
+        The reason is carried rather than reconstructed at the print site: "no
+        such host", an expired credential and a refused connection all arrive
+        here and read differently to whoever has to fix it.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(
+            128, "git fetch", stderr="fatal: Could not read from remote repository\n"
+        )
+
+        outcome = repo_manager.fetch_ref("owner", "repo", "main")
+
+        assert isinstance(outcome, FetchFailed)
+        assert "Could not read from remote repository" in outcome.reason
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_does_not_advance_last_fetched(self, mock_run, repo_manager, cached_repo):
+        """One ref is not the sweep, so it must not claim the sweep's bookkeeping.
+
+        Advancing last_fetched here would suppress the background sweep's broad
+        fetch for a whole interval on the strength of having fetched a single
+        branch — every other ref silently starved by the thing meant to keep the
+        launch path cheap. It also keeps the repo→metadata lock nesting off this
+        path entirely.
+        """
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        repo_manager.fetch_ref("owner", "repo", "main")
+
+        assert repo_manager.storage.get_repository("owner", "repo").last_fetched is None
+
+    def test_rejects_a_ref_that_would_reach_git_as_an_option(self, repo_manager, cached_repo):
+        """The branch is interpolated into a refspec, so it is checked first."""
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            repo_manager.fetch_ref("owner", "repo", "--upload-pack=evil")
+
+    def test_missing_cache_is_a_failure_not_a_missing_ref(self, repo_manager):
+        """No clone to fetch into is a FetchFailed, not a claim about the remote.
+
+        Reading it as RefMissingOnRemote would send the caller off to create the
+        branch from a default branch that is equally not there.
+        """
+        repo_manager.storage.add_repository(
+            BaseRepository(
+                owner="owner",
+                repo="repo",
+                remote_url="https://github.com/owner/repo.git",
+                local_path=repo_manager.get_bare_path("owner", "repo"),
+            )
+        )
+
+        outcome = repo_manager.fetch_ref("owner", "repo", "main")
+
+        assert isinstance(outcome, FetchFailed)
 
 
 class TestLazyFetch:

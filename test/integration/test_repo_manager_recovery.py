@@ -108,7 +108,7 @@ class TestABareCloneWithNoRecord:
         storage.remove_repository("test", "repo")
         assert storage.get_repository("test", "repo") is None
 
-        adopted = manager.ensure_repo("test", "repo", remote_url, auto_fetch=False)
+        adopted = manager.ensure_repo("test", "repo", remote_url)
 
         assert refs_of(bare_path) == before, "the clone was rebuilt instead of adopted"
         assert adopted.local_path == bare_path
@@ -131,7 +131,7 @@ class TestABareCloneWithNoRecord:
         (bare_path / "objects").mkdir()
         (bare_path / "half-written").write_text("nothing usable\n", encoding="utf-8")
 
-        cloned = manager.ensure_repo("test", "repo", local_git_repo["remote_url"], auto_fetch=False)
+        cloned = manager.ensure_repo("test", "repo", local_git_repo["remote_url"])
 
         assert not (bare_path / "half-written").exists(), "the wreckage was left in place"
         assert (bare_path / "HEAD").exists()
@@ -162,7 +162,7 @@ class TestACloneThatFails:
         nowhere = str(tmp_path / "no-such-repo.git")
 
         with pytest.raises(RuntimeError, match="Failed to clone repository"):
-            manager.ensure_repo("test", "repo", nowhere, auto_fetch=False)
+            manager.ensure_repo("test", "repo", nowhere)
 
         assert not manager.get_bare_path("test", "repo").exists()
         # The residue that would actually hurt. A record is every caller's
@@ -184,7 +184,7 @@ class TestACloneThatFails:
         lock_path = manager.lock_path("test", "repo")
 
         with pytest.raises(RuntimeError):
-            manager.ensure_repo("test", "repo", str(tmp_path / "gone.git"), auto_fetch=False)
+            manager.ensure_repo("test", "repo", str(tmp_path / "gone.git"))
 
         assert lock_path.exists(), "a failed clone took the repo lock file with it"
         assert lock_path.parent.exists()
@@ -197,11 +197,9 @@ class TestACloneThatFails:
         # can clone into.
         manager: RepositoryManager = real_managers["repo_manager"]
         with pytest.raises(RuntimeError):
-            manager.ensure_repo("test", "repo", str(tmp_path / "gone.git"), auto_fetch=False)
+            manager.ensure_repo("test", "repo", str(tmp_path / "gone.git"))
 
-        recovered = manager.ensure_repo(
-            "test", "repo", local_git_repo["remote_url"], auto_fetch=False
-        )
+        recovered = manager.ensure_repo("test", "repo", local_git_repo["remote_url"])
         assert recovered.default_branch == "main"
         assert manager.repo_exists("test", "repo")
 
@@ -224,9 +222,7 @@ class TestTheDefaultBranchIsReadOffTheClone:
     ):
         remote = a_remote_headed_at(tmp_path, branch, branch.replace("/", "-"))
 
-        cloned = real_managers["repo_manager"].ensure_repo(
-            "test", "headed", remote, auto_fetch=False
-        )
+        cloned = real_managers["repo_manager"].ensure_repo("test", "headed", remote)
 
         assert cloned.default_branch == branch
         # And it names a ref that is really there, which is the property the
@@ -263,9 +259,7 @@ class TestARecordWhoseCloneIsGone:
         manager.clone_repo("test", "repo", local_git_repo["remote_url"])
         shutil.rmtree(manager.get_bare_path("test", "repo"))
 
-        recovered = manager.ensure_repo(
-            "test", "repo", local_git_repo["remote_url"], auto_fetch=False
-        )
+        recovered = manager.ensure_repo("test", "repo", local_git_repo["remote_url"])
         assert manager.repo_exists("test", "repo")
         assert recovered.default_branch == "main"
 
@@ -296,7 +290,7 @@ class TestACacheTheUserCannotWriteTo:
         refuses_writes(repo_dir)
 
         with pytest.raises(RuntimeError, match="Failed to clone repository"):
-            manager.ensure_repo("test", "repo", local_git_repo["remote_url"], auto_fetch=False)
+            manager.ensure_repo("test", "repo", local_git_repo["remote_url"])
 
         # The residue that would actually hurt: every caller reads a returned
         # record as "the cache is ready", so a record for a clone that did not
