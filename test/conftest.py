@@ -20,7 +20,7 @@ if str(test_dir) not in sys.path:
 # Import fixtures from the fixtures package to make them available to all tests
 # Note: pytest automatically discovers fixtures in conftest.py
 # noqa: E402 - imports must come after sys.path modification
-from devlaunch import dl, gh_auth  # noqa: E402
+from devlaunch import dl, gh_auth, timing  # noqa: E402
 from fixtures.git_fixtures import (  # noqa: E402
     isolated_devlaunch_env,
     local_git_repo,
@@ -158,6 +158,19 @@ def fresh_clone_manager():
     dl.invalidate_clone_manager()
     yield
     dl.invalidate_clone_manager()
+
+
+@pytest.fixture(autouse=True)
+def timing_switch_off(monkeypatch):
+    """Start every test with the timing switch off, whatever the shell says.
+
+    DEVLAUNCH_TIMING makes dl append a timing summary to stderr, and a good few
+    tests assert stderr is empty. The developers this instrument exists for are
+    the ones who will have it exported when they run the suite, so the suite
+    scrubs it rather than going red in their shell. A test that wants the switch
+    on sets it itself.
+    """
+    monkeypatch.delenv(timing.ENV_VAR, raising=False)
 
 
 def pytest_configure():

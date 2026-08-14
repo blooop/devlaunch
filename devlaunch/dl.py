@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from . import devpod_ssh, disk_usage, gh_auth, tools, tty_session, workspace_state
+from . import devpod_ssh, disk_usage, gh_auth, timing, tools, tty_session, workspace_state
 from .completion import install_completions
 from .workspace_id import TARGET_LENGTH, WorkspaceId, slug, source_workspace_id, validate_ref_name
 from .worktree.config import get_worktree_config
@@ -2431,13 +2431,14 @@ def _git_ls_remote(owner_repo: str, *args: str) -> Optional[str]:
     """
     url = f"git@github.com:{owner_repo}.git"
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", url, *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
+        with timing.span("git ls-remote"):
+            result = subprocess.run(
+                ["git", "ls-remote", url, *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
@@ -2570,13 +2571,16 @@ def run_devpod(
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
     try:
-        if capture:
+        # Timed by subcommand, not full argv: the summary should name each
+        # round trip (status, ssh, up...) without leaking workspace ids into it.
+        with timing.span(" ".join(cmd[:2])):
+            if capture:
+                # nosec B603 - using list form, not shell=True; no command injection risk
+                return subprocess.run(
+                    cmd, capture_output=True, text=True, check=False, env=env, stdin=stdin_file
+                )
             # nosec B603 - using list form, not shell=True; no command injection risk
-            return subprocess.run(
-                cmd, capture_output=True, text=True, check=False, env=env, stdin=stdin_file
-            )
-        # nosec B603 - using list form, not shell=True; no command injection risk
-        return subprocess.run(cmd, check=False, env=env, stdin=stdin_file)
+            return subprocess.run(cmd, check=False, env=env, stdin=stdin_file)
     except FileNotFoundError as e:
         raise DevpodNotInstalled(DEVPOD_MISSING_MESSAGE) from e
 
@@ -2594,22 +2598,25 @@ def run_devpod_session(
     """
     cmd = ["devpod"] + args
     logging.debug("Running: %s", " ".join(cmd))
-    # nosec B603 - using list form, not shell=True; no command injection risk
-    with subprocess.Popen(
-        cmd,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-    ) as proc:
-        # proc.stderr is a pipe because PIPE was asked for, but Popen's type
-        # cannot express that, so the narrowing happens here rather than by
-        # widening filter_devpod_stderr to a None it would have no answer for.
-        pipe = proc.stderr
-        remote_status = (
-            devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe is not None else None
-        )
+    # The span covers the whole session: what the summary names is the round
+    # trip the user waited on, not just the process spawn.
+    with timing.span(" ".join(cmd[:2])):
+        # nosec B603 - using list form, not shell=True; no command injection risk
+        with subprocess.Popen(
+            cmd,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        ) as proc:
+            # proc.stderr is a pipe because PIPE was asked for, but Popen's type
+            # cannot express that, so the narrowing happens here rather than by
+            # widening filter_devpod_stderr to a None it would have no answer for.
+            pipe = proc.stderr
+            remote_status = (
+                devpod_ssh.filter_devpod_stderr(pipe, sys.stderr) if pipe is not None else None
+            )
     return devpod_ssh.interpret(proc.returncode, remote_status)
 
 
@@ -3056,8 +3063,9 @@ def run_ssh(args: List[str], env: Optional[Dict[str, str]] = None) -> subprocess
     """
     logging.debug("Running: %s", " ".join(args))
     try:
-        # nosec B603 B607 - list form, not shell=True; no command injection risk
-        return subprocess.run(list(args), check=False, env=env)
+        with timing.span("ssh"):
+            # nosec B603 B607 - list form, not shell=True; no command injection risk
+            return subprocess.run(list(args), check=False, env=env)
     except FileNotFoundError as e:
         raise SshNotInstalled(SSH_MISSING_MESSAGE) from e
 
@@ -3405,6 +3413,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # a caller that drives main() twice (a test, a shell wrapper) must not have
     # the first command's view of devpod answer the second command's questions.
     invalidate_workspace_list_cache()
+    # Timing is per-command, like the workspace-list snapshot: begin() here so
+    # a second main() in the same process starts a fresh summary, emit() in the
+    # finally so the summary lands on stderr however the command ended.
+    timing.begin()
     try:
         return _run_cli(argv)
     except MissingBinary as e:
@@ -3413,6 +3425,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except UnreadableWorkspaceList as e:
         print(f"error: {e}", file=sys.stderr)
         return UNREADABLE_WORKSPACE_LIST_EXIT_CODE
+    finally:
+        timing.emit()
 
 
 def _run_cli(argv: Optional[List[str]] = None) -> int:

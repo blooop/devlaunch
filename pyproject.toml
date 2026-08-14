@@ -90,6 +90,8 @@ lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
 test = "pytest"
+# Median wall time of a command over N runs; see "Measuring launch time" in README.md.
+bench = "python scripts/bench_launch.py"
 # Needs a real Docker daemon and a real devpod. Inside this repo's devcontainer
 # that daemon is the container's own, via the docker-in-docker feature; on an
 # ephemeral CI runner or a machine you do not mind writing to, it is the host's.
