@@ -59,8 +59,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, NoReturn, Optional, Union
 
-from devlaunch import timing
-
 logger = logging.getLogger(__name__)
 
 
@@ -276,15 +274,14 @@ def _git(repo: Path, *args: str) -> GitAnswer:
     """
     root = repo.resolve()
     try:
-        with timing.span(f"git {args[0]}" if args else "git"):
-            result = subprocess.run(
-                ["git", f"--git-dir={root / '.git'}", f"--work-tree={root}", *args],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-            )
+        result = subprocess.run(
+            ["git", f"--git-dir={root / '.git'}", f"--work-tree={root}", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
     except (OSError, subprocess.SubprocessError) as e:
         logger.debug(f"git {' '.join(args)} in {repo}: {e}")
         return GitRefused(str(e))
