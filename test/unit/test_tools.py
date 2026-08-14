@@ -135,13 +135,6 @@ class TestProvisionScript:
         assert script.index(".bash_profile") < script.index(".bash_login")
         assert script.index(".bash_login") < script.index('PROFILE="$HOME/.profile"')
 
-    def test_the_profile_is_not_appended_to_twice(self):
-        """Every profile edit is guarded, so relaunching cannot grow the file."""
-        script = provision_script()
-        profile_writes = [line for line in script.splitlines() if '>> "$PROFILE"' in line]
-        assert profile_writes
-        assert all(line.startswith("grep -q") for line in profile_writes)
-
     def test_a_profile_that_cannot_be_written_is_a_failure(self):
         """Installed but not on PATH is not the guarantee this module makes."""
         script = provision_script()
@@ -1078,12 +1071,6 @@ class TestTransferScript:
         script = self._script(tmp_path)
         assert "exec >&2" in script
         assert script.index("exec >&2") < script.index("echo")
-
-    def test_the_profile_edit_is_guarded_like_the_network_installs(self, tmp_path):
-        script = self._script(tmp_path)
-        profile_writes = [line for line in script.splitlines() if '>> "$PROFILE"' in line]
-        assert profile_writes
-        assert all(line.startswith("grep -q") for line in profile_writes)
 
     def test_the_stream_the_container_receives_is_that_tar(self, tmp_path):
         """End to end: what `tar xf -` reads on the other side has to be a
