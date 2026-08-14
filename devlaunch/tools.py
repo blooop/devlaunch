@@ -65,7 +65,7 @@ import shutil
 import tarfile
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, NoReturn, Optional, Sequence, Tuple
 
 from . import timing
 
@@ -393,6 +393,166 @@ def probe_script() -> str:
     )
 
 
+@dataclass(frozen=True)
+class Stage:
+    """One independent step the setup pass carries in front of the probe.
+
+    `command` is a shell command the container is asked to run; whether it
+    worked is reported by the composer on a marked line, never by the stage
+    itself, so a stage is an ordinary command rather than something that has to
+    know about this protocol.
+
+    `failure_level` is how loudly *this* stage's failure is worth saying. Most
+    stages warrant a warning -- naming a stage that did not work is the whole
+    legibility claim of folding them into one trip. The hostname does not:
+    `sudo hostname` cannot succeed without CAP_SYS_ADMIN, which Docker drops by
+    default, so failure is the majority case and a warning on most cold
+    launches would erode the signal a warning carries. It is still reported by
+    name, which is more than the silently-discarded boolean it replaces.
+    """
+
+    name: str
+    command: str
+    failure_level: int = logging.WARNING
+
+
+# The stage that names the container. Its outcome is what "can this image set a
+# hostname" detection is, and it costs nothing: the trip is the probe's.
+HOSTNAME_STAGE = "hostname"
+
+# The key every stage-outcome line carries, in the same marked `key value`
+# shape the probe's own report uses -- so the outcomes survive a login
+# profile's banner exactly as the probe's lines do, and so `ProbeResult.parse`,
+# which reads only the keys it always read, is inert to them.
+STAGE_KEY = "stage"
+
+# The two words an outcome line can carry, the second followed by the status.
+_STAGE_OK = "ok"
+_STAGE_FAILED = "failed"
+
+
+def setup_stages(workspace: str) -> Tuple[Stage, ...]:
+    """The stages one setup pass runs in `workspace`, in order.
+
+    Built per pass rather than declared as a constant because a stage's command
+    names the workspace, and a workspace id is not known until there is one.
+    """
+    return (
+        Stage(
+            name=HOSTNAME_STAGE,
+            # The hostname appears in the bash prompt (user@hostname:path$),
+            # which is what tells a session which project and branch it is in.
+            # bash reads it once when the shell starts, so it has to be set
+            # before the session dl hands over -- which is why it rides the
+            # `up`'s own trip rather than the attach's.
+            command=f"sudo hostname {shlex.quote(workspace)}",
+            failure_level=logging.INFO,
+        ),
+    )
+
+
+def _stage_snippet(stage: Stage) -> str:
+    """One stage, with the composer's report of how it went wrapped round it.
+
+    No `&&`, no `set -e`: the `if` contains the failure to this stage, so the
+    stages after it and the probe behind them all still run. `$?` inside the
+    `else` is the command's own status, which is the number the host needs to
+    tell "the image will not let me" from "the command is not even there".
+    """
+    return "\n".join(
+        [
+            f"if {stage.command}; then",
+            f'  echo "{PROBE_MARK} {STAGE_KEY} {stage.name} {_STAGE_OK}"',
+            "else",
+            f'  echo "{PROBE_MARK} {STAGE_KEY} {stage.name} {_STAGE_FAILED} $?"',
+            "fi",
+        ]
+    )
+
+
+def setup_script(workspace: str) -> str:
+    """The one script a cold launch's setup pass sends: stages, then the probe.
+
+    Composed here, on the host, out of `probe_script()` **verbatim** plus stage
+    snippets that know nothing about it. Nothing about the probe is copied or
+    re-expressed: the relation that decides what a container's two resolved
+    paths mean is stated once, in `_is_official_claude`, and a rewritten probe
+    would be a second copy of it -- the drift that once had one side trusting a
+    shim the other refused to lend.
+
+    The stages go **in front of** the probe, and that is not cosmetic: the probe
+    exits early when a tool is missing, which is the commonest answer on the
+    very launches this fold exists for, so a stage placed behind it would report
+    `not reached` most of the time.
+
+    Exits 0 in every state, like the probe it carries, so a non-zero `devpod
+    ssh` keeps meaning the transport failed and never that a stage did.
+    """
+    return "\n".join([*(_stage_snippet(stage) for stage in setup_stages(workspace)), probe_script()])
+
+
+@dataclass(frozen=True)
+class StageOk:
+    """The stage ran and exited 0."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class StageFailed:
+    """The stage ran and exited non-zero, with `returncode` as its status."""
+
+    name: str
+    returncode: int
+
+
+@dataclass(frozen=True)
+class StageNotReached:
+    """No readable outcome for this stage came back.
+
+    A stage the script died in front of, a report truncated before its line, a
+    line too garbled to read: none of them says the stage worked, and none of
+    them says it failed with a status either. Kept as its own state rather than
+    folded into a bool or a sentinel status, because "never ran" and "ran fine"
+    are exactly the two the fold must not be able to confuse.
+    """
+
+    name: str
+
+
+StageOutcome = StageOk | StageFailed | StageNotReached
+
+
+def stage_outcomes(report: str, stages: Sequence[Stage]) -> Tuple[StageOutcome, ...]:
+    """How each of `stages` went, in the order they were asked, from `report`.
+
+    Total, and it errs towards speaking: anything that is not a readable
+    outcome is the *absence* of one, and every outcome that is not `StageOk` is
+    reported by name -- so an unreadable line is named rather than passed over.
+    """
+    reported = {}
+    for line in report.splitlines():
+        mark, _, rest = line.strip().partition(" ")
+        if mark != PROBE_MARK:
+            continue
+        key, _, value = rest.partition(" ")
+        if key != STAGE_KEY:
+            continue
+        name, _, status = value.strip().partition(" ")
+        reported[name] = status.strip()
+    return tuple(_read_outcome(stage.name, reported.get(stage.name)) for stage in stages)
+
+
+def _read_outcome(name: str, status: Optional[str]) -> StageOutcome:
+    """One stage's reported status as a value; unreadable means not reached."""
+    if status == _STAGE_OK:
+        return StageOk(name=name)
+    word, _, code = (status or "").partition(" ")
+    if word == _STAGE_FAILED and code.strip().isdigit():
+        return StageFailed(name=name, returncode=int(code.strip()))
+    return StageNotReached(name=name)
+
+
 def _pixi_bootstrap() -> str:
     """Install pixi if the image has none, since every tool here comes from it.
 
@@ -575,23 +735,75 @@ def _write_payload_tar(payload: HostPayload, out: pathlib.Path) -> None:
                 tar.add(source, arcname=arcname)
 
 
-def _probe(workspace: str, runner) -> ProbeResult:
-    """One round trip: what does this workspace still need?
+def _unhandled_outcome(outcome: NoReturn) -> NoReturn:
+    """Reject a stage outcome nobody handled -- at type-check time, not at runtime.
 
-    Captured, unlike the two trips that may follow -- here the output *is* the
-    answer the caller branches on, rather than progress a user needs to watch.
-
-    A trip that fails is not an answer: the script exits 0 in all three states,
-    so a non-zero status means the ssh itself did not get through, and the
-    reading that costs a redundant trip is preferred to the one that skips the
-    work.
+    The same shape as :func:`devlaunch.workspace_state.unhandled_unsaved`, and
+    for the same reason: an ``else`` hand-rolled where the arms are read is how
+    a fourth outcome would come to be reported as though it were `ok`.
     """
+    raise AssertionError(f"Unhandled setup stage outcome: {outcome!r}")
+
+
+def _report_outcome(workspace: str, stage: Stage, outcome: StageOutcome) -> None:
+    """Say what became of one stage, unless what became of it was nothing.
+
+    `ok` is silent -- a launch that worked has nothing to say -- and every other
+    outcome is named, at the level the stage itself declares.
+    """
+    match outcome:
+        case StageOk():
+            return
+        case StageFailed(name=name, returncode=returncode):
+            logging.log(
+                stage.failure_level,
+                "%s: the %s setup stage exited %s.",
+                workspace,
+                name,
+                returncode,
+            )
+        case StageNotReached(name=name):
+            logging.log(
+                stage.failure_level,
+                "%s: the %s setup stage did not report; it may not have run.",
+                workspace,
+                name,
+            )
+        case _ as unhandled:
+            _unhandled_outcome(unhandled)
+
+
+def _setup_pass(workspace: str, runner) -> ProbeResult:
+    """One round trip: set the workspace up, and report what it still needs.
+
+    The cold path's whole setup pass, and the only trip a provisioned workspace
+    pays. The stages happen because this trip was being paid anyway -- a
+    separate `devpod ssh` for the hostname measured ~1.73s, of which ~99% was
+    connection and process setup, so folding it in saves a whole trip (#157).
+
+    Captured, unlike the trips that may follow -- here the output *is* the
+    answer the caller branches on, rather than progress a user needs to watch.
+    Which is also why each stage's outcome is logged here rather than returned:
+    the caller branches on what the container still needs, and a stage's outcome
+    is not that.
+
+    A trip that fails is not an answer: the script exits 0 in every state, so a
+    non-zero status means the ssh itself did not get through, and the reading
+    that costs a redundant trip is preferred to the one that skips the work.
+    Whatever the trip did print is still read for stage outcomes, because a
+    report cut off partway is exactly what `not reached` is for.
+    """
+    stages = setup_stages(workspace)
     result = runner(
-        ["ssh", workspace, "--command", f"bash -lc {shlex.quote(probe_script())}"], capture=True
+        ["ssh", workspace, "--command", f"bash -lc {shlex.quote(setup_script(workspace))}"],
+        capture=True,
     )
+    report = result.stdout or ""
+    for stage, outcome in zip(stages, stage_outcomes(report, stages)):
+        _report_outcome(workspace, stage, outcome)
     if result.returncode != 0:
         return ProbeResult.ABSENT
-    return ProbeResult.parse(result.stdout)
+    return ProbeResult.parse(report)
 
 
 def _transfer(workspace: str, runner, payload: HostPayload) -> bool:
@@ -628,12 +840,19 @@ def ensure_tools(workspace: str, runner) -> bool:
     `runner` is dl.run_devpod, passed in rather than imported to keep this
     module off dl's import cycle and testable without a devpod.
 
-    Three trips at most, each earning the next: a probe (the only trip a
-    provisioned workspace ever pays), then the host lending its own binaries
-    (see the module docstring for why that is the fast path), then the network
-    install for a host with nothing to lend or a container the lent binaries
-    cannot run in. Which of them run is decided by the probe's three-state
-    answer, and only a genuinely `absent` container ever reaches the third.
+    Three trips at most, each earning the next: the setup pass (the only trip a
+    provisioned workspace ever pays, and the one the container's stages ride
+    in), then the host lending its own binaries (see the module docstring for
+    why that is the fast path), then the network install for a host with nothing
+    to lend or a container the lent binaries cannot run in. Which of them run is
+    decided by the probe's three-state answer, and only a genuinely `absent`
+    container ever reaches the third.
+
+    The pass is not gated on the tools opt-out, and only what follows it is:
+    the stages the pass carries are not tools work, so a machine that has turned
+    tool provisioning off must not thereby have turned container naming off. The
+    function still answers the question its name asks -- whether the tools are
+    there -- and answers False when it was told not to install any.
 
     Version drift is deliberately not handled: a real claude already in the
     container is left alone whatever its version. Keeping versions in sync
@@ -655,12 +874,13 @@ def ensure_tools(workspace: str, runner) -> bool:
     OSError (see dl.DevpodNotInstalled) so that it is never mistaken for a
     failure of the thing being attempted, and it keeps that meaning here.
     """
-    if provisioning_disabled():
-        logging.debug("%s is set; not installing tools into %s", DISABLE_VAR, workspace)
-        return False
-
     try:
-        found = _probe(workspace, runner)
+        found = _setup_pass(workspace, runner)
+
+        if provisioning_disabled():
+            logging.debug("%s is set; not installing tools into %s", DISABLE_VAR, workspace)
+            return False
+
         if found is ProbeResult.PROVISIONED:
             return True
 
