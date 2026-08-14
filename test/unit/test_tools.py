@@ -2,6 +2,7 @@
 
 import io
 import os
+import pathlib
 import shlex
 import shutil
 import subprocess
@@ -168,24 +169,47 @@ class TestProvisionScript:
         assert "command -v gh" not in script
 
 
+# The devcontainer feature's installer edits the same file the scripts above
+# do -- `$TARGET_HOME/.profile` is the *user's* login profile, not a file the
+# feature owns -- so its guards are held to the same properties. It was
+# excluded from the #164 sweep on the stated grounds that it guards its own
+# line in its own file; that reason was wrong, which is why it is covered here
+# rather than trusted.
+FEATURE_INSTALLER = (
+    pathlib.Path(__file__).resolve().parents[2] / ".devcontainer/claude-code/install.sh"
+)
+
+
 class TestProfileGuards:
-    """Every "have I already edited this profile?" question, in both scripts.
+    """Every "have I already edited this profile?" question, in every script.
 
     Asked once here rather than per script, because the property is the same
     wherever it is asked and the answer decides whether a workspace ever stops
     doing work it has already done.
     """
 
+    SCRIPTS = ["provision", "transfer", "feature"]
+
+    @staticmethod
+    def _script(name, tmp_path):
+        if name == "provision":
+            return provision_script()
+        if name == "transfer":
+            return tools.transfer_script(fake_payload(tmp_path))
+        return FEATURE_INSTALLER.read_text(encoding="utf-8")
+
     @staticmethod
     def _guards(script):
         """The guard half of every line that appends to the login profile."""
         guards = [
-            line.partition("||")[0] for line in script.splitlines() if '>> "$PROFILE"' in line
+            line.strip().partition("||")[0]
+            for line in script.splitlines()
+            if '>> "$PROFILE"' in line or '>> "$profile"' in line
         ]
         assert guards, "a script that never edits the profile has nothing to guard"
         return guards
 
-    @pytest.mark.parametrize("name", ["provision", "transfer"])
+    @pytest.mark.parametrize("name", SCRIPTS)
     def test_a_guard_asks_about_devlaunchs_own_line_not_about_a_directory(self, name, tmp_path):
         """The guard means "have *we* already prepended our directory here", and
         the only evidence of that which devlaunch owns is the mark it writes.
@@ -198,11 +222,7 @@ class TestProfileGuards:
         transfer. A directory name may appear in what is appended; it may not
         appear in what decides whether to append.
         """
-        script = (
-            provision_script()
-            if name == "provision"
-            else tools.transfer_script(fake_payload(tmp_path))
-        )
+        script = self._script(name, tmp_path)
         for guard in self._guards(script):
             assert tools.PROFILE_MARK in guard
             for owned_by_the_image in (".local/bin", ".pixi/bin", "pixi/envs/claude-shim"):
@@ -223,9 +243,12 @@ class TestProfileGuards:
         """
         profile = tmp_path / "profile"
         appends = []
-        for script in (provision_script(), tools.transfer_script(fake_payload(tmp_path))):
-            appends.extend(line for line in script.splitlines() if '>> "$PROFILE"' in line)
-        assert len(appends) == 3, "a fourth PATH line belongs in this test's expectations"
+        for name in self.SCRIPTS:
+            script = self._script(name, tmp_path)
+            appends.extend(
+                line.strip() for line in script.splitlines() if '>> "$PROFILE"' in line
+            )
+        assert len(appends) == 5, "a new PATH line belongs in this test's expectations"
         for _ in range(2):
             subprocess.run(
                 [shutil.which("bash") or "/bin/bash", "-c", "\n".join(appends)],
@@ -241,18 +264,36 @@ class TestProfileGuards:
         ):
             assert written.count(line) == 1, f"{line!r} appended {written.count(line)} times"
 
-    @pytest.mark.parametrize("name", ["provision", "transfer"])
+    @pytest.mark.parametrize("name", SCRIPTS)
     def test_a_guard_matches_a_whole_line_not_a_fragment_of_one(self, name, tmp_path):
         """A mark is only devlaunch's if nothing longer can pass for it: an
         exact-line, fixed-string match, so neither a regex metacharacter nor a
         longer line that happens to contain the mark counts as a hit."""
-        script = (
-            provision_script()
-            if name == "provision"
-            else tools.transfer_script(fake_payload(tmp_path))
-        )
-        for guard in self._guards(script):
+        for guard in self._guards(self._script(name, tmp_path)):
             assert guard.startswith("grep -qxF ")
+
+    def test_the_feature_installer_writes_the_very_fragments_devlaunch_renders(self):
+        """The installer's two profile edits are `_profile_prepend`'s own
+        output, verbatim -- same derived mark, same guard, same line.
+
+        Pinned byte-for-byte rather than by shape, because the marks are
+        content hashes a shell script cannot derive for itself: hardcoded,
+        they drift the moment either side's line changes, and a drifted mark
+        quietly costs a workspace one duplicate PATH entry per line -- the
+        installer runs at image build, the provision script at `up`, and only
+        matching marks let the second writer recognise the first's work.
+        """
+        installer = FEATURE_INSTALLER.read_text(encoding="utf-8")
+        for line in (
+            'export PATH="$HOME/.pixi/bin:$PATH"',
+            '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
+            'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
+        ):
+            fragment = tools._profile_prepend(line)  # pylint: disable=protected-access
+            assert fragment in installer, (
+                f"the feature installer no longer carries the rendered append for {line!r}; "
+                "regenerate it with tools._profile_prepend"
+            )
 
 
 def fake_payload(tmp_path) -> tools.HostPayload:
