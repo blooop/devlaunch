@@ -210,7 +210,7 @@ class TestTheDocumentedColdReset:
         # dl-next is this working tree's install of main() (see dev.sh).
         argv = shlex.split(recipe.group(1))[1:]
 
-        def devpod(args, **kwargs):
+        def devpod(args, **_kwargs):
             # Real devpod v0.26.1 against the recipe's starting state: nothing
             # exists, so everything fails except an ignore-not-found delete.
             if args[:1] == ["delete"] and "--ignore-not-found" in args:
