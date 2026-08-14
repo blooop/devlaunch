@@ -942,6 +942,50 @@ things about it are load-bearing:
   caller's to say: the same command benches either shape depending on
   `--before`, and a wrong label is worse in a trend than a missing one.
 
+### The trend on main
+
+Every push to `main` runs `.github/workflows/bench.yml`, which benches both
+shapes on the runner and publishes one point per stage to
+<https://blooop.github.io/devlaunch/dev/bench/>. It can also be dispatched by
+hand. Reading it needs nothing but the chart; what follows is for changing it.
+
+`scripts/bench_points.py` is the step between the two formats — bench records
+in, one flat array of trend cases out:
+
+```bash
+python3 scripts/bench_points.py warm.json cold-recreate.json --out bench.json \
+    --require-stages-on cold-recreate
+```
+
+(`pixi run bench-points ...` in the devcontainer.) One case per stage the shape
+reported, plus that shape's own total: `warm / host-prep`,
+`cold-recreate / devpod-up`, `warm / total`. Five properties of it are
+load-bearing:
+
+- **The published value is the median, and the case name is a key.** The trend
+  compares a point against the immediately previous point and nothing older, so
+  the de-noising has to have happened before publishing. Renaming a stage
+  starts a new, empty series beside a frozen old one.
+- **The spread rides along as the point's error bar**, and the outside
+  stopwatch (`wall=`) as part of its `extra`. Evidence beside the number,
+  rather than a second trend line for the same launch that disagrees with the
+  first by a constant.
+- **An absent stage is absent.** A warm launch lends nothing, so there is no
+  `warm / tools` case at all — never a zero, which would claim an instantaneous
+  lend and would drag the line down exactly where a regression should show.
+- **`--require-stages-on` fails the job rather than the trend.** The way this
+  decomposition is expected to break is an absence, not a wrong number: a stage
+  stops being emitted and the total keeps working. So the cold-recreate shape,
+  where every stage is known to be present, asserts them all, and a run that
+  lost one publishes nothing and goes red. Naming a shape that was not benched
+  fails too — an assertion that covers nothing reads exactly like one that
+  passed.
+- **A regression alerts; it never gates.** The workflow is deliberately not a
+  job in `ci.yml`: a job there would join the CI gate's `needs` by house
+  convention and turn a noisy wall-clock measurement into a merge gate. A point
+  above the threshold leaves a commit comment and a red mark on the chart, and
+  the build stays green.
+
 ## Worktree Backend
 
 For git repositories, devlaunch uses an efficient worktree backend by default:

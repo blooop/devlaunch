@@ -1,0 +1,194 @@
+name: Launch benchmark
+
+# The launch-latency trend (map #193). Every merge to main benches the two
+# reproducible launch shapes, publishes one median point per stage, and alerts
+# on a large relative regression.
+#
+# ALERT, DO NOT GATE. This workflow must never become a required check and must
+# never fail a build on a slow point. One quiet host's five identical
+# cold-recreate runs spread 15.2-20.0s; a shared runner is worse, so a hard
+# wall-clock gate would be either too loose to fire or flaky. Deterministic
+# structural guards (test_devpod_spawn_counts.py and its kin) keep the gating
+# role, and they live in ci.yml where a gate belongs.
+#
+# It is a separate file for exactly that reason: house convention is that a new
+# job in ci.yml joins `gate`'s `needs` in the same pull request, and `needs`
+# cannot reach across files. A job in there would have become a merge gate by
+# convention, which is the thing the charter grilled out. `test_bench_workflow.py`
+# holds this and the other charter properties down.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      alert-threshold:
+        description: >-
+          Relative regression that alerts, as a percentage of the previous
+          point. Lower it on a dispatch to watch the alert actually fire --
+          an alert nobody has ever seen fire is worth nothing -- without
+          committing a temporary threshold to main.
+        default: '150%'
+        required: false
+
+# Deliberately no `paths:` filter, and this is not an omission: a launch can be
+# slowed by any file in the repo, and a trend with holes in it cannot compare a
+# point against its own previous point.
+
+concurrency:
+  # Serialise. The publishing action commits to gh-pages, so two runs race on
+  # that push -- it retries, but not racing is cheaper -- and two benches
+  # sharing a runner class would also be measuring each other.
+  group: launch-benchmark
+  cancel-in-progress: false
+
+permissions:
+  # One permission covers both halves of publishing: the push to gh-pages and
+  # the alert's commit comment. The repository default is read-only.
+  contents: write
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    # Generous, because the priming step below builds a devcontainer image from
+    # scratch on every run. Bounded, because an unbounded job on a registry
+    # serving at 640 B/s hangs for six hours and reports a timeout nobody reads.
+    timeout-minutes: 45
+    env:
+      # The benched repo. This is an interface, not a detail: the trend's whole
+      # meaning is "the same launch, over time", so changing this repo makes
+      # every existing point incomparable with every later one. Change it the
+      # way a stage name is changed -- deliberately, knowing the line breaks.
+      #
+      # Its own devcontainer builds an image and runs `pixi install` in
+      # postCreate, both of which the cold-recreate shape pays for. That is the
+      # first thing to look at if the cold trend proves noisier than the alert
+      # threshold can live with.
+      TARGET: blooop/mcp-devtasks
+      # Every byte this job writes, scoped away from anything else on the
+      # runner: DEVPOD_HOME (plus DEVPOD_SSH_CONFIG, which `devpod up` writes
+      # outside that home) is devpod's own state, XDG_CACHE_HOME is
+      # devlaunch's clone cache and bookkeeping. The runner is ephemeral, so
+      # /tmp is the same scratch recipe the bench script's epilog documents.
+      DEVPOD_HOME: /tmp/dl-bench/devpod
+      DEVPOD_SSH_CONFIG: /tmp/dl-bench/ssh_config
+      XDG_CACHE_HOME: /tmp/dl-bench/cache
+      # dl forwards a GitHub token into every workspace it opens, via
+      # `gh auth token` -- which answers from GH_TOKEN when one is set. Without
+      # this the host-prep stage times a token fetch that fails.
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # No devpod install step: devpod is a pixi dependency, already in the
+      # lockfile setup-pixi restores, and it is the version this tree is pinned
+      # against rather than whatever a runner image happens to carry.
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          cache: true
+          frozen: true
+          environments: default
+
+      - name: Let dl's git reach GitHub without an SSH key
+        # dl clones and probes over `git@github.com:`, and a runner has no key
+        # for that. The rewrite is the standard CI substitution and touches
+        # only what git resolves -- devpod never talks to GitHub here, because
+        # the worktree backend hands it a local path.
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ github.token }}@github.com/".insteadOf \
+            "git@github.com:"
+
+      - name: Register the docker provider in this job's devpod home
+        # A fresh DEVPOD_HOME has no provider at all, so this is not optional
+        # setup -- it is what makes the home usable. Docker itself is already
+        # on the runner.
+        run: pixi run dev-add-docker
+
+      - name: Prime the image and the clone cache
+        # THE FIRST-EVER-COLD EXCLUSION, and it is deliberate rather than
+        # redundant with the benched runs below. Charter decision 4 keeps the
+        # first-ever cold launch out of the per-merge trend: its dominant cost
+        # is an image transfer or build this repo does not control, and the
+        # image build's own duration is already visible in the target's own
+        # workflows. An ephemeral runner starts every job in that state, so
+        # without this step the first timed cold run would be a first-ever cold
+        # one and the trend would carry a number about a registry's day.
+        #
+        # It also leaves the workspace up, which is what makes the next step
+        # warm.
+        run: pixi run dl "$TARGET" -- true
+
+      # Five runs per shape, both shapes. The bench script's own recipe says
+      # five, and the point published is their MEDIAN -- the trend's baseline is
+      # the immediately previous point and nothing older, so de-noising has to
+      # happen here or the alert is a coin flip. Three would save about a minute
+      # on a job that spends longer than that priming, and would halve the
+      # median's resistance to one slow run: the exact noise this whole map is
+      # about.
+      - name: Bench the warm shape
+        run: pixi run bench -n 5 --record warm.json --shape warm -- dl "$TARGET" -- true
+
+      - name: Bench the cold-recreate shape
+        # `--before` re-establishes the cold state before EVERY run: delete once
+        # and bench five times and runs 2..5 are warm, i.e. a warm median under
+        # a cold label. What it removes is the workspace and its container; the
+        # image layers and the bare clone the priming step left behind survive
+        # on purpose, which is what makes this "recreate" rather than "first
+        # ever".
+        run: |
+          pixi run bench -n 5 --record cold-recreate.json --shape cold-recreate \
+            --before "dl $TARGET rm --force" -- dl "$TARGET" -- true
+
+      - name: Turn the records into this commit's trend points
+        # `--require-stages-on cold-recreate` is the load-bearing flag: a cold
+        # recreate that reported no `tools` stage means the launch changed shape
+        # or stopped saying so, and this step then fails the JOB and publishes
+        # nothing -- rather than letting a stage go quietly absent from a chart
+        # nobody reads that week. The warm shape is not asserted: it legitimately
+        # lends nothing, and requiring `tools` of it would fail every green run.
+        run: |
+          pixi run python scripts/bench_points.py warm.json cold-recreate.json \
+            --out bench.json --require-stages-on cold-recreate \
+            --note "$(pixi run -q devpod version | tr -d '\r\n'), ${{ runner.os }}-${{ runner.arch }}"
+
+      - name: Publish the point and alert on a regression
+        uses: benchmark-action/github-action-benchmark@v1.22.1
+        with:
+          name: devlaunch launch stages
+          tool: customSmallerIsBetter
+          output-file-path: bench.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          # One global relative threshold to start with; per-stage thresholds are
+          # parked until there is false-alarm experience to tune them against.
+          alert-threshold: ${{ inputs.alert-threshold || '150%' }}
+          comment-on-alert: true
+          # The point of the entire map. `fail-threshold` only applies when this
+          # is true, so leaving it unset is safe.
+          fail-on-alert: false
+          # On a push there is no pull request, so the alert is a COMMIT comment
+          # -- and commit comments notify almost nobody. This @-mention is what
+          # actually produces a notification; without it the alert is invisible.
+          alert-comment-cc-users: '@blooop'
+          # The comparison table lands in every run's job summary, so "did it
+          # move" is answerable without opening the chart or waiting for a breach.
+          summary-always: true
+          # Unset means unbounded growth of the published data file.
+          max-items-in-chart: 500
+
+      - name: Keep the runs behind the medians
+        # The trend carries medians; this carries the spread that produced them,
+        # for digging after an alert. `always()` because a job that failed its
+        # stage assertion is exactly the one whose records somebody wants.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-records
+          path: |
+            warm.json
+            cold-recreate.json
+            bench.json
+          if-no-files-found: warn
