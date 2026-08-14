@@ -813,7 +813,7 @@ For before/after numbers, `scripts/bench_launch.py` runs a command N times and
 reports the median — one command per side of a change:
 
 ```bash
-python scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true   # warm launch
+python3 scripts/bench_launch.py -n 5 -- dl-next owner/repo -- true   # warm launch
 ```
 
 (`pixi run bench -n 5 -- ...` in the devcontainer.) It reports no median if any
@@ -822,8 +822,15 @@ run fails, so a broken launch cannot pass as a fast one. See `bench_launch.py
 whose `rm --force` also succeeds on the first run, when there is nothing to
 remove yet — and for why its wall clock and `dl-timing: total` are not the
 same quantity. For scale, on the host the session above was captured on, the
-warm median over 5 runs was 2.176s and the cold median (container recreated
-per run) over 3 runs was 33.204s.
+warm median over 5 runs was 2.176s. Running the cold recipe exactly as the
+epilog writes it — `-n 5`, container recreated per run — gave a median of
+15.899s (runs: 15.9, 20.0, 15.2, 15.7, 17.8). Read that as the cost of
+recreating a container, not of a first-ever launch: the reset removes the
+workspace but leaves the docker image layers and the bare clone cache, so
+every run after the first starts from both. A machine that must also pull or
+build the image pays more, by an amount this recipe does not measure — but the
+gap is large: an earlier 3-run median on this same host, reported as its first
+real launch, was 33.204s.
 
 ## Worktree Backend
 
