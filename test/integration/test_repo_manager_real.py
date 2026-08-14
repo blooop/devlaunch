@@ -303,8 +303,7 @@ class TestStalenessContract:
 
         pushed = _commit_on(work_dir, "main", "after_cache.txt", "Pushed after the cache")
 
-        clone_manager.ensure_branch("test", "repo", "main")
-        ws_path = clone_manager.ensure_workspace("test", "repo", "main", remote_url)
+        ws_path = clone_manager.prepare_cold("test", "repo", "main", remote_url)
 
         assert _head_sha(ws_path) == pushed
 
@@ -324,8 +323,7 @@ class TestStalenessContract:
 
         pushed = _commit_on(work_dir, "feature/late", "late.txt", "Pushed later")
 
-        clone_manager.ensure_branch("test", "repo", "feature/late")
-        ws_path = clone_manager.ensure_workspace("test", "repo", "feature/late", remote_url)
+        ws_path = clone_manager.prepare_cold("test", "repo", "feature/late", remote_url)
 
         assert _head_sha(ws_path) == pushed
 
@@ -345,8 +343,7 @@ class TestStalenessContract:
 
         main_tip = _commit_on(work_dir, "main", "moved.txt", "main moved on")
 
-        clone_manager.ensure_branch("test", "repo", "brand/new")
-        ws_path = clone_manager.ensure_workspace("test", "repo", "brand/new", remote_url)
+        ws_path = clone_manager.prepare_cold("test", "repo", "brand/new", remote_url)
 
         assert _head_sha(ws_path) == main_tip
         assert (
@@ -377,15 +374,12 @@ class TestStalenessContract:
 
         clone_manager.repo_manager.ensure_repo("test", "empty", str(empty_remote))
 
-        # On the launch path ensure_branch runs first, so its branch creation is
-        # where the empty cache is actually discovered.
+        # The branch step runs before the workspace step inside the one locked
+        # scope, so its branch creation is where the empty cache is discovered --
+        # and the whole preparation fails there rather than handing back a
+        # workspace built on nothing.
         with pytest.raises(RuntimeError):
-            clone_manager.ensure_branch("test", "empty", "nosuch")
-
-        # And a caller that reaches the workspace step anyway still fails there
-        # rather than getting a workspace built on nothing.
-        with pytest.raises(RuntimeError):
-            clone_manager.ensure_workspace("test", "empty", "nosuch", str(empty_remote))
+            clone_manager.prepare_cold("test", "empty", "nosuch", str(empty_remote))
 
     def test_an_unreachable_remote_launches_from_the_cache(self, clone_manager, local_git_repo):
         """Offline, a branch already in the cache still launches.
@@ -401,7 +395,6 @@ class TestStalenessContract:
         clone_manager.repo_manager.ensure_repo("test", "repo", remote_url)
         Path(remote_url).rename(Path(remote_url).with_name("moved_away.git"))
 
-        clone_manager.ensure_branch("test", "repo", "main")
-        ws_path = clone_manager.ensure_workspace("test", "repo", "main", remote_url)
+        ws_path = clone_manager.prepare_cold("test", "repo", "main", remote_url)
 
         assert _head_sha(ws_path) == cached_tip

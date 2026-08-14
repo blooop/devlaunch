@@ -1850,7 +1850,7 @@ class TestMainCLI:
         mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
-        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
+        mock_mgr.prepare_cold.return_value = pathlib.Path("/tmp/ws/repo-main")
         mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -1859,10 +1859,9 @@ class TestMainCLI:
         assert result == 0
         # Should resolve default branch
         mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
-        # Should ensure branch exists
-        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
-        # Workspace ID includes resolved branch
-        mock_mgr.ensure_workspace.assert_called_once_with(
+        # One call prepares the clone, the branch and the workspace, and the
+        # workspace ID includes the resolved branch
+        mock_mgr.prepare_cold.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
         main_id = WorkspaceId("owner", "repo", "main").value
@@ -1882,21 +1881,21 @@ class TestMainCLI:
     def test_main_new_workspace_from_repo_with_branch(
         self, _cache, mock_ssh, mock_up, mock_clone_mgr, mock_state
     ):
-        """Test creating workspace from owner/repo@branch uses ensure_branch."""
+        """A named branch goes straight to the cold entrypoint."""
         mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
-        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
+        mock_mgr.prepare_cold.return_value = pathlib.Path("/tmp/ws/repo-main")
         mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
         assert result == 0
-        # Should NOT resolve default branch (branch was specified)
+        # Should NOT resolve default branch (branch was specified), and should
+        # not take a repo-lock cycle of its own to find that out
         mock_mgr.repo_manager.get_default_branch.assert_not_called()
-        # Should ensure branch exists via clone_mgr
-        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
-        mock_mgr.ensure_workspace.assert_called_once_with(
+        mock_mgr.repo_manager.ensure_repo.assert_not_called()
+        mock_mgr.prepare_cold.assert_called_once_with(
             "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
         main_id = WorkspaceId("owner", "repo", "main").value
@@ -1918,30 +1917,31 @@ class TestMainCLI:
         """Test creating workspace from owner/repo@newbranch creates the branch."""
         mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
-        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-newbranch")
+        mock_mgr.prepare_cold.return_value = pathlib.Path("/tmp/ws/repo-newbranch")
         mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 0
-        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
-        mock_mgr.ensure_workspace.assert_called_once_with(
+        mock_mgr.prepare_cold.assert_called_once_with(
             "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
         )
 
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     def test_main_branch_creation_fails(self, mock_clone_mgr, mock_state):
-        """Test error when branch ensure fails."""
+        """Test error when preparing the branch fails."""
         mock_state.return_value = None  # Not existing
         mock_mgr = MagicMock()
-        mock_mgr.ensure_branch.side_effect = RuntimeError("push failed")
+        mock_mgr.prepare_cold.side_effect = RuntimeError("push failed")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 1
-        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "newbranch")
+        mock_mgr.prepare_cold.assert_called_once_with(
+            "owner", "repo", "newbranch", "git@github.com:owner/repo.git"
+        )
 
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1959,15 +1959,19 @@ class TestMainCLI:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     def test_main_clone_fails_with_branch(self, mock_clone_mgr, mock_state):
-        """Test error when ensure_repo fails (branch specified, workspace not existing)."""
+        """Test error when the clone fails (branch specified, workspace not existing).
+
+        With a branch named, clone-if-missing happens inside the cold entrypoint
+        rather than in a call of its own, so that is where the failure comes from.
+        """
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.repo_manager.ensure_repo.side_effect = OSError("network unreachable")
+        mock_mgr.prepare_cold.side_effect = OSError("network unreachable")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
         assert result == 1
-        mock_mgr.repo_manager.ensure_repo.assert_called_once()
+        mock_mgr.prepare_cold.assert_called_once()
 
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
@@ -1986,7 +1990,7 @@ class TestMainCLI:
             result = main()
         assert result == 1
         assert "Invalid git ref name" in caplog.text
-        mock_clone_mgr.return_value.ensure_workspace.assert_not_called()
+        mock_clone_mgr.return_value.prepare_cold.assert_not_called()
         mock_up.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -2016,7 +2020,7 @@ class TestMainCLI:
         # Nothing may reach the cache or devpod.
         mock_mgr.repo_manager.ensure_repo.assert_not_called()
         mock_mgr.repo_manager.get_default_branch.assert_not_called()
-        mock_mgr.ensure_workspace.assert_not_called()
+        mock_mgr.prepare_cold.assert_not_called()
         mock_up.assert_not_called()
 
     @patch("devlaunch.dl.get_workspace_state")
@@ -2030,15 +2034,14 @@ class TestMainCLI:
         """Test creating workspace with feature/branch style branch name."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-feature-my-feature")
+        mock_mgr.prepare_cold.return_value = pathlib.Path("/tmp/ws/repo-feature-my-feature")
         mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
         with patch.object(sys, "argv", ["dl", "owner/repo@feature/my-feature"]):
             result = main()
         assert result == 0
-        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "feature/my-feature")
-        mock_mgr.ensure_workspace.assert_called_once_with(
+        mock_mgr.prepare_cold.assert_called_once_with(
             "owner", "repo", "feature/my-feature", "git@github.com:owner/repo.git"
         )
 
@@ -2071,7 +2074,7 @@ class TestMainCLI:
         mock_state.return_value = None
         mock_mgr = MagicMock()
         mock_mgr.repo_manager.get_default_branch.return_value = "main"
-        mock_mgr.ensure_workspace.return_value = pathlib.Path("/tmp/ws/repo-main")
+        mock_mgr.prepare_cold.return_value = pathlib.Path("/tmp/ws/repo-main")
         mock_clone_mgr.return_value = mock_mgr
         mock_up.return_value = MagicMock(returncode=0)
         mock_ssh.return_value = 0
@@ -2080,7 +2083,9 @@ class TestMainCLI:
         assert result == 0
         # Should resolve default branch and use it
         mock_mgr.repo_manager.get_default_branch.assert_called_once_with("owner", "repo")
-        mock_mgr.ensure_branch.assert_called_once_with("owner", "repo", "main")
+        mock_mgr.prepare_cold.assert_called_once_with(
+            "owner", "repo", "main", "git@github.com:owner/repo.git"
+        )
 
 
 class TestPurgeFunctionality:
@@ -2665,7 +2670,7 @@ class TestCLIErrorMessages:
         """Clone failure (with branch) produces exactly one error line."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.repo_manager.ensure_repo.side_effect = OSError("network unreachable")
+        mock_mgr.prepare_cold.side_effect = OSError("network unreachable")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@feature"]):
             result = main()
@@ -2694,10 +2699,10 @@ class TestCLIErrorMessages:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     def test_branch_ensure_runtime_error(self, mock_clone_mgr, mock_state, caplog):
-        """Branch ensure RuntimeError logged with branch name."""
+        """Branch preparation RuntimeError logged with the branch name."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.ensure_branch.side_effect = RuntimeError("push failed: permission denied")
+        mock_mgr.prepare_cold.side_effect = RuntimeError("push failed: permission denied")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@newbranch"]):
             result = main()
@@ -2708,10 +2713,10 @@ class TestCLIErrorMessages:
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
     def test_branch_ensure_os_error(self, mock_clone_mgr, mock_state, caplog):
-        """Branch ensure OSError returns 1."""
+        """Branch preparation OSError returns 1."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.ensure_branch.side_effect = OSError("git not found")
+        mock_mgr.prepare_cold.side_effect = OSError("git not found")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@develop"]):
             result = main()
@@ -2722,11 +2727,11 @@ class TestCLIErrorMessages:
 
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_ensure_workspace_runtime_error(self, mock_clone_mgr, mock_state, caplog):
-        """ensure_workspace RuntimeError returns 1 with message."""
+    def test_prepare_cold_runtime_error(self, mock_clone_mgr, mock_state, caplog):
+        """prepare_cold RuntimeError returns 1 with message."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.ensure_workspace.side_effect = RuntimeError("worktree creation failed")
+        mock_mgr.prepare_cold.side_effect = RuntimeError("worktree creation failed")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
@@ -2736,11 +2741,11 @@ class TestCLIErrorMessages:
 
     @patch("devlaunch.dl.get_workspace_state")
     @patch("devlaunch.dl._get_clone_manager")
-    def test_ensure_workspace_os_error(self, mock_clone_mgr, mock_state, caplog):
-        """ensure_workspace OSError returns 1."""
+    def test_prepare_cold_os_error(self, mock_clone_mgr, mock_state, caplog):
+        """prepare_cold OSError returns 1."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.ensure_workspace.side_effect = OSError("disk full")
+        mock_mgr.prepare_cold.side_effect = OSError("disk full")
         mock_clone_mgr.return_value = mock_mgr
         with patch.object(sys, "argv", ["dl", "owner/repo@main"]):
             result = main()
@@ -2856,7 +2861,7 @@ class TestCLIErrorMessages:
         """Verify fetch failure doesn't produce duplicate error messages."""
         mock_state.return_value = None
         mock_mgr = MagicMock()
-        mock_mgr.repo_manager.ensure_repo.side_effect = RuntimeError(
+        mock_mgr.prepare_cold.side_effect = RuntimeError(
             "Failed to fetch repository: network timeout"
         )
         mock_clone_mgr.return_value = mock_mgr

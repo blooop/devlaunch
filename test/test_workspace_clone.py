@@ -1,6 +1,7 @@
 """Tests for WorkspaceCloneManager."""
 # pylint: disable=redefined-outer-name,protected-access,unused-argument
 
+import contextlib
 from pathlib import Path
 from unittest.mock import call, patch, MagicMock
 
@@ -10,7 +11,12 @@ import os
 import pytest
 
 from devlaunch.workspace_id import WorkspaceId
-from devlaunch.worktree.repo_manager import FetchFailed, RefMissingOnRemote, Updated
+from devlaunch.worktree.repo_manager import (
+    FetchFailed,
+    RefMissingOnRemote,
+    RepositoryManager,
+    Updated,
+)
 from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 from devlaunch.worktree.config import WorktreeConfig
 
@@ -65,15 +71,38 @@ def config(tmp_repos_dir):
 
 
 @pytest.fixture
-def mock_repo_manager(tmp_repos_dir):
+def repo_lock(tmp_path):
+    """A real RepoLock for owner/repo, minted the only way one can be.
+
+    Real rather than a stub, because ``require`` is a live check inside every
+    method these tests call: a mock token would answer it silently, and the
+    property that a lock on one repository cannot vouch for another would go
+    unexercised in the whole file.
+
+    Minted over a directory of its own rather than over `tmp_repos_dir`, which
+    tests here are entitled to create and assert the contents of. What the token
+    carries is the pair, not a path, so where the flock behind it sits makes no
+    difference to anything under test.
+    """
+    manager = RepositoryManager(tmp_path / "lock-scope", MagicMock())
+    with manager.hold_repo_lock("owner", "repo") as lock:
+        yield lock
+
+
+@pytest.fixture
+def mock_repo_manager(tmp_repos_dir, repo_lock):
     """Create a mock RepositoryManager."""
     mgr = MagicMock()
     repo_root = tmp_repos_dir / "owner" / "repo"
     mgr.get_repo_path.return_value = repo_root
     mgr.get_bare_path.return_value = repo_root / ".bare"
-    # A real path, not a MagicMock: ensure_workspace/ensure_branch flock this.
+    # A real path, not a MagicMock: the lock scope flocks this.
     mgr.lock_path.return_value = repo_root / ".lock"
-    mgr.ensure_repo.return_value = MagicMock()
+    # The lock scope hands out the real token the fixture already holds, rather
+    # than a mock context manager yielding a mock: what prepare_cold passes down
+    # is then the same evidence the production path passes down.
+    mgr.hold_repo_lock = lambda owner, repo: contextlib.nullcontext(repo_lock)
+    mgr.clone_if_missing.return_value = MagicMock()
     # A real outcome arm, not a MagicMock: ensure_branch dispatches on the type
     # and rejects anything that is not one of the three, so a bare mock here
     # would fail every test with "unhandled fetch outcome" rather than with
@@ -154,11 +183,9 @@ class TestGetWorkspacePath:
         with pytest.raises(ValueError, match="Invalid git ref"):
             clone_manager.workspace_exists("owner", "repo", "branch name")
 
-    def test_rejects_unvalidated_ref_via_ensure_workspace(self, clone_manager):
+    def test_rejects_unvalidated_ref_via_prepare_cold(self, clone_manager):
         with pytest.raises(ValueError, match="Invalid git ref"):
-            clone_manager.ensure_workspace(
-                "owner", "repo", "--evil", "git@github.com:owner/repo.git"
-            )
+            clone_manager.prepare_cold("owner", "repo", "--evil", "git@github.com:owner/repo.git")
 
     def test_rejects_unvalidated_ref_via_remove_workspace(self, clone_manager):
         with pytest.raises(ValueError, match="Invalid git ref"):
@@ -190,7 +217,7 @@ class TestEnsureBranch:
     """Tests for ensure_branch."""
 
     def test_fetches_the_requested_ref_then_ensures(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """The requested branch is fetched by name, then the branch is ensured.
 
@@ -203,7 +230,7 @@ class TestEnsureBranch:
         mock_repo_manager.get_default_branch.return_value = "main"
         mock_repo_manager.fetch_ref.return_value = Updated()
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         mock_repo_manager.fetch_ref.assert_called_once_with("owner", "repo", "newbranch")
         mock_repo_manager.lazy_fetch.assert_not_called()
@@ -216,7 +243,7 @@ class TestEnsureBranch:
         )
 
     def test_ref_absent_upstream_fetches_the_default_branch_to_base_on(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """A brand-new branch is based on a *freshly fetched* default branch.
 
@@ -229,7 +256,7 @@ class TestEnsureBranch:
         mock_repo_manager.get_default_branch.return_value = "main"
         mock_repo_manager.fetch_ref.side_effect = [RefMissingOnRemote(), Updated()]
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         assert mock_repo_manager.fetch_ref.call_args_list == [
             call("owner", "repo", "newbranch"),
@@ -244,7 +271,7 @@ class TestEnsureBranch:
         )
 
     def test_absent_ref_costs_exactly_one_extra_fetch(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """The default-branch fetch is not retried when it too finds nothing.
 
@@ -257,12 +284,18 @@ class TestEnsureBranch:
         mock_repo_manager.get_default_branch.return_value = "main"
         mock_repo_manager.fetch_ref.return_value = RefMissingOnRemote()
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         assert mock_repo_manager.fetch_ref.call_count == 2
 
     def test_a_failed_default_branch_fetch_warns_with_its_reason(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, caplog
+        self,
+        clone_manager,
+        mock_repo_manager,
+        mock_branch_manager,
+        tmp_repos_dir,
+        repo_lock,
+        caplog,
     ):
         """Losing the base-branch fetch is reported the way losing any fetch is.
 
@@ -279,7 +312,7 @@ class TestEnsureBranch:
         ]
 
         with caplog.at_level(logging.WARNING):
-            clone_manager.ensure_branch("owner", "repo", "newbranch")
+            clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         assert "no such host" in caplog.text
         # Still proceeds: the cache's own default branch is the best remaining
@@ -287,7 +320,7 @@ class TestEnsureBranch:
         mock_branch_manager.ensure_branch_exists.assert_called_once()
 
     def test_an_unsafe_recorded_default_branch_does_not_escape_as_a_valueerror(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """A corrupt default_branch in metadata must not change what ensure_branch raises.
 
@@ -308,13 +341,13 @@ class TestEnsureBranch:
 
         mock_repo_manager.fetch_ref.side_effect = reject_unsafe
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         # Still ensures the branch, leaving the failure to git as it did before.
         mock_branch_manager.ensure_branch_exists.assert_called_once()
 
     def test_continues_from_cache_when_the_fetch_fails(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """Offline still launches, from whatever the cache holds.
 
@@ -328,7 +361,7 @@ class TestEnsureBranch:
         mock_repo_manager.get_default_branch.return_value = "main"
         mock_repo_manager.fetch_ref.return_value = FetchFailed("no such host")
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         # No default-branch fetch: nothing was learned about the remote, so there
         # is no basis for treating the branch as new.
@@ -342,14 +375,14 @@ class TestEnsureBranch:
         )
 
     def test_falls_back_to_head_if_get_default_branch_fails(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """Test that ensure_branch falls back to HEAD when get_default_branch raises."""
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
         mock_repo_manager.get_default_branch.side_effect = RuntimeError("no HEAD")
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
             bare_path,
@@ -360,14 +393,14 @@ class TestEnsureBranch:
         )
 
     def test_falls_back_to_head_if_get_default_branch_returns_empty(
-        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
         """Test that ensure_branch falls back to HEAD when get_default_branch returns empty."""
         bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
         mock_repo_manager.get_bare_path.return_value = bare_path
         mock_repo_manager.get_default_branch.return_value = ""
 
-        clone_manager.ensure_branch("owner", "repo", "newbranch")
+        clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
         mock_branch_manager.ensure_branch_exists.assert_called_once_with(
             bare_path,
@@ -378,8 +411,8 @@ class TestEnsureBranch:
         )
 
 
-class TestEnsureWorkspace:
-    """Tests for ensure_workspace."""
+class TestPrepareCold:
+    """Tests for prepare_cold, the cold path's one locked entrypoint."""
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
@@ -400,7 +433,7 @@ class TestEnsureWorkspace:
 
         ws_path = repo_root / leaf()
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # Should have called: git clone, git remote set-url,
         # git show-ref (remote ref check), git checkout -B (no fetch)
@@ -462,7 +495,7 @@ class TestEnsureWorkspace:
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         assert [c[0][0] for c in mock_run.call_args_list] == [
             ["git", "checkout", "nb4"],
@@ -492,7 +525,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert ["git", "lfs", "pull", "origin"] in issued
@@ -513,7 +546,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert ["git", "lfs", "pull", "origin"] not in issued
@@ -542,7 +575,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = stub_git(tracked=["assets/big.bin"], lfs_files=["assets/big.bin"])
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         lfs_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:2] == ["git", "lfs"]]
         assert ["git", "lfs", "ls-files", "--name-only"] in lfs_calls
@@ -570,7 +603,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = stub_git(tracked=["main.py"])
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert not any(cmd[:2] == ["git", "lfs"] for cmd in issued)
@@ -599,7 +632,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = stub_git(tracked=["big.bin"], lfs_files=["big.bin"])
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert ["git", "lfs", "pull", "origin"] not in issued
@@ -627,7 +660,7 @@ class TestEnsureWorkspace:
 
         mock_run.side_effect = stub_git(lfs_files=["big.bin"], index_readable=False)
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         issued = [c[0][0] for c in mock_run.call_args_list]
         assert ["git", "lfs", "pull", "origin"] in issued
@@ -658,9 +691,7 @@ class TestEnsureWorkspace:
         base_repo.default_branch = "main"
         mock_repo_manager.get_repo.return_value = base_repo
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "new-feature", "git@github.com:owner/repo.git"
-        )
+        clone_manager.prepare_cold("owner", "repo", "new-feature", "git@github.com:owner/repo.git")
 
         # Last call should be checkout -B <branch> origin/main
         checkout_call = mock_run.call_args_list[-1]
@@ -695,7 +726,7 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo.return_value = base_repo
 
         with pytest.raises(RuntimeError, match="neither 'origin/new-feature' nor 'origin/main'"):
-            clone_manager.ensure_workspace(
+            clone_manager.prepare_cold(
                 "owner", "repo", "new-feature", "git@github.com:owner/repo.git"
             )
 
@@ -715,7 +746,7 @@ class TestEnsureWorkspace:
 
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # Checkout and nothing else (no clone, no remote set-url, no show-ref,
         # and no fetch)
@@ -739,7 +770,7 @@ class TestEnsureWorkspace:
 
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # Should only call checkout (no clone, no remote set-url, no fetch)
         assert mock_run.call_count == 1
@@ -747,14 +778,14 @@ class TestEnsureWorkspace:
         assert checkout_call[0][0] == ["git", "checkout", "nb4"]
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
-    def test_ensures_bare_repo_first(self, mock_run, clone_manager, mock_repo_manager):
-        """Test that ensure_repo is called before cloning."""
+    def test_ensures_bare_repo_first(self, mock_run, clone_manager, mock_repo_manager, repo_lock):
+        """Clone-if-missing runs first, and under the token the scope minted."""
         mock_run.return_value = MagicMock(returncode=0)
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
-        mock_repo_manager.ensure_repo.assert_called_once_with(
-            "owner", "repo", "git@github.com:owner/repo.git"
+        mock_repo_manager.clone_if_missing.assert_called_once_with(
+            repo_lock, "owner", "repo", "git@github.com:owner/repo.git"
         )
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
@@ -765,19 +796,19 @@ class TestEnsureWorkspace:
         )
 
         with pytest.raises(RuntimeError, match="Failed to clone workspace"):
-            clone_manager.ensure_workspace("owner", "repo", "main", "git@github.com:owner/repo.git")
+            clone_manager.prepare_cold("owner", "repo", "main", "git@github.com:owner/repo.git")
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_returns_workspace_path(
         self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
-        """Test that ensure_workspace returns the workspace path."""
+        """Test that prepare_cold returns the workspace path."""
         repo_root = tmp_repos_dir / "owner" / "repo"
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
         mock_run.return_value = MagicMock(returncode=0)
 
-        result = clone_manager.ensure_workspace(
+        result = clone_manager.prepare_cold(
             "owner", "repo", "main", "git@github.com:owner/repo.git"
         )
 
@@ -793,7 +824,7 @@ class TestEnsureWorkspace:
         mock_repo_manager.get_repo_path.return_value = repo_root
         mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
 
-        clone_manager.ensure_workspace("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
 
         # No call should contain "git fetch origin"
         fetch_calls = [c for c in mock_run.call_args_list if c[0][0] == ["git", "fetch", "origin"]]

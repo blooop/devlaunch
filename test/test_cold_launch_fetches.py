@@ -38,6 +38,7 @@ from devlaunch.worktree.repo_manager import RepositoryManager
 from devlaunch.worktree.storage import MetadataStorage
 from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
 from devlaunch.worktree.config import WorktreeConfig
+from devlaunch.workspace_id import WorkspaceId
 
 
 @dataclass(frozen=True)
@@ -169,10 +170,14 @@ def git_calls(warm_cache):
 
 
 def cold_launch(clone_manager, branch="feature/x"):
-    """The cold path dl.py takes when devpod does not know the workspace."""
-    clone_manager.repo_manager.ensure_repo("owner", "repo", "git@github.com:owner/repo.git")
-    clone_manager.ensure_branch("owner", "repo", branch)
-    clone_manager.ensure_workspace("owner", "repo", branch, "git@github.com:owner/repo.git")
+    """The cold path dl.py takes when devpod does not know the workspace.
+
+    One call since devlaunch#200: clone-if-missing, the targeted fetch, the
+    branch and the workspace clone all happen inside the single scope that holds
+    the repo lock. What is fetched, and what is fetched while that lock is held,
+    is unchanged -- which is what everything below asserts.
+    """
+    clone_manager.prepare_cold("owner", "repo", branch, "git@github.com:owner/repo.git")
 
 
 class TestColdLaunchFetches:
@@ -254,9 +259,19 @@ class TestReRegistration:
         ws_path.mkdir(parents=True)
         (ws_path / ".git").mkdir()
 
-        clone_manager.ensure_workspace(
-            "owner", "repo", "feature/x", "git@github.com:owner/repo.git"
-        )
+        # The workspace-prep step on its own, which is what "of its own" means
+        # here: the targeted fetch belongs to the branch step next door and is
+        # counted by the tests above. Reached through the lock scope because
+        # that is the only way to hold the token it requires.
+        workspace = WorkspaceId("owner", "repo", "feature/x")
+        with clone_manager.repo_manager.hold_repo_lock("owner", "repo") as lock:
+            clone_manager._prepare_workspace(  # pylint: disable=protected-access
+                lock,
+                workspace,
+                clone_manager.repo_manager.get_bare_path("owner", "repo"),
+                ws_path,
+                "git@github.com:owner/repo.git",
+            )
 
         assert recorder.fetches == []
         assert [c.argv for c in recorder.calls] == [["git", "checkout", "feature/x"]]
@@ -282,4 +297,5 @@ class TestFetchFailureStillLaunches:
             return recorder(argv, **kwargs)
 
         with patch("devlaunch.worktree.repo_manager.subprocess.run", unreachable):
-            clone_manager.ensure_branch("owner", "repo", "feature/x")
+            with clone_manager.repo_manager.hold_repo_lock("owner", "repo") as lock:
+                clone_manager.ensure_branch(lock, "owner", "repo", "feature/x")

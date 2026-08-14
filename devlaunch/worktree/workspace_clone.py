@@ -26,11 +26,11 @@ from .. import timing
 from ..workspace_id import WorkspaceId, validate_ref_name
 from .branch_manager import BranchManager
 from .config import WorktreeConfig, get_worktree_config
-from .locks import hold_lock
 from .models import WorktreeInfo
 from .repo_manager import (
     FetchFailed,
     RefMissingOnRemote,
+    RepoLock,
     RepositoryManager,
     Updated,
     unhandled_fetch_outcome,
@@ -329,7 +329,39 @@ class WorkspaceCloneManager:
             ) from e
 
     @timing.staged("host-prep")
-    def ensure_branch(self, owner: str, repo: str, branch: str) -> None:
+    def prepare_cold(self, owner: str, repo: str, branch: str, remote_url: str) -> Path:
+        """Everything a cold launch needs on the host, under one repo lock.
+
+        The cold path's single entrypoint, and the only place the repo lock is
+        taken for it. Clone-if-missing, the targeted fetch and branch creation,
+        and the workspace clone all run inside one scope that provably owns the
+        lock, so the sequence cannot be interrupted partway through.
+
+        It used to be four separate acquisitions, and the cost was never the
+        flocks -- four uncontended ones are microseconds. It was that between any
+        two of them another process could act on a repository this launch was
+        halfway through preparing: ``dl --prune`` weighing or removing a clone
+        still being filled, or two launches of different branches of one repo
+        interleaving their steps. Atomicity and legibility, not speed.
+
+        Returns the workspace clone's path, which is what dl hands devpod.
+        """
+        # Derived here rather than passed in, and derived before the lock: it is
+        # the parse boundary for the triple, and an unsafe ref should be refused
+        # without anything having been locked or written on its behalf.
+        workspace = WorkspaceId(owner, repo, branch)
+        with self.repo_manager.hold_repo_lock(owner, repo) as lock:
+            self.repo_manager.clone_if_missing(lock, owner, repo, remote_url)
+            self.ensure_branch(lock, owner, repo, branch)
+            return self._prepare_workspace(
+                lock,
+                workspace,
+                self.repo_manager.get_bare_path(owner, repo),
+                self.get_workspace_path(owner, repo, branch),
+                remote_url,
+            )
+
+    def ensure_branch(self, lock: RepoLock, owner: str, repo: str, branch: str) -> None:
         """Ensure a branch exists in the bare repo, at the remote's current tip.
 
         This is the whole of the launch path's network use, and the staleness
@@ -353,125 +385,99 @@ class WorkspaceCloneManager:
 
         Does not push to the remote.
 
-        Runs under the repo lock: the fetch and the branch creation both write
-        refs in the shared bare repo, and two processes doing so at once trip
-        over git's own ref locks. (hold_lock is not reentrant; no callee here
-        takes the repo lock -- `fetch_ref` documents that it expects to be
-        called with it held.)
+        Takes a :class:`RepoLock` rather than acquiring one: the fetch and the
+        branch creation both write refs in the shared bare repo, and two
+        processes doing so at once trip over git's own ref locks. The token is
+        what says the caller has already serialized this, and it is minted only
+        inside :meth:`RepositoryManager.hold_repo_lock`.
         """
+        lock.require(owner, repo)
         bare_path = self.repo_manager.get_bare_path(owner, repo)
-        with hold_lock(
-            self.repo_manager.lock_path(owner, repo),
-            waiting_note=f"another dl run preparing {owner}/{repo}",
-        ):
-            outcome = self.repo_manager.fetch_ref(owner, repo, branch)
+        outcome = self.repo_manager.fetch_ref(owner, repo, branch)
 
-            try:
-                default_branch = self.repo_manager.get_default_branch(owner, repo)
-            except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
-                logger.warning(f"Failed to resolve default branch: {e}")
-                default_branch = None
+        try:
+            default_branch = self.repo_manager.get_default_branch(owner, repo)
+        except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
+            logger.warning(f"Failed to resolve default branch: {e}")
+            default_branch = None
 
-            # Each arm named, so a fourth one cannot be silently read as one of
-            # these three.
-            if isinstance(outcome, Updated):
-                pass
-            elif isinstance(outcome, RefMissingOnRemote):
-                # The remote answered, so the branch really is new: base it on the
-                # default branch, and fetch *that* so it is based on something
-                # current. Whatever this second fetch answers, the branch creation
-                # below proceeds -- there is no third ref to fall back to, and the
-                # cache's own default branch is the best remaining start point.
-                if default_branch:
-                    try:
-                        base_outcome = self.repo_manager.fetch_ref(owner, repo, default_branch)
-                    except ValueError as e:
-                        # Unlike `branch`, this name is read back from metadata.json
-                        # and carries no proof. Caught rather than propagated so a
-                        # hand-edited record cannot change what this method raises:
-                        # dl's launch path guards it with (RuntimeError, OSError),
-                        # so a ValueError here would surface as a traceback.
-                        logger.warning(f"Cannot fetch recorded default branch: {e}")
-                    else:
-                        if isinstance(base_outcome, FetchFailed):
-                            # Same condition as the arm below, warned the same
-                            # way: the new branch is about to be cut from a
-                            # possibly stale cache, and the reason is carried
-                            # precisely so it can be printed here.
-                            logger.warning(
-                                f"Could not fetch {default_branch} for {owner}/{repo}: "
-                                f"{base_outcome.reason}"
-                            )
-            elif isinstance(outcome, FetchFailed):
-                # Not an error here: a cached branch still launches. Deliberately
-                # no default-branch fetch -- nothing was learned about the remote,
-                # so nothing licenses treating this branch as new.
-                logger.warning(f"Could not fetch {branch} for {owner}/{repo}: {outcome.reason}")
-            else:
-                unhandled_fetch_outcome(outcome)
+        # Each arm named, so a fourth one cannot be silently read as one of
+        # these three.
+        if isinstance(outcome, Updated):
+            pass
+        elif isinstance(outcome, RefMissingOnRemote):
+            # The remote answered, so the branch really is new: base it on the
+            # default branch, and fetch *that* so it is based on something
+            # current. Whatever this second fetch answers, the branch creation
+            # below proceeds -- there is no third ref to fall back to, and the
+            # cache's own default branch is the best remaining start point.
+            if default_branch:
+                try:
+                    base_outcome = self.repo_manager.fetch_ref(owner, repo, default_branch)
+                except ValueError as e:
+                    # Unlike `branch`, this name is read back from metadata.json
+                    # and carries no proof. Caught rather than propagated so a
+                    # hand-edited record cannot change what this method raises:
+                    # dl's launch path guards it with (RuntimeError, OSError),
+                    # so a ValueError here would surface as a traceback.
+                    logger.warning(f"Cannot fetch recorded default branch: {e}")
+                else:
+                    if isinstance(base_outcome, FetchFailed):
+                        # Same condition as the arm below, warned the same
+                        # way: the new branch is about to be cut from a
+                        # possibly stale cache, and the reason is carried
+                        # precisely so it can be printed here.
+                        logger.warning(
+                            f"Could not fetch {default_branch} for {owner}/{repo}: "
+                            f"{base_outcome.reason}"
+                        )
+        elif isinstance(outcome, FetchFailed):
+            # Not an error here: a cached branch still launches. Deliberately
+            # no default-branch fetch -- nothing was learned about the remote,
+            # so nothing licenses treating this branch as new.
+            logger.warning(f"Could not fetch {branch} for {owner}/{repo}: {outcome.reason}")
+        else:
+            unhandled_fetch_outcome(outcome)
 
-            self.branch_manager.ensure_branch_exists(
-                bare_path,
-                branch,
-                create_remote=False,
-                start_point=default_branch or "HEAD",
-                use_local_refs=True,
-            )
-
-    @timing.staged("host-prep")
-    def ensure_workspace(
-        self,
-        owner: str,
-        repo: str,
-        branch: str,
-        remote_url: str,
-    ) -> Path:
-        """Ensure a workspace clone exists and is on the right branch.
-
-        1. Ensure the bare reference repo is cloned/fetched
-        2. Clone from bare repo to workspace path (if not already there)
-        3. Fix remote URL to point to GitHub (not the bare repo)
-        4. Checkout the requested branch
-        5. Track workspace in metadata for deletion
-
-        The workspace id written to metadata is derived here rather than passed in.
-        It has to equal the clone directory's leaf name for later lookups to find
-        the clone, and an id-shaped argument could disagree with it silently.
-
-        Returns the workspace path.
-        """
-        workspace = WorkspaceId(owner, repo, branch)
-        # Step 1: Ensure bare reference repo exists
-        self.repo_manager.ensure_repo(owner, repo, remote_url)
-        bare_repo_path = self.repo_manager.get_bare_path(owner, repo)
-
-        ws_path = self.get_workspace_path(owner, repo, branch)
-
-        # Steps 2-5 mutate the workspace clone, so they run under the repo
-        # lock: fire the same workspace twice at once and, unserialized, each
-        # process saw no clone, both cloned into the same path, and the loser's
-        # cleanup deleted the winner's. The lock is taken only after
-        # ensure_repo (which takes the same lock) has returned -- hold_lock is
-        # not reentrant.
-        with hold_lock(
-            self.repo_manager.lock_path(owner, repo),
-            waiting_note=f"another dl run preparing {owner}/{repo}",
-        ):
-            return self._prepare_workspace(workspace, bare_repo_path, ws_path, remote_url)
+        self.branch_manager.ensure_branch_exists(
+            bare_path,
+            branch,
+            create_remote=False,
+            start_point=default_branch or "HEAD",
+            use_local_refs=True,
+        )
 
     def _prepare_workspace(
         self,
+        lock: RepoLock,
         workspace: WorkspaceId,
         bare_repo_path: Path,
         ws_path: Path,
         remote_url: str,
     ) -> Path:
-        """Steps 2-5 of ensure_workspace; the caller holds the repo lock."""
+        """Make the workspace clone and record it; the caller holds *lock*.
+
+        1. Clone from the bare repo to the workspace path (if not already there)
+        2. Fix the remote URL to point at GitHub (not the bare repo)
+        3. Checkout the requested branch
+        4. Track the workspace in metadata for deletion
+
+        All of it mutates the workspace clone, which is why it needs the lock:
+        fire the same workspace twice at once and, unserialized, each process saw
+        no clone, both cloned into the same path, and the loser's cleanup deleted
+        the winner's.
+
+        The workspace id written to metadata comes from the *workspace* argument
+        rather than being re-derived here, and that argument is the proof its
+        triple was validated. It has to equal the clone directory's leaf name for
+        later lookups to find the clone.
+        """
         owner, repo, branch = workspace.owner, workspace.repo, workspace.ref
+        lock.require(owner, repo)
         is_new_workspace = False
         if not self.workspace_exists(owner, repo, branch):
             is_new_workspace = True
-            # Step 2: Clone from bare repo
+            # Step 1: Clone from bare repo
             logger.info(f"Creating workspace clone at {ws_path}")
             ws_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -496,7 +502,7 @@ class WorkspaceCloneManager:
                     shutil.rmtree(ws_path)
                 raise RuntimeError(f"Failed to clone workspace: {e.stderr}") from e
 
-            # Step 3: Fix remote URL to point to GitHub
+            # Step 2: Fix remote URL to point to GitHub
             try:
                 subprocess.run(
                     ["git", "remote", "set-url", "origin", remote_url],
@@ -516,7 +522,7 @@ class WorkspaceCloneManager:
         # consults no remote-tracking ref. It was a network round-trip per launch
         # that bought nothing (devlaunch#144).
 
-        # Step 4: Checkout branch
+        # Step 3: Checkout branch
         try:
             if is_new_workspace:
                 # For new workspaces, reset the branch to the remote ref to
@@ -559,7 +565,7 @@ class WorkspaceCloneManager:
         # existing-workspace path forever after, silently building against pointers.
         self._materialize_lfs(ws_path)
 
-        # Step 5: Track in metadata
+        # Step 4: Track in metadata
         try:
             wt_info = WorktreeInfo(
                 owner=owner,
