@@ -672,6 +672,13 @@ That refusal is the only judgement `dl` makes here, and it is not about finished
 work — it is `dl` declining to destroy the only copy of something, including
 when it cannot prove there is another copy. Say `--force` if you mean it.
 
+`--force` changes one more answer: an already-absent workspace counts as
+deleted, like `rm -f`. Unforced, `rm` reports devpod's refusal to delete a
+workspace it does not have; forced, the contract is the state afterwards, not
+that a delete happened — which is what lets the [cold benchmark's per-run
+reset](#measuring-launch-time) run before the first launch, when there is
+nothing to remove yet.
+
 The guard reads `dl`'s metadata record, so the recorded directory is the one it
 asks about. (The delete does not always remove that same directory: when the
 recorded path is not on disk it falls back to a derived one. That divergence is
