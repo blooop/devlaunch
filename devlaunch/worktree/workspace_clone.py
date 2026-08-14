@@ -471,6 +471,39 @@ class WorkspaceCloneManager:
         rather than being re-derived here, and that argument is the proof its
         triple was validated. It has to equal the clone directory's leaf name for
         later lookups to find the clone.
+
+        **Step 1 shares the cache's object files, and that is the design rather
+        than a happy accident.** ``git clone <path> <path>`` hardlinks the pack
+        files instead of copying them, which is the whole reason a workspace per
+        branch is affordable. Measured on blooop/devlaunch itself (``du -sc``
+        over the cache and each clone's ``.git``, ext4, git 2.55.0): cache plus
+        one workspace is 2400 KB shared against 4472 KB with ``--no-hardlinks``,
+        and each further workspace's ``.git`` costs 196 KB instead of 2268 KB --
+        about 91% of it is the cache's copy, not its own. Nothing in this call
+        *says* so, so an integration test asserts it (same ``st_ino``,
+        ``st_nlink >= 2``) and goes red on the silent ways to lose it: a
+        ``file://`` URL, an intermediate copy, an explicit ``--no-hardlinks``.
+
+        No clone flag guards it, deliberately. ``--local`` is already the default
+        and does not even error on a ``file://`` source, so it would pin nothing;
+        ``--shared`` and ``--reference`` were measured to leave an fsck-broken
+        workspace once the cache's force-refspec fetch and gc have run, for a 2 KB
+        saving, and are rejected (devlaunch#154).
+
+        Two measured ways the sharing erodes, neither of which this call fights:
+
+        1. **A repack of the cache drops an existing clone's pack to
+           ``st_nlink == 1``** -- its own private, complete copy. Measured: the
+           clone still passes ``git fsck`` afterwards. That is the safety
+           property that makes alternates unnecessary, not a bug. The workspace
+           stops being cheap and never stops being valid, which is exactly what
+           an alternates-based workspace fails to do here.
+        2. **A destination on another filesystem makes git fall back to a full
+           copy, silently.** Measured across ext4 and tmpfs: exit 0, no warning,
+           and a pack with a different inode on a different device. Devlaunch's
+           own layout makes it unreachable -- ``.bare`` and every workspace clone
+           are siblings inside one repo directory, so source and destination are
+           on the same filesystem by construction.
         """
         owner, repo, branch = workspace.owner, workspace.repo, workspace.ref
         lock.require(owner, repo)

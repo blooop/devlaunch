@@ -111,6 +111,34 @@ table and should be judged on its own merits.
   the pass runs and whether the tools work runs are two questions. A machine with the
   opt-out set pays one round trip per `up` that it did not pay before.
 
+- **A workspace clone sharing the bare cache's pack files is now a stated, tested design
+  rather than a default nobody had written down**
+  ([#162](https://github.com/blooop/devlaunch/issues/162)). No behaviour changes: this is
+  the guard that was missing. `git clone <path> <path>` hardlinks pack files by default,
+  and that default was all that kept every workspace after the first cheap — a `file://`
+  URL, an intermediate copy, or an explicit `--no-hardlinks` would each have forfeited it
+  silently, with git exiting 0 either way. Measured on this repo — `du -sc` over the cache
+  and each clone's `.git`, ext4, git 2.55.0 — cache plus one workspace is **2400 KB**
+  shared against **4472 KB** unshared, and each further workspace's `.git` costs
+  **196 KB** instead of **2268 KB**. (#154 decided this on the same measurement over a
+  smaller history: 2044 KB against 3788 KB, 180 KB against 1924 KB. The ratio is what
+  holds; the absolute figures grow with the repo.)
+
+  An `integration` test now asserts each pack file in a workspace *is* the cache's file —
+  equal `st_ino`, `st_nlink >= 2` — and goes red on all three of those changes; it also
+  refuses to pass over an empty pack set, which the suite's three-object fixture would
+  otherwise have given it. **No clone flag was added**, deliberately: `--local` is already
+  the default and does not even reject a `file://` source, so it pins nothing, and
+  `--shared`/`--reference` were measured to leave an fsck-broken workspace after the
+  cache's force-refspec fetch and gc, for a 2 KB saving.
+
+  Two erosions are now written down where the clone happens, both measured. A repack of
+  the cache drops an existing clone's pack to one link — its own complete copy, still
+  passing `git fsck`, which is the safety property that makes alternates unnecessary. And
+  a destination on another filesystem makes git fall back to a full copy with exit 0 and
+  no warning (measured across ext4 and tmpfs); devlaunch's layout puts `.bare` and every
+  clone inside one directory, so that one is unreachable by construction.
+
 ## [0.0.26] - 2026-08-14
 
 ### Added

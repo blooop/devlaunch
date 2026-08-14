@@ -198,6 +198,13 @@ class RepositoryManager:
         Layout:
             repos/<owner>/<repo>/.bare/   # bare git data
             repos/<owner>/<repo>/<branch>/ # workspace clones (managed by WorkspaceCloneManager)
+
+        The cache and the clones being *siblings of one directory* is load-bearing
+        and not merely tidy: it is what puts every workspace clone on the same
+        filesystem as the objects it clones from, so the local transport can
+        hardlink the pack files rather than copy them. See
+        ``WorkspaceCloneManager._prepare_workspace`` for what that is worth and
+        for the cross-filesystem fallback this layout makes unreachable.
         """
         bare_path = self.get_bare_path(owner, repo)
 
