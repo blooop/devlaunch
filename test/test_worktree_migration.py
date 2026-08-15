@@ -459,6 +459,27 @@ class TestOrphanedContainers:
         assert "3 devpod" in notice[0]
         assert f"xargs -r -n1 devpod delete < {listing}" in notice[0]
 
+    def test_the_notice_offers_repair_before_disposal(self, simple_cache, capsys):
+        # An orphaned container sourced at a clone this run just renamed is the
+        # exact shape `--reconcile` adopts (#88), so these containers are mostly
+        # savable and the notice must say so before it says how to delete them.
+        # Deletion stays -- a workspace one is finished with is still a real
+        # answer -- but leading with it steers people into throwing away the
+        # container state the rename strategy exists to protect.
+        metadata_path, repos_dir = simple_cache
+
+        run_migration(metadata_path, repos_dir)
+
+        lines = [line for line in capsys.readouterr().err.splitlines() if "orphan" in line]
+        assert len(lines) == 1
+        notice = lines[0]
+        assert "dl --reconcile" in notice, "the repair path must be offered at all"
+        repair, rebuild = notice.index("dl --reconcile"), notice.index("recreate")
+        assert repair < rebuild < notice.index("devpod delete")
+        # And the limit is stated rather than left to be discovered: the repair
+        # gives back the clone and the workspace, not a container's insides.
+        assert "only inside the old container" in notice
+
     def test_no_notice_when_no_id_changed(self, tmp_path, capsys):
         """Records already carrying the derived id have no orphaned container."""
         metadata_path, repos_dir = build_legacy_cache(tmp_path, {})

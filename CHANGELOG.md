@@ -311,6 +311,18 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **The cache migration's orphaned-container notice now offers repair before disposal**
+  ([#227](https://github.com/blooop/devlaunch/issues/227)). It used to answer "N devpod
+  containers are orphaned" with nothing but `xargs -r -n1 devpod delete`, advice written
+  before `dl --reconcile` existed. A container orphaned by the migration is sourced at the
+  path the migration just renamed, with the real clone next to it under the new name —
+  which is exactly the case `--reconcile` adopts, so the notice now names `dl --reconcile`
+  and the `dl <workspace> recreate` that finishes the repair first, and states the limit:
+  that gives back the clone association and the workspace's identity, not state that lived
+  only inside the old container. The bulk delete is unchanged and still printed, as the
+  answer for workspaces you are finished with rather than the only answer offered. Nothing
+  about what the migration does changed; only what it tells you to do next.
+
 - **A cold launch now holds the per-repo lock across the whole of its host
   preparation, where it used to take and release it four times**
   ([#200](https://github.com/blooop/devlaunch/issues/200)). Clone-if-missing, the
