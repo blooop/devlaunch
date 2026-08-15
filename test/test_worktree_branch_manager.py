@@ -1,6 +1,7 @@
 """Tests for worktree branch manager."""
 # pylint: disable=redefined-outer-name,unused-argument
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -250,6 +251,46 @@ class TestBranchManager:
         assert "env" in call_kwargs
         assert "GIT_SSH_COMMAND" in call_kwargs["env"]
         assert "/path/to/key" in call_kwargs["env"]["GIT_SSH_COMMAND"]
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_ssh_key_push_keeps_the_inherited_environment(
+        self, mock_run, branch_manager, temp_repo, monkeypatch
+    ):
+        """Naming an ssh key must add to git's environment, not replace it.
+
+        A push handed a bare ``{"GIT_SSH_COMMAND": ...}`` runs with no ``PATH``,
+        ``HOME`` or ``SSH_AUTH_SOCK`` -- so git cannot find the ssh binary it was
+        just told to use, cannot read ``~/.ssh/known_hosts``, and cannot reach the
+        agent. Pinned at the env handed to the subprocess, the only place the
+        guarantee can be made.
+        """
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/sentinel-agent.sock")
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        branch_manager.push_branch_to_remote(temp_repo, "new-branch", ssh_key_path="/path/to/key")
+
+        env = mock_run.call_args[1].get("env")
+        assert env is not None, "an ssh key must reach git through an explicit env"
+        assert "/path/to/key" in env["GIT_SSH_COMMAND"]
+        # The rest of the environment must survive -- losing it breaks ssh auth.
+        assert env["SSH_AUTH_SOCK"] == "/tmp/sentinel-agent.sock"
+        assert env["PATH"] == os.environ["PATH"]
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_create_local_branch_survives_stderr_less_failure(
+        self, mock_run, branch_manager, temp_repo
+    ):
+        """A failure git wrote nothing to stderr for is still a failure.
+
+        ``CalledProcessError.stderr`` is ``None`` when the output was never
+        captured, so the already-exists arm must not read it unguarded -- an
+        unguarded membership test turns that failure into a ``TypeError`` that
+        names neither the branch nor the cause.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(1, "git branch", stderr=None)
+
+        with pytest.raises(RuntimeError, match="Failed to create branch"):
+            branch_manager.create_local_branch(temp_repo, "new-branch")
 
     @patch("devlaunch.worktree.branch_manager.subprocess.run")
     def test_push_branch_to_remote_failure(self, mock_run, branch_manager, temp_repo):
