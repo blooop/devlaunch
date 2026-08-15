@@ -91,6 +91,26 @@ class World:
             )
         )
 
+    def remote_workspace(self, workspace_id: str, url: str) -> None:
+        """A workspace devpod sources from a git remote rather than a folder.
+
+        Listed only, with no `workspace.json` written for it, and that absence is
+        an assertion: this command re-points a record by rewriting that file, so
+        a run that decided to adopt this workspace would have nothing to rewrite
+        and would say so. It stands in for the workspaces `devpod up <url>` and
+        every other tool leave in the shared namespace.
+        """
+        self.listed.append(
+            {
+                "id": workspace_id,
+                "source": {"gitRepository": url},
+                "provider": {"name": "docker"},
+                "ide": {"name": "none"},
+                "context": "default",
+                "lastUsed": "2026-03-01T18:39:40Z",
+            }
+        )
+
     def workspace(self, workspace_id: str, source: Path, context: str = "default") -> Path:
         """A devpod workspace record sourced at *source*, however dead."""
         directory = self.devpod_home / "contexts" / context / "workspaces" / workspace_id
@@ -352,6 +372,54 @@ class TestRefusingToGuessAndRefusingToDelete:
         assert world.sourced_at("someones-project") == str(outside)
         assert "delete" not in devpod.subcommands()
         assert status == 0
+
+
+class TestTheReportDoesNotDependOnWhereItWasRun:
+    """devlaunch#224, at the surface it was found on.
+
+    Run from inside `<root>/<owner>/<repo>/`, this command listed every
+    git-URL-sourced workspace on the machine as that repository's orphan: a
+    remote is relative-looking text, so resolving it as a path resolved it
+    against the current directory and landed it in the tree the user happened to
+    be standing in. Nothing was ever re-pointed -- no clone's directory name can
+    equal a URL -- so the whole of it was a report about workspaces that had
+    nothing to do with the repository named.
+    """
+
+    def test_a_workspace_devpod_sources_from_a_remote_is_no_repositorys_orphan(
+        self, world, capsys, monkeypatch
+    ):
+        world.remote_workspace("wayfinder", "git@github.com:blooop/wayfinder.git")
+        monkeypatch.chdir(world.repo_dir)
+
+        status, devpod = reconcile(world, "-y")
+
+        assert status == 0
+        assert "Nothing to reconcile." in capsys.readouterr().out
+        assert "delete" not in devpod.subcommands()
+
+    def test_standing_in_a_repository_does_not_change_what_is_reported(
+        self, world, capsys, monkeypatch
+    ):
+        """The property, rather than one instance of it: same workspaces, two
+        directories, one report.
+
+        A real orphan stands beside the remote so the comparison is between two
+        reports with something in them, not between two empty ones -- an
+        equality that holds because both runs found nothing would hold with the
+        bug fully back.
+        """
+        world.workspace("devlaunch-gone", world.repo_dir / "gone")
+        world.remote_workspace("wayfinder", "https://github.com/blooop/wayfinder.git")
+        monkeypatch.chdir(world.devpod_home)
+
+        reconcile(world, "-y")
+        outside = capsys.readouterr().out
+        monkeypatch.chdir(world.repo_dir)
+        reconcile(world, "-y")
+
+        assert "devlaunch-gone" in outside
+        assert capsys.readouterr().out == outside
 
 
 class TestRunningItTwiceChangesNothing:

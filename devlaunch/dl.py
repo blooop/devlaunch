@@ -1864,18 +1864,61 @@ class Unplaceable:
 SourcePlaces = Placeable | Unplaceable
 
 
+#: Text that names a repository somewhere else: scheme-prefixed (`https://`,
+#: `ssh://`, `git://`) or scp-like (`git@github.com:owner/repo.git`).
+_REMOTE_URL = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.\-]*://|[^/@:\s]+@[^/:\s]+:)")
+
+
+def _names_a_remote(text: str) -> bool:
+    """Whether *text* is a URL rather than something on this disk.
+
+    Said once, here, because the two readers of `source_places` -- `--prune`'s
+    placement pass and `--reconcile`'s orphan sweep -- have to agree about it or
+    a workspace is a remote to one command and a directory to the other.
+
+    **The two mistakes are not equal, so the test is deliberately narrow.** A
+    remote read as a path is devlaunch#224: relative-looking text, resolved
+    against the current directory, so a workspace lands inside whichever
+    repository the person running `dl` happened to be standing in and is
+    misreported there -- wrong, and toward refusing. A path read as a remote
+    drops a directory out of the referenced set, which is how `--prune` would
+    come to call a live clone unreferenced -- wrong, and toward loss. So only
+    the two shapes that cannot also be a relative directory count: a URL scheme,
+    and `user@host:`. Text that is merely host-shaped (`github.com/owner/repo`)
+    does not, because it is a perfectly good relative path, and
+    `devpod up ./some-repo` is the case this arm exists for.
+
+    Not `parse_owner_repo_from_url`, which is a different question with a
+    different failure: it answers *which* repository and recognises only
+    github.com, so a remote on any other host would come back None and fall
+    through to being resolved as a path -- the bug, still there.
+    """
+    return bool(_REMOTE_URL.match(text))
+
+
 def source_places(source: WorkspaceSource) -> SourcePlaces:
     """Where on this machine *source* could be. Total over the arms.
 
-    A `gitRepository` counts, even though devlaunch only ever hands devpod a
-    local path, and the reason is which way the mistake runs. `devpod up
-    <path-to-a-repo>` records that arm with a path in it, and a path this
-    function does not return is a directory `--prune` will call unreferenced.
-    is_devlaunch_clone refuses the same arm on purpose -- but refusing there
-    means declining to delete somebody else's *workspace*, which is the opposite
-    direction, so its answer must not be reused here. That is what the review of
-    the disk-size surface meant by "not as-is": the predicate is right for
-    reporting and for purging, and this question is neither.
+    A `gitRepository` counts *when it carries a path*, even though devlaunch only
+    ever hands devpod a local path, and the reason is which way the mistake runs.
+    `devpod up <path-to-a-repo>` records that arm with a path in it, and a path
+    this function does not return is a directory `--prune` will call
+    unreferenced. is_devlaunch_clone refuses the same arm on purpose -- but
+    refusing there means declining to delete somebody else's *workspace*, which
+    is the opposite direction, so its answer must not be reused here. That is
+    what the review of the disk-size surface meant by "not as-is": the predicate
+    is right for reporting and for purging, and this question is neither.
+
+    When it carries a *remote* it counts for nothing, and that is not the same
+    concession. A URL names a repository on another machine, so there is no
+    directory here it could be holding -- but it is also relative-looking text,
+    and every caller resolves what this returns against the current directory.
+    Returning it made a workspace's location a function of where `dl` was run:
+    from `<root>/<owner>/<repo>` every git-URL workspace on the machine landed
+    inside that repository and was reported as its orphan (devlaunch#224) -- the
+    hazard `parse_workspace_source`'s empty-string guard names, reached through
+    the other arm. The shape is decided before any filesystem call sees the text,
+    because by then the answer is already cwd-shaped.
 
     The two answers that carry no path are kept apart, because reading them
     alike is how a live workspace contributed no path *and* no alarm while the
@@ -1887,7 +1930,7 @@ def source_places(source: WorkspaceSource) -> SourcePlaces:
     if isinstance(source, LocalFolder):
         return Placeable((source.path,))
     if isinstance(source, GitRepository):
-        return Placeable((source.url,))
+        return Placeable(() if _names_a_remote(source.url) else (source.url,))
     if isinstance(source, UnrecognisedSource):
         return Placeable(())
     if isinstance(source, UnreadableLocalFolder):

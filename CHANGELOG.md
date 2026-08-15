@@ -121,6 +121,28 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **`dl --reconcile` and `dl --prune` no longer answer differently depending on which
+  directory you ran them from** ([#224](https://github.com/blooop/devlaunch/issues/224)).
+  Run from inside `<repos-root>/<owner>/<repo>/`, `--reconcile` listed every workspace
+  devpod sources from a git URL — anything started by `devpod up <url>`, by another tool,
+  or by an older `dl` — as an orphan of whichever repository you happened to be standing
+  in, at invented paths like `<root>/blooop/devlaunch/git@github.com:blooop/wayfinder.git`.
+  From a neutral directory the same command listed none of them.
+
+  A workspace source that carries a local path has to keep counting — `devpod up
+  <path-to-a-repo>` records one, and a path `--prune` does not know about is a directory
+  it would call unreferenced — so the arm was resolved as a path unconditionally. A remote
+  URL is relative-looking text, so resolving it produced a path under the current
+  directory. Text that is URL-shaped is now recognised as naming a repository elsewhere
+  before anything tries to resolve it, and contributes no location at all; text that is a
+  path is treated exactly as before.
+
+  **Nothing was ever deleted or re-pointed because of this.** Every affected path ran
+  toward refusing: `--reconcile` reported and adopted nothing (no clone directory can be
+  named the same as a URL), and `--prune` withheld clones it could have offered. What
+  changes is that the reports are now about your repositories rather than about where your
+  shell was.
+
 - **A cache migration that could not rename everything no longer marks itself done**
   ([#180](https://github.com/blooop/devlaunch/issues/180)). The one-shot migration onto the
   post-#64 id scheme renamed what it could and then wrote the new schema header regardless.
