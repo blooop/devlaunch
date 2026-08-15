@@ -361,6 +361,25 @@ class TestBranchManager:
         assert "128" in str(excinfo.value)
 
     @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_create_failure_quotes_stderr_without_its_trailing_newline(
+        self, mock_run, branch_manager, temp_repo
+    ):
+        """What git said becomes the sentence's tail, not a line of its own.
+
+        Subprocess stderr arrives newline-terminated, and quoted raw it broke
+        the RuntimeError's message across two lines. The trim is half of what
+        git_failure_reason exists to do and was pinned nowhere.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(
+            128, "git branch", stderr="fatal: boom\n"
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            branch_manager.create_local_branch(temp_repo, "new-branch")
+
+        assert str(excinfo.value) == "Failed to create branch: fatal: boom"
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
     def test_push_branch_to_remote_failure(self, mock_run, branch_manager, temp_repo):
         """Test branch push failure."""
         mock_run.side_effect = subprocess.CalledProcessError(1, "git push", stderr="Push failed")

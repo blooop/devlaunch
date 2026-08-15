@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 
-from .git_errors import _git_failure_reason
+from .git_errors import git_failure_reason
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,8 @@ class BranchManager:
         except subprocess.CalledProcessError as e:
             # Branch might already exist -- classified from the reason text, so a
             # failure git said nothing about falls through to the raise; rationale
-            # at _git_failure_reason.
-            reason = _git_failure_reason(e, "branch")
+            # at git_failure_reason.
+            reason = git_failure_reason(e, "branch")
             if "already exists" in reason:
                 logger.debug(f"Branch {branch} already exists")
             else:
@@ -206,6 +206,6 @@ class BranchManager:
             )
             logger.debug(f"Push output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            reason = _git_failure_reason(e, "push")
+            reason = git_failure_reason(e, "push")
             logger.debug(f"Failed to push branch: {reason}")
             raise RuntimeError(f"Failed to push branch to remote: {reason}") from e

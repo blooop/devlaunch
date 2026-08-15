@@ -7,7 +7,7 @@ reach it without arranging its imports around it.
 import subprocess
 
 
-def _git_failure_reason(e: subprocess.CalledProcessError, verb: str) -> str:
+def git_failure_reason(e: subprocess.CalledProcessError, verb: str) -> str:
     """What a failed ``git <verb>`` gives a caller to act on.
 
     Three things a caller of git needs, and they are here once rather than at
