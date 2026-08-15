@@ -1,13 +1,13 @@
 # Claude Code CLI - Local Dev Container Feature
 
-A local Dev Container Feature that installs the Claude Code CLI and configures it with read-only mounts to your host machine's Claude configuration.
+A local Dev Container Feature that installs the Claude Code CLI and gives the container your host machine's Claude configuration as a short, explicit list of binds — the files holding executable instructions read-only.
 
 ## What This Feature Does
 
 This feature combines two capabilities:
 
 1. **CLI Installation**: Installs the `@anthropic-ai/claude-code` npm package globally
-2. **Configuration Mounting**: Mounts your host machine's Claude configuration files into the container as read-only binds
+2. **Configuration Mounting**: Mounts a named list of files and directories from your host machine's Claude configuration into the container — read-only except for the two that hold credentials and onboarding state
 
 ## What Gets Installed
 
@@ -38,7 +38,26 @@ These are **read-only** (`ro` flag) to prevent:
 These files **must be writable** to enable:
 - OAuth authentication flow and token refresh
 - Workspace setup state tracking (`projectOnboardingSeenCount`)
-- Session continuity across container rebuilds
+- Your account and its onboarding state surviving container rebuilds (session
+  *transcripts* do not: see "What Is Not Mounted")
+
+### What Is Not Mounted
+
+Everything else under `~/.claude` — session transcripts, `projects/`,
+`history.jsonl`, `shell-snapshots/`, `skills/`, `plugins/` — is **not** mounted.
+Those paths still exist in the container and are writable; they are simply the
+container's own, and they die with it.
+
+The list above is an allow-list, and that is the point: a directory Claude starts
+writing to next month cannot silently become another way onto your host. What it
+costs is real and worth knowing before you meet it. A container does not resume a
+session you started on the host, and the skills and plugins installed on your
+host are not visible in there.
+
+One consequence people go looking for after the fact: a `settings.json` entry
+naming a script that lives outside the mounted paths — a `statusLine` command
+under `~/.claude/scripts/`, say — arrives in the container pointing at a file
+that is not there. The setting is mounted; the script it names is not.
 
 ### Why These Must Be Writable
 
@@ -64,6 +83,40 @@ Add this feature to your `devcontainer.json`:
 
 **Note**: Node.js is automatically installed via the `installsAfter` dependency mechanism - you don't need to explicitly add it to your features.
 
+### The host-side prerequisite
+
+Every mounted path has to exist on the host before the container is created, and
+a Feature cannot arrange that for itself: `initializeCommand` is a
+`devcontainer.json` property, and the Feature specification has no equivalent. So
+the consuming `devcontainer.json` wires up the script this feature ships beside
+its manifest:
+
+```json
+{
+  "initializeCommand": ".devcontainer/claude-code/init-host.sh",
+  "features": {
+    "./claude-code": {}
+  }
+}
+```
+
+It creates only what is missing and rewrites nothing you already have — which is
+also what lets it run *inside* a container built this way, where the paths it
+would create are the read-only mounts and a write would fail.
+
+Skipping it does not degrade the container, it stops it. Measured on devpod
+0.26.1 against a host with no `~/.claude`:
+
+```
+devcontainer up: runner run container: bind mount source path does not exist
+  …/.claude/.claude.json
+```
+
+Nothing is created on the host when that happens; the create is refused before
+any container exists. This is not a cost of the granular mounts either — the
+single whole-directory mount that preceded them failed in exactly the same way on
+the same host.
+
 ### The OAuth callback, and why host networking is not the answer
 
 This feature used to tell you to add `"runArgs": ["--network=host"]`, on an
@@ -87,7 +140,7 @@ gets connection refused. The callback genuinely does not complete on its own.
   works again. That is a per-session flag, not a property baked into every
   container this feature builds.
 - **The shipped configuration never runs that flow anyway.** This feature
-  bind-mounts `~/.claude`, so `.credentials.json` is already populated when the
+  bind-mounts your `.credentials.json`, so it is already populated when the
   container starts. The interactive OAuth flow is for a host that has never
   authenticated — and that host should authenticate itself, once, rather than
   every container it builds carrying a networking mode for the case.
@@ -121,24 +174,32 @@ With VS Code:
 
 ### Host Machine
 
-You should have these files/directories on your host machine (they will be created if they don't exist):
+These are the paths this feature mounts, and all of them have to exist before the
+container is created:
 
 ```bash
 ~/.claude/
-├── CLAUDE.md           # Optional: global instructions
-├── settings.json       # Optional: Claude settings
-├── agents/             # Optional: custom agents
-├── commands/           # Optional: custom commands
-└── hooks/              # Optional: event hooks
+├── CLAUDE.md           # Global instructions
+├── settings.json       # Claude settings
+├── agents/             # Custom agents
+├── commands/           # Custom commands
+├── hooks/              # Event hooks
+├── .credentials.json   # OAuth tokens
+└── .claude.json        # Account and workspace state
 ```
 
-**Note**: If these don't exist on your host, the container will still build successfully, but you may see mount warnings. You can create them with:
+**None of them is optional.** A missing one aborts the container create rather
+than producing a warning — see "The host-side prerequisite" above, which is how
+this is normally handled. By hand, it is:
 
 ```bash
 mkdir -p ~/.claude/{agents,commands,hooks}
 touch ~/.claude/CLAUDE.md
-touch ~/.claude/settings.json
+echo '{}' > ~/.claude/settings.json
 ```
+
+(A host that has ever run `claude` already has `.credentials.json` and
+`.claude.json`.)
 
 ### Container
 
@@ -254,7 +315,7 @@ devpod up . --recreate
 
 ## Modifying Configuration
 
-Configuration files (except credentials) are read-only. You **cannot** modify Claude settings from within the container.
+Every mounted configuration file except `.credentials.json` and `.claude.json` is read-only. You **cannot** modify Claude settings from within the container.
 
 To change configuration:
 
@@ -305,6 +366,8 @@ Add GitHub Actions workflow (`.github/workflows/test.yaml`):
     mkdir -p ~/.claude/hooks
     touch ~/.claude/settings.json
     touch ~/.claude/CLAUDE.md
+    touch ~/.claude/.credentials.json
+    touch ~/.claude/.claude.json
 ```
 
 ### 4. Publishing Workflow
@@ -412,13 +475,22 @@ See "The OAuth callback, and why host networking is not the answer" above.
 actually mounted and readable in the container, and that `CLAUDE_CONFIG_DIR`
 points at the mounted directory rather than a fresh one.
 
-### Mount warnings about missing files
+### `bind mount source path does not exist`
 
-**Solution**: Create the directories on your host:
+**Problem**: `devpod up` fails before any container exists, naming a path under
+`~/.claude`.
+
+**Root cause**: This feature mounts named paths, and a bind whose source is
+missing is refused rather than created. Nothing was written to your host.
+
+**Solution**: Wire up `initializeCommand` as shown in "The host-side
+prerequisite" — that is what creates them, on every create, for everyone. To
+unblock one machine now:
 
 ```bash
 mkdir -p ~/.claude/{agents,commands,hooks}
-touch ~/.claude/CLAUDE.md ~/.claude/settings.json
+touch ~/.claude/CLAUDE.md
+echo '{}' > ~/.claude/settings.json
 ```
 
 ## Security Notes
