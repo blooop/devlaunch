@@ -241,8 +241,9 @@ class MetadataStorage:
             )
             return version, True
 
-        # A version below SCHEMA_VERSION is an older shape, upgraded on the next
-        # write; the value is exposed unchanged so a migration can branch on it.
+        # A version below SCHEMA_VERSION is an older shape. Plain saves preserve
+        # it -- only a fully successful migration promotes it (#180) -- and the
+        # value is exposed unchanged so a migration can branch on it.
         return version, False
 
     def _load(self) -> None:
@@ -278,7 +279,13 @@ class MetadataStorage:
         workspace metadata is worse than an error.
         """
         data = {
-            "version": SCHEMA_VERSION,
+            # The loaded version, not the constant: a cache a migration could not
+            # finish keeps its old header, so the next run's version comparison
+            # still lets it in (#180). Any save re-stamping the current version
+            # would undo that, and the migration is far from the only writer.
+            # Capped at SCHEMA_VERSION because a file from a newer build has just
+            # been rewritten in *this* build's shape, fields and all.
+            "version": min(self.schema_version, SCHEMA_VERSION),
             "repositories": {key: repo.to_dict() for key, repo in self.repositories.items()},
             "worktrees": {key: worktree.to_dict() for key, worktree in self.worktrees.items()},
         }

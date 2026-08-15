@@ -207,7 +207,10 @@ Running dl again changes nothing: the migration is keyed on the `version` field 
 `metadata.json`, not on directory names, so a branch that happens to look like a new-scheme
 id is never mistaken for one. If a migration is interrupted, the next run finishes it — the
 version is written last, in the same atomic save as the new paths, so it never claims more
-than the filesystem has actually done.
+than the filesystem has actually done. A rename the filesystem refuses (a read-only mount,
+tightened permissions) is treated the same way: the version stays put and every later run
+retries the refused directories and repeats the notice until the underlying refusal is
+fixed by hand.
 
 ## Workspace Commands
 
