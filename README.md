@@ -492,6 +492,13 @@ If the directory cannot be created — a full disk, a read-only cache home — t
 launch goes ahead without the mount and the container downloads its own packages,
 exactly as it did before this existed.
 
+A workspace created before this existed is a special case on its next `up`:
+devpod re-applies `--workspace-env` every time but a bind mount is fixed at
+creation, so `PIXI_CACHE_DIR` points at a plain directory inside that container —
+a private cache under the shared cache's name, abandoning whatever pixi had
+already warmed in its default location. It works, and re-warms itself; it just
+never shares. `dl <workspace> recreate` puts it on the real mount.
+
 ## Global Commands
 
 | Command | Description |
@@ -539,7 +546,7 @@ Anything it is leaving is named before it asks:
 $ dl --purge
 This will remove all devlaunch data:
   - 4 DevPod workspace(s)
-  - /home/you/.cache/devlaunch/ (workspace clones, repo caches, completions)
+  - /home/you/.cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
 
 Leaving 2 workspace(s) devlaunch did not create:
   - pythontemplate

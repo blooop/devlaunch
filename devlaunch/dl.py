@@ -3453,7 +3453,7 @@ def _context_options_cache_path() -> pathlib.Path:
 PIXI_CACHE_TARGET = "/home/vscode/.cache/devlaunch-pixi"
 
 
-def pixi_cache_source() -> pathlib.Path:
+def _pixi_cache_source() -> pathlib.Path:
     """The host directory containers share their downloaded pixi packages through.
 
     Under devlaunch's own cache dir, so it follows XDG_CACHE_HOME like the rest of
@@ -3473,7 +3473,7 @@ def pixi_cache_source() -> pathlib.Path:
     return _get_cache_dir() / "pixi"
 
 
-def pixi_cache_up_args() -> List[str]:
+def _pixi_cache_up_args() -> List[str]:
     """The `devpod up` flags that put a container on the shared package cache.
 
     Three of them, and the third is not a duplicate of the second. devpod gives
@@ -3493,11 +3493,20 @@ def pixi_cache_up_args() -> List[str]:
     traceback. Without the mount a container downloads its own packages, which is
     what every container did before this existed.
     """
-    source = pixi_cache_source()
+    source = _pixi_cache_source()
     try:
         source.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        logging.debug("No shared pixi cache at %s: %s", source, e)
+        # A warning and not a debug line, in the mould of gh_auth's token file:
+        # the launch survives, but the degradation is invisible and permanent --
+        # every container on this machine re-downloads its packages until the
+        # cache home is writable again.
+        logging.warning(
+            "Could not create the shared pixi cache at %s (%s), so each "
+            "container downloads its own packages.",
+            source,
+            e,
+        )
         return []
     return [
         "--mount",
@@ -3644,7 +3653,7 @@ def workspace_up(
     # cache that is 62-113s and 1.2GB of network per container fetching what the
     # last one already fetched. One host directory bound into all of them makes
     # the second container's sync an 18-28s unpack from disk (#232).
-    args.extend(pixi_cache_up_args())
+    args.extend(_pixi_cache_up_args())
     with contextlib.ExitStack() as stack:
         # Two ways to end up unserialized, and neither is worth failing a
         # launch over. No identity means there is nothing to key a lock on,
@@ -4434,7 +4443,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         owned = workspace_ownership(list_workspaces(), cache_dir)
         print("This will remove all devlaunch data:")
         print(f"  - {len(owned.mine)} DevPod workspace(s)")
-        print(f"  - {cache_dir}/ (workspace clones, repo caches, completions)")
+        print(
+            f"  - {cache_dir}/ (workspace clones, repo caches, the shared pixi cache, completions)"
+        )
         # Named, not merely excluded from the count: a user who asked for a
         # clean slate and gets survivors should learn it here, while saying no
         # is still an option, rather than from a later `dl --ls`.

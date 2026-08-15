@@ -1660,7 +1660,7 @@ class TestSharedPixiCache:
         send every user's packages to somebody else's home directory.
         """
         monkeypatch.setenv("HOME", str(tmp_path))
-        assert dl_module.pixi_cache_source() == tmp_path / ".cache" / "devlaunch" / "pixi"
+        assert dl_module._pixi_cache_source() == tmp_path / ".cache" / "devlaunch" / "pixi"  # pylint: disable=protected-access
 
     @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
     @patch("devlaunch.dl.workspace_ssh", return_value=0)
