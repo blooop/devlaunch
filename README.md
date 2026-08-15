@@ -497,6 +497,23 @@ used to be `1` with the *whole* cache still standing: the first refusal stopped
 the purge, so the completion caches, `metadata.json` and every other clone
 survived on account of one directory.
 
+When **none** of it goes — the cache directory itself is what will not let go,
+or it is a symlink, or it cannot even be looked at — the headline says that
+instead of claiming a partial success:
+
+```
+$ dl --purge -y
+Removed nothing under /home/you/.cache/devlaunch. These refused:
+  - /home/you/.cache/devlaunch: Permission denied
+```
+
+The report underneath is the same one, and so is the exit status: `0` means the
+cache is gone and nothing else does, which is the only distinction a script can
+act on. Removed everything, removed what it was permitted to and removed nothing
+are three outcomes rather than two, and the sentence is where the third one
+lives — because it is the one that decides whether you still have clones to go
+and look for.
+
 What is listed is the directory, once — not the hundreds of files inside it.
 Unlinking needs write permission on the directory rather than on the file, so
 every entry in that clone refuses separately and they are all the same fact.
