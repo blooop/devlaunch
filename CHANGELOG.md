@@ -21,6 +21,34 @@ table and should be judged on its own merits.
 
 ### Added
 
+- **`DEVLAUNCH_DOTFILES_ON_ATTACH=1` refreshes dotfiles just before an interactive
+  attach hands over the shell** ([#183](https://github.com/blooop/devlaunch/issues/183)).
+  devpod applies dotfiles only when it *provisions* a workspace, so a long-lived one
+  keeps whatever it was born with until somebody runs `dl <ws> dotfiles`. Set the
+  variable and `dl` runs that same refresh for you, in front of the shell rather than
+  behind it — dotfiles that arrive after the shell has started are dotfiles it has
+  already finished sourcing.
+
+  **Off unless you set it, and that is the feature.** An earlier attempt refreshed on
+  every attach and cost every user a `devpod ssh` round-trip — ~1.7s, of which ~99% is
+  connection setup — plus a git pull, to close a gap most of them did not have. Someone
+  who has not asked for this sees no change at all: the spawn-count pins that measure
+  the attach path are unedited and still green, which is the actual claim rather than
+  the flag being present.
+
+  Two limits, both deliberate. It **never runs for `dl <ws> -- <command>`**, on the same
+  reasoning the attach has always applied — a one-shot renders no prompt and sources no
+  interactive shell, so a refresh in front of it buys that command nothing and costs it
+  a round-trip; that is the path agent launchers use. And it is **bounded at 60
+  seconds**, spent inside the container, so an unreachable dotfiles remote or one
+  waiting on a password nobody is there to type is a pause and then your shell rather
+  than a hang. The bound signals the whole process group, so the git process actually
+  doing the waiting dies too instead of lingering with the session held open.
+
+  `dl <ws> dotfiles`, typed by hand, is unchanged and still unbounded: a deadline is
+  worth having on the refresh nobody asked for, and is a way to abandon a half-finished
+  `pixi global sync` on the one somebody did.
+
 - **`dl --reconcile` re-points devpod workspaces the id-scheme change orphaned**
   ([#88](https://github.com/blooop/devlaunch/issues/88)). When workspace ids and clone
   directories gained a hashed suffix, `dl`'s own records were migrated and devpod's were

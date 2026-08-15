@@ -3427,6 +3427,41 @@ class TestDotfilesUpdate:
 
     @patch("devlaunch.dl.workspace_ssh")
     @patch("devlaunch.dl.get_context_options")
+    def test_a_typed_refresh_is_given_no_deadline(self, mock_ctx, mock_ssh):
+        """`dl <ws> dotfiles` runs to completion however long it takes.
+
+        The deadline exists for the refresh nobody asked for, which sits in
+        front of a shell somebody is waiting on. A refresh somebody typed is in
+        the foreground and interruptible, and a first `pixi global sync` on a
+        full manifest is legitimately slow -- killing that at some fixed second
+        would abandon a half-finished sync to save nobody any time.
+        """
+        mock_ctx.return_value = {}
+        mock_ssh.return_value = 0
+        dotfiles_update("myws")
+        assert "timeout" not in mock_ssh.call_args[1]["command"]
+
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.get_context_options")
+    def test_a_bounded_refresh_still_carries_the_whole_payload(self, mock_ctx, mock_ssh):
+        """A deadline wraps the refresh rather than replacing part of it.
+
+        The bound goes around everything, not around the `chezmoi update` alone:
+        the fallback `git clone` reaches the network too, and three separate
+        deadlines would bound each step while leaving the trip as a whole
+        unbounded at three times the number written down.
+        """
+        mock_ctx.return_value = {"DOTFILES_URL": "https://github.com/user/dots"}
+        mock_ssh.return_value = 0
+        dotfiles_update("myws", timeout=17)
+        cmd = mock_ssh.call_args[1]["command"]
+        assert cmd.startswith("timeout 17 ")
+        assert "chezmoi update --force" in cmd
+        assert "pixi global sync" in cmd
+        assert "https://github.com/user/dots" in cmd
+
+    @patch("devlaunch.dl.workspace_ssh")
+    @patch("devlaunch.dl.get_context_options")
     def test_no_dotfiles_url_fallback_exits(self, mock_ctx, mock_ssh):
         """Without DOTFILES_URL, fallback reports error."""
         mock_ctx.return_value = {}
