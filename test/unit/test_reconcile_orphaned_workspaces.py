@@ -40,7 +40,17 @@ import pytest
 
 from devlaunch import dl
 from devlaunch.workspace_id import WorkspaceId
+from devlaunch.worktree.migration import MigrationReport, migrate_cache
 from devlaunch.xdg import devlaunch_cache
+
+# The migration suite's own builder for a pre-#64 cache, rather than a second
+# idea of what one looks like. What TestTheRepairTheMigrationsNoticePromises
+# asks is whether the artifact that migration produces is one this command can
+# adopt, and two descriptions of the input would let the answer be yes about a
+# cache nobody's dl ever wrote. `test/` is on sys.path (see test/conftest.py),
+# which is how test_claude_code_feature_mounts.py already reaches
+# test_lending_doc.
+from test_worktree_migration import build_legacy_cache, _old_leaf
 
 OWNER, REPO = "blooop", "devlaunch"
 
@@ -69,6 +79,39 @@ class World:
         path.mkdir()
         (path / ".git").mkdir()
         return path
+
+    def old_scheme_clone(self, branch: str) -> Path:
+        """*branch*'s clone and record as a pre-#64 build left them, un-migrated.
+
+        Returned path is the directory under its **old** leaf, which has to be
+        read before :meth:`migrate` runs because that is the name the rename
+        takes away -- and the name devpod's record is still holding.
+
+        `build_legacy_cache` writes `metadata.json` whole, so this must also
+        come before any :meth:`record` call -- the assert keeps a record
+        written earlier from being lost silently.
+        """
+        assert not (self.cache / "metadata.json").exists(), (
+            "old_scheme_clone overwrites metadata.json; call it before record()"
+        )
+        build_legacy_cache(self.cache.parent, {(OWNER, REPO): [branch]})
+        return self.repo_dir / _old_leaf(branch)
+
+    def migrate(self) -> MigrationReport:
+        """Run dl's real one-shot migration over this cache, once.
+
+        The migration itself and not a hand-made imitation of its result: the
+        renamed leaf, the repointed record and the list of orphaned container
+        ids all come out of the code that ships, so a change to any of them
+        arrives here rather than being described twice.
+        """
+        from devlaunch.worktree.storage import (  # pylint: disable=import-outside-toplevel
+            MetadataStorage,
+        )
+
+        report = migrate_cache(MetadataStorage(self.cache / "metadata.json"), self.cache / "repos")
+        assert report is not None, "the cache under test was not on the old scheme"
+        return report
 
     def record(self, branch: str, clone: Path, devpod_workspace_id: Optional[str] = None) -> None:
         """One metadata.json worktree record, written through dl's own storage."""
@@ -259,6 +302,54 @@ class TestAdoptingAnOrphanedRecord:
         reconcile(world, "-y")
 
         assert world.sourced_at("devlaunch-feature-x") == str(clone)
+
+
+class TestTheRepairTheMigrationsNoticePromises:
+    """The id-scheme migration tells the user this command will adopt what it orphaned.
+
+    That notice is written in migration.py and its truth is owed here, across a
+    module boundary nothing else spans: the notice's own tests pin the words and
+    the ordering, not the adoption. Narrowing the join in
+    :func:`_orphaned_workspaces` or the spellings in :func:`_leaf_spellings`
+    does redden neighbours in this file -- but only a case built out of the
+    migration's real machinery notices the *other* side drifting. Let the
+    migration start normalising `record.branch` to the derived id and the
+    sentence lies with every other test at this seam still green; this one goes
+    red, because its input is whatever the migration actually wrote.
+    """
+
+    def test_a_container_the_migration_orphans_is_one_this_command_adopts(self, world):
+        """The migration's exact leavings: old source path, renamed clone.
+
+        Nothing here is described twice. The clone and the record are the old
+        cache the migration suite builds, the rename is the shipped
+        `migrate_cache`, the orphaned container's id is read off the report's own
+        list -- the list the notice counts and writes to disk for the user -- and
+        the clone the adoption must land on is derived with `WorkspaceId` rather
+        than spelled out, so a moved derivation moves the expectation with it.
+
+        `feature/auth` rather than `main` because it is the branch whose old
+        directory name is not its own name: the migration wrote `feature-auth`,
+        so the join has to come through the flattened spelling rather than
+        through the two that coincide when a branch needs no flattening.
+        """
+        old_source = world.old_scheme_clone("feature/auth")
+        report = world.migrate()
+        (orphaned_id,) = report.orphaned_ids
+        # devpod learned nothing from the rename, because nothing told it: its
+        # record still sources the container at the directory that has moved.
+        world.workspace(orphaned_id, old_source)
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 0
+        renamed = world.repo_dir / WorkspaceId(OWNER, REPO, "feature/auth").value
+        assert world.sourced_at(orphaned_id) == str(renamed)
+        # The other half of adoption, and the half the migration deliberately did
+        # not do: it leaves `devpod_workspace_id` alone rather than giving the
+        # field a second meaning, so this is the only writer that can join the
+        # renamed record back to the container the notice named.
+        assert world.stored_id("feature/auth") == orphaned_id
 
 
 class TestRefusingToGuessAndRefusingToDelete:
