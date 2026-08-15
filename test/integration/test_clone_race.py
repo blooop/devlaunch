@@ -77,7 +77,7 @@ def wait_for(flag):
 manager = RepositoryManager(
     repos_dir=repos_dir,
     storage=MetadataStorage(metadata),
-    config=WorktreeConfig(repos_dir=repos_dir, auto_fetch=False, fetch_interval=0),
+    config=WorktreeConfig(repos_dir=repos_dir, fetch_interval=0),
 )
 
 if role == "winner":
