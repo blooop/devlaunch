@@ -37,19 +37,19 @@ def devpod():
 
     with patch.object(dl, "run_devpod", side_effect=run):
         with patch.object(dl, "invalidate_workspace_list_cache"):
-            with patch.object(dl.tools, "ensure_tools") as ensure:
-                yield calls, ensure
+            with patch.object(dl.tools, "provision_tools") as provision:
+                yield calls, provision
 
 
 def _up(devpod, *, contended: bool, state: str, **kwargs):
     """Run workspace_up under a lock with the given contention and state."""
-    calls, ensure = devpod
+    calls, provision = devpod
     with patch.object(dl, "hold_lock", lambda *_a, **_k: _lock(contended)):
         with patch.object(dl, "get_workspace_state", return_value=state):
             result = dl.workspace_up(
                 "owner/repo", workspace_id="myws", workspace_identity="myws", **kwargs
             )
-    return result, [c for c in calls if c[:1] == ["up"]], ensure
+    return result, [c for c in calls if c[:1] == ["up"]], provision
 
 
 class TestAContendedUp:
@@ -59,7 +59,7 @@ class TestAContendedUp:
         """The prewarm won the race, so the launch has nothing left to do but
         succeed — `devpod up` here would re-walk a whole container lifecycle
         to arrive where the workspace already is."""
-        result, ups, _ensure = _up(devpod, contended=True, state="Running")
+        result, ups, _provision = _up(devpod, contended=True, state="Running")
         assert result.returncode == 0
         assert ups == []
 
@@ -74,18 +74,18 @@ class TestAContendedUp:
         hand the user a session without them. The probe is one round trip and
         silent when there is nothing to do.
         """
-        _result, ups, ensure = _up(devpod, contended=True, state="Running")
+        _result, ups, provision = _up(devpod, contended=True, state="Running")
         assert ups == []
-        ensure.assert_called_once()
-        assert ensure.call_args.args[0] == "myws"
+        provision.assert_called_once()
+        assert provision.call_args.args[0] == "myws"
 
     def test_a_stopped_workspace_is_still_brought_up(self, devpod):
         """Waiting is not evidence the sibling succeeded: a prewarm that
         failed, or that only got as far as creating a stopped workspace,
         leaves the launch exactly the work it came to do."""
-        _result, ups, ensure = _up(devpod, contended=True, state="Stopped")
+        _result, ups, provision = _up(devpod, contended=True, state="Stopped")
         assert len(ups) == 1
-        assert ensure.call_count == 1
+        assert provision.call_count == 1
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -106,7 +106,7 @@ class TestAContendedUp:
         and waits on the lock. Skipping there would attach them to the default
         and never say so.
         """
-        _result, ups, _ensure = _up(devpod, contended=True, state="Running", **kwargs)
+        _result, ups, _provision = _up(devpod, contended=True, state="Running", **kwargs)
         assert len(ups) == 1
 
 
@@ -118,12 +118,12 @@ class TestALockThatCannotBeTaken:
         this cache, and a full or read-only disk lands here too. Serialization
         guards a race that may not be happening; an errno traceback in front
         of a `devpod up` that would have worked is the worse answer."""
-        calls, ensure = devpod
+        calls, provision = devpod
         with patch.object(dl, "hold_lock", side_effect=PermissionError(13, "Permission denied")):
             result = dl.workspace_up("owner/repo", workspace_id="myws", workspace_identity="myws")
         assert result.returncode == 0
         assert [c for c in calls if c[:1] == ["up"]]
-        assert ensure.call_count == 1
+        assert provision.call_count == 1
 
 
 class TestAnUncontendedUp:
@@ -132,7 +132,7 @@ class TestAnUncontendedUp:
     def test_it_never_asks_for_the_state(self, devpod):
         """No sibling ran, so nothing can have changed under this process —
         the re-check would be a round trip bought with no question to answer."""
-        calls, _ensure = devpod
+        calls, _provision = devpod
         with patch.object(dl, "hold_lock", lambda *_a, **_k: _lock(False)):
             with patch.object(dl, "get_workspace_state") as state:
                 dl.workspace_up("owner/repo", workspace_id="myws", workspace_identity="myws")
@@ -162,7 +162,7 @@ class TestTheLockItself:
     def test_an_up_with_no_identity_takes_no_lock(self, devpod):
         """Nothing to key it on. The caller shapes that reach here are not the
         concurrent-launch ones."""
-        calls, _ensure = devpod
+        calls, _provision = devpod
         with patch.object(dl, "hold_lock", side_effect=AssertionError("locked anyway")):
             dl.workspace_up("owner/repo")
         assert [c for c in calls if c[:1] == ["up"]]
