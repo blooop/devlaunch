@@ -1481,6 +1481,25 @@ class TestWorkspaceUpInstallsTools:
         """There is no container to install into."""
         assert self._up(returncode=1).call_count == 0
 
+    def test_up_against_a_container_already_running_still_tops_them_up(self):
+        """`dl <ws> up` is one of the two verbs the module docstring names as
+        how a workspace that missed provisioning gets it -- started by something
+        other than dl, or created before this existed. That workspace is very
+        often already running, which is the arm that returns without calling
+        `devpod up` at all; skipping the tools there would make the documented
+        recovery the one route that cannot recover."""
+        from devlaunch import dl
+
+        with (
+            patch.object(dl, "get_workspace_state", return_value="Running"),
+            patch.object(dl, "workspace_up") as workspace_up,
+            patch.object(dl.tools, "provision_tools") as provision,
+        ):
+            assert dl.main(["myws", "up"]) == 0
+        workspace_up.assert_not_called()
+        provision.assert_called_once()
+        assert provision.call_args.args[0] == "myws"
+
 
 class TestNoRegressionInTheOptOutContract:
     """DEVLAUNCH_NO_TOOLS mirrors DEVLAUNCH_NO_GH_TOKEN, so it reads the same."""
