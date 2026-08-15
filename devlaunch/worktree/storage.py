@@ -241,8 +241,9 @@ class MetadataStorage:
             )
             return version, True
 
-        # A version below SCHEMA_VERSION is an older shape, upgraded on the next
-        # write; the value is exposed unchanged so a migration can branch on it.
+        # A version below SCHEMA_VERSION is an older shape. Plain saves preserve
+        # it -- only a fully successful migration promotes it (#180) -- and the
+        # value is exposed unchanged so a migration can branch on it.
         return version, False
 
     def _load(self) -> None:

@@ -664,7 +664,7 @@ class TestWhatTheFilesystemRefuses:
         assert said.count("could not rename") == 3
         assert "it was left where it is" in said
 
-    def test_a_refused_rename_leaves_the_header_behind_so_a_later_run_retries_it(
+    def test_a_refused_rename_leaves_the_header_behind_until_the_retry_succeeds(
         self, tmp_path, capsys, refuses_writes
     ):
         # The consequence the test above stops one line short of. A refused
@@ -721,6 +721,10 @@ class TestWhatTheFilesystemRefuses:
         assert second is not None, "the header at 1 is what lets the next run in"
         assert second.renamed == []
         assert sorted(str(src) for src, _, _ in second.failed) == refused
+
+        # The notice repeats on every run until the refusal is fixed by hand --
+        # the accepted cost of keeping the header honest (#180).
+        assert capsys.readouterr().err.count("could not rename") == 2
 
         # And when the refusal lifts, the retry completes and only then does the
         # header advance -- the records were recoverable the whole time.

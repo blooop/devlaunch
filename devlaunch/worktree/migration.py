@@ -22,8 +22,11 @@ deterministic and idempotent by construction.
 **Write ordering.** All renames happen first; then a single
 :meth:`MetadataStorage.save` writes the new paths, and the new version header
 *only if every rename succeeded*, in one atomic replace. Nothing writes the
-header early, so "header says 2" always means "every path in this file is
-current". A crash anywhere in the renames leaves the header at 1, so the next run
+header early, so "header says 2" always means "every rename this migration could
+ever perform is done". The two outcomes it can never perform -- a collision with
+a directory another record owns, and a branch no legal id derives from -- are
+reported and deliberately left behind, because retrying those would never end
+differently. A crash anywhere in the renames leaves the header at 1, so the next run
 migrates again and finds each already-renamed directory as "destination present,
 source gone" -- which it treats as a resumed rename and simply catches metadata
 up to. The reverse ordering has no safe resume: saving first would bump the
@@ -283,10 +286,9 @@ def migrate_cache(storage: MetadataStorage, repos_dir: Path) -> Optional[Migrati
 
     # One atomic write, last: it carries the new paths and the new version header
     # together, so the header can never claim more than the filesystem has done.
-    # The header only moves when nothing was refused -- a refused rename is not a
-    # crash, but it needs the same resumability, and leaving the header at 1 is
-    # what buys it. The save happens either way, so the renames that did work are
-    # recorded now rather than repeated (#180).
+    # A refusal is held to the crash standard -- the module docstring's paragraph
+    # of that name is why the header only moves when nothing was refused while
+    # the save happens either way (#180).
     if not report.failed:
         storage.schema_version = SCHEMA_VERSION
     storage.save()
