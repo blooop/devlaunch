@@ -366,6 +366,8 @@ Add GitHub Actions workflow (`.github/workflows/test.yaml`):
     mkdir -p ~/.claude/hooks
     touch ~/.claude/settings.json
     touch ~/.claude/CLAUDE.md
+    touch ~/.claude/.credentials.json
+    touch ~/.claude/.claude.json
 ```
 
 ### 4. Publishing Workflow
