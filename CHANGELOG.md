@@ -258,6 +258,27 @@ table and should be judged on its own merits.
   `TypeError` from testing membership in `None` that names neither the branch nor the
   cause.
 
+- **The devpod provider guard's three entry points can be stood in for by a test again**
+  ([#217](https://github.com/blooop/devlaunch/issues/217)). Each named
+  `run=subprocess.run` as a *default argument*. Python evaluates a default once, when the
+  module is imported, so all three held the real `subprocess.run` for the life of the
+  process and `mock.patch` could not reach them by construction — the seam was written,
+  documented and inert. A caller that named no runner spawned a real `devpod provider ...`
+  from under a suite that believed it had replaced every process in the tree, and if that
+  suite had also patched `Popen`, the real `run` built its process out of the stand-in and
+  died inside CPython's `subprocess.py` with an `AttributeError` naming neither devpod nor
+  the fixture. The default is now `None`, resolved to `subprocess.run` at call time, which
+  is what the signature always read as doing.
+
+  **What this does not claim.** It is the door, not a witness to anything having walked
+  through it. Nothing in `devlaunch/` imports this module today, and its own tests all
+  pass `run=` explicitly, so the once-observed `FinishedSession`/`kill` flake that led
+  here still has no established origin — closing this removes the only known leak of that
+  shape without proving it was the one. The named-error guard
+  [#216](https://github.com/blooop/devlaunch/pull/216) added to the spawn-count fixture
+  stays, and would name any recurrence for what it is rather than leaving it to surface as
+  a missing attribute two libraries away.
+
 ### Changed
 
 - **A cold launch now holds the per-repo lock across the whole of its host

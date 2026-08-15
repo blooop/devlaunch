@@ -12,6 +12,7 @@ survives being fixed.
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -98,6 +99,66 @@ def test_listing_is_requested_in_machine_readable_form():
     assert listing_cmd[:3] == ["devpod", "provider", "list"]
     assert "--output" in listing_cmd
     assert listing_cmd[listing_cmd.index("--output") + 1] == "json"
+
+
+def test_the_caller_that_names_no_runner_still_goes_through_a_patched_subprocess():
+    """The runner is whatever `subprocess.run` is when the call happens.
+
+    Every test above hands `run=` in explicitly, so none of them can see how
+    this module behaves for the caller that does not -- and that caller is the
+    shipped one: the `dev-add-docker` task runs the CLI with no runner at all.
+    These three entry points used to name `subprocess.run` as a *default
+    argument*, which Python evaluates once at import, so they held CPython's
+    real `run` for the life of the process and `mock.patch` could not reach
+    them by construction. A suite that patched subprocess and then entered one
+    of them spawned a real `devpod provider ...` anyway (devlaunch#217).
+
+    So the assertion is that the recorder *saw the argv*, not merely that the
+    call returned a set. A leak returns a perfectly good set -- it is a real
+    devpod answering -- and the only thing that distinguishes the two is which
+    process did the answering.
+    """
+    devpod = RecordedDevpod(REGISTERED)
+
+    with patch("subprocess.run", devpod):
+        assert devpod_provider.list_provider_names() == {"docker"}
+
+    assert devpod.commands == [["devpod", "provider", "list", "--output", "json"]]
+
+
+def test_the_guard_that_names_no_runner_goes_through_a_patched_subprocess():
+    """The same reachability, pinned on `ensure_provider`'s own default.
+
+    Stated separately rather than trusted to the listing above it: this one
+    reaches the patch twice over, once for the listing it delegates and once
+    for the add it runs itself, and a default argument growing back on either
+    is a leak the listing's pin would not notice.
+    """
+    devpod = RecordedDevpod(NOTHING_REGISTERED)
+
+    with patch("subprocess.run", devpod):
+        assert devpod_provider.ensure_provider("docker") is True
+
+    assert devpod.commands == [
+        ["devpod", "provider", "list", "--output", "json"],
+        ["devpod", "provider", "add", "docker"],
+    ]
+
+
+def test_the_cli_that_names_no_runner_goes_through_a_patched_subprocess(capsys):
+    """And the entry point the pixi task actually invokes.
+
+    `python -m devlaunch.devpod_provider docker` passes no runner, so this is
+    the one call shape in the tree that reached the import-time binding in
+    production rather than only under test.
+    """
+    devpod = RecordedDevpod(REGISTERED)
+
+    with patch("subprocess.run", devpod):
+        assert devpod_provider.main(["docker"]) == 0
+
+    assert "already registered" in capsys.readouterr().out
+    assert devpod.commands == [["devpod", "provider", "list", "--output", "json"]]
 
 
 def test_unreadable_listing_is_reported_rather_than_swallowed():
