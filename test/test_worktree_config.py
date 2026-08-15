@@ -134,7 +134,6 @@ class TestRetiredAutoFetchKnob:
 
         assert "auto_fetch" not in config.to_dict()["worktree"]
 
-    @pytest.mark.usefixtures("home_cache_default")
     def test_a_stale_config_still_naming_the_knob_loads_with_its_other_keys_applied(self):
         """The loader reads the keys it knows by name and ignores the rest, so a
         config written before the knob was retired keeps working untouched."""
@@ -152,7 +151,6 @@ class TestRetiredAutoFetchKnob:
         assert config.fetch_interval == 7200
         assert not hasattr(config, "auto_fetch")
 
-    @pytest.mark.usefixtures("home_cache_default")
     def test_a_stale_config_is_accepted_in_silence(self, caplog):
         """No unknown-key warning: the loader has never had one, and a retired
         knob is not the thing to introduce nagging for."""
