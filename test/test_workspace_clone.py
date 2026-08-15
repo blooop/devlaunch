@@ -340,6 +340,23 @@ class TestEnsureBranch:
         with pytest.raises(AssertionError, match="Unhandled fetch outcome"):
             clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
 
+    def test_an_unrecognised_requested_ref_outcome_is_rejected_not_absorbed(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """The same rejection on the requested ref's own fetch.
+
+        The guarantee the arm above is held to; pinned here so the pair cannot
+        drift back apart, and so the rejection is a tested promise rather than
+        an unexercised branch.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = object()
+
+        with pytest.raises(AssertionError, match="Unhandled fetch outcome"):
+            clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
     def test_an_unsafe_recorded_default_branch_does_not_escape_as_a_valueerror(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):
