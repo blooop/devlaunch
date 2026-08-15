@@ -1,6 +1,7 @@
 """Branch management for worktree backend."""
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -76,6 +77,14 @@ class BranchManager:
                 capture_output=True,
                 text=True,
                 check=True,
+                # The already-exists arm below is classified from git's stderr
+                # text, which git translates -- so git is addressed in the C
+                # locale, or on a German host an ordinary re-launch of a branch
+                # that is already there raises instead of being swallowed.
+                # LANGUAGE is pinned too: under gettext it outranks a non-C
+                # LC_ALL, and the guarantee should not hang on the one glibc
+                # rule that exempts C.
+                env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
             )
             logger.debug(f"Branch creation output: {result.stdout}")
         except subprocess.CalledProcessError as e:
