@@ -529,9 +529,10 @@ used to be `1` with the *whole* cache still standing: the first refusal stopped
 the purge, so the completion caches, `metadata.json` and every other clone
 survived on account of one directory.
 
-When **none** of it goes — the cache directory itself is what will not let go,
-or it is a symlink, or it cannot even be looked at — the headline says that
-instead of claiming a partial success:
+When **none** of it goes — nothing under the cache came away at all, which is
+what a symlinked cache root gives you, or one that cannot even be looked at, or
+one whose every entry refused — the headline says that instead of claiming a
+partial success:
 
 ```
 $ dl --purge -y
