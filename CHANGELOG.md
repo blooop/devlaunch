@@ -158,6 +158,34 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **The executable-doc guard now reads the README too, and `bench_launch.py` stops
+  accepting abbreviated flags** ([#192](https://github.com/blooop/devlaunch/issues/192)).
+  Three documented-command defects have shipped in this lineage — a reset naming a
+  `delete` subcommand `dl` does not have (twice), a recipe that said `-n 5` beside a
+  median taken over three runs, and `python scripts/bench_launch.py` published to readers
+  whose host has no `python` outside pixi. Each was found by *running* the documentation.
+  The guard built after the first two extracts the cold recipe from the script's own
+  epilog and drives it through `dl`'s `main()` — and the third defect shipped in the
+  README, which the guard never opened.
+
+  It does now: every fenced invocation of a bench script under "Measuring launch time" is
+  extracted and handed to whatever would have caught each defect. The **interpreter** goes
+  to a list of the two routes this repo can vouch for, because no parser will ever see
+  that word; the **flags** to the script's own parser; the **`pixi run` shortcuts** the
+  prose offers beside them to the project manifest, since a renamed task leaves the
+  sentence confidently wrong; and any **`--before` reset** to the same nothing-to-delete
+  harness the epilog's reset already goes through. While the section documents no reset of
+  its own, the guard holds it to the pointer that stands in for one, so the cold recipe
+  cannot become unreachable from the page.
+
+  `bench_launch.py` was built on an argparse that accepts any unambiguous *prefix* of a
+  long flag, which is what made those guards weaker than they read: rename `--record` to
+  something it is a prefix of and every document keeps saying `--record`, the parser keeps
+  accepting it, and the rename ships behind a green guard. It now refuses abbreviations,
+  the way the sibling points script always has, and a test abbreviates each documented
+  flag by one letter to keep both parsers that way. No documented or scripted invocation
+  used an abbreviation.
+
 - **The bare cache is now the repo's git-lfs store, and workspaces hardlink out of it**
   ([#163](https://github.com/blooop/devlaunch/issues/163), deciding
   [#154](https://github.com/blooop/devlaunch/issues/154)). git-lfs objects are not git

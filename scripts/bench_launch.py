@@ -249,14 +249,23 @@ def positive_int(text: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     """The command line, built where a test can also ask it what it accepts.
 
-    Separate from :func:`main` so the documented invocations in EPILOG can be
-    parsed without being run: every documented-command defect in this script's
-    history was a command nobody had ever fed to the thing that reads it.
+    Separate from :func:`main` so the documented invocations in EPILOG and in
+    README can be parsed without being run: every documented-command defect in
+    this script's history was a command nobody had ever fed to the thing that
+    reads it.
+
+    `allow_abbrev=False` is part of that, and is why this parser refuses an
+    unambiguous prefix that argparse would otherwise take. A parser that accepts
+    prefixes accepts `--record` after `--record` has been renamed to something
+    it is a prefix of -- so the rename ships, both documents keep the old
+    spelling, and every guard that hands them here stays green. The sibling
+    points script has always been built this way.
     """
     parser = argparse.ArgumentParser(
         description="Run a command N times and report the median wall time.",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument("-n", type=positive_int, default=5, help="number of runs (default: 5)")
     parser.add_argument(
