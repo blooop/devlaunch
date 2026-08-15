@@ -93,6 +93,25 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **The devcontainer feature's installer now writes its PATH lines into the profile bash
+  actually reads** ([#191](https://github.com/blooop/devlaunch/issues/191)). bash sources
+  only the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile` that exists, which
+  is why `dl`'s provision and lend scripts resolve the file instead of naming one.
+  `.devcontainer/claude-code/install.sh` named `~/.profile` flatly, so on an image
+  shipping a `~/.bash_profile` it wrote both `# devlaunch:`-marked lines into a file
+  nothing ever sources — and looked for its marks there too, missing the identical lines
+  the provision script had written in the file bash *does* read. The feature's PATH setup
+  was dead on exactly those images, and the two writers deduped against different files.
+  Latent rather than live on this repo's own base image, which ships no `~/.bash_profile`.
+
+  The resolution is now rendered from one place and pasted into the installer with
+  `$TARGET_HOME` for `$HOME` — the installer edits a home it does not run in — the same
+  way the two marked append lines have been pasted since
+  [#164](https://github.com/blooop/devlaunch/issues/164). A test runs each writer's edit
+  in a scratch home of every shape and then asks a real login `bash` what its PATH is, so
+  what pins this is bash's own answer rather than a rule restated; a second asserts each
+  writer carries the one rendering, so the copies cannot drift apart again.
+
 - **`dl` now writes down the devpod workspace id it creates, and follows it**
   ([#88](https://github.com/blooop/devlaunch/issues/88)). The id `dl` handed devpod was
   derived from `(owner, repo, ref)` on every command and stored nowhere, so the

@@ -100,19 +100,6 @@ CLAUDE_VERSIONS_RELPATH = ".local/share/claude/versions"
 # printed into the same stdout as a container login profile's banner.
 PROBE_MARK = "devlaunch-probe"
 
-# Which file a bash login shell will actually read. bash tries ~/.bash_profile,
-# ~/.bash_login and ~/.profile in that order and sources only the first that
-# exists, so appending to ~/.profile in an image that ships a ~/.bash_profile
-# writes to a file nothing reads.
-_PROFILE_RESOLUTION = "\n".join(
-    [
-        'if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"',
-        'elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"',
-        'else PROFILE="$HOME/.profile"',
-        "fi",
-    ]
-)
-
 # What devlaunch writes above every PATH line it appends to a container's login
 # profile, and the only thing its "have I already done this?" guard looks for.
 # The mark exists so the guard can ask about devlaunch's own work instead of
@@ -195,6 +182,38 @@ def _is_official_claude(versions_dir: str, claude_binary: str) -> bool:
     return pathlib.PurePosixPath(claude_binary).parent == pathlib.PurePosixPath(versions_dir)
 
 
+def _profile_resolution(home: str = "$HOME") -> str:
+    """Shell that sets `$PROFILE` to the file a bash login shell will read.
+
+    bash tries ~/.bash_profile, ~/.bash_login and ~/.profile in that order and
+    sources only the first that exists, so appending to ~/.profile in an image
+    that ships a ~/.bash_profile writes to a file nothing reads -- the tools
+    land installed and unreachable, and (since the reuse check is `command -v`)
+    are reinstalled from scratch on every launch.
+
+    Rendered from here rather than written out per script because more than
+    one writer edits the same profile over a workspace's life, and their
+    dedupe marks only find each other in a file they both name. Two writers
+    that answer this question differently guard against different files: each
+    reads the other's work as not done, and both still exit 0. The devcontainer
+    feature's installer answered `.profile` flatly while these scripts resolved
+    it, which is exactly that split.
+
+    `home` is the shell expression naming the home directory to resolve in --
+    `$HOME` for anything running as the user, `$TARGET_HOME` for the feature
+    installer, which edits a home it is not running in. It is the only thing
+    the writers may differ by; a test asserts each carries this rendering.
+    """
+    return "\n".join(
+        [
+            f'if [ -f "{home}/.bash_profile" ]; then PROFILE="{home}/.bash_profile"',
+            f'elif [ -f "{home}/.bash_login" ]; then PROFILE="{home}/.bash_login"',
+            f'else PROFILE="{home}/.profile"',
+            "fi",
+        ]
+    )
+
+
 def _profile_prepend(line: str, on_failure: str = "") -> str:
     """One PATH line appended to `$PROFILE` at most once, ever.
 
@@ -270,7 +289,7 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
             # to the wrong one leaves the tools installed and unreachable, and
             # (since the check above is `command -v`) reinstalled from scratch
             # on every single launch.
-            _PROFILE_RESOLUTION,
+            _profile_resolution(),
             _profile_prepend('export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"),
             _profile_prepend(
                 '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
@@ -704,7 +723,7 @@ def transfer_script(payload: HostPayload) -> str:
     # `provisioned` -- because ~/.local/bin goes in front of it.
     profile_lines = "\n".join(
         [
-            _PROFILE_RESOLUTION,
+            _profile_resolution(),
             _profile_prepend('export PATH="$HOME/.local/bin:$PATH"'),
         ]
     )

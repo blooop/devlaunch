@@ -97,7 +97,19 @@ install_claude_code() {
     # (at `up`) recognise each other's work instead of each appending its own
     # copy of the same line. A test pins these fragments byte-for-byte;
     # regenerate with devlaunch.tools._profile_prepend if a line changes.
-    PROFILE="$TARGET_HOME/.profile"
+    #
+    # Which file to edit is devlaunch.tools._profile_resolution, pasted the
+    # same way and with $TARGET_HOME for $HOME -- this installer edits a home
+    # it is not running in. bash sources only the first of ~/.bash_profile,
+    # ~/.bash_login and ~/.profile that exists, so on an image shipping a
+    # ~/.bash_profile this used to write both lines into a file nothing ever
+    # reads -- and to look for its marks there too, missing the provision
+    # script's identical lines in the file bash does read (#191).
+    local PROFILE
+    if [ -f "$TARGET_HOME/.bash_profile" ]; then PROFILE="$TARGET_HOME/.bash_profile"
+    elif [ -f "$TARGET_HOME/.bash_login" ]; then PROFILE="$TARGET_HOME/.bash_login"
+    else PROFILE="$TARGET_HOME/.profile"
+    fi
     grep -qxF '# devlaunch: 6b593c3a6327' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 6b593c3a6327' 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$PROFILE"
     grep -qxF '# devlaunch: 12897b113bea' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 12897b113bea' '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE"
     chown "$TARGET_USER:$TARGET_USER" "$PROFILE" 2>/dev/null || true
