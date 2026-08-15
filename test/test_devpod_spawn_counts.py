@@ -98,15 +98,15 @@ def _refuse_a_devpod_argv_inside_the_real_run(argv: List[str]) -> None:
     only an argv it has already tested as non-devpod, and `popen` applies the
     identical test to the identical argv, so a pass-through cannot round-trip
     into a FinishedSession. It takes a caller holding a reference to
-    `subprocess.run` that patching the module attribute does not reach, and the
-    tree has exactly one shape of those: `devlaunch/devpod_provider.py` binds
+    `subprocess.run` that patching the module attribute does not reach. The
+    tree's one known shape of those -- `devlaunch/devpod_provider.py` binding
     `run: Callable[...] = subprocess.run` as a *default argument* on
-    `list_provider_names`, `ensure_provider` and `main`. A default argument is
-    evaluated once at import, so those three are permanently wired to the real
-    run, and each spawns `devpod provider ...` -- the only devpod argv in the
-    tree that does not go through `dl.run_devpod`. Nothing dl does calls them
-    without passing `run=` today, which is why this is rare rather than
-    constant, but "rare" is what a flake is made of.
+    `list_provider_names`, `ensure_provider` and `main`, evaluated once at
+    import and so permanently wired to the real run -- was closed by #217,
+    which resolves `run=None` at call time. The guard stays because it names
+    the *class*, not that instance: any future caller holding its own
+    reference to the real run re-opens the door, and "rare" is what a flake
+    is made of.
 
     So the leak is named where it happens instead of being left to surface as a
     missing attribute two libraries away. It also fails *before* the real `run`

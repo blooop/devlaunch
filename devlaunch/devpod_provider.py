@@ -78,7 +78,7 @@ def list_provider_names(
     it, and a caller that named no runner would spawn a real `devpod` from
     under a suite that believed it had replaced them all.
     """
-    run = run or subprocess.run
+    run = subprocess.run if run is None else run
     result = run(
         ["devpod", "provider", "list", "--output", "json"],
         capture_output=True,
@@ -104,7 +104,7 @@ def ensure_provider(
 
     `run` is resolved at call time for the reason `list_provider_names` gives.
     """
-    run = run or subprocess.run
+    run = subprocess.run if run is None else run
     if name in list_provider_names(run=run):
         return False
     result = run(
@@ -131,7 +131,8 @@ def main(
     read has to stop the task rather than let it carry on as if the provider
     were missing. That task names no runner, which makes this the one call shape
     in the tree that reached the import-time binding in production and not only
-    under test -- `run` is resolved at call time here too.
+    under test. `main` never calls the runner itself: it hands `run` -- None
+    included -- to `ensure_provider`, which resolves it where the call happens.
     """
     import argparse  # pylint: disable=import-outside-toplevel
 
