@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786791077526,
+  "lastUpdate": 1786792120122,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -1819,6 +1819,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.421944",
             "unit": "s",
             "extra": "runs=5/5 wall=10.228652s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1bb34c4a9446a7837f6097273bf071867d7f00ae",
+          "message": "Merge pull request #229 from blooop/wayfinder/devlaunch-227\n\nOffer reconcile before delete in the orphaned-containers notice",
+          "timestamp": "2026-08-15T13:06:50+02:00",
+          "tree_id": "b8e1ad474716987d4e40025de578ca8742aeaa9f",
+          "url": "https://github.com/blooop/devlaunch/commit/1bb34c4a9446a7837f6097273bf071867d7f00ae"
+        },
+        "date": 1786792119650,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.09797,
+            "range": "± 0.081254",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.258225,
+            "range": "± 0.03915",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.00084,
+            "range": "± 0.000125",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.415219,
+            "range": "± 0.084622",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.539795s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.066559,
+            "range": "± 0.055241",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 2.396666,
+            "range": "± 0.511471",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.16364,
+            "range": "± 0.006514",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 6.06212,
+            "range": "± 0.176504",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 9.700998,
+            "range": "± 0.620696",
+            "unit": "s",
+            "extra": "runs=5/5 wall=9.82267s v0.26.1, Linux-X64"
           }
         ]
       }
