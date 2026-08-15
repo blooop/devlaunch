@@ -21,6 +21,34 @@ table and should be judged on its own merits.
 
 ### Added
 
+- **Every container `dl` creates now shares one host directory of downloaded pixi
+  packages** ([#232](https://github.com/blooop/devlaunch/issues/232)). `devpod up`
+  gains a bind mount of `~/.cache/devlaunch/pixi` (under `$XDG_CACHE_HOME` if you
+  set one) onto `/home/vscode/.cache/devlaunch-pixi`, plus `PIXI_CACHE_DIR` pointed
+  at it for both the workspace and the dotfiles install script — dotfiles that
+  provision their tools with `pixi global sync` are the consumer, and devpod gives
+  that script an environment separate from the workspace's, so the assignment is
+  passed twice.
+
+  Measured on a real pair of containers while building this: the first container
+  downloaded 667 MB; the second, a fresh container finding the packages already
+  there, finished its sync in **16 s having fetched 13 KB**. Two containers syncing
+  against one empty cache at the same time both exited 0 and between them downloaded
+  the same 667 MB rather than 667 MB each.
+
+  **Deleting the directory is always safe**, at any moment, including under running
+  containers — it holds nothing but re-fetchable package archives, and nothing inside
+  a container refers into it. `dl --purge` takes it with the rest of the cache.
+
+  Only the *download cache* is shared. `PIXI_HOME` is not, and must not be: installed
+  environments are baked with absolute paths, and two containers on one environment
+  tree is [pixi#5476](https://github.com/prefix-dev/pixi/issues/5476). Nor is it the
+  host's own `~/.cache/rattler/cache` — a dedicated directory keeps a host-side
+  `pixi clean cache` from pulling packages out from under a live container, and keeps
+  containers writing as their own remote user out of a cache you rely on. A cache
+  directory that cannot be created costs the sharing and not the launch: the container
+  downloads its own packages, exactly as it did before.
+
 - **`DEVLAUNCH_DOTFILES_ON_ATTACH=1` refreshes dotfiles just before an interactive
   attach hands over the shell** ([#183](https://github.com/blooop/devlaunch/issues/183)).
   devpod applies dotfiles only when it *provisions* a workspace, so a long-lived one

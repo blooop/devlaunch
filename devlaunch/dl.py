@@ -3440,6 +3440,75 @@ def _context_options_cache_path() -> pathlib.Path:
     return _get_cache_dir() / "context-options.json"
 
 
+# Where the shared pixi package cache is bound inside a container, and the value
+# PIXI_CACHE_DIR takes there. `/home/vscode` is devpod's remoteUser convention and
+# the one this repo's own devcontainer is built on; unlike the host side it is a
+# property of the image rather than of whoever is running dl, so it is a constant.
+#
+# A path of its own rather than the container's `~/.cache/rattler/cache`: what is
+# on this mount is shared between containers, and putting it where pixi would
+# have kept its private cache invites the environments to follow. They must not
+# -- prefixes are baked with absolute paths and two syncs sharing one prefix tree
+# is prefix-dev/pixi#5476. PIXI_HOME is never passed here for the same reason.
+PIXI_CACHE_TARGET = "/home/vscode/.cache/devlaunch-pixi"
+
+
+def pixi_cache_source() -> pathlib.Path:
+    """The host directory containers share their downloaded pixi packages through.
+
+    Under devlaunch's own cache dir, so it follows XDG_CACHE_HOME like the rest of
+    dl's storage and `dl --purge` already takes it away with everything else --
+    correct by construction here, because this is a pure cache and the worst a
+    deletion costs is the next container's downloads.
+
+    A dedicated directory, not the host's real `~/.cache/rattler/cache`, on two
+    counts the ticket settled: containers write into it as their own remoteUser,
+    whose uid is only coincidentally the host user's; and a host-side
+    `pixi clean cache` must not be able to pull packages out from under a running
+    container.
+
+    Resolved at call time rather than from the module-level CACHE_DIR, like the
+    context-options cache above it.
+    """
+    return _get_cache_dir() / "pixi"
+
+
+def pixi_cache_up_args() -> List[str]:
+    """The `devpod up` flags that put a container on the shared package cache.
+
+    Three of them, and the third is not a duplicate of the second. devpod gives
+    the dotfiles install script an environment of its own, so a variable set only
+    for the workspace never reaches the `pixi global sync` that is the whole
+    consumer of this cache.
+
+    The source directory is created here rather than left to the container
+    runtime. Runtimes disagree about a bind source that does not exist -- refused
+    outright by some, created as root by others -- and a root-owned directory is
+    one the container cannot write a package into, which is this feature failing
+    silently and slowly.
+
+    A directory that cannot be created costs the sharing and not the launch, the
+    same call workspace_up already makes about its launch lock: a full disk or a
+    read-only cache home must not turn an `up` that would have worked into a
+    traceback. Without the mount a container downloads its own packages, which is
+    what every container did before this existed.
+    """
+    source = pixi_cache_source()
+    try:
+        source.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logging.debug("No shared pixi cache at %s: %s", source, e)
+        return []
+    return [
+        "--mount",
+        f"type=bind,source={source},target={PIXI_CACHE_TARGET}",
+        "--workspace-env",
+        f"PIXI_CACHE_DIR={PIXI_CACHE_TARGET}",
+        "--dotfiles-script-env",
+        f"PIXI_CACHE_DIR={PIXI_CACHE_TARGET}",
+    ]
+
+
 def _launch_lock_path(workspace_id: str) -> pathlib.Path:
     """The lock two `up`s of one workspace serialize on (see workspace_up).
 
@@ -3571,6 +3640,11 @@ def workspace_up(
         args.extend(["--dotfiles", ctx["DOTFILES_URL"]])
     if ctx.get("DOTFILES_SCRIPT"):
         args.extend(["--dotfiles-script", ctx["DOTFILES_SCRIPT"]])
+    # Every container's dotfiles install runs `pixi global sync`, and on an empty
+    # cache that is 62-113s and 1.2GB of network per container fetching what the
+    # last one already fetched. One host directory bound into all of them makes
+    # the second container's sync an 18-28s unpack from disk (#232).
+    args.extend(pixi_cache_up_args())
     with contextlib.ExitStack() as stack:
         # Two ways to end up unserialized, and neither is worth failing a
         # launch over. No identity means there is nothing to key a lock on,
