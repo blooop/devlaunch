@@ -243,6 +243,17 @@ class TestProfileGuards:
         assert appends, "a script that never edits the profile has nothing to resolve"
         return "\n".join([TestProfileGuards._resolution(script)] + appends)
 
+    @staticmethod
+    def _guards(script):
+        """The guard half of every line that appends to the login profile."""
+        guards = [
+            line.strip().partition("||")[0]
+            for line in script.splitlines()
+            if '>> "$PROFILE"' in line
+        ]
+        assert guards, "a script that never edits the profile has nothing to guard"
+        return guards
+
     @pytest.mark.parametrize("name", SCRIPTS)
     @pytest.mark.parametrize("present", HOME_SHAPES, ids=lambda shape: "+".join(shape) or "empty")
     def test_a_profile_edit_lands_where_a_login_shell_will_read_it(self, name, present, tmp_path):
@@ -285,17 +296,6 @@ class TestProfileGuards:
             f"{name} appended to a file a login shell in a home with "
             f"{list(present) or 'no profile'} never reads"
         )
-
-    @staticmethod
-    def _guards(script):
-        """The guard half of every line that appends to the login profile."""
-        guards = [
-            line.strip().partition("||")[0]
-            for line in script.splitlines()
-            if '>> "$PROFILE"' in line
-        ]
-        assert guards, "a script that never edits the profile has nothing to guard"
-        return guards
 
     @pytest.mark.parametrize("name", SCRIPTS)
     def test_a_guard_asks_about_devlaunchs_own_line_not_about_a_directory(self, name, tmp_path):
