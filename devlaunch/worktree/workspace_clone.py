@@ -26,6 +26,7 @@ from .. import timing
 from ..workspace_id import WorkspaceId, validate_ref_name
 from .branch_manager import BranchManager
 from .config import WorktreeConfig, get_worktree_config
+from .git_errors import git_failure_reason
 from .models import WorktreeInfo
 from .repo_manager import (
     FetchFailed,
@@ -656,10 +657,11 @@ class WorkspaceCloneManager:
                         env=clone_env,
                     )
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to clone workspace: {e.stderr}")
+                reason = git_failure_reason(e, "clone")
+                logger.error(f"Failed to clone workspace: {reason}")
                 if ws_path.exists():
                     shutil.rmtree(ws_path)
-                raise RuntimeError(f"Failed to clone workspace: {e.stderr}") from e
+                raise RuntimeError(f"Failed to clone workspace: {reason}") from e
 
             # Step 2: Fix remote URL to point to GitHub
             try:
@@ -671,8 +673,9 @@ class WorkspaceCloneManager:
                     check=True,
                 )
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to set remote URL: {e.stderr}")
-                raise RuntimeError(f"Failed to set remote URL: {e.stderr}") from e
+                reason = git_failure_reason(e, "remote set-url")
+                logger.error(f"Failed to set remote URL: {reason}")
+                raise RuntimeError(f"Failed to set remote URL: {reason}") from e
 
         # No fetch in the workspace clone. A new one was just cloned from a bare
         # cache that ensure_branch had already fetched the requested ref into, and
@@ -716,8 +719,9 @@ class WorkspaceCloneManager:
                 check=True,
             )
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to checkout branch '{branch}': {e.stderr}")
-            raise RuntimeError(f"Failed to checkout branch '{branch}': {e.stderr}") from e
+            reason = git_failure_reason(e, "checkout")
+            logger.error(f"Failed to checkout branch '{branch}': {reason}")
+            raise RuntimeError(f"Failed to checkout branch '{branch}': {reason}") from e
 
         # Materialize LFS content. Not gated on is_new_workspace: a failed pull
         # leaves a workspace that already "exists", and gating here would take the

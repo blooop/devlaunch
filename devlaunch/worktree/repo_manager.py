@@ -278,12 +278,13 @@ class RepositoryManager:
             return base_repo
 
         except subprocess.CalledProcessError as e:
-            logger.debug(f"Failed to clone repository: {e.stderr}")
+            reason = git_failure_reason(e, "clone")
+            logger.debug(f"Failed to clone repository: {reason}")
             # Clean up the partial clone. Safe to delete: the exists-cases were
             # all handled above, so this directory is one this call created.
             if bare_path.exists():
                 shutil.rmtree(bare_path)
-            raise RuntimeError(f"Failed to clone repository: {e.stderr}") from e
+            raise RuntimeError(f"Failed to clone repository: {reason}") from e
 
     def _register_existing_bare(
         self, owner: str, repo: str, remote_url: str, bare_path: Path
@@ -347,8 +348,9 @@ class RepositoryManager:
             logger.debug(f"Fetch of {owner}/{repo} exceeded {timeout}s")
             raise RuntimeError(f"Fetch of {owner}/{repo} timed out after {timeout}s") from e
         except subprocess.CalledProcessError as e:
-            logger.debug(f"Failed to fetch repository: {e.stderr}")
-            raise RuntimeError(f"Failed to fetch repository: {e.stderr}") from e
+            reason = git_failure_reason(e, "fetch")
+            logger.debug(f"Failed to fetch repository: {reason}")
+            raise RuntimeError(f"Failed to fetch repository: {reason}") from e
 
     def fetch_ref(self, owner: str, repo: str, branch: str) -> FetchOutcome:
         """Fetch exactly one branch into the bare cache, and say what happened.

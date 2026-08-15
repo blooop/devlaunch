@@ -286,6 +286,11 @@ def _git(repo: Path, *args: str) -> GitAnswer:
         logger.debug(f"git {' '.join(args)} in {repo}: {e}")
         return GitRefused(str(e))
     if result.returncode != 0:
+        # Deliberately not routed through worktree.git_errors.git_failure_reason
+        # (#238): this is a ``CompletedProcess`` under unconditional capture, so
+        # the ``None`` that helper guards against cannot occur here -- and this
+        # module imports nothing from the package, a leafhood not worth spending
+        # on a strip the next line already does.
         stderr = result.stderr.strip()
         logger.debug(f"git {' '.join(args)} in {repo}: {stderr}")
         return GitRefused(stderr or f"git {' '.join(args)} exited {result.returncode}")
