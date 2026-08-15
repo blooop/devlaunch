@@ -13,6 +13,7 @@ redundant round-trip fails here instead of quietly costing half a second.
 
 import io
 import json
+import pathlib
 import shlex
 import subprocess
 import sys
@@ -56,12 +57,28 @@ class FinishedSession:
         return False
 
 
+# Captured before anything is patched, because patching `devlaunch.dl.subprocess`
+# patches the subprocess *module* -- dl imports the module rather than a name out
+# of it, so there is only one `subprocess.run` in the process and a stub put
+# there answers every module's calls, not just dl's.
+_real_run = subprocess.run
+_real_popen = subprocess.Popen
+
+
 class DevpodSpawns:
     """Stands in for subprocess.run and records every devpod command line.
 
     Answers the read-only devpod commands dl makes (list/status/context
     options) from in-memory state so a whole CLI invocation can run without a
     devpod binary, and reports the devpod spawns in order.
+
+    **Only devpod.** Every other command runs for real, and that is a
+    correctness property rather than a convenience: the clone classification
+    behind `--prune` is a real `git status` and a real `git log --not
+    --remotes`, and a stub that answered them too would hand back a clean exit
+    with empty output -- which reads as "this clone holds nothing", which is
+    the answer that removes it. A fixture earning its removal that way models a
+    deletion the shipped code will not perform (devlaunch#184).
 
     A session attach spawns through Popen rather than run, so `popen` records
     into the same list: what these tests count is devpod processes, not which
@@ -81,28 +98,38 @@ class DevpodSpawns:
         # a workspace purge will act on points this at the cache dir it patched.
         self.source_root = "/cache"
 
-    def __call__(self, cmd, *_args, **_kwargs) -> subprocess.CompletedProcess:
+    def __call__(self, cmd, *args, **kwargs) -> subprocess.CompletedProcess:
         argv = list(cmd)
+        if argv[:1] != ["devpod"]:
+            # pylint: disable=subprocess-run-check  # the caller's own kwargs carry it
+            return _real_run(cmd, *args, **kwargs)
         self.commands.append(argv)
-        stdout = ""
         returncode = 0
-        if argv[:1] == ["devpod"]:
-            stdout = self._devpod_stdout(argv[1:])
-            # Real devpod exits non-zero for `status` on a workspace it does
-            # not have, and dl now reads that answer as "not found" -- a fake
-            # that succeeds for every id would hide the cold path entirely.
-            if argv[1:2] == ["status"] and (
-                argv[2] not in self.workspace_ids or argv[2] in self.undescribable
-            ):
-                stdout = ""
-                returncode = 1
+        stdout = self._devpod_stdout(argv[1:])
+        # Real devpod exits non-zero for `status` on a workspace it does
+        # not have, and dl now reads that answer as "not found" -- a fake
+        # that succeeds for every id would hide the cold path entirely.
+        if argv[1:2] == ["status"] and (
+            argv[2] not in self.workspace_ids or argv[2] in self.undescribable
+        ):
+            stdout = ""
+            returncode = 1
         return subprocess.CompletedProcess(
             args=argv, returncode=returncode, stdout=stdout, stderr=""
         )
 
-    def popen(self, cmd, *_args, **_kwargs) -> FinishedSession:
-        """Stand in for the Popen behind an interactive or one-shot session."""
+    def popen(self, cmd, *args, **kwargs):
+        """Stand in for the Popen behind an interactive or one-shot session.
+
+        Passes non-devpod commands through for the same reason `__call__` does,
+        and it is not only for symmetry: `subprocess.run` is itself written in
+        terms of `Popen`, so a passed-through `git status` arrives back here on
+        its way to the real binary and would otherwise be answered by a session
+        object that has no process behind it.
+        """
         argv = list(cmd)
+        if argv[:1] != ["devpod"]:
+            return _real_popen(cmd, *args, **kwargs)
         self.commands.append(argv)
         return FinishedSession(argv)
 
@@ -154,6 +181,36 @@ def spawns():
 def _run_dl(*argv: str) -> int:
     with patch.object(sys, "argv", ["dl", *argv]):
         return main()
+
+
+def _git(*args: str, cwd: pathlib.Path) -> None:
+    """Run git for real, failing the test with git's own words if it refuses."""
+    result = _real_run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"git {' '.join(args)}: {result.stderr}"
+
+
+def _fully_pushed_clone(clone: pathlib.Path, scratch: pathlib.Path) -> pathlib.Path:
+    """A real clone at *clone* that git will say holds nothing worth keeping.
+
+    A local path is a real git remote, so a clone made this way has a genuine
+    remote-tracking ref and `git log --oneline main --not --remotes` is empty
+    because the commit really is on the remote -- which is the state
+    `--prune` removes a directory for. An empty directory with a file in it
+    is not that state and is not removable: git cannot read it as a
+    repository, so it classifies as work that could not be asked about and is
+    kept unless `--force` says otherwise (devlaunch#184).
+    """
+    seed = scratch / "seed"
+    seed.mkdir()
+    _git("init", "-b", "main", ".", cwd=seed)
+    (seed / "README.md").write_text("seed\n", encoding="utf-8")
+    _git("add", "-A", cwd=seed)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed", cwd=seed)
+    origin = scratch / "origin.git"
+    _git("clone", "--bare", str(seed), str(origin), cwd=scratch)
+    clone.parent.mkdir(parents=True, exist_ok=True)
+    _git("clone", str(origin), str(clone), cwd=scratch)
+    return clone
 
 
 class TestHotCommandSpawnCounts:
@@ -210,7 +267,7 @@ class TestHotCommandSpawnCounts:
             ["delete", "ws2", "--force"],
         ]
 
-    def test_prune_lists_workspaces_once_per_pass_and_asks_no_status(self, spawns):
+    def test_prune_lists_workspaces_once_per_pass_and_asks_no_status(self, spawns, tmp_path):
         """`dl --prune` costs one `devpod list` per pass and nothing else.
 
         A workspace's *state* has no bearing on whether a clone directory is
@@ -234,12 +291,20 @@ class TestHotCommandSpawnCounts:
         that it was removed comes first: a fixture whose directories sit
         somewhere the command never looks would leave these counts describing a
         scan that classified nothing at all.
+
+        It is a real clone with a real remote, and that is what makes the
+        removal mean anything. Built as a bare directory with a file in it, it
+        was removed only because the recorder was answering git as well as
+        devpod -- clean exit, empty output, read as "holds nothing". The
+        shipped code classifies that directory `CouldNotTell` and keeps it, so
+        the counts below were being taken over a scan that removed something
+        `dl --prune` would not (devlaunch#184).
         """
         from devlaunch.xdg import devlaunch_cache
 
-        stale = devlaunch_cache() / "repos" / "o" / "r" / "r-main-abcdefgh"
-        stale.mkdir(parents=True)
-        (stale / "payload.bin").write_bytes(b"\0" * 1024)
+        stale = _fully_pushed_clone(
+            devlaunch_cache() / "repos" / "o" / "r" / "r-main-abcdefgh", tmp_path
+        )
         assert _run_dl("--prune", "-y") == 0
         assert not stale.exists()
         assert spawns.devpod_commands == [
