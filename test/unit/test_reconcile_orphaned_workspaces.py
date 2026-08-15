@@ -86,7 +86,14 @@ class World:
         Returned path is the directory under its **old** leaf, which has to be
         read before :meth:`migrate` runs because that is the name the rename
         takes away -- and the name devpod's record is still holding.
+
+        `build_legacy_cache` writes `metadata.json` whole, so this must also
+        come before any :meth:`record` call -- the assert keeps a record
+        written earlier from being lost silently.
         """
+        assert not (self.cache / "metadata.json").exists(), (
+            "old_scheme_clone overwrites metadata.json; call it before record()"
+        )
         build_legacy_cache(self.cache.parent, {(OWNER, REPO): [branch]})
         return self.repo_dir / _old_leaf(branch)
 
@@ -302,10 +309,13 @@ class TestTheRepairTheMigrationsNoticePromises:
 
     That notice is written in migration.py and its truth is owed here, across a
     module boundary nothing else spans: the notice's own tests pin the words and
-    the ordering, so if the join in :func:`_orphaned_workspaces` or the spellings
-    in :func:`_leaf_spellings` ever narrowed, the sentence would start lying with
-    every test in both files still green. One case, built out of the migration's
-    real machinery, is what closes that.
+    the ordering, not the adoption. Narrowing the join in
+    :func:`_orphaned_workspaces` or the spellings in :func:`_leaf_spellings`
+    does redden neighbours in this file -- but only a case built out of the
+    migration's real machinery notices the *other* side drifting. Let the
+    migration start normalising `record.branch` to the derived id and the
+    sentence lies with every other test at this seam still green; this one goes
+    red, because its input is whatever the migration actually wrote.
     """
 
     def test_a_container_the_migration_orphans_is_one_this_command_adopts(self, world):
