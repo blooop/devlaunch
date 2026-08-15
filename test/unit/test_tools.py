@@ -175,14 +175,35 @@ FEATURE_INSTALLER = (
 
 
 class TestProfileGuards:
-    """Every "have I already edited this profile?" question, in every script.
+    """Every question these scripts ask about the login profile, in every script.
 
-    Asked once here rather than per script, because the property is the same
-    wherever it is asked and the answer decides whether a workspace ever stops
-    doing work it has already done.
+    Two questions, both asked once here rather than per script, because each
+    property is the same wherever it is asked: *which* file is the login
+    profile, and *have we already edited it*. The first decides whether the
+    edit is ever read, the second whether it stops being repeated.
     """
 
     SCRIPTS = ["provision", "transfer", "feature"]
+
+    # The directory each script's profile edit unconditionally puts on a login
+    # shell's PATH. Written out as literals rather than read back off the
+    # script, because a test that derives what to expect from the thing under
+    # test agrees with it however wrong it is.
+    PREPENDED = {"provision": ".pixi/bin", "transfer": ".local/bin", "feature": ".pixi/bin"}
+
+    # Every shape a container's home can have when a writer arrives. bash
+    # sources the *first* of ~/.bash_profile, ~/.bash_login, ~/.profile that
+    # exists and no other, so which of these files are already there is
+    # exactly what decides where an edit has to land to be read.
+    HOME_SHAPES = [
+        (),
+        (".profile",),
+        (".bash_profile",),
+        (".bash_login",),
+        (".bash_profile", ".profile"),
+        (".bash_login", ".profile"),
+        (".bash_profile", ".bash_login", ".profile"),
+    ]
 
     @staticmethod
     def _script(name, tmp_path):
@@ -193,12 +214,85 @@ class TestProfileGuards:
         return FEATURE_INSTALLER.read_text(encoding="utf-8")
 
     @staticmethod
+    def _resolution(script):
+        """The lines of `script` that decide which file `$PROFILE` names.
+
+        Cut out by its own shape -- from the line that both names
+        ~/.bash_profile and assigns `PROFILE` down to the `fi` that closes it
+        -- and returned with the indentation of its surroundings taken off, so
+        a block sitting inside a shell function compares against the same
+        block rendered on its own.
+        """
+        lines = script.splitlines()
+        start = next(
+            i for i, line in enumerate(lines) if ".bash_profile" in line and "PROFILE=" in line
+        )
+        end = next(i for i in range(start, len(lines)) if lines[i].strip() == "fi")
+        return "\n".join(line.strip() for line in lines[start : end + 1])
+
+    @staticmethod
+    def _profile_edit(script):
+        """The part of `script` that picks a profile file and appends to it.
+
+        Cut out of the script rather than rebuilt from its pieces so the block
+        can be *run*: the resolution and the appends it feeds are lifted
+        verbatim and executed, which is the only way to find out where the
+        writes actually land.
+        """
+        appends = [line for line in script.splitlines() if '>> "$PROFILE"' in line]
+        assert appends, "a script that never edits the profile has nothing to resolve"
+        return "\n".join([TestProfileGuards._resolution(script)] + appends)
+
+    @pytest.mark.parametrize("name", SCRIPTS)
+    @pytest.mark.parametrize("present", HOME_SHAPES, ids=lambda shape: "+".join(shape) or "empty")
+    def test_a_profile_edit_lands_where_a_login_shell_will_read_it(self, name, present, tmp_path):
+        """The edit has to go in the file bash *reads*, not the one named
+        ~/.profile.
+
+        bash sources exactly one login profile -- the first of ~/.bash_profile,
+        ~/.bash_login, ~/.profile that exists -- so on an image shipping a
+        ~/.bash_profile, appending to ~/.profile writes to a file nothing ever
+        reads: the tools are installed and unreachable, and (since the reuse
+        check is `command -v`) reinstalled from scratch on every launch. Two
+        writers that answer this differently also dedupe against different
+        files, so neither can see the other's marks.
+
+        Asked of a real login bash rather than of a rule this test restates:
+        the edit is run in a scratch home, then bash is started as a login
+        shell there and asked what its PATH is. That makes bash the authority
+        on both halves at once, and means all three writers agreeing is a
+        consequence of each being right rather than a separate assertion.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        for name_ in present:
+            (home / name_).write_text("# stock\n", encoding="utf-8")
+        bash = shutil.which("bash") or "/bin/bash"
+        subprocess.run(
+            [bash, "-c", self._profile_edit(self._script(name, tmp_path))],
+            env={"PATH": os.environ["PATH"], "HOME": str(home), "TARGET_HOME": str(home)},
+            check=True,
+        )
+        login_path = subprocess.run(
+            [bash, "-l", "-c", 'printf "%s\\n" "$PATH"'],
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        prepended = str(home / self.PREPENDED[name])
+        assert prepended in login_path.strip().split(":"), (
+            f"{name} appended to a file a login shell in a home with "
+            f"{list(present) or 'no profile'} never reads"
+        )
+
+    @staticmethod
     def _guards(script):
         """The guard half of every line that appends to the login profile."""
         guards = [
             line.strip().partition("||")[0]
             for line in script.splitlines()
-            if '>> "$PROFILE"' in line or '>> "$profile"' in line
+            if '>> "$PROFILE"' in line
         ]
         assert guards, "a script that never edits the profile has nothing to guard"
         return guards
@@ -286,6 +380,44 @@ class TestProfileGuards:
                 f"the feature installer no longer carries the rendered append for {line!r}; "
                 "regenerate it with tools._profile_prepend"
             )
+
+    @pytest.mark.parametrize("name", SCRIPTS)
+    def test_every_writer_carries_the_one_resolution_the_module_renders(self, name, tmp_path):
+        """There is one answer to "which file is the login profile", rendered
+        in one place, and every writer carries that rendering.
+
+        The test above proves each writer's edit reaches a login shell today.
+        This one is why it stays true: two hand-maintained copies of the
+        answer drift, and the drift is silent -- the writer that keeps the old
+        answer still exits 0, still writes a file, and only stops being read.
+        The rendering takes the home variable as an argument because the
+        installer works on another user's home (`$TARGET_HOME`) while the
+        scripts run in it (`$HOME`); that is the *only* difference allowed
+        between them, which is what asserting equality here says.
+        """
+        home_var = "$TARGET_HOME" if name == "feature" else "$HOME"
+        rendered = tools._profile_resolution(home_var)  # pylint: disable=protected-access
+        assert self._resolution(self._script(name, tmp_path)) == rendered, (
+            f"{name} no longer resolves the login profile the way the module does; "
+            "regenerate it with tools._profile_resolution"
+        )
+
+    @pytest.mark.parametrize("name", SCRIPTS)
+    def test_no_profile_edit_hides_from_these_tests_under_another_name(self, name, tmp_path):
+        """Every append in these scripts goes to `$PROFILE`, spelled that way.
+
+        The tests here find profile edits by matching that one spelling, so a
+        writer that appended under any other name would be silently exempt
+        from all of them -- unguarded, unresolved, and reported as covered.
+        The filter used to also admit a lowercase `$profile` that nothing has
+        ever written, which is precisely such an exemption sitting ready.
+        """
+        for line in self._script(name, tmp_path).splitlines():
+            if ">>" in line:
+                assert '>> "$PROFILE"' in line, (
+                    f"{name} appends to something other than $PROFILE, which these "
+                    f"tests do not see: {line.strip()!r}"
+                )
 
 
 def fake_payload(tmp_path) -> tools.HostPayload:
