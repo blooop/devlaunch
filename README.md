@@ -229,10 +229,42 @@ than the filesystem has actually done.
 |--------|-------------|
 | `--devcontainer <variant\|path>` | Use a non-default `devcontainer.json`. A bare name means `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so pass it once. |
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal; always use the plain `devpod ssh` transport. |
+| `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before handing over an interactive shell. Off by default; see below. |
 
 Projects with demanding devcontainers — several variants, compose sidecars, or a
 host-side `initializeCommand` that has to tell branch workspaces apart — are
 covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
+
+### Refreshing dotfiles on attach
+
+devpod applies dotfiles when it *provisions* a workspace, so a workspace that has
+been up for a fortnight still has the dotfiles it was born with. `dl <ws>
+dotfiles` fixes that when you think of it; `DEVLAUNCH_DOTFILES_ON_ATTACH=1` makes
+`dl` think of it for you, running the same refresh just before it hands you the
+shell.
+
+```bash
+DEVLAUNCH_DOTFILES_ON_ATTACH=1 dl someone/repo
+```
+
+It is off unless you set it, and that is the point rather than caution. The
+refresh is a `devpod ssh` round-trip — measured at ~1.7s, almost all of it
+connection setup — with a `git pull` behind it, and it would otherwise be charged
+to every attach on every machine to close a gap most people do not have.
+
+Two things it deliberately does not do:
+
+- **It never runs for `dl <ws> -- <command>`.** A one-shot command renders no
+  prompt and sources no interactive shell, so refreshing in front of it would
+  buy that command nothing and cost it the round-trip. That path is the one
+  agent launchers use, and it stays exactly as fast as it was.
+- **It never holds the shell hostage.** The refresh gets 60 seconds; an
+  unreachable dotfiles remote, or one that wants a password nobody is there to
+  type, means a pause and then your shell, not a hang. Failure is a warning —
+  you get the workspace either way.
+
+Refreshes run every time you attach, with no cooldown, because you asked for
+them. If that is too often, unset the variable and use `dl <ws> dotfiles`.
 
 ## GitHub Authentication
 

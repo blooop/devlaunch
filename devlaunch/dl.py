@@ -3702,6 +3702,40 @@ def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> 
     return run_ssh(args, env=env).returncode
 
 
+DOTFILES_ON_ATTACH_VAR = "DEVLAUNCH_DOTFILES_ON_ATTACH"
+
+_FALSEY = ("", "0", "false", "no")
+
+# What the opt-in refresh may spend before it gives up and hands over the shell.
+# Generous enough that a real `chezmoi update` plus `pixi global sync` finishes
+# inside it on a working remote, short enough that an unreachable one is a pause
+# rather than a hang. Not a knob: a second environment variable to tune a number
+# nobody has yet been bitten by is a knob to maintain, and the failure it guards
+# is already survivable -- the refresh is best-effort and the shell arrives
+# either way.
+DOTFILES_ATTACH_TIMEOUT_SECONDS = 60
+
+
+def refresh_on_attach_enabled() -> bool:
+    """Whether the user asked for dotfiles to be refreshed when they attach.
+
+    Off unless switched on, and that is the requirement rather than a default
+    (#183). devpod applies dotfiles when it *provisions* a workspace, so a
+    long-lived one keeps whatever it was born with until something refreshes it
+    -- a real gap, but one whose fix costs a `devpod ssh` round-trip measured at
+    ~1.73s of which ~99% is connection setup, plus a git pull, in front of every
+    shell. Charging that to everyone to close a gap most of them do not have is
+    how the first attempt at this failed; the people who want it say so.
+
+    Reads the same vocabulary of denials as `DEVLAUNCH_NO_TTY` and
+    `DEVLAUNCH_NO_GH_TOKEN`, so `=0` and an empty export mean off here too. The
+    identical expression flips sense for free: unset reads as the empty string,
+    which is a denial, so the default falls out of the default rather than
+    needing to be stated.
+    """
+    return os.environ.get(DOTFILES_ON_ATTACH_VAR, "").strip().lower() not in _FALSEY
+
+
 @timing.staged("attach")
 def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> int:
     """Hand the workspace to the user: ssh in, and nothing else.
@@ -3721,15 +3755,47 @@ def attach_workspace(workspace_id: str, shell_command: Optional[str] = None) -> 
 
     Kept as a function despite being one line: it is where the `attach` timing
     stage is declared, and the stage belongs on the thing it names.
+
+    One thing is conditional on top of the session, and only ever off unless
+    asked for: the dotfiles refresh (#183). See ``refresh_on_attach_enabled``
+    for why it is opt-in and ``DOTFILES_ATTACH_TIMEOUT_SECONDS`` for what bounds
+    it. It is skipped for a one-shot `dl <ws> -- cmd` on the same reasoning the
+    hostname round-trip was skipped for years before it moved: that command
+    renders no prompt and sources no interactive shell, so a refresh in front of
+    it buys it nothing and costs it a ~1.7s round-trip. That path is the one
+    #139 is about and the shape wayfinder hands dl for every agent launch.
+
+    In front of the session rather than behind it, because the shell being
+    handed over is the whole point: dotfiles that landed after it started are
+    dotfiles it has already finished sourcing.
     """
+    if shell_command is None and refresh_on_attach_enabled():
+        dotfiles_update(workspace_id, timeout=DOTFILES_ATTACH_TIMEOUT_SECONDS)
     return workspace_ssh(workspace_id, shell_command)
 
 
-def dotfiles_update(workspace_id: str) -> int:
+def dotfiles_update(workspace_id: str, timeout: Optional[int] = None) -> int:
     """Refresh dotfiles inside a running workspace.
 
     Runs chezmoi update + pixi global sync. Falls back to running install.sh
     if chezmoi is not available (e.g. workspace predates dotfiles setup).
+
+    ``timeout`` bounds the whole payload, in seconds, and is what makes the
+    automatic refresh safe to put in front of a shell: every step of this is a
+    network call, and a non-zero exit being tolerated only helps once the
+    command has decided to exit at all. An unreachable remote or a credential
+    prompt is exactly the case where it does not.
+
+    The bound is spent inside the container rather than on a host-side
+    subprocess deadline. `timeout` puts the managed command in its own process
+    group and signals the group, so the git or pixi process actually doing the
+    waiting dies with the shell that started it and stops holding the session
+    open -- which a host-side kill of the `devpod ssh` client would not achieve.
+
+    Left unbounded by default, so `dl <ws> dotfiles` -- typed, in the
+    foreground, interruptible, and sometimes a legitimately slow first `pixi
+    global sync` -- keeps behaving as it did. A deadline is worth having on the
+    refresh nobody asked for, and is a way to lose work on the one somebody did.
     """
     ctx = get_context_options()
     dotfiles_url = ctx.get("DOTFILES_URL", "")
@@ -3755,6 +3821,8 @@ def dotfiles_update(workspace_id: str) -> int:
         'echo "Dotfiles updated successfully"; '
         f"else {fallback}; fi"
     )
+    if timeout is not None:
+        update_cmd = f"timeout {timeout} bash -c {shlex.quote(update_cmd)}"
     return workspace_ssh(workspace_id, command=update_cmd)
 
 
@@ -3927,6 +3995,12 @@ Options:
 Environment:
     DEVLAUNCH_NO_GH_TOKEN=1          Do not forward the host's gh login into
                                      workspaces (forwarded as GH_TOKEN by default)
+    DEVLAUNCH_DOTFILES_ON_ATTACH=1   Refresh dotfiles before handing over an
+                                     interactive shell, the way `dotfiles`
+                                     does. Off by default: it costs a round
+                                     trip plus a git pull on every attach.
+                                     Skipped for `-- <command>`, and given 60s
+                                     before it gives up and hands over anyway.
 
 Workspace sources:
     dl myproject                     Existing workspace by name

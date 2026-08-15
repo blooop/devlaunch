@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
+from devlaunch import dl as dl_module
 from devlaunch import tools
 from devlaunch.dl import (
     DevpodNotInstalled,
@@ -722,6 +723,97 @@ class TestMemoizationCannotHideAMissingDevpod:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err.strip().count("\n") == 0
+
+
+class TestOptInDotfilesRefreshOnAttach:
+    """What switching the dotfiles refresh on costs, and what leaving it off does not.
+
+    The feature is measured here rather than anywhere else because the whole
+    question it lost on the first time is a spawn count (#183). The pins in
+    `TestHotCommandSpawnCounts` above are the off-by-default requirement: they
+    run with the switch unset, they were not edited to accommodate this, and an
+    unconditional refresh fails five of them. So the counts below are the *other*
+    half — what the user who asked for it actually pays.
+    """
+
+    def test_an_opted_in_interactive_attach_refreshes_before_the_shell(self, spawns, monkeypatch):
+        """Switched on, an interactive attach pays one refresh trip, then the session.
+
+        The order is the feature: the point of refreshing on attach rather than
+        on some later timer is that the shell being handed over is the one that
+        reads the new dotfiles. A refresh that landed after the session started
+        would be updating files the shell had already sourced.
+        """
+        monkeypatch.setenv("DEVLAUNCH_DOTFILES_ON_ATTACH", "1")
+        assert _run_dl("myws") == 0
+        heads = [argv[:2] for argv in spawns.devpod_commands]
+        assert heads == [
+            ["status", "myws"],
+            ["context", "options"],
+            ["ssh", "myws"],
+            ["ssh", "myws"],
+        ]
+        refresh, session = spawns.devpod_commands[2], spawns.devpod_commands[3]
+        assert refresh[2] == "--command"
+        assert "chezmoi update" in refresh[3]
+        assert session == ["ssh", "myws"]
+
+    def test_the_refresh_trip_is_bounded(self, spawns, monkeypatch):
+        """The refresh that crosses into the container carries its own deadline.
+
+        An unreachable dotfiles remote must hand the shell over rather than sit
+        in front of it, and nothing on dl's side bounds a `chezmoi update` that
+        is blocked on a network read or a credential prompt -- tolerating a
+        non-zero exit only helps once the command has decided to exit.
+
+        The bound is asserted as a literal in the payload rather than by waiting
+        out a real hang: a test that slept out a timeout would be measuring
+        coreutils, slowly, and would still not prove dl had asked for one.
+        """
+        monkeypatch.setenv("DEVLAUNCH_DOTFILES_ON_ATTACH", "1")
+        assert _run_dl("myws") == 0
+        payload = spawns.devpod_commands[2][3]
+        assert f"timeout {dl_module.DOTFILES_ATTACH_TIMEOUT_SECONDS}" in payload
+        assert dl_module.DOTFILES_ATTACH_TIMEOUT_SECONDS > 0
+
+    def test_a_one_shot_command_is_not_worth_a_refresh(self, spawns, monkeypatch):
+        """Switched on, `dl <ws> -- cmd` still costs exactly status plus the command.
+
+        Same reasoning the attach already applies to everything it does not do
+        for a one-shot: the command renders no prompt and sources no interactive
+        shell, so a refresh in front of it buys that command nothing and costs it
+        a round-trip. This is the shape wayfinder hands dl for every agent
+        launch, so it is the one that must not grow.
+        """
+        monkeypatch.setenv("DEVLAUNCH_DOTFILES_ON_ATTACH", "1")
+        assert _run_dl("myws", "--", "echo", "hi") == 0
+        assert spawns.devpod_commands == [
+            ["status", "myws", "--output", "json"],
+            ["ssh", "myws", "--command", "bash -lc 'echo hi'"],
+        ]
+
+    @pytest.mark.parametrize("setting", ["", "0", "false", "no", "FALSE", " no "])
+    def test_a_switch_set_to_a_denial_is_still_off(self, spawns, monkeypatch, setting):
+        """Only an affirmative value turns it on.
+
+        A variable exported empty is what an unset variable looks like to a
+        shell that mentions it, and `=0` is what someone who once turned it on
+        writes to turn it back off. Reading mere presence as consent would make
+        both of those a latency regression the user believed they had declined.
+
+        The accepted denials are the vocabulary dl already reads for
+        `DEVLAUNCH_NO_TTY` and `DEVLAUNCH_NO_GH_TOKEN`, case and surrounding
+        space included, rather than a third spelling of the same idea. A user
+        who has learned what dl treats as off should not have to learn it twice
+        -- so the parametrization is deliberately that list and not a longer one
+        containing, say, `off`, which those variables do not accept either.
+        """
+        monkeypatch.setenv("DEVLAUNCH_DOTFILES_ON_ATTACH", setting)
+        assert _run_dl("myws") == 0
+        assert spawns.devpod_commands == [
+            ["status", "myws", "--output", "json"],
+            ["ssh", "myws"],
+        ]
 
 
 class TestAttachHelper:

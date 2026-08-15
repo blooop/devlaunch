@@ -182,6 +182,11 @@ def timing_switch_off(monkeypatch):
     monkeypatch.delenv(timing.ENV_VAR, raising=False)
     monkeypatch.delenv(timing.HANDOFF_VAR, raising=False)
     monkeypatch.delenv(timing.PREWARM_VAR, raising=False)
+    # The dotfiles-on-attach switch is scrubbed for the same reason as the
+    # timing switch above: the developers who opt in are the ones running the
+    # suite with it exported, and two attach-shape pins go red in exactly
+    # their shells. A test that wants the refresh on sets it itself.
+    monkeypatch.delenv(dl.DOTFILES_ON_ATTACH_VAR, raising=False)
 
 
 def pytest_configure():
