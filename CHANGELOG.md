@@ -135,7 +135,8 @@ table and should be judged on its own merits.
   URL is relative-looking text, so resolving it produced a path under the current
   directory. Text that is URL-shaped is now recognised as naming a repository elsewhere
   before anything tries to resolve it, and contributes no location at all; text that is a
-  path is treated exactly as before.
+  path is treated exactly as before. (`file://` URLs count as URL-shaped: they previously
+  resolved to garbage like `<cwd>/file:/...`, so they contributed nothing real to lose.)
 
   **Nothing was ever deleted or re-pointed because of this.** Every affected path ran
   toward refusing: `--reconcile` reported and adopted nothing (no clone directory can be

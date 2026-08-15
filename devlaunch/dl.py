@@ -1313,10 +1313,13 @@ class LocalFolder:
 
 @dataclass(frozen=True)
 class GitRepository:
-    """devpod is opening a repository it clones itself, named by URL.
+    """devpod is opening a repository it clones itself -- usually named by URL.
 
-    Never a path on this machine, which is why the purge predicate can refuse
-    this arm outright instead of asking where it points.
+    Usually, not always: `devpod up <path-to-a-repo>` records this arm carrying
+    a path on this machine, which is why `source_places` reads it instead of
+    refusing it (devlaunch#224). The purge predicate still refuses the arm
+    outright, and may: declining to delete is safe whatever the text turns out
+    to be, where deciding a workspace's location is not.
     """
 
     url: str
@@ -1865,7 +1868,8 @@ SourcePlaces = Placeable | Unplaceable
 
 
 #: Text that names a repository somewhere else: scheme-prefixed (`https://`,
-#: `ssh://`, `git://`) or scp-like (`git@github.com:owner/repo.git`).
+#: `ssh://`, `git://` -- and `file://`, see the docstring) or scp-like
+#: (`git@github.com:owner/repo.git`).
 _REMOTE_URL = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.\-]*://|[^/@:\s]+@[^/:\s]+:)")
 
 
@@ -1883,15 +1887,25 @@ def _names_a_remote(text: str) -> bool:
     misreported there -- wrong, and toward refusing. A path read as a remote
     drops a directory out of the referenced set, which is how `--prune` would
     come to call a live clone unreferenced -- wrong, and toward loss. So only
-    the two shapes that cannot also be a relative directory count: a URL scheme,
-    and `user@host:`. Text that is merely host-shaped (`github.com/owner/repo`)
-    does not, because it is a perfectly good relative path, and
-    `devpod up ./some-repo` is the case this arm exists for.
+    the two shapes that are never also written as a relative directory count: a
+    URL scheme, and `user@host:` (a directory literally named like an scp remote
+    is possible and nobody's spelling; any `/` before the `:` disqualifies it).
+    Text that is merely host-shaped (`github.com/owner/repo`) does not count,
+    because it is a perfectly good relative path, and `devpod up ./some-repo`
+    is the case this arm exists for.
+
+    `file://` matches the scheme form, and it is the one scheme that does name
+    a directory on this machine -- but never usably: the callers resolve plain
+    paths, so it only ever produced `<cwd>/file:/...` garbage. Contributing
+    nothing is strictly less wrong.
 
     Not `parse_owner_repo_from_url`, which is a different question with a
     different failure: it answers *which* repository and recognises only
     github.com, so a remote on any other host would come back None and fall
-    through to being resolved as a path -- the bug, still there.
+    through to being resolved as a path -- the bug, still there. And not
+    `expand_workspace_spec`'s own URL sniff, which reads *user-typed* specs:
+    unifying a UX guess with a placement decision would let a convenience
+    loosen a safety property, so the spellings stay apart on purpose.
     """
     return bool(_REMOTE_URL.match(text))
 

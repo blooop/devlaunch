@@ -117,3 +117,25 @@ class TestAGitSourceCarryingALocalPathStillCounts:
         located = workspace_locations([_sourced(GitRepository(str(gone)))], root)
 
         assert (OWNER, REPO) in located.misplaced
+
+    def test_host_shaped_or_at_carrying_text_without_a_scheme_is_still_a_path(
+        self, root, tmp_path, monkeypatch
+    ):
+        """The predicate's deliberate narrowness, pinned.
+
+        `github.com/owner/repo` is a perfectly good relative directory, and an
+        `@` alone does not make text a remote. A predicate broadened to "looks
+        like a host" or "contains an `@`" would drop these out of the
+        referenced set -- the loss direction the fix's asymmetry argument
+        forbids, and the reason `parse_owner_repo_from_url` (whose patterns
+        match host-shaped text) is deliberately not reused.
+        """
+        monkeypatch.chdir(tmp_path)
+        for spelling in ("github.com/owner/repo", "clones/feature@2x"):
+            clone = tmp_path / spelling
+            clone.mkdir(parents=True)
+            (clone / ".git").mkdir()
+
+            located = workspace_locations([_sourced(GitRepository(spelling))], root)
+
+            assert located.holder(clone) == "w1", spelling
