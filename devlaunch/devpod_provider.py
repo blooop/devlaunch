@@ -65,9 +65,20 @@ def parse_provider_names(listing: str) -> Set[str]:
 
 
 def list_provider_names(
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Optional[Callable[..., subprocess.CompletedProcess]] = None,
 ) -> Set[str]:
-    """Ask devpod which providers are registered."""
+    """Ask devpod which providers are registered.
+
+    `run` defaults to None and is resolved to `subprocess.run` here rather than
+    in the signature. Naming it in the signature reads the same and is not the
+    same: a default argument is evaluated once, when this module is imported,
+    so the function would hold the `subprocess.run` that existed at import for
+    the life of the process. Patching the subprocess module afterwards -- which
+    is how every test in this tree stands in for a process -- could not reach
+    it, and a caller that named no runner would spawn a real `devpod` from
+    under a suite that believed it had replaced them all.
+    """
+    run = run or subprocess.run
     result = run(
         ["devpod", "provider", "list", "--output", "json"],
         capture_output=True,
@@ -83,14 +94,17 @@ def list_provider_names(
 
 
 def ensure_provider(
-    name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    name: str, run: Optional[Callable[..., subprocess.CompletedProcess]] = None
 ) -> bool:
     """Register `name` with devpod unless it is already registered.
 
     Returns True if it had to be added, False if it was already there. Raises
     `UnreadableProviderList` rather than guessing when devpod's answer cannot
     be read, and `ProviderAddFailed` when the add itself fails.
+
+    `run` is resolved at call time for the reason `list_provider_names` gives.
     """
+    run = run or subprocess.run
     if name in list_provider_names(run=run):
         return False
     result = run(
@@ -109,13 +123,15 @@ def ensure_provider(
 
 def main(
     argv: Optional[Sequence[str]] = None,
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Optional[Callable[..., subprocess.CompletedProcess]] = None,
 ) -> int:
     """CLI entry point: `python -m devlaunch.devpod_provider <name>`.
 
     This is what the `dev-add-docker` pixi task runs, so a devpod that cannot be
     read has to stop the task rather than let it carry on as if the provider
-    were missing.
+    were missing. That task names no runner, which makes this the one call shape
+    in the tree that reached the import-time binding in production and not only
+    under test -- `run` is resolved at call time here too.
     """
     import argparse  # pylint: disable=import-outside-toplevel
 
