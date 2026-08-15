@@ -11,13 +11,15 @@ subprocess boundary rather than at run_devpod, so a change that reintroduces a
 redundant round-trip fails here instead of quietly costing half a second.
 """
 
+import inspect
 import io
 import json
 import pathlib
 import shlex
 import subprocess
 import sys
-from typing import List, Optional
+import traceback
+from typing import List, Optional, Union
 from unittest.mock import patch
 
 import pytest
@@ -64,6 +66,60 @@ class FinishedSession:
 _real_run = subprocess.run
 _real_popen = subprocess.Popen
 
+DEVPOD_REACHED_THE_REAL_RUN = (
+    "a devpod argv reached the real subprocess.run -- the recorder should have "
+    "answered it. Something called subprocess.run through a reference the "
+    "fixture's patch cannot reach (a binding captured before it was applied, "
+    "such as a `run=subprocess.run` default argument), so the recorder never "
+    "saw the call, and the real run built its process out of the patched "
+    "Popen. Whatever devpod spawn is in the traceback below is unrecorded and "
+    "uncounted, which is the whole of what this file measures."
+)
+
+
+def _refuse_a_devpod_argv_inside_the_real_run(argv: List[str]) -> None:
+    """Fail by name when a devpod argv arrives here from inside a real `run`.
+
+    Left alone this is not a test failure anybody can read. `subprocess.run`
+    resolves `Popen` from the subprocess module's own globals, which is exactly
+    what this fixture patches, so a real `run` reached with a devpod argv gets
+    a `FinishedSession` back -- a session object with no process behind it.
+    `run` then calls `process.communicate(...)`, which FinishedSession does not
+    have; the bare `except:` that exists to re-raise that runs `process.kill()`
+    first, which it also does not have, and the AttributeError from the cleanup
+    buries the one that explains it. What comes out is
+    `AttributeError: 'FinishedSession' object has no attribute 'kill'` raised
+    from CPython's subprocess.py, naming neither devpod nor this fixture. It
+    was seen once in ~90 runs while this fixture was under review, and no
+    reader of that traceback would have found their way back to here.
+
+    The recorder cannot open that door itself: `__call__` hands `_real_run`
+    only an argv it has already tested as non-devpod, and `popen` applies the
+    identical test to the identical argv, so a pass-through cannot round-trip
+    into a FinishedSession. It takes a caller holding a reference to
+    `subprocess.run` that patching the module attribute does not reach, and the
+    tree has exactly one shape of those: `devlaunch/devpod_provider.py` binds
+    `run: Callable[...] = subprocess.run` as a *default argument* on
+    `list_provider_names`, `ensure_provider` and `main`. A default argument is
+    evaluated once at import, so those three are permanently wired to the real
+    run, and each spawns `devpod provider ...` -- the only devpod argv in the
+    tree that does not go through `dl.run_devpod`. Nothing dl does calls them
+    without passing `run=` today, which is why this is rare rather than
+    constant, but "rare" is what a flake is made of.
+
+    So the leak is named where it happens instead of being left to surface as a
+    missing attribute two libraries away. It also fails *before* the real `run`
+    can build anything, so there is no half-spawned process to clean up.
+    """
+    frame = inspect.currentframe()
+    while frame is not None:
+        if frame.f_code is _real_run.__code__:
+            raise AssertionError(
+                f"{DEVPOD_REACHED_THE_REAL_RUN}\n\nargv: {argv}\n\n"
+                + "".join(traceback.format_stack())
+            )
+        frame = frame.f_back
+
 
 class DevpodSpawns:
     """Stands in for subprocess.run and records every devpod command line.
@@ -100,10 +156,18 @@ class DevpodSpawns:
 
     def __call__(self, cmd, *args, **kwargs) -> subprocess.CompletedProcess:
         argv = list(cmd)
+        # Recorded before the pass-through, not after the devpod test, so that
+        # `commands` is every spawn and not merely every devpod spawn. The
+        # difference is the whole value of the strict-equality assertion in
+        # test_ls_with_sizes_spawns_nothing_extra: a recorder that only ever
+        # holds devpod entries makes `commands == [["devpod", ...]]` a
+        # restatement of the `devpod_commands` assertion above it, and the one
+        # guard in this file against a *non-devpod* spawn -- a `du` per
+        # workspace on a listing command -- stops guarding anything.
+        self.commands.append(argv)
         if argv[:1] != ["devpod"]:
             # pylint: disable=subprocess-run-check  # the caller's own kwargs carry it
             return _real_run(cmd, *args, **kwargs)
-        self.commands.append(argv)
         returncode = 0
         stdout = self._devpod_stdout(argv[1:])
         # Real devpod exits non-zero for `status` on a workspace it does
@@ -118,7 +182,7 @@ class DevpodSpawns:
             args=argv, returncode=returncode, stdout=stdout, stderr=""
         )
 
-    def popen(self, cmd, *args, **kwargs):
+    def popen(self, cmd, *args, **kwargs) -> Union["FinishedSession", subprocess.Popen]:
         """Stand in for the Popen behind an interactive or one-shot session.
 
         Passes non-devpod commands through for the same reason `__call__` does,
@@ -126,10 +190,16 @@ class DevpodSpawns:
         terms of `Popen`, so a passed-through `git status` arrives back here on
         its way to the real binary and would otherwise be answered by a session
         object that has no process behind it.
+
+        A pass-through records nothing, because `__call__` already recorded the
+        argv on its way past: the two would otherwise log one `git status`
+        twice. Only a devpod argv, which reaches Popen directly and never
+        through `__call__`, is recorded here.
         """
         argv = list(cmd)
         if argv[:1] != ["devpod"]:
             return _real_popen(cmd, *args, **kwargs)
+        _refuse_a_devpod_argv_inside_the_real_run(argv)
         self.commands.append(argv)
         return FinishedSession(argv)
 
@@ -170,6 +240,17 @@ def spawns():
 
     update_cache_background is out of the way because it spawns a second dl
     process, whose own devpod calls belong to that process, not this one.
+
+    It is also the first thing suspected whenever this file flakes, and it is
+    worth writing down that it cannot be the culprit for the class of flake
+    `_refuse_a_devpod_argv_inside_the_real_run` guards. Every test here that
+    drives main() takes this fixture, so the updater is scrubbed on all of
+    them; and even unscrubbed it spawns a *detached* `python -m devlaunch.dl
+    --update-cache`, a separate process whose devpod spawns and exceptions both
+    stay in that process. A leak into *this* process's `subprocess.run` has to
+    come from a caller in this process holding a pre-patch reference to it --
+    see that guard for what those are and why the failure is unreadable
+    without it.
     """
     recorder = DevpodSpawns(["myws"])
     with patch("devlaunch.dl.subprocess.run", side_effect=recorder):
