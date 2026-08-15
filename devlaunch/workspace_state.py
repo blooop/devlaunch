@@ -286,6 +286,16 @@ def _git(repo: Path, *args: str) -> GitAnswer:
         logger.debug(f"git {' '.join(args)} in {repo}: {e}")
         return GitRefused(str(e))
     if result.returncode != 0:
+        # Deliberately not routed through worktree.git_errors.git_failure_reason,
+        # which every other git-failure message in the package now shares (#238).
+        # Two of the three things that helper does are already here -- the strip
+        # and the exit-code fallback -- and the third, its guard against a
+        # ``None`` stderr, cannot apply: that ``None`` is what
+        # ``CalledProcessError`` carries when output was never captured, and this
+        # call captures unconditionally, so ``result.stderr`` is always a string.
+        # Sharing the line would mean widening the helper to accept a
+        # ``CompletedProcess`` too, and its whole subject -- what an *exception*
+        # from git leaves a caller to report -- would stop being one thing.
         stderr = result.stderr.strip()
         logger.debug(f"git {' '.join(args)} in {repo}: {stderr}")
         return GitRefused(stderr or f"git {' '.join(args)} exited {result.returncode}")

@@ -181,6 +181,25 @@ table and should be judged on its own merits.
   fallback can no longer drift apart between siblings, and the reasoning for them is
   written once where they share it instead of restated at each site.
 
+- **The rest of the git failures `dl` reports now name their exit code instead of
+  reporting `None`** ([#238](https://github.com/blooop/devlaunch/issues/238)). Five
+  messages were left quoting git's stderr raw, and printed the word `None` whenever git
+  failed without writing any — the cached clone of a repository, the sweep that fetches
+  every ref in it, the workspace clone taken from that cache, the remote repoint that
+  follows it, and the branch checkout every launch runs. The last two are the ones most
+  likely to be met: a checkout runs on every warm launch, and a local clone that fails
+  usually fails for a reason git has nothing to say about, such as a full disk. They now
+  read `Failed to checkout branch 'x': git checkout exited 128` and so on, each naming
+  the subcommand that failed. Failures git did explain read as before, except that the
+  quoted text no longer drags git's trailing newline into the middle of the sentence.
+
+  With these, every message the worktree package raises from a failed git derives its
+  text in the one place [#234](https://github.com/blooop/devlaunch/issues/234)
+  established. One site is deliberately left out and says so where it sits: the
+  working-tree read behind the unsaved-work check that `dl --prune` and `dl <ws> rm`
+  both consult, which inspects a completed process rather than an exception and so
+  cannot encounter the missing stderr the shared helper exists to guard.
+
 - **`dl --reconcile` and `dl --prune` no longer answer differently depending on which
   directory you ran them from** ([#224](https://github.com/blooop/devlaunch/issues/224)).
   Run from inside `<repos-root>/<owner>/<repo>/`, `--reconcile` listed every workspace

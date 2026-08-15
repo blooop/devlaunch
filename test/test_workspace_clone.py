@@ -1046,6 +1046,73 @@ class TestPrepareCold:
             clone_manager.prepare_cold("owner", "repo", "main", "git@github.com:owner/repo.git")
 
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_workspace_clone_failure_reads_as_a_failure_when_git_said_nothing(
+        self, mock_run, clone_manager
+    ):
+        """A workspace clone that failed silently must still name what happened.
+
+        This clone is local -- bare cache to workspace -- so when it fails it is
+        usually for a reason git says nothing about, such as a full disk. That is
+        exactly the case that reported "Failed to clone workspace: None".
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git clone", stderr=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            clone_manager.prepare_cold("owner", "repo", "main", "git@github.com:owner/repo.git")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_remote_repoint_failure_reads_as_a_failure_when_git_said_nothing(
+        self, mock_run, clone_manager
+    ):
+        """A remote repoint that failed silently must still name what happened.
+
+        The step between a fresh clone and a usable workspace: until it lands the
+        clone still points at the local bare cache, so a failure here has to be
+        readable rather than "Failed to set remote URL: None".
+        """
+
+        def run(cmd, *_args, **_kwargs):
+            if "set-url" in cmd:
+                raise subprocess.CalledProcessError(128, cmd, stderr=None)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run
+
+        with pytest.raises(RuntimeError) as excinfo:
+            clone_manager.prepare_cold("owner", "repo", "main", "git@github.com:owner/repo.git")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_checkout_failure_reads_as_a_failure_when_git_said_nothing(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """A checkout that failed silently must still name what happened.
+
+        Taken against a workspace that already exists, which is the every-launch
+        path: the one git command a warm launch runs, and the one whose failure
+        used to read "Failed to checkout branch 'nb4': None".
+        """
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        ws_path = repo_root / leaf()
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git checkout", stderr=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
+
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_returns_workspace_path(
         self, mock_run, clone_manager, mock_repo_manager, tmp_repos_dir
     ):

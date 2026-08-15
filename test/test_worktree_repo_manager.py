@@ -125,6 +125,23 @@ class TestRepositoryManager:
             repo_manager.clone_repo("owner", "repo", "https://github.com/owner/repo.git")
 
     @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_clone_failure_reads_as_a_failure_when_git_said_nothing(self, mock_run, repo_manager):
+        """A clone that failed silently must still name what happened.
+
+        This is the first thing a launch does for a repo nobody has cached yet,
+        so it is the failure a new user is most likely to meet first, and quoting
+        an uncaptured stderr raw met them with "Failed to clone repository: None".
+        The exit code is what is left to say.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git clone", stderr=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            repo_manager.clone_repo("owner", "repo", "https://github.com/owner/repo.git")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
     def test_fetch_repo_success(self, mock_run, repo_manager):
         """Test successful repository fetch."""
         # Create repo directory
@@ -168,6 +185,28 @@ class TestRepositoryManager:
 
         with pytest.raises(RuntimeError, match="Failed to fetch"):
             repo_manager.fetch_repo("owner", "repo")
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_sweep_fetch_failure_reads_as_a_failure_when_git_said_nothing(
+        self, mock_run, repo_manager
+    ):
+        """The broad sweep says what the one-ref fetch beside it already says.
+
+        ``fetch_ref`` reports a silent failure as its exit code; this sweep over
+        every head and tag quoted an uncaptured stderr raw and reported "Failed
+        to fetch repository: None". Same git, same silence, two different answers.
+        """
+        bare_path = repo_manager.get_bare_path("owner", "repo")
+        bare_path.mkdir(parents=True)
+        (bare_path / "HEAD").write_text("ref: refs/heads/main\n")
+
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git fetch", stderr=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            repo_manager.fetch_repo("owner", "repo")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
 
     @patch("devlaunch.worktree.repo_manager.subprocess.run")
     def test_ensure_repo_clones_if_not_exists(self, mock_run, repo_manager):
