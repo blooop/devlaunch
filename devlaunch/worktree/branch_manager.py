@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 
+from .git_errors import git_failure_reason
+
 logger = logging.getLogger(__name__)
 
 # Constants for git paths
@@ -89,15 +91,15 @@ class BranchManager:
             )
             logger.debug(f"Branch creation output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            # Branch might already exist. stderr is None when it was never
-            # captured, and a failure git said nothing about is not the benign
-            # arm -- so it falls through to the raise rather than to a TypeError.
-            stderr = e.stderr or ""
-            if "already exists" in stderr:
+            # Branch might already exist -- classified from the reason text, so a
+            # failure git said nothing about falls through to the raise; rationale
+            # at git_failure_reason.
+            reason = git_failure_reason(e, "branch")
+            if "already exists" in reason:
                 logger.debug(f"Branch {branch} already exists")
             else:
-                logger.debug(f"Failed to create branch: {stderr}")
-                raise RuntimeError(f"Failed to create branch: {stderr}") from e
+                logger.debug(f"Failed to create branch: {reason}")
+                raise RuntimeError(f"Failed to create branch: {reason}") from e
 
     def track_remote_branch(
         self, base_repo_path: Path, branch: str, remote: str = "origin"
@@ -204,11 +206,6 @@ class BranchManager:
             )
             logger.debug(f"Push output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            # stderr is None when the output was never captured, and formatting
-            # it raw reports "...: None" -- a message that names neither the
-            # branch's problem nor anything to act on. The exit code is what is
-            # left to say about a push git was silent about.
-            stderr = e.stderr or ""
-            reason = stderr.strip() or f"git push exited {e.returncode}"
+            reason = git_failure_reason(e, "push")
             logger.debug(f"Failed to push branch: {reason}")
             raise RuntimeError(f"Failed to push branch to remote: {reason}") from e
