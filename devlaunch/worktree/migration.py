@@ -20,14 +20,27 @@ literally named ``foo-bexoza`` false-positives, and the header makes the trigger
 deterministic and idempotent by construction.
 
 **Write ordering.** All renames happen first; then a single
-:meth:`MetadataStorage.save` writes the new paths *and* the new version header in
-one atomic replace. Nothing writes the header early, so "header says 2" always
-means "every path in this file is current". A crash anywhere in the renames leaves
-the header at 1, so the next run migrates again and finds each already-renamed
-directory as "destination present, source gone" -- which it treats as a resumed
-rename and simply catches metadata up to. The reverse ordering has no safe
-resume: saving first would bump the header to 2 while directories were still
-under their old names, and the next run would skip them for good.
+:meth:`MetadataStorage.save` writes the new paths, and the new version header
+*only if every rename succeeded*, in one atomic replace. Nothing writes the
+header early, so "header says 2" always means "every path in this file is
+current". A crash anywhere in the renames leaves the header at 1, so the next run
+migrates again and finds each already-renamed directory as "destination present,
+source gone" -- which it treats as a resumed rename and simply catches metadata
+up to. The reverse ordering has no safe resume: saving first would bump the
+header to 2 while directories were still under their old names, and the next run
+would skip them for good.
+
+**A refusal is held to the crash standard** (#180). A rename the filesystem
+declines -- read-only mount, tightened permissions, full disk -- is not a crash,
+but stranding its records would be just as permanent, so the header stays at 1
+and the next run retries exactly the refused directories. The save still happens:
+the renames that did work are recorded immediately, and the resume path above is
+what stops them being redone. That is why :meth:`MetadataStorage.save` writes the
+storage object's own version rather than the constant -- the migration is not the
+only writer, and a save from any other operation would otherwise re-strand the
+records this run deliberately left behind. A permanently refusing cache therefore
+re-reports on every invocation, which is correct: the walk is bounded and the
+notice names directories that really do still need a hand.
 """
 
 import os
@@ -270,6 +283,12 @@ def migrate_cache(storage: MetadataStorage, repos_dir: Path) -> Optional[Migrati
 
     # One atomic write, last: it carries the new paths and the new version header
     # together, so the header can never claim more than the filesystem has done.
+    # The header only moves when nothing was refused -- a refused rename is not a
+    # crash, but it needs the same resumability, and leaving the header at 1 is
+    # what buys it. The save happens either way, so the renames that did work are
+    # recorded now rather than repeated (#180).
+    if not report.failed:
+        storage.schema_version = SCHEMA_VERSION
     storage.save()
     _announce(report, storage.metadata_path.parent)
     return report

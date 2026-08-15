@@ -121,6 +121,36 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **A cache migration that could not rename everything no longer marks itself done**
+  ([#180](https://github.com/blooop/devlaunch/issues/180)). The one-shot migration onto the
+  post-#64 id scheme renamed what it could and then wrote the new schema header regardless.
+  A rename the filesystem refuses — a read-only mount, a directory whose permissions were
+  tightened, a full disk — is not a crash, so it never got the crash's resume treatment: the
+  header said 2, the next run's version comparison returned immediately, and those records
+  kept their pre-#64 `workspace_id` for good. Since `remove_workspace_by_id` matches the id
+  `dl` derives today, `dl <owner>/<repo>@<branch> rm` could no longer find them, and a clone
+  directory that may hold uncommitted work would be orphaned alongside its record.
+
+  The header now advances only when nothing was refused. The save still happens either way,
+  so renames that did work are recorded immediately and are not repeated; the next run finds
+  them as the already-documented "destination present, source gone" resume and retries only
+  the directories that were refused.
+
+  **`MetadataStorage.save` writes the version it loaded rather than the current constant**,
+  which is the half that makes the rest hold: the migration is not the only thing that
+  writes `metadata.json`, and a save from opening a workspace or reconciling would otherwise
+  re-stamp the current version and re-strand exactly the records the migration had
+  deliberately left for a later run. A file written by a *newer* build is still rewritten at
+  this build's version, because its entries have just been rewritten in this build's shape.
+
+  **In practice this is template hygiene rather than a live rescue.** Caches still on the
+  old scheme are effectively nonexistent — the builds that wrote them saw almost no use —
+  so this is unlikely to have stranded anyone's workspace. It is worth fixing because this
+  migration is the code a future schema bump gets copied from, and a header that can claim
+  more than the filesystem has done is the kind of defect that gets copied with it. A cache
+  that refuses permanently now re-reports on every invocation; the walk is bounded and the
+  notice names directories that really do still need a hand.
+
 - **The `claude-code` feature's read-only mounts now exist**
   ([#108](https://github.com/blooop/devlaunch/issues/108)). The feature's README documented
   granular mounts, with `CLAUDE.md`, `settings.json`, `agents/`, `commands/` and `hooks/`

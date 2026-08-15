@@ -1047,8 +1047,15 @@ class TestSchemaVersion:
         assert json.loads(metadata_path.read_text(encoding="utf-8"))["version"] == SCHEMA_VERSION
         assert backup_path.read_bytes() == original_bytes
 
-    def test_older_version_loads_and_is_upgraded_on_write(self, tmp_path, capsys):
-        """A lower version is an older shape: load it, report it, upgrade on write."""
+    def test_older_version_loads_and_survives_a_write(self, tmp_path, capsys):
+        """A lower version is an older shape, and a plain write leaves it lower.
+
+        Upgrading the header is the migration's job and nobody else's: the
+        header is what tells the migration this cache still needs it, so a save
+        from an unrelated operation must not answer that question on its behalf
+        (#180). It is the migration that promotes the version, once it has
+        actually finished.
+        """
         metadata_path = tmp_path / "metadata.json"
         _write_metadata(
             metadata_path,
@@ -1074,7 +1081,8 @@ class TestSchemaVersion:
 
         storage.save()
 
-        assert json.loads(metadata_path.read_text(encoding="utf-8"))["version"] == SCHEMA_VERSION
+        assert json.loads(metadata_path.read_text(encoding="utf-8"))["version"] == 0
+        assert MetadataStorage(metadata_path).schema_version == 0
 
     @pytest.mark.parametrize(
         "version, normalized",

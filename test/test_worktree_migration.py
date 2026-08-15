@@ -664,43 +664,101 @@ class TestWhatTheFilesystemRefuses:
         assert said.count("could not rename") == 3
         assert "it was left where it is" in said
 
-    def test_a_refused_rename_leaves_records_no_later_run_will_revisit(
-        self, simple_cache, capsys, refuses_writes
+    def test_a_refused_rename_leaves_the_header_behind_so_a_later_run_retries_it(
+        self, tmp_path, capsys, refuses_writes
     ):
-        # The consequence the test above stops one line short of, written down
-        # because it is a **defect and not a design**: `migrate_cache` saves the
-        # new schema header even when renames failed, so those records keep
-        # their pre-#64 `workspace_id` forever and the migration never runs
-        # again to fix them. `remove_workspace_by_id` matches on exactly the id
-        # dl derives today, so `dl blooop/devlaunch@main rm` can never find
-        # them — the container goes and the clone and its record are orphaned.
+        # The consequence the test above stops one line short of. A refused
+        # rename is not a crash, but it has to be survivable the same way: the
+        # header is what the next run's version comparison reads, so a run that
+        # left a directory under its old name must leave the header at 1 too.
+        # Advancing it would strand those records on their pre-#64
+        # `workspace_id` forever -- `remove_workspace_by_id` matches on exactly
+        # the id dl derives today, so `dl acme/widgets@main rm` could never find
+        # them again, and the clone plus its record would be silently orphaned
+        # while the container went (blooop/devlaunch#180).
         #
-        # Pinned rather than fixed here: the fix is a choice between two
-        # imperfect options (retry the migration on every future invocation, or
-        # advance the header per-record) and belongs to whoever makes it
-        # deliberately, not to a testing change. Tracked in blooop/devlaunch#180.
-        # When it is fixed, this test is the one that should go red.
-        metadata_path, repos_dir = simple_cache
-        refuses_writes(repos_dir / "blooop" / "devlaunch")
+        # Two repos, one of them locked: the refusal has to be *partial* to show
+        # that the save still happens. The successful renames are recorded
+        # immediately -- declining the save entirely would lose them.
+        metadata_path, repos_dir = build_legacy_cache(
+            tmp_path,
+            {("blooop", "devlaunch"): ["main"], ("acme", "widgets"): ["main", "release"]},
+        )
+        locked = repos_dir / "acme" / "widgets"
+        refuses_writes(locked)
 
         report = run_migration(metadata_path, repos_dir)
-        assert len(report.failed) == 3
+
+        assert len(report.renamed) == 1
+        assert len(report.failed) == 2
+        refused = sorted(str(src) for src, _, _ in report.failed)
 
         cache = on_disk(metadata_path)
-        assert cache["version"] == SCHEMA_VERSION, (
-            "the header is advanced despite the failures — the defect this pins"
-        )
-        stranded = sorted(record["workspace_id"] for record in cache["worktrees"].values())
-        assert stranded == ["devlaunch-aid-auto-2", "devlaunch-feature-auth", "devlaunch-main"], (
-            "the ids are the pre-migration ones"
-        )
-        for record in cache["worktrees"].values():
-            derived = new_leaf(record["owner"], record["repo"], record["branch"])
-            assert record["workspace_id"] != derived, "an id dl could still look up"
+        assert cache["version"] == 1, "the header may not claim more than the filesystem has done"
 
-        # And it is permanent: nothing runs a second time.
+        # The half that worked is on disk, not just in memory: the record moved
+        # with its directory and carries the id dl derives today.
+        done = cache["worktrees"]["blooop/devlaunch/main"]
+        assert Path(done["local_path"]) == (
+            repos_dir / "blooop" / "devlaunch" / new_leaf("blooop", "devlaunch", "main")
+        )
+        assert Path(done["local_path"]).is_dir()
+        assert done["workspace_id"] == new_leaf("blooop", "devlaunch", "main")
+
+        # The half that was refused still points at the directory that is really
+        # there, under its old name and its old id.
+        for key in ("acme/widgets/main", "acme/widgets/release"):
+            left = cache["worktrees"][key]
+            assert Path(left["local_path"]).is_dir()
+            assert left["workspace_id"] == _old_workspace_id("widgets", left["branch"])
+
+        # A second run picks the cache back up and retries *exactly* the refused
+        # set: the already-renamed clone is the documented "destination present,
+        # source gone" resume, which is caught up to without a second rename.
         capsys.readouterr()
-        assert run_migration(metadata_path, repos_dir) is None
+        second = run_migration(metadata_path, repos_dir)
+
+        assert second is not None, "the header at 1 is what lets the next run in"
+        assert second.renamed == []
+        assert sorted(str(src) for src, _, _ in second.failed) == refused
+
+        # And when the refusal lifts, the retry completes and only then does the
+        # header advance -- the records were recoverable the whole time.
+        locked.chmod(0o700)
+        third = run_migration(metadata_path, repos_dir)
+
+        assert len(third.renamed) == 2
+        assert third.failed == []
+        finished = on_disk(metadata_path)
+        assert finished["version"] == SCHEMA_VERSION
+        for key, entry in finished["worktrees"].items():
+            owner, repo, branch = key.split("/", 2)
+            assert entry["workspace_id"] == new_leaf(owner, repo, branch)
+            assert Path(entry["local_path"]).is_dir()
+
+    def test_an_unrelated_save_between_runs_does_not_advance_the_header(
+        self, simple_cache, capsys, refuses_writes
+    ):
+        """Any save, not just the migration's, has to keep the header honest.
+
+        The migration is not the only thing that writes ``metadata.json``:
+        opening a workspace or reconciling saves too, through a storage object
+        loaded fresh long after the migration ran. If ``save`` stamped the
+        current version the way it used to, the very next such write would
+        re-strand the records a refused rename had deliberately left behind,
+        and gating only the migration's own save would miss it entirely.
+        """
+        metadata_path, repos_dir = simple_cache
+        refuses_writes(repos_dir / "blooop" / "devlaunch")
+        assert run_migration(metadata_path, repos_dir).failed
+        capsys.readouterr()
+
+        # An unrelated operation, mid-life: it loads the cache and writes it back
+        # knowing nothing about migrations.
+        MetadataStorage(metadata_path).save()
+
+        assert on_disk(metadata_path)["version"] == 1
+        assert run_migration(metadata_path, repos_dir) is not None, "still reachable"
 
     def test_a_corner_of_the_cache_that_cannot_be_scanned_costs_only_that_corner(
         self, tmp_path, capsys, refuses_reads
