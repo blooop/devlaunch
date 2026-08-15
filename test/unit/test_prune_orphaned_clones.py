@@ -89,7 +89,7 @@ class World:
         """The branches metadata.json still holds a worktree record for."""
         return sorted(record.branch for record in self.storage.list_worktrees())
 
-    def spare_clone(self, path: Path, branch: str) -> Path:
+    def spare_clone(self, path: Path, branch: str, git_dir: Optional[Path] = None) -> Path:
         """One more real clone, fully pushed, that `--prune` may remove.
 
         A test that needs *something removable* has to build a repository git
@@ -104,9 +104,15 @@ class World:
         Made the way the fixture's own four clones are, from the same bare and
         pushed to the same origin, so the git objects hardlink out of the bare
         and `git log --not --remotes` really has nothing to report.
+
+        *git_dir* puts the repository somewhere else and leaves `.git` as a
+        file, which is `git clone --separate-git-dir` and is a layout git
+        supports rather than a fixture trick. What it buys is a clone whose
+        every entry is a *file*: see :meth:`TestWhenADirectoryWillNotComeAway._seal_shut`.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        git("clone", str(self.bare), str(path), cwd=self.tmp_path)
+        separate = ["--separate-git-dir", str(git_dir)] if git_dir is not None else []
+        git("clone", *separate, str(self.bare), str(path), cwd=self.tmp_path)
         git("remote", "set-url", "origin", str(self.origin), cwd=path)
         git("checkout", "-b", branch, cwd=path)
         (path / f"{branch}.txt").write_text("work\n")
@@ -797,6 +803,62 @@ class TestWhenADirectoryWillNotComeAway:
             (leftover / "locked").chmod(0o700)
         advice = next(row for row in out.splitlines() if "sudo rm -rf" in row)
         assert shlex.split(advice)[3:] == [str(leftover / "locked")], advice
+
+    @staticmethod
+    def _seal_shut(world: World) -> Path:
+        """An orphan clone that will not give up a single one of its entries.
+
+        `_seal` above is a *partial* removal: the clone's other files go and the
+        sealed subdirectory stays. Nothing gets that far here. The seal is on the
+        clone's own root, and unlinking an entry needs write permission on the
+        directory holding it -- so every entry refuses, the root then refuses as
+        non-empty, and `remove_tree` answers `RemovedNothing`. It is the shape
+        `test_a_cache_root_that_refuses_everything_reports_that_nothing_went`
+        pins one level up, on a clone directory instead of on the cache root.
+
+        The repository has to live outside the sealed directory for that to be
+        the whole story: a `.git` *directory* is still writable from the inside,
+        so its contents would come away and the removal would be a partial one
+        (`test_a_sealed_root_over_clones_that_did_go_is_still_a_partial_success`
+        is that case deliberately). `--separate-git-dir` leaves `.git` as a
+        file, so every entry under the seal is a file the seal governs -- and
+        git still answers about the clone from out there, which is what keeps it
+        classified removable rather than kept as a :class:`CouldNotTell`.
+        """
+        leftover = world.spare_clone(
+            world.repo_dir / "sealed", "sealed", git_dir=world.tmp_path / "sealed.git"
+        )
+        leftover.chmod(0o500)
+        return leftover
+
+    @needs_an_unprivileged_user
+    def test_a_directory_none_of_which_came_away_is_reported_the_same_way(self, world, capsys):
+        """The removed-nothing arm, at the caller that treats it as the partial one.
+
+        `prune_clones` handles both refusal arms in one branch, on the grounds
+        that a clone directory is one unit of work to it: half a directory and
+        none of it are alike to somebody who has to go and deal with it. That is
+        only sound while the two arms really do arrive at the same report and the
+        same exit code, and nothing here reached the second of them -- narrowing
+        the `isinstance` to `(RemovedWhatItCould,)` left all 55 tests green,
+        which is a branch nothing was holding down.
+
+        So this asserts what the partial case above asserts, on a clone that
+        removed nothing: named with what the system said, siblings still gone,
+        exit 1 because a directory the user was told would go is still there.
+        """
+        leftover = self._seal_shut(world)
+        try:
+            code, _devpod = run_prune(world, "-y")
+            out = capsys.readouterr().out
+            entries = sorted(path.name for path in leftover.iterdir())
+        finally:
+            leftover.chmod(0o700)
+        assert code == 1
+        assert f"{leftover}:" in out
+        assert entries == [".git", "README.md", "sealed.txt"], "not a byte of it came away"
+        assert not world.clones["orphan-clean"].exists()
+        assert "Removed 1 clone director(ies)" in out, "the refused one is not counted as removed"
 
 
 _LOCK_HOLDER = """
