@@ -183,6 +183,20 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **The `auto_fetch` config knob is gone**
+  ([#188](https://github.com/blooop/devlaunch/issues/188)). It never gated anything. The
+  fetch that shared its name was gated by a separate `ensure_repo` parameter, no caller
+  ever passed the config value into it, and that parameter went away with the fetch when
+  the launch path stopped sweeping every ref
+  ([#150](https://github.com/blooop/devlaunch/issues/150)) — so the knob was inert for its
+  whole life, not merely stranded by the rework.
+
+  **A `config.toml` that still sets it needs no edit.** The loader reads the keys it knows
+  by name and ignores everything else, with no unknown-key warning to start firing, so a
+  stale `auto_fetch = false` is now simply passed over and the rest of the file applies as
+  before. Nothing about how often devlaunch fetches changes: `fetch_interval` is untouched
+  and still decides that.
+
 - **The executable-doc guard now reads the README too, and `bench_launch.py` stops
   accepting abbreviated flags** ([#192](https://github.com/blooop/devlaunch/issues/192)).
   Three documented-command defects have shipped in this lineage — a reset naming a

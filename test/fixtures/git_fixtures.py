@@ -236,10 +236,8 @@ def real_managers(
     """
     env = isolated_devlaunch_env
 
-    # Create config with auto_fetch disabled to avoid network calls
     config = WorktreeConfig(
         repos_dir=env["repos_dir"],
-        auto_fetch=False,
         fetch_interval=0,
     )
 

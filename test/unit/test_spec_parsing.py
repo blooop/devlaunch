@@ -119,7 +119,6 @@ class TestWorktreeConfig:
         config = WorktreeConfig()
 
         assert config.enabled is True
-        assert config.auto_fetch is True
         assert config.fetch_interval == 3600
         assert config.auto_prune is True
         assert config.prune_after_days == 30
@@ -131,14 +130,12 @@ class TestWorktreeConfig:
 
         config = WorktreeConfig(
             repos_dir=Path("/tmp/repos"),
-            auto_fetch=False,
             fallback_image="ubuntu:latest",
         )
 
         data = config.to_dict()
 
         assert data["worktree"]["enabled"] is True
-        assert data["worktree"]["auto_fetch"] is False
         assert data["worktree"]["repos_dir"] == "/tmp/repos"
         assert data["worktree"]["fallback_image"] == "ubuntu:latest"
 
@@ -150,7 +147,6 @@ class TestWorktreeConfig:
             "worktree": {
                 "enabled": False,
                 "repos_dir": "/custom/path",
-                "auto_fetch": False,
                 "fetch_interval": 7200,
                 "cleanup": {
                     "auto_prune": False,
@@ -162,7 +158,6 @@ class TestWorktreeConfig:
         config = WorktreeConfig.from_dict(data)
 
         assert config.enabled is False
-        assert config.auto_fetch is False
         assert config.fetch_interval == 7200
         assert config.auto_prune is False
         assert config.prune_after_days == 60

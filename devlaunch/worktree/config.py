@@ -20,8 +20,7 @@ class WorktreeConfig:
 
     enabled: bool = True  # Enabled by default
     repos_dir: Union[Path, str] = field(default_factory=lambda: devlaunch_cache() / "repos")
-    auto_fetch: bool = True
-    fetch_interval: int = 3600  # Seconds between auto-fetches
+    fetch_interval: int = 3600  # Seconds between background fetches
     auto_prune: bool = True
     prune_after_days: int = 30
     fallback_image: Optional[str] = None  # Docker image to use for repos without devcontainer.json
@@ -48,7 +47,6 @@ class WorktreeConfig:
             "worktree": {
                 "enabled": self.enabled,
                 "repos_dir": str(self.repos_dir),
-                "auto_fetch": self.auto_fetch,
                 "fetch_interval": self.fetch_interval,
                 "cleanup": {
                     "auto_prune": self.auto_prune,
@@ -69,7 +67,6 @@ class WorktreeConfig:
         return cls(
             enabled=worktree_data.get("enabled", True),
             repos_dir=Path(worktree_data.get("repos_dir", devlaunch_cache() / "repos")),
-            auto_fetch=worktree_data.get("auto_fetch", True),
             fetch_interval=worktree_data.get("fetch_interval", 3600),
             auto_prune=cleanup_data.get("auto_prune", True),
             prune_after_days=cleanup_data.get("prune_after_days", 30),
