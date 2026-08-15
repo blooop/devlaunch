@@ -242,6 +242,26 @@ table and should be judged on its own merits.
 
 ### Changed
 
+- **A cold launch now holds the per-repo lock across the whole of its host
+  preparation, where it used to take and release it four times**
+  ([#200](https://github.com/blooop/devlaunch/issues/200)). Clone-if-missing, the
+  targeted ref fetch, branch creation and the workspace clone run inside one scope, so
+  the sequence can no longer be interrupted partway through by another `dl` acting on
+  the same repository between two of the old acquisitions.
+
+  **What that costs is a wider serialization window, and it is worth knowing about.**
+  Two cold launches of *different branches of the same repo* now queue: the second waits
+  out the whole of the first's preparation rather than interleaving with it. Launches of
+  different repositories are unaffected — the lock has always been per repo — and warm
+  attaches are unaffected, because they take the lock zero times for a named branch and
+  once for a bare `owner/repo`. The wait is the clone and one fetch, and a launch that
+  sits on it says so.
+
+  One user-visible message changed with it. The three per-step failures of the old
+  sequence became one, which names what was being prepared: `Failed to prepare workspace
+  'owner/repo@branch': …`. The repo and branch used to be carried by the individual
+  messages and would otherwise have been dropped.
+
 - **The `auto_fetch` config knob is gone**
   ([#188](https://github.com/blooop/devlaunch/issues/188)). It never gated anything. The
   fetch that shared its name was gated by a separate `ensure_repo` parameter, no caller

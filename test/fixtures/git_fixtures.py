@@ -236,6 +236,13 @@ def real_managers(
     """
     env = isolated_devlaunch_env
 
+    # `fetch_interval=0` is not an abstinence knob, and reads like one:
+    # `_should_fetch` asks whether *more* than the interval has elapsed, so zero
+    # makes every check say yes. It costs these tests nothing, for two separate
+    # reasons -- the only thing that reads the interval is `lazy_fetch`, the
+    # detached updater's sweep, which nothing built on this fixture drives; and
+    # the remotes here are git repositories on local disk, so there is no
+    # network to abstain from either way.
     config = WorktreeConfig(
         repos_dir=env["repos_dir"],
         fetch_interval=0,

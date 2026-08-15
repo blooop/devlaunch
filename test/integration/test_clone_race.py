@@ -74,6 +74,11 @@ def wait_for(flag):
 # race: a process's in-memory metadata is whatever the file said when it
 # started, so a process that starts before a sibling saves goes on believing
 # the repo is not cloned long after it is.
+#
+# `fetch_interval=0` means *always* fetch rather than never -- `_should_fetch`
+# asks whether more than the interval has elapsed -- and it is harmless here for
+# the same two reasons it is in `test/fixtures/git_fixtures.py`: `lazy_fetch` is
+# its only reader and this script never calls it, and `remote` is a path on disk.
 manager = RepositoryManager(
     repos_dir=repos_dir,
     storage=MetadataStorage(metadata),
