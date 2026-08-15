@@ -497,7 +497,7 @@ class TestALaunchThatWaitedForItsPrewarm:
             patch("devlaunch.dl.hold_lock", lambda *_a, **_k: contended_lock()),
             patch("devlaunch.dl.get_workspace_state", return_value="Running"),
             patch("devlaunch.dl.invalidate_workspace_list_cache"),
-            patch("devlaunch.dl.tools.ensure_tools"),
+            patch("devlaunch.dl.tools.provision_tools"),
         ):
             workspace_up("owner/repo", workspace_id="myws", workspace_identity="myws")
         buffer = io.StringIO()

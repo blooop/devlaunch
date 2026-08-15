@@ -223,9 +223,20 @@ class RepositoryManager:
                 # refuses the non-empty destination, and the failure cleanup
                 # below would then delete a cache another launch is using.
                 return self._register_existing_bare(owner, repo, remote_url, bare_path)
-            # No HEAD: a dead run's partial clone. Holding the repo lock (every
-            # caller comes through ensure_repo) means no live process owns it,
-            # so clear it and clone fresh.
+            # No HEAD: a dead run's partial clone. No live process owns it, and
+            # what says so is the repo lock: in production this is reached only
+            # through clone_if_missing, which cannot be called without the
+            # RepoLock token that hold_repo_lock alone mints. Naming an
+            # entrypoint instead would name the wrong gate -- ensure_repo and
+            # prepare_cold both reach this, and what they have in common is the
+            # lock, not the route. So clear it and clone fresh.
+            #
+            # `clone_repo` itself is public and takes no token, so this is a
+            # property of the callers rather than one the signature enforces:
+            # the tests call it directly and unlocked, which is safe only
+            # because each has the cache to itself. A new production caller
+            # would have to come through the lock scope to keep the rmtree
+            # below true, and nothing here would stop it doing otherwise.
             logger.warning(f"Removing partial clone at {bare_path}")
             shutil.rmtree(bare_path)
 

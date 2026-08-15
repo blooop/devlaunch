@@ -600,8 +600,9 @@ class WorkspaceCloneManager:
         one workspace is 2400 KB shared against 4472 KB with ``--no-hardlinks``,
         and each further workspace's ``.git`` costs 196 KB instead of 2268 KB --
         about 91% of it is the cache's copy, not its own. Nothing in this call
-        *says* so, so an integration test asserts it (same ``st_ino``,
-        ``st_nlink >= 2``) and goes red on the silent ways to lose it: a
+        *says* so, so an integration test asserts it (the same
+        ``(st_dev, st_ino)`` pair, ``st_nlink >= 2``) and goes red on the silent
+        ways to lose it: a
         ``file://`` URL, an intermediate copy, an explicit ``--no-hardlinks``.
 
         No clone flag guards it, deliberately. ``--local`` is already the default
@@ -635,10 +636,15 @@ class WorkspaceCloneManager:
             ws_path.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                # Skip LFS smudge during clone: the clone source is the local
-                # bare cache, which has no LFS objects, so smudging here fails
-                # with "remote missing object". LFS content is pulled from the
-                # real remote after the origin URL is fixed (see below).
+                # Skip LFS smudge during clone. The bare cache is the repo's LFS
+                # store, but only for refs some earlier launch already
+                # materialized: it arrives empty and is filled one ref at a time
+                # by _materialize_lfs, which runs after this clone. So a smudge
+                # here has nothing to fetch on a repo's first workspace and no
+                # guarantee of this ref's objects on any later one, and fails
+                # with "remote missing object" whenever it comes up short.
+                # Deferring it keeps the fill and the pull together, where the
+                # cache is topped up for this ref and then hardlinked out of.
                 clone_env = os.environ.copy()
                 clone_env["GIT_LFS_SKIP_SMUDGE"] = "1"
                 with timing.span("git clone"):

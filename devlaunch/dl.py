@@ -2441,14 +2441,15 @@ def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathli
                 # says it is entirely gone counts it as removed and drops its
                 # record. The two refusal arms are alike to this caller -- a
                 # directory half removed is still a directory somebody has to
-                # deal with -- but they are named separately rather than
-                # grouped, so a fourth arm arrives here as a type error.
+                # deal with -- so they share one branch, the way describe_source
+                # already groups its own pair. A fourth arm still arrives here as
+                # a type error: what rejects it is _unhandled_removal's NoReturn
+                # parameter, which a grouped isinstance narrows to just as well
+                # as separate ones.
                 if isinstance(outcome, RemovedEverything):
                     removed.append(reclaimable)
                     _forget_clone(clone_mgr, record_for.get(reclaimable.path))
-                elif isinstance(outcome, RemovedWhatItCould):
-                    refused.extend(outcome.refused)
-                elif isinstance(outcome, RemovedNothing):
+                elif isinstance(outcome, (RemovedWhatItCould, RemovedNothing)):
                     refused.extend(outcome.refused)
                 else:
                     _unhandled_removal(outcome)
@@ -3557,14 +3558,14 @@ def workspace_up(
             timing.observe_attach(timing.PARTIAL)
             invalidate_workspace_list_cache()
             # The tools are still this call's business. "Running" says the
-            # sibling's `devpod up` finished, not that its ensure_tools did:
+            # sibling's `devpod up` finished, not that its provision_tools did:
             # it may have been interrupted between the two, its `up` may have
             # failed after the container started, or it may have run with
-            # DEVLAUNCH_NO_TOOLS set where this one does not. ensure_tools is
+            # DEVLAUNCH_NO_TOOLS set where this one does not. provision_tools is
             # idempotent and costs one setup-pass round trip against a
             # workspace that is already up, which is the cheap way to stop a skipped
             # `up` from meaning a session with no tools.
-            tools.ensure_tools(identity, run_devpod)
+            tools.provision_tools(identity, run_devpod)
             return subprocess.CompletedProcess(args=["devpod"] + args, returncode=0)
         # Give every workspace the host's gh login, whatever its
         # devcontainer.json does or doesn't set up for itself.
@@ -3583,7 +3584,7 @@ def workspace_up(
         # there is no container to install into otherwise. Inside the lock, so
         # a launch waiting on a prewarm cannot attach before the tools land.
         if result.returncode == 0 and identity:
-            tools.ensure_tools(identity, run_devpod)
+            tools.provision_tools(identity, run_devpod)
     return result
 
 
@@ -4518,7 +4519,7 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
             # documented recovery the one path that cannot recover. It is one
             # setup-pass round trip against a running workspace, and silent
             # when there is nothing to do.
-            tools.ensure_tools(workspace_id, run_devpod)
+            tools.provision_tools(workspace_id, run_devpod)
             return 0
         result = workspace_up(
             workspace_spec,

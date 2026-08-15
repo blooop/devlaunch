@@ -268,7 +268,7 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
 
     Idempotent and cheap on the common path: every tool already on PATH is
     skipped, so a workspace that has been provisioned before does nothing but
-    answer. It runs under a login shell (see ensure_tools), which is what puts
+    answer. It runs under a login shell (see provision_tools), which is what puts
     an earlier run's ~/.pixi/bin on PATH -- checked from a non-login shell every
     tool would look missing and be reinstalled on every launch.
 
@@ -875,8 +875,17 @@ def _transfer(workspace: str, runner, payload: HostPayload) -> bool:
 
 
 @timing.staged("tools")
-def ensure_tools(workspace: str, runner) -> bool:
-    """Make REQUIRED_TOOLS available in `workspace`. Returns whether they now are.
+def provision_tools(workspace: str, runner) -> bool:
+    """Provision REQUIRED_TOOLS into `workspace`. Returns whether they are now there.
+
+    **Provision, not ensure**, and the distinction is the whole return value.
+    This probes, lends and installs, and every one of those may come up empty --
+    a host with nothing to lend, a container the lent binaries will not run in,
+    an opt-out that forbids installing at all, a network install that fails. It
+    then reports what it found, and the caller launches the session either way
+    (see the module docstring's "provisioning is a convenience"). A name
+    promising the tools *are* there would be describing the answer this returns
+    rather than the work it does.
 
     Not parametric over a tool set, because the probe is not: it asks about the
     fixed pair this module can lend, so a caller-supplied set would be probed
@@ -896,8 +905,8 @@ def ensure_tools(workspace: str, runner) -> bool:
     The pass is not gated on the tools opt-out, and only what follows it is:
     the stages the pass carries are not tools work, so a machine that has turned
     tool provisioning off must not thereby have turned container naming off. The
-    function still answers the question its name asks -- whether the tools are
-    there -- and answers False when it was told not to install any.
+    return value still answers the same question -- whether the tools are there
+    -- and answers False when it was told not to install any.
 
     Version drift is deliberately not handled: a real claude already in the
     container is left alone whatever its version. Keeping versions in sync
@@ -951,7 +960,7 @@ def ensure_tools(workspace: str, runner) -> bool:
             # one part of it that has been measured is staging the tar (#158:
             # ~0.13s warm, ~2.6s cold), which is a fraction of it. Breaking the
             # loop needs per-container retry state persisted somewhere, which is
-            # more machinery than the case is worth, and ensure_tools never runs
+            # more machinery than the case is worth, and provision_tools never runs
             # on the fast-attach path: this only ever rides an `up` that already
             # took seconds to minutes.
             return True

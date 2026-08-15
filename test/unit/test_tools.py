@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from devlaunch import tools
-from devlaunch.tools import REQUIRED_TOOLS, Tool, ensure_tools, provision_script
+from devlaunch.tools import REQUIRED_TOOLS, Tool, provision_script, provision_tools
 
 
 class Runner:
@@ -61,7 +61,7 @@ def _forwarding_enabled(monkeypatch):
 def no_host_payload():
     """This host must not lend its own binaries to a test of the flow.
 
-    ensure_tools asks the real filesystem what the machine could lend; on a
+    provision_tools asks the real filesystem what the machine could lend; on a
     developer machine that is a real claude and gh, on CI nothing, and a test
     of "what happens with nothing to lend" cannot depend on which. The
     resolvers themselves are tested against scratch homes in TestHostPayload,
@@ -1104,14 +1104,14 @@ class TestStageOutcomes:
 
 
 @pytest.mark.usefixtures("no_host_payload")
-class TestEnsureTools:
+class TestProvisionTools:
     """The three-trip flow: probe, host transfer, network install."""
 
     def test_a_provisioned_workspace_pays_one_setup_pass_and_nothing_else(self):
         """The common path: every launch after the first is one round trip, and
         that trip is the whole setup pass -- stages and probe together."""
         runner = Runner(returncodes=(0,), stdout=REPORT_PROVISIONED)
-        assert ensure_tools("myws", runner) is True
+        assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 1
         assert runner.calls[0][:2] == ["ssh", "myws"]
         # A non-login shell has no ~/.pixi/bin, so every tool would look absent.
@@ -1125,14 +1125,14 @@ class TestEnsureTools:
         the pass's own script it is expected -- that is the fold."""
         for report in (REPORT_PROVISIONED, REPORT_LENDABLE, REPORT_ABSENT):
             runner = Runner(returncodes=(0, 0), stdout=report)
-            ensure_tools("myws", runner)
+            provision_tools("myws", runner)
             assert not any("sudo hostname myws" in call for call in runner.calls)
 
     def test_with_nothing_to_lend_a_cold_workspace_gets_the_network_install(self):
         runner = Runner(returncodes=(0, 0), stdout=REPORT_ABSENT)
-        assert ensure_tools("myws", runner) is True
+        assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 2
-        # shlex.split is the inverse of the quoting ensure_tools applies.
+        # shlex.split is the inverse of the quoting provision_tools applies.
         argv = shlex.split(runner.script(1))
         assert argv[:2] == ["bash", "-lc"]
         assert argv[2] == provision_script()
@@ -1142,14 +1142,14 @@ class TestEnsureTools:
         trip failing rather than an answer -- and the cold flow is the safe
         reading of no answer at all."""
         runner = Runner(returncodes=(1, 0), stdout=REPORT_PROVISIONED)
-        assert ensure_tools("myws", runner) is True
+        assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 2
         assert shlex.split(runner.script(1))[2] == provision_script()
 
     def test_a_host_with_the_tools_lends_them_instead_of_the_network(self, tmp_path):
         runner = Runner(returncodes=(0, 0), stdout=REPORT_ABSENT)
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
-            assert ensure_tools("myws", runner) is True
+            assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 2
         # The transfer is the tar stream: stdin on the trip, no stream elsewhere.
         assert [stream is not None for stream in runner.streams] == [False, True]
@@ -1160,7 +1160,7 @@ class TestEnsureTools:
         end of the transfer script reports it, and the old path still runs."""
         runner = Runner(returncodes=(0, 1, 0), stdout=REPORT_ABSENT)
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
-            assert ensure_tools("myws", runner) is True
+            assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 3
         assert shlex.split(runner.script(2))[2] == provision_script()
 
@@ -1169,7 +1169,7 @@ class TestEnsureTools:
         answer, but the claude is a downloader, so the host replaces it."""
         runner = Runner(returncodes=(0, 0), stdout=REPORT_LENDABLE)
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
-            assert ensure_tools("myws", runner) is True
+            assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 2
         assert [stream is not None for stream in runner.streams] == [False, True]
         assert "tar xf -" in runner.script(1)
@@ -1181,14 +1181,14 @@ class TestEnsureTools:
         would install nothing -- it is not taken."""
         runner = Runner(returncodes=(0, 1), stdout=REPORT_LENDABLE)
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
-            assert ensure_tools("myws", runner) is True
+            assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 2
 
     def test_a_shim_with_nothing_to_lend_stops_after_the_probe(self):
         """Nothing on the host to replace it with, and the network fallback
         would no-op, so the shim stands and the launch costs one trip."""
         runner = Runner(returncodes=(0,), stdout=REPORT_LENDABLE)
-        assert ensure_tools("myws", runner) is True
+        assert provision_tools("myws", runner) is True
         assert len(runner.calls) == 1
 
     def test_the_install_output_reaches_the_user_but_the_probe_is_silent(self):
@@ -1200,19 +1200,19 @@ class TestEnsureTools:
         the caller branches on, which is exactly what has to be read back.
         """
         runner = Runner(returncodes=(0, 0), stdout=REPORT_ABSENT)
-        ensure_tools("myws", runner)
+        provision_tools("myws", runner)
         assert runner.captured == [True, False]
 
     def test_a_failed_install_does_not_raise(self):
         """The workspace is up and the user asked for a session, not an install."""
         runner = Runner(returncodes=(1,), stderr="no network")
-        assert ensure_tools("myws", runner) is False
+        assert provision_tools("myws", runner) is False
 
     def test_a_missing_devpod_does_not_raise(self):
         def explode(*_args, **_kwargs):
             raise OSError("devpod vanished")
 
-        assert ensure_tools("myws", explode) is False
+        assert provision_tools("myws", explode) is False
 
     def test_the_opt_out_installs_nothing_and_still_names_the_container(self, monkeypatch):
         """Whether the pass runs and whether the tools work runs are two
@@ -1223,7 +1223,7 @@ class TestEnsureTools:
         """
         monkeypatch.setenv(tools.DISABLE_VAR, "1")
         runner = Runner(returncodes=(0,), stdout=REPORT_ABSENT)
-        assert ensure_tools("myws", runner) is False
+        assert provision_tools("myws", runner) is False
         assert len(runner.calls) == 1
         assert shlex.split(runner.script())[2] == tools.setup_script("myws")
 
@@ -1231,7 +1231,7 @@ class TestEnsureTools:
     def test_falsey_opt_out_values_leave_provisioning_on(self, monkeypatch, value):
         monkeypatch.setenv(tools.DISABLE_VAR, value)
         runner = Runner()
-        assert ensure_tools("myws", runner) is True
+        assert provision_tools("myws", runner) is True
 
 
 @pytest.mark.usefixtures("no_host_payload")
@@ -1247,7 +1247,7 @@ class TestTheHostNamesEveryStageThatIsNotOk:
     @staticmethod
     def _report(caplog, stdout: str, returncode: int = 0) -> List[tuple]:
         with caplog.at_level(logging.INFO, logger=""):
-            ensure_tools("myws", Runner(returncodes=(returncode, 0), stdout=stdout))
+            provision_tools("myws", Runner(returncodes=(returncode, 0), stdout=stdout))
         return [
             (record.levelno, record.getMessage())
             for record in caplog.records
@@ -1447,7 +1447,7 @@ class TestTransferScript:
         link and the PATH edit were written against."""
         runner = Runner(returncodes=(1, 0))
         with patch.object(tools, "host_payload", return_value=fake_payload(tmp_path)):
-            assert ensure_tools("myws", runner) is True
+            assert provision_tools("myws", runner) is True
         streamed = runner.streams[1]
         assert streamed is not None, "the transfer trip streamed nothing"
         with tarfile.open(fileobj=io.BytesIO(streamed)) as tar:
@@ -1468,18 +1468,37 @@ class TestWorkspaceUpInstallsTools:
                 [], returncode=returncode, stdout="{}"
             )
             with patch.object(dl, "invalidate_workspace_list_cache"):
-                with patch.object(dl.tools, "ensure_tools") as ensure:
+                with patch.object(dl.tools, "provision_tools") as provision:
                     dl.workspace_up("owner/repo", workspace_id="myws", workspace_identity="myws")
-        return ensure
+        return provision
 
     def test_a_successful_up_installs_the_tools(self):
-        ensure = self._up(returncode=0)
-        ensure.assert_called_once()
-        assert ensure.call_args.args[0] == "myws"
+        provision = self._up(returncode=0)
+        provision.assert_called_once()
+        assert provision.call_args.args[0] == "myws"
 
     def test_a_failed_up_does_not(self):
         """There is no container to install into."""
         assert self._up(returncode=1).call_count == 0
+
+    def test_up_against_a_container_already_running_still_tops_them_up(self):
+        """`dl <ws> up` is one of the two verbs the module docstring names as
+        how a workspace that missed provisioning gets it -- started by something
+        other than dl, or created before this existed. That workspace is very
+        often already running, which is the arm that returns without calling
+        `devpod up` at all; skipping the tools there would make the documented
+        recovery the one route that cannot recover."""
+        from devlaunch import dl
+
+        with (
+            patch.object(dl, "get_workspace_state", return_value="Running"),
+            patch.object(dl, "workspace_up") as workspace_up,
+            patch.object(dl.tools, "provision_tools") as provision,
+        ):
+            assert dl.main(["myws", "up"]) == 0
+        workspace_up.assert_not_called()
+        provision.assert_called_once()
+        assert provision.call_args.args[0] == "myws"
 
 
 class TestNoRegressionInTheOptOutContract:
