@@ -88,12 +88,15 @@ class BranchManager:
             )
             logger.debug(f"Branch creation output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            # Branch might already exist
-            if "already exists" in e.stderr:
+            # Branch might already exist. stderr is None when it was never
+            # captured, and a failure git said nothing about is not the benign
+            # arm -- so it falls through to the raise rather than to a TypeError.
+            stderr = e.stderr or ""
+            if "already exists" in stderr:
                 logger.debug(f"Branch {branch} already exists")
             else:
-                logger.debug(f"Failed to create branch: {e.stderr}")
-                raise RuntimeError(f"Failed to create branch: {e.stderr}") from e
+                logger.debug(f"Failed to create branch: {stderr}")
+                raise RuntimeError(f"Failed to create branch: {stderr}") from e
 
     def track_remote_branch(
         self, base_repo_path: Path, branch: str, remote: str = "origin"
@@ -180,7 +183,11 @@ class BranchManager:
         if ssh_key_path:
             # Set up SSH command with specific key
             ssh_command = f"ssh -i {ssh_key_path} -o IdentitiesOnly=yes"
-            env = {"GIT_SSH_COMMAND": ssh_command}
+            # Layered on the inherited env, not substituted for it: a git push
+            # with no PATH cannot find the ssh it was just told to run, and one
+            # with no HOME or SSH_AUTH_SOCK cannot read known_hosts or reach the
+            # agent -- so naming a key would be what breaks the auth it sets up.
+            env = {**os.environ, "GIT_SSH_COMMAND": ssh_command}
 
         try:
             result = subprocess.run(

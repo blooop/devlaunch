@@ -240,6 +240,24 @@ table and should be judged on its own merits.
   named and an unrecognised one is rejected loudly, matching what the dispatch beside it
   already guaranteed. No behaviour changes for the three outcomes that exist today.
 
+- **Pushing a branch with a named ssh key no longer strips git's whole environment**
+  ([#212](https://github.com/blooop/devlaunch/issues/212)). The push handed git a bare
+  `{"GIT_SSH_COMMAND": ...}`, which *replaces* the inherited environment rather than
+  extending it — so the one call that was told which key to authenticate with ran with
+  no `PATH` to find `ssh` on, no `HOME` to read `~/.ssh/known_hosts` or the key's own
+  config from, and no `SSH_AUTH_SOCK` to reach the agent. Naming a key was what broke
+  the auth it was meant to set up, and the failure only reached the machines that pass
+  one. Same env-replacement hazard [#187](https://github.com/blooop/devlaunch/issues/187)
+  closed at the locale pin, same fix: the key's ssh command is now layered on the
+  inherited environment.
+
+  Aligned in the same pass, from #187's review: the two places that classify git's
+  outcome by reading stderr text disagreed on `stderr` being `None` — the fetch path
+  guarded it, branch creation did not. A failure git wrote nothing to stderr for now
+  raises the same "failed to create branch" error as any other failure, instead of a
+  `TypeError` from testing membership in `None` that names neither the branch nor the
+  cause.
+
 ### Changed
 
 - **A cold launch now holds the per-repo lock across the whole of its host
