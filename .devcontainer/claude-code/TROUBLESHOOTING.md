@@ -88,7 +88,7 @@ claude  # Should go straight to interactive mode without wizard
 The OAuth callback listener runs inside the container, on the container's loopback (e.g. `localhost:54545`). Your browser runs on the host, so it connects to the *host's* loopback, where nothing is listening. A `curl` from the host to that port gets connection refused.
 
 **Solution — authenticate on the host, once:**
-Run `claude` on your host machine and complete the flow there. The feature bind-mounts `~/.claude`, so `.credentials.json` arrives already populated and no container ever needs to run this flow. This is what the shipped configuration does, and it is why the problem does not normally appear.
+Run `claude` on your host machine and complete the flow there. The feature bind-mounts your `.credentials.json`, so it arrives already populated and no container ever needs to run this flow. This is what the shipped configuration does, and it is why the problem does not normally appear.
 
 **If you must complete the flow from inside the container:**
 Forward the port for that one session, rather than changing how every container is built:
