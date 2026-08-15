@@ -448,6 +448,57 @@ Attaching to a workspace that is *already running* skips `devpod up`, and so ski
 this too. A workspace started by something other than `dl` — or created before this
 existed — picks the tools up on its next `dl <workspace> restart`.
 
+## The shared pixi package cache
+
+Every container `dl` creates gets one host directory bound into it, and
+`PIXI_CACHE_DIR` pointed at it, so that dotfiles which provision their tools with
+`pixi global sync` download each package once per machine instead of once per
+container:
+
+| | |
+|---|---|
+| **On the host** | `$XDG_CACHE_HOME`, or `~/.cache`, then `devlaunch/pixi` |
+| **In the container** | `/home/vscode/.cache/devlaunch-pixi` |
+
+Measured on the profile this was built for — 23 pixi-global environments — a
+container with a cold cache spends 62–113 s and downloads 1.2 GB; one that finds
+the packages already there finishes in 18–28 s and fetches nothing. Two containers
+syncing against it at the same time is fine: the downloads are content-addressed
+and rattler takes a lock per package.
+
+**Deleting it is always safe, at any moment, including while containers are
+running.** It holds nothing but downloaded package archives — every one of them
+re-fetchable from the network, and none of them referenced by a path anything
+inside a container has stored. The worst a deletion costs is the next container's
+download.
+
+```bash
+rm -rf ~/.cache/devlaunch/pixi
+```
+
+`dl --purge` takes it away with the rest of `~/.cache/devlaunch/`, for the same
+reason.
+
+Two things it deliberately is not. It is **not the host's own**
+`~/.cache/rattler/cache`: containers write into it as their own remote user,
+whose uid only happens to match yours, and a `pixi clean cache` you run for your
+own reasons must not be able to pull packages out from under a running container.
+And it is **not a shared `PIXI_HOME`** — the installed environments and their
+trampolines are baked with absolute paths, and two containers sharing one
+environment tree is [pixi#5476](https://github.com/prefix-dev/pixi/issues/5476).
+Only the download cache is shared, which is the part that is safe to share.
+
+If the directory cannot be created — a full disk, a read-only cache home — the
+launch goes ahead without the mount and the container downloads its own packages,
+exactly as it did before this existed.
+
+A workspace created before this existed is a special case on its next `up`:
+devpod re-applies `--workspace-env` every time but a bind mount is fixed at
+creation, so `PIXI_CACHE_DIR` points at a plain directory inside that container —
+a private cache under the shared cache's name, abandoning whatever pixi had
+already warmed in its default location. It works, and re-warms itself; it just
+never shares. `dl <workspace> recreate` puts it on the real mount.
+
 ## Global Commands
 
 | Command | Description |
@@ -495,7 +546,7 @@ Anything it is leaving is named before it asks:
 $ dl --purge
 This will remove all devlaunch data:
   - 4 DevPod workspace(s)
-  - /home/you/.cache/devlaunch/ (workspace clones, repo caches, completions)
+  - /home/you/.cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
 
 Leaving 2 workspace(s) devlaunch did not create:
   - pythontemplate

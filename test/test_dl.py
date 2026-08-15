@@ -11,6 +11,7 @@ import pathlib
 from unittest.mock import patch, MagicMock
 import pytest
 
+from devlaunch import dl as dl_module
 from devlaunch import gh_auth
 from devlaunch.devpod_ssh import RemoteExit
 from devlaunch.workspace_id import TARGET_LENGTH, WorkspaceId
@@ -1539,6 +1540,141 @@ class TestDevcontainerPath:
         with patch.object(sys, "argv", ["dl", "myws", "--devcontainer", "sim", "stop"]):
             main()
         assert "Ignoring --devcontainer" in caplog.text
+
+
+class TestSharedPixiCache:
+    """Tests for the pixi package cache every container downloads into once.
+
+    A container's dotfiles install runs `pixi global sync`, which on an empty
+    cache spends 62-113s and 1.2GB of network fetching packages that the last
+    container downloaded already. The downloads are content-addressed and safe
+    to share -- rattler locks per package -- so one host directory bound into
+    every container turns that into an 18-28s unpack from disk (#232).
+
+    What is shared is only the *cache*. Environments and trampolines are
+    prefix-baked and stay per-container, which is why PIXI_HOME is never on
+    this mount: two syncs sharing one env prefix is prefix-dev/pixi#5476.
+    """
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_up_binds_the_host_cache_into_the_container(
+        self, mock_run, _mock_ctx, tmp_path, monkeypatch
+    ):
+        """The mount, spelled as devpod's `--mount` takes it.
+
+        The source is a dedicated directory rather than the host's own
+        `~/.cache/rattler/cache`: containers write into it as whatever uid
+        their remoteUser has, and a host-side `pixi clean cache` must not be
+        able to pull packages out from under a live container.
+        """
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        args = _devpod_up_args(mock_run)
+        assert args[args.index("--mount") + 1] == (
+            f"type=bind,source={tmp_path}/cache/devlaunch/pixi,"
+            "target=/home/vscode/.cache/devlaunch-pixi"
+        )
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_up_points_pixi_at_the_mount_for_the_workspace(self, mock_run, _mock_ctx):
+        """PIXI_CACHE_DIR wins over RATTLER_CACHE_DIR, so setting it is enough."""
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        args = _devpod_up_args(mock_run)
+        assert args[args.index("--workspace-env") + 1] == (
+            "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi"
+        )
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_up_points_pixi_at_the_mount_for_the_dotfiles_script(self, mock_run, _mock_ctx):
+        """The dotfiles install script is the actual consumer, and devpod gives
+        it an environment of its own -- a workspace env alone never reaches it,
+        so the same assignment is passed twice on purpose."""
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        args = _devpod_up_args(mock_run)
+        assert args[args.index("--dotfiles-script-env") + 1] == (
+            "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi"
+        )
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_the_host_directory_exists_before_devpod_is_asked_to_bind_it(
+        self, mock_run, _mock_ctx, tmp_path, monkeypatch
+    ):
+        """dl creates the source, rather than leaving it to whatever is underneath.
+
+        A bind source that does not exist is refused outright by some
+        runtimes and created as root by others, and a root-owned directory is
+        one the container cannot write a single package into -- which is the
+        whole feature, failing silently and slowly.
+
+        Asserted as a real directory on disk and from inside the spawn, so a
+        creation that happened after `devpod up` returned would not pass.
+        """
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        expected = tmp_path / "cache" / "devlaunch" / "pixi"
+        seen = {}
+
+        def observe(argv, **_kwargs):
+            seen[argv[0]] = expected.is_dir()
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = observe
+        workspace_up("/path")
+        assert seen["up"] is True
+
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_a_cache_directory_that_cannot_be_created_is_not_a_failed_launch(
+        self, mock_run, _mock_ctx, monkeypatch
+    ):
+        """An unwritable cache home costs the sharing, not the container.
+
+        Same call dl already makes about its launch lock: a full disk, a
+        read-only mount or a directory some container left owned by another
+        uid must not turn a `devpod up` that would have worked into a
+        traceback. Without the mount the container downloads its own packages,
+        which is exactly what it did before this feature.
+        """
+        blocked = pathlib.Path("/proc/version/cache")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(blocked))
+        mock_run.return_value = MagicMock(returncode=0)
+        workspace_up("/path")
+        args = _devpod_up_args(mock_run)
+        assert "--mount" not in args
+        assert "--workspace-env" not in args
+        assert "--dotfiles-script-env" not in args
+
+    def test_the_host_directory_is_the_users_own_and_not_a_written_down_path(
+        self, tmp_path, monkeypatch, home_cache_default
+    ):  # pylint: disable=unused-argument
+        """With no XDG_CACHE_HOME the answer follows the invoking user's home.
+
+        The container-side path is devpod's remoteUser convention and is
+        rightly a constant; the host side is not, and a hardcoded one would
+        send every user's packages to somebody else's home directory.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert dl_module._pixi_cache_source() == tmp_path / ".cache" / "devlaunch" / "pixi"  # pylint: disable=protected-access
+
+    @patch("devlaunch.dl.get_workspace_state", return_value="Stopped")
+    @patch("devlaunch.dl.workspace_ssh", return_value=0)
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_the_mount_reaches_devpod_through_main(
+        self, mock_run, _mock_ctx, _mock_ssh, _mock_state
+    ):
+        """End-to-end through argv, so a launch really carries it."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(sys, "argv", ["dl", "myws"]):
+            main()
+        args = _devpod_up_args(mock_run)
+        assert "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi" in args
 
 
 class TestWorkspaceOperations:

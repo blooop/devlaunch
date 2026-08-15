@@ -556,7 +556,17 @@ class TestColdLaunchSpawnCounts:
         names it in the same trip; the transfer lends the host's binaries. There
         is no third trip setting a hostname, which is the ~1.9s this ticket
         saves (#157, measured against real devpod against a real container).
+
+        The `up` argv is pinned whole rather than by membership, so a flag
+        added at that seam has to be added here too -- which is what happened
+        for the shared pixi cache (#232). Its source path is built from the
+        cache-home resolver the suite has already scoped rather than from the
+        function under test, so this stays an assertion about where the mount
+        points and not a restatement of it.
         """
+        from devlaunch.xdg import devlaunch_cache
+
+        pixi_cache = devlaunch_cache() / "pixi"
         with patch("devlaunch.tools.host_payload", return_value=self._payload(tmp_path)):
             commands = self._up(spawns)
         assert commands == [
@@ -570,6 +580,12 @@ class TestColdLaunchSpawnCounts:
                 "none",
                 "--init-env",
                 "DEVLAUNCH_WORKSPACE_ID=brand-new",
+                "--mount",
+                f"type=bind,source={pixi_cache},target=/home/vscode/.cache/devlaunch-pixi",
+                "--workspace-env",
+                "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi",
+                "--dotfiles-script-env",
+                "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi",
             ],
             [
                 "ssh",
