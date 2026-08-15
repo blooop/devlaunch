@@ -26,6 +26,7 @@ whatever the string says.
 """
 
 import json
+import os
 import pathlib
 import subprocess
 from typing import List
@@ -79,6 +80,21 @@ def run_purge(cache: pathlib.Path) -> RecordedProcesses:
         with patch("devlaunch.dl._get_cache_dir", return_value=cache):
             with patch("devlaunch.dl.update_cache_background"):
                 assert main(["--purge", "-y"]) == 0
+    return recorder
+
+
+def run_refused_purge(cache: pathlib.Path) -> RecordedProcesses:
+    """A whole `dl --purge -y` against a cache that will not let go of anything.
+
+    Exits 1 rather than 0, which is why it needs its own runner: the boundary
+    line has to survive the unhappy endings too, and this is the one where the
+    command has nothing of its own to report having freed.
+    """
+    recorder = RecordedProcesses()
+    with patch("devlaunch.dl.subprocess.run", side_effect=recorder):
+        with patch("devlaunch.dl._get_cache_dir", return_value=cache):
+            with patch("devlaunch.dl.update_cache_background"):
+                assert main(["--purge", "-y"]) == 1
     return recorder
 
 
@@ -164,6 +180,53 @@ class TestAPurgeAnsweredNoEndsThereToo:
     def test_declining_removed_nothing(self, cache):
         run_aborted_purge(cache)
         assert (cache / "completions.json").exists()
+
+
+class TestAPurgeThatFreedNothingEndsThereToo:
+    """The fourth way a purge ends, added by devlaunch#182.
+
+    A purge whose cache refuses everything now says so in its own words rather
+    than borrowing the partial-success sentence. That is a headline the wrapper
+    knows nothing about -- it prints the boundary line after whatever the purge
+    said -- and this is where the two are checked to compose: the outcome a
+    person is most likely to be reading while hunting for disk is the one where
+    devlaunch just freed them none of it, and the gigabytes Docker is holding
+    are still not devlaunch's to take.
+    """
+
+    @pytest.fixture(name="refusing_cache")
+    def fixture_refusing_cache(self, cache):
+        """*cache* under a root this process cannot unlink anything out of."""
+        cache.chmod(0o500)
+        try:
+            yield cache
+        finally:
+            # A test may go on to unseal it and purge it for real, so tmp_path's
+            # teardown needs this back only if it is still there.
+            if cache.exists():
+                cache.chmod(0o700)
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root can empty any directory, so nothing here can refuse"
+    )
+    def test_a_purge_that_removed_nothing_still_names_the_docker_disk(self, refusing_cache, capsys):
+        run_refused_purge(refusing_cache)
+        out = capsys.readouterr().out
+        assert "Removed nothing under" in out, out
+        assert NOT_OURS in out
+        assert STILL_HOLDING in out
+        assert THE_TOOL_THAT_KNOWS in out
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root can empty any directory, so nothing here can refuse"
+    )
+    def test_it_is_the_same_line_a_completed_purge_ends_on(self, refusing_cache, cache, capsys):
+        run_refused_purge(refusing_cache)
+        refused = boundary_line(capsys.readouterr().out)
+        cache.chmod(0o700)
+        run_purge(cache)
+        completed = boundary_line(capsys.readouterr().out)
+        assert refused == completed
 
 
 class TestTheTwoCommandsCannotDriftApart:

@@ -17,14 +17,21 @@ no way to learn that most of it did, or which path to go and look at.
 So the purge now removes everything it is allowed to and reports the paths that
 refused. The three outcomes #131 names -- removed everything, removed what it
 was allowed to, removed nothing -- are two *decisions*: you are done, or these
-paths need another pair of hands. "Removed nothing" is the degenerate case of
-the second, where the list of refusals is the cache root itself, and it is told
-apart by reading the report rather than by a third exit code.
+paths need another pair of hands, and the exit status carries only that.
+
+The three are still three, though, and collapsing them into the exit status is
+not the same as collapsing them into the report. devlaunch#182 is what happened
+when the removal's answer carried only the refusals: "one clone stayed behind"
+and "not a byte of it moved" arrived at the caller as the same value, and the
+second printed the first's sentence. The removal now answers with which of the
+three happened and the purge has a sentence for each -- one exit status, three
+headlines.
 
 No container is needed to test any of this. The failure is a filesystem
 permission, so a directory this process cannot empty reproduces it exactly.
 """
 
+import contextlib
 import os
 import pathlib
 import random
@@ -34,13 +41,33 @@ from unittest.mock import patch
 
 import pytest
 
-from devlaunch.dl import purge_all_data, remove_tree
+from devlaunch.dl import (
+    RemovedEverything,
+    RemovedNothing,
+    RemovedWhatItCould,
+    purge_all_data,
+    remove_tree,
+)
+
+
+def refusals(tree) -> tuple:
+    """What *tree*'s removal refused, whatever arm it came back as.
+
+    The arm is the subject of one test class and beside the point in the rest,
+    which are about *which paths* are named and why -- so this reads the
+    refusals out of either arm that has them, and calls a clean sweep an empty
+    list rather than making every caller say `RemovedEverything()`.
+    """
+    outcome = remove_tree(tree)
+    if isinstance(outcome, RemovedEverything):
+        return ()
+    return outcome.refused
 
 
 def refused_paths(tree) -> list:
     """`remove_tree` reports a path *and* what the system said about it; most
     assertions here are about which paths, so this drops the reasons."""
-    return [refusal.path for refusal in remove_tree(tree)]
+    return [refusal.path for refusal in refusals(tree)]
 
 
 def still_there(path: pathlib.Path) -> bool:
@@ -131,18 +158,58 @@ def fixture_cache(tmp_path) -> Iterator[Cache]:
             built.unseal()
 
 
-@pytest.fixture(name="purge")
-def fixture_purge(cache):
-    """`purge_all_data` pointed at *cache*, with devpod answering an empty list.
+@pytest.fixture(name="sealed_root")
+def fixture_sealed_root(tmp_path) -> Iterator[pathlib.Path]:
+    """A cache where not one path can be removed, and it takes some care to build.
+
+    Sealing the root is not on its own enough, which the first attempt at this
+    fixture got wrong and the test caught: unlinking an entry needs write
+    permission on the *directory holding it*, so a sealed root refuses its own
+    entries while everything deeper down stays as removable as it ever was. A
+    sealed root over a real clone tree therefore empties the clones and is an
+    honest partial success -- pinned below, because that is the reading the
+    third arm must not steal.
+
+    So this is the cache that has none: the shape devlaunch writes before the
+    first clone exists -- the completion caches, metadata.json and an empty
+    `repos` -- under a root that will not let any of them go.
+    """
+    root = tmp_path / "devlaunch"
+    (root / "repos").mkdir(parents=True)
+    (root / "metadata.json").write_text("{}")
+    (root / "completions.json").write_text("{}")
+    root.chmod(0o500)
+    try:
+        yield root
+    finally:
+        root.chmod(0o700)
+
+
+@contextlib.contextmanager
+def purging(root: pathlib.Path):
+    """`purge_all_data` pointed at *root*, with devpod answering an empty list.
 
     No workspaces: this file is about the cache half of a purge, and #131 is
     explicit that the workspace half "did everything right".
     """
     empty_listing = subprocess.CompletedProcess([], 0, "[]", "")
     with patch("devlaunch.dl.subprocess.run", return_value=empty_listing):
-        with patch("devlaunch.dl._get_cache_dir", return_value=cache.root):
+        with patch("devlaunch.dl._get_cache_dir", return_value=root):
             with patch("devlaunch.dl.update_cache_background"):
                 yield purge_all_data
+
+
+@pytest.fixture(name="purge")
+def fixture_purge(cache):
+    with purging(cache.root) as run:
+        yield run
+
+
+@pytest.fixture(name="purge_sealed_root")
+def fixture_purge_sealed_root(sealed_root):
+    """A whole purge of the cache where nothing at all can be removed."""
+    with purging(sealed_root) as run:
+        yield run
 
 
 class TestARefusedPathDoesNotStopTheRest:
@@ -245,6 +312,186 @@ class TestTheReportIsActionable:
         assert "does not fix all of them" in printed
 
 
+class TestThePurgeSaysWhichOfTheThreeHappened:
+    """devlaunch#182: the headline claimed a partial success that never happened.
+
+    One sentence per arm, and each of the three has to be false of the other
+    two. The exit code deliberately stays two-valued -- zero means the cache is
+    gone and nothing else does -- so the sentence is the only place the
+    difference between "one clone stayed" and "nothing moved" is carried, and
+    it is the part somebody reads before deciding whether to go and look.
+    """
+
+    @needs_an_unprivileged_user
+    def test_a_purge_that_removed_nothing_says_nothing_was_removed(
+        self, purge_sealed_root, sealed_root, capsys
+    ):
+        assert purge_sealed_root() == 1
+        printed = capsys.readouterr().out
+        assert f"Removed nothing under {sealed_root}." in printed, printed
+
+    @needs_an_unprivileged_user
+    def test_a_purge_that_removed_nothing_does_not_claim_a_partial_success(
+        self, purge_sealed_root, capsys
+    ):
+        """The ticket's sentence, and the whole reason for the third arm."""
+        purge_sealed_root()
+        printed = capsys.readouterr().out
+        assert "Removed what was permitted" not in printed, printed
+
+    @needs_an_unprivileged_user
+    def test_a_purge_that_removed_some_of_it_still_says_that(self, cache, purge, capsys):
+        """The over-correction guard: two of these are refusals, not one.
+
+        A fix that renamed the refusal sentence rather than splitting it would
+        pass the test above and tell somebody whose completion caches, metadata
+        and other clones all went that nothing was removed.
+        """
+        cache.seal()
+        assert purge() == 1
+        printed = capsys.readouterr().out
+        assert f"Removed what was permitted under {cache.root}." in printed, printed
+        assert "Removed nothing" not in printed, printed
+
+    def test_a_clean_sweep_says_neither_of_the_refusal_sentences(self, cache, purge, capsys):
+        assert purge() == 0
+        printed = capsys.readouterr().out
+        assert f"Removed: {cache.root}" in printed, printed
+        assert "Removed nothing" not in printed, printed
+        assert "Removed what was permitted" not in printed, printed
+
+    @needs_an_unprivileged_user
+    def test_removing_nothing_still_names_the_paths_and_the_way_out(
+        self, purge_sealed_root, sealed_root, capsys
+    ):
+        """The third sentence replaces a headline, not the report under it.
+
+        "Removed nothing" on its own is the errno-only report #131 removed,
+        wearing different words: the paths and the command that usually clears
+        them are what somebody acts on.
+        """
+        purge_sealed_root()
+        printed = capsys.readouterr().out
+        assert f"  - {sealed_root}: Permission denied" in printed.splitlines(), printed
+        assert f"sudo rm -rf {sealed_root}" in printed, printed
+
+
+class TestWhetherAnythingCameAwayIsPartOfTheAnswer:
+    """Three arms, because a removal that may remove *some* of a tree has three.
+
+    A flat list of refusals records what was refused and not whether anything
+    went, so "one clone stayed behind" and "not a byte of it moved" arrive at a
+    caller as the same value -- and devlaunch#182 is what that costs: a purge
+    that removed nothing printed the sentence for a partial success.
+
+    The distinction is decided here rather than re-derived at each call site,
+    and it is a *type* rather than a `(removed_something, refused)` pair
+    because a pair can say "removed everything, and here is what it refused".
+    These arms cannot say it: the arm that means a clean sweep has nowhere to
+    put a refusal.
+    """
+
+    def test_a_tree_that_goes_completely_says_so_and_carries_no_refusals(self, cache):
+        assert remove_tree(cache.root) == RemovedEverything()
+
+    @needs_an_unprivileged_user
+    def test_a_tree_that_partly_went_is_told_apart_from_one_that_did_not(self, cache):
+        """The distinction the exit code could not carry, at the seam that knows.
+
+        Everything but the sealed clone is removable here, so this is a genuine
+        partial success -- and the check that it went is what stops the arm
+        being a label the code is free to get wrong.
+        """
+        cache.seal()
+        outcome = remove_tree(cache.root)
+        assert isinstance(outcome, RemovedWhatItCould), outcome
+        assert [refusal.path for refusal in outcome.refused] == [cache.stuck]
+        assert not cache.metadata.exists(), "the partial arm has to mean something went"
+        assert not cache.other_clone.exists()
+
+    @needs_an_unprivileged_user
+    def test_a_cache_root_that_refuses_everything_reports_that_nothing_went(self, sealed_root):
+        """devlaunch#182's case: the root itself is what will not let go.
+
+        Nothing under it can be unlinked either, since unlinking an entry needs
+        write permission on the directory holding it -- so the whole cache is
+        standing afterwards and the honest answer names no removal at all.
+        """
+        outcome = remove_tree(sealed_root)
+        assert isinstance(outcome, RemovedNothing), outcome
+        assert [refusal.path for refusal in outcome.refused] == [sealed_root]
+        assert (sealed_root / "metadata.json").read_text() == "{}"
+        assert (sealed_root / "completions.json").exists()
+        assert (sealed_root / "repos").is_dir()
+
+    @needs_an_unprivileged_user
+    def test_a_sealed_root_over_clones_that_did_go_is_still_a_partial_success(self, tmp_path):
+        """The arm is decided by what moved, not by where the obstruction is.
+
+        A sealed root refuses its own entries and nothing deeper: the clones
+        under it are held in directories that are still writable, so they go.
+        Reading "the root refused" as "nothing came away" would call this one
+        removed-nothing and tell somebody their clones survived when they did
+        not -- which is the same class of lie as devlaunch#182, pointed the
+        other way.
+        """
+        root = tmp_path / "devlaunch"
+        clone = root / "repos" / "blooop" / "bencher" / "bencher-main-kivagede"
+        clone.mkdir(parents=True)
+        (clone / "README.md").write_text("a clone that will go\n")
+        root.chmod(0o500)
+        try:
+            outcome = remove_tree(root)
+            assert isinstance(outcome, RemovedWhatItCould), outcome
+            assert not clone.exists(), "the clones under a sealed root are still removable"
+        finally:
+            root.chmod(0o700)
+
+    @needs_an_unprivileged_user
+    def test_a_root_that_cannot_even_be_looked_at_removed_nothing(self, tmp_path):
+        """ "Cannot tell" is not a partial success either.
+
+        The lstat is refused before a single path is attempted, so there is
+        nothing this could have removed -- and the arm that says so is the one
+        that cannot be mistaken for progress.
+        """
+        home = tmp_path / "cachehome"
+        root = home / "devlaunch"
+        root.mkdir(parents=True)
+        (root / "metadata.json").write_text("still here")
+        home.chmod(0o600)  # rw-, not traversable: lstat on root raises EACCES
+        try:
+            outcome = remove_tree(root)
+            assert isinstance(outcome, RemovedNothing), outcome
+            assert [refusal.path for refusal in outcome.refused] == [root]
+        finally:
+            home.chmod(0o700)
+
+    def test_a_symlinked_root_removed_nothing(self, tmp_path):
+        """Refusing to follow a link is a refusal to remove, not a clean sweep.
+
+        This one needs no permissions to reproduce, so it holds as root too --
+        which matters, because it is the arm a container running as root would
+        otherwise never exercise.
+        """
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "metadata.json").write_text("somebody's cache")
+        link = tmp_path / "cache" / "devlaunch"
+        link.parent.mkdir()
+        link.symlink_to(target)
+
+        outcome = remove_tree(link)
+        assert isinstance(outcome, RemovedNothing), outcome
+        assert [refusal.path for refusal in outcome.refused] == [link]
+
+    def test_a_tree_that_was_never_there_is_a_clean_sweep_not_a_refusal(self, tmp_path):
+        """A purge run twice is not a failure the second time, and is not a
+        removal that refused nothing while removing nothing either: there is
+        nothing left under that name, which is what the first arm means."""
+        assert remove_tree(tmp_path / "never-existed") == RemovedEverything()
+
+
 class TestOnlyTheObstructionIsNamed:
     """`remove_tree` on its own, where the reporting rule is decided."""
 
@@ -324,12 +571,12 @@ class TestOnlyTheObstructionIsNamed:
         held.chmod(0o700)
 
     def test_a_tree_that_goes_completely_refuses_nothing(self, cache):
-        assert remove_tree(cache.root) == ()
+        assert refusals(cache.root) == ()
         assert not cache.root.exists()
 
     def test_a_tree_that_is_not_there_refuses_nothing(self, tmp_path):
         """A purge run twice is not an error the second time."""
-        assert remove_tree(tmp_path / "never-existed") == ()
+        assert refusals(tmp_path / "never-existed") == ()
 
     @needs_an_unprivileged_user
     def test_an_unreadable_directory_is_reported_rather_than_skipped(self, cache):
@@ -364,7 +611,7 @@ class TestOnlyTheObstructionIsNamed:
         opaque = cache.root / "repos" / "blooop" / "opaque"
         opaque.mkdir(parents=True)
         opaque.chmod(0o300)  # -wx and empty: unlistable, but it will go
-        assert remove_tree(cache.root) == ()
+        assert refusals(cache.root) == ()
         assert not cache.root.exists()
 
 
@@ -399,7 +646,7 @@ class TestNothingOutsideTheTreeIsTouched:
         link.parent.mkdir()
         link.symlink_to(target)
 
-        refused = remove_tree(link)
+        refused = refusals(link)
         assert [r.path for r in refused] == [link]
         assert link.is_symlink(), "the link is left where it is, not silently removed"
         assert (target / "metadata.json").read_text() == "somebody's cache"
@@ -434,13 +681,13 @@ class TestNothingOutsideTheTreeIsTouched:
         (cache.root / "repos" / "link").symlink_to(outside)
         (cache.root / "repos" / "file-link").symlink_to(outside / "precious.txt")
 
-        assert remove_tree(cache.root) == ()
+        assert refusals(cache.root) == ()
         assert not cache.root.exists()
         assert (outside / "precious.txt").read_text() == "not devlaunch's"
 
     def test_a_dangling_symlink_is_removed_without_complaint(self, cache):
         (cache.root / "repos" / "broken").symlink_to(cache.root / "never-existed")
-        assert remove_tree(cache.root) == ()
+        assert refusals(cache.root) == ()
         assert not cache.root.exists()
 
 

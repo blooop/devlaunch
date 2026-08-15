@@ -93,6 +93,31 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **`dl --purge` no longer says it removed what it was permitted to when it removed
+  nothing** ([#182](https://github.com/blooop/devlaunch/issues/182)). The removal's answer
+  was a flat list of refusals, which records *what refused* and never *whether anything
+  went*, so a cache whose root was itself the obstruction — sealed, a symlink, or one that
+  could not even be looked at — printed `Removed what was permitted under <cache>` with
+  the whole cache still standing. The per-refusal reasons underneath were right in both
+  cases, so nobody was left without information; the headline was simply false, and it is
+  the line somebody reads before deciding whether they still have clones to go and find.
+
+  The removal now answers with one of three values — removed everything, removed what it
+  could, removed nothing — and the two that can carry refusals are the only two that have
+  anywhere to put them, so "removed everything, and here is what it refused" is not a
+  value this code can build. Whether anything came away is counted as it happens rather
+  than inferred from the report afterwards, which is the inference that could not be made.
+  A total refusal now reads `Removed nothing under <cache>. These refused:` over the same
+  report as before.
+
+  **The exit status is unchanged and stays two-valued**: `0` means the cache is gone and
+  nothing else does, which is the only distinction a script can act on, and a third code
+  would be an interface to keep forever. Which of the two failures happened is in the
+  sentence, where the person who can act on it reads it. `dl --prune` shares the removal
+  and its behaviour is unchanged — a clone directory is one unit of work there, and only
+  the arm that says it is entirely gone counts it as removed. A fourth outcome would now
+  be a type error at every reader rather than being read silently as one of these three.
+
 - **The devcontainer feature's installer now writes its PATH lines into the profile bash
   actually reads** ([#191](https://github.com/blooop/devlaunch/issues/191)). bash sources
   only the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile` that exists, which

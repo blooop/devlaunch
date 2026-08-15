@@ -735,8 +735,59 @@ def _present(path: pathlib.Path) -> bool:
     return True
 
 
-def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
-    """Remove *tree* and everything under it. Returns what refused, and why.
+@dataclass(frozen=True)
+class RemovedEverything:
+    """The tree is gone, and so is everything that was under it.
+
+    Carries no payload, and that is the point: the arm that means a clean sweep
+    has nowhere to put a refusal, so "removed everything, and here is what it
+    refused" is not a value this module can produce.
+    """
+
+
+@dataclass(frozen=True)
+class RemovedWhatItCould:
+    """Some of it went. *refused* is what the filesystem would not let go."""
+
+    refused: Tuple[Refusal, ...]
+
+
+@dataclass(frozen=True)
+class RemovedNothing:
+    """None of it went. *refused* is what the filesystem would not let go."""
+
+    refused: Tuple[Refusal, ...]
+
+
+# Three arms, because a removal permitted to remove *part* of a tree has three
+# answers and a flat list of refusals records only two of them: what refused,
+# never whether anything went. devlaunch#182 is what that cost -- a purge whose
+# cache root was itself the obstruction removed not one path and printed the
+# sentence for a partial success, because the only question its caller could ask
+# was "were there refusals".
+#
+# A `(removed_something, refused)` pair would answer it and would also make
+# "removed everything, and here is what it refused" expressible, leaving every
+# reader to be trusted not to build it. These arms cannot say it.
+#
+# The exit status stays two-valued on purpose: zero means the cache is gone and
+# nothing else does, which is the only distinction a caller can act on. Which of
+# the two failures happened is in the report, where somebody can act on it.
+Removal = RemovedEverything | RemovedWhatItCould | RemovedNothing
+
+
+def _unhandled_removal(outcome: NoReturn) -> NoReturn:
+    """Reject a removal arm nobody handled -- at type-check time, not at runtime.
+
+    The sibling of _unhandled_source, and there for the same reason: `ty` runs
+    in CI, so a fourth arm breaks every reader that has not grown a case for it
+    rather than being quietly read as one of the existing three.
+    """
+    raise AssertionError(f"Unhandled removal outcome: {outcome!r}")
+
+
+def remove_tree(tree: pathlib.Path) -> Removal:
+    """Remove *tree* and everything under it. Returns which of three things happened.
 
     `shutil.rmtree` is the obvious way to do this and is the wrong one here,
     because it stops at the first failure. A container writes into its
@@ -777,7 +828,13 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
     ancestor rule -- could have silenced a genuine refusal above it, which is
     the one failure direction that matters here.
 
-    An empty result means the tree is gone, including when it was never there:
+    **Whether anything came away is answered, not inferred.** A path that went
+    is counted as it goes, so the two refusal arms are told apart by what the
+    removal did rather than by what its report happens to look like -- a
+    surviving refusal list says nothing about the completion caches beside it,
+    which is the reading devlaunch#182 is about.
+
+    RemovedEverything means the tree is gone, including when it was never there:
     a purge run twice is not a failure the second time.
     """
     # One lstat, three outcomes, none of them inferred. `Path.exists()` and
@@ -788,11 +845,12 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
     try:
         info = os.lstat(tree)
     except FileNotFoundError:
-        return ()
+        return RemovedEverything()
     except OSError as error:
         # Something is there that we are not allowed to look at. Saying so is
-        # the whole point; calling it gone is the failure this guards.
-        return (Refusal(tree, _why(error)),)
+        # the whole point; calling it gone is the failure this guards. Nothing
+        # was attempted, so nothing came away.
+        return RemovedNothing((Refusal(tree, _why(error)),))
 
     # A symlinked root is refused, which is what `shutil.rmtree` did and is the
     # only one of the three available answers that is not a lie.
@@ -812,9 +870,14 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
             points_at = f" to {os.readlink(tree)}"
         except OSError:
             points_at = ""
-        return (Refusal(tree, f"is a symbolic link{points_at}, which a purge will not follow"),)
+        # Refused before anything was attempted: the link is still there and so
+        # is everything it points at, so this is a removal that removed nothing.
+        return RemovedNothing(
+            (Refusal(tree, f"is a symbolic link{points_at}, which a purge will not follow"),)
+        )
 
     failed: List[Refusal] = []
+    removed_any = False
 
     def obstruction(path: pathlib.Path) -> pathlib.Path:
         """The outermost path that actually explains a failure to remove *path*.
@@ -846,6 +909,7 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
             failed.append(Refusal(pathlib.Path(error.filename), _why(error)))
 
     def remove(path: pathlib.Path) -> None:
+        nonlocal removed_any
         try:
             # A symlink is unlinked, never followed -- descending one would put
             # a purge outside the cache directory it was asked to remove.
@@ -855,6 +919,12 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
                 path.unlink()
         except OSError as error:
             failed.append(Refusal(path, _why(error)))
+        else:
+            # Counted where it happened. Deriving this from the refusal list
+            # afterwards is exactly the inference that cannot be made: a cache
+            # root that refuses its own entries reports one refusal whether
+            # there were two clones beside it or none.
+            removed_any = True
 
     # Bottom-up, so a directory is only attempted once its contents have been.
     for parent, dirs, files in os.walk(tree, topdown=False, onerror=unreadable):
@@ -881,7 +951,12 @@ def remove_tree(tree: pathlib.Path) -> Tuple[Refusal, ...]:
             refused.append(Refusal(path, candidate.reason))
             blocked.add(path)
         blocked.add(path.parent)
-    return tuple(refused)
+    if not refused:
+        # Nothing survived that anybody needs to know about, so the tree is
+        # gone -- including the case where the walk hit failures that the disk
+        # then contradicted.
+        return RemovedEverything()
+    return RemovedWhatItCould(tuple(refused)) if removed_any else RemovedNothing(tuple(refused))
 
 
 DOCKER_BOUNDARY = (
@@ -977,21 +1052,36 @@ def _purge_devlaunch_data() -> int:
             print("No data to purge.")
         return 0
 
-    refused = remove_tree(cache_dir)
-    if not refused:
+    outcome = remove_tree(cache_dir)
+    if isinstance(outcome, RemovedEverything):
         print(f"Removed: {cache_dir}")
         return 0
 
     # Not 0: a clone the user was told would go is still on disk. Not silent
     # either -- an exit code cannot distinguish "removed most of it" from
-    # "removed none of it", and the difference is the whole news, so the report
-    # carries it and the exit code only says the job is unfinished.
-    report_refusals(
-        refused,
-        f"Removed what was permitted under {cache_dir}. These refused:",
-        (cache_dir,),
-    )
-    return 1
+    # "removed none of it", and the difference is the whole news, so the
+    # headline carries it and the exit code only says the job is unfinished.
+    #
+    # Both refusal arms print the same report underneath, and only the sentence
+    # over it differs: the paths and the command that usually clears them are
+    # what somebody acts on either way. What the sentence changes is whether
+    # they have to go and check what survived (devlaunch#182 -- a purge that
+    # removed not one path said it had removed what it was permitted to).
+    if isinstance(outcome, RemovedWhatItCould):
+        report_refusals(
+            outcome.refused,
+            f"Removed what was permitted under {cache_dir}. These refused:",
+            (cache_dir,),
+        )
+        return 1
+    if isinstance(outcome, RemovedNothing):
+        report_refusals(
+            outcome.refused,
+            f"Removed nothing under {cache_dir}. These refused:",
+            (cache_dir,),
+        )
+        return 1
+    _unhandled_removal(outcome)
 
 
 def report_refusals(
@@ -2346,12 +2436,22 @@ def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathli
                 if isinstance(decision, Keep):
                     withheld.append((reclaimable.path, decision.because))
                     continue
-                refusals = remove_tree(reclaimable.path)
-                if refusals:
-                    refused.extend(refusals)
-                    continue
-                removed.append(reclaimable)
-                _forget_clone(clone_mgr, record_for.get(reclaimable.path))
+                outcome = remove_tree(reclaimable.path)
+                # A clone directory is one unit of work here: only the arm that
+                # says it is entirely gone counts it as removed and drops its
+                # record. The two refusal arms are alike to this caller -- a
+                # directory half removed is still a directory somebody has to
+                # deal with -- but they are named separately rather than
+                # grouped, so a fourth arm arrives here as a type error.
+                if isinstance(outcome, RemovedEverything):
+                    removed.append(reclaimable)
+                    _forget_clone(clone_mgr, record_for.get(reclaimable.path))
+                elif isinstance(outcome, RemovedWhatItCould):
+                    refused.extend(outcome.refused)
+                elif isinstance(outcome, RemovedNothing):
+                    refused.extend(outcome.refused)
+                else:
+                    _unhandled_removal(outcome)
     for record in plan.stale_records:
         _forget_clone(clone_mgr, record)
     freed = disk_usage.describe_usage(disk_usage.total_usage(r.usage for r in removed))
