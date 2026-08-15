@@ -295,9 +295,7 @@ class TestBranchManager:
             mock_run.reset_mock()
             mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
 
-            branch_manager.push_branch_to_remote(
-                temp_repo, "new-branch", ssh_key_path=key
-            )
+            branch_manager.push_branch_to_remote(temp_repo, "new-branch", ssh_key_path=key)
 
             ssh_command = mock_run.call_args[1]["env"]["GIT_SSH_COMMAND"]
             assert shlex.split(ssh_command) == [
