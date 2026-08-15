@@ -529,7 +529,18 @@ class WorkspaceCloneManager:
                     # so a ValueError here would surface as a traceback.
                     logger.warning(f"Cannot fetch recorded default branch: {e}")
                 else:
-                    if isinstance(base_outcome, FetchFailed):
+                    # Named arm by arm for the same reason as the dispatch
+                    # around it: the sum exists so a fourth outcome cannot be
+                    # quietly read as one of these three.
+                    if isinstance(base_outcome, Updated):
+                        pass
+                    elif isinstance(base_outcome, RefMissingOnRemote):
+                        # The remote has no default branch under that name
+                        # either. Nothing more to try -- there is no third ref
+                        # -- and the branch creation below still has the cache's
+                        # own default branch to start from.
+                        pass
+                    elif isinstance(base_outcome, FetchFailed):
                         # Same condition as the arm below, warned the same
                         # way: the new branch is about to be cut from a
                         # possibly stale cache, and the reason is carried
@@ -538,6 +549,8 @@ class WorkspaceCloneManager:
                             f"Could not fetch {default_branch} for {owner}/{repo}: "
                             f"{base_outcome.reason}"
                         )
+                    else:
+                        unhandled_fetch_outcome(base_outcome)
         elif isinstance(outcome, FetchFailed):
             # Not an error here: a cached branch still launches. Deliberately
             # no default-branch fetch -- nothing was learned about the remote,

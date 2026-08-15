@@ -320,6 +320,26 @@ class TestEnsureBranch:
         # start point, exactly as when the first fetch fails.
         mock_branch_manager.ensure_branch_exists.assert_called_once()
 
+    def test_an_unrecognised_base_fetch_outcome_is_rejected_not_absorbed(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """A fourth fetch outcome must be rejected on the base fetch too.
+
+        The sum type exists so that every arm is named and a new one cannot be
+        read as an old one — the guarantee the requested-ref dispatch already
+        makes. The base-branch fetch answers the same three, so an outcome
+        outside them is a bug in the same way: absorbed silently it would cut a
+        brand-new branch from the cache while behaving exactly like a clean
+        fetch, with nothing distinguishing the two.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [RefMissingOnRemote(), object()]
+
+        with pytest.raises(AssertionError, match="Unhandled fetch outcome"):
+            clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
     def test_an_unsafe_recorded_default_branch_does_not_escape_as_a_valueerror(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
     ):

@@ -115,6 +115,25 @@ table and should be judged on its own merits.
   applied to the id. It prevents the next derivation change from costing anything; it
   repairs nothing already broken, which is what `dl --reconcile` above is for.
 
+- **A non-English host locale no longer breaks re-launching a branch that already
+  exists** ([#187](https://github.com/blooop/devlaunch/issues/187)). Creating the branch
+  in the bare cache tells the harmless "it is already there" from a real failure by
+  looking for `already exists` in git's stderr — and git translates that message.
+  Measured against git's own German catalog: under `LANGUAGE=de` it reads
+  `Schwerwiegend: Branch 'dup' existiert bereits`, so the harmless case was classified
+  as fatal and every launch of an existing branch raised `Failed to create branch`. The
+  git call now runs with `LC_ALL=C` and `LANGUAGE=C` — both, so the guarantee does not
+  rest on the one glibc rule that lets `LC_ALL=C` outrank `LANGUAGE` — layered on the
+  inherited environment rather than replacing it, so ssh auth survives. Same hazard and
+  same pin as the fetch path already carried; this was the one remaining site that
+  classified translated text without it.
+
+  Found alongside it and fixed with it: the fetch of the branch to base a *new* branch
+  on tested only its failure outcome and let the rest fall through, so an outcome the
+  sum type does not yet have would have been read as a clean fetch. Every arm is now
+  named and an unrecognised one is rejected loudly, matching what the dispatch beside it
+  already guaranteed. No behaviour changes for the three outcomes that exist today.
+
 ### Changed
 
 - **The bare cache is now the repo's git-lfs store, and workspaces hardlink out of it**
