@@ -470,7 +470,10 @@ class TestOrphanedContainers:
 
         run_migration(metadata_path, repos_dir)
 
-        notice = next(line for line in capsys.readouterr().err.splitlines() if "orphan" in line)
+        lines = [line for line in capsys.readouterr().err.splitlines() if "orphan" in line]
+        assert len(lines) == 1
+        notice = lines[0]
+        assert "dl --reconcile" in notice, "the repair path must be offered at all"
         repair, rebuild = notice.index("dl --reconcile"), notice.index("recreate")
         assert repair < rebuild < notice.index("devpod delete")
         # And the limit is stated rather than left to be discovered: the repair

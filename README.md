@@ -186,20 +186,23 @@ this is a plain rename: branches, history and **uncommitted changes all survive*
 the folder name changes. `metadata.json` is updated in the same pass, so nothing is left
 pointing at the old name.
 
-**Your existing devpod containers keep their old ids and are orphaned — and most of them
-can be repaired rather than replaced.** An orphaned container is sourced at the path this
+**Your existing devpod containers keep their old ids and are orphaned — and they can
+often be repaired rather than replaced.** An orphaned container is sourced at the path this
 migration just renamed, with the real clone sitting next to it under the new name, which is
 precisely what [`dl --reconcile`](#reconciling-records-that-disagree) is for: it re-points
 devpod's record at the renamed clone, and `dl <workspace> recreate` finishes the repair.
 That gives you back the clone association and the workspace's identity — not state that
-lived only inside the old container, which nothing can bring back. Left alone, the next
-`dl user/repo@branch` simply builds a fresh container under the new id.
+lived only inside the old container, which nothing can bring back. The repair is
+order-dependent: relaunching the branch claims the renamed clone for a fresh container,
+and reconcile never re-points a clone a live container holds — so reconcile first, then
+relaunch. Left alone, the next `dl user/repo@branch` simply builds a fresh container
+under the new id, and deleting the old one is all that remains for it.
 
 dl does not delete containers for you — deleting by id is how a running sidecar got
 destroyed the last time something tried ([kinisi_ros#9766](https://github.com/kinisi-robotics/kinisi_ros/pull/9766)) —
 so it prints a one-line notice with the count and writes the old ids to
 `~/.cache/devlaunch/orphaned-workspaces.txt`. For the workspaces you are finished with,
-that listing is the disposal command:
+the disposal command reads from that listing:
 
 ```bash
 xargs -r -n1 devpod delete < ~/.cache/devlaunch/orphaned-workspaces.txt

@@ -245,23 +245,19 @@ def _announce(report: MigrationReport, cache_dir: Path) -> None:
             if listing
             else "devpod delete <old-id>, one per workspace"
         )
-        # Repair is offered before disposal, because a container orphaned by this
-        # very run is the exact shape `--reconcile` adopts (#88): it is sourced at a
-        # path that no longer holds a checkout, with the real clone sitting next to
-        # it under the renamed leaf. Telling people to delete first contradicted the
-        # strategy above -- the rename exists to keep work that is not cheaply
-        # recreatable, and a container is more of that, not less. Deletion stays,
-        # demoted to what it actually is: the answer for a workspace one is finished
-        # with. The caveat is stated rather than left to be found out, because the
-        # repair's reach is genuinely partial: re-pointing plus a rebuild restores
-        # the clone association and the workspace's identity, and nothing restores
-        # what only ever existed inside the old container.
+        # Repair before disposal (#227); the why is user-facing and lives in the
+        # string itself and README's migration section. What the string cannot
+        # show: its truth is owed by dl.py's reconcile seam (_orphaned_workspaces
+        # joining by path, _leaf_spellings naming the old leaves) -- if adoption
+        # there ever narrows, this notice starts lying before any test here fails.
         _notice(
             f"{len(report.orphaned_ids)} devpod container(s) still carry the old workspace ids "
             f"and are now orphaned; dl --reconcile re-points them at the renamed clones, and "
-            f"dl <workspace> recreate finishes each repair -- that gives back the clone and the "
-            f"workspace, not state that lived only inside the old container. dl deletes nothing "
-            f"for you; for the ones you are finished with: {cleanup}"
+            f"dl <workspace> recreate finishes each repair -- that restores the clone "
+            f"association and the workspace, not state that lived only inside the old "
+            f"container, and only until the branch is launched again (a fresh launch claims "
+            f"the clone, and reconcile never re-points a clone a live container holds). "
+            f"dl deletes nothing for you; for the ones you are finished with: {cleanup}"
         )
 
 
