@@ -403,6 +403,9 @@ class RepositoryManager:
                 )
             return Updated()
         except subprocess.CalledProcessError as e:
+            # stderr is None when the output was never captured; the ref-missing
+            # arm is a membership test, so reading it unguarded would raise out
+            # of a method whose contract is to return one of three outcomes.
             stderr = e.stderr or ""
             if "couldn't find remote ref" in stderr:
                 # git reached the remote and was told the ref is not there. This

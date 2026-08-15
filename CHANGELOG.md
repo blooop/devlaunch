@@ -121,6 +121,20 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **An ssh key stored under a directory with a space in its name now reaches ssh whole**
+  ([#225](https://github.com/blooop/devlaunch/issues/225)). Pushing a new branch with a
+  named key builds `GIT_SSH_COMMAND`, which git hands to a shell rather than running as
+  argv — so an unquoted path was split on whitespace, ssh got a truncated `-i` and the
+  rest of the path as a hostname, and the push failed on the one piece of setup that
+  naming a key exists to guarantee. The path is now shell-quoted, so any key path works
+  regardless of what is in it. Keys at paths without shell metacharacters behave exactly
+  as before.
+
+  **A push git said nothing about now names its exit code instead of reporting `None`.**
+  When the failure carried no stderr, the error read `Failed to push branch to remote:
+  None` — a message with nothing in it to act on. Same class of gap as the branch-creation
+  arm fixed in [#212](https://github.com/blooop/devlaunch/issues/212), one function over.
+
 - **`dl --reconcile` and `dl --prune` no longer answer differently depending on which
   directory you ran them from** ([#224](https://github.com/blooop/devlaunch/issues/224)).
   Run from inside `<repos-root>/<owner>/<repo>/`, `--reconcile` listed every workspace

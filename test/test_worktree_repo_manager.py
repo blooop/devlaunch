@@ -413,6 +413,25 @@ class TestFetchRef:
         assert "Could not read from remote repository" in outcome.reason
 
     @patch("devlaunch.worktree.repo_manager.subprocess.run")
+    def test_silent_fetch_failure_is_still_one_of_the_three_answers(
+        self, mock_run, repo_manager, cached_repo
+    ):
+        """A fetch git wrote nothing to stderr for is a FetchFailed.
+
+        ``CalledProcessError.stderr`` is ``None`` when the output was never
+        captured, so the ref-missing arm must not read it unguarded -- an
+        unguarded membership test raises ``TypeError`` out of a method whose
+        whole contract is to return one of three outcomes, and the caller that
+        was ready for all three gets a traceback instead.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git fetch", stderr=None)
+
+        outcome = repo_manager.fetch_ref("owner", "repo", "main")
+
+        assert isinstance(outcome, FetchFailed)
+        assert "128" in outcome.reason
+
+    @patch("devlaunch.worktree.repo_manager.subprocess.run")
     def test_does_not_advance_last_fetched(self, mock_run, repo_manager, cached_repo):
         """One ref is not the sweep, so it must not claim the sweep's bookkeeping.
 
