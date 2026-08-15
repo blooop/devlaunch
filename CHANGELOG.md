@@ -93,6 +93,37 @@ table and should be judged on its own merits.
 
 ### Fixed
 
+- **The `claude-code` feature's read-only mounts now exist**
+  ([#108](https://github.com/blooop/devlaunch/issues/108)). The feature's README documented
+  granular mounts, with `CLAUDE.md`, `settings.json`, `agents/`, `commands/` and `hooks/`
+  read-only, and gave the reason: those files hold *executable instructions*, so a prompt
+  injection that edits one is not confined to the session that fell for it — it is on the
+  host, and it runs again in every later session, in every other container. The manifest
+  mounted the whole of `~/.claude` read-write, so the container could write every one of
+  them. The protection was documented and absent from the first commit; there was no
+  regression to find, and the feature's manifest had never been edited since.
+
+  The mounts are now the list the README describes, plus the two files it argues have to
+  stay writable — `.credentials.json` for token refresh, `.claude.json` for onboarding
+  state. Checked in a real container rather than on the page: with this feature's mounts in
+  place, `/proc/mounts` reports `ro` for all five protected paths, an append to `CLAUDE.md`
+  and a new file under `hooks/` are refused with `Read-only file system`, the host's files
+  are unchanged afterwards, and the writable pair still takes a write.
+
+  **What this costs.** The mount list is an allow-list now, so everything else under
+  `~/.claude` — session transcripts, `projects/`, `history.jsonl`, `skills/`, `plugins/` —
+  is the container's own and dies with it. A container no longer resumes a session started
+  on the host, and the skills and plugins installed on the host are not visible in there.
+  That is what the allow-list buys: a directory Claude starts writing to next month cannot
+  silently become another way onto the host.
+
+  **What it does not cost.** Every mounted path has to exist before the container starts,
+  and the host-side hook this repo already runs before each create now creates all of them,
+  rewriting nothing that is already there — which is what lets that hook keep running
+  *inside* a container built this way, where those paths are the read-only mounts. A host
+  with no `~/.claude` fails exactly as it did before this change: `bind mount source path
+  does not exist`, refused before any container exists, leaving nothing behind on the host.
+
 - **`dl --purge` no longer says it removed what it was permitted to when it removed
   nothing** ([#182](https://github.com/blooop/devlaunch/issues/182)). The removal's answer
   was a flat list of refusals, which records *what refused* and never *whether anything
