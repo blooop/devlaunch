@@ -288,19 +288,25 @@ class TestBranchManager:
         ``-i`` and the rest of the path as a hostname, and the push fails on the
         one setup naming a key was supposed to guarantee.
         """
-        key = "/tmp/dl keys/id ed25519"
-        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        # The second path carries the shell's other weapons -- a substitution,
+        # a semicolon, a single quote -- because the guarantee is "one
+        # argument, whatever is in it", not "spaces survive".
+        for key in ("/tmp/dl keys/id ed25519", "/tmp/dl$(rm x); it's/id"):
+            mock_run.reset_mock()
+            mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
 
-        branch_manager.push_branch_to_remote(temp_repo, "new-branch", ssh_key_path=key)
+            branch_manager.push_branch_to_remote(
+                temp_repo, "new-branch", ssh_key_path=key
+            )
 
-        ssh_command = mock_run.call_args[1]["env"]["GIT_SSH_COMMAND"]
-        assert shlex.split(ssh_command) == [
-            "ssh",
-            "-i",
-            "/tmp/dl keys/id ed25519",
-            "-o",
-            "IdentitiesOnly=yes",
-        ]
+            ssh_command = mock_run.call_args[1]["env"]["GIT_SSH_COMMAND"]
+            assert shlex.split(ssh_command) == [
+                "ssh",
+                "-i",
+                key,
+                "-o",
+                "IdentitiesOnly=yes",
+            ]
 
     @patch("devlaunch.worktree.branch_manager.subprocess.run")
     def test_push_failure_reads_as_a_failure_when_git_said_nothing(

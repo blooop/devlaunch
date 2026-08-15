@@ -132,8 +132,10 @@ table and should be judged on its own merits.
 
   **A push git said nothing about now names its exit code instead of reporting `None`.**
   When the failure carried no stderr, the error read `Failed to push branch to remote:
-  None` — a message with nothing in it to act on. Same class of gap as the branch-creation
-  arm fixed in [#212](https://github.com/blooop/devlaunch/issues/212), one function over.
+  None` — a message with nothing in it to act on. Same class of gap
+  [#212](https://github.com/blooop/devlaunch/issues/212) guarded against in the
+  branch-creation arm, one function over (that arm still prints an empty tail on a silent
+  failure; aligning all three arms is follow-up work, not this change).
 
 - **`dl --reconcile` and `dl --prune` no longer answer differently depending on which
   directory you ran them from** ([#224](https://github.com/blooop/devlaunch/issues/224)).
