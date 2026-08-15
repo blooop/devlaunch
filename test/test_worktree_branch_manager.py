@@ -2,6 +2,7 @@
 # pylint: disable=redefined-outer-name,unused-argument
 
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -275,6 +276,54 @@ class TestBranchManager:
         # The rest of the environment must survive -- losing it breaks ssh auth.
         assert env["SSH_AUTH_SOCK"] == "/tmp/sentinel-agent.sock"
         assert env["PATH"] == os.environ["PATH"]
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_ssh_key_path_reaches_ssh_whole_when_it_contains_a_space(
+        self, mock_run, branch_manager, temp_repo
+    ):
+        """A key path with a space must arrive at ssh as one argument.
+
+        ``GIT_SSH_COMMAND`` is a shell string, not argv, so an unquoted path
+        containing a space is split by the shell -- ssh is handed a truncated
+        ``-i`` and the rest of the path as a hostname, and the push fails on the
+        one setup naming a key was supposed to guarantee.
+        """
+        # The second path carries the shell's other weapons -- a substitution,
+        # a semicolon, a single quote -- because the guarantee is "one
+        # argument, whatever is in it", not "spaces survive".
+        for key in ("/tmp/dl keys/id ed25519", "/tmp/dl$(rm x); it's/id"):
+            mock_run.reset_mock()
+            mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+            branch_manager.push_branch_to_remote(temp_repo, "new-branch", ssh_key_path=key)
+
+            ssh_command = mock_run.call_args[1]["env"]["GIT_SSH_COMMAND"]
+            assert shlex.split(ssh_command) == [
+                "ssh",
+                "-i",
+                key,
+                "-o",
+                "IdentitiesOnly=yes",
+            ]
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_push_failure_reads_as_a_failure_when_git_said_nothing(
+        self, mock_run, branch_manager, temp_repo
+    ):
+        """A push that failed silently must still name what happened.
+
+        ``CalledProcessError.stderr`` is ``None`` when the output was never
+        captured, and formatting it raw reports "Failed to push branch to
+        remote: None" -- a message that tells whoever reads it nothing. The exit
+        code is what is left to say.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git push", stderr=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            branch_manager.push_branch_to_remote(temp_repo, "new-branch")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
 
     @patch("devlaunch.worktree.branch_manager.subprocess.run")
     def test_create_local_branch_survives_stderr_less_failure(

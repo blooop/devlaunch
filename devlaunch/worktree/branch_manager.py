@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -181,8 +182,11 @@ class BranchManager:
         """Push a branch to the remote."""
         env = None
         if ssh_key_path:
-            # Set up SSH command with specific key
-            ssh_command = f"ssh -i {ssh_key_path} -o IdentitiesOnly=yes"
+            # Set up SSH command with specific key. GIT_SSH_COMMAND is a shell
+            # string, not argv, so the path is quoted: a key under a directory
+            # with a space in it would otherwise be split by the shell, and ssh
+            # would get a truncated -i and the remainder as a hostname.
+            ssh_command = f"ssh -i {shlex.quote(str(ssh_key_path))} -o IdentitiesOnly=yes"
             # Layered on the inherited env, not substituted for it: a git push
             # with no PATH cannot find the ssh it was just told to run, and one
             # with no HOME or SSH_AUTH_SOCK cannot read known_hosts or reach the
@@ -200,5 +204,11 @@ class BranchManager:
             )
             logger.debug(f"Push output: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            logger.debug(f"Failed to push branch: {e.stderr}")
-            raise RuntimeError(f"Failed to push branch to remote: {e.stderr}") from e
+            # stderr is None when the output was never captured, and formatting
+            # it raw reports "...: None" -- a message that names neither the
+            # branch's problem nor anything to act on. The exit code is what is
+            # left to say about a push git was silent about.
+            stderr = e.stderr or ""
+            reason = stderr.strip() or f"git push exited {e.returncode}"
+            logger.debug(f"Failed to push branch: {reason}")
+            raise RuntimeError(f"Failed to push branch to remote: {reason}") from e

@@ -403,6 +403,8 @@ class RepositoryManager:
                 )
             return Updated()
         except subprocess.CalledProcessError as e:
+            # The `or ""` is load-bearing -- pinned by the membership-test case
+            # in test_worktree_repo_manager (#225); rationale at the push arm.
             stderr = e.stderr or ""
             if "couldn't find remote ref" in stderr:
                 # git reached the remote and was told the ref is not there. This
