@@ -267,6 +267,59 @@ class TestRefusingToGuessAndRefusingToDelete:
         assert world.sourced_at("devlaunch-main") == str(world.repo_dir / "main")
         assert world.sourced_at("devlaunch-main-live") == str(clone)
 
+    def test_a_clone_whose_subdirectory_a_live_workspace_opens_is_not_taken_either(self, world):
+        """`devpod up <clone>/subproject` holds the clone, and holds it whole.
+
+        The check has to be containment and not equality, which is the mistake
+        `WorkspaceLocations.holder` was carved out for on the deletion side
+        ("Equality answered no and deleted the parent"). Here equality answers
+        no and hands the directory to a dead record instead: the live workspace
+        keeps opening a subdirectory of a checkout a second workspace now claims
+        as its source, which is the collision this refusal exists to prevent.
+        """
+        clone = world.clone("main")
+        world.record("main", clone)
+        (clone / "subproject").mkdir()
+        world.workspace("devlaunch-main-live", clone / "subproject")
+        world.workspace("devlaunch-main", world.repo_dir / "main")
+
+        status, _ = reconcile(world, "-y")
+
+        assert status == 0
+        assert world.sourced_at("devlaunch-main") == str(world.repo_dir / "main")
+        assert world.sourced_at("devlaunch-main-live") == str(clone / "subproject")
+        assert world.stored_id("main") is None
+
+    def test_two_clones_answering_to_one_old_name_adopt_neither(self, world, capsys):
+        """The old flattened leaf is not injective, so one name can mean two branches.
+
+        `feature/auth` and `feature-auth` are both branches a repository can
+        have, and under the pre-#81 scheme both were the directory
+        `feature-auth` -- five verified preimages of that exact leaf are on
+        record (5db5c42). A devpod record sourced there names both clones and
+        chooses neither: resolving it would be dict insertion order deciding
+        which branch's checkout a workspace reopens, and the wrong answer is
+        indistinguishable from the right one afterwards.
+        """
+        flattened = world.clone("feature/auth")
+        literal = world.clone("feature-auth")
+        world.record("feature/auth", flattened)
+        world.record("feature-auth", literal)
+        world.workspace("devlaunch-feature-auth", world.repo_dir / "feature-auth")
+
+        status, _ = reconcile(world, "-y")
+        out = capsys.readouterr().out
+
+        assert status == 0
+        assert world.sourced_at("devlaunch-feature-auth") == str(world.repo_dir / "feature-auth")
+        assert world.stored_id("feature/auth") is None
+        assert world.stored_id("feature-auth") is None
+        # Both sides of the ambiguity are named, because a report that said only
+        # "ambiguous" would leave the user unable to settle it by hand.
+        assert "devlaunch-feature-auth" in out
+        assert str(flattened) in out
+        assert str(literal) in out
+
     def test_two_orphans_matching_one_clone_are_both_left_alone(self, world):
         """Ambiguity is reported, not resolved by listing order.
 
@@ -414,22 +467,53 @@ class TestARepairThatCannotBeMadeIsNotHalfMade:
 
 
 class TestSourcesThisCommandCannotFollow:
-    """A source dl cannot read is passed over, not guessed at."""
+    """A live workspace dl cannot place stops the command, exactly as in `--prune`.
 
-    def test_a_local_folder_devpod_filled_with_an_object_is_skipped(self, world):
+    The two commands ask one question of an unfollowable source -- which clone
+    might this be holding? -- and get one answer: any of them. `--prune` stops
+    because it cannot call a clone unreferenced; this stops because it cannot
+    call one free to give away, and handing a dead record a directory a working
+    workspace turns out to open is the collision the claimed-clone check exists
+    to prevent, reached by not knowing instead of by guessing.
+    """
+
+    def test_a_local_folder_devpod_filled_with_an_object_stops_the_command(self, world):
+        clone = world.clone("main")
+        world.record("main", clone)
+        world.workspace("devlaunch-main", world.repo_dir / "main")
         world.listed.append({"id": "unreadable", "source": {"localFolder": {"nested": True}}})
 
         status, devpod = reconcile(world, "-y")
 
-        assert status == 0
+        assert status == 1
+        assert world.sourced_at("devlaunch-main") == str(world.repo_dir / "main")
+        assert world.stored_id("main") is None
         assert "delete" not in devpod.subcommands()
 
-    def test_a_source_no_filesystem_call_will_accept_is_skipped(self, world):
+    def test_the_refusal_is_the_report_prune_gives_named_for_this_command(self, world, capsys):
+        """Same shape, same sentence, this command's name and this command's
+        outcome -- so that having read it once is having read it for both."""
+        world.listed.append({"id": "unreadable", "source": {"localFolder": {"nested": True}}})
+
+        status, _ = reconcile(world, "-y")
+        out = capsys.readouterr().out
+
+        assert status == 1
+        assert "dl --reconcile cannot follow these live workspaces' sources:" in out
+        assert "unreadable" in out
+        assert "Nothing was re-pointed" in out
+
+    def test_a_source_no_filesystem_call_will_accept_stops_the_command(self, world):
+        clone = world.clone("main")
+        world.record("main", clone)
+        world.workspace("devlaunch-main", world.repo_dir / "main")
         world.listed.append({"id": "unusable", "source": {"localFolder": "/no\0such/path"}})
 
         status, _ = reconcile(world, "-y")
 
-        assert status == 0
+        assert status == 1
+        assert world.sourced_at("devlaunch-main") == str(world.repo_dir / "main")
+        assert world.stored_id("main") is None
 
     def test_a_record_dl_cannot_name_a_directory_for_is_no_candidate(self, world, capsys):
         """An empty path and a branch the derivation refuses: no directory at

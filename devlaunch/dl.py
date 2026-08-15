@@ -2268,20 +2268,27 @@ def print_prune_plan(plan: PrunePlan) -> None:
         print("Nothing to prune.")
 
 
-def report_unlocatable(locations: WorkspaceLocations) -> None:
+def report_unlocatable(locations: WorkspaceLocations, command: str, outcome: str) -> None:
     """Say which live workspaces could not be placed, and that nothing went.
 
     Not a warning above a report. A workspace whose source cannot be followed --
     text no filesystem call will accept, or a `localFolder` devpod filled with
     something that is not a path -- could be opening any of the candidates, so
     while one exists there is no directory this command can honestly call
-    unreferenced. Printed by both passes, because both have to be able to stop.
+    unreferenced. Printed by both of `--prune`'s passes, because both have to be
+    able to stop.
+
+    *command* and *outcome* are the only words that differ between the callers,
+    and the sentence under them is deliberately the same one: `--reconcile` asks
+    the identical question -- is any live workspace holding this clone -- and an
+    unfollowable source is the identical unanswerable. It stops for it too, and
+    a user who has read this report once has read it for both.
     """
-    print("dl --prune cannot follow these live workspaces' sources:")
+    print(f"dl {command} cannot follow these live workspaces' sources:")
     for source in locations.unlocatable:
         print(f"  - {source}")
     print()
-    print("Nothing was removed: no clone is unreferenced while a workspace is unaccounted for.")
+    print(f"{outcome}: no clone is unreferenced while a workspace is unaccounted for.")
 
 
 def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathlib.Path) -> int:
@@ -2322,7 +2329,7 @@ def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathli
     workspaces = list_workspaces(refresh=True)
     locations = workspace_locations(workspaces, root)
     if locations.unlocatable:
-        report_unlocatable(locations)
+        report_unlocatable(locations, "--prune", "Nothing was removed")
         return 1
     listed_at = {ws.id: describe_source(ws.source)[1] for ws in workspaces}
     record_for = _records_by_directory(clone_mgr)
@@ -2426,7 +2433,7 @@ def _prune_clone_directories(flags: Sequence[str]) -> int:
     workspaces = list_workspaces()
     locations = workspace_locations(workspaces, root)
     if locations.unlocatable:
-        report_unlocatable(locations)
+        report_unlocatable(locations, "--prune", "Nothing was removed")
         return 1
     plan = prune_plan(clone_mgr, workspaces, locations, root, force)
     print_prune_plan(plan)
@@ -2557,10 +2564,17 @@ def reconcile_plan(
     branch in one of the three spellings `dl` has written (see
     :func:`_leaf_spellings`).
 
-    Two candidates are refused rather than resolved, in both directions. A clone
-    a live workspace already opens is not a candidate at all -- adopting it
-    would point two workspaces at one directory and leave the working one
-    sharing its checkout with a dead one. And a clone that two orphans both
+    Two candidates are refused rather than resolved, in both directions, and
+    both directions have two shapes. A clone a live workspace already opens --
+    at it *or under it*, which is what :meth:`WorkspaceLocations.holder` is for
+    -- is not a candidate at all: adopting it would point two workspaces at one
+    directory and leave the working one sharing its checkout with a dead one.
+    Two clones answering to one name are likewise no candidate, because the
+    legacy spelling is not injective: `feature/auth`, `feature auth` and
+    `feature:auth` were all the directory `feature-auth` (five verified
+    preimages are recorded on 5db5c42), so one devpod record can name two
+    branches' clones and a dict would hand it whichever `list_worktrees()`
+    happened to yield last. On the other side, a clone that two orphans both
     match is claimed by neither: picking one would be a coin flip decided by
     listing order, and the loser would still be broken with nothing said about
     why.
@@ -2569,39 +2583,59 @@ def reconcile_plan(
     ambiguity here fails towards the report.
     """
     orphans = _orphaned_workspaces(workspaces, root)
-    claimed = set(locations.by_path)
     # Every clone this cache has a record for that is a real checkout and that
     # no live workspace is already opening, indexed by the directory names a
-    # devpod record could be calling it.
-    candidates: Dict[Tuple[str, str, str], pathlib.Path] = {}
+    # devpod record could be calling it. Every clone a name answers to and not
+    # the last one written, because a name two clones answer to has to be
+    # visible as contested rather than silently resolved to one of them.
+    candidates: Dict[Tuple[str, str, str], List[pathlib.Path]] = {}
     records: Dict[pathlib.Path, WorktreeInfo] = {}
     for record in clone_mgr.storage.list_worktrees():
         clone = clone_mgr.resolve_clone_path(record)
         if clone is None:
             continue
         resolved = _canonical(str(clone))
-        if resolved is None or resolved in claimed or not _is_populated_clone(resolved):
+        if resolved is None or not _is_populated_clone(resolved):
+            continue
+        if locations.holder(resolved) is not None:
             continue
         records[resolved] = record
         for spelling in _leaf_spellings(record):
-            candidates[(record.owner, record.repo, spelling)] = resolved
+            answers = candidates.setdefault((record.owner, record.repo, spelling), [])
+            # One record spells its leaf the same way twice whenever the branch
+            # needs no flattening, and that is one answer, not a contest.
+            if resolved not in answers:
+                answers.append(resolved)
 
     # Which orphans want which clone, before any of them gets one: a clone two
     # orphans match has to be visible as contested from both sides.
     wanted: Dict[pathlib.Path, List[str]] = {}
     matched: Dict[str, pathlib.Path] = {}
+    contested: Dict[str, List[pathlib.Path]] = {}
     for workspace, source in orphans:
         owner, repo = source.relative_to(root).parts[:2]
-        clone = candidates.get((owner, repo, source.name))
-        if clone is not None:
-            wanted.setdefault(clone, []).append(workspace.id)
-            matched[workspace.id] = clone
+        answers = candidates.get((owner, repo, source.name), [])
+        if len(answers) == 1:
+            wanted.setdefault(answers[0], []).append(workspace.id)
+            matched[workspace.id] = answers[0]
+        elif len(answers) > 1:
+            contested[workspace.id] = sorted(answers)
 
     adopting: List[Adoptable] = []
     reporting: List[Unadoptable] = []
     for workspace, source in orphans:
         clone = matched.get(workspace.id)
-        if clone is None:
+        answers = contested.get(workspace.id, [])
+        if answers:
+            reporting.append(
+                Unadoptable(
+                    workspace.id,
+                    str(source),
+                    f"{len(answers)} clones answer to this name, so none of them can: "
+                    + ", ".join(str(answer) for answer in answers),
+                )
+            )
+        elif clone is None:
             reporting.append(
                 Unadoptable(
                     workspace.id,
@@ -2760,6 +2794,15 @@ def reconcile_command(flags: Sequence[str]) -> int:
     root = clone_root(clone_mgr)
     workspaces = list_workspaces()
     locations = workspace_locations(workspaces, root)
+    if locations.unlocatable:
+        # `--prune`'s stop, for `--prune`'s reason. A live workspace whose
+        # source cannot be followed could be holding *any* of the candidates,
+        # and a clone that cannot be shown to be free is one no orphan can be
+        # given: re-pointing a dead record at a directory a working workspace
+        # turns out to open is the same collision skipping a claimed clone
+        # exists to prevent, arrived at by not knowing rather than by guessing.
+        report_unlocatable(locations, "--reconcile", "Nothing was re-pointed")
+        return 1
     plan = reconcile_plan(clone_mgr, workspaces, locations, root)
     print_reconcile_plan(plan)
     if not plan.adopting:

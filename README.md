@@ -681,8 +681,13 @@ changed, so it connects nothing, while the source folder devpod kept still names
 the owner and the repository exactly, and its last component still names the
 branch in one of the three ways `dl` has named a clone directory. Where that
 match is not unique it is refused rather than guessed: a clone a live workspace
-already opens is never taken from it, and a clone two dead records both match is
-claimed by neither. **Nothing is ever deleted.** A workspace `dl` cannot match
+already opens — at it, or anywhere under it — is never taken from it, a clone two
+dead records both match is claimed by neither, and a name that two clones answer
+to (the old flattened spelling turned `feature/auth`, `feature auth` and
+`feature:auth` all into `feature-auth`) adopts neither of them. If a live
+workspace's source cannot be followed at all, the whole command stops the way
+`dl --prune` does, because such a workspace could be holding any of the clones on
+offer. **Nothing is ever deleted.** A workspace `dl` cannot match
 is named and left exactly where it is, because whether a workspace is finished
 with is not something `dl` can know, and the two mistakes are not the same size.
 
