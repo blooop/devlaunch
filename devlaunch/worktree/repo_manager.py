@@ -14,6 +14,7 @@ from typing import Iterator, NoReturn, Optional, TYPE_CHECKING, Union
 from .. import timing
 from ..workspace_id import validate_ref_name
 from . import locks
+from .git_errors import _git_failure_reason
 from .models import BaseRepository
 from .storage import MetadataStorage
 
@@ -403,15 +404,16 @@ class RepositoryManager:
                 )
             return Updated()
         except subprocess.CalledProcessError as e:
-            # The `or ""` is load-bearing -- pinned by the membership-test case
-            # in test_worktree_repo_manager (#225); rationale at the push arm.
-            stderr = e.stderr or ""
-            if "couldn't find remote ref" in stderr:
+            # The guard inside _git_failure_reason is load-bearing for the
+            # membership test below -- pinned by the silent-failure case in
+            # test_worktree_repo_manager (#225); rationale at the helper.
+            reason = _git_failure_reason(e, "fetch")
+            if "couldn't find remote ref" in reason:
                 # git reached the remote and was told the ref is not there. This
                 # is the one case where a non-zero exit is an *answer*.
                 logger.debug(f"Remote has no ref {branch} for {owner}/{repo}")
                 return RefMissingOnRemote()
-            return FetchFailed(stderr.strip() or f"git fetch exited {e.returncode}")
+            return FetchFailed(reason)
 
     def _should_fetch(self, repo: BaseRepository) -> bool:
         """Check if repository should be fetched based on fetch_interval.

@@ -342,6 +342,25 @@ class TestBranchManager:
             branch_manager.create_local_branch(temp_repo, "new-branch")
 
     @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_create_failure_reads_as_a_failure_when_git_said_nothing(
+        self, mock_run, branch_manager, temp_repo
+    ):
+        """A branch creation that failed silently must still name what happened.
+
+        The sibling push arm already says this: with no stderr to quote, the exit
+        code is what is left to say. Creation reported "Failed to create branch: "
+        and stopped -- a message whose only content is that something went wrong,
+        which the caller already knew from the exception.
+        """
+        mock_run.side_effect = subprocess.CalledProcessError(128, "git branch", stderr=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            branch_manager.create_local_branch(temp_repo, "new-branch")
+
+        assert "None" not in str(excinfo.value)
+        assert "128" in str(excinfo.value)
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
     def test_push_branch_to_remote_failure(self, mock_run, branch_manager, temp_repo):
         """Test branch push failure."""
         mock_run.side_effect = subprocess.CalledProcessError(1, "git push", stderr="Push failed")

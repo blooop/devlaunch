@@ -134,8 +134,24 @@ table and should be judged on its own merits.
   When the failure carried no stderr, the error read `Failed to push branch to remote:
   None` — a message with nothing in it to act on. Same class of gap
   [#212](https://github.com/blooop/devlaunch/issues/212) guarded against in the
-  branch-creation arm, one function over (that arm still prints an empty tail on a silent
-  failure; aligning all three arms is follow-up work, not this change).
+  branch-creation arm, one function over (that arm printed an empty tail on a silent
+  failure until [#234](https://github.com/blooop/devlaunch/issues/234), below, brought all
+  three arms onto one answer).
+
+- **A branch creation git said nothing about now names its exit code too**
+  ([#234](https://github.com/blooop/devlaunch/issues/234)). A creation that failed with no
+  stderr to quote raised `Failed to create branch: ` — a message that ends at the colon,
+  and so reports only that something went wrong, which the exception itself already said.
+  It now reads `Failed to create branch: git branch exited 128`, the answer the push arm
+  has given since [#225](https://github.com/blooop/devlaunch/issues/225). Failures git did
+  explain read as before, save that the quoted text no longer drags git's trailing newline
+  into the middle of the sentence; which failures count as the benign "branch is already
+  there" is unchanged.
+
+  Behind all three — branch creation, branch push, and ref fetch — the text is now derived
+  in one place rather than three. The missing-stderr guard, the trim and the exit-code
+  fallback can no longer drift apart between siblings, and the reasoning for them is
+  written once where they share it instead of restated at each site.
 
 - **`dl --reconcile` and `dl --prune` no longer answer differently depending on which
   directory you ran them from** ([#224](https://github.com/blooop/devlaunch/issues/224)).
