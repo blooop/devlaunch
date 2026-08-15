@@ -135,6 +135,37 @@ class TestBranchManager:
             branch_manager.create_local_branch(temp_repo, "new-branch")
 
     @patch("devlaunch.worktree.branch_manager.subprocess.run")
+    def test_already_exists_answer_survives_a_translated_git(
+        self, mock_run, branch_manager, temp_repo, monkeypatch
+    ):
+        """The benign/fatal split must hold on a host whose git speaks German.
+
+        "The branch is already there" is told apart from a real failure by
+        reading git's stderr text, and git marks that message for translation.
+        So the split is only sound if git is always addressed in the C locale,
+        whatever the host env says: on a host with git translations installed, a
+        wrong env turns the ordinary re-launch of an existing branch into a
+        raised error. Pinned at the env handed to the subprocess, which is the
+        only place the guarantee can be made.
+        """
+        monkeypatch.setenv("LANG", "de_DE.UTF-8")
+        monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+        monkeypatch.setenv("LANGUAGE", "de_DE:de")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/sentinel-agent.sock")
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        branch_manager.create_local_branch(temp_repo, "new-branch")
+
+        env = mock_run.call_args[1].get("env")
+        assert env is not None, "git must get an explicit env pinning its message locale"
+        assert env["LC_ALL"] == "C"
+        # LANGUAGE outranks LC_ALL under gettext unless LC_ALL is C; pinned
+        # anyway so the guarantee does not hang on that one glibc rule.
+        assert env["LANGUAGE"] == "C"
+        # The rest of the environment must survive — losing it breaks ssh auth.
+        assert env["SSH_AUTH_SOCK"] == "/tmp/sentinel-agent.sock"
+
+    @patch("devlaunch.worktree.branch_manager.subprocess.run")
     def test_track_remote_branch_success(self, mock_run, branch_manager, temp_repo):
         """Test successful remote branch tracking."""
         mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
