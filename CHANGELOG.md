@@ -193,12 +193,13 @@ table and should be judged on its own merits.
   the subcommand that failed. Failures git did explain read as before, except that the
   quoted text no longer drags git's trailing newline into the middle of the sentence.
 
-  With these, every message the worktree package raises from a failed git derives its
-  text in the one place [#234](https://github.com/blooop/devlaunch/issues/234)
-  established. One site is deliberately left out and says so where it sits: the
-  working-tree read behind the unsaved-work check that `dl --prune` and `dl <ws> rm`
-  both consult, which inspects a completed process rather than an exception and so
-  cannot encounter the missing stderr the shared helper exists to guard.
+  With these, every worktree message that quotes a failed git's captured stderr derives
+  its text in the one place [#234](https://github.com/blooop/devlaunch/issues/234)
+  established. Two sites stay outside it on purpose: the git-lfs pull never captures
+  stderr at all, so the exit code it already reports is everything it ever had to say;
+  and the working-tree read behind the unsaved-work check that `dl --prune` and
+  `dl <ws> rm` both consult inspects a completed process rather than an exception, and
+  so cannot encounter the missing stderr the shared helper exists to guard.
 
 - **`dl --reconcile` and `dl --prune` no longer answer differently depending on which
   directory you ran them from** ([#224](https://github.com/blooop/devlaunch/issues/224)).
