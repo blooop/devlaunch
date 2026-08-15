@@ -715,6 +715,19 @@ class WorkspaceCloneManager:
                 branch=branch,
                 local_path=ws_path,
                 workspace_id=workspace.value,
+                # The devpod workspace id, written down rather than left to be
+                # re-derived later (devlaunch#88). It is the same string as
+                # `workspace_id` at the moment it is written -- dl hands this
+                # clone to `devpod up --id <workspace.value>` immediately after
+                # this call returns -- and the point of storing it is that the
+                # two stop being the same string the day the derivation moves.
+                # Every workspace created before #81 changed the scheme had no
+                # second copy of its old id anywhere, so the whole population
+                # became unaddressable at once; the same lesson
+                # `remove_workspace_by_id` records for the clone *path*, for the
+                # id. Re-registration writes it too, which is how a record from
+                # an older dl acquires one without a migration.
+                devpod_workspace_id=workspace.value,
             )
             self.storage.add_worktree(wt_info)
         except Exception as e:

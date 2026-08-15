@@ -1371,6 +1371,13 @@ class Workspace:
     last_used: str
     provider: str
     ide: str
+    #: The devpod context this workspace belongs to. Ids are unique per context,
+    #: not globally, so it is half of the workspace's address on disk -- devpod
+    #: keeps each workspace's own record at
+    #: `<devpod home>/contexts/<context>/workspaces/<id>/workspace.json`, which
+    #: is what `--reconcile` re-points. Defaulted rather than required because
+    #: nothing else here needs it and a listing that omits it must still parse.
+    context: str = "default"
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "Workspace":
@@ -1381,6 +1388,7 @@ class Workspace:
             last_used=data.get("lastUsed", ""),
             provider=data.get("provider", {}).get("name", ""),
             ide=data.get("ide", {}).get("name", ""),
+            context=data.get("context") or "default",
         )
 
 
@@ -2260,20 +2268,27 @@ def print_prune_plan(plan: PrunePlan) -> None:
         print("Nothing to prune.")
 
 
-def report_unlocatable(locations: WorkspaceLocations) -> None:
+def report_unlocatable(locations: WorkspaceLocations, command: str, outcome: str) -> None:
     """Say which live workspaces could not be placed, and that nothing went.
 
     Not a warning above a report. A workspace whose source cannot be followed --
     text no filesystem call will accept, or a `localFolder` devpod filled with
     something that is not a path -- could be opening any of the candidates, so
     while one exists there is no directory this command can honestly call
-    unreferenced. Printed by both passes, because both have to be able to stop.
+    unreferenced. Printed by both of `--prune`'s passes, because both have to be
+    able to stop.
+
+    *command* and *outcome* are the only words that differ between the callers,
+    and the sentence under them is deliberately the same one: `--reconcile` asks
+    the identical question -- is any live workspace holding this clone -- and an
+    unfollowable source is the identical unanswerable. It stops for it too, and
+    a user who has read this report once has read it for both.
     """
-    print("dl --prune cannot follow these live workspaces' sources:")
+    print(f"dl {command} cannot follow these live workspaces' sources:")
     for source in locations.unlocatable:
         print(f"  - {source}")
     print()
-    print("Nothing was removed: no clone is unreferenced while a workspace is unaccounted for.")
+    print(f"{outcome}: no clone is unreferenced while a workspace is unaccounted for.")
 
 
 def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathlib.Path) -> int:
@@ -2314,7 +2329,7 @@ def prune_clones(clone_mgr: WorkspaceCloneManager, plan: PrunePlan, root: pathli
     workspaces = list_workspaces(refresh=True)
     locations = workspace_locations(workspaces, root)
     if locations.unlocatable:
-        report_unlocatable(locations)
+        report_unlocatable(locations, "--prune", "Nothing was removed")
         return 1
     listed_at = {ws.id: describe_source(ws.source)[1] for ws in workspaces}
     record_for = _records_by_directory(clone_mgr)
@@ -2418,7 +2433,7 @@ def _prune_clone_directories(flags: Sequence[str]) -> int:
     workspaces = list_workspaces()
     locations = workspace_locations(workspaces, root)
     if locations.unlocatable:
-        report_unlocatable(locations)
+        report_unlocatable(locations, "--prune", "Nothing was removed")
         return 1
     plan = prune_plan(clone_mgr, workspaces, locations, root, force)
     print_prune_plan(plan)
@@ -2429,6 +2444,376 @@ def _prune_clone_directories(flags: Sequence[str]) -> int:
             print("Aborted.")
             return 0
     return prune_clones(clone_mgr, plan, root)
+
+
+# How `dl` named a workspace's clone directory before devlaunch#81 gave it a
+# hashed suffix: the branch with everything git allows and a path component does
+# not collapsed to dashes. Kept because it is the only thing connecting devpod's
+# stale record to a branch -- the id it was addressed by is exactly what changed,
+# so the leaf is what survived. This is `dl`'s own history rather than a guess at
+# another tool's format, and it is frozen: a third naming would be a third entry
+# here, never an edit to this one.
+_LEGACY_LEAF_RE = re.compile(r"[^\w.-]")
+
+
+def _legacy_leaf(branch: str) -> str:
+    """The clone-directory leaf *branch* had under the pre-#81 scheme."""
+    return _LEGACY_LEAF_RE.sub("-", branch).strip("-")
+
+
+def _leaf_spellings(record: WorktreeInfo) -> Tuple[str, ...]:
+    """Every directory name *record*'s clone has been called by a build of `dl`.
+
+    Three, because `dl` has named that directory three ways and a devpod record
+    can be holding any of them: the current hashed leaf, the branch itself (the
+    original layout), and the branch flattened for the filesystem. Matching on
+    all three is what lets one command repair hosts that stopped at different
+    versions.
+    """
+    return (record.workspace_id, record.branch, _legacy_leaf(record.branch))
+
+
+@dataclass(frozen=True)
+class Adoptable:
+    """An orphaned devpod record, and the clone it can be re-pointed at.
+
+    *record* is carried rather than looked up again at write time so that the
+    plan the user consented to and the change that is applied cannot be built
+    from two different reads of metadata.json.
+    """
+
+    workspace_id: str
+    context: str
+    sourced_at: str
+    clone: pathlib.Path
+    record: WorktreeInfo
+
+
+@dataclass(frozen=True)
+class Unadoptable:
+    """An orphaned devpod record `dl` will not repair, and why not.
+
+    Reported, never deleted. `dl` has no way to know whether a workspace whose
+    clone is gone is finished with, and the two mistakes are not equal: leaving
+    a dead record costs a line in `devpod list`, removing a live one costs
+    whatever was in the container.
+    """
+
+    workspace_id: str
+    sourced_at: str
+    because: str
+
+
+Reconciliation = Adoptable | Unadoptable
+
+
+@dataclass(frozen=True)
+class ReconcilePlan:
+    """What `--reconcile` would change, and what it would only report."""
+
+    root: pathlib.Path
+    adopting: Tuple[Adoptable, ...]
+    reporting: Tuple[Unadoptable, ...]
+
+    @property
+    def nothing_to_do(self) -> bool:
+        return not self.adopting and not self.reporting
+
+
+def _orphaned_workspaces(
+    workspaces: Sequence[Workspace], root: pathlib.Path
+) -> List[Tuple[Workspace, pathlib.Path]]:
+    """The workspaces devpod sources inside a repository's clone tree, at no clone.
+
+    The same test `--prune` classifies :class:`Misplaced` by, and deliberately
+    the same one: a directory with no `.git` in it is devlaunch#88's published
+    diagnostic, and it covers both shapes the reporting host had -- a folder
+    that is simply gone, and the config-only stub devpod rebuilds from its cache
+    when it finds the recorded source absent. The second is the dangerous one,
+    because it exists and so passes every check that only asks whether the
+    source is there.
+
+    Each answer carries the resolved source path, so the leaf the join is made
+    on is read off the same value the site was decided from.
+    """
+    orphans: List[Tuple[Workspace, pathlib.Path]] = []
+    for workspace in workspaces:
+        places = source_places(workspace.source)
+        if isinstance(places, Unplaceable):
+            continue
+        for source in places.paths:
+            resolved = _canonical(source)
+            if resolved is None:
+                continue
+            if isinstance(_site_of(resolved, root), InARepositoryOnly):
+                orphans.append((workspace, resolved))
+    return orphans
+
+
+def reconcile_plan(
+    clone_mgr: WorkspaceCloneManager,
+    workspaces: Sequence[Workspace],
+    locations: WorkspaceLocations,
+    root: pathlib.Path,
+) -> ReconcilePlan:
+    """Match every orphaned devpod record to a clone, or say why it cannot be.
+
+    **The join is by path and never by id.** The id is what the scheme change
+    moved, so it connects nothing across the two record sets; the source path
+    devpod kept still names owner and repo exactly, and its leaf still names the
+    branch in one of the three spellings `dl` has written (see
+    :func:`_leaf_spellings`).
+
+    Two candidates are refused rather than resolved, in both directions, and
+    both directions have two shapes. A clone a live workspace already opens --
+    at it *or under it*, which is what :meth:`WorkspaceLocations.holder` is for
+    -- is not a candidate at all: adopting it would point two workspaces at one
+    directory and leave the working one sharing its checkout with a dead one.
+    Two clones answering to one name are likewise no candidate, because the
+    legacy spelling is not injective: `feature/auth`, `feature auth` and
+    `feature:auth` were all the directory `feature-auth` (five verified
+    preimages are recorded on 5db5c42), so one devpod record can name two
+    branches' clones and a dict would hand it whichever `list_worktrees()`
+    happened to yield last. On the other side, a clone that two orphans both
+    match is claimed by neither: picking one would be a coin flip decided by
+    listing order, and the loser would still be broken with nothing said about
+    why.
+
+    Refusing costs a line in a report. Guessing costs a workspace, so every
+    ambiguity here fails towards the report.
+    """
+    orphans = _orphaned_workspaces(workspaces, root)
+    # Every clone this cache has a record for that is a real checkout and that
+    # no live workspace is already opening, indexed by the directory names a
+    # devpod record could be calling it. Every clone a name answers to and not
+    # the last one written, because a name two clones answer to has to be
+    # visible as contested rather than silently resolved to one of them.
+    candidates: Dict[Tuple[str, str, str], List[pathlib.Path]] = {}
+    records: Dict[pathlib.Path, WorktreeInfo] = {}
+    for record in clone_mgr.storage.list_worktrees():
+        clone = clone_mgr.resolve_clone_path(record)
+        if clone is None:
+            continue
+        resolved = _canonical(str(clone))
+        if resolved is None or not _is_populated_clone(resolved):
+            continue
+        if locations.holder(resolved) is not None:
+            continue
+        records[resolved] = record
+        for spelling in _leaf_spellings(record):
+            answers = candidates.setdefault((record.owner, record.repo, spelling), [])
+            # One record spells its leaf the same way twice whenever the branch
+            # needs no flattening, and that is one answer, not a contest.
+            if resolved not in answers:
+                answers.append(resolved)
+
+    # Which orphans want which clone, before any of them gets one: a clone two
+    # orphans match has to be visible as contested from both sides.
+    wanted: Dict[pathlib.Path, List[str]] = {}
+    matched: Dict[str, pathlib.Path] = {}
+    contested: Dict[str, List[pathlib.Path]] = {}
+    for workspace, source in orphans:
+        owner, repo = source.relative_to(root).parts[:2]
+        answers = candidates.get((owner, repo, source.name), [])
+        if len(answers) == 1:
+            wanted.setdefault(answers[0], []).append(workspace.id)
+            matched[workspace.id] = answers[0]
+        elif len(answers) > 1:
+            contested[workspace.id] = sorted(answers)
+
+    adopting: List[Adoptable] = []
+    reporting: List[Unadoptable] = []
+    for workspace, source in orphans:
+        clone = matched.get(workspace.id)
+        answers = contested.get(workspace.id, [])
+        if answers:
+            reporting.append(
+                Unadoptable(
+                    workspace.id,
+                    str(source),
+                    f"{len(answers)} clones answer to this name, so none of them can: "
+                    + ", ".join(str(answer) for answer in answers),
+                )
+            )
+        elif clone is None:
+            reporting.append(
+                Unadoptable(
+                    workspace.id,
+                    str(source),
+                    "no clone of that repository answers to this name",
+                )
+            )
+        elif len(wanted[clone]) > 1:
+            reporting.append(
+                Unadoptable(
+                    workspace.id,
+                    str(source),
+                    f"{len(wanted[clone])} workspaces match {clone}, so none of them can",
+                )
+            )
+        else:
+            adopting.append(
+                Adoptable(workspace.id, workspace.context, str(source), clone, records[clone])
+            )
+    return ReconcilePlan(root=root, adopting=tuple(adopting), reporting=tuple(reporting))
+
+
+def print_reconcile_plan(plan: ReconcilePlan) -> None:
+    """Say what would be re-pointed and what would only be named."""
+    print(f"devpod workspaces sourced under {plan.root} at something that is not a clone:")
+    print()
+    if plan.adopting:
+        print(f"Re-pointing {len(plan.adopting)}:")
+        for adoptable in plan.adopting:
+            print(f"  - {adoptable.workspace_id}: {adoptable.sourced_at} -> {adoptable.clone}")
+        print()
+        # Stated before the confirmation rather than after the change, because
+        # it is part of what is being consented to. The container was built with
+        # the dead path bind-mounted into it, and re-pointing the record does not
+        # move a running mount: the workspace opens again only once its container
+        # is built against the new source.
+        print("Each of these needs `dl <workspace> recreate` afterwards: the container")
+        print("still has the old source bind-mounted, and no record change moves a mount.")
+        print()
+    if plan.reporting:
+        print(f"Leaving {len(plan.reporting)}, which dl will not guess at:")
+        for unadoptable in plan.reporting:
+            print(
+                f"  - {unadoptable.workspace_id} ({unadoptable.sourced_at}): {unadoptable.because}"
+            )
+        print()
+        # Named as the user's decision, not offered as a follow-up dl will make.
+        print("Nothing here is deleted. `dl <workspace> rm` is how one goes, if it should.")
+        print()
+    if plan.nothing_to_do:
+        print("Nothing to reconcile.")
+
+
+def _repoint_devpod_source(adoptable: Adoptable) -> Optional[str]:
+    """Rewrite one devpod workspace record's source folder. Error text, or None.
+
+    **devpod's own file, written directly, and that is a decision rather than a
+    convenience.** devpod v0.26.1 has no subcommand that changes an existing
+    workspace's source: the surface is build, delete, list, logs, ssh, status,
+    stop and up, and the only one that sets a source is a create, which needs a
+    container daemon and would destroy the very record being repaired. So the
+    choice is between one field of one JSON file and not repairing anything.
+
+    Only `source.localFolder` is touched, and the file is rewritten from what
+    devpod itself last wrote, so every key devpod knows about and dl does not --
+    `uid`, provider options, timestamps -- survives untouched. Written through a
+    temporary file in the same directory and renamed over the original, so a
+    failure partway leaves devpod's record whole rather than truncated.
+    """
+    path = (
+        devpod_home()
+        / "contexts"
+        / adoptable.context
+        / "workspaces"
+        / adoptable.workspace_id
+        / "workspace.json"
+    )
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return f"could not read {path}: {e}"
+    if not isinstance(record, dict) or not isinstance(record.get("source"), dict):
+        # Not the shape this repair understands. Refusing is the whole of the
+        # response: a source key dl cannot read is one it cannot safely replace.
+        return f"{path} is not a devpod workspace record dl can repair"
+    record["source"] = dict(record["source"], localFolder=str(adoptable.clone))
+    temp = path.with_suffix(".dl-tmp")
+    try:
+        temp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        temp.replace(path)
+    except OSError as e:
+        temp.unlink(missing_ok=True)
+        return f"could not write {path}: {e}"
+    return None
+
+
+def apply_reconciliation(clone_mgr: WorkspaceCloneManager, plan: ReconcilePlan) -> int:
+    """Carry out *plan*'s adoptions. Non-zero if any of them could not be made.
+
+    devpod's record is re-pointed first and metadata's id written second, and
+    that order is the recoverable one. Stopping between them leaves a workspace
+    that opens the right clone and a record that has not yet said so, which the
+    next run repairs; the other order would leave `dl` following a record to a
+    workspace still sourced at a dead path, which is the fault this command
+    exists to clear.
+    """
+    failures = 0
+    for adoptable in plan.adopting:
+        error = _repoint_devpod_source(adoptable)
+        if error is not None:
+            logging.error("Could not re-point %s: %s", adoptable.workspace_id, error)
+            failures += 1
+            continue
+        # The second copy of the id, which is what stops this happening again:
+        # after this the workspace is reachable from the record, so the next
+        # derivation change costs nothing.
+        adoptable.record.devpod_workspace_id = adoptable.workspace_id
+        clone_mgr.storage.add_worktree(adoptable.record)
+        print(f"Re-pointed {adoptable.workspace_id} at {adoptable.clone}")
+    # devpod's records just changed, so any listing dl has cached describes the
+    # world before the repair.
+    invalidate_workspace_list_cache()
+    update_cache_background(force=True)
+    return 1 if failures else 0
+
+
+_RECONCILE_FLAGS = ("-y", "--yes")
+
+
+def reconcile_command(flags: Sequence[str]) -> int:
+    """`dl --reconcile`: repair devpod records the id-scheme change orphaned.
+
+    devlaunch#88. Persisting the workspace id stops the two record sets drifting
+    apart again; it repairs nothing that has already drifted, because those
+    records were written before there was a field to write the id in. On the
+    reporting host that was 36 of 39 workspaces.
+
+    A command somebody runs, not a repair that happens on the way to something
+    else. It writes another tool's records, which is not a thing to do to
+    somebody unasked, and the shape is `--purge`'s and `--prune`'s so that
+    anyone who has run either already knows this one: print the plan, name what
+    is being left and why, confirm, `-y` to skip.
+
+    It is **not** a mode of `--prune`, deliberately. `--prune` states as its
+    contract that it never touches a devpod workspace, and this is nothing but a
+    devpod-workspace write; folding it in would retract that promise for every
+    existing `--prune` user in order to save a flag.
+    """
+    unknown = [flag for flag in flags if flag not in _RECONCILE_FLAGS]
+    if unknown:
+        # Refused rather than ignored, for `--prune`'s reason: an option that
+        # reads as a rehearsal must not turn out to have been the real thing.
+        logging.error(f"Unknown option(s) for --reconcile: {' '.join(unknown)}")
+        return 1
+    clone_mgr = _get_clone_manager()
+    root = clone_root(clone_mgr)
+    workspaces = list_workspaces()
+    locations = workspace_locations(workspaces, root)
+    if locations.unlocatable:
+        # `--prune`'s stop, for `--prune`'s reason. A live workspace whose
+        # source cannot be followed could be holding *any* of the candidates,
+        # and a clone that cannot be shown to be free is one no orphan can be
+        # given: re-pointing a dead record at a directory a working workspace
+        # turns out to open is the same collision skipping a claimed clone
+        # exists to prevent, arrived at by not knowing rather than by guessing.
+        report_unlocatable(locations, "--reconcile", "Nothing was re-pointed")
+        return 1
+    plan = reconcile_plan(clone_mgr, workspaces, locations, root)
+    print_reconcile_plan(plan)
+    if not plan.adopting:
+        # Nothing to consent to. A report of workspaces dl will not touch is
+        # already complete, and asking about it would imply an action it has.
+        return 0
+    if not any(flag in _RECONCILE_FLAGS for flag in flags):
+        if input("Re-point these? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+    return apply_reconciliation(clone_mgr, plan)
 
 
 # Regex patterns for parsing git URLs
@@ -2908,15 +3293,19 @@ def _launch_lock_path(workspace_id: str) -> pathlib.Path:
     return _get_cache_dir() / "launch-locks" / f"{workspace_id}.lock"
 
 
-def _devpod_config_path() -> pathlib.Path:
-    """devpod's own config file, which holds every context and its options.
+def devpod_home() -> pathlib.Path:
+    """The directory devpod keeps its own records in.
 
     Honours DEVPOD_HOME for the same reason the rest of dl does: it is what
     scopes devpod, and the test suite sets it.
     """
     home = os.environ.get("DEVPOD_HOME")
-    root = pathlib.Path(home) if home else pathlib.Path.home() / ".devpod"
-    return root / "config.yaml"
+    return pathlib.Path(home) if home else pathlib.Path.home() / ".devpod"
+
+
+def _devpod_config_path() -> pathlib.Path:
+    """devpod's own config file, which holds every context and its options."""
+    return devpod_home() / "config.yaml"
 
 
 def get_context_options() -> dict:
@@ -3335,6 +3724,91 @@ def get_workspace_state(workspace_id: str) -> Optional[str]:
         return None
 
 
+@dataclass(frozen=True)
+class KnownWorkspace:
+    """The id devpod answers to for a triple, and the state it gave.
+
+    A pair rather than two lookups, because the two must come from the same
+    round trip: asking "which id" and then "what state" separately is how the
+    command ends up addressing one workspace and reporting another's state.
+    *state* is None exactly when devpod knows no workspace for this triple, in
+    which case *workspace_id* is the derived id -- the one a create would use.
+    """
+
+    workspace_id: str
+    state: Optional[str]
+
+
+def resolve_known_workspace(derived: str, owner: str, repo: str, branch: str) -> KnownWorkspace:
+    """Which devpod workspace `(owner, repo, branch)` is, asked of devpod first.
+
+    devlaunch#88. The id `dl` hands devpod used to be derived on every command
+    and written down nowhere, so the derivation was the only copy of it that
+    existed. PR #81 moved that derivation and every workspace created under the
+    old one became unaddressable in the same instant -- 36 of 39 on the
+    reporting host. Nothing was lost and nothing was corrupted; `dl` simply
+    began asking devpod about ids devpod had never been given. The record is the
+    second copy, and this is where it is read.
+
+    **Derived first, record second, and that order is a trade rather than a
+    shortcut.** Reading the record means loading metadata.json under its lock,
+    parsing it and running the id-scheme migration's version check -- three
+    things devlaunch#145 deliberately took off the warm attach path, which is
+    the path a user waits on. Asking devpod about the derived id is already paid
+    for by the status round trip this function is built around, so the record is
+    consulted only once devpod has *denied* the derived id, which is the only
+    case in which it can say anything new.
+
+    The two orders differ in what they return only when devpod knows the derived
+    id **and** a different recorded one for the same triple. Since `dl` now
+    records what it creates, reaching that state takes a workspace `dl` did not
+    create, and preferring the derived id there is what every other `dl` path
+    already does.
+
+    A stored id devpod also denies is not used. metadata.json is append-mostly
+    and nothing prunes it, so a record naming a workspace deleted months ago is
+    ordinary; addressing it would substitute one absent workspace for another
+    and lose the derived id a create needs.
+    """
+    state = get_workspace_state(derived)
+    if state is not None:
+        return KnownWorkspace(derived, state)
+    recorded = recorded_devpod_workspace_id(owner, repo, branch)
+    if recorded is None or recorded == derived:
+        return KnownWorkspace(derived, None)
+    recorded_state = get_workspace_state(recorded)
+    if recorded_state is None:
+        return KnownWorkspace(derived, None)
+    logging.info(
+        "Addressing devpod workspace '%s' from the record for %s/%s@%s; this build derives '%s'",
+        recorded,
+        owner,
+        repo,
+        branch,
+        derived,
+    )
+    return KnownWorkspace(recorded, recorded_state)
+
+
+def recorded_devpod_workspace_id(owner: str, repo: str, branch: str) -> Optional[str]:
+    """The devpod workspace id metadata.json holds for a triple, if any.
+
+    None covers both "no record" and "a record from before this field was ever
+    written", which are the same answer to the only question asked of it: there
+    is nothing here to follow, so the derivation stands. A cache dl cannot read
+    is that answer too -- a lookup that failed must not be able to stop a
+    command that would otherwise have worked.
+    """
+    try:
+        record = _get_clone_manager().storage.get_worktree(owner, repo, branch)
+    except (OSError, ValueError) as e:
+        logging.debug(
+            "Could not read the workspace record for %s/%s@%s: %s", owner, repo, branch, e
+        )
+        return None
+    return record.devpod_workspace_id if record else None
+
+
 def print_help():
     """Print usage help."""
     help_text = """dl - DevLaunch CLI
@@ -3403,6 +3877,15 @@ Global commands:
                                      alone; a clone holding uncommitted or
                                      unpushed work is named and kept unless
                                      --force. Prints the plan and asks first.
+    dl --reconcile [-y]              Re-point devpod workspaces whose recorded
+                                     source folder is missing, or is a stub with
+                                     no checkout in it, at the clone that holds
+                                     the checkout. Repairs the workspaces the
+                                     id-scheme change left behind. Deletes
+                                     nothing: one dl cannot match is named and
+                                     left standing. Prints the plan and asks
+                                     first. A re-pointed workspace needs
+                                     `dl <workspace> recreate` afterwards.
     dl --purge [-y]                  Remove devlaunch's workspaces and caches.
                                      Like --prune it never removes a Docker
                                      image, volume or build cache -- devlaunch
@@ -3635,6 +4118,9 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
     if args[0] == "--prune":
         return prune_command(args[1:])
 
+    if args[0] == "--reconcile":
+        return reconcile_command(args[1:])
+
     if args[0] == "--purge":
         # Check for -y flag to skip confirmation
         skip_confirm = len(args) > 1 and args[1] in ("-y", "--yes")
@@ -3734,10 +4220,13 @@ def _run_cli(argv: Optional[List[str]] = None) -> int:
         except ValueError as e:
             logging.error(str(e))
             return 1
-        workspace_id = workspace.value
-
-        # Fast path: if devpod already knows this workspace, skip clone manager
-        known_state = get_workspace_state(workspace_id)
+        # Fast path: if devpod already knows this workspace, skip clone manager.
+        # Which id that is is resolve_known_workspace's question and not this
+        # one's: the derived id is a hint, and the record is what settles it when
+        # devpod does not recognise the hint (devlaunch#88).
+        known = resolve_known_workspace(workspace.value, owner, repo, branch)
+        workspace_id = known.workspace_id
+        known_state = known.state
         if known_state is not None:
             workspace_spec = workspace_id
             custom_id = None

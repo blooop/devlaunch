@@ -1406,3 +1406,52 @@ class TestRemoteRefExists:
             text=True,
             check=False,
         )
+
+
+class TestTheDevpodWorkspaceIdIsWrittenDown:
+    """The record says which devpod workspace this clone belongs to.
+
+    devlaunch#88. The field has existed on ``WorktreeInfo`` since the worktree
+    backend was written and nothing ever assigned it, so when the id derivation
+    moved under #81 there was no second copy of the old id anywhere and every
+    workspace created before the change became unaddressable. These pin that the
+    id goes on the record at the moment the clone is prepared, which is the last
+    point before dl hands that same string to devpod as ``--id``.
+    """
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_a_new_clone_records_the_id_dl_hands_devpod(
+        self, mock_run, _mock_which, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_repo_manager.get_repo_path.return_value = tmp_repos_dir / "owner" / "repo"
+
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        recorded = mock_storage.add_worktree.call_args[0][0]
+        assert recorded.devpod_workspace_id == leaf()
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_re_registering_an_existing_clone_records_it_too(
+        self, mock_run, _mock_which, clone_manager, mock_storage, mock_repo_manager, tmp_repos_dir
+    ):
+        """The clone is already on disk and devpod has forgotten the workspace.
+
+        This is the path a record written by an older dl comes back through, so
+        it is the one that fills the field in for workspaces that predate it.
+        Skipping it would leave exactly the population this ticket is about
+        still carrying no id.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        ws_path = repo_root / leaf()
+        ws_path.mkdir(parents=True)
+        (ws_path / ".git").mkdir()
+
+        clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        recorded = mock_storage.add_worktree.call_args[0][0]
+        assert recorded.devpod_workspace_id == leaf()

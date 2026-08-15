@@ -411,6 +411,7 @@ existed — picks the tools up on its next `dl <workspace> restart`.
 | `dl --ls --size` | Add [what deleting each workspace would free](#how-much-disk-a-workspace-costs). Opt-in: it walks every file in the clone |
 | `dl --install` | Install shell completions |
 | `dl --prune [-y] [--force]` | Remove [the clone directories no workspace opens any more](#pruning-the-clones-nothing-opens) — and nothing else |
+| `dl --reconcile [-y]` | Re-point [devpod workspaces whose recorded source folder no longer holds a checkout](#reconciling-records-that-disagree) at the clone that does |
 | `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
 | `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
@@ -542,6 +543,7 @@ the next clone of a repo fast), and never looks outside
   stub was the only thing anything pointed at. `--prune` will not guess which
   clone such a workspace needs: it keeps every clone of that repository and
   names the record to go and fix. `--force` does not move any of them.
+  [`dl --reconcile`](#reconciling-records-that-disagree) is what fixes them.
 
 Note that *every* directory two levels under `<cache>/devlaunch/repos` is a
 candidate — a stray directory somebody left there is looked at like any other.
@@ -638,6 +640,74 @@ prune -a` is not scoped to devlaunch at all — it would take images built by
 everything else on the machine. Deleting them is a decision with your own
 containers on the other side of it, and `docker system df` is the tool that shows
 you what it costs.
+
+### Reconciling records that disagree
+
+`dl` keeps its own record of every workspace, and devpod keeps one too. They
+agree until the naming that connects them moves — and it did move once, when
+workspace ids and clone-directory names gained a hashed suffix. `dl`'s records
+were migrated to the new naming; devpod's were not, because nothing knew to
+touch them. On the host that reported it, **36 of 39 devpod workspaces recorded
+a source folder that was missing, or was a stub with no `.git` in it**, while the
+real checkout sat next to it under the new name. Nothing was deleted and nothing
+was corrupted: `dl` was simply asking devpod about workspaces devpod had never
+been given, and devpod was answering correctly that there were none.
+
+Two things fix that, and they are different jobs. `dl` now **writes the devpod
+workspace id down** when it creates a workspace, so the naming can move again
+without taking anything with it — that is automatic and needs no command. It
+does nothing for the records that already disagree, because they were written
+before there was a field to write it in. `dl --reconcile` is for those:
+
+```
+$ dl --reconcile
+devpod workspaces sourced under /home/you/.cache/devlaunch/repos at something that is not a clone:
+
+Re-pointing 2:
+  - devlaunch-main: .../blooop/devlaunch/main -> .../blooop/devlaunch/devlaunch-main-zovomobo
+  - bencher-test1: .../blooop/bencher/test1 -> .../blooop/bencher/bencher-test1-pipagito
+
+Each of these needs `dl <workspace> recreate` afterwards: the container
+still has the old source bind-mounted, and no record change moves a mount.
+
+Leaving 1, which dl will not guess at:
+  - rockerc-main (.../blooop/rockerc/main): no clone of that repository answers to this name
+
+Nothing here is deleted. `dl <workspace> rm` is how one goes, if it should.
+```
+
+It matches the two sides **by path, never by id** — the id is the thing that
+changed, so it connects nothing, while the source folder devpod kept still names
+the owner and the repository exactly, and its last component still names the
+branch in one of the three ways `dl` has named a clone directory. Where that
+match is not unique it is refused rather than guessed: a clone a live workspace
+already opens — at it, or anywhere under it — is never taken from it, a clone two
+dead records both match is claimed by neither, and a name that two clones answer
+to (the old flattened spelling turned `feature/auth`, `feature auth` and
+`feature:auth` all into `feature-auth`) adopts neither of them. If a live
+workspace's source cannot be followed at all, the whole command stops the way
+`dl --prune` does, because such a workspace could be holding any of the clones on
+offer. **Nothing is ever deleted.** A workspace `dl` cannot match
+is named and left exactly where it is, because whether a workspace is finished
+with is not something `dl` can know, and the two mistakes are not the same size.
+
+Run it as often as you like — a repaired workspace is no longer sourced at a
+non-checkout, so a second run finds nothing to do.
+
+**A re-pointed workspace still needs rebuilding.** Its container was built with
+the dead path bind-mounted into it, and changing a record does not move a mount.
+`dl <workspace> recreate` is what finishes the repair, and it is the step that
+needs Docker.
+
+**Do not point an old `dl` at a reconciled cache.** A `dl` from before the naming
+changed derives the old directory name, does not find it, and treats the launch
+as a cold one: it clones a second directory under the old name, registers a
+second devpod workspace, and rewrites that branch's record with the old naming
+and an empty workspace id — undoing the repair for that one workspace, and
+leaving you two clones of the branch. It is not destructive and the next
+`dl --reconcile` sorts it out, but a machine that runs both builds against one
+cache will keep re-breaking. Upgrade the old one, or give it its own
+`XDG_CACHE_HOME`.
 
 ### Cleaning up workspaces
 

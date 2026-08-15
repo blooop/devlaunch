@@ -21,6 +21,28 @@ table and should be judged on its own merits.
 
 ### Added
 
+- **`dl --reconcile` re-points devpod workspaces the id-scheme change orphaned**
+  ([#88](https://github.com/blooop/devlaunch/issues/88)). When workspace ids and clone
+  directories gained a hashed suffix, `dl`'s own records were migrated and devpod's were
+  not — on the reporting host, **36 of 39 devpod workspaces recorded a source folder that
+  was missing (35) or was a config-only stub devpod had rebuilt from its cache (1)**,
+  while the real checkout sat beside it under the new name. This matches the two record
+  sets **by path, never by id** — the id is exactly what moved, so it joins nothing —
+  rewrites devpod's `source.localFolder` at the clone that holds the checkout, and fills
+  in the workspace id on `dl`'s record.
+
+  **It deletes nothing, and it guesses at nothing.** A clone a live workspace already
+  opens is never taken from it, a clone two dead records both match is claimed by
+  neither, and an orphan with no clone to adopt is named and left standing — `dl` cannot
+  know whether a workspace is finished with, and the two mistakes are not the same size.
+  Shaped like `--purge` and `--prune`: print the plan, name what is being left and why,
+  confirm, `-y` to skip. Running it twice changes nothing.
+
+  It is deliberately **not** a mode of `--prune`, which states as its contract that it
+  never touches a devpod workspace. A re-pointed workspace still needs
+  `dl <workspace> recreate`: its container was built with the dead path bind-mounted, and
+  no record change moves a mount. The plan says so before asking, not after acting.
+
 - **`DEVLAUNCH_TIMING=json` reports a launch as one machine-readable document**, decomposed
   into five ownership-boundary stages — `handoff`, `host-prep`, `devpod-up`, `tools`,
   `attach` — with the finer per-subprocess spans nested inside the stage that paid for
@@ -68,6 +90,30 @@ table and should be judged on its own merits.
   never built (the footgun [#129](https://github.com/blooop/devlaunch/pull/129)
   removed from `--purge`). devpod's images carry no devlaunch or devpod label, so
   a list of "yours" would be a guess.
+
+### Fixed
+
+- **`dl` now writes down the devpod workspace id it creates, and follows it**
+  ([#88](https://github.com/blooop/devlaunch/issues/88)). The id `dl` handed devpod was
+  derived from `(owner, repo, ref)` on every command and stored nowhere, so the
+  derivation was the only copy of it in existence — and when it changed, every workspace
+  created under the old one stopped being addressable in the same instant. `WorktreeInfo`
+  has declared a `devpod_workspace_id` field since the worktree backend was written and
+  nothing had ever assigned it; it is now written when a clone is prepared, including on
+  re-registration, so records from older builds acquire one without a migration.
+
+  A launch still derives an id and asks devpod about it first, and only consults the
+  record when devpod **denies** it — which keeps
+  [#145](https://github.com/blooop/devlaunch/issues/145)'s warm attach path clear of the
+  metadata lock, the parse and the migration check that reading the record costs. A
+  stored id devpod also denies is not used: `metadata.json` is append-mostly, so a record
+  naming a workspace deleted months ago is ordinary, and addressing it would substitute
+  one absent workspace for another. `stop`, `rm`, `restart`, `recreate`, `reset` and the
+  attach all read the one resolution, so they were fixed together.
+
+  This is the lesson `remove_workspace_by_id` already records for the clone *path*,
+  applied to the id. It prevents the next derivation change from costing anything; it
+  repairs nothing already broken, which is what `dl --reconcile` above is for.
 
 ### Changed
 
