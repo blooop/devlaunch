@@ -499,12 +499,16 @@ its own status. Since `zellij -s <name> action new-pane` works perfectly well fr
 command that is in no session at all, running beside the session costs nothing and
 delivers the same pane.
 
-**A bare `dl <workspace>` is untouched, switched on or off.** An interactive attach
-sends no command for the wrap to attach to — that is exactly what gets it a terminal
-from devpod — and giving it one would cost either the terminal or a round trip in
-front of every shell. You land in an ordinary login shell with `zellij` on `PATH`, so
-`zellij attach -c devlaunch` gets you the session, and any panes an agent has opened
-in it, whenever you want them.
+**The interactive session of a bare `dl <workspace>` is untouched, switched on or
+off.** An interactive attach sends no command for the wrap to attach to — that is
+exactly what gets it a terminal from devpod — and giving it one would cost either the
+terminal or a round trip in front of every shell. You land in an ordinary login shell
+with `zellij` on `PATH`, so `zellij attach -c devlaunch` gets you the session, and any
+panes an agent has opened in it, whenever you want them.
+
+There is one exception, and it is a pleasant one: if you also run with
+`DEVLAUNCH_DOTFILES_ON_ATTACH=1`, that refresh is a command, so it gets wrapped like
+any other and the session is already there when the shell arrives.
 
 ### Existing workspaces
 

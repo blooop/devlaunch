@@ -298,6 +298,13 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
 
     Exits 0 unless an install actually failed, so "nothing to do" and "all
     installs worked" are the same answer to the caller.
+
+    `tools` parameterizes *which tools are installed* and nothing else: the
+    profile lines below are REQUIRED_TOOLS' own, so `provision_script((x,))`
+    still writes the claude-shim prepend. That is why `zellij_script` assembles
+    itself from the shared helpers instead of calling this with one tool -- it
+    would otherwise teach a container about a package it is not installing.
+    Parameterize the profile lines too before reusing this for anything else.
     """
     all_present = _all_present(tools)
     installs = "\n".join(_install_line(tool) for tool in tools)
@@ -377,6 +384,13 @@ def zellij_script() -> str:
     """
     return "\n".join(
         [
+            # `set -u` for the same reason `provision_script` sets it: these are
+            # the same helpers, and an unset variable in one of them must not
+            # quietly expand to nothing in one script while aborting the other.
+            # Its `exec >&2` is the one piece deliberately *not* carried -- a
+            # stage cannot redirect itself, since `_stage_snippet` interpolates
+            # it into `if <command>; then`, so the stage's own `>&2` does it.
+            "set -u",
             "failed=0",
             # Already there: nothing else in this script may run. The commonest
             # answer by far, and the reason a stage on every pass is affordable.
@@ -616,8 +630,15 @@ def _stage_snippet(stage: Stage) -> str:
     )
 
 
-def setup_script(workspace: str) -> str:
+def setup_script(workspace: str, stages: Optional[Sequence[Stage]] = None) -> str:
     """The one script a cold launch's setup pass sends: stages, then the probe.
+
+    `stages` exists so a caller that already has the tuple sends *that* tuple
+    rather than a second one built from a second reading of the environment:
+    `setup_stages` is no longer a pure function of `workspace` (the zellij
+    stage is conditional), and a script whose stages disagreed with the list
+    its outcomes are matched against would report a phantom `not reached`.
+    Defaulted, because every other caller only has the workspace.
 
     Composed here, on the host, out of `probe_script()` **verbatim** plus stage
     snippets that know nothing about it. Nothing about the probe is copied or
@@ -634,9 +655,8 @@ def setup_script(workspace: str) -> str:
     Exits 0 in every state, like the probe it carries, so a non-zero `devpod
     ssh` keeps meaning the transport failed and never that a stage did.
     """
-    return "\n".join(
-        [*(_stage_snippet(stage) for stage in setup_stages(workspace)), probe_script()]
-    )
+    resolved = setup_stages(workspace) if stages is None else stages
+    return "\n".join([*(_stage_snippet(stage) for stage in resolved), probe_script()])
 
 
 @dataclass(frozen=True)
@@ -943,7 +963,12 @@ def _setup_pass(workspace: str, runner) -> ProbeResult:
     """
     stages = setup_stages(workspace)
     result = runner(
-        ["ssh", workspace, "--command", f"bash -lc {shlex.quote(setup_script(workspace))}"],
+        [
+            "ssh",
+            workspace,
+            "--command",
+            f"bash -lc {shlex.quote(setup_script(workspace, stages))}",
+        ],
         capture=True,
     )
     report = result.stdout or ""

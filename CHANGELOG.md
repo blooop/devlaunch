@@ -52,9 +52,12 @@ table and should be judged on its own merits.
   meaning. The command runs *beside* the session rather than inside a pane of it, on
   purpose: a pane would hand the command's stdin, stdout and exit status to zellij, and
   `dl <ws> -- cmd > file` has to keep putting the command's own output in the file. A
-  bare `dl <workspace>` attach is untouched either way — it sends no command to wrap,
-  which is what gets it a terminal from devpod, and it lands you in a login shell where
-  `zellij attach -c devlaunch` reaches the session by hand.
+  bare `dl <workspace>`'s session is untouched either way — it sends no command to
+  wrap, which is what gets it a terminal from devpod, and it lands you in a login shell
+  where `zellij attach -c devlaunch` reaches the session by hand. The one command a
+  bare attach can send ahead of that shell is the opt-in `DEVLAUNCH_DOTFILES_ON_ATTACH`
+  refresh, which is wrapped like any other command, so running both switches together
+  means the session is already waiting when the shell arrives.
 
 - **Every container `dl` creates now shares one host directory of downloaded pixi
   packages** ([#232](https://github.com/blooop/devlaunch/issues/232)). `devpod up`

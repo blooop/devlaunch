@@ -2558,8 +2558,10 @@ class TestZellijSessionWrap:
         assert workspace_ssh("myws", command="pytest") == 2
 
     @patch("devlaunch.dl.run_devpod_session")
-    def test_a_bare_attach_is_untouched_even_switched_on(self, mock_session, monkeypatch):
-        """What a bare `dl <ws>` does, stated as a test.
+    def test_the_interactive_session_itself_is_untouched_even_switched_on(
+        self, mock_session, monkeypatch
+    ):
+        """What the session of a bare `dl <ws>` does, stated as a test.
 
         Nothing. It sends no `--command` at all -- that is what gets it a pty
         from devpod -- so there is no payload to wrap, and giving it one would
@@ -2567,11 +2569,38 @@ class TestZellijSessionWrap:
         shell (#183's lesson). A human at that shell has zellij on PATH and can
         attach to or create the session by hand; the wrap exists for the
         program dl launches, which cannot.
+
+        This is the session, not the whole of `dl <ws>`: see
+        `test_an_opted_in_refresh_carries_the_ensure_in_front_of_the_shell` for
+        the one command a bare attach can send ahead of it.
         """
         monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
         mock_session.return_value = RemoteExit(0)
         assert workspace_ssh("myws") == 0
         mock_session.assert_called_once_with(["ssh", "myws"], env=None)
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_an_opted_in_refresh_carries_the_ensure_in_front_of_the_shell(
+        self, mock_session, monkeypatch
+    ):
+        """The one way a bare `dl <ws>` does send a wrapped command.
+
+        `attach_workspace` puts the opt-in dotfiles refresh in front of the
+        session, and a refresh *is* a command, so with both switches on it is
+        wrapped like any other -- the session exists by the time the shell is
+        handed over. Benign, arguably the nicest arrival there is, but it means
+        "a bare attach is untouched" is true of the session and not of the
+        command that can precede it. Pinned so the two switches are known to
+        compose rather than assumed to.
+        """
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        monkeypatch.setenv(dl_module.DOTFILES_ON_ATTACH_VAR, "1")
+        mock_session.return_value = RemoteExit(0)
+        dl_module.attach_workspace("myws")
+        refresh = mock_session.call_args_list[0].args[0][-1]
+        assert self.ENSURE in refresh
+        # ...and the session behind it is still a bare, wrap-free `ssh`.
+        assert mock_session.call_args_list[-1].args[0] == ["ssh", "myws"]
 
     @patch("devlaunch.dl.run_devpod_session")
     def test_a_command_with_quotes_survives_both_wrappers(self, mock_session, monkeypatch):
