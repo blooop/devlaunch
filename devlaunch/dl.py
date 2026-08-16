@@ -3441,16 +3441,31 @@ def _context_options_cache_path() -> pathlib.Path:
 
 
 # Where the shared pixi package cache is bound inside a container, and the value
-# PIXI_CACHE_DIR takes there. `/home/vscode` is devpod's remoteUser convention and
-# the one this repo's own devcontainer is built on; unlike the host side it is a
-# property of the image rather than of whoever is running dl, so it is a constant.
+# PIXI_CACHE_DIR takes there.
+#
+# Outside every home directory, which #240 measured the cost of getting wrong.
+# A bind target whose parent the image does not ship is created by the runtime
+# as root, so pointing this into `~/.cache` handed containers a root-owned home
+# cache: stock `devcontainers/base:ubuntu` and `rust:latest` ship no `~/.cache`,
+# and after the mount their user could not write one -- taking pip, uv,
+# pre-commit and fontconfig down with it, while the pixi mount itself stayed
+# fine and said nothing. `/var/cache` is FHS-required and present in every base
+# this launches, so nothing is invented on the way to the mount point. It is
+# also out of reach of dotfiles installs that chown `$HOME/.cache` when they
+# find it root-owned -- the shipped target manufactured exactly that
+# precondition, and the chown wrote through the bind to the host.
+#
+# Being outside `$HOME` also drops a guess dl had no business making: the old
+# path hardcoded devpod's `vscode` remoteUser convention, which is only a
+# convention, and an image whose user lives anywhere else got a mount in a
+# stranger's home.
 #
 # A path of its own rather than the container's `~/.cache/rattler/cache`: what is
 # on this mount is shared between containers, and putting it where pixi would
 # have kept its private cache invites the environments to follow. They must not
 # -- prefixes are baked with absolute paths and two syncs sharing one prefix tree
 # is prefix-dev/pixi#5476. PIXI_HOME is never passed here for the same reason.
-PIXI_CACHE_TARGET = "/home/vscode/.cache/devlaunch-pixi"
+PIXI_CACHE_TARGET = "/var/cache/devlaunch/pixi"
 
 
 def _pixi_cache_source() -> pathlib.Path:
@@ -3506,6 +3521,18 @@ def _pixi_cache_up_args() -> List[str]:
             "container downloads its own packages.",
             source,
             e,
+        )
+        return []
+    if not source.is_dir():
+        # Belt to the mkdir's braces, for the gap between creating the source
+        # and devpod reading it. A bind source that is not there fails `up`
+        # loudly, but the `ssh` that follows a failed `up` starts the container
+        # anyway -- without the mount, and without anyone being told. Cheaper
+        # to emit no mount than to emit one that turns a launch into that.
+        logging.warning(
+            "The shared pixi cache at %s is not there after all, so this "
+            "container downloads its own packages.",
+            source,
         )
         return []
     return [

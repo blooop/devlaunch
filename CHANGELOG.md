@@ -24,7 +24,7 @@ table and should be judged on its own merits.
 - **Every container `dl` creates now shares one host directory of downloaded pixi
   packages** ([#232](https://github.com/blooop/devlaunch/issues/232)). `devpod up`
   gains a bind mount of `~/.cache/devlaunch/pixi` (under `$XDG_CACHE_HOME` if you
-  set one) onto `/home/vscode/.cache/devlaunch-pixi`, plus `PIXI_CACHE_DIR` pointed
+  set one) onto `/var/cache/devlaunch/pixi`, plus `PIXI_CACHE_DIR` pointed
   at it for both the workspace and the dotfiles install script — dotfiles that
   provision their tools with `pixi global sync` are the consumer, and devpod gives
   that script an environment separate from the workspace's, so the assignment is
@@ -148,6 +148,44 @@ table and should be judged on its own merits.
   a list of "yours" would be a guess.
 
 ### Fixed
+
+- **The shared pixi cache no longer takes `~/.cache` away from the container user**
+  ([#240](https://github.com/blooop/devlaunch/issues/240)). The mount landed on
+  `/home/vscode/.cache/devlaunch-pixi`, and in an image that ships no `~/.cache` the
+  runtime created that missing parent as `root:root` — so the container's own home
+  cache became a directory it could not write. The pixi mount itself stayed fine and
+  said nothing, while everything *else* that writes there (pip, uv, pre-commit,
+  fontconfig) broke. Measured on stock `devcontainers/base:ubuntu`,
+  `base:ubuntu-24.04` and `rust:latest`, all of which ship no `~/.cache`; images that
+  do ship one — including this repo's own — were unaffected, which is why it survived
+  the feature that introduced it.
+
+  **The mount target is now `/var/cache/devlaunch/pixi`.** `/var/cache` is
+  FHS-required and exists in every base this launches, so nothing along the path is
+  invented as root. `PIXI_CACHE_DIR` follows it for both the workspace and the
+  dotfiles script. Moving out of `$HOME` fixes two more things at once: the old path
+  hardcoded devpod's `vscode` remote-user convention, so an image whose user lives
+  elsewhere got a mount in a stranger's home; and dotfiles installs that chown
+  `$HOME/.cache` when they find it root-owned — a precondition the mount itself
+  manufactured — were writing that chown through the bind onto the *host* directory,
+  leaving two containers at different uids ping-ponging its ownership.
+
+  **The host side is unchanged** (`~/.cache/devlaunch/pixi`, under `$XDG_CACHE_HOME`
+  if you set one), and mounts are fixed at container creation, so a container built
+  before this keeps the old target until `dl <workspace> recreate`.
+
+  Also here: the mount args are emitted only when the source directory really
+  exists, closing a gap where a source that vanished between creation and use failed
+  `devpod up` loudly and then let the following `ssh` start a container silently
+  missing the mount.
+
+  **Known constraint, now documented rather than fixed:** sharing requires the
+  container's user to be able to write the cache — its uid matching yours, or root.
+  pixi does not degrade to reading a cache it cannot write; it fails the install
+  outright (exit 1, `Permission denied` on the repodata) even with every package
+  already present. `dl` cannot see a container's uid before launching it, so it
+  cannot decide this ahead of time. The common case is safe — every mainstream base
+  runs at uid 1000 — and the README now states the limit.
 
 - **An ssh key stored under a directory with a space in its name now reaches ssh whole**
   ([#225](https://github.com/blooop/devlaunch/issues/225)). Pushing a new branch with a
