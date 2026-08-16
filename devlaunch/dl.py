@@ -3449,11 +3449,25 @@ def _context_options_cache_path() -> pathlib.Path:
 # cache: stock `devcontainers/base:ubuntu` and `rust:latest` ship no `~/.cache`,
 # and after the mount their user could not write one -- taking pip, uv,
 # pre-commit and fontconfig down with it, while the pixi mount itself stayed
-# fine and said nothing. `/var/cache` is FHS-required and present in every base
-# this launches, so nothing is invented on the way to the mount point. It is
-# also out of reach of dotfiles installs that chown `$HOME/.cache` when they
-# find it root-owned -- the shipped target manufactured exactly that
-# precondition, and the chown wrote through the bind to the host.
+# fine and said nothing. It is also out of reach of dotfiles installs that chown
+# `$HOME/.cache` when they find it root-owned -- the shipped target manufactured
+# exactly that precondition, and the chown wrote through the bind to the host.
+#
+# `/var/tmp` and not `/var/cache/devlaunch`, on the two properties the leaf
+# needs and only a `1777` parent gives it:
+#
+#   1. Nothing is invented on the way here. `/var/tmp` exists in every base this
+#      launches, so the runtime creates the leaf and nothing above it. Under
+#      `/var/cache` the missing `devlaunch/` level was created `root:root`,
+#      which is the same mistake one directory further up.
+#   2. The path still works with nothing mounted on it. devpod re-applies
+#      `--workspace-env` on every `up` while a mount only lands at container
+#      creation, so every container built before a target change gets this value
+#      pointing at bare image filesystem -- and pixi does not degrade there, it
+#      fails the install outright. Measured as uid 1000 on the stock base with
+#      no mount: `pixi global install jq` exits 1 with `Permission denied` under
+#      `/var/cache/devlaunch/pixi`, 0 under `/var/tmp/devlaunch-pixi`, which
+#      `drwxrwxrwt` is the whole of the difference.
 #
 # Being outside `$HOME` also drops a guess dl had no business making: the old
 # path hardcoded devpod's `vscode` remoteUser convention, which is only a
@@ -3465,7 +3479,7 @@ def _context_options_cache_path() -> pathlib.Path:
 # have kept its private cache invites the environments to follow. They must not
 # -- prefixes are baked with absolute paths and two syncs sharing one prefix tree
 # is prefix-dev/pixi#5476. PIXI_HOME is never passed here for the same reason.
-PIXI_CACHE_TARGET = "/var/cache/devlaunch/pixi"
+PIXI_CACHE_TARGET = "/var/tmp/devlaunch-pixi"
 
 
 def _pixi_cache_source() -> pathlib.Path:
@@ -3524,11 +3538,19 @@ def _pixi_cache_up_args() -> List[str]:
         )
         return []
     if not source.is_dir():
-        # Belt to the mkdir's braces, for the gap between creating the source
-        # and devpod reading it. A bind source that is not there fails `up`
-        # loudly, but the `ssh` that follows a failed `up` starts the container
-        # anyway -- without the mount, and without anyone being told. Cheaper
-        # to emit no mount than to emit one that turns a launch into that.
+        # Belt to the mkdir's braces: a source that mkdir reported success for
+        # and that is not a directory anyway -- an exist_ok hit on a plain
+        # file, or something deleting it in the moment between the two calls.
+        #
+        # It is narrow, and honestly so. The window it covers is the
+        # microseconds between the mkdir above and this line, not the wide one
+        # that follows: the launch lock (which can block on a sibling `up`) and
+        # gh_auth both run after this, so a cache home swept during them still
+        # reaches devpod as a mount source that has gone. Emitting no mount is
+        # the right answer in both cases -- a bind source that is not there
+        # fails `up`, and the `ssh` that follows a failed `up` starts the
+        # container anyway, without the mount and without saying so -- but this
+        # check is only reached by the small one.
         logging.warning(
             "The shared pixi cache at %s is not there after all, so this "
             "container downloads its own packages.",

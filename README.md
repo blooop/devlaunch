@@ -458,7 +458,7 @@ container:
 | | |
 |---|---|
 | **On the host** | `$XDG_CACHE_HOME`, or `~/.cache`, then `devlaunch/pixi` |
-| **In the container** | `/var/cache/devlaunch/pixi` |
+| **In the container** | `/var/tmp/devlaunch-pixi` |
 
 Measured on the profile this was built for — 23 pixi-global environments — a
 container with a cold cache spends 62–113 s and downloads 1.2 GB; one that finds
@@ -509,12 +509,30 @@ hit the failure, the fixes available to you are to run that image as your own
 uid, or to take the cache out of play for it (`rm -rf ~/.cache/devlaunch/pixi`
 recovers a directory an earlier container left owned by someone else).
 
-A workspace created before this existed is a special case on its next `up`:
-devpod re-applies `--workspace-env` every time but a bind mount is fixed at
-creation, so `PIXI_CACHE_DIR` points at a plain directory inside that container —
-a private cache under the shared cache's name, abandoning whatever pixi had
-already warmed in its default location. It works, and re-warms itself; it just
-never shares. `dl <workspace> recreate` puts it on the real mount.
+### Existing containers, and what a recreate is for
+
+**A mount lands only when a container is created.** devpod re-applies
+`--workspace-env` on every `up`, but it will not add a bind mount to a container
+that already exists — passing `--mount` there is a silent no-op. So a container
+built before this feature, or before a change to where the mount lands, keeps
+whatever it was created with until `dl <workspace> recreate`, and only then
+picks the current arrangement up.
+
+In between, `PIXI_CACHE_DIR` points at `/var/tmp/devlaunch-pixi` with nothing
+mounted on it. That is a working private cache, not a failure — `/var/tmp` is
+world-writable in every image, so pixi creates the directory and fills it. The
+container re-warms itself and simply never shares, abandoning whatever pixi had
+already warmed in its default location. **This is the reason the container-side
+path is under `/var/tmp` rather than somewhere tidier like `/var/cache`:** a
+target whose parent is root-owned is a hard `pixi global sync` failure on every
+container that predates it, not a lost optimisation.
+
+One older breakage needs the recreate rather than a restart. Devlaunch briefly
+mounted this cache inside `~/.cache`, which left that directory root-owned in
+any image that ships no `~/.cache` of its own. `$HOME` lives on the container's
+own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
+directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
+user's own again.
 
 ## Global Commands
 

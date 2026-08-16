@@ -1575,14 +1575,29 @@ class TestSharedPixiCache:
         """
         assert not dl_module.PIXI_CACHE_TARGET.startswith(home)
 
-    def test_the_mount_target_lands_where_every_image_already_has_a_parent(self):
-        """Not-under-a-home is only half of it: the parent must exist.
+    def test_an_unmounted_target_is_still_a_directory_the_container_can_write(self):
+        """Not-under-a-home is only half of it: the target must survive unmounted.
 
-        `/var/cache` is FHS-required and present in every base this launches
-        -- verified on stock `devcontainers/base:ubuntu` -- so the runtime
-        creates nothing as root on the way to the mount point.
+        devpod re-applies `--workspace-env` on every `up`, but a bind mount
+        only lands when a container is created. So every container built
+        before a target change gets the new `PIXI_CACHE_DIR` pointing at a
+        path with nothing mounted on it, and pixi does not degrade there: it
+        creates the cache or it fails the install outright. Measured on stock
+        `devcontainers/base:ubuntu` as uid 1000 with no mount,
+        `pixi global install jq` exits 1 with `Permission denied` under
+        `/var/cache/devlaunch/pixi` and 0 under `/var/tmp/devlaunch-pixi`.
+
+        The property that buys that is the parent's mode, so the parent has to
+        be one of the two directories FHS requires to be world-writable and
+        sticky. Both also pre-exist in every image, which is the other half:
+        an intermediate directory the runtime has to invent is invented as
+        root (`/var/cache/devlaunch` came out `root:root`), and a
+        world-writable leaf under a root-owned parent is not something dl can
+        arrange from outside the container.
         """
-        assert dl_module.PIXI_CACHE_TARGET.startswith("/var/cache/")
+        fhs_world_writable = {"/tmp", "/var/tmp"}
+        parent = str(pathlib.PurePosixPath(dl_module.PIXI_CACHE_TARGET).parent)
+        assert parent in fhs_world_writable
 
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
@@ -1601,7 +1616,7 @@ class TestSharedPixiCache:
         workspace_up("/path")
         args = _devpod_up_args(mock_run)
         assert args[args.index("--mount") + 1] == (
-            f"type=bind,source={tmp_path}/cache/devlaunch/pixi,target=/var/cache/devlaunch/pixi"
+            f"type=bind,source={tmp_path}/cache/devlaunch/pixi,target=/var/tmp/devlaunch-pixi"
         )
 
     @patch("devlaunch.dl.get_context_options", return_value={})
@@ -1611,9 +1626,7 @@ class TestSharedPixiCache:
         mock_run.return_value = MagicMock(returncode=0)
         workspace_up("/path")
         args = _devpod_up_args(mock_run)
-        assert args[args.index("--workspace-env") + 1] == (
-            "PIXI_CACHE_DIR=/var/cache/devlaunch/pixi"
-        )
+        assert args[args.index("--workspace-env") + 1] == ("PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi")
 
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
@@ -1625,7 +1638,7 @@ class TestSharedPixiCache:
         workspace_up("/path")
         args = _devpod_up_args(mock_run)
         assert args[args.index("--dotfiles-script-env") + 1] == (
-            "PIXI_CACHE_DIR=/var/cache/devlaunch/pixi"
+            "PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi"
         )
 
     @patch("devlaunch.dl.get_context_options", return_value={})
@@ -1684,13 +1697,15 @@ class TestSharedPixiCache:
     ):
         """The args are emitted only when the source really exists.
 
-        dl creates the source itself, so this is the narrow case where the
-        creation reported success and the directory still is not there -- a
-        cache home swept between the two, a source removed under a retry.
-        Worth stating because the failure it prevents is not a loud one: a
-        missing bind source fails `devpod up` outright, but the `ssh` that
-        follows a failed `up` starts the container anyway, without the mount
-        and without saying so.
+        dl creates the source itself, so the only way here is the narrow one:
+        the creation reported success and the directory still is not there.
+        The test has to monkeypatch `mkdir` to reach it at all, which is the
+        honest measure of how narrow -- the check covers the microseconds
+        between the mkdir and itself, not the wide window after it. What it
+        pins is the choice of answer: no mount rather than a mount devpod
+        cannot honour, since a missing bind source fails `up` outright and the
+        `ssh` that follows a failed `up` starts the container anyway, without
+        the mount and without saying so.
         """
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
         mock_run.return_value = MagicMock(returncode=0)
@@ -1738,7 +1753,7 @@ class TestSharedPixiCache:
         with patch.object(sys, "argv", ["dl", "myws"]):
             main()
         args = _devpod_up_args(mock_run)
-        assert "PIXI_CACHE_DIR=/var/cache/devlaunch/pixi" in args
+        assert "PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi" in args
 
 
 class TestWorkspaceOperations:
