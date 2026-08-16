@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1556,6 +1557,48 @@ class TestSharedPixiCache:
     this mount: two syncs sharing one env prefix is prefix-dev/pixi#5476.
     """
 
+    @pytest.mark.parametrize("home", ["/home/", "/root/"])
+    def test_the_mount_target_is_outside_every_home_directory(self, home):
+        """The invariant #240 was the violation of.
+
+        A bind target whose parent the image does not ship is created by the
+        runtime as root, and a target under `$HOME` therefore hands the
+        container a root-owned home cache: `~/.cache` stops being the user's
+        own, and pip, uv, pre-commit and fontconfig lose it -- measured broken
+        on stock `devcontainers/base:ubuntu` and `rust:latest`, which ship no
+        `~/.cache` of their own.
+
+        Stated over homes rather than over the one path that regressed,
+        because the fault was never `/home/vscode` in particular: any home is
+        a directory the image owns, whose layout dl cannot see and whose
+        contents a dotfiles install may chown out from under the mount.
+        """
+        assert not dl_module.PIXI_CACHE_TARGET.startswith(home)
+
+    def test_an_unmounted_target_is_still_a_directory_the_container_can_write(self):
+        """Not-under-a-home is only half of it: the target must survive unmounted.
+
+        devpod re-applies `--workspace-env` on every `up`, but a bind mount
+        only lands when a container is created. So every container built
+        before a target change gets the new `PIXI_CACHE_DIR` pointing at a
+        path with nothing mounted on it, and pixi does not degrade there: it
+        creates the cache or it fails the install outright. Measured on stock
+        `devcontainers/base:ubuntu` as uid 1000 with no mount,
+        `pixi global install jq` exits 1 with `Permission denied` under
+        `/var/cache/devlaunch/pixi` and 0 under `/var/tmp/devlaunch-pixi`.
+
+        The property that buys that is the parent's mode, so the parent has to
+        be one of the two directories FHS requires to be world-writable and
+        sticky. Both also pre-exist in every image, which is the other half:
+        an intermediate directory the runtime has to invent is invented as
+        root (`/var/cache/devlaunch` came out `root:root`), and a
+        world-writable leaf under a root-owned parent is not something dl can
+        arrange from outside the container.
+        """
+        fhs_world_writable = {"/tmp", "/var/tmp"}
+        parent = str(pathlib.PurePosixPath(dl_module.PIXI_CACHE_TARGET).parent)
+        assert parent in fhs_world_writable
+
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
     def test_up_binds_the_host_cache_into_the_container(
@@ -1573,8 +1616,7 @@ class TestSharedPixiCache:
         workspace_up("/path")
         args = _devpod_up_args(mock_run)
         assert args[args.index("--mount") + 1] == (
-            f"type=bind,source={tmp_path}/cache/devlaunch/pixi,"
-            "target=/home/vscode/.cache/devlaunch-pixi"
+            f"type=bind,source={tmp_path}/cache/devlaunch/pixi,target=/var/tmp/devlaunch-pixi"
         )
 
     @patch("devlaunch.dl.get_context_options", return_value={})
@@ -1584,9 +1626,7 @@ class TestSharedPixiCache:
         mock_run.return_value = MagicMock(returncode=0)
         workspace_up("/path")
         args = _devpod_up_args(mock_run)
-        assert args[args.index("--workspace-env") + 1] == (
-            "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi"
-        )
+        assert args[args.index("--workspace-env") + 1] == ("PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi")
 
     @patch("devlaunch.dl.get_context_options", return_value={})
     @patch("devlaunch.dl.run_devpod")
@@ -1598,7 +1638,7 @@ class TestSharedPixiCache:
         workspace_up("/path")
         args = _devpod_up_args(mock_run)
         assert args[args.index("--dotfiles-script-env") + 1] == (
-            "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi"
+            "PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi"
         )
 
     @patch("devlaunch.dl.get_context_options", return_value={})
@@ -1650,14 +1690,53 @@ class TestSharedPixiCache:
         assert "--workspace-env" not in args
         assert "--dotfiles-script-env" not in args
 
+    @patch("devlaunch.dl.get_context_options", return_value={})
+    @patch("devlaunch.dl.run_devpod")
+    def test_a_source_that_is_not_there_after_all_is_left_out_of_the_argv(
+        self, mock_run, _mock_ctx, tmp_path, monkeypatch
+    ):
+        """The args are emitted only when the source really exists.
+
+        dl creates the source itself, so the only way here is the narrow one:
+        the creation reported success and the directory still is not there.
+        The test has to monkeypatch `mkdir` to reach it at all, which is the
+        honest measure of how narrow -- the check covers the microseconds
+        between the mkdir and itself, not the wide window after it. What it
+        pins is the choice of answer: no mount rather than a mount devpod
+        cannot honour, since a missing bind source fails `up` outright and the
+        `ssh` that follows a failed `up` starts the container anyway, without
+        the mount and without saying so.
+        """
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        mock_run.return_value = MagicMock(returncode=0)
+        source = tmp_path / "cache" / "devlaunch" / "pixi"
+        real_mkdir = pathlib.Path.mkdir
+
+        def mkdir_that_leaves_only_this_one_behind(self, *args, **kwargs):
+            real_mkdir(self, *args, **kwargs)
+            if self == source:
+                # ignore_errors so the removal itself never raises out of
+                # mkdir: an OSError here would be caught by the branch that
+                # already drops the args, and this test would pass without
+                # ever exercising the existence check it is about.
+                shutil.rmtree(self, ignore_errors=True)
+
+        monkeypatch.setattr(pathlib.Path, "mkdir", mkdir_that_leaves_only_this_one_behind)
+        workspace_up("/path")
+        assert not source.exists()
+        args = _devpod_up_args(mock_run)
+        assert "--mount" not in args
+        assert "--workspace-env" not in args
+        assert "--dotfiles-script-env" not in args
+
     def test_the_host_directory_is_the_users_own_and_not_a_written_down_path(
         self, tmp_path, monkeypatch, home_cache_default
     ):  # pylint: disable=unused-argument
         """With no XDG_CACHE_HOME the answer follows the invoking user's home.
 
-        The container-side path is devpod's remoteUser convention and is
-        rightly a constant; the host side is not, and a hardcoded one would
-        send every user's packages to somebody else's home directory.
+        The container-side path is a fixed system location and is rightly a
+        constant; the host side is not, and a hardcoded one would send every
+        user's packages to somebody else's home directory.
         """
         monkeypatch.setenv("HOME", str(tmp_path))
         assert dl_module._pixi_cache_source() == tmp_path / ".cache" / "devlaunch" / "pixi"  # pylint: disable=protected-access
@@ -1674,7 +1753,7 @@ class TestSharedPixiCache:
         with patch.object(sys, "argv", ["dl", "myws"]):
             main()
         args = _devpod_up_args(mock_run)
-        assert "PIXI_CACHE_DIR=/home/vscode/.cache/devlaunch-pixi" in args
+        assert "PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi" in args
 
 
 class TestWorkspaceOperations:

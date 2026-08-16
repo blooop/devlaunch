@@ -458,7 +458,7 @@ container:
 | | |
 |---|---|
 | **On the host** | `$XDG_CACHE_HOME`, or `~/.cache`, then `devlaunch/pixi` |
-| **In the container** | `/home/vscode/.cache/devlaunch-pixi` |
+| **In the container** | `/var/tmp/devlaunch-pixi` |
 
 Measured on the profile this was built for — 23 pixi-global environments — a
 container with a cold cache spends 62–113 s and downloads 1.2 GB; one that finds
@@ -488,16 +488,51 @@ trampolines are baked with absolute paths, and two containers sharing one
 environment tree is [pixi#5476](https://github.com/prefix-dev/pixi/issues/5476).
 Only the download cache is shared, which is the part that is safe to share.
 
-If the directory cannot be created — a full disk, a read-only cache home — the
-launch goes ahead without the mount and the container downloads its own packages,
+If the directory cannot be created, or is not there when the launch reaches it —
+a full disk, a read-only cache home, a cache swept between the two — the launch
+goes ahead without the mount and the container downloads its own packages,
 exactly as it did before this existed.
 
-A workspace created before this existed is a special case on its next `up`:
-devpod re-applies `--workspace-env` every time but a bind mount is fixed at
-creation, so `PIXI_CACHE_DIR` points at a plain directory inside that container —
-a private cache under the shared cache's name, abandoning whatever pixi had
-already warmed in its default location. It works, and re-warms itself; it just
-never shares. `dl <workspace> recreate` puts it on the real mount.
+**Sharing requires the container's user to be able to write the directory**,
+which in practice means its uid matches yours or it is root. The mount carries
+host ownership through unchanged, and pixi does not degrade to reading a cache
+it cannot write: pointing `PIXI_CACHE_DIR` at a directory owned by another uid
+fails the install outright (`Permission denied` on the repodata, exit 1) even
+when every package it wants is already in there. So an image whose remote user
+is neither root nor your uid does not merely lose the sharing — its `pixi global
+sync` fails, and its tools do not get provisioned.
+
+`dl` cannot see the container's uid before it launches, so it cannot decide this
+for you. In practice the common case is safe: every mainstream base declares a
+remote user at uid 1000, which is the first human user on a Linux host. If you
+hit the failure, the fixes available to you are to run that image as your own
+uid, or to take the cache out of play for it (`rm -rf ~/.cache/devlaunch/pixi`
+recovers a directory an earlier container left owned by someone else).
+
+### Existing containers, and what a recreate is for
+
+**A mount lands only when a container is created.** devpod re-applies
+`--workspace-env` on every `up`, but it will not add a bind mount to a container
+that already exists — passing `--mount` there is a silent no-op. So a container
+built before this feature, or before a change to where the mount lands, keeps
+whatever it was created with until `dl <workspace> recreate`, and only then
+picks the current arrangement up.
+
+In between, `PIXI_CACHE_DIR` points at `/var/tmp/devlaunch-pixi` with nothing
+mounted on it. That is a working private cache, not a failure — `/var/tmp` is
+world-writable in every image, so pixi creates the directory and fills it. The
+container re-warms itself and simply never shares, abandoning whatever pixi had
+already warmed in its default location. **This is the reason the container-side
+path is under `/var/tmp` rather than somewhere tidier like `/var/cache`:** a
+target whose parent is root-owned is a hard `pixi global sync` failure on every
+container that predates it, not a lost optimisation.
+
+One older breakage needs the recreate rather than a restart. Devlaunch briefly
+mounted this cache inside `~/.cache`, which left that directory root-owned in
+any image that ships no `~/.cache` of its own. `$HOME` lives on the container's
+own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
+directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
+user's own again.
 
 ## Global Commands
 

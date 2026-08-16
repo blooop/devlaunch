@@ -24,7 +24,7 @@ table and should be judged on its own merits.
 - **Every container `dl` creates now shares one host directory of downloaded pixi
   packages** ([#232](https://github.com/blooop/devlaunch/issues/232)). `devpod up`
   gains a bind mount of `~/.cache/devlaunch/pixi` (under `$XDG_CACHE_HOME` if you
-  set one) onto `/home/vscode/.cache/devlaunch-pixi`, plus `PIXI_CACHE_DIR` pointed
+  set one) onto `/var/tmp/devlaunch-pixi`, plus `PIXI_CACHE_DIR` pointed
   at it for both the workspace and the dotfiles install script — dotfiles that
   provision their tools with `pixi global sync` are the consumer, and devpod gives
   that script an environment separate from the workspace's, so the assignment is
@@ -47,7 +47,41 @@ table and should be judged on its own merits.
   `pixi clean cache` from pulling packages out from under a live container, and keeps
   containers writing as their own remote user out of a cache you rely on. A cache
   directory that cannot be created costs the sharing and not the launch: the container
-  downloads its own packages, exactly as it did before.
+  downloads its own packages, exactly as it did before. Nor does a source that is
+  gone by the time the launch reaches it: the mount arguments are emitted only when
+  the directory really exists, because a bind source that is not there fails
+  `devpod up` and the `ssh` that follows a failed `up` starts the container anyway.
+
+  **The container-side path is `/var/tmp/devlaunch-pixi`, and both halves of that
+  are load-bearing** ([#240](https://github.com/blooop/devlaunch/issues/240)). It is
+  outside every home directory, because a bind target whose parent the image does not
+  ship is created by the runtime as `root:root` — pointed into `~/.cache`, this mount
+  took the container's own home cache away from it on every image that ships no
+  `~/.cache`, which the stock `devcontainers/base:ubuntu`, `base:ubuntu-24.04` and
+  `rust:latest` do not. And its parent is world-writable, because a mount lands only
+  when a container is created while `PIXI_CACHE_DIR` is re-applied on every `up`: a
+  container that predates this gets the variable pointing at bare image filesystem,
+  where pixi does not degrade to reading but fails the install outright. Measured as
+  uid 1000 on the stock base with nothing mounted, `pixi global install jq` exits 1
+  with `Permission denied` under `/var/cache/devlaunch/pixi` and 0 under
+  `/var/tmp/devlaunch-pixi`. Being out of `$HOME` also puts the cache beyond dotfiles
+  installs that chown a root-owned `$HOME/.cache` — which this mount used to
+  manufacture, and the chown wrote through the bind onto the host.
+
+  Both earlier targets existed only on `main`: [#232](https://github.com/blooop/devlaunch/issues/232)
+  merged 2026-08-15 and the newest release, `v0.0.26`, is dated 2026-08-14, so **no
+  release ever carried them** and there is nobody to migrate. What does need a
+  migration is any container you built from `main` in between: mounts are fixed at
+  creation, so it keeps the target it was born with until `dl <workspace> recreate`,
+  and a `~/.cache` an earlier build left root-owned heals on that recreate but not on
+  a `stop` and `up`.
+
+  **Sharing requires the container's user to be able to write the host directory** —
+  its uid matching yours, or root. This is a documented constraint, not something
+  `dl` fixes: pixi fails an unwritable cache outright rather than reading it, and
+  `dl` cannot see a container's uid before launching it. The common case is safe,
+  since every mainstream base runs at uid 1000; the README states the limit and the
+  recovery.
 
 - **`DEVLAUNCH_DOTFILES_ON_ATTACH=1` refreshes dotfiles just before an interactive
   attach hands over the shell** ([#183](https://github.com/blooop/devlaunch/issues/183)).
