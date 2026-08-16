@@ -183,13 +183,18 @@ class TestProfileGuards:
     edit is ever read, the second whether it stops being repeated.
     """
 
-    SCRIPTS = ["provision", "transfer", "feature"]
+    SCRIPTS = ["provision", "transfer", "feature", "zellij"]
 
     # The directory each script's profile edit unconditionally puts on a login
     # shell's PATH. Written out as literals rather than read back off the
     # script, because a test that derives what to expect from the thing under
     # test agrees with it however wrong it is.
-    PREPENDED = {"provision": ".pixi/bin", "transfer": ".local/bin", "feature": ".pixi/bin"}
+    PREPENDED = {
+        "provision": ".pixi/bin",
+        "transfer": ".local/bin",
+        "feature": ".pixi/bin",
+        "zellij": ".pixi/bin",
+    }
 
     # Every shape a container's home can have when a writer arrives. bash
     # sources the *first* of ~/.bash_profile, ~/.bash_login, ~/.profile that
@@ -211,6 +216,8 @@ class TestProfileGuards:
             return provision_script()
         if name == "transfer":
             return tools.transfer_script(fake_payload(tmp_path))
+        if name == "zellij":
+            return tools.zellij_script()
         return FEATURE_INSTALLER.read_text(encoding="utf-8")
 
     @staticmethod
@@ -334,7 +341,7 @@ class TestProfileGuards:
         for name in self.SCRIPTS:
             script = self._script(name, tmp_path)
             appends.extend(line.strip() for line in script.splitlines() if '>> "$PROFILE"' in line)
-        assert len(appends) == 5, "a new PATH line belongs in this test's expectations"
+        assert len(appends) == 6, "a new PATH line belongs in this test's expectations"
         for _ in range(2):
             subprocess.run(
                 [shutil.which("bash") or "/bin/bash", "-c", "\n".join(appends)],
@@ -1024,28 +1031,44 @@ class TestSetupPassScript:
         assert result.returncode == 0, result.stderr
         return home, result.stdout
 
+    @staticmethod
+    def _outcome(report, name):
+        """One stage's outcome out of a pass that now runs more than one.
+
+        By name rather than by position, and asserted per stage rather than as
+        the whole tuple, because these tests are each about the hostname stage
+        and a second stage's fortunes are not their subject. `stage_outcomes` is
+        still asked for every stage the pass declares, so a stage that stopped
+        reporting at all would still read `not reached` here.
+        """
+        outcomes = {
+            outcome.name: outcome
+            for outcome in tools.stage_outcomes(report, tools.setup_stages("myws"))
+        }
+        return outcomes.get(name)
+
     def test_a_failing_stage_does_not_cost_the_probe_its_answer(self, tmp_path):
         """The legibility claim, run rather than argued: the stage fails, names
         itself with its status, and the probe still answers in the same trip."""
         home, report = self._run(tmp_path, "myws", sudo_exit=1)
         assert tools.ProbeResult.parse(report) is tools.ProbeResult.ABSENT
-        assert tools.stage_outcomes(report, tools.setup_stages("myws")) == (
-            tools.StageFailed(name=tools.HOSTNAME_STAGE, returncode=1),
+        assert self._outcome(report, tools.HOSTNAME_STAGE) == tools.StageFailed(
+            name=tools.HOSTNAME_STAGE, returncode=1
         )
         assert home.exists()
 
     def test_a_stage_the_image_cannot_even_run_reports_its_status(self, tmp_path):
         """No `sudo` in the image at all: 127, not silence."""
         _, report = self._run(tmp_path, "myws")
-        assert tools.stage_outcomes(report, tools.setup_stages("myws")) == (
-            tools.StageFailed(name=tools.HOSTNAME_STAGE, returncode=127),
+        assert self._outcome(report, tools.HOSTNAME_STAGE) == tools.StageFailed(
+            name=tools.HOSTNAME_STAGE, returncode=127
         )
 
     def test_a_stage_that_worked_says_so(self, tmp_path):
         """The privileged-image case, which is the one the user can see."""
         _, report = self._run(tmp_path, "myws", sudo_exit=0)
-        assert tools.stage_outcomes(report, tools.setup_stages("myws")) == (
-            tools.StageOk(name=tools.HOSTNAME_STAGE),
+        assert self._outcome(report, tools.HOSTNAME_STAGE) == tools.StageOk(
+            name=tools.HOSTNAME_STAGE
         )
 
 
@@ -1054,7 +1077,17 @@ class TestStageOutcomes:
 
     @staticmethod
     def _hostname(report: str):
-        return tools.stage_outcomes(report, tools.setup_stages("myws"))
+        """Read the hostname stage's outcome, out of the real declared stage.
+
+        Narrowed to the one stage rather than the whole pass because every
+        assertion below is about how one reported line is *read* -- the parser
+        is the subject, and a pass that declares more stages would otherwise
+        change the shape of every expectation here without changing the
+        behaviour any of them is about.
+        """
+        stages = [s for s in tools.setup_stages("myws") if s.name == tools.HOSTNAME_STAGE]
+        assert stages, "the pass no longer names the container"
+        return tools.stage_outcomes(report, stages)
 
     def test_a_stage_that_worked_reads_ok(self):
         assert self._hostname(STAGE_OK) == (tools.StageOk(name=tools.HOSTNAME_STAGE),)
@@ -1288,7 +1321,14 @@ class TestTheHostNamesEveryStageThatIsNotOk:
         the rule."""
         assert tools.Stage(name="x", command="true").failure_level == logging.WARNING
         levels = {stage.name: stage.failure_level for stage in tools.setup_stages("myws")}
-        assert levels == {tools.HOSTNAME_STAGE: logging.INFO}
+        assert levels == {
+            tools.HOSTNAME_STAGE: logging.INFO,
+            # A zellij that would not install is a real, invisible and permanent
+            # degradation of a container -- the same shape of loss the shared
+            # pixi cache warns about when it cannot make its directory -- so it
+            # takes the default rather than declaring an exception.
+            tools.ZELLIJ_STAGE: logging.WARNING,
+        }
 
 
 class TestHostPayload:
@@ -1515,3 +1555,200 @@ class TestNoRegressionInTheOptOutContract:
     def test_unset_means_enabled(self, monkeypatch):
         monkeypatch.delenv(tools.DISABLE_VAR, raising=False)
         assert tools.provisioning_disabled() is False
+
+
+class TestZellijProvisioning:
+    """zellij reaches every container devlaunch launches, and can never cost one.
+
+    The capability #242 is for -- a terminal opened from *inside* an agent
+    session -- needs exactly one thing from the container: a `zellij` on PATH.
+    Where it comes from was decided by measurement rather than taste. A warm
+    `pixi global install zellij` against the shared package cache, timed over
+    three fresh `devcontainers/base:ubuntu` containers, cost 0.56s, 0.23s and
+    0.23s (3.0s against an empty cache, which it fills with 167MB). The
+    ticket's falsification condition was "more than a few seconds"; it does not
+    fire, so zellij is installed container-side by pixi and the static-musl
+    binary mount stays a recorded alternative -- no host-side download, no new
+    upstream dependency.
+
+    Two things about *where* it is provisioned from are load-bearing, and both
+    are asserted below rather than described:
+
+    - It is **not** a third row in REQUIRED_TOOLS. That table is also what the
+      probe asks about and what the host lends, so a container carrying gh and
+      a real claude but no zellij would start reporting `tools missing`, pay a
+      ~300MB claude lend on every single launch, and then still never install
+      zellij -- because a successful lend returns ahead of the install trip.
+    - It rides the setup pass as a stage of its own, where a failure is already
+      contained, named, and unable to change the pass's exit status. That is
+      the "cost the feature, not the launch" rule the launch lock and the pixi
+      cache already follow, reused rather than re-implemented.
+    """
+
+    @staticmethod
+    def _sandbox(tmp_path, *, has_zellij=False, pixi_exit=None, has_pixi_install=False):
+        """A scratch $HOME and a PATH holding only the fakes a case asks for.
+
+        Never the host's real pixi, curl or zellij: this must not be able to
+        reach the network, and must not be able to install anything on the
+        machine running the tests.
+        """
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        sysbin = tmp_path / "sysbin"
+        sysbin.mkdir(exist_ok=True)
+        for name in ("readlink", "grep", "bash"):
+            real = shutil.which(name)
+            assert real, f"the test host needs {name}"
+            link = sysbin / name
+            if not link.exists():
+                link.symlink_to(real)
+        log = tmp_path / "calls.log"
+        quoted_log = shlex.quote(str(log))
+
+        def fake(name, exit_code, noise=""):
+            path = sysbin / name
+            body = f'echo "{name} $*" >> {quoted_log}\n'
+            if noise:
+                body += f"echo {shlex.quote(noise)}\n"
+            path.write_text(f"#!/bin/sh\n{body}exit {exit_code}\n", encoding="utf-8")
+            path.chmod(0o755)
+
+        if has_zellij:
+            fake("zellij", 0)
+        if pixi_exit is not None:
+            # Noise on *stdout*, because that is the stream the pass's protocol
+            # shares and the one a stage may never speak on.
+            fake("pixi", pixi_exit, noise="PIXI-NOISE")
+        # A curl that cannot reach anything, which is what an offline image is.
+        fake("curl", 1)
+        if has_pixi_install:
+            fake("bash-installer", 0)
+        return home, sysbin, log
+
+    @classmethod
+    def _run(cls, tmp_path, **kwargs):
+        """Run the whole setup pass for real and read it the way the host does."""
+        home, sysbin, log = cls._sandbox(tmp_path, **kwargs)
+        result = subprocess.run(
+            [shutil.which("bash") or "/bin/bash", "-c", tools.setup_script("myws")],
+            env={"HOME": str(home), "PATH": str(sysbin)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Exits 0 whatever the stages did: a non-zero `devpod ssh` has to keep
+        # meaning the transport failed. A zellij that would not install may
+        # never be able to change that.
+        assert result.returncode == 0, result.stderr
+        calls = log.read_text(encoding="utf-8") if log.exists() else ""
+        return home, result, calls
+
+    @classmethod
+    def _zellij_outcome(cls, report):
+        outcomes = {
+            outcome.name: outcome
+            for outcome in tools.stage_outcomes(report, tools.setup_stages("myws"))
+        }
+        return outcomes.get(tools.ZELLIJ_STAGE)
+
+    def test_every_container_devlaunch_launches_is_asked_for_zellij(self):
+        """The guarantee, stated where it is made: the pass every entry into
+        Running goes through carries a zellij stage. No dotfiles, no
+        devcontainer.json, no repo cooperation -- the ask comes from the
+        invocation, which is the same argument gh_auth makes for the token."""
+        assert tools.ZELLIJ_STAGE in {stage.name for stage in tools.setup_stages("myws")}
+
+    def test_it_is_never_a_required_tool(self):
+        """The regression this whole placement exists to avoid.
+
+        REQUIRED_TOOLS is not just an install list: `probe_script` asks whether
+        *all* of it is present, and a container answering "missing" is lent the
+        host's ~300MB claude. Adding zellij there would put every already-good
+        container onto the lending path forever, and the lend returns True
+        before the install trip -- so the container would pay the transfer and
+        still have no zellij.
+        """
+        assert tools.ZELLIJ_TOOL.command not in {tool.command for tool in REQUIRED_TOOLS}
+        assert tools.ZELLIJ_TOOL.command not in tools.probe_script()
+
+    def test_a_container_that_already_has_it_installs_nothing(self, tmp_path):
+        """Every launch after the first: one `command -v` and no pixi at all.
+
+        The check has to be this cheap because the stage runs on every entry
+        into Running, and it has to be made from the login shell the pass
+        already runs in -- from anywhere without ~/.pixi/bin on PATH, an
+        installed zellij looks missing and is reinstalled on every launch.
+        """
+        home, result, calls = self._run(tmp_path, has_zellij=True)
+        assert self._zellij_outcome(result.stdout) == tools.StageOk(name=tools.ZELLIJ_STAGE)
+        assert "pixi" not in calls
+        assert not (home / ".profile").exists()
+
+    def test_a_cold_container_gets_it_and_the_next_shell_can_find_it(self, tmp_path):
+        """Installed, and put on the *login* PATH so the next trip sees it.
+
+        The second half is not decoration. A lent container has only
+        ~/.local/bin on its login PATH -- `transfer_script` writes that one and
+        no other -- so without this edit a `pixi global install zellij` would
+        land a binary no later login shell could resolve, and the stage would
+        reinstall it forever.
+        """
+        home, result, calls = self._run(tmp_path, pixi_exit=0)
+        assert self._zellij_outcome(result.stdout) == tools.StageOk(name=tools.ZELLIJ_STAGE)
+        assert "pixi global install zellij" in calls
+        assert 'export PATH="$HOME/.pixi/bin:$PATH"' in (home / ".profile").read_text(
+            encoding="utf-8"
+        )
+
+    def test_an_install_that_fails_is_named_and_costs_the_launch_nothing(self, tmp_path):
+        """The ticket's second requirement, run rather than argued.
+
+        The install fails, the stage says so with its status, the probe still
+        answers in the same trip, and the pass still exits 0 -- so the
+        container opens without zellij instead of not opening.
+        """
+        _, result, calls = self._run(tmp_path, pixi_exit=1)
+        assert self._zellij_outcome(result.stdout) == tools.StageFailed(
+            name=tools.ZELLIJ_STAGE, returncode=1
+        )
+        assert "pixi global install zellij" in calls
+        assert tools.ProbeResult.parse(result.stdout) is tools.ProbeResult.ABSENT
+
+    def test_an_image_with_no_pixi_and_no_network_still_launches(self, tmp_path):
+        """The worst case: nothing to install with and nothing to fetch it
+        from. The bootstrap's curl fails, there is no pixi behind it, and the
+        stage reports that -- while the probe answers and the pass exits 0."""
+        _, result, _ = self._run(tmp_path)
+        outcome = self._zellij_outcome(result.stdout)
+        assert isinstance(outcome, tools.StageFailed)
+        assert tools.ProbeResult.parse(result.stdout) is tools.ProbeResult.ABSENT
+
+    def test_the_install_never_speaks_on_the_protocols_stdout(self, tmp_path):
+        """A stage shares the probe's stdout, and pixi is loud.
+
+        `Stage` says it in words -- keep stages silent or redirect them -- and
+        the cost of ignoring it is not hypothetical: the readers split marked
+        lines on spaces, so a package manager's progress on this stream is one
+        unlucky line away from being read as protocol. It also matters that
+        the noise goes to stderr rather than nowhere: `_setup_pass` captures
+        stdout, so an install redirected into it would be invisible, and a
+        cold launch that looks hung is what these scripts print progress for.
+        """
+        _, result, _ = self._run(tmp_path, pixi_exit=0)
+        assert "PIXI-NOISE" not in result.stdout
+        assert "PIXI-NOISE" in result.stderr
+
+    def test_the_tools_opt_out_asks_for_no_zellij(self, monkeypatch, tmp_path):
+        """Installing zellij *is* tool provisioning, so the opt-out covers it.
+
+        Unlike the hostname stage, which is not tools work and is deliberately
+        left outside that switch -- a machine that turned tool installs off has
+        not thereby asked for unnamed containers.
+        """
+        monkeypatch.setenv(tools.DISABLE_VAR, "1")
+        names = {stage.name for stage in tools.setup_stages("myws")}
+        assert tools.ZELLIJ_STAGE not in names
+        assert tools.HOSTNAME_STAGE in names
+        _, _, calls = self._run(tmp_path, pixi_exit=0)
+        assert "pixi" not in calls

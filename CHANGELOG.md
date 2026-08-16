@@ -21,6 +21,44 @@ table and should be judged on its own merits.
 
 ### Added
 
+- **Every workspace now has `zellij` on `PATH`, so an agent can open a terminal beside
+  itself** ([#242](https://github.com/blooop/devlaunch/issues/242)). With a session
+  running in the container, `zellij -s devlaunch action new-pane -- <cmd>` opens a
+  working pane from a completely non-interactive command, with no terminal attached to
+  anything — which is what lets an agent inside a container hand you a shell next to it
+  that you can attach to and type in. It depends on no dotfiles and on no repo's
+  `devcontainer.json`, because `dl` launches arbitrary repos and a guarantee that
+  depended on the image would not be one.
+
+  zellij comes from pixi, container-side, and that was decided by measurement rather
+  than taste: a warm `pixi global install zellij` against the shared package cache cost
+  0.56s, 0.23s and 0.23s over three fresh containers (3.0s against an empty cache).
+  The alternative on the table — mounting a static musl binary downloaded host-side —
+  is faster still but adds an upstream GitHub-release dependency and a bind mount that
+  only lands at container creation, which is not worth buying for a fifth of a second.
+  Because nothing here is a mount, an existing workspace picks zellij up on its next
+  `dl <workspace> restart` rather than needing a full recreate.
+
+  It rides the setup pass that every `devpod up` already pays, so it costs **no extra
+  round trip**, and every launch after the first is one `command -v` — the whole warm
+  pass measured at 50ms. It also **cannot fail a launch**: provisioning is a stage,
+  whose failure is contained and reported by name, so a container with no network and
+  no pixi opens exactly as it would have, without zellij. `DEVLAUNCH_NO_TOOLS=1` skips
+  it along with the rest of tool provisioning.
+
+- **`DEVLAUNCH_ZELLIJ=1` makes `dl <spec> -- <command>` run beside a zellij session**
+  ([#242](https://github.com/blooop/devlaunch/issues/242)), so the command can open
+  panes into it. **Off by default**, and off means no existing invocation changes
+  meaning. The command runs *beside* the session rather than inside a pane of it, on
+  purpose: a pane would hand the command's stdin, stdout and exit status to zellij, and
+  `dl <ws> -- cmd > file` has to keep putting the command's own output in the file. A
+  bare `dl <workspace>`'s session is untouched either way — it sends no command to
+  wrap, which is what gets it a terminal from devpod, and it lands you in a login shell
+  where `zellij attach -c devlaunch` reaches the session by hand. The one command a
+  bare attach can send ahead of that shell is the opt-in `DEVLAUNCH_DOTFILES_ON_ATTACH`
+  refresh, which is wrapped like any other command, so running both switches together
+  means the session is already waiting when the shell arrives.
+
 - **Every container `dl` creates now shares one host directory of downloaded pixi
   packages** ([#232](https://github.com/blooop/devlaunch/issues/232)). `devpod up`
   gains a bind mount of `~/.cache/devlaunch/pixi` (under `$XDG_CACHE_HOME` if you

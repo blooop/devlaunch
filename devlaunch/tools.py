@@ -141,6 +141,30 @@ REQUIRED_TOOLS: Sequence[Tool] = (
     Tool(command="claude", package="claude-shim", channel=BLOOOP_CHANNEL),
 )
 
+# The terminal an agent can open beside itself (#242). A `zellij` on PATH is the
+# whole of what that capability needs from a container: with a session running
+# there, `zellij -s <name> action new-pane -- <cmd>` opens a working pane from a
+# completely non-interactive command, with no TTY anywhere.
+#
+# From pixi, container-side, because that was measured rather than guessed. A
+# warm `pixi global install zellij` against the shared package cache costs
+# 0.56s / 0.23s / 0.23s over three fresh `devcontainers/base:ubuntu` containers
+# (3.0s against an empty cache, which it fills with 167MB). The ticket's
+# falsification condition was "more than a few seconds", so the host-side static
+# musl binary -- faster still, but a new upstream GitHub-release dependency and
+# a mount that only lands at container creation -- stays a recorded alternative.
+#
+# Deliberately **not** a third row in REQUIRED_TOOLS, which is the tempting
+# place and the wrong one. That tuple is not just an install list: `probe_script`
+# asks whether *all* of it is present, and a container that answers "missing" is
+# lent the host's ~300MB claude. Adding zellij there would put every container
+# that already has gh and a real claude back onto the lending path on every
+# launch, and would still never install zellij -- a successful lend returns
+# before the network-install trip is reached. So it is provisioned as a stage of
+# the setup pass instead (see `setup_stages`), where a failure is already
+# contained and named by construction.
+ZELLIJ_TOOL = Tool(command="zellij", package="zellij")
+
 
 def provisioning_disabled() -> bool:
     """Whether the user opted this machine out of installing tools."""
@@ -274,6 +298,13 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
 
     Exits 0 unless an install actually failed, so "nothing to do" and "all
     installs worked" are the same answer to the caller.
+
+    `tools` parameterizes *which tools are installed* and nothing else: the
+    profile lines below are REQUIRED_TOOLS' own, so `provision_script((x,))`
+    still writes the claude-shim prepend. That is why `zellij_script` assembles
+    itself from the shared helpers instead of calling this with one tool -- it
+    would otherwise teach a container about a package it is not installing.
+    Parameterize the profile lines too before reusing this for anything else.
     """
     all_present = _all_present(tools)
     installs = "\n".join(_install_line(tool) for tool in tools)
@@ -314,6 +345,60 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
             _pixi_bootstrap(),
             installs,
             profile_lines,
+            'exit "$failed"',
+        ]
+    )
+
+
+def zellij_script() -> str:
+    """The shell script that makes `zellij` available in a workspace.
+
+    Assembled entirely out of the pieces `provision_script` is assembled from --
+    the pixi bootstrap, the install line, the profile resolution and the guarded
+    prepend -- because every one of those is a decision this module has already
+    made once and must not make twice. What is new here is only *which* tool and
+    *where it is run from* (a setup stage rather than the cold-path install
+    trip); nothing about how a tool gets installed is restated.
+
+    Idempotent and nearly free on the common path: a `zellij` already on PATH
+    exits before pixi, the profile or the network are touched, and that is the
+    answer on every launch after the first. The check works because this runs
+    under the pass's login shell, which is what puts an earlier run's
+    ~/.pixi/bin on PATH -- from a non-login shell an installed zellij looks
+    missing and would be reinstalled on every single launch.
+
+    The PATH prepend is written here rather than relied on from elsewhere,
+    because the container this most often lands in has not had it written. A
+    lend edits the profile for ~/.local/bin and nothing else (`transfer_script`),
+    and a container that reached `provisioned` never runs `provision_script` at
+    all -- so on both of those paths this stage is the only writer, and without
+    the edit it would install a binary no later login shell could resolve.
+    Writing it twice costs nothing: the guard's mark is a hash of the line, so
+    the identical line from `provision_script` and from here share one mark and
+    land exactly once, in whichever order they arrive.
+
+    Exits non-zero only when the install or the profile edit actually failed,
+    which is what lets the stage report a real failure by name -- and, because a
+    stage's failure is contained by the `if` around it, that report is the whole
+    consequence. The container opens without zellij; the launch is untouched.
+    """
+    return "\n".join(
+        [
+            # `set -u` for the same reason `provision_script` sets it: these are
+            # the same helpers, and an unset variable in one of them must not
+            # quietly expand to nothing in one script while aborting the other.
+            # Its `exec >&2` is the one piece deliberately *not* carried -- a
+            # stage cannot redirect itself, since `_stage_snippet` interpolates
+            # it into `if <command>; then`, so the stage's own `>&2` does it.
+            "set -u",
+            "failed=0",
+            # Already there: nothing else in this script may run. The commonest
+            # answer by far, and the reason a stage on every pass is affordable.
+            f"if command -v {shlex.quote(ZELLIJ_TOOL.command)} >/dev/null 2>&1; then exit 0; fi",
+            _pixi_bootstrap(),
+            _install_line(ZELLIJ_TOOL),
+            _profile_resolution(),
+            _profile_prepend('export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"),
             'exit "$failed"',
         ]
     )
@@ -463,6 +548,10 @@ class Stage:
 # hostname" detection is, and it costs nothing: the trip is the probe's.
 HOSTNAME_STAGE = "hostname"
 
+# The stage that puts `zellij` in the container (see ZELLIJ_TOOL). Also free of
+# round trips: it rides the pass every entry into Running already pays.
+ZELLIJ_STAGE = "zellij"
+
 # The key every stage-outcome line carries, in the same marked `key value`
 # shape the probe's own report uses -- so the outcomes survive a login
 # profile's banner exactly as the probe's lines do, and so `ProbeResult.parse`,
@@ -478,9 +567,11 @@ def setup_stages(workspace: str) -> Tuple[Stage, ...]:
     """The stages one setup pass runs in `workspace`, in order.
 
     Built per pass rather than declared as a constant because a stage's command
-    names the workspace, and a workspace id is not known until there is one.
+    names the workspace, and a workspace id is not known until there is one --
+    and now also because whether the zellij stage is asked for at all depends on
+    an environment the process may change between passes.
     """
-    return (
+    stages = [
         Stage(
             name=HOSTNAME_STAGE,
             # The hostname appears in the bash prompt (user@hostname:path$),
@@ -491,7 +582,33 @@ def setup_stages(workspace: str) -> Tuple[Stage, ...]:
             command=f"sudo hostname {shlex.quote(workspace)}",
             failure_level=logging.INFO,
         ),
-    )
+    ]
+    # Gated on the tools opt-out, unlike the hostname above it: installing
+    # zellij *is* tool provisioning, where naming a container is not, and a
+    # machine that turned tool installs off has not thereby asked for anonymous
+    # containers. `provision_tools` draws the same line for the same reason.
+    if not provisioning_disabled():
+        stages.append(
+            Stage(
+                name=ZELLIJ_STAGE,
+                # A nested `bash -c` because a stage is interpolated into
+                # `if <command>; then`, which is one line, and this script is
+                # not. It inherits the pass's exported PATH rather than
+                # sourcing the profile again: the pass is already a login
+                # shell, so an installed zellij is on PATH here, and a second
+                # `-l` would re-run a chatty image's profile on every launch.
+                #
+                # Redirected to stderr as a whole, because a stage shares the
+                # probe's stdout (see `Stage`) and pixi is loud -- both readers
+                # split marked lines on spaces, so a package manager's progress
+                # on that stream is one unlucky line from being read as
+                # protocol. To stderr and not to /dev/null because `_setup_pass`
+                # captures stdout: an install redirected into that buffer is a
+                # cold launch that looks hung with nothing to show for it.
+                command=f"bash -c {shlex.quote(zellij_script())} >&2",
+            )
+        )
+    return tuple(stages)
 
 
 def _stage_snippet(stage: Stage) -> str:
@@ -513,8 +630,15 @@ def _stage_snippet(stage: Stage) -> str:
     )
 
 
-def setup_script(workspace: str) -> str:
+def setup_script(workspace: str, stages: Optional[Sequence[Stage]] = None) -> str:
     """The one script a cold launch's setup pass sends: stages, then the probe.
+
+    `stages` exists so a caller that already has the tuple sends *that* tuple
+    rather than a second one built from a second reading of the environment:
+    `setup_stages` is no longer a pure function of `workspace` (the zellij
+    stage is conditional), and a script whose stages disagreed with the list
+    its outcomes are matched against would report a phantom `not reached`.
+    Defaulted, because every other caller only has the workspace.
 
     Composed here, on the host, out of `probe_script()` **verbatim** plus stage
     snippets that know nothing about it. Nothing about the probe is copied or
@@ -531,9 +655,8 @@ def setup_script(workspace: str) -> str:
     Exits 0 in every state, like the probe it carries, so a non-zero `devpod
     ssh` keeps meaning the transport failed and never that a stage did.
     """
-    return "\n".join(
-        [*(_stage_snippet(stage) for stage in setup_stages(workspace)), probe_script()]
-    )
+    resolved = setup_stages(workspace) if stages is None else stages
+    return "\n".join([*(_stage_snippet(stage) for stage in resolved), probe_script()])
 
 
 @dataclass(frozen=True)
@@ -840,7 +963,12 @@ def _setup_pass(workspace: str, runner) -> ProbeResult:
     """
     stages = setup_stages(workspace)
     result = runner(
-        ["ssh", workspace, "--command", f"bash -lc {shlex.quote(setup_script(workspace))}"],
+        [
+            "ssh",
+            workspace,
+            "--command",
+            f"bash -lc {shlex.quote(setup_script(workspace, stages))}",
+        ],
         capture=True,
     )
     report = result.stdout or ""
