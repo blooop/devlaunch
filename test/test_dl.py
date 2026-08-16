@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2482,6 +2483,115 @@ class TestWorkspaceSsh:
             ["ssh", "myws", "--workdir", "/workspaces/myws", "--command", "bash -lc 'make test'"],
             env=None,
         )
+
+
+class TestZellijSessionWrap:
+    """The opt-in terminal-beside-the-agent wrap (#242), on and off.
+
+    What the capability actually needs is measured and narrow: with a zellij
+    session merely *existing* in the container, `zellij -s <name> action
+    new-pane -- <cmd>` opens a working pane from a command that is not itself
+    in any session, with no TTY anywhere. So the wrap ensures the named session
+    exists and then runs the command **beside** it, rather than inside a pane.
+
+    Running the command inside a pane would have taken its stdout and its exit
+    status away from `dl` -- zellij would own the pty and report its own status
+    -- and both are contracts the rest of this file pins: `dl <ws> -- cmd >
+    file` puts the command's output in the file, and `TestSessionExitStatus`
+    below exists entirely to keep the remote program's status intact. The
+    capability the ticket asks for is delivered either way; only one of the two
+    designs breaks every scripted caller.
+
+    Default off is the other half, and it is asserted as an absence: the
+    payload pins in `TestWorkspaceSsh` above run with the switch unset and were
+    not edited for this feature.
+    """
+
+    ENSURE = "zellij attach -b devlaunch >/dev/null 2>&1 || true"
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_it_is_off_unless_switched_on(self, mock_session, monkeypatch):
+        """No existing invocation changes meaning. The whole default."""
+        monkeypatch.delenv(dl_module.ZELLIJ_WRAP_VAR, raising=False)
+        mock_session.return_value = RemoteExit(0)
+        assert workspace_ssh("myws", command="echo hello") == 0
+        mock_session.assert_called_once_with(
+            ["ssh", "myws", "--command", "bash -lc 'echo hello'"], env=None
+        )
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_switched_on_the_command_runs_beside_a_named_session(self, mock_session, monkeypatch):
+        """The payload, pinned whole.
+
+        `attach -b` and not `attach -c`: `-b` creates the session detached and
+        returns, which is the only form a non-TTY `devpod ssh --command` can
+        use. Measured live in `devcontainers/base:ubuntu`.
+        """
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        mock_session.return_value = RemoteExit(0)
+        assert workspace_ssh("myws", command="echo hello") == 0
+        mock_session.assert_called_once_with(
+            ["ssh", "myws", "--command", f"bash -lc '{self.ENSURE}; echo hello'"],
+            env=None,
+        )
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_a_session_that_is_already_there_is_not_an_error(self, mock_session, monkeypatch):
+        """Measured: a second `zellij attach -b <name>` exits **1** once the
+        session exists, which is the case every launch after the first takes.
+        Without the `|| true` the ensure would fail on exactly the common
+        path, so the tolerance is pinned rather than left to reading."""
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        mock_session.return_value = RemoteExit(0)
+        workspace_ssh("myws", command="true")
+        payload = mock_session.call_args.args[0][-1]
+        assert "|| true" in payload
+        assert "&&" not in payload
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_the_commands_own_status_still_comes_back(self, mock_session, monkeypatch):
+        """The ensure runs in front of the command and `;` separates them, so
+        what the payload exits with is the command's status and never the
+        session setup's. `dl <ws> -- pytest` stays scriptable."""
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        mock_session.return_value = RemoteExit(2)
+        assert workspace_ssh("myws", command="pytest") == 2
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_a_bare_attach_is_untouched_even_switched_on(self, mock_session, monkeypatch):
+        """What a bare `dl <ws>` does, stated as a test.
+
+        Nothing. It sends no `--command` at all -- that is what gets it a pty
+        from devpod -- so there is no payload to wrap, and giving it one would
+        cost either the pty or a round trip of its own in front of every
+        shell (#183's lesson). A human at that shell has zellij on PATH and can
+        attach to or create the session by hand; the wrap exists for the
+        program dl launches, which cannot.
+        """
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        mock_session.return_value = RemoteExit(0)
+        assert workspace_ssh("myws") == 0
+        mock_session.assert_called_once_with(["ssh", "myws"], env=None)
+
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_a_command_with_quotes_survives_both_wrappers(self, mock_session, monkeypatch):
+        """One `shlex.quote`, applied after the ensure is prepended, so the
+        composed payload is quoted once as a whole rather than twice."""
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        mock_session.return_value = RemoteExit(0)
+        workspace_ssh("myws", command="claude 'do the thing'")
+        inner = f"{self.ENSURE}; claude 'do the thing'"
+        assert mock_session.call_args.args[0][-1] == f"bash -lc {shlex.quote(inner)}"
+
+    @pytest.mark.parametrize("setting", ["", "0", "false", "no", "NO", " 0 "])
+    @patch("devlaunch.dl.run_devpod_session")
+    def test_a_switch_set_to_a_denial_is_still_off(self, mock_session, monkeypatch, setting):
+        """The same vocabulary of denials the other switches read, so an
+        `export DEVLAUNCH_ZELLIJ=0` means off here too."""
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, setting)
+        mock_session.return_value = RemoteExit(0)
+        workspace_ssh("myws", command="echo hello")
+        assert mock_session.call_args.args[0][-1] == "bash -lc 'echo hello'"
 
 
 class TestSessionExitStatus:

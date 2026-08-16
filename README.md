@@ -448,6 +448,95 @@ Attaching to a workspace that is *already running* skips `devpod up`, and so ski
 this too. A workspace started by something other than `dl` — or created before this
 existed — picks the tools up on its next `dl <workspace> restart`.
 
+## A terminal beside the agent
+
+Every workspace `dl` opens also has [zellij](https://zellij.dev) on `PATH`, which
+buys one thing the other tools do not: an agent running in a container can open a
+**second terminal next to itself**, in the same container, and you can attach to it
+from anywhere to watch or to type.
+
+Nothing has to cooperate for this. It does not come from your dotfiles, it does not
+need an edit to any repo's `devcontainer.json`, and it works in images `dl` has never
+seen — the same argument the rest of "Tools in every workspace" makes, for the same
+reason: `dl` launches arbitrary repos.
+
+### Opening a pane from inside a session
+
+From anywhere inside the container — including from a completely non-interactive
+command, with no terminal attached to anything:
+
+```bash
+zellij -s devlaunch action new-pane -- htop
+```
+
+`-s <name>` is the form to use and the only one worth depending on. Bare
+`zellij action new-pane` happens to work by falling back to the single running
+session, which stops being a single session the moment there are two of them.
+
+`devlaunch` is the session name `dl` creates and the one to name here.
+
+### Switching the wrap on
+
+The session an agent opens panes into has to exist first, and creating it is
+**off by default**:
+
+```bash
+DEVLAUNCH_ZELLIJ=1 dl someone/repo -- claude -p "do the thing"
+```
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_ZELLIJ=1` | Before running `dl <spec> -- <command>`, make sure a zellij session named `devlaunch` exists in the container, so the command can open panes into it |
+
+With it off, no invocation changes meaning at all — that is what off means here, and
+it is why the switch exists rather than the behaviour simply being on.
+
+**The command runs beside the session, not inside a pane of it.** That is deliberate.
+Putting the command in a pane would hand its stdin, stdout and exit status to zellij,
+and all three are things `dl` promises to leave alone: `dl <ws> -- cmd > file` has to
+put the command's own output in the file, and a failing command has to come back with
+its own status. Since `zellij -s <name> action new-pane` works perfectly well from a
+command that is in no session at all, running beside the session costs nothing and
+delivers the same pane.
+
+**A bare `dl <workspace>` is untouched, switched on or off.** An interactive attach
+sends no command for the wrap to attach to — that is exactly what gets it a terminal
+from devpod — and giving it one would cost either the terminal or a round trip in
+front of every shell. You land in an ordinary login shell with `zellij` on `PATH`, so
+`zellij attach -c devlaunch` gets you the session, and any panes an agent has opened
+in it, whenever you want them.
+
+### Existing workspaces
+
+zellij arrives on the setup pass, which runs on every `devpod up`. So a workspace
+that predates this picks it up on its next **`dl <workspace> restart`** — a full
+`dl <workspace> recreate` also works but is not needed, because nothing here is a
+bind mount and mounts are the thing that only lands at container creation.
+
+Attaching to a workspace that is *already running* skips `devpod up` and so skips
+this too, which is what makes the restart necessary rather than automatic.
+
+### What it costs
+
+Almost nothing, and that was measured rather than assumed. zellij is a conda-forge
+package installed by pixi into the container, so it lands in the shared package cache
+above and every container after the first extracts rather than downloads:
+
+| | |
+|---|---|
+| **Warm install** (shared cache populated) | 0.56s / 0.23s / 0.23s over three fresh containers |
+| **Cold install** (empty cache) | 3.0s, filling 167MB of shared cache |
+| **Every launch after the first** | one `command -v`; the whole setup pass measured at 50ms |
+
+**It can never fail a launch.** Provisioning zellij is a stage of the setup pass, so a
+container with no network, no pixi and no way to get either reports the stage as
+failed, by name, and then opens exactly as it would have. A container that ends up
+without zellij still works; with the wrap on, the command still runs, because the
+session setup is allowed to fail and the command runs regardless.
+
+`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning —
+installing zellij is tool provisioning, where naming a container is not.
+
 ## The shared pixi package cache
 
 Every container `dl` creates gets one host directory bound into it, and

@@ -832,6 +832,62 @@ class TestOptInDotfilesRefreshOnAttach:
         ]
 
 
+class TestOptInZellijWrap:
+    """What switching the terminal-beside-the-agent wrap on costs: no trips.
+
+    The feature adds one shell command to an existing payload and one stage to
+    a setup pass that was already being paid, so the count is the claim. The
+    off-by-default requirement is the untouched pins in
+    `TestHotCommandSpawnCounts` above, which run with the switch unset.
+    """
+
+    def test_switched_on_a_one_shot_command_still_costs_exactly_two_spawns(
+        self, spawns, monkeypatch
+    ):
+        """Ensuring the session rides the command's own trip.
+
+        A separate `devpod ssh` to create the session first would be ~1.73s of
+        which ~99% is connection setup -- the very round trip #157 folded away
+        and #183 refused to reintroduce -- charged to every agent launch.
+        """
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        assert _run_dl("myws", "--", "echo", "hi") == 0
+        assert spawns.devpod_commands == [
+            ["status", "myws", "--output", "json"],
+            [
+                "ssh",
+                "myws",
+                "--command",
+                "bash -lc 'zellij attach -b devlaunch >/dev/null 2>&1 || true; echo hi'",
+            ],
+        ]
+
+    def test_switched_on_an_attach_still_costs_exactly_what_it_did(self, spawns, monkeypatch):
+        """A bare attach sends no command, so there is nothing to wrap and
+        nothing to pay -- the same spawn sequence as with the switch off."""
+        monkeypatch.setenv(dl_module.ZELLIJ_WRAP_VAR, "1")
+        assert _run_dl("myws") == 0
+        assert spawns.devpod_commands == [
+            ["status", "myws", "--output", "json"],
+            ["ssh", "myws"],
+        ]
+
+    def test_provisioning_zellij_is_never_a_trip_of_its_own(self, spawns):
+        """It rides the setup pass, which every entry into Running already pays.
+
+        Asserted as the absence the fold is worth: on no path does a `devpod
+        ssh` go out whose whole payload is a zellij install. Inside the pass's
+        own script it is expected -- that is the fold -- so the check is on
+        each trip's *shape*, not on the substring.
+        """
+        assert _run_dl("myws", "--", "echo", "hi") == 0
+        for argv in spawns.devpod_commands:
+            if argv[:1] != ["ssh"] or "--command" not in argv:
+                continue
+            payload = argv[argv.index("--command") + 1]
+            assert payload != f"bash -lc {shlex.quote(tools.zellij_script())}"
+
+
 class TestAttachHelper:
     """The attach is one trip now, and the same one trip either way.
 

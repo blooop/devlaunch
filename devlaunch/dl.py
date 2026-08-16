@@ -3837,7 +3837,7 @@ def workspace_ssh(
     # Built once and shared by both transports: two copies of this expression
     # would be two chances for the transports to drift, which is the whole
     # failure this function exists to have fixed.
-    payload = f"bash -lc {shlex.quote(command)}" if command else None
+    payload = f"bash -lc {shlex.quote(_with_zellij_session(command))}" if command else None
 
     if payload is not None and tty_session.have_terminal():
         if tty_session.devpod_host_configured(workspace):
@@ -3895,6 +3895,63 @@ def _ssh_with_terminal(workspace: str, payload: str, workdir: Optional[str]) -> 
 DOTFILES_ON_ATTACH_VAR = "DEVLAUNCH_DOTFILES_ON_ATTACH"
 
 _FALSEY = ("", "0", "false", "no")
+
+# The switch that puts `dl <spec> -- <cmd>` beside a zellij session (#242), and
+# the name that session takes.
+#
+# One fixed name rather than one per workspace, because a zellij server lives
+# *inside* a container and dies with it: two workspaces cannot collide on this
+# name, since neither can see the other's sessions. That makes the name a
+# constant a human can type without looking it up, which is the whole of the
+# documented interface -- `zellij -s devlaunch action new-pane -- <cmd>`.
+ZELLIJ_WRAP_VAR = "DEVLAUNCH_ZELLIJ"
+ZELLIJ_SESSION = "devlaunch"
+
+
+def zellij_wrap_enabled() -> bool:
+    """Whether the user asked commands to run beside a zellij session.
+
+    Off unless switched on, which is the requirement rather than a preference:
+    with it off, no existing invocation changes meaning at all. Reads the same
+    vocabulary of denials as `DEVLAUNCH_DOTFILES_ON_ATTACH` and
+    `DEVLAUNCH_NO_GH_TOKEN`, so `=0` and an empty export mean off here too, and
+    the default falls out of unset reading as the empty string.
+    """
+    return os.environ.get(ZELLIJ_WRAP_VAR, "").strip().lower() not in _FALSEY
+
+
+def _with_zellij_session(command: str) -> str:
+    """`command`, preceded by making sure the agent has a terminal to open into.
+
+    **Beside the session, not inside it**, and that is the design decision worth
+    reading twice. What the capability needs is only that a session *exists*:
+    `zellij -s <name> action new-pane -- <cmd>` opens a working pane from a
+    command that is in no session at all, with no TTY anywhere -- measured live
+    through `devpod ssh --command` against `devcontainers/base:ubuntu`. Running
+    the command inside a pane instead would hand its stdin, stdout and exit
+    status to zellij, and all three are contracts dl holds: `dl <ws> -- cmd >
+    file` has to put the command's output in the file, and `workspace_ssh` goes
+    to considerable trouble to return the remote program's own status. Both
+    designs deliver the pane; only one of them breaks every scripted caller.
+
+    `attach -b` (create detached and return) rather than `attach -c`, because
+    `-c` wants to attach, and the command this rides is not on a terminal.
+
+    `|| true`, and the tolerance is load-bearing rather than defensive: a second
+    `zellij attach -b <name>` exits **1** once the session is there, which is
+    the case every launch after the first takes. It also carries the "cost the
+    feature, not the launch" rule to this end of the feature -- a container
+    where zellij never installed runs the command exactly as it would have,
+    because a missing binary is a 127 this swallows like any other.
+
+    Separated by `;` and not `&&` for the same reason: what the payload exits
+    with must be the command's status, never the session setup's.
+    """
+    if not zellij_wrap_enabled():
+        return command
+    ensure = f"zellij attach -b {shlex.quote(ZELLIJ_SESSION)} >/dev/null 2>&1 || true"
+    return f"{ensure}; {command}"
+
 
 # What the opt-in refresh may spend before it gives up and hands over the shell.
 # Generous enough that a real `chezmoi update` plus `pixi global sync` finishes
