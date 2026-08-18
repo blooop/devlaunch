@@ -44,19 +44,19 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_dl.py` | pending |  |
 | `test/test_interactive_command.py` | pending |  |
 | `test/test_lending_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
-| `test/test_locks.py` | pending |  |
+| `test/test_locks.py` | re-pinned in Rust | domain/locks.rs; the literal "dl: waiting" stderr line is rendering (typed event pinned; words are the dl binary's) |
 | `test/test_pty_helpers.py` | out of port scope (harness infrastructure) | pins test/fixtures/pty_helpers.py, which survives as the judge |
 | `test/test_repo_lock_cycles.py` | pending |  |
 | `test/test_timing.py` | pending |  |
 | `test/test_workspace_clone.py` | pending |  |
-| `test/test_workspace_id.py` | pending |  |
+| `test/test_workspace_id.py` | re-pinned in Rust | all 53 behaviors; 55 Rust tests in domain/workspace_id.rs incl. 45 Python-generated golden ids |
 | `test/test_workspace_state.py` | pending |  |
 | `test/test_worktree_branch_manager.py` | pending |  |
-| `test/test_worktree_config.py` | pending |  |
+| `test/test_worktree_config.py` | re-pinned in Rust | domain/config.rs; to_dict untested — no production caller writes config.toml |
 | `test/test_worktree_migration.py` | pending |  |
-| `test/test_worktree_models.py` | pending |  |
+| `test/test_worktree_models.py` | re-pinned in Rust | domain/model.rs; byte-compat golden JSON from Python |
 | `test/test_worktree_repo_manager.py` | pending |  |
-| `test/test_worktree_storage.py` | pending |  |
+| `test/test_worktree_storage.py` | re-pinned in Rust | domain/metadata.rs; seam-patched tests re-expressed as behavior |
 | `test/unit/__init__.py` | out of port scope (harness infrastructure) |  |
 | `test/unit/test_aid.py` | pending |  |
 | `test/unit/test_claude_code_feature_mounts.py` | pending |  |
@@ -73,12 +73,12 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_e2e_workspace_helper.py` | out of port scope (harness infrastructure) | pins e2e_helpers.py, which survives as the judge |
 | `test/unit/test_gh_auth.py` | pending |  |
 | `test/unit/test_launch_serialization.py` | pending |  |
-| `test/unit/test_locks.py` | pending |  |
+| `test/unit/test_locks.py` | re-pinned in Rust | domain/locks.rs; the Python-language API-shape guards have no Rust analogue |
 | `test/unit/test_prune_orphaned_clones.py` | pending |  |
 | `test/unit/test_purge_ownership.py` | pending |  |
 | `test/unit/test_purge_partial_removal.py` | pending |  |
 | `test/unit/test_reconcile_orphaned_workspaces.py` | pending |  |
-| `test/unit/test_spec_parsing.py` | pending |  |
+| `test/unit/test_spec_parsing.py` | re-pinned in Rust | misnamed file: model/config serialization, covered by domain/model.rs + config.rs tests |
 | `test/unit/test_stored_workspace_id.py` | pending |  |
 | `test/unit/test_tools.py` | pending |  |
 | `test/unit/test_tty_session.py` | pending |  |
