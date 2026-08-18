@@ -14,6 +14,14 @@
 //! raises `DevpodNotInstalled` for that case and `main()` renders exit 127; the
 //! arm is [`NotRun::NotInstalled`] and the rendering is still the binary's.
 //!
+//! Being the one spawn is also what makes it the one place a devpod round trip is
+//! *timed*: each of the three opens a [`timing`] span named
+//! [`Call::round_trip`] — Python's `" ".join(cmd[:2])` — so a new devpod call is
+//! measured by existing rather than by its caller remembering to wrap it. A span
+//! recorded here lands in whatever stage the calling flow has open, which is how
+//! `devpod status` is charged to `devpod-up` without this module knowing there are
+//! stages.
+//!
 //! # What devpod says, as data
 //!
 //! Four things devpod is asked are *read* rather than merely run, and each has
@@ -54,6 +62,7 @@ use std::time::Duration;
 use crate::runner::{
     CapturedText, EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec, StdinPlan,
 };
+use crate::timing;
 
 /// The program every call in this module runs. One constant, so no caller
 /// spells it and the response table of a test has one name to match on.
@@ -133,10 +142,23 @@ impl Call {
         self
     }
 
-    /// The whole argv, `devpod` included — what a recorded call compares against,
-    /// and what a timing span is named from (`" ".join(cmd[:2])` in Python).
+    /// The whole argv, `devpod` included — what a recorded call compares against.
     pub(crate) fn argv(&self) -> Vec<String> {
         self.spec().invocation.argv()
+    }
+
+    /// How a timing summary names this round trip: `" ".join(cmd[:2])`, which is
+    /// what Python's `run_devpod` spans every devpod call under.
+    ///
+    /// The subcommand and not the whole argv, so the summary names each trip
+    /// (`devpod status`, `devpod ssh`, `devpod up`) without leaking a workspace id
+    /// into it. A call with no subcommand at all is not one anything makes, and
+    /// naming it `devpod` is what Python's slice does with it.
+    fn round_trip(&self) -> String {
+        match self.args.first() {
+            Some(subcommand) => format!("{PROGRAM} {subcommand}"),
+            None => PROGRAM.to_owned(),
+        }
     }
 
     fn spec(&self) -> SpawnSpec {
@@ -173,6 +195,7 @@ impl Answer {
 
 /// Ask devpod something and read both its streams.
 pub(crate) fn capture(runner: &dyn Runner, call: &Call) -> Result<Answer, NotRun> {
+    let _span = timing::span(call.round_trip());
     let (exit, text) = ran(runner.capture(&call.spec()))?;
     Ok(Answer { exit, text })
 }
@@ -180,6 +203,7 @@ pub(crate) fn capture(runner: &dyn Runner, call: &Call) -> Result<Answer, NotRun
 /// Run devpod with this process's streams, capturing nothing: `devpod up` builds
 /// an image for minutes and its progress belongs on the user's terminal.
 pub(crate) fn run(runner: &dyn Runner, call: &Call) -> Result<Exit, NotRun> {
+    let _span = timing::span(call.round_trip());
     ran(runner.passthrough(&call.spec())).map(|(exit, ())| exit)
 }
 
@@ -367,6 +391,9 @@ pub(crate) fn session(
     call: &Call,
     forward: &mut dyn FnMut(&str),
 ) -> Result<SshOutcome, NotRun> {
+    // The span covers the whole session, as Python's does: what the summary names
+    // is the round trip the user waited on, not just the process spawn.
+    let _span = timing::span(call.round_trip());
     let mut filter = StderrFilter::new();
     let outcome = runner.session(&call.spec(), &mut |line| filter.push(line, forward));
     let remote_status = filter.finish(forward);
@@ -1058,9 +1085,17 @@ pub(crate) mod tests {
     }
 
     /// A recording [`Runner`] whose answers a test writes.
-    #[derive(Debug, Default)]
+    ///
+    /// It holds [`timing::exclusive`] for its own lifetime, because every call
+    /// through it is spanned against the **process-global** registry: without it, a
+    /// test that merely asks devpod something writes into whatever document a
+    /// concurrent measured test installed. In the fixture rather than per test, so
+    /// no test has to remember.
+    #[derive(Debug)]
     pub(crate) struct ScriptedRunner {
         inner: Mutex<Recording>,
+        /// See [`timing::exclusive`]. Last field, so it is dropped last.
+        _serialized: timing::Exclusive,
     }
 
     #[derive(Debug, Default)]
@@ -1071,7 +1106,10 @@ pub(crate) mod tests {
 
     impl ScriptedRunner {
         pub(crate) fn new() -> Self {
-            Self::default()
+            Self {
+                inner: Mutex::default(),
+                _serialized: timing::exclusive(),
+            }
         }
 
         /// Answer `reply` to any call whose whole argv starts this way. Entries
@@ -1337,6 +1375,92 @@ pub(crate) mod tests {
             }
             other => panic!("expected a passthrough call, got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------------- the timing spans
+    //
+    // `test/test_timing.py`'s `TestDevpodRoundTripsAreNamed` asserts these labels
+    // through `main()`, where they arrive from Python's one spawn helper. They
+    // arrive from this module's three, so this is where they are pinned.
+
+    /// The span labels `record` produced, in order.
+    ///
+    /// Drives the process-global registry, so it holds [`timing::exclusive`] for
+    /// the length of the measurement.
+    fn spans_of(record: impl FnOnce()) -> Vec<String> {
+        let _serialized = timing::exclusive();
+        timing::install(Some(timing::Registry::start(
+            timing::Mode::Prose,
+            timing::Seam::default(),
+            0.0,
+        )));
+        record();
+        match timing::emit().expect("a report from an installed registry") {
+            timing::Report::Prose(prose) => {
+                prose.spans.iter().map(|span| span.label.clone()).collect()
+            }
+            other => panic!("asked for the prose summary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_devpod_round_trip_is_named_by_its_subcommand() {
+        // Python spans each call as `" ".join(cmd[:2])`, and all three shapes of
+        // call go through it: captured, inherited, and the session.
+        let fake = ScriptedRunner::new()
+            .with_script(["devpod", "list"], Reply::stdout("[]"))
+            .with_script(
+                ["devpod", "status"],
+                Reply::stdout(r#"{"state": "Running"}"#),
+            );
+
+        let labels = spans_of(|| {
+            let _ = list_workspaces(&fake);
+            let _ = status(&fake, "myws");
+            let _ = run(&fake, &Call::new(["up", "myws", "--ide", "none"]));
+            let _ = session(&fake, &Call::new(["ssh", "myws"]), &mut |_| {});
+        });
+
+        assert_eq!(
+            labels,
+            ["devpod list", "devpod status", "devpod up", "devpod ssh"]
+        );
+    }
+
+    #[test]
+    fn the_label_is_the_subcommand_and_never_what_follows_it() {
+        // A workspace id in a summary is what the `cmd[:2]` slice exists to keep
+        // out of it.
+        assert_eq!(
+            Call::new(["status", "myws", "--output", "json"]).round_trip(),
+            "devpod status"
+        );
+        assert_eq!(
+            Call::new(["context", "options", "--output", "json"]).round_trip(),
+            "devpod context"
+        );
+        assert_eq!(
+            Call::new(["provider", "add", "docker"]).round_trip(),
+            "devpod provider"
+        );
+        assert_eq!(
+            Call::new(Vec::<String>::new()).round_trip(),
+            "devpod",
+            "a call with no subcommand is named by the slice it has"
+        );
+    }
+
+    #[test]
+    fn a_round_trip_devpod_never_answered_is_still_named_and_timed() {
+        // A spawn that failed still took time, and dropping it would make the
+        // parts add up to less than the total.
+        let fake = ScriptedRunner::new().with_missing("devpod");
+
+        let labels = spans_of(|| {
+            let _ = list_workspaces(&fake);
+        });
+
+        assert_eq!(labels, ["devpod list"]);
     }
 
     // ------------------------------------ how a session ended (devpod_ssh.py)

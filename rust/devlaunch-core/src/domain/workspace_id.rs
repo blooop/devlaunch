@@ -218,7 +218,7 @@ pub(crate) fn source_workspace_id(source: &str) -> String {
 /// The fields are private and there is no other constructor, which is what makes
 /// an unvalidated triple unrepresentable rather than merely discouraged.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct WorkspaceId {
+pub struct WorkspaceId {
     owner: String,
     repo: String,
     git_ref: String,
@@ -230,7 +230,7 @@ impl WorkspaceId {
     /// Parts are checked owner-first, because a caller that builds
     /// `repos_dir/<owner>/<repo>` needs the owner's verdict before it touches
     /// the filesystem.
-    pub(crate) fn new(owner: &str, repo: &str, git_ref: &str) -> Result<Self, UnsafeName> {
+    pub fn new(owner: &str, repo: &str, git_ref: &str) -> Result<Self, UnsafeName> {
         validate_ref_name(owner, NamePart::Owner)?;
         validate_ref_name(repo, NamePart::Repo)?;
         validate_ref_name(git_ref, NamePart::Ref)?;
@@ -272,7 +272,7 @@ impl WorkspaceId {
     }
 
     /// The derived id, at most [`TARGET_LENGTH`] characters.
-    pub(crate) fn value(&self) -> String {
+    pub fn value(&self) -> String {
         let suffix = self.suffix();
         let mut repo_part = slug(&self.repo);
         // Cut the repo slug only when the id would otherwise overflow. Capping it

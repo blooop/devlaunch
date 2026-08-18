@@ -64,7 +64,7 @@ const FALSEY: [&str; 4] = ["", "0", "false", "no"];
 /// devpod is present and working would send them the wrong way. The way out that
 /// needs no ssh at all — `DEVLAUNCH_NO_TTY=1` — is what the rendering names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NotRun {
+pub enum NotRun {
     NotInstalled,
     TimedOut,
     Blocked(OsFailure),
@@ -72,7 +72,7 @@ pub(crate) enum NotRun {
 
 /// A terminal session that cannot be composed, and must not be approximated.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum UnsafeRequest {
+pub enum UnsafeRequest {
     /// The workspace id would reach ssh as an option.
     ///
     /// The alias goes in positionally and ssh has no reliable `--`, so an id

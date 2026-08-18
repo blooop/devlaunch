@@ -861,6 +861,73 @@ pub(crate) fn observe_attach(shape: AttachShape) {
     with_registry(|registry| registry.observe_attach(shape));
 }
 
+// --- the test exclusion -----------------------------------------------------
+
+/// Exclusive use of the process-global registry, for the length of the guard.
+///
+/// `cargo test` runs a crate's tests as threads of *one* process, and there is one
+/// registry per process — so without this, a test that installs one and a test that
+/// merely opens a stage are writing to the same document. Two things then go wrong,
+/// and only the first is visible as a wrong number: a stranger's spans and stages
+/// land in the measured document, and two concurrent [`stage`] calls for the same
+/// owner have the second find it already open, so its guard closes nothing while
+/// the first one's closes the stage out from under it.
+///
+/// Crate-wide rather than per-module, which is the whole point: the hazard is
+/// between modules. It is held by the *fixtures* — `launch`'s `Scene`,
+/// `repo_manager`'s `Cache`, `lifecycle`'s `Devpod` — rather than asked for at the
+/// top of each test, so a new test cannot forget it, and a test that builds two of
+/// them does not deadlock: the exclusion is reentrant per thread, and only the
+/// outermost guard holds the lock.
+///
+/// A test whose *body* spawns threads is covered by this too, because what the
+/// exclusion is against is another **test** recording, and no other test can be
+/// running while this one holds the guard. The one thing such a worker must not do
+/// is ask for a guard of its own: reentrancy is per thread, so a worker would be
+/// waiting for its own test to finish. That is why the contention tests' `FakeGit`
+/// is not a holder and their `Cache` is.
+#[cfg(test)]
+pub(crate) fn exclusive() -> Exclusive {
+    // The `None` arm is a thread already inside the exclusion; taking the lock
+    // again there is a deadlock against itself, and needs nothing, because the
+    // outer guard already excludes everybody else.
+    let held = (DEPTH.get() == 0).then(|| {
+        MEASURING
+            .lock()
+            // A test that panicked while measuring must not fail every later one:
+            // what is behind this lock is `()`, so there is no state to have left
+            // inconsistent.
+            .unwrap_or_else(PoisonError::into_inner)
+    });
+    DEPTH.set(DEPTH.get() + 1);
+    Exclusive { _held: held }
+}
+
+#[cfg(test)]
+static MEASURING: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    /// How many live [`Exclusive`] guards this thread already holds.
+    static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The registry is this test's alone until this is dropped.
+#[cfg(test)]
+#[derive(Debug)]
+#[must_use = "the exclusion lasts until this guard drops, so bind it"]
+pub(crate) struct Exclusive {
+    /// Held by the outermost guard on this thread, and by no inner one.
+    _held: Option<MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for Exclusive {
+    fn drop(&mut self) {
+        DEPTH.set(DEPTH.get() - 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! What `test/test_timing.py` pins, on this side of the port.
@@ -1531,19 +1598,31 @@ mod tests {
 
     // --- the process-global handle ------------------------------------------
     //
-    // One registry per process, so these tests take a lock rather than running
-    // alongside each other. Everything else above drives an owned registry and
-    // needs none of this.
-
-    static GLOBAL: Mutex<()> = Mutex::new(());
+    // One registry per process, so these tests take [`exclusive`] rather than
+    // running alongside each other *or* alongside the flow tests that record into
+    // whatever is installed. Everything else above drives an owned registry and
+    // needs none of it.
 
     fn global<T>(test: impl FnOnce() -> T) -> T {
-        let held = GLOBAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = exclusive();
         install(None);
         let outcome = test();
         install(None);
         drop(held);
         outcome
+    }
+
+    #[test]
+    fn the_exclusion_is_reentrant_so_a_fixture_can_hold_it_without_deadlocking() {
+        // The guard lives in test fixtures, and a test that builds two of them
+        // asks twice on one thread. A plain mutex deadlocks against itself there,
+        // which is why this is worth a test even though its failure is a hang.
+        let outer = exclusive();
+        let inner = exclusive();
+        drop(inner);
+        drop(outer);
+        // And the lock really was released, so a third ask still succeeds.
+        drop(exclusive());
     }
 
     #[test]

@@ -1,57 +1,59 @@
-//! Which devpod workspace a target word names.
+//! Which devpod workspace a lifecycle verb's target word names.
 //!
 //! `dl <target> stop` and `dl <target> rm` accept everything `dl <target>` does —
 //! a workspace id, `owner/repo[@branch]`, a path, a git URL — and every one of
 //! them has to become the *one* id devpod is addressed by. Python answers that
 //! question in one block above its subcommand dispatch, shared by the launch and
-//! by the lifecycle verbs; this is the lifecycle half of that block.
+//! by the lifecycle verbs.
 //!
-//! # Two of Python's steps are deliberately not here
+//! # The resolution is core's; the two subtractions are this module
 //!
-//! Python's shared block is a *launch* resolution, and a lifecycle verb inherited
-//! two things from it that only a launch wants:
+//! M6 stood this module up as its own copy of that block, because the launch flow
+//! had not been wired yet. It is no longer a copy: the classification is
+//! [`launch::plan`] and the devpod-first lookup is [`launch::resolve_triple`], the
+//! same two calls `dl <spec>` makes. What is left here is the pair of steps a
+//! *lifecycle* verb must not take, and both are **divergence row 23**:
 //!
 //! - `ensure_repo`, which clones the bare cache so a bare `owner/repo` can be
 //!   asked for its default branch. Here the branch comes from
 //!   [`RepositoryManager::get_default_branch`], which reads the record and then
-//!   asks the remote for `HEAD` without a clone.
+//!   asks the remote for `HEAD` without a clone — where [`launch::plan`]'s caller
+//!   would go through [`launch::name_default_branch`] and clone.
 //! - `prepare_cold`, which clones the *workspace* whenever devpod does not
 //!   recognise the derived id — so `dl owner/never-launched@main stop` created a
 //!   clone directory and a metadata record on its way to stopping a workspace that
-//!   does not exist. Nothing here creates anything.
+//!   does not exist. Nothing here creates anything: a triple devpod denies keeps
+//!   the derived id, and the verb fails on devpod's own refusal.
 //!
-//! Both are named as divergence candidates in the M6 report; both only ever ran
-//! on a target devpod could not place, where the verb was going to fail anyway.
-//!
-//! # Where this lives
-//!
-//! In the binary for now, because it is the *only* consumer: M7's launch flow
-//! resolves the same target in core, and when it does, this module is what folds
-//! into it — with the `pub` promotions in `domain::spec` and
-//! `domain::workspace_id` folding back the other way.
-
-use std::path::PathBuf;
+//! One thing the fold changed on purpose: **divergence row 20**. This module used
+//! to name a path spec by `Path::canonicalize`, which follows symlinks, while
+//! [`launch::plan`] normalises lexically. Two answers to "which workspace is
+//! `./x`" is one answer too many, so the naming is now core's for both, and it is
+//! the lexical one.
 
 use devlaunch_core::clients::devpod::ListingUnreadable;
-use devlaunch_core::domain::spec::{self, SpecIdentity, WorkspaceSpec};
-use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
-use devlaunch_core::flows::lifecycle::{self, LifecycleNotice};
+use devlaunch_core::domain::workspace_id::{UnsafeName, WorkspaceId};
+use devlaunch_core::flows::launch::{self, LaunchNotice, Plan, Resolution};
+use devlaunch_core::flows::lifecycle;
 use devlaunch_core::flows::listing::CommandContext;
 use devlaunch_core::runner::Runner;
 
-use crate::session::{self, Records, StartupError};
+use crate::cold::ColdPath;
+use crate::session::StartupError;
 
-/// Which workspace the target is, and everything the resolution had to open or
-/// say on the way.
+/// Which workspace the target is, and everything the resolution had to say on the
+/// way.
 ///
-/// `records` is an `Option` because the warm path must not load `metadata.json` at
-/// all (devlaunch#145): a target devpod recognises straight away is resolved from
-/// one `devpod status`, and the store is opened only once devpod has *denied* the
-/// derived id. A caller that needs the records regardless opens them itself.
-pub(crate) struct Addressed<'r> {
+/// The records are not in here: they are the [`ColdPath`]'s, which is the caller's,
+/// so a resolution that had to open them and a delete that needs them are looking
+/// at one store rather than two. That is also what keeps the warm path clear of
+/// `metadata.json` (devlaunch#145) — a target devpod recognises straight away is
+/// resolved from one `devpod status`, and the [`ColdPath`] is never asked.
+pub(crate) struct Addressed {
     pub(crate) workspace_id: String,
-    pub(crate) records: Option<Records<'r>>,
-    pub(crate) notices: Vec<LifecycleNotice>,
+    /// Notices in [`LaunchNotice`]'s vocabulary because that is the vocabulary the
+    /// shared resolution reports in; it carries the lifecycle and cache arms whole.
+    pub(crate) notices: Vec<LaunchNotice>,
 }
 
 /// Why no workspace could be named.
@@ -84,95 +86,71 @@ impl From<UnsafeName> for Unaddressable {
 /// The workspace `target` names, asked of devpod first.
 pub(crate) fn resolve<'r>(
     runner: &'r dyn Runner,
-    context: &mut CommandContext<'_>,
+    context: &mut CommandContext<'r>,
+    cold: &mut ColdPath<'r>,
     target: &str,
-) -> Result<Addressed<'r>, Unaddressable> {
-    match spec::parse(target) {
-        // A triple: the derived id is a hint, and the record settles it when devpod
-        // does not recognise the hint (devlaunch#88).
-        WorkspaceSpec::OwnerRepo {
-            owner,
-            repo,
-            branch,
-        } => {
-            // Before anything builds a path out of them: `repos_dir/<owner>/<repo>`
-            // would otherwise act on a traversal first and reject it after.
-            validate_ref_name(owner, NamePart::Owner)?;
-            validate_ref_name(repo, NamePart::Repo)?;
-            match branch {
-                Some(branch) => Ok(known(
-                    runner,
-                    (owner, repo, branch),
-                    derived_id(target)?,
-                    None,
-                    Vec::new(),
-                )),
-                None => {
-                    let records = session::open_records(runner)?;
-                    let mut cache = Vec::new();
-                    let branch = &records.clones.repo_manager().get_default_branch(
-                        &records.storage,
-                        owner,
-                        repo,
-                        &mut cache,
-                    );
-                    let derived = derived_id(&format!("{owner}/{repo}@{branch}"))?;
-                    Ok(known(
-                        runner,
-                        (owner, repo, branch.as_str()),
-                        derived,
-                        Some(records),
-                        cache.into_iter().map(LifecycleNotice::Cache).collect(),
-                    ))
-                }
-            }
-        }
+) -> Result<Addressed, Unaddressable> {
+    match launch::plan(target)? {
         // A path or a git source: devpod names the workspace after the source, and
-        // there is no triple to look a record up by.
-        WorkspaceSpec::Path(_)
-        | WorkspaceSpec::Url(_)
-        | WorkspaceSpec::HostPath(_)
-        | WorkspaceSpec::SshUrl(_) => Ok(Addressed {
-            workspace_id: derived_id(target)?,
-            records: None,
+        // there is no triple to look a record up by. Nothing is asked of devpod
+        // about it, as nothing is on the launch path either.
+        Plan::Creatable { workspace_id, .. } => Ok(Addressed {
+            workspace_id,
             notices: Vec::new(),
         }),
         // A bare name can only be a workspace devpod already has; everything
         // creatable is a path or a git spec and matched above.
-        WorkspaceSpec::ExistingIdOrName(name) => existing(runner, context, name),
+        Plan::Existing { name } => existing(runner, context, name),
+        Plan::Triple {
+            owner,
+            repo,
+            branch,
+            ..
+        } => triple(context, cold, owner, repo, branch),
     }
 }
 
-/// The resolution one `devpod status` and (only then) one record lookup make.
-fn known<'r>(
-    runner: &'r dyn Runner,
-    triple: (&str, &str, &str),
-    derived: String,
-    already_open: Option<Records<'r>>,
-    mut notices: Vec<LifecycleNotice>,
-) -> Addressed<'r> {
-    let (owner, repo, branch) = triple;
-    // Opened by the lookup only if the lookup happens, which is what keeps the
-    // warm path clear of the metadata lock, the parse and the migration.
-    let mut opened = already_open;
-    let resolved = lifecycle::resolve_known_workspace(
-        runner,
-        triple,
-        &derived,
-        || {
-            if opened.is_none() {
-                opened = session::open_records(runner).ok();
-            }
-            let records = opened.as_ref()?;
-            lifecycle::recorded_devpod_workspace_id(&records.storage, owner, repo, branch)
-        },
-        &mut notices,
-    );
-    Addressed {
-        workspace_id: resolved.workspace_id().to_owned(),
-        records: opened,
+/// `owner/repo[@branch]`: the derived id is a hint, and the record settles it when
+/// devpod does not recognise the hint (devlaunch#88).
+fn triple(
+    context: &mut CommandContext<'_>,
+    cold: &mut ColdPath<'_>,
+    owner: String,
+    repo: String,
+    branch: Option<String>,
+) -> Result<Addressed, Unaddressable> {
+    let mut notices: Vec<LaunchNotice> = Vec::new();
+    let branch = match branch {
+        Some(branch) => branch,
+        None => {
+            // Row 23: the record first, then `git ls-remote --symref`. A verb on
+            // its way to removing something must not clone a repository to find
+            // out what its default branch is called.
+            let records = cold.records()?;
+            let mut cache = Vec::new();
+            let named = records.clones.repo_manager().get_default_branch(
+                &records.storage,
+                &owner,
+                &repo,
+                &mut cache,
+            );
+            notices.extend(cache.into_iter().map(LaunchNotice::Cache));
+            named
+        }
+    };
+    // Constructing the WorkspaceId is the parse boundary: an unsafe owner, repo or
+    // ref is rejected here, before it can name a container or a directory.
+    let workspace = WorkspaceId::new(&owner, &repo, &branch)?;
+    let workspace_id = match launch::resolve_triple(context, cold, &workspace, &mut notices) {
+        Resolution::Warm { placement } => placement.workspace_id().to_owned(),
+        // devpod knows nothing about it. The derived id is what the verb addresses,
+        // and devpod's own refusal is what the user sees — no clone, no record.
+        Resolution::Cold { workspace } => workspace.value(),
+    };
+    Ok(Addressed {
+        workspace_id,
         notices,
-    }
+    })
 }
 
 /// A bare word: devpod's own answer, with its listing as the second opinion.
@@ -183,68 +161,20 @@ fn known<'r>(
 /// provider is broken or gone still lists and cannot be described — and that is
 /// precisely the workspace somebody is about to run `dl <ws> rm` on. The listing
 /// gets the final word, at the price of one round trip on the failure path.
-fn existing<'r>(
-    runner: &'r dyn Runner,
+fn existing(
+    runner: &dyn Runner,
     context: &mut CommandContext<'_>,
-    name: &str,
-) -> Result<Addressed<'r>, Unaddressable> {
-    let described = lifecycle::workspace_state(runner, name).is_ok();
+    name: String,
+) -> Result<Addressed, Unaddressable> {
+    let described = lifecycle::workspace_state(runner, &name).is_ok();
     if !described {
         let listed = context.workspaces().map_err(Unaddressable::Listing)?;
         if !listed.iter().any(|workspace| workspace.id == name) {
-            return Err(Unaddressable::Unknown {
-                target: name.to_owned(),
-            });
+            return Err(Unaddressable::Unknown { target: name });
         }
     }
     Ok(Addressed {
-        workspace_id: name.to_owned(),
-        records: None,
+        workspace_id: name,
         notices: Vec::new(),
     })
-}
-
-/// The workspace id `spec` derives — Python's `spec_to_workspace_id`, total over
-/// [`SpecIdentity`]'s four arms.
-fn derived_id(spec: &str) -> Result<String, UnsafeName> {
-    Ok(match spec::identity(spec)? {
-        SpecIdentity::Workspace(id) => id,
-        // A repo with no ref: not a workspace identity, and Python's answer for
-        // one all the same. Unreachable from [`resolve`], which resolves the
-        // default branch before it derives.
-        SpecIdentity::RepoLabel(label) => label,
-        SpecIdentity::PathLeaf(path) => path_leaf(path),
-        SpecIdentity::ExistingName(name) => name.to_owned(),
-    })
-}
-
-/// The directory name a path spec resolves to — Python's
-/// `Path(spec).expanduser().resolve().name`.
-///
-/// A path that will not resolve keeps its own last component, which is what the
-/// text already says the directory is called: there is no workspace to find either
-/// way, and the id is what the "unknown workspace" refusal will name.
-fn path_leaf(path: &str) -> String {
-    let expanded = expanduser(path);
-    let resolved = lifecycle::canonical(&expanded.to_string_lossy()).unwrap_or(expanded);
-    resolved
-        .file_name()
-        .map(|leaf| leaf.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-/// `~` and `~/…` against this user's home directory. `~user` is left alone, as
-/// Python leaves it when it cannot name the user.
-fn expanduser(path: &str) -> PathBuf {
-    let Some(rest) = path.strip_prefix('~') else {
-        return PathBuf::from(path);
-    };
-    let Some(home) = std::env::home_dir() else {
-        return PathBuf::from(path);
-    };
-    match rest {
-        "" => home,
-        rest if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
-        _ => PathBuf::from(path),
-    }
 }

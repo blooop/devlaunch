@@ -64,10 +64,10 @@
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun};
-use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup, TokenSource};
+use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
@@ -143,7 +143,7 @@ pub(crate) const LAUNCH_LOCK_DIR: &str = "launch-locks";
 /// a function of its inputs — and so a test states the host it means instead of
 /// mutating an environment the rest of the binary shares.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Host {
+pub struct Host {
     pub(crate) gh: gh::HostEnv,
     /// `DEVLAUNCH_DOTFILES_ON_ATTACH`.
     pub(crate) dotfiles_on_attach: Option<String>,
@@ -170,7 +170,7 @@ impl Host {
     /// The cache directory is a parameter because resolving it can fail (no home
     /// directory) and the binary has already had to resolve it for everything
     /// else; a second answer here could disagree with the first.
-    pub(crate) fn from_process(cache_dir: impl Into<PathBuf>) -> Self {
+    pub fn from_process(cache_dir: impl Into<PathBuf>) -> Self {
         Self {
             gh: gh::HostEnv::from_process(),
             dotfiles_on_attach: std::env::var(DOTFILES_ON_ATTACH_VAR).ok(),
@@ -249,7 +249,7 @@ fn switched_on(value: Option<&str>) -> bool {
 /// from every stage of it. Every arm is one `logging.*` call `dl.py` made,
 /// carrying what that line interpolated and nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LaunchNotice {
+pub enum LaunchNotice {
     // --- the shared pixi cache (dl.py `_pixi_cache_up_args`)
     /// The shared pixi cache could not be created, so each container downloads
     /// its own packages. A warning and not a debug line: the launch survives, but
@@ -400,12 +400,7 @@ pub(crate) fn context_options(
     if let Some(cached) = cached_options(cache_path, devpod_config, now) {
         return cached;
     }
-    let asked = {
-        // Python's `run_devpod` spans every devpod call as `" ".join(cmd[:2])`.
-        let _span = timing::span("devpod context");
-        devpod::context_options(runner)
-    };
-    let Ok(options) = asked else {
+    let Ok(options) = devpod::context_options(runner) else {
         return ContextOptions::default();
     };
     write_options_cache(cache_path, &options);
@@ -575,12 +570,12 @@ impl PixiCache {
 /// ask and by no later one, so a launch that forwards the token twice reports one
 /// notice rather than two.
 #[derive(Debug, Default)]
-pub(crate) struct HostToken {
+pub struct HostToken {
     asked: OnceCell<TokenLookup>,
 }
 
 impl HostToken {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -597,20 +592,10 @@ impl HostToken {
         if let Some(remembered) = self.asked.get() {
             return remembered;
         }
-        // Timed by hand rather than with a span guard, because the span belongs to
-        // the ask that actually spawned gh and `resolve_token` answers from the
-        // environment without spawning anything. Python's span sits inside
-        // `_token_from_gh_cli`, past that check; measuring here and recording only
-        // when gh was really asked says the same thing without this module
-        // re-deciding what `clients::gh` already decided.
-        let started = Instant::now();
+        // Not timed here: `clients::gh` spans the trip at the spawn, which is the
+        // only place that can tell an ask that reached gh from one `resolve_token`
+        // answered out of the environment.
         let lookup = gh::resolve_token(runner, host);
-        if asked_the_cli(&lookup) {
-            // Host prep wherever it lands: the token is the host's to produce, and
-            // the trip is charged to that owner even in the middle of an attach.
-            let _stage = timing::stage(timing::Stage::HostPrep);
-            timing::record("gh auth token", started.elapsed());
-        }
         if let TokenLookup::Unavailable(event) = &lookup {
             notices.push(LaunchNotice::NoGitHubToken(*event));
         }
@@ -628,22 +613,6 @@ impl HostToken {
         notices: &mut Vec<LaunchNotice>,
     ) -> Option<&Token> {
         self.lookup(runner, host, notices).token()
-    }
-}
-
-/// Whether this lookup involved a `gh auth token` spawn.
-///
-/// [`TokenLookup::NothingToForward`] covers the opt-out, a token the host
-/// exported, *and* a gh that is not installed — and Python's `shutil.which` guard
-/// means none of those three spans anything either.
-fn asked_the_cli(lookup: &TokenLookup) -> bool {
-    match lookup {
-        TokenLookup::Found {
-            from: TokenSource::GhCli,
-            ..
-        }
-        | TokenLookup::Unavailable(_) => true,
-        TokenLookup::Found { .. } | TokenLookup::NothingToForward => false,
     }
 }
 
@@ -705,7 +674,7 @@ impl Rebuild {
 /// four combinations three are meaningful and one — an `--id` with no identity —
 /// is unreachable only by the callers' good behaviour. These are the three.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Naming<'a> {
+pub enum Naming<'a> {
     /// A create: `--id <id>` goes to devpod, and that id is also the identity.
     Create { workspace_id: &'a str },
     /// devpod already knows the workspace: no `--id`, and the identity is the id
@@ -727,7 +696,7 @@ impl<'a> Naming<'a> {
     }
 
     /// The id the workspace is known by, when anything knows it.
-    pub(crate) fn identity(self) -> Option<&'a str> {
+    pub fn identity(self) -> Option<&'a str> {
         match self {
             Self::Create { workspace_id } | Self::Known { workspace_id } => Some(workspace_id),
             Self::Anonymous => None,
@@ -930,7 +899,7 @@ fn lock_reason(error: &LockError) -> String {
 /// It answers nothing. Whether the pass worked is reported by the pass itself
 /// (devlaunch#167/#168), and a launch does not branch on it: the tools are
 /// best-effort, and a workspace with no tools is still a workspace.
-pub(crate) trait Provision {
+pub trait Provision {
     fn provision_tools(&self, runner: &dyn Runner, workspace_id: &str);
 }
 
@@ -1058,10 +1027,7 @@ fn up_under_stage(
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
     timing::observe_attach(timing::AttachShape::Miss);
-    let exit = {
-        let _span = timing::span("devpod up");
-        devpod::run(context.runner(), &Call::new(args))?
-    };
+    let exit = devpod::run(context.runner(), &Call::new(args))?;
     // `up` creates and starts workspaces, so any snapshot of `devpod list` taken
     // before it is now out of date.
     context.forget_workspaces();
@@ -1080,15 +1046,10 @@ fn up_under_stage(
 
 /// Whether devpod reports this workspace as running.
 ///
-/// Wrapped rather than calling [`lifecycle::workspace_state`] bare, because the
-/// `devpod status` span belongs *inside* the `devpod-up` stage that function
-/// opens: a span opened around the call would drop after the stage had closed and
-/// land on whatever stage was open outside it. Opening the stage here first makes
-/// the inner entry a no-op ([`timing::Entry::AlreadyOpen`]) and leaves this scope
-/// holding it while the span is recorded.
+/// Nothing is timed here: [`lifecycle::workspace_state`] opens the `devpod-up`
+/// stage and [`crate::clients::devpod`] spans the round trip inside it, so the
+/// measurement is already the shape it should be wherever this is called from.
 fn is_running(runner: &dyn Runner, workspace_id: &str) -> bool {
-    let _stage = timing::stage(timing::Stage::DevpodUp);
-    let _span = timing::span("devpod status");
     lifecycle::workspace_state(runner, workspace_id)
         .as_ref()
         .is_ok_and(ContainerState::is_running)
@@ -1146,8 +1107,8 @@ impl ZellijWrap {
 /// mangles it — and an argument that cannot mean what it says is better refused
 /// than sent. The same call [`ssh::command_args`] makes about a workdir.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UnquotableCommand {
-    pub(crate) command: String,
+pub struct UnquotableCommand {
+    pub command: String,
 }
 
 /// `word` as one shell word, spelled the way Python's `shlex.quote` spells it.
@@ -1335,7 +1296,7 @@ pub(crate) fn route(
 /// report devpod's exit code (always 1) for a session that had ended perfectly
 /// normally with, say, 130.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Session {
+pub enum Session {
     /// OpenSSH ran the remote program and exited with its status. Nothing to
     /// recover: OpenSSH passes the status through, which is the thing devpod loses
     /// by wrapping its `*ssh.ExitError` three times before type-asserting on it,
@@ -1353,7 +1314,7 @@ impl Session {
     ///
     /// A signal is Python's negative `returncode`, kept here so the binary renders
     /// the same exit code rather than inventing 128+n.
-    pub(crate) fn exit_status(self) -> i32 {
+    pub fn exit_status(self) -> i32 {
         match self {
             Self::RemoteExit { status } => status,
             Self::Terminal { exit } | Self::DevpodFailed { exit } => match exit {
@@ -1370,7 +1331,7 @@ impl Session {
 /// same one: a missing binary travels as a type nothing in between catches, and
 /// `main()` renders exit 127 for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SessionRefused {
+pub enum SessionRefused {
     /// devpod never ran — Python's `DevpodNotInstalled` and friends.
     Devpod(NotRun),
     /// OpenSSH never ran. Its own arm rather than devpod's, for the reason Python
@@ -1390,14 +1351,14 @@ pub(crate) enum SessionRefused {
 /// one token lookup the launch shares — so they are one parameter rather than
 /// three repeated at each of five signatures.
 #[derive(Clone, Copy)]
-pub(crate) struct SessionContext<'a> {
+pub struct SessionContext<'a> {
     pub(crate) runner: &'a dyn Runner,
     pub(crate) host: &'a Host,
     pub(crate) token: &'a HostToken,
 }
 
 impl<'a> SessionContext<'a> {
-    pub(crate) fn new(runner: &'a dyn Runner, host: &'a Host, token: &'a HostToken) -> Self {
+    pub fn new(runner: &'a dyn Runner, host: &'a Host, token: &'a HostToken) -> Self {
         Self {
             runner,
             host,
@@ -1493,11 +1454,8 @@ fn devpod_session(
     // session lives for hours, and devpod's warning about it is worth nothing an
     // hour late. Python writes these to `sys.stderr` from inside the filter; core
     // writes to nobody's stream, so the sink is the caller's.
-    let outcome = {
-        let _span = timing::span("devpod ssh");
-        devpod::session(session.runner, &call, forward)
-    }
-    .map_err(SessionRefused::Devpod)?;
+    let outcome =
+        devpod::session(session.runner, &call, forward).map_err(SessionRefused::Devpod)?;
     Ok(match outcome {
         devpod::SshOutcome::RemoteExit { status } => Session::RemoteExit { status },
         devpod::SshOutcome::DevpodFailed { exit } => {
@@ -1700,7 +1658,7 @@ pub(crate) fn attach_workspace(
 /// cannot collide: a workspace id never contains `/`, `:` or a path prefix, so
 /// whichever arm matches is the only arm that could.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Plan {
+pub enum Plan {
     /// `owner/repo[@branch]`, the shape `dl` exists to make short. `branch` is
     /// `None` for a bare `owner/repo`, whose default branch has to be named
     /// before anything can derive a workspace id.
@@ -1730,7 +1688,7 @@ pub(crate) enum Plan {
 /// a traversal first and reject it after — `x/..` resolves to `repos_dir` itself
 /// and `../x` leaves it entirely. The branch's own check waits for the
 /// [`WorkspaceId`], which is the parse boundary for the triple.
-pub(crate) fn plan(raw_spec: &str) -> Result<Plan, UnsafeName> {
+pub fn plan(raw_spec: &str) -> Result<Plan, UnsafeName> {
     let parsed = spec::parse(raw_spec);
     if let WorkspaceSpec::OwnerRepo {
         owner,
@@ -1811,15 +1769,15 @@ fn path_leaf(path: &str) -> String {
 // ===========================================================================
 
 /// The clone manager and the metadata store, for the arms that need them.
-pub(crate) struct Cold<'a, 'r> {
-    pub(crate) clones: &'a WorkspaceCloneManager<'r>,
-    pub(crate) storage: &'a mut MetadataStorage,
+pub struct Cold<'a, 'r> {
+    pub clones: &'a WorkspaceCloneManager<'r>,
+    pub storage: &'a mut MetadataStorage,
 }
 
 /// Why the cold path's machinery could not be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ColdRefused {
-    pub(crate) reason: String,
+pub struct ColdRefused {
+    pub reason: String,
 }
 
 /// A way to build the cold path's machinery, called only when it is needed.
@@ -1835,7 +1793,7 @@ pub(crate) struct ColdRefused {
 ///
 /// It is the same move [`lifecycle::resolve_known_workspace`] makes with its
 /// `recorded_id` closure, one level up.
-pub(crate) trait ColdMachinery<'r> {
+pub trait ColdMachinery<'r> {
     fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused>;
 }
 
@@ -1863,7 +1821,7 @@ impl<'r> ColdMachinery<'r> for NoColdPath {
 /// state off a [`Placement::Creating`] — which is what makes "is this launch warm"
 /// a question about one value instead of a conjunction over two.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Placement {
+pub enum Placement {
     /// devpod knows this workspace and reported this state. It is addressed by
     /// id, `up` passes no `--id`, and a running one can be attached to straight
     /// away.
@@ -1891,7 +1849,7 @@ pub(crate) enum Placement {
 
 impl Placement {
     /// The id every later step addresses.
-    pub(crate) fn workspace_id(&self) -> &str {
+    pub fn workspace_id(&self) -> &str {
         match self {
             Self::Known { workspace_id, .. }
             | Self::Listed { workspace_id }
@@ -1900,7 +1858,7 @@ impl Placement {
     }
 
     /// What devpod is given positionally.
-    pub(crate) fn source(&self) -> &str {
+    pub fn source(&self) -> &str {
         match self {
             Self::Known { workspace_id, .. } | Self::Listed { workspace_id } => workspace_id,
             Self::Creating { source, .. } => source,
@@ -1908,7 +1866,7 @@ impl Placement {
     }
 
     /// How devpod is told which workspace this is.
-    pub(crate) fn naming(&self) -> Naming<'_> {
+    pub fn naming(&self) -> Naming<'_> {
         match self {
             Self::Known { workspace_id, .. } | Self::Listed { workspace_id } => {
                 Naming::Known { workspace_id }
@@ -1919,7 +1877,7 @@ impl Placement {
 
     /// Whether a launch may attach straight away — Python's
     /// `custom_id is None and known_state == "Running"`.
-    pub(crate) fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         match self {
             Self::Known { state, .. } => state.is_running(),
             // Nothing said it was running, which is not the same as saying it is
@@ -1935,7 +1893,7 @@ impl Placement {
 /// `metadata.json`. The cold arm carries what the host still has to prepare, and
 /// is the only arm that needs the [`ColdMachinery`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Resolution {
+pub enum Resolution {
     Warm { placement: Placement },
     Cold { workspace: WorkspaceId },
 }
@@ -1951,7 +1909,7 @@ pub(crate) enum Resolution {
 /// Charged to the `devpod-up` stage with a `devpod status` span, for the reason
 /// [`is_running`] gives: the span belongs inside the stage the lifecycle helper
 /// opens, and a guard around the call would drop after that stage had closed.
-pub(crate) fn resolve_triple(
+pub fn resolve_triple(
     context: &mut CommandContext<'_>,
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
@@ -1960,17 +1918,13 @@ pub(crate) fn resolve_triple(
     let derived = workspace.value();
     let triple = (workspace.owner(), workspace.repo(), workspace.git_ref());
     let mut lifecycle_notices = Vec::new();
-    let known = {
-        let _stage = timing::stage(timing::Stage::DevpodUp);
-        let _span = timing::span("devpod status");
-        lifecycle::resolve_known_workspace(
-            context.runner(),
-            triple,
-            &derived,
-            || recorded_id(cold, triple),
-            &mut lifecycle_notices,
-        )
-    };
+    let known = lifecycle::resolve_known_workspace(
+        context.runner(),
+        triple,
+        &derived,
+        || recorded_id(cold, triple),
+        &mut lifecycle_notices,
+    );
     extend_with_lifecycle(notices, lifecycle_notices);
     match known {
         KnownWorkspace::Known {
@@ -2030,7 +1984,7 @@ pub(crate) fn name_default_branch(
 
 /// Why a bare `owner/repo` could not be turned into a triple.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BranchNotNamed {
+pub enum BranchNotNamed {
     Cold(ColdRefused),
     /// The bare-clone cache could not be brought up for this repository.
     Repository {
@@ -2044,7 +1998,7 @@ pub(crate) enum BranchNotNamed {
 
 /// Why a cold launch's host-side preparation could not finish.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NotPrepared {
+pub enum NotPrepared {
     Cold(ColdRefused),
     /// The clone, the fetch, the branch or the workspace clone failed. Named by
     /// the workspace being prepared, because one report covers what three used to:
@@ -2098,7 +2052,7 @@ pub(crate) fn prepare(
 /// One arm per shape `_run_cli` dispatches to on this path. `stop`, `rm` and the
 /// cache-wide commands are [`lifecycle`]'s and have no arm here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LaunchVerb {
+pub enum LaunchVerb {
     /// `dl <spec>` and `dl <spec> -- <cmd>`: bring it up if it is not up, then
     /// attach. The default, and the shape wayfinder hands dl for every agent
     /// launch.
@@ -2163,7 +2117,7 @@ impl LaunchVerb {
 
 /// How a launch ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Launched {
+pub enum Launched {
     /// A session ran, and its ending is whose the exit code is.
     Session(Session),
     /// The workspace is up and this verb was not asked to attach — `dl <ws> up`,
@@ -2180,7 +2134,7 @@ pub(crate) enum Launched {
 /// Why a launch will not go ahead. Every arm is one `logging.error` in `_run_cli`
 /// followed by `return 1`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LaunchRefusal {
+pub enum LaunchRefusal {
     /// The spec is not one a workspace can be named from.
     UnsafeSpec(UnsafeName),
     /// A bare name devpod cannot describe *and* does not list. Both answers are
@@ -2217,7 +2171,7 @@ pub(crate) enum LaunchRefusal {
 /// codes are the binary's — 127 for the two missing-binary arms, 1 for the
 /// unreadable listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LaunchAborted {
+pub enum LaunchAborted {
     DevpodNotRun(NotRun),
     SshNotRun(ssh::NotRun),
     ListingUnreadable(ListingUnreadable),
@@ -2228,7 +2182,7 @@ pub(crate) enum LaunchAborted {
 /// A value the binary makes one of per command, for the reason
 /// [`CommandContext`] is one. It owns the notice list, so a caller cannot lose
 /// half of them by forgetting to thread a `Vec` through one of the stages.
-pub(crate) struct Launch<'a, 'r, 'l> {
+pub struct Launch<'a, 'r, 'l> {
     context: &'a mut CommandContext<'r>,
     refresh: &'a mut Refresh<'l>,
     cold: &'a mut dyn ColdMachinery<'r>,
@@ -2242,7 +2196,7 @@ pub(crate) struct Launch<'a, 'r, 'l> {
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
-    pub(crate) fn new(
+    pub fn new(
         context: &'a mut CommandContext<'r>,
         refresh: &'a mut Refresh<'l>,
         cold: &'a mut dyn ColdMachinery<'r>,
@@ -2263,16 +2217,16 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     }
 
     /// Everything this launch has to report, in the order it happened.
-    pub(crate) fn notices(&self) -> &[LaunchNotice] {
+    pub fn notices(&self) -> &[LaunchNotice] {
         &self.notices
     }
 
-    pub(crate) fn take_notices(&mut self) -> Vec<LaunchNotice> {
+    pub fn take_notices(&mut self) -> Vec<LaunchNotice> {
         std::mem::take(&mut self.notices)
     }
 
     /// Run one launch.
-    pub(crate) fn run(
+    pub fn run(
         &mut self,
         raw_spec: &str,
         verb: &LaunchVerb,
@@ -2314,11 +2268,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         &mut self,
         name: String,
     ) -> Result<Result<Placement, LaunchRefusal>, LaunchAborted> {
-        let state = {
-            let _stage = timing::stage(timing::Stage::DevpodUp);
-            let _span = timing::span("devpod status");
-            lifecycle::workspace_state(self.context.runner(), &name)
-        };
+        let state = lifecycle::workspace_state(self.context.runner(), &name);
         if let Ok(state) = state {
             return Ok(Ok(Placement::Known {
                 workspace_id: name,
@@ -2329,11 +2279,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // difference decides whether the user can clean it up — so the listing
         // gets the final word. It costs a round trip only on the failure path,
         // where a second one is not what is wrong.
-        let listed = {
-            let _span = timing::span("devpod list");
-            self.context.workspaces()
-        };
-        let listed = listed.map_err(LaunchAborted::ListingUnreadable)?;
+        let listed = self
+            .context
+            .workspaces()
+            .map_err(LaunchAborted::ListingUnreadable)?;
         if listed.iter().any(|workspace| workspace.id == name) {
             return Ok(Ok(Placement::Listed { workspace_id: name }));
         }
@@ -2515,13 +2464,9 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// for, and changing it here would be a behaviour change wearing a port's
     /// clothes.
     fn run_dotfiles(&mut self, placement: &Placement) -> Result<Launched, LaunchAborted> {
-        let running = {
-            let _stage = timing::stage(timing::Stage::DevpodUp);
-            let _span = timing::span("devpod status");
-            lifecycle::workspace_state(self.context.runner(), placement.workspace_id())
-                .as_ref()
-                .is_ok_and(ContainerState::is_running)
-        };
+        let running = lifecycle::workspace_state(self.context.runner(), placement.workspace_id())
+            .as_ref()
+            .is_ok_and(ContainerState::is_running);
         if !running {
             self.notices.push(LaunchNotice::StartingForDotfiles {
                 workspace_id: placement.workspace_id().to_owned(),
@@ -2645,7 +2590,7 @@ mod tests {
 
     use super::*;
 
-    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::sync::{Mutex, PoisonError};
 
     use devlaunch_test_support::{FakeRunner, Response, WorkspaceState};
 
@@ -2656,31 +2601,24 @@ mod tests {
 
     // ------------------------------------------------------------ the scene
 
-    /// Every test that runs launch code takes this, because [`crate::timing`]'s
-    /// registry is **process-global**: a measured test installs one, and any
-    /// concurrent test's spans and stages then land in *its* document. Worse, two
-    /// concurrent `stage_result(Attach)` calls have one of them find the stage
-    /// already open, so its guard closes nothing and the other thread's guard
-    /// closes the stage out from under it.
-    ///
-    /// Held by [`Scene`] for the scene's lifetime, so it cannot be forgotten: a
-    /// test that spawns anything through the launch has a `Scene`, and a test that
-    /// has no `Scene` records nothing.
-    static LAUNCHING: Mutex<()> = Mutex::new(());
-
     /// A cache directory and the collaborators over it.
     struct Scene {
         dir: tempfile::TempDir,
         runner: FakeRunner,
         host: Host,
-        /// See [`LAUNCHING`]. Last field, so it is dropped last.
-        _serialized: MutexGuard<'static, ()>,
+        /// See [`timing::exclusive`]. Last field, so it is dropped last.
+        _serialized: timing::Exclusive,
     }
 
     impl Scene {
         /// A host with no terminal, no gh login, and a scratch cache.
+        ///
+        /// Takes [`timing::exclusive`], because the registry is process-global and
+        /// a test that runs launch code either measures it or records into whatever
+        /// a concurrent test installed. Holding it here rather than per test is
+        /// what makes it impossible to forget.
         fn new() -> Self {
-            let serialized = LAUNCHING.lock().unwrap_or_else(PoisonError::into_inner);
+            let serialized = timing::exclusive();
             let dir = tempfile::tempdir().expect("a scratch cache");
             let host = Host {
                 // Opted out, so nothing in these tests spawns `gh` unless it says

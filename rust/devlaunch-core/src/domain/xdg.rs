@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 pub struct NoHomeDirectory;
 
 /// `$XDG_CONFIG_HOME`, or the `~/.config` the spec falls back to.
-pub(crate) fn config_home() -> Result<PathBuf, NoHomeDirectory> {
+pub fn config_home() -> Result<PathBuf, NoHomeDirectory> {
     resolve(
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::home_dir(),

@@ -11,8 +11,10 @@ use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::domain::locks::LockError;
+use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
+use devlaunch_core::flows::launch::LaunchNotice;
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteOutcome, Guarded, Insistence, LifecycleNotice, PruneError, PruneOutcome,
     Refresh, RefreshReason, StopOutcome,
@@ -22,6 +24,8 @@ use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::runner::{Exit, Runner};
 
 use crate::cli::{Command, ListOutput, Verb};
+use crate::cold::ColdPath;
+use crate::launch::{self, Family};
 use crate::render;
 use crate::session::{self, Records, StartupError};
 use crate::target::{self, Unaddressable};
@@ -47,6 +51,15 @@ pub(crate) enum Ending {
     /// — so a script that reads `$?` after `dl <ws> stop` reads devpod's answer and
     /// not dl's opinion of it.
     Child(Exit),
+    /// A session ran, and this is the number Python returned for it.
+    ///
+    /// Its own arm rather than a [`Ending::Child`] carrying an [`Exit`], because a
+    /// session's ending is already the answer to "whose number is this": core's
+    /// [`Session`](devlaunch_core::flows::launch::Session) has resolved the three
+    /// processes a status can come from into the one number Python returns,
+    /// negative-for-a-signal included, and re-deriving it here from an `Exit` would
+    /// be a second opinion about a question already settled.
+    Session(i32),
 }
 
 impl Ending {
@@ -60,6 +73,7 @@ impl Ending {
             // both truncate the status to its low eight bits.
             Ending::Child(Exit::Code(code)) => code,
             Ending::Child(Exit::Signal(signal)) => -signal,
+            Ending::Session(status) => status,
         }
     }
 }
@@ -104,7 +118,7 @@ pub(crate) fn dispatch(
             refresh,
             &target,
             verb,
-            devcontainer.is_some(),
+            devcontainer.as_ref(),
         ),
     }
 }
@@ -461,42 +475,49 @@ fn install_failure(error: &InstallError) -> String {
 
 /// A workspace and a verb.
 ///
-/// The two lifecycle verbs are here; the launch family lands in M7, and until it
-/// does each one says so rather than doing nothing.
+/// One [`ColdPath`] for the whole command, whichever verb this is: the lifecycle
+/// verbs and the launch verbs both resolve the target through the same two calls
+/// into core, and both have to be able to open dl's records without either of them
+/// opening a second copy.
 #[allow(clippy::too_many_arguments)]
-fn render_workspace(
-    runner: &dyn Runner,
-    context: &mut CommandContext<'_>,
+fn render_workspace<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
     cache: &Path,
     refresh: &mut Refresh<'_>,
     target: &str,
     verb: Verb,
-    devcontainer: bool,
+    devcontainer: Option<&DevcontainerPath>,
 ) -> Ending {
-    match verb {
-        Verb::Stop => {
-            devcontainer_ignored(devcontainer, "stop");
-            render_stop(runner, context, refresh, target)
+    let mut cold = ColdPath::new(runner);
+    match launch::family(&verb) {
+        Family::Stop => {
+            devcontainer_ignored(devcontainer.is_some(), "stop");
+            render_stop(runner, context, refresh, &mut cold, target)
         }
-        Verb::Remove { force } => {
-            devcontainer_ignored(devcontainer, "rm");
+        Family::Remove { force } => {
+            devcontainer_ignored(devcontainer.is_some(), "rm");
             let insistence = if force {
                 Insistence::Insisted
             } else {
                 Insistence::NotInsisted
             };
-            render_remove(runner, context, cache, refresh, target, insistence)
+            render_remove(
+                runner, context, cache, refresh, &mut cold, target, insistence,
+            )
         }
         // Launch: clone, `devpod up`, fast attach, `-- <cmd>` through
         // `devpod ssh --command`.
-        Verb::Attach
-        | Verb::Run(_)
-        | Verb::Up
-        | Verb::Code
-        | Verb::Recreate
-        | Verb::Restart
-        | Verb::Reset
-        | Verb::Dotfiles => not_yet(&format!("`dl <workspace> {}`", verb.word()), "M7"),
+        Family::Launch(launched) => launch::render_launch(
+            runner,
+            context,
+            cache,
+            refresh,
+            &mut cold,
+            target,
+            &launched,
+            devcontainer,
+        ),
     }
 }
 
@@ -509,20 +530,20 @@ fn devcontainer_ignored(given: bool, verb: &str) {
 }
 
 /// `dl <ws> stop` — one `devpod stop`, and devpod's own status back.
-fn render_stop(
-    runner: &dyn Runner,
-    context: &mut CommandContext<'_>,
+fn render_stop<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
     refresh: &mut Refresh<'_>,
+    cold: &mut ColdPath<'r>,
     target: &str,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, target) {
+    let addressed = match target::resolve(runner, context, cold, target) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };
-    if let Some(records) = &addressed.records {
-        report(records);
-    }
-    say(&addressed.notices);
+    // The metadata load's own notices were said by the `ColdPath` at the moment it
+    // opened the store, which is where they happened.
+    say_launch(&addressed.notices);
     match lifecycle::workspace_stop(context, refresh, &addressed.workspace_id) {
         Err(not_run) => refuse_devpod("stop", &not_run),
         // devpod's own diagnostics are already on this process's stderr — the call
@@ -533,31 +554,28 @@ fn render_stop(
 }
 
 /// `dl <ws> rm [--force]` — the guard, the delete, and the clone with it.
-fn render_remove(
-    runner: &dyn Runner,
-    context: &mut CommandContext<'_>,
+#[allow(clippy::too_many_arguments)]
+fn render_remove<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
     cache: &Path,
     refresh: &mut Refresh<'_>,
+    cold: &mut ColdPath<'r>,
     target: &str,
     insistence: Insistence,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, target) {
+    let addressed = match target::resolve(runner, context, cold, target) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };
+    say_launch(&addressed.notices);
     // The delete needs the records whatever the resolution needed, so a resolution
-    // that did not open them opens them here. Reported before the resolution's own
-    // notices, because that is the order they happened in: a record is read before
-    // anything can be said about which workspace it names.
-    let mut records = match addressed.records {
-        Some(records) => records,
-        None => match session::open_records(runner) {
-            Err(refused) => return refuse_startup(&refused),
-            Ok(records) => records,
-        },
+    // that did not open them opens them here — through the same `ColdPath`, which is
+    // what keeps one command from holding two views of `metadata.json`.
+    let records = match cold.records() {
+        Err(refused) => return refuse_startup(&refused),
+        Ok(records) => records,
     };
-    report(&records);
-    say(&addressed.notices);
     let workspace_id = addressed.workspace_id;
     let mut notices: Vec<LifecycleNotice> = Vec::new();
 
@@ -585,7 +603,7 @@ fn render_remove(
 
     let Records {
         storage, clones, ..
-    } = &mut records;
+    } = records;
     let deleted = lifecycle::workspace_delete(
         context,
         refresh,
@@ -984,6 +1002,13 @@ fn say(notices: &[LifecycleNotice]) {
     }
 }
 
+/// The same, for the notices the shared target resolution reports in.
+fn say_launch(notices: &[LaunchNotice]) {
+    for line in render::launch_notices(notices) {
+        eprintln!("{line}");
+    }
+}
+
 /// The `[y/N]` question, asked on stdout and answered on stdin.
 ///
 /// The prompt goes to stdout without a newline and is flushed before the read, as
@@ -1060,19 +1085,12 @@ fn refuse_devpod(call: &str, refused: &NotRun) -> Ending {
 }
 
 fn refuse_startup(refused: &StartupError) -> Ending {
-    let line = match refused {
-        StartupError::NoHomeDirectory => {
-            "this machine names no home directory, so dl cannot find its cache".to_owned()
-        }
-        StartupError::Config(error) => render::config_error(error),
-        StartupError::Metadata(error) => render::metadata_error(error),
-    };
-    eprintln!("error: {line}");
+    eprintln!("error: {}", render::startup_reason(refused));
     Ending::Refused
 }
 
 /// Everything a metadata load and the cache migration had to say.
-fn report(records: &Records<'_>) {
+pub(crate) fn report(records: &Records<'_>) {
     for line in render::metadata_notices(&records.notices) {
         eprintln!("{line}");
     }

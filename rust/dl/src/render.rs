@@ -10,20 +10,29 @@ use std::io;
 use std::path::Path;
 
 use devlaunch_core::clients::devpod::{self, ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
+use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::metadata;
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
+use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::disk_usage::describe_usage;
+use devlaunch_core::flows::launch::{
+    BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
+};
 use devlaunch_core::flows::lifecycle::{
     KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
     PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
+use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::repo_manager::{CacheNotice, Refusal, RefusalReason};
 use devlaunch_runner::Exit;
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
+
+use crate::session::StartupError;
 
 // ---------------------------------------------------------------------------
 // the `dl --ls` table
@@ -612,24 +621,36 @@ pub(crate) fn metadata_error(error: &metadata::MetadataError) -> String {
 /// to stderr — printed by the caller, which is the only thing that knows whether
 /// a command has finished saying what it has to say.
 pub(crate) fn lifecycle_notices(notices: &[LifecycleNotice]) -> Vec<String> {
-    notices.iter().map(lifecycle_notice).collect()
+    notices.iter().filter_map(lifecycle_notice).collect()
 }
 
-fn lifecycle_notice(notice: &LifecycleNotice) -> String {
-    match notice {
+/// One notice's line, or `None` for a notice Python printed nothing for.
+fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
+    Some(match notice {
         LifecycleNotice::CloneRemoved { workspace_id } => {
             format!("Removed local clone for {workspace_id}")
         }
-        LifecycleNotice::CloneNotRemoved { reason, .. } => {
-            format!("Failed to remove local clone: {reason}")
+        // core-polish: mechanical fix, renderer TODO. The notice now carries the
+        // typed refusal instead of `format!("{error:?}")`; each arm wants words of
+        // its own (`RemoveTreeError::RootIsSymlink` has a `points_at` worth
+        // naming), and until then the debug shape keeps the line saying what it
+        // said before.
+        LifecycleNotice::CloneNotRemoved { refusal, .. } => {
+            format!("Failed to remove local clone: {refusal:?}")
         }
         LifecycleNotice::WorkspaceNotDeleted {
             workspace_id,
             stderr,
             ..
         } => format!("Failed to delete workspace {workspace_id}: {stderr}"),
-        LifecycleNotice::RecordNotDropped { path, reason } => {
-            format!("Could not drop the record for {}: {reason}", path.display())
+        // core-polish: mechanical fix, renderer TODO. As above: `RecordRefusal`'s
+        // arms name the step and carry the OS's own words, and a real rendering
+        // would read like `render::metadata_error`'s does.
+        LifecycleNotice::RecordNotDropped { path, refusal } => {
+            format!(
+                "Could not drop the record for {}: {refusal:?}",
+                path.display()
+            )
         }
         LifecycleNotice::AddressingRecordedWorkspace {
             recorded,
@@ -641,8 +662,8 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> String {
             "Addressing devpod workspace '{recorded}' from the record for {owner}/{repo}@{branch}; \
              this build derives '{derived}'"
         ),
-        LifecycleNotice::Cache(cache) => cache_notice(cache),
-    }
+        LifecycleNotice::Cache(cache) => return cache_notice(cache),
+    })
 }
 
 /// One storage-flow notice, in the words the module that logged it used.
@@ -651,8 +672,29 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> String {
 /// through module loggers, which `dl.py`'s `basicConfig(format="%(message)s")`
 /// sends to stderr as the bare message — so there is no logger name, no level and
 /// no prefix in any of them.
-fn cache_notice(notice: &CacheNotice) -> String {
+///
+/// `None` is the progress half of the vocabulary — the `logger.info` lines that say
+/// what the flow is about to do — which the storage flows have only just started
+/// carrying as typed arms. Naming them here rather than wildcarding them is what
+/// makes the next arm the compiler's problem rather than a silent omission.
+fn cache_notice(notice: &CacheNotice) -> Option<String> {
+    // TODO(render): progress events. Rendered by the follow-up wave; a launch that
+    // sits for minutes cloning a large repository says nothing about it until then,
+    // which is what these arms are.
     match notice {
+        CacheNotice::CloningRepository { .. }
+        | CacheNotice::ClonedRepository { .. }
+        | CacheNotice::FetchingUpdates { .. }
+        | CacheNotice::FetchedUpdates { .. }
+        | CacheNotice::FetchingRef { .. }
+        | CacheNotice::CreatingWorkspaceClone { .. }
+        | CacheNotice::FillingLfsCache
+        | CacheNotice::PullingLfsFromOrigin
+        | CacheNotice::WorkspaceCloneRemoved { .. }
+        | CacheNotice::NoWorkspaceCloneToRemove { .. } => return None,
+        _ => {}
+    }
+    Some(match notice {
         CacheNotice::AdoptedBareClone { owner, repo, bare } => {
             format!(
                 "Repository {owner}/{repo} already exists at {}",
@@ -709,7 +751,19 @@ fn cache_notice(notice: &CacheNotice) -> String {
             reason,
         } => format!("cannot name the clone directory for {owner}/{repo}@{branch}: {reason}"),
         CacheNotice::Metadata(notice) => metadata_notice(notice),
-    }
+        // Matched above; answered here so this stays a total function of the value
+        // it is given rather than a `match` with a hole in it.
+        CacheNotice::CloningRepository { .. }
+        | CacheNotice::ClonedRepository { .. }
+        | CacheNotice::FetchingUpdates { .. }
+        | CacheNotice::FetchedUpdates { .. }
+        | CacheNotice::FetchingRef { .. }
+        | CacheNotice::CreatingWorkspaceClone { .. }
+        | CacheNotice::FillingLfsCache
+        | CacheNotice::PullingLfsFromOrigin
+        | CacheNotice::WorkspaceCloneRemoved { .. }
+        | CacheNotice::NoWorkspaceCloneToRemove { .. } => return None,
+    })
 }
 
 /// Why an owner, repo or ref is not a name `dl` will build a path out of.
@@ -1188,6 +1242,333 @@ pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// the launch
+// ---------------------------------------------------------------------------
+
+/// One launch notice's line, or `None` for one Python prints nothing for.
+///
+/// `dl.py` configures `logging.basicConfig(level=logging.INFO,
+/// format="%(message)s")`, so an `info` and a `warning` are the same bytes on
+/// stderr — no level, no logger name, no prefix — and a `debug` is *nothing at
+/// all*. Which of the two a notice is happens to be the whole of its rendering,
+/// and it is the binary's to decide (#251 §5): core carries the typed event and no
+/// level. The level each arm stands for is named in its comment.
+pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
+    Some(match notice {
+        // --- the shared pixi cache (warning; dl.py `_pixi_cache_up_args`, 3533/3554)
+        LaunchNotice::PixiCacheNotCreated { source, reason } => format!(
+            "Could not create the shared pixi cache at {} ({reason}), so each container downloads \
+             its own packages.",
+            source.display()
+        ),
+        LaunchNotice::PixiCacheNotADirectory { source } => format!(
+            "The shared pixi cache at {} is not there after all, so this container downloads its \
+             own packages.",
+            source.display()
+        ),
+
+        // --- the launch lock (locks.py:89's bare `print`, and dl.py 3727/3744)
+        LaunchNotice::WaitingForSiblingLaunch { workspace_id } => {
+            format!("dl: waiting for another launch of {workspace_id}")
+        }
+        // debug: a lock that could not be taken costs this `up` its serialization
+        // and nothing a user acts on.
+        LaunchNotice::LaunchLockUnavailable { .. } => return None,
+        // info
+        LaunchNotice::BroughtUpBySibling { workspace_id } => {
+            format!("Workspace {workspace_id} was brought up by another dl run.")
+        }
+
+        // --- the token (warning; gh_auth.py 84/94/105/139)
+        LaunchNotice::NoGitHubToken(event) => no_github_token(event),
+        LaunchNotice::TokenNotStaged { reason } => format!(
+            "Could not create a file to pass the GitHub token to devpod ({reason}), so this \
+             workspace opens without a GitHub login."
+        ),
+
+        // --- the session (warning at 3845, info at 3864/3891, debug at 3875)
+        LaunchNotice::NoTerminalAlias { workspace_id } => format!(
+            "No devpod ssh host entry for {workspace_id}, so this command gets no terminal; \
+             interactive programs may exit immediately. `dl {workspace_id} restart` republishes it."
+        ),
+        LaunchNotice::SshCommand { argv } => format!("SSH command: {}", argv.join(" ")),
+        // debug: devpod's own diagnostics are already on the user's stderr, and the
+        // status is the exit code this command ends with.
+        LaunchNotice::DevpodSessionFailed { .. } => return None,
+
+        // --- the launch's own arms (info, bar the last; dl.py 4869/4762/4844/4871)
+        LaunchNotice::AlreadyRunningAttaching { workspace_id } => {
+            format!("Workspace {workspace_id} is already running, attaching...")
+        }
+        LaunchNotice::AlreadyRunning { workspace_id } => {
+            format!("Workspace {workspace_id} is already running.")
+        }
+        LaunchNotice::StartingForDotfiles { workspace_id } => {
+            format!("Starting workspace {workspace_id}...")
+        }
+        LaunchNotice::DevcontainerIgnoredRunning { workspace_id, spec } => format!(
+            "Ignoring --devcontainer: {workspace_id} is already running. Use 'dl {spec} recreate \
+             --devcontainer ...' to switch config."
+        ),
+
+        // --- passed through from the layers below, in those modules' own words
+        LaunchNotice::Cache(cache) => return cache_notice(cache),
+        LaunchNotice::Lifecycle(notice) => return lifecycle_notice(notice),
+    })
+}
+
+/// The lines a launch's notices read as, in the order they happened, with the
+/// debug ones dropped as a default-configured Python drops them.
+pub(crate) fn launch_notices(notices: &[LaunchNotice]) -> Vec<String> {
+    notices.iter().filter_map(launch_notice).collect()
+}
+
+/// Why this workspace opens without a GitHub login.
+///
+/// The `Refused` arm names the directory gh read its config from, because that is
+/// the one arm whose commonest cause is not a missing login at all: a run that
+/// scoped `XDG_CONFIG_HOME` to a scratch directory hides the host's gh login, gh
+/// refuses, and `gh auth login` is exactly the wrong remedy.
+fn no_github_token(event: &GhEvent) -> String {
+    match event {
+        GhEvent::CouldNotRun(unavailable) => format!(
+            "Could not read a GitHub token from gh ({}), so this workspace opens without a GitHub \
+             login.",
+            gh_unavailable(unavailable)
+        ),
+        GhEvent::Refused { exit } => format!(
+            "gh auth token exited {}, so this workspace opens without a GitHub login. gh read its \
+             config from {} -- if you are logged in on this host, that directory is the thing to \
+             check before `gh auth login`.",
+            exit_status(*exit),
+            gh_config_home().display()
+        ),
+        // Never the junk itself: what gh printed may be a malformed credential,
+        // and a warning is not a place to put one.
+        GhEvent::NotAToken => "gh auth token printed something that is not a token, so this \
+             workspace opens without a GitHub login."
+            .to_owned(),
+    }
+}
+
+fn gh_unavailable(unavailable: &GhUnavailable) -> String {
+    match unavailable {
+        GhUnavailable::TimedOut => "it did not answer in time".to_owned(),
+        GhUnavailable::Blocked(failure) => format!("{:?}", failure.kind),
+    }
+}
+
+/// The directory gh reads its config from, for the sentence that names it.
+///
+/// A machine with no home directory cannot get this far — every command that
+/// forwards a token has already resolved dl's cache directory out of the same
+/// home — so the fallback is the spec's own spelling rather than an answer.
+fn gh_config_home() -> std::path::PathBuf {
+    xdg::config_home().unwrap_or_else(|_| std::path::PathBuf::from("~/.config"))
+}
+
+/// The one-line message for an ssh that is not installed.
+///
+/// Names the way out that needs no ssh at all: the devpod transport still runs
+/// commands, it just cannot give them a terminal.
+pub(crate) const SSH_MISSING: &str = concat!(
+    "ssh not found on PATH: dl needs OpenSSH to give a workspace command a terminal. ",
+    "Install it, or set DEVLAUNCH_NO_TTY=1 to run commands through devpod instead ",
+    "(interactive programs will not work)."
+);
+
+/// Why a launch could not even be attempted.
+///
+/// The class Python's `main()` handles rather than `_run_cli`: a missing binary
+/// travels as a type nothing in between catches and is printed bare (no `error: `
+/// prefix, because `main` prints the exception itself), and an unreadable listing
+/// gets the `error: ` line the read side already writes.
+pub(crate) fn launch_abort(aborted: &LaunchAborted) -> String {
+    match aborted {
+        LaunchAborted::DevpodNotRun(NotRun::NotInstalled) => DEVPOD_MISSING.to_owned(),
+        LaunchAborted::DevpodNotRun(NotRun::TimedOut) => {
+            "error: devpod did not answer in time".to_owned()
+        }
+        LaunchAborted::DevpodNotRun(NotRun::Blocked(failure)) => {
+            format!("error: devpod could not be run ({:?})", failure.kind)
+        }
+        LaunchAborted::SshNotRun(SshNotRun::NotInstalled) => SSH_MISSING.to_owned(),
+        LaunchAborted::SshNotRun(SshNotRun::TimedOut) => {
+            "error: ssh did not answer in time".to_owned()
+        }
+        LaunchAborted::SshNotRun(SshNotRun::Blocked(failure)) => {
+            format!("error: ssh could not be run ({:?})", failure.kind)
+        }
+        LaunchAborted::ListingUnreadable(refused) => listing_refusal(refused),
+    }
+}
+
+/// Whether this abort is one of the two missing binaries, which is what exits 127.
+pub(crate) fn is_binary_missing(aborted: &LaunchAborted) -> bool {
+    match aborted {
+        LaunchAborted::DevpodNotRun(refused) => matches!(refused, NotRun::NotInstalled),
+        LaunchAborted::SshNotRun(refused) => matches!(refused, SshNotRun::NotInstalled),
+        LaunchAborted::ListingUnreadable(refused) => is_devpod_missing(refused),
+    }
+}
+
+/// Why a launch will not go ahead, in the words `_run_cli` refused it with.
+///
+/// `None` is a refusal with nothing to say: `devpod up` and `devpod stop` write
+/// their own diagnostics to this process's stderr — the calls inherit the streams —
+/// so dl has nothing to add but the exit code.
+pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
+    match refused {
+        LaunchRefusal::UnsafeSpec(name) => Some(unsafe_name(name)),
+        LaunchRefusal::UnknownWorkspace { name } => Some(unknown_workspace(name)),
+        LaunchRefusal::BranchNotNamed { owner, repo, error } => Some(format!(
+            "Repository '{owner}/{repo}': {}",
+            branch_not_named(error)
+        )),
+        LaunchRefusal::NotPrepared {
+            owner,
+            repo,
+            branch,
+            error,
+        } => Some(format!(
+            "Failed to prepare workspace '{owner}/{repo}@{branch}': {}",
+            not_prepared(error)
+        )),
+        LaunchRefusal::UpRefused { .. } | LaunchRefusal::StopRefused { .. } => None,
+        LaunchRefusal::NoSession(refused) => Some(session_refusal(refused)),
+    }
+}
+
+fn branch_not_named(error: &BranchNotNamed) -> String {
+    match error {
+        BranchNotNamed::Cold(refused) => refused.reason.clone(),
+        BranchNotNamed::Repository { reason } => reason.clone(),
+    }
+}
+
+fn not_prepared(error: &NotPrepared) -> String {
+    match error {
+        NotPrepared::Cold(refused) => refused.reason.clone(),
+        NotPrepared::Preparation { reason } => reason.clone(),
+    }
+}
+
+/// Why no session could be composed.
+///
+/// The two never-ran arms are lifted to [`LaunchAborted`] before they get here, so
+/// what is left is the pair Python has no refusal for: **divergence row 19**, a
+/// command holding a NUL, and the ssh invocation `clients::ssh` will not compose.
+fn session_refusal(refused: &SessionRefused) -> String {
+    match refused {
+        SessionRefused::Unquotable(command) => format!(
+            "error: cannot run {} in a workspace: a command holding a NUL byte cannot be a shell \
+             word.",
+            python_repr(&command.command)
+        ),
+        SessionRefused::UnsafeRequest(UnsafeRequest::OptionLikeWorkspaceId { workspace_id }) => {
+            format!(
+                "error: refusing to ssh to {}: a workspace name starting with '-' would reach ssh \
+                 as an option.",
+                python_repr(workspace_id)
+            )
+        }
+        SessionRefused::UnsafeRequest(UnsafeRequest::UnquotableWorkdir { workdir }) => format!(
+            "error: cannot enter {}: a directory holding a NUL byte cannot be a shell word.",
+            python_repr(workdir)
+        ),
+        // Lifted to `LaunchAborted` by the launch itself; answered anyway so this
+        // stays a total function of the value it is given.
+        SessionRefused::Devpod(refused) => devpod_not_run("ssh", refused),
+        SessionRefused::Ssh(SshNotRun::NotInstalled) => SSH_MISSING.to_owned(),
+        SessionRefused::Ssh(SshNotRun::TimedOut) => "error: ssh did not answer in time".to_owned(),
+        SessionRefused::Ssh(SshNotRun::Blocked(failure)) => {
+            format!("error: ssh could not be run ({:?})", failure.kind)
+        }
+    }
+}
+
+/// Why a command could not get as far as running, without the `error: ` prefix.
+///
+/// Quoted inside core's own refusals as well as printed on its own, which is why
+/// the prefix is the caller's: `Repository 'owner/repo': <this>` must not carry one.
+pub(crate) fn startup_reason(refused: &StartupError) -> String {
+    match refused {
+        StartupError::NoHomeDirectory => {
+            "this machine names no home directory, so dl cannot find its cache".to_owned()
+        }
+        StartupError::Config(error) => config_error(error),
+        StartupError::Metadata(error) => metadata_error(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// provisioning
+// ---------------------------------------------------------------------------
+
+/// One provisioning event's line, or `None` for one Python prints nothing for.
+///
+/// Four of the six are `logging.debug` — provisioning is a convenience whose
+/// failures cost the workspace its tools and not its session, and Python says
+/// nothing about most of them at the default level. The two that speak are the
+/// setup stages, each at the level the stage itself declares
+/// ([`FailureLevel`]) — and both of those levels print, because
+/// `basicConfig(level=INFO)` prints an info as well as a warning.
+pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
+    Some(match event {
+        // tools.py:926/934. `loudness` is info for the hostname stage and warning
+        // for the rest — `sudo hostname` cannot succeed without CAP_SYS_ADMIN,
+        // which Docker drops by default, so failure is the majority case there and
+        // a warning on most cold launches would erode what a warning means. Both
+        // reach stderr as the bare message, so the field is read and not rendered.
+        ProvisionEvent::StageFailed {
+            workspace,
+            stage,
+            status,
+            loudness,
+        } => {
+            let _: &FailureLevel = loudness;
+            format!("{workspace}: the {stage} setup stage exited {status}.")
+        }
+        ProvisionEvent::StageNotReported {
+            workspace,
+            stage,
+            loudness,
+        } => {
+            let _: &FailureLevel = loudness;
+            format!("{workspace}: the {stage} setup stage did not report; it may not have run.")
+        }
+        // debug (tools.py:1063), and the `%s` is the variable's own name.
+        ProvisionEvent::ProvisioningDisabled { .. } => return None,
+        // debug (tools.py:998): the network install follows, which is the path
+        // Python took for any bundle failure.
+        ProvisionEvent::PayloadNotBundled { failure } => {
+            let _: &BundleFailed = failure;
+            return None;
+        }
+        // debug (tools.py:1100): Python's `except OSError` answer.
+        ProvisionEvent::TripRefused { .. } => return None,
+        // warning (tools.py:1106) — the one arm a user is meant to see. The exit
+        // status is not in the sentence: Python's line does not carry it.
+        ProvisionEvent::NotInstalled {
+            workspace,
+            tools,
+            exit,
+        } => {
+            let _: &Exit = exit;
+            format!(
+                "Could not install {} into {workspace}; the session will start without them.",
+                tools.join(" and ")
+            )
+        }
+    })
+}
+
+/// The lines a provisioning pass's events read as, with the debug ones dropped.
+pub(crate) fn provision_events(events: &[ProvisionEvent]) -> Vec<String> {
+    events.iter().filter_map(provision_event).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use devlaunch_core::flows::disk_usage::DiskUsage;
@@ -1400,5 +1781,201 @@ mod tests {
         assert!(!is_devpod_missing(&ListingUnreadable::Unreadable(
             NotAListing::Silence
         )));
+    }
+
+    // ================================================================ the launch
+
+    #[test]
+    fn the_two_missing_binaries_are_the_two_lines_that_exit_127() {
+        // The ssh half cannot be reached from a headless test: the OpenSSH
+        // transport is chosen only when dl is *on* a terminal, so the line is pinned
+        // here and the route it travels is M9's pty work (see the note in
+        // `tests/launch.rs`). Both are printed bare, as Python's `print(e)` prints
+        // the exception, and both are 127.
+        let devpod = LaunchAborted::DevpodNotRun(NotRun::NotInstalled);
+        let ssh = LaunchAborted::SshNotRun(SshNotRun::NotInstalled);
+        assert_eq!(launch_abort(&devpod), DEVPOD_MISSING);
+        assert_eq!(
+            launch_abort(&ssh),
+            "ssh not found on PATH: dl needs OpenSSH to give a workspace command a terminal. \
+             Install it, or set DEVLAUNCH_NO_TTY=1 to run commands through devpod instead \
+             (interactive programs will not work)."
+        );
+        assert!(is_binary_missing(&devpod) && is_binary_missing(&ssh));
+        // Everything else about a launch that could not start is exit 1, which is
+        // what `UNREADABLE_WORKSPACE_LIST_EXIT_CODE` says and what a devpod that is
+        // there but unreachable deserves.
+        let unreadable =
+            LaunchAborted::ListingUnreadable(ListingUnreadable::Unreadable(NotAListing::Silence));
+        assert!(!is_binary_missing(&unreadable));
+        assert!(!is_binary_missing(&LaunchAborted::DevpodNotRun(
+            NotRun::TimedOut
+        )));
+    }
+
+    #[test]
+    fn a_devpod_that_wrote_its_own_diagnostics_gets_no_sentence_from_dl() {
+        // `devpod up` and `devpod stop` inherit this process's streams, so their
+        // refusal is already on the user's stderr and dl has only the exit code to
+        // add. `None` is what makes "say nothing" a value rather than a forgotten
+        // branch at the call site.
+        assert_eq!(
+            launch_refusal(&LaunchRefusal::UpRefused {
+                exit: Exit::Code(7)
+            }),
+            None
+        );
+        assert_eq!(
+            launch_refusal(&LaunchRefusal::StopRefused {
+                exit: Exit::Code(9)
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn the_launch_lock_and_the_failed_session_are_debug_lines_nobody_sees() {
+        // `logging.debug` under `basicConfig(level=INFO)`: not a rendering choice,
+        // the absence of one.
+        assert_eq!(
+            launch_notice(&LaunchNotice::LaunchLockUnavailable {
+                workspace_id: "ws".to_owned(),
+                reason: "Permission denied (os error 13)".to_owned(),
+            }),
+            None
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::DevpodSessionFailed {
+                exit: Exit::Code(1)
+            }),
+            None
+        );
+        // And the one a sibling launch prints, which is a bare `print` to stderr
+        // rather than a log line at all (locks.py:89).
+        assert_eq!(
+            launch_notice(&LaunchNotice::WaitingForSiblingLaunch {
+                workspace_id: "ws".to_owned(),
+            }),
+            Some("dl: waiting for another launch of ws".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_gh_refusal_names_the_config_directory_gh_read() {
+        // The arm whose commonest cause is not a missing login at all: a run that
+        // scoped `XDG_CONFIG_HOME` to a scratch directory hides the host's gh login,
+        // so gh refuses even though the user is logged in — and `gh auth login` is
+        // exactly the wrong remedy for that.
+        let line = launch_notice(&LaunchNotice::NoGitHubToken(GhEvent::Refused {
+            exit: Exit::Code(1),
+        }))
+        .expect("a warning");
+        assert!(
+            line.starts_with(
+                "gh auth token exited 1, so this workspace opens without a GitHub login. gh read \
+                 its config from "
+            ) && line.ends_with(
+                " -- if you are logged in on this host, that directory is the thing to check \
+                 before `gh auth login`."
+            ),
+            "{line}"
+        );
+        // Never the junk gh printed: it may be a malformed credential, and a warning
+        // is not a place to put one.
+        assert_eq!(
+            launch_notice(&LaunchNotice::NoGitHubToken(GhEvent::NotAToken)),
+            Some(
+                "gh auth token printed something that is not a token, so this workspace opens \
+                 without a GitHub login."
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn the_other_two_reasons_a_workspace_opens_without_a_login() {
+        // gh_auth.py:84 and :139. Both are warnings, because the degradation is
+        // invisible from inside the container: a `gh` with no token there looks like
+        // a `gh` nobody logged in with.
+        assert_eq!(
+            launch_notice(&LaunchNotice::NoGitHubToken(GhEvent::CouldNotRun(
+                GhUnavailable::TimedOut
+            ))),
+            Some(
+                "Could not read a GitHub token from gh (it did not answer in time), so this \
+                 workspace opens without a GitHub login."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::TokenNotStaged {
+                reason: "No space left on device (os error 28)".to_owned(),
+            }),
+            Some(
+                "Could not create a file to pass the GitHub token to devpod (No space left on \
+                 device (os error 28)), so this workspace opens without a GitHub login."
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_shared_pixi_cache_that_could_not_be_made_is_a_warning_not_a_failure() {
+        // The launch survives either way, which is exactly why these are warnings:
+        // the degradation is invisible and permanent until the cache home is
+        // writable again, and it costs every container a 1.2GB download the last one
+        // already paid for (devlaunch#232).
+        assert_eq!(
+            launch_notice(&LaunchNotice::PixiCacheNotCreated {
+                source: std::path::PathBuf::from("/c/pixi"),
+                reason: "Permission denied (os error 13)".to_owned(),
+            }),
+            Some(
+                "Could not create the shared pixi cache at /c/pixi (Permission denied (os error \
+                 13)), so each container downloads its own packages."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::PixiCacheNotADirectory {
+                source: std::path::PathBuf::from("/c/pixi"),
+            }),
+            Some(
+                "The shared pixi cache at /c/pixi is not there after all, so this container \
+                 downloads its own packages."
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn the_provisioning_events_a_user_sees_are_the_stages_and_the_failed_install() {
+        // Everything else `tools.py` says about provisioning is a `logging.debug`.
+        assert_eq!(
+            provision_event(&ProvisionEvent::StageFailed {
+                workspace: "ws".to_owned(),
+                stage: "hostname",
+                status: 1,
+                loudness: FailureLevel::default(),
+            }),
+            Some("ws: the hostname setup stage exited 1.".to_owned())
+        );
+        assert_eq!(
+            provision_event(&ProvisionEvent::NotInstalled {
+                workspace: "ws".to_owned(),
+                tools: vec!["gh", "claude"],
+                exit: Exit::Code(1),
+            }),
+            Some(
+                "Could not install gh and claude into ws; the session will start without them."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            provision_event(&ProvisionEvent::ProvisioningDisabled {
+                workspace: "ws".to_owned(),
+            }),
+            None
+        );
     }
 }

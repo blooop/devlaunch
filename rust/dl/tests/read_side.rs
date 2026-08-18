@@ -743,29 +743,18 @@ fn the_timing_summary_is_asked_for_by_the_environment_and_lands_on_stderr() {
 fn a_command_whose_flow_is_not_ported_refuses_and_names_the_milestone() {
     // The alternative — succeeding silently — is what would let a mid-port build
     // look like it had opened a workspace. M6 took `--purge`, `--prune`,
-    // `--reconcile` and the two lifecycle verbs out of this list; what is left is
-    // the launch family and the selector.
+    // `--reconcile` and the two lifecycle verbs out of this list and M7 took the
+    // eight launch verbs; what is left is the selector every verb-with-no-target
+    // opens, which is M8's.
     let world = World::full();
-    for (args, expected) in [
-        (
-            vec!["blooop-devlaunch-main-4f3a2b1c"],
-            "`dl <workspace> attach` is not in this build yet",
-        ),
-        (
-            vec!["blooop-devlaunch-main-4f3a2b1c", "up"],
-            "`dl <workspace> up` is not in this build yet",
-        ),
-        (
-            vec!["blooop-devlaunch-main-4f3a2b1c", "--", "make", "test"],
-            "`dl <workspace> --` is not in this build yet",
-        ),
-        (
-            vec!["stop"],
-            "the interactive workspace selector is not in this build yet",
-        ),
-    ] {
+    for args in [vec!["stop"], vec!["--rm"], vec!["--", "make", "test"]] {
         let run = world.dl(&args);
         run.exited(1);
-        assert!(run.err.contains(expected), "dl {args:?} said {:?}", run.err);
+        assert!(
+            run.err
+                .contains("the interactive workspace selector is not in this build yet"),
+            "dl {args:?} said {:?}",
+            run.err
+        );
     }
 }

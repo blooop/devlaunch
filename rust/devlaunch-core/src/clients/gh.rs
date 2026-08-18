@@ -52,9 +52,10 @@
 
 use std::io::Write as _;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::runner::{EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec};
+use crate::timing;
 
 /// The program asked for the host's token.
 pub(crate) const PROGRAM: &str = "gh";
@@ -173,7 +174,7 @@ pub(crate) enum TokenSource {
 
 /// gh could not be asked at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GhUnavailable {
+pub enum GhUnavailable {
     /// It was still running when its deadline ran out — a keyring that never
     /// unlocked, most likely.
     TimedOut,
@@ -183,7 +184,7 @@ pub(crate) enum GhUnavailable {
 /// Why this workspace is opening without a GitHub login, when that is worth
 /// saying.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GhEvent {
+pub enum GhEvent {
     CouldNotRun(GhUnavailable),
     /// `gh auth token` ran and refused.
     ///
@@ -241,13 +242,29 @@ pub(crate) fn resolve_token(runner: &dyn Runner, host: &HostEnv) -> TokenLookup 
 }
 
 /// Ask the gh CLI for the host's token.
+///
+/// The one trip in this module, and the one place it is timed. Python spans it
+/// here too, inside `_token_from_gh_cli` and past the `shutil.which` guard, under
+/// `host-prep`: the token is the host's to produce, and the trip is charged to that
+/// owner even when it happens in the middle of the attach that needed it.
 fn token_from_gh_cli(runner: &dyn Runner) -> TokenLookup {
     let spec = SpawnSpec::new(Invocation::new(PROGRAM).with_args(["auth", "token"]))
         // gh must not eat stdin that belongs to the command `dl` was asked to
         // run, and must not leave the terminal in a state of its own.
         .with_stdin_null()
         .with_timeout(GH_TIMEOUT);
-    match runner.capture(&spec) {
+    let started = Instant::now();
+    let answered = runner.capture(&spec);
+    let took = started.elapsed();
+    // Measured by hand rather than with a span guard, because what is spanned is
+    // the trip that *happened*: Python's `shutil.which` guard means a host with no
+    // gh spans nothing and opens no stage, and here that is known only once the
+    // spawn has answered.
+    if !matches!(answered, Outcome::ProgramNotFound) {
+        let _stage = timing::stage(timing::Stage::HostPrep);
+        timing::record("gh auth token", took);
+    }
+    match answered {
         Outcome::Ran { exit, io } if exit.is_success() => match Token::parse(&io.stdout) {
             Some(token) => TokenLookup::Found {
                 token,
@@ -552,6 +569,104 @@ mod tests {
             resolve_token(&fake, &bare_host()),
             TokenLookup::Unavailable(GhEvent::CouldNotRun(GhUnavailable::Blocked(failure)))
         );
+    }
+
+    // -------------------------------------------------------- the timing span
+    //
+    // `test/test_timing.py`'s `TestTransportAndGitGhCallsAreNamed` and
+    // `TestHostPrepIsAStage` assert this from outside; Python's span and stage sit
+    // inside `_token_from_gh_cli`, so this is the module that owns them.
+
+    /// The stages and spans a measured `record` produced.
+    fn measured(record: impl FnOnce()) -> timing::Document {
+        let _serialized = timing::exclusive();
+        timing::install(Some(timing::Registry::start(
+            timing::Mode::Document,
+            timing::Seam::default(),
+            0.0,
+        )));
+        record();
+        timing::emit()
+            .expect("a report from an installed registry")
+            .document()
+            .expect("document mode was asked for")
+            .clone()
+    }
+
+    fn stage_names(document: &timing::Document) -> Vec<&str> {
+        document.stages.iter().map(|stage| stage.stage).collect()
+    }
+
+    fn span_labels(document: &timing::Document, stage: &str) -> Vec<String> {
+        document
+            .stages
+            .iter()
+            .filter(|record| record.stage == stage)
+            .flat_map(|record| record.spans.iter().map(|span| span.label.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn the_token_round_trip_is_named_and_charged_to_host_prep() {
+        // Host prep is an owner, not a region of the timeline: the token is the
+        // host's to produce, and the trip is charged to that owner wherever on the
+        // launch it happens.
+        let fake = ScriptedRunner::new().with_script(
+            ["gh", "auth", "token"],
+            Reply::stdout(format!("gho_{}\n", "a".repeat(36))),
+        );
+
+        let document = measured(|| {
+            assert!(resolve_token(&fake, &bare_host()).token().is_some());
+        });
+
+        assert_eq!(stage_names(&document), ["host-prep"]);
+        assert_eq!(span_labels(&document, "host-prep"), ["gh auth token"]);
+    }
+
+    #[test]
+    fn a_gh_that_refused_is_still_named_and_timed() {
+        // The span wraps the trip, not the answer: a refusal took time too.
+        let fake = ScriptedRunner::new().with_script(["gh"], Reply::exited(1));
+
+        let document = measured(|| {
+            assert!(resolve_token(&fake, &bare_host()).token().is_none());
+        });
+
+        assert_eq!(span_labels(&document, "host-prep"), ["gh auth token"]);
+    }
+
+    #[test]
+    fn a_host_with_no_gh_records_no_span_and_opens_no_stage() {
+        // Python's `shutil.which` guard means a machine without gh never reaches
+        // the span; here the spawn is what answers, and nothing is charged for it.
+        let fake = ScriptedRunner::new().with_missing("gh");
+
+        let document = measured(|| {
+            assert_eq!(
+                resolve_token(&fake, &bare_host()),
+                TokenLookup::NothingToForward
+            );
+        });
+
+        assert_eq!(stage_names(&document), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn a_token_the_host_exported_costs_no_span_at_all() {
+        // `resolve_token` answers from the environment without spawning, and
+        // Python's span sits inside the branch that spawns.
+        let fake = ScriptedRunner::new();
+        let host = HostEnv {
+            gh_token: Some("gho_fromenv".to_owned()),
+            ..bare_host()
+        };
+
+        let document = measured(|| {
+            assert!(resolve_token(&fake, &host).token().is_some());
+        });
+
+        assert_eq!(stage_names(&document), [] as [&str; 0]);
     }
 
     // ------------------------------------------------------------ the opt-out

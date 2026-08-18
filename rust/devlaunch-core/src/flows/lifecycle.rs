@@ -99,9 +99,13 @@ pub enum LifecycleNotice {
     CloneRemoved { workspace_id: String },
     /// devpod let go of the workspace and the clone could not be removed. The
     /// workspace is gone either way, so this is a notice rather than a failure.
+    ///
+    /// Carries the refusal itself, not a rendering of it: Python interpolates the
+    /// exception (`Failed to remove local clone: {e}`) and the words for each arm
+    /// are the `dl` binary's to choose.
     CloneNotRemoved {
         workspace_id: String,
-        reason: String,
+        refusal: RemoveWorkspaceError,
     },
     /// A purge asked devpod to delete one of its own workspaces and devpod
     /// refused. The purge carries on: one failed delete must not cost the rest of
@@ -113,7 +117,14 @@ pub enum LifecycleNotice {
     },
     /// A clone directory went and its `metadata.json` record could not be
     /// dropped. Named by the path, which is what the record described.
-    RecordNotDropped { path: PathBuf, reason: String },
+    ///
+    /// Carries the refusal itself, for the reason
+    /// [`LifecycleNotice::CloneNotRemoved`] does: Python's line is `Could not drop
+    /// the record for {path}: {e}`, and the `{e}` is the binary's to write.
+    RecordNotDropped {
+        path: PathBuf,
+        refusal: RecordRefusal,
+    },
     /// This command is addressing a devpod workspace named by the record rather
     /// than the one this build derives (devlaunch#88).
     AddressingRecordedWorkspace {
@@ -125,6 +136,122 @@ pub enum LifecycleNotice {
     },
     /// Something one of the storage flows reported on the way through.
     Cache(CacheNotice),
+}
+
+/// Why a `metadata.json` write refused, as much of it as a notice can carry.
+///
+/// Not [`metadata::MetadataError`] itself, and the reason is mechanical rather than
+/// principled: that type's lock arm holds an `io::Error`, which is neither `Clone`
+/// nor comparable, and a notice is both. Every one of its arms maps here through
+/// the one exhaustive [`From`] below, so a new way for a write to fail is a compile
+/// error at that conversion rather than a reason that quietly reads as an old one.
+/// If `MetadataError` ever becomes `Clone` and `Eq`, this type is what goes away.
+///
+/// Nothing here is a sentence. The strings are the *OS's* own words — the same
+/// standing [`metadata::OsFailure::message`] has — and the words a person reads
+/// are the `dl` binary's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum RecordRefusal {
+    /// The directory `metadata.json` lives in could not be created.
+    DirectoryNotCreated {
+        path: PathBuf,
+        failure: metadata::OsFailure,
+    },
+    /// The metadata lock could not be taken, at this step of taking it.
+    NotLocked {
+        step: LockStep,
+        path: PathBuf,
+        reason: String,
+    },
+    /// No temp file could be created next to the target.
+    TempNotCreated {
+        directory: PathBuf,
+        failure: metadata::OsFailure,
+    },
+    /// The document could not be turned into bytes.
+    NotEncoded { reason: String },
+    /// The bytes could not be written, flushed or fsynced.
+    NotWritten {
+        path: PathBuf,
+        failure: metadata::OsFailure,
+    },
+    /// The target's permissions could not be copied onto the temp file.
+    ModeNotSet {
+        path: PathBuf,
+        mode: u32,
+        failure: metadata::OsFailure,
+    },
+    /// The finished temp file could not be renamed over the target.
+    NotReplaced {
+        from: PathBuf,
+        to: PathBuf,
+        failure: metadata::OsFailure,
+    },
+}
+
+/// Which step of taking the metadata lock refused.
+///
+/// Kept apart rather than collapsed into one "could not lock", because the three
+/// are fixed in three different places: a parent directory that cannot be made, a
+/// lock file that cannot be opened, and an `flock` that failed for a reason other
+/// than somebody else holding it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum LockStep {
+    CreateParent,
+    Open,
+    Acquire,
+}
+
+impl From<&metadata::MetadataError> for RecordRefusal {
+    fn from(error: &metadata::MetadataError) -> Self {
+        match error {
+            metadata::MetadataError::CreateDir { path, failure } => Self::DirectoryNotCreated {
+                path: path.clone(),
+                failure: failure.clone(),
+            },
+            metadata::MetadataError::Lock(lock) => {
+                let (step, path, source) = match lock {
+                    LockError::CreateParent { path, source } => {
+                        (LockStep::CreateParent, path, source)
+                    }
+                    LockError::Open { path, source } => (LockStep::Open, path, source),
+                    LockError::Acquire { path, source } => (LockStep::Acquire, path, source),
+                };
+                Self::NotLocked {
+                    step,
+                    path: path.clone(),
+                    reason: source.to_string(),
+                }
+            }
+            metadata::MetadataError::CreateTemp { directory, failure } => Self::TempNotCreated {
+                directory: directory.clone(),
+                failure: failure.clone(),
+            },
+            metadata::MetadataError::Encode { reason } => Self::NotEncoded {
+                reason: reason.clone(),
+            },
+            metadata::MetadataError::Write { path, failure } => Self::NotWritten {
+                path: path.clone(),
+                failure: failure.clone(),
+            },
+            metadata::MetadataError::SetMode {
+                path,
+                mode,
+                failure,
+            } => Self::ModeNotSet {
+                path: path.clone(),
+                mode: *mode,
+                failure: failure.clone(),
+            },
+            metadata::MetadataError::Replace { from, to, failure } => Self::NotReplaced {
+                from: from.clone(),
+                to: to.clone(),
+                failure: failure.clone(),
+            },
+        }
+    }
 }
 
 /// Collect the notices one of the storage flows produced.
@@ -850,7 +977,7 @@ pub fn workspace_delete(
             // the caller looking for a workspace that is not there.
             notices.push(LifecycleNotice::CloneNotRemoved {
                 workspace_id: workspace_id.to_owned(),
-                reason: remove_workspace_reason(&error),
+                refusal: error,
             });
             Removed::Nothing
         }
@@ -866,10 +993,6 @@ fn delete_call(workspace_id: &str, insistence: Insistence) -> Call {
         Insistence::Insisted => Call::new(["delete", workspace_id, "--ignore-not-found"]),
         Insistence::NotInsisted => Call::new(["delete", workspace_id]),
     }
-}
-
-fn remove_workspace_reason(error: &RemoveWorkspaceError) -> String {
-    format!("{error:?}")
 }
 
 // ===========================================================================
@@ -2069,7 +2192,7 @@ fn forget_clone(
         Ok(store_notices) => extend_with_store(notices, store_notices),
         Err(error) => notices.push(LifecycleNotice::RecordNotDropped {
             path: record.local_path.clone(),
-            reason: format!("{error:?}"),
+            refusal: RecordRefusal::from(&error),
         }),
     }
 }
@@ -2503,7 +2626,7 @@ pub fn apply_reconciliation(
             Ok(store_notices) => extend_with_store(notices, store_notices),
             Err(error) => notices.push(LifecycleNotice::RecordNotDropped {
                 path: adoptable.record.local_path.clone(),
-                reason: format!("{error:?}"),
+                refusal: RecordRefusal::from(&error),
             }),
         }
         report.repointed.push(adoptable.clone());
@@ -2571,7 +2694,7 @@ mod tests {
     use crate::domain::model::{BaseRepository, Timestamp, WorktreeInfo};
     use crate::domain::workspace_id::WorkspaceId;
     use crate::flows::repo_manager::tests::{refusing_reads, refusing_writes, run_git};
-    use crate::flows::repo_manager::{RefusalReason, bare_dir};
+    use crate::flows::repo_manager::{RefusalReason, RemoveTreeError, bare_dir};
     use crate::flows::workspace_clone::GitLfs;
 
     // ------------------------------------------------------------ test doubles
@@ -2585,13 +2708,24 @@ mod tests {
     struct Devpod {
         fake: FakeRunner,
         processes: ProcessRunner,
+        /// See [`timing::exclusive`]. Last field, so it is dropped last.
+        _serialized: timing::Exclusive,
     }
 
     impl Devpod {
+        /// The runner, and the timing exclusion for as long as it lives.
+        ///
+        /// Every devpod call through it is spanned against the **process-global**
+        /// registry (`clients::devpod` names each round trip), and
+        /// [`workspace_state`] opens the `devpod-up` stage — so a test holding one
+        /// of these would otherwise write into whatever document a concurrent
+        /// measured test had installed. In the fixture rather than per test, so a
+        /// new test cannot forget it.
         fn new() -> Self {
             Self {
                 fake: FakeRunner::new(),
                 processes: ProcessRunner,
+                _serialized: timing::exclusive(),
             }
         }
 
@@ -4081,6 +4215,86 @@ mod tests {
         assert!(notices.contains(&LifecycleNotice::CloneRemoved {
             workspace_id: "r-main-aa".to_owned()
         }));
+    }
+
+    #[test]
+    fn a_clone_that_could_not_be_removed_reports_the_refusal_and_not_a_rendering_of_it() {
+        // The workspace is gone whatever happened to the clone, so this is a notice
+        // and the delete still succeeds. What the notice carries is the refusal
+        // itself: a symlinked root has a `points_at` worth naming, and choosing the
+        // words for it is the binary's job, not core's.
+        let mut world = World::empty();
+        let elsewhere = world.tmp().join("moved-clone");
+        let clone = world.repo_dir.join("r-main-aa");
+        std::fs::create_dir_all(&elsewhere).expect("the real directory");
+        std::os::unix::fs::symlink(&elsewhere, &clone).expect("a symlinked clone");
+        world.record("r-main-aa", "main", &clone);
+        world.devpod.knows("r-main-aa");
+        let clones = clones_for(&world.repos_dir, &world.devpod);
+        let updater = SelfInvocation::new("dl");
+        let cache_path = fresh_cache(world.tmp());
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&updater, &cache_path);
+        let mut notices = Vec::new();
+
+        let outcome = workspace_delete(
+            &mut context,
+            &mut refresh,
+            &clones,
+            &mut world.storage,
+            "r-main-aa",
+            Insistence::NotInsisted,
+            &mut notices,
+        )
+        .expect("devpod ran");
+
+        assert_eq!(
+            outcome,
+            DeleteOutcome::Deleted {
+                clone: Removed::Nothing
+            }
+        );
+        assert_eq!(
+            notices,
+            vec![LifecycleNotice::CloneNotRemoved {
+                workspace_id: "r-main-aa".to_owned(),
+                refusal: RemoveWorkspaceError::DirectoryLeft(RemoveTreeError::RootIsSymlink {
+                    path: clone,
+                    points_at: Some(elsewhere),
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_record_that_could_not_be_dropped_reports_the_step_that_refused() {
+        // Python's line is `Could not drop the record for {path}: {e}`, and the
+        // `{e}` is the binary's to write: a temp file that could not be made, a
+        // lock that could not be taken and a rename that failed read differently
+        // to whoever has to fix them, so the notice carries which one it was.
+        let mut world = World::empty();
+        let clone = world.repo_dir.join("r-main-aa");
+        let record = world.record("r-main-aa", "main", &clone);
+        let cache = world.cache.clone();
+        let Some(_denied) = refusing_writes(&cache) else {
+            // Root is refused by nothing, and a mode this filesystem ignores is
+            // ordinary on bind and overlay mounts.
+            return;
+        };
+        let mut notices = Vec::new();
+
+        forget_clone(&mut world.storage, &record, &mut notices);
+
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [LifecycleNotice::RecordNotDropped {
+                    path,
+                    refusal: RecordRefusal::TempNotCreated { directory, .. },
+                }] if path == &clone && directory == &cache
+            ),
+            "{notices:?}"
+        );
     }
 
     // =======================================================================

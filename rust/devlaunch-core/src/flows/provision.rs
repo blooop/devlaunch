@@ -277,7 +277,7 @@ pub(crate) fn provisioning_disabled(value: Option<&str>) -> bool {
 /// anything follows the pass) and "true" says nothing about which question it is
 /// answering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ToolsSwitch {
+pub enum ToolsSwitch {
     Install,
     Skip,
 }
@@ -293,7 +293,7 @@ impl ToolsSwitch {
     }
 
     /// What the process environment asks for.
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         Self::requested(std::env::var(DISABLE_VAR).ok().as_deref())
     }
 }
@@ -713,7 +713,7 @@ fn posix_parts(path: &str) -> Vec<&str> {
 /// Two named levels rather than Python's `logging` integer, because core writes no
 /// output: which log level these become is the `dl` binary's rendering.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum FailureLevel {
+pub enum FailureLevel {
     /// Python's `logging.WARNING`, and what a stage gets unless it asks otherwise.
     #[default]
     Warning,
@@ -988,7 +988,7 @@ impl HostPayload {
 /// inputs, and a test states the host it means instead of monkeypatching
 /// `Path.home` the way the Python tests have to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HostLayout {
+pub struct HostLayout {
     /// The home directory the official claude install would be under.
     pub(crate) home: PathBuf,
     /// What a PATH search for `gh` answered, if anything.
@@ -997,7 +997,7 @@ pub(crate) struct HostLayout {
 
 impl HostLayout {
     /// This machine, as `Path.home()` and `shutil.which("gh")` read it.
-    pub(crate) fn from_env() -> Option<Self> {
+    pub fn from_env() -> Option<Self> {
         Some(Self {
             home: std::env::home_dir()?,
             gh_on_path: which("gh"),
@@ -1198,7 +1198,7 @@ pub(crate) fn transfer_script(payload: &HostPayload) -> String {
 /// out would cost the user the workspace they just built over a convenience that is
 /// allowed to fail.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BundleFailed {
+pub enum BundleFailed {
     /// A member could not be opened, stat'ed or read.
     Unreadable { path: PathBuf, error: OsFailure },
     /// The bundle itself could not be created or written.
@@ -1357,7 +1357,7 @@ fn ustar_header(arcname: &str, meta: &Metadata) -> Result<[u8; TAR_BLOCK], Bundl
 /// stage that worked produces no event at all — a launch that worked has nothing to
 /// say.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProvisionEvent {
+pub enum ProvisionEvent {
     /// `tools.py:926` — `"%s: the %s setup stage exited %s."`, at the stage's own
     /// level.
     StageFailed {
@@ -1397,7 +1397,7 @@ pub(crate) enum ProvisionEvent {
 /// failed install. Every arm here is one of Python's return statements, and
 /// [`Provisioning::tools_present`] is the bool it returned.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Provisioning {
+pub enum Provisioning {
     /// The probe found the official layout: one trip, nothing to do.
     AlreadyProvisioned,
     /// The host's own binaries landed in the container.
@@ -1425,7 +1425,7 @@ pub(crate) enum Provisioning {
 
 impl Provisioning {
     /// Whether the tools are now there — the bool Python returns.
-    pub(crate) fn tools_present(&self) -> bool {
+    pub fn tools_present(&self) -> bool {
         match self {
             Self::AlreadyProvisioned | Self::Lent | Self::ShimKept | Self::Installed => true,
             Self::InstallRefused { .. } | Self::Disabled | Self::TripRefused { .. } => false,
@@ -1440,7 +1440,7 @@ impl Provisioning {
 /// that is deliberately not an `OSError` so that the `except OSError` around this
 /// flow never swallows it, and the `dl` binary renders it as exit 127.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DevpodMissing;
+pub struct DevpodMissing;
 
 /// Provision [`REQUIRED_TOOLS`] into `workspace`. Answers how that turned out.
 ///
@@ -1483,7 +1483,7 @@ pub(crate) struct DevpodMissing;
 /// is not captured — a cold install streams a ~300MB binary or downloads pixi and two
 /// packages, which with nothing on the terminal reads as a hung `dl`, and the
 /// scripts' own progress lines are worth nothing in a buffer.
-pub(crate) fn provision_tools(
+pub fn provision_tools(
     runner: &dyn Runner,
     workspace: &str,
     tools: ToolsSwitch,

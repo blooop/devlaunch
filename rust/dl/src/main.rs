@@ -7,13 +7,17 @@
 //!
 //! - [`cli`] — the grammar. argv in, one `Command` out, pure.
 //! - [`session`] — what one command holds: the runner, the cache directory, and
-//!   the records when it needs them.
-//! - [`commands`] — one `render_*` per command, and the exhaustive match.
+//!   the records when it needs them; [`cold`] is the lazily-opened records
+//!   themselves, and [`target`] is which workspace a verb's target word names.
+//! - [`commands`] — one `render_*` per command, and the exhaustive match;
+//!   [`launch`] is the eight launch verbs' half of it.
 //! - [`render`] — typed values in, bytes out. Every user-facing English word `dl`
 //!   prints is written in this module or in [`commands`]; core holds none of it.
 
 mod cli;
+mod cold;
 mod commands;
+mod launch;
 mod render;
 mod session;
 mod target;

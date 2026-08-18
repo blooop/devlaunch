@@ -124,11 +124,58 @@ pub(crate) fn clone_dir(repos_dir: &Path, owner: &str, repo: &str, workspace_id:
 /// One vocabulary for the whole subsystem — this module,
 /// [`crate::flows::workspace_clone`] and the branch step between them — because
 /// they are one operation to a user and a single launch produces notices from all
-/// three. Every arm is one `logging.warning` or `logging.error` Python wrote,
-/// carrying what that line interpolated; nothing here is a sentence.
+/// three. Every arm is one `logging` call Python made, carrying what that line
+/// interpolated; nothing here is a sentence.
+///
+/// Two kinds of arm, and the difference is Python's level rather than anything a
+/// reader of this type has to act on. The first group is the `logger.info`
+/// **progress** lines — what the flow is about to do, or has just done — and the
+/// rest are the `warning`/`error` lines, where something was adopted, degraded or
+/// refused. Both reach stderr as the bare message (`dl.py` configures
+/// `level=INFO, format="%(message)s"`), so there is no level to render and the
+/// groups are not two types; a notice pushed in flow order stays in flow order
+/// either way, which is the whole reason the progress lines can travel this way at
+/// all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // binary surface — not part of the frozen wf API (#250 §7)
 pub enum CacheNotice {
+    // --- progress: what the flow is doing (Python's `logger.info` lines) ---
+    /// A bare clone is about to be made, because there is none.
+    ///
+    /// The remote and the destination, which is what the line names: the first
+    /// launch of a large repository sits here for minutes, and the two paths are
+    /// what say which repository is being fetched and where the disk is going.
+    CloningRepository { remote_url: String, bare: PathBuf },
+    /// The bare clone is on disk and recorded.
+    ClonedRepository { owner: String, repo: String },
+    /// Every head and tag is about to be swept into the bare clone — the broad
+    /// fetch, which is the sweep's and the forced refresh's, never a launch's.
+    FetchingUpdates { owner: String, repo: String },
+    /// The sweep finished and the record's `last_fetched` moved.
+    FetchedUpdates { owner: String, repo: String },
+    /// One ref is about to be fetched — the launch path's entire network budget.
+    FetchingRef {
+        owner: String,
+        repo: String,
+        branch: String,
+    },
+    /// A workspace clone is about to be cut from the bare cache.
+    CreatingWorkspaceClone { path: PathBuf },
+    /// The cache's own git-lfs store is about to be filled for one ref. Carries
+    /// nothing: Python's line names neither the ref nor the cache.
+    FillingLfsCache,
+    /// A pointer survived the cache phase, so the objects are about to come from
+    /// the forge. Carries nothing, as Python's line does.
+    PullingLfsFromOrigin,
+    /// A workspace clone directory is gone.
+    WorkspaceCloneRemoved { path: PathBuf },
+    /// There was no workspace clone at the directory dl named, so nothing was
+    /// removed. Reported rather than silent: the directory is the answer to "then
+    /// where is my work?", and dl naming one that is not there is how a stale
+    /// record shows itself.
+    NoWorkspaceCloneToRemove { path: PathBuf },
+
+    // --- the rest: adopted, degraded or refused (`warning`/`error` lines) ---
     /// A working bare clone was already on disk for a repository this process has
     /// no record of, so the record was rebuilt from the clone rather than the
     /// clone from the remote. Either another process cloned it just now, or a run
@@ -345,7 +392,10 @@ pub(crate) enum TreeRemoval {
 
 /// Why a tree could not be removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RemoveTreeError {
+// binary surface — not part of the frozen wf API (#250 §7). Public because
+// `RemoveWorkspaceError` carries it and reaches the binary through
+// `LifecycleNotice::CloneNotRemoved`, unrendered.
+pub enum RemoveTreeError {
     /// The root is a symbolic link, and neither of the two things that could be
     /// done with it is honest.
     ///
@@ -1079,6 +1129,10 @@ impl<'r> RepositoryManager<'r> {
             })?;
         }
 
+        notices.push(CacheNotice::CloningRepository {
+            remote_url: remote_url.to_owned(),
+            bare: bare.clone(),
+        });
         let cloned = {
             let _span = timing::span("git clone --bare");
             self.git.clone_bare(remote_url, &bare)
@@ -1101,7 +1155,14 @@ impl<'r> RepositoryManager<'r> {
             last_fetched: Some(Timestamp::now()),
             worktrees: Vec::new(),
         };
-        self.record(storage, repository, notices)
+        let recorded = self.record(storage, repository, notices)?;
+        // After the record, as Python logs it: what the line reports is a clone
+        // that is both on disk and known about.
+        notices.push(CacheNotice::ClonedRepository {
+            owner: owner.to_owned(),
+            repo: repo.to_owned(),
+        });
+        Ok(recorded)
     }
 
     /// Rebuild the metadata record for a bare clone already on disk.
@@ -1249,6 +1310,10 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
+        notices.push(CacheNotice::FetchingUpdates {
+            owner: owner.to_owned(),
+            repo: repo.to_owned(),
+        });
         let fetched = {
             let _span = timing::span("git fetch");
             self.git.fetch_all(&bare, limit)
@@ -1275,6 +1340,12 @@ impl<'r> RepositoryManager<'r> {
                 Err(error) => return Err(FetchRepoError::NotRecorded(format!("{error:?}"))),
             }
         }
+        // Last, where Python logs it: past the fetch and past the bookkeeping, so
+        // the line means both are done.
+        notices.push(CacheNotice::FetchedUpdates {
+            owner: owner.to_owned(),
+            repo: repo.to_owned(),
+        });
         Ok(())
     }
 
@@ -1304,6 +1375,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         branch: &str,
+        notices: &mut Vec<CacheNotice>,
     ) -> Result<FetchOutcome, UnsafeName> {
         // The branch is interpolated into a refspec that reaches git as argv, so
         // it is checked here rather than trusted. The caller usually holds a
@@ -1320,6 +1392,13 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
+        // Past both guards, where Python logs it: a ref nothing could be fetched
+        // for was never announced as being fetched.
+        notices.push(CacheNotice::FetchingRef {
+            owner: owner.to_owned(),
+            repo: repo.to_owned(),
+            branch: branch.to_owned(),
+        });
         let fetched = {
             let _span = timing::span("git fetch");
             self.git.fetch_ref(&bare, branch)
@@ -1579,6 +1658,12 @@ pub(crate) mod tests {
     /// absent, and a workspace clone must leave a `.git` or the workspace step does
     /// the same. Everything else about the fake — the recorder, the argv→response
     /// table, the quiet success by default — is the shared fake's.
+    ///
+    /// Deliberately *not* a holder of [`timing::exclusive`], unlike [`Cache`]: this
+    /// is constructed inside the worker threads of the contention tests, and the
+    /// exclusion is reentrant per thread rather than per test — a worker asking for
+    /// a guard its own test already holds would wait for itself. The cache is the
+    /// hook instead, because it is what the span-recording flows are driven over.
     pub(crate) struct FakeGit {
         fake: FakeRunner,
         extra: Vec<Effect>,
@@ -1705,9 +1790,19 @@ pub(crate) mod tests {
         pub(crate) dir: tempfile::TempDir,
         pub(crate) repos_dir: PathBuf,
         pub(crate) storage: MetadataStorage,
+        /// See [`timing::exclusive`]. Last field, so it is dropped last.
+        _serialized: timing::Exclusive,
     }
 
+    /// A cache, and the timing exclusion for as long as it lives.
+    ///
+    /// Every flow reached from here opens a `host-prep` stage or records a span
+    /// against the **process-global** registry, so a test holding one of these
+    /// would otherwise write into whatever document a concurrent measured test had
+    /// installed. Holding the exclusion in the fixture rather than per test is what
+    /// makes it impossible for a new test to forget.
     pub(crate) fn a_cache() -> Cache {
+        let serialized = timing::exclusive();
         let dir = tempfile::tempdir().expect("a temp dir");
         let repos_dir = dir.path().join("repos");
         let (storage, notices) =
@@ -1717,6 +1812,7 @@ pub(crate) mod tests {
             dir,
             repos_dir,
             storage,
+            _serialized: serialized,
         }
     }
 
@@ -2044,7 +2140,20 @@ pub(crate) mod tests {
             Some(&cloned),
             "and the record is on disk"
         );
-        assert_eq!(notices, Vec::new());
+        assert_eq!(
+            notices,
+            vec![
+                CacheNotice::CloningRepository {
+                    remote_url: "https://github.com/owner/repo.git".to_owned(),
+                    bare: bare.clone(),
+                },
+                CacheNotice::ClonedRepository {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                },
+            ],
+            "the progress lines bracket the clone, in the order Python logs them"
+        );
     }
 
     #[test]
@@ -2190,7 +2299,17 @@ pub(crate) mod tests {
         assert!(bare.join("HEAD").exists(), "and the fake clone ran");
         assert_eq!(
             notices,
-            vec![CacheNotice::ClearedPartialClone { bare }],
+            vec![
+                CacheNotice::ClearedPartialClone { bare: bare.clone() },
+                CacheNotice::CloningRepository {
+                    remote_url: "u".to_owned(),
+                    bare,
+                },
+                CacheNotice::ClonedRepository {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                },
+            ],
             "the removal is reported, because nothing else would say it happened"
         );
     }
@@ -2272,6 +2391,78 @@ pub(crate) mod tests {
                 .last_fetched
                 .is_some(),
             "the sweep's clock is what the interval is measured from"
+        );
+    }
+
+    #[test]
+    fn a_sweep_says_which_repository_it_is_fetching_and_that_it_finished() {
+        // Python's two `logger.info` lines around the fetch, and both are worth
+        // carrying: the first is what a user watches through a slow one, and the
+        // second is what says the record's clock moved with it.
+        let mut cache = a_cache();
+        cache.given_bare_clone("owner", "repo");
+        cache.given_record("owner", "repo");
+        let fake = FakeGit::new();
+        let manager = a_manager(&cache, Git::new(&fake));
+        let mut notices = ignoring();
+
+        manager
+            .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut notices)
+            .expect("fetched");
+
+        assert_eq!(
+            notices,
+            vec![
+                CacheNotice::FetchingUpdates {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                },
+                CacheNotice::FetchedUpdates {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sweep_with_no_clone_to_fetch_into_announces_nothing() {
+        // The announcement sits past the guard, where Python's does: nothing was
+        // fetched, so nothing claimed to be fetching.
+        let mut cache = a_cache();
+        let fake = FakeGit::new();
+        let manager = a_manager(&cache, Git::new(&fake));
+        let mut notices = ignoring();
+
+        manager
+            .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut notices)
+            .expect_err("there is no clone to fetch into");
+
+        assert_eq!(notices, Vec::new());
+    }
+
+    #[test]
+    fn a_fetch_that_failed_says_it_started_and_never_says_it_finished() {
+        // Which is the whole use of having two lines rather than one.
+        let mut cache = a_cache();
+        cache.given_bare_clone("owner", "repo");
+        let fake = FakeGit::new().with_script(
+            ["git", "fetch"],
+            Response::failed(128, "fatal: no such host\n"),
+        );
+        let manager = a_manager(&cache, Git::new(&fake));
+        let mut notices = ignoring();
+
+        manager
+            .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut notices)
+            .expect_err("the remote is unreachable");
+
+        assert_eq!(
+            notices,
+            vec![CacheNotice::FetchingUpdates {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+            }]
         );
     }
 
@@ -2384,7 +2575,7 @@ pub(crate) mod tests {
         let manager = a_manager(&cache, Git::new(&fake));
 
         let outcome = manager
-            .fetch_ref("owner", "repo", "feature/x")
+            .fetch_ref("owner", "repo", "feature/x", &mut ignoring())
             .expect("a safe ref");
 
         assert_eq!(outcome, FetchOutcome::Updated);
@@ -2425,7 +2616,9 @@ pub(crate) mod tests {
         let manager = a_manager(&cache, Git::new(&fake));
 
         assert_eq!(
-            manager.fetch_ref("owner", "repo", "nosuch").expect("safe"),
+            manager
+                .fetch_ref("owner", "repo", "nosuch", &mut ignoring())
+                .expect("safe"),
             FetchOutcome::RefMissingOnRemote
         );
     }
@@ -2440,7 +2633,10 @@ pub(crate) mod tests {
         );
         let manager = a_manager(&cache, Git::new(&fake));
 
-        match manager.fetch_ref("owner", "repo", "main").expect("safe") {
+        match manager
+            .fetch_ref("owner", "repo", "main", &mut ignoring())
+            .expect("safe")
+        {
             FetchOutcome::Failed { reason } => {
                 assert!(
                     reason.contains("Could not read from remote repository"),
@@ -2458,7 +2654,10 @@ pub(crate) mod tests {
         let fake = FakeGit::new().with_script(["git", "fetch"], Response::exited(128));
         let manager = a_manager(&cache, Git::new(&fake));
 
-        match manager.fetch_ref("owner", "repo", "main").expect("safe") {
+        match manager
+            .fetch_ref("owner", "repo", "main", &mut ignoring())
+            .expect("safe")
+        {
             FetchOutcome::Failed { reason } => assert!(reason.contains("128"), "{reason}"),
             other => panic!("a failure, got {other:?}"),
         }
@@ -2476,7 +2675,9 @@ pub(crate) mod tests {
         let fake = FakeGit::new();
         let manager = a_manager(&cache, Git::new(&fake));
 
-        manager.fetch_ref("owner", "repo", "main").expect("safe");
+        manager
+            .fetch_ref("owner", "repo", "main", &mut ignoring())
+            .expect("safe");
 
         assert_eq!(
             cache
@@ -2496,7 +2697,7 @@ pub(crate) mod tests {
         let manager = a_manager(&cache, Git::new(&fake));
 
         let refused = manager
-            .fetch_ref("owner", "repo", "--upload-pack=evil")
+            .fetch_ref("owner", "repo", "--upload-pack=evil", &mut ignoring())
             .expect_err("an unsafe ref");
 
         assert_eq!(refused.name, "--upload-pack=evil");
@@ -2513,7 +2714,10 @@ pub(crate) mod tests {
         let fake = FakeGit::new();
         let manager = a_manager(&cache, Git::new(&fake));
 
-        match manager.fetch_ref("owner", "repo", "main").expect("safe") {
+        match manager
+            .fetch_ref("owner", "repo", "main", &mut ignoring())
+            .expect("safe")
+        {
             FetchOutcome::Failed { reason } => assert!(reason.contains("owner/repo"), "{reason}"),
             other => panic!("a failure, got {other:?}"),
         }

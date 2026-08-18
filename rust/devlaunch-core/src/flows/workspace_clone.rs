@@ -270,7 +270,10 @@ pub enum Removed {
 
 /// Why a workspace clone could not be removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RemoveWorkspaceError {
+// binary surface — not part of the frozen wf API (#250 §7). Public because
+// `LifecycleNotice::CloneNotRemoved` carries it rather than a rendering of it, so
+// the words for each arm can be the binary's.
+pub enum RemoveWorkspaceError {
     /// The triple is not one a clone directory can be derived from.
     UnsafeTriple(UnsafeName),
     /// The directory is still there, and this is why.
@@ -398,21 +401,6 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// answer, which is why it is an absent answer rather than an error: deriving
     /// raises on an unsafe ref, and one hand-edited record must not be able to
     /// take down the whole of `dl --ls --json`.
-    /// [`Self::resolve_clone_path`] for a caller with nowhere to put the notices.
-    ///
-    /// binary surface — not part of the frozen wf API (#250 §7).
-    ///
-    /// The one notice the resolution can raise ([`CacheNotice::CloneNotNamed`])
-    /// is a diagnostic the Python build never printed at all, so dropping it here
-    /// is what parity means for now — and there is nowhere else to drop it,
-    /// because `CacheNotice` is still crate-private and a `pub fn` cannot name
-    /// it. When it is promoted, this wrapper is what goes away: the binary takes
-    /// the notices and renders them, as it does for every other typed event.
-    pub fn clone_path(&self, recorded: &WorktreeInfo) -> Option<PathBuf> {
-        let mut dropped = Vec::new();
-        self.resolve_clone_path(recorded, &mut dropped)
-    }
-
     pub(crate) fn resolve_clone_path(
         &self,
         recorded: &WorktreeInfo,
@@ -588,7 +576,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         // changing what this method returns.
         let outcome = self
             .repo_manager
-            .fetch_ref(owner, repo, branch)
+            .fetch_ref(owner, repo, branch, notices)
             .unwrap_or_else(|unsafe_name| FetchOutcome::Failed {
                 reason: unsafe_reason(&unsafe_name),
             });
@@ -681,7 +669,10 @@ impl<'r> WorkspaceCloneManager<'r> {
         // and carries no proof. Its refusal is reported as a stale base rather
         // than propagated, so a hand-edited record cannot change what this method
         // answers with.
-        let outcome = match self.repo_manager.fetch_ref(owner, repo, default_branch) {
+        let outcome = match self
+            .repo_manager
+            .fetch_ref(owner, repo, default_branch, notices)
+        {
             Ok(outcome) => outcome,
             Err(unsafe_name) => {
                 let reason = unsafe_reason(&unsafe_name);
@@ -809,6 +800,9 @@ impl<'r> WorkspaceCloneManager<'r> {
         // decides which of the two checkout shapes runs.
         let is_new_workspace = !clone_is_there(ws_path);
         if is_new_workspace {
+            notices.push(CacheNotice::CreatingWorkspaceClone {
+                path: ws_path.to_path_buf(),
+            });
             if let Some(parent) = ws_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| {
                     PrepareWorkspaceError::ParentNotCreated {
@@ -1048,6 +1042,7 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// Writes into the shared bare repository, so it must not run unserialized;
     /// its one caller runs under the repo lock `prepare_workspace` holds.
     fn fill_cache_lfs_store(&self, bare: &Path, reference: &str, notices: &mut Vec<CacheNotice>) {
+        notices.push(CacheNotice::FillingLfsCache);
         let _span = timing::span("git lfs fetch (cache)");
         if let Some(refused) = self.git.lfs_fetch_into_cache(bare, reference).refusal() {
             notices.push(CacheNotice::LfsCacheNotFilled {
@@ -1112,6 +1107,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         if !self.has_lfs_pointers(ws_path, notices) {
             return Ok(());
         }
+        notices.push(CacheNotice::PullingLfsFromOrigin);
         let pulled = {
             let _span = timing::span("git lfs pull");
             self.git.lfs_pull_origin(ws_path)
@@ -1191,8 +1187,15 @@ impl<'r> WorkspaceCloneManager<'r> {
         notices: &mut Vec<CacheNotice>,
     ) -> Result<Removed, RemoveWorkspaceError> {
         match remove_tree(ws_path) {
-            Ok(TreeRemoval::WasNotThere) => return Ok(Removed::Nothing),
-            Ok(TreeRemoval::Removed) => {}
+            Ok(TreeRemoval::WasNotThere) => {
+                notices.push(CacheNotice::NoWorkspaceCloneToRemove {
+                    path: ws_path.to_path_buf(),
+                });
+                return Ok(Removed::Nothing);
+            }
+            Ok(TreeRemoval::Removed) => notices.push(CacheNotice::WorkspaceCloneRemoved {
+                path: ws_path.to_path_buf(),
+            }),
             Err(error) => return Err(RemoveWorkspaceError::DirectoryLeft(error)),
         }
         // The clone is gone either way, so a record that cannot be removed is a
@@ -1488,6 +1491,53 @@ mod tests {
                 vec!["git", "show-ref", "--verify", "refs/remotes/origin/nb4"],
                 vec!["git", "checkout", "-B", "nb4", "origin/nb4"],
             ]
+        );
+    }
+
+    #[test]
+    fn a_cold_prepare_names_the_clone_it_is_about_to_cut_and_only_when_it_cuts_one() {
+        // Python logs this inside the `is_new_workspace` branch, which is what makes
+        // it a report of work rather than of a launch: re-launching an existing
+        // workspace creates nothing and says nothing.
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let mut creating = ignoring();
+        let prepared = manager
+            .prepare_cold(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                "nb4",
+                REMOTE_URL,
+                &mut creating,
+            )
+            .expect("prepared");
+        let mut again = ignoring();
+        manager
+            .prepare_cold(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                "nb4",
+                REMOTE_URL,
+                &mut again,
+            )
+            .expect("prepared again");
+
+        assert!(
+            creating.contains(&CacheNotice::CreatingWorkspaceClone {
+                path: prepared.path.clone(),
+            }),
+            "{creating:?}"
+        );
+        assert!(
+            !again
+                .iter()
+                .any(|notice| matches!(notice, CacheNotice::CreatingWorkspaceClone { .. })),
+            "{again:?}"
         );
     }
 
@@ -1841,7 +1891,15 @@ mod tests {
         let (base, notices) = ensure_branch_with(&manager, &mut cache, "newbranch");
 
         assert_eq!(base.expect("ensured"), BranchBase::Fresh);
-        assert_eq!(notices, Vec::new());
+        assert_eq!(
+            notices,
+            vec![CacheNotice::FetchingRef {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                branch: "newbranch".to_owned(),
+            }],
+            "the one fetch announces itself, and nothing else is reported"
+        );
         let argvs = fake.argvs();
         assert_eq!(
             as_strs(&argvs),
@@ -1970,12 +2028,24 @@ mod tests {
         );
         assert_eq!(
             notices,
-            vec![CacheNotice::RefNotFetched {
-                owner: "owner".to_owned(),
-                repo: "repo".to_owned(),
-                branch: "main".to_owned(),
-                reason: "fatal: no such host".to_owned(),
-            }],
+            vec![
+                CacheNotice::FetchingRef {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "newbranch".to_owned(),
+                },
+                CacheNotice::FetchingRef {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "main".to_owned(),
+                },
+                CacheNotice::RefNotFetched {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "main".to_owned(),
+                    reason: "fatal: no such host".to_owned(),
+                },
+            ],
             "the reason is carried precisely so it can be printed"
         );
         let argvs = fake.argvs();
@@ -2009,7 +2079,10 @@ mod tests {
         }
         assert!(matches!(
             notices.as_slice(),
-            [CacheNotice::RefNotFetched { .. }]
+            [
+                CacheNotice::FetchingRef { .. },
+                CacheNotice::RefNotFetched { .. }
+            ]
         ));
         let argvs = fake.argvs();
         assert_eq!(
@@ -2057,7 +2130,10 @@ mod tests {
         }
         assert!(matches!(
             notices.as_slice(),
-            [CacheNotice::RefNotFetched { .. }]
+            [
+                CacheNotice::FetchingRef { .. },
+                CacheNotice::RefNotFetched { .. }
+            ]
         ));
         let argvs = fake.argvs();
         assert_eq!(
@@ -2393,6 +2469,43 @@ mod tests {
                 .iter()
                 .any(|argv| argv.contains(&"ls-files")),
             "nothing git-lfs could name matters when git-lfs is not installed: {argvs:?}"
+        );
+    }
+
+    #[test]
+    fn each_lfs_phase_announces_itself_and_neither_names_anything_else() {
+        // Python's two `logger.info` lines carry no data at all — not the ref, not
+        // the cache — so these arms carry none either: what they say is which of
+        // the two phases a multi-gigabyte wait is being spent in.
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let (_, fake) = a_workspace_holding_a_pointer(&cache, "big.bin");
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::Installed);
+        let mut notices = ignoring();
+
+        manager
+            .prepare_cold(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                "nb4",
+                REMOTE_URL,
+                &mut notices,
+            )
+            .expect("prepared");
+
+        assert_eq!(
+            notices,
+            vec![
+                CacheNotice::FetchingRef {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "nb4".to_owned(),
+                },
+                CacheNotice::FillingLfsCache,
+                CacheNotice::PullingLfsFromOrigin,
+            ],
+            "the cache phase, then the network one it fell through to"
         );
     }
 
@@ -2904,6 +3017,60 @@ mod tests {
         assert_eq!(removed, Removed::Clone);
         assert!(!ws.exists());
         assert_eq!(cache.storage.get_worktree("owner", "repo", "nb4"), None);
+    }
+
+    #[test]
+    fn a_removal_names_the_directory_it_took_and_the_one_it_found_empty() {
+        // Two `logger.info` lines, and the difference between them is the whole
+        // news: "removed <path>" and "there was nothing at <path>" are the answer
+        // to "then where is my work?", and a stale record shows itself as the
+        // second one naming a directory nobody expected.
+        let mut cache = a_cache();
+        let ws = given_clone(&cache, "nb4", &[("file.txt", b"content")]);
+        cache
+            .storage
+            .add_worktree(a_record("nb4", ws.clone()))
+            .expect("recorded");
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let mut taken = ignoring();
+        manager
+            .remove_workspace(&mut cache.storage, "owner", "repo", "nb4", &mut taken)
+            .expect("removed");
+        let mut again = ignoring();
+        manager
+            .remove_workspace(&mut cache.storage, "owner", "repo", "nb4", &mut again)
+            .expect("nothing left to remove");
+
+        assert_eq!(
+            taken,
+            vec![CacheNotice::WorkspaceCloneRemoved { path: ws.clone() }]
+        );
+        assert_eq!(
+            again,
+            vec![CacheNotice::NoWorkspaceCloneToRemove { path: ws }]
+        );
+    }
+
+    #[test]
+    fn a_removal_with_no_directory_to_name_reports_nothing_at_all() {
+        // Python returns before its log line when there is no record to resolve a
+        // path from, and a notice naming no path would be the one thing worse than
+        // silence here.
+        let mut cache = a_cache();
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+        let mut notices = ignoring();
+
+        assert_eq!(
+            manager
+                .remove_workspace_by_id(&mut cache.storage, "nonexistent", &mut notices)
+                .expect("no error"),
+            Removed::Nothing
+        );
+
+        assert_eq!(notices, Vec::new());
     }
 
     #[test]
