@@ -5,6 +5,7 @@ They verify that git command construction, cloning, and fetching work correctly.
 """
 # pylint: disable=redefined-outer-name
 
+import logging
 import subprocess
 from pathlib import Path
 
@@ -386,3 +387,50 @@ class TestStalenessContract:
         ws_path = clone_manager.prepare_cold("test", "repo", "main", remote_url)
 
         assert _head_sha(ws_path) == cached_tip
+
+    def test_an_unusable_recorded_default_branch_cuts_from_the_cache_and_says_so(
+        self, clone_manager, local_git_repo, caplog
+    ):
+        """Arm 3 of devlaunch#245, end to end over real git.
+
+        A recorded default-branch name the fetch validator refuses means the
+        base is never refreshed — yet git happily resolves that same name as a
+        start point, so the launch succeeds on a base of the cache's age. This
+        is the shape observed in the wild (a workspace 201 commits behind with
+        no error). The launch must keep succeeding, land exactly on what the
+        *cache* resolves the name to, and say out loud that the base is
+        unrefreshed — the line wf reads.
+        """
+        remote_url = local_git_repo["remote_url"]
+        work_dir = local_git_repo["work_dir"]
+
+        # Give main depth, then build the cache: 'main~1' must resolve inside it.
+        _commit_on(work_dir, "main", "depth.txt", "Give main a parent")
+        clone_manager.repo_manager.ensure_repo("test", "repo", remote_url)
+        cached_base = subprocess.run(
+            ["git", "rev-parse", "main~1"],
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        # The remote moves on after the cache is built; a fresh base would see it.
+        _commit_on(work_dir, "main", "moved.txt", "main moved on")
+
+        # Poison the record the way a hand-edited or corrupted metadata.json
+        # does: a name the fetch refuses, but a revision git resolves.
+        record = clone_manager.storage.get_repository("test", "repo")
+        record.default_branch = "main~1"
+        clone_manager.storage.add_repository(record)
+
+        with caplog.at_level(logging.WARNING):
+            ws_path = clone_manager.prepare_cold("test", "repo", "brand/new", remote_url)
+
+        # The new branch's base is what the *cache* resolved the name to —
+        # nothing fetched, nothing from the moved remote.
+        assert _head_sha(ws_path) == cached_base
+        stale_lines = [r.message for r in caplog.records if "may be behind" in r.message]
+        assert len(stale_lines) == 1
+        assert "test/repo@brand/new" in stale_lines[0]
+        assert "'main~1'" in stale_lines[0]
