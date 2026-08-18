@@ -19,8 +19,9 @@ import logging
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from .. import timing
 from ..workspace_id import WorkspaceId, validate_ref_name
@@ -42,6 +43,42 @@ from .storage import MetadataStorage
 _LFS_POINTER_PREFIX = b"version https://git-lfs"
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FreshBase:
+    """The ref this launch runs on was fetched from the remote this call.
+
+    Either the requested branch itself was refreshed, or the branch is new and
+    the base it was cut from was. Carries no payload: "your tip is current" is
+    the whole message.
+    """
+
+
+@dataclass(frozen=True)
+class StaleBase:
+    """The launch proceeds on a ref nothing refreshed this call.
+
+    *base* names that ref — the default branch a new branch was cut from, the
+    cache's own ``HEAD`` when no default branch could even be named, or the
+    requested branch itself when its fetch failed. *reason* is why nothing
+    refreshed it, carried rather than reconstructed at the print site for the
+    same reason :class:`devlaunch.worktree.repo_manager.FetchFailed` carries
+    its own.
+
+    Deliberately not an error (devlaunch#144: launch-from-cache is the offline
+    contract) and deliberately not only a log line (devlaunch#245: the caller —
+    and wf, reading dl's output — must be able to tell a fresh base from a
+    stale one).
+    """
+
+    base: str
+    reason: str
+
+
+# Two arms and no third: every path through ensure_branch answers one of these,
+# so "the fetch quietly did not back the base" cannot exist as an unnamed state.
+BranchBase = Union[FreshBase, StaleBase]
 
 
 def _on_disk(path: Path) -> Optional[bool]:
@@ -469,8 +506,14 @@ class WorkspaceCloneManager:
                 remote_url,
             )
 
-    def ensure_branch(self, lock: RepoLock, owner: str, repo: str, branch: str) -> None:
+    def ensure_branch(self, lock: RepoLock, owner: str, repo: str, branch: str) -> BranchBase:
         """Ensure a branch exists in the bare repo, at the remote's current tip.
+
+        Returns which of those two things it actually delivered: a
+        :class:`FreshBase` when the tip the launch runs on was fetched this
+        call, a :class:`StaleBase` naming the unrefreshed ref and the reason
+        when it was not (devlaunch#245). The degraded arms all proceed — that
+        is the devlaunch#144 contract — but they no longer proceed silently.
 
         This is the whole of the launch path's network use, and the staleness
         contract devlaunch#144 settled is stated here because this is the code
@@ -505,14 +548,17 @@ class WorkspaceCloneManager:
 
         try:
             default_branch = self.repo_manager.get_default_branch(owner, repo)
+            default_branch_error = None
         except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
             logger.warning(f"Failed to resolve default branch: {e}")
             default_branch = None
+            default_branch_error = str(e)
 
         # Each arm named, so a fourth one cannot be silently read as one of
         # these three.
+        base: BranchBase
         if isinstance(outcome, Updated):
-            pass
+            base = FreshBase()
         elif isinstance(outcome, RefMissingOnRemote):
             # The remote answered, so the branch really is new: base it on the
             # default branch, and fetch *that* so it is based on something
@@ -529,18 +575,23 @@ class WorkspaceCloneManager:
                     # dl's launch path guards it with (RuntimeError, OSError),
                     # so a ValueError here would surface as a traceback.
                     logger.warning(f"Cannot fetch recorded default branch: {e}")
+                    base = StaleBase(base=default_branch, reason=str(e))
                 else:
                     # Named arm by arm for the same reason as the dispatch
                     # around it: the sum exists so a fourth outcome cannot be
                     # quietly read as one of these three.
                     if isinstance(base_outcome, Updated):
-                        pass
+                        base = FreshBase()
                     elif isinstance(base_outcome, RefMissingOnRemote):
                         # The remote has no default branch under that name
                         # either. Nothing more to try -- there is no third ref
                         # -- and the branch creation below still has the cache's
-                        # own default branch to start from.
-                        pass
+                        # own default branch to start from. Unverifiable is
+                        # stale here: nothing fetched backs it.
+                        base = StaleBase(
+                            base=default_branch,
+                            reason=f"the remote has no branch '{default_branch}' to refresh from",
+                        )
                     elif isinstance(base_outcome, FetchFailed):
                         # Same condition as the arm below, warned the same
                         # way: the new branch is about to be cut from a
@@ -550,13 +601,23 @@ class WorkspaceCloneManager:
                             f"Could not fetch {default_branch} for {owner}/{repo}: "
                             f"{base_outcome.reason}"
                         )
+                        base = StaleBase(base=default_branch, reason=base_outcome.reason)
                     else:
                         unhandled_fetch_outcome(base_outcome)
+            else:
+                # No default branch could even be named, so nothing was
+                # fetched and the creation below starts from the bare cache's
+                # own HEAD -- a ref of unbounded age, and the report says so.
+                base = StaleBase(
+                    base="HEAD",
+                    reason=default_branch_error or "no default branch is recorded",
+                )
         elif isinstance(outcome, FetchFailed):
             # Not an error here: a cached branch still launches. Deliberately
             # no default-branch fetch -- nothing was learned about the remote,
             # so nothing licenses treating this branch as new.
             logger.warning(f"Could not fetch {branch} for {owner}/{repo}: {outcome.reason}")
+            base = StaleBase(base=branch, reason=outcome.reason)
         else:
             unhandled_fetch_outcome(outcome)
 
@@ -567,6 +628,7 @@ class WorkspaceCloneManager:
             start_point=default_branch or "HEAD",
             use_local_refs=True,
         )
+        return base
 
     def _prepare_workspace(
         self,

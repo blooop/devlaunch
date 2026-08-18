@@ -18,7 +18,7 @@ from devlaunch.worktree.repo_manager import (
     RepositoryManager,
     Updated,
 )
-from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
+from devlaunch.worktree.workspace_clone import FreshBase, StaleBase, WorkspaceCloneManager
 from devlaunch.worktree.config import WorktreeConfig
 
 
@@ -447,6 +447,156 @@ class TestEnsureBranch:
             start_point="HEAD",
             use_local_refs=True,
         )
+
+    def test_a_fresh_requested_ref_reports_a_fresh_base(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """A launch whose tip was fetched this call says so in its return value.
+
+        The report is the channel devlaunch#245 adds: the caller could never
+        tell a fresh base from a stale one, because both returned None and the
+        difference lived only in a log line.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = Updated()
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, FreshBase)
+
+    def test_a_new_branch_cut_from_a_fresh_default_reports_a_fresh_base(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """The happy new-branch arm is fresh: its base was fetched this call."""
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [RefMissingOnRemote(), Updated()]
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, FreshBase)
+
+    def test_a_lost_base_fetch_reports_the_stale_base_and_its_reason(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """Arm 1 of devlaunch#245: the base-branch fetch fails after the remote
+        called the branch new. The branch is still cut from the cache's default
+        branch — and the return value now says which ref that was and why
+        nothing refreshed it, instead of leaving both facts in a warning.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [
+            RefMissingOnRemote(),
+            FetchFailed("no such host"),
+        ]
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, StaleBase)
+        assert base.base == "main"
+        assert "no such host" in base.reason
+        # The branch is still cut, from the cache's own default branch.
+        mock_branch_manager.ensure_branch_exists.assert_called_once_with(
+            bare_path,
+            "newbranch",
+            create_remote=False,
+            start_point="main",
+            use_local_refs=True,
+        )
+
+    def test_an_unresolvable_default_branch_reports_head_as_the_stale_base(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """Arm 2 of devlaunch#245: with no default branch to name, nothing is
+        fetched and the branch is cut from the cache's own HEAD — a ref of
+        unbounded age. The report names HEAD as the base so the caller knows
+        exactly how weak the guarantee is.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.side_effect = RuntimeError("no HEAD")
+        mock_repo_manager.fetch_ref.return_value = RefMissingOnRemote()
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, StaleBase)
+        assert base.base == "HEAD"
+        assert "no HEAD" in base.reason
+        mock_branch_manager.ensure_branch_exists.assert_called_once_with(
+            bare_path,
+            "newbranch",
+            create_remote=False,
+            start_point="HEAD",
+            use_local_refs=True,
+        )
+
+    def test_an_unsafe_recorded_default_branch_reports_the_stale_base(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """Arm 3 of devlaunch#245: a recorded default-branch name the fetch
+        refuses means nothing was refreshed, yet that same unproven name is
+        what the branch is cut from. The report carries the name and the
+        rejection, where before both died as a warning.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "--upload-pack=evil"
+
+        def reject_unsafe(_owner, _repo, ref):
+            if ref.startswith("-"):
+                raise ValueError(f"Invalid git ref: {ref}")
+            return RefMissingOnRemote()
+
+        mock_repo_manager.fetch_ref.side_effect = reject_unsafe
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, StaleBase)
+        assert base.base == "--upload-pack=evil"
+        assert "Invalid git ref" in base.reason
+
+    def test_a_base_the_remote_no_longer_has_reports_the_stale_base(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """The remote answering "no such base branch" leaves the cache's copy
+        unverifiable, which is stale in the only sense that matters here:
+        nothing this call fetched backs the ref the branch is cut from.
+        Pinned so the sum stays total — no arm may answer with silence.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [RefMissingOnRemote(), RefMissingOnRemote()]
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, StaleBase)
+        assert base.base == "main"
+
+    def test_an_unreachable_remote_reports_the_launched_ref_as_the_stale_base(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """Offline, the ref you launch is itself the one nothing refreshed.
+
+        The launch still proceeds from the cache — that contract is pinned
+        elsewhere and untouched — but the report now says the tip is
+        unrefreshed rather than claiming nothing.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = FetchFailed("no such host")
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, StaleBase)
+        assert base.base == "newbranch"
+        assert "no such host" in base.reason
 
 
 class TestPrepareCold:
