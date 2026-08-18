@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The host's Agent Skills reach the container: `~/.claude/skills/` and
+  `~/.claude/wf-skills/` are mounted read-only.** The claude-code feature's
+  allow-list left both out, so a workspace this repo's devcontainer built came up
+  with no `~/.claude/skills` at all — every skill installed on the host invisible
+  inside, `/wf` and the rest of blooop/wayfinder's bundle included, which is how
+  a `wf` launch into a node lands in a session that cannot see the skill it was
+  launched to run. Two paths rather than one because `wf skills install` leaves
+  *relative* links (`skills/wf -> ../wf-skills/wf`) and the bodies live in the
+  sibling: mounting `skills/` alone delivers a directory of dangling links.
+  Read-only, like `commands/` and `hooks/`, so the allow-list gains no write path
+  onto the host — a skill is executable instructions. The one cost: `wf` refreshes
+  its links on every launch, so a `wf` run from *inside* a container now prints
+  that it could not, and carries on.
+
 ## [0.0.28] - 2026-08-18
 
 ### Fixed

@@ -25,11 +25,23 @@ The following files and directories from your **host machine** are mounted into 
 - `~/.claude/agents/` → Custom agent configurations
 - `~/.claude/commands/` → Command definitions
 - `~/.claude/hooks/` → Event-driven shell hooks
+- `~/.claude/skills/` → Agent Skills, and the links a skill installer leaves there
+- `~/.claude/wf-skills/` → the skill bodies those links point at
 
 These are **read-only** (`ro` flag) to prevent:
 - Prompt injection attacks that could modify your Claude configuration
 - Accidental modification of shared configuration from within containers
 - Security issues related to hook manipulation
+
+Skills are two mounts because they are one thing. An installer that keeps the
+prompt bodies in a sibling directory and leaves *relative* links behind —
+`skills/wf -> ../wf-skills/wf`, which is what `wf skills install` from
+blooop/wayfinder writes — needs both sides in here or every link arrives
+dangling, and a container with dangling links has no skills at all rather than
+stale ones. Read-only for the same reason `commands/` is: a skill is executable
+instructions. That costs one thing, and it is a warning rather than a failure —
+`wf` heals its own links on every launch, so a `wf` run *inside* a container
+reports that it could not refresh them and carries on.
 
 ### Read-Write Mounts (Authentication & State)
 - `~/.claude/.credentials.json` → OAuth access/refresh tokens
@@ -44,15 +56,15 @@ These files **must be writable** to enable:
 ### What Is Not Mounted
 
 Everything else under `~/.claude` — session transcripts, `projects/`,
-`history.jsonl`, `shell-snapshots/`, `skills/`, `plugins/` — is **not** mounted.
+`history.jsonl`, `shell-snapshots/`, `plugins/` — is **not** mounted.
 Those paths still exist in the container and are writable; they are simply the
 container's own, and they die with it.
 
 The list above is an allow-list, and that is the point: a directory Claude starts
 writing to next month cannot silently become another way onto your host. What it
 costs is real and worth knowing before you meet it. A container does not resume a
-session you started on the host, and the skills and plugins installed on your
-host are not visible in there.
+session you started on the host, and the plugins installed on your host are not
+visible in there.
 
 One consequence people go looking for after the fact: a `settings.json` entry
 naming a script that lives outside the mounted paths — a `statusLine` command
