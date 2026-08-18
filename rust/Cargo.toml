@@ -11,6 +11,7 @@ license = "MIT"
 repository = "https://github.com/blooop/devlaunch"
 
 [workspace.dependencies]
+sha2 = "0.10"
 devlaunch-core = { path = "devlaunch-core" }
 devlaunch-test-support = { path = "devlaunch-test-support" }
 # `setsid`, which is what Python's `start_new_session=True` means and what
