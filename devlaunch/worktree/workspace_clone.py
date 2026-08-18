@@ -21,7 +21,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import NoReturn, Optional, Union
 
 from .. import timing
 from ..workspace_id import WorkspaceId, validate_ref_name
@@ -79,6 +79,67 @@ class StaleBase:
 # Two arms and no third: every path through ensure_branch answers one of these,
 # so "the fetch quietly did not back the base" cannot exist as an unnamed state.
 BranchBase = Union[FreshBase, StaleBase]
+
+
+@dataclass(frozen=True)
+class _DefaultBranchNamed:
+    """The repository's default branch is known, and *name* is it."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class _DefaultBranchUnknown:
+    """No default branch could be named, and *reason* is why.
+
+    One arm for both ways that happens -- the resolver raised, or it answered
+    with an empty name -- because what follows is the same for each: nothing to
+    fetch, and a new branch cut from the bare cache's own ``HEAD``. The reason
+    is what tells the two apart afterwards, and it is carried rather than
+    rebuilt at the print site.
+    """
+
+    reason: str
+
+
+# The name-or-why of a repository's default branch. A pair of locals held this
+# before, and nothing stopped them disagreeing: an error string beside a name,
+# or neither set. The two facts travel as one value now, and "no name" carries
+# its reason by construction rather than by a second variable being consulted.
+_DefaultBranch = Union[_DefaultBranchNamed, _DefaultBranchUnknown]
+
+
+def _unhandled_default_branch(default: NoReturn) -> NoReturn:
+    """Reject a default-branch answer nobody handled. See :func:`unhandled_branch_base`."""
+    raise AssertionError(f"Unhandled default branch: {default!r}")
+
+
+def _start_point(default: _DefaultBranch) -> str:
+    """What a new branch is cut from, whichever arm *default* is.
+
+    Exists so the two call sites do not each hand-roll the fallback, the way
+    :func:`devlaunch.disk_usage.known_bytes` exists for its own sum.
+    """
+    if isinstance(default, _DefaultBranchNamed):
+        return default.name
+    if isinstance(default, _DefaultBranchUnknown):
+        return "HEAD"
+    _unhandled_default_branch(default)
+
+
+def unhandled_branch_base(base: NoReturn) -> NoReturn:
+    """Reject a base answer nobody handled -- at type-check time, not at runtime.
+
+    Exported for the same reason
+    :func:`devlaunch.worktree.repo_manager.unhandled_fetch_outcome` is: an
+    ``else`` hand-rolled at a call site is exactly how a third arm gets read as
+    "the base is fresh", which is the one thing this sum exists to prevent.
+
+    Hand-rolled rather than :func:`typing.assert_never`, which is 3.11+ while
+    this package supports 3.10; a parameter typed ``NoReturn`` gets the same
+    treatment from the checker.
+    """
+    raise AssertionError(f"Unhandled branch base: {base!r}")
 
 
 def _on_disk(path: Path) -> Optional[bool]:
@@ -498,7 +559,12 @@ class WorkspaceCloneManager:
         with self.repo_manager.hold_repo_lock(owner, repo) as lock:
             self.repo_manager.clone_if_missing(lock, owner, repo, remote_url)
             base = self.ensure_branch(lock, owner, repo, branch)
-            if isinstance(base, StaleBase):
+            # Named arm by arm, like every other sum this package reads: a third
+            # arm absorbed by a bare `else` here would launch from a stale cache
+            # in silence, which is the defect this reporting was built to close.
+            if isinstance(base, FreshBase):
+                pass
+            elif isinstance(base, StaleBase):
                 # The one consequence-stating line for the whole degraded
                 # family, in dl's own output because wf reads that output: the
                 # fetch-level warnings above it say what failed, this says what
@@ -508,6 +574,8 @@ class WorkspaceCloneManager:
                     f"which could not be refreshed ({base.reason}); "
                     f"it may be behind the remote."
                 )
+            else:
+                unhandled_branch_base(base)
             return self._prepare_workspace(
                 lock,
                 workspace,
@@ -555,14 +623,7 @@ class WorkspaceCloneManager:
         lock.require(owner, repo)
         bare_path = self.repo_manager.get_bare_path(owner, repo)
         outcome = self.repo_manager.fetch_ref(owner, repo, branch)
-
-        try:
-            default_branch = self.repo_manager.get_default_branch(owner, repo)
-            default_branch_error = None
-        except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
-            logger.warning(f"Failed to resolve default branch: {e}")
-            default_branch = None
-            default_branch_error = str(e)
+        default = self._resolve_default_branch(owner, repo)
 
         # Each arm named, so a fourth one cannot be silently read as one of
         # these three.
@@ -575,53 +636,15 @@ class WorkspaceCloneManager:
             # current. Whatever this second fetch answers, the branch creation
             # below proceeds -- there is no third ref to fall back to, and the
             # cache's own default branch is the best remaining start point.
-            if default_branch:
-                try:
-                    base_outcome = self.repo_manager.fetch_ref(owner, repo, default_branch)
-                except ValueError as e:
-                    # Unlike `branch`, this name is read back from metadata.json
-                    # and carries no proof. Caught rather than propagated so a
-                    # hand-edited record cannot change what this method raises:
-                    # dl's launch path guards it with (RuntimeError, OSError),
-                    # so a ValueError here would surface as a traceback.
-                    logger.warning(f"Cannot fetch recorded default branch: {e}")
-                    base = StaleBase(base=default_branch, reason=str(e))
-                else:
-                    # Named arm by arm for the same reason as the dispatch
-                    # around it: the sum exists so a fourth outcome cannot be
-                    # quietly read as one of these three.
-                    if isinstance(base_outcome, Updated):
-                        base = FreshBase()
-                    elif isinstance(base_outcome, RefMissingOnRemote):
-                        # The remote has no default branch under that name
-                        # either. Nothing more to try -- there is no third ref
-                        # -- and the branch creation below still has the cache's
-                        # own default branch to start from. Unverifiable is
-                        # stale here: nothing fetched backs it.
-                        base = StaleBase(
-                            base=default_branch,
-                            reason=f"the remote has no branch '{default_branch}' to refresh from",
-                        )
-                    elif isinstance(base_outcome, FetchFailed):
-                        # Same condition as the arm below, warned the same
-                        # way: the new branch is about to be cut from a
-                        # possibly stale cache, and the reason is carried
-                        # precisely so it can be printed here.
-                        logger.warning(
-                            f"Could not fetch {default_branch} for {owner}/{repo}: "
-                            f"{base_outcome.reason}"
-                        )
-                        base = StaleBase(base=default_branch, reason=base_outcome.reason)
-                    else:
-                        unhandled_fetch_outcome(base_outcome)
-            else:
+            if isinstance(default, _DefaultBranchNamed):
+                base = self._fetch_base_branch(owner, repo, default.name)
+            elif isinstance(default, _DefaultBranchUnknown):
                 # No default branch could even be named, so nothing was
                 # fetched and the creation below starts from the bare cache's
                 # own HEAD -- a ref of unbounded age, and the report says so.
-                base = StaleBase(
-                    base="HEAD",
-                    reason=default_branch_error or "no default branch is recorded",
-                )
+                base = StaleBase(base="HEAD", reason=default.reason)
+            else:
+                _unhandled_default_branch(default)
         elif isinstance(outcome, FetchFailed):
             # Not an error here: a cached branch still launches. Deliberately
             # no default-branch fetch -- nothing was learned about the remote,
@@ -635,10 +658,71 @@ class WorkspaceCloneManager:
             bare_path,
             branch,
             create_remote=False,
-            start_point=default_branch or "HEAD",
+            start_point=_start_point(default),
             use_local_refs=True,
         )
         return base
+
+    def _resolve_default_branch(self, owner: str, repo: str) -> _DefaultBranch:
+        """The repository's default branch, or why it could not be named.
+
+        An empty answer is folded into :class:`_DefaultBranchUnknown` here
+        rather than being left to read as falsey downstream: a branch named
+        ``""`` is not a thing, so the one place that can tell is the one place
+        that asked.
+
+        Both arms guard against an empty *reason* for the same underlying
+        rule: whatever ends up in a :class:`StaleBase` gets printed inside
+        "could not be refreshed (…)", and an exception whose ``str()`` is empty
+        would print that as "()" -- a sentence with the reason cut out of it.
+        """
+        try:
+            name = self.repo_manager.get_default_branch(owner, repo)
+        except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
+            logger.warning(f"Failed to resolve default branch: {e}")
+            return _DefaultBranchUnknown(reason=str(e) or f"{type(e).__name__} with no message")
+        if not name:
+            return _DefaultBranchUnknown(reason="no default branch is recorded")
+        return _DefaultBranchNamed(name=name)
+
+    def _fetch_base_branch(self, owner: str, repo: str, default_branch: str) -> BranchBase:
+        """Refresh *default_branch* to cut a brand-new branch from, and report it.
+
+        Split out of :meth:`ensure_branch` so the "which ref is the base" question
+        is answered in one place per outcome rather than nested three deep inside
+        the requested ref's own dispatch.
+        """
+        try:
+            outcome = self.repo_manager.fetch_ref(owner, repo, default_branch)
+        except ValueError as e:
+            # Unlike the requested branch, this name is read back from
+            # metadata.json and carries no proof. Caught rather than propagated
+            # so a hand-edited record cannot change what ensure_branch raises:
+            # dl's launch path guards it with (RuntimeError, OSError), so a
+            # ValueError here would surface as a traceback.
+            logger.warning(f"Cannot fetch recorded default branch: {e}")
+            return StaleBase(base=default_branch, reason=str(e))
+
+        # Named arm by arm for the same reason as the dispatch around it: the sum
+        # exists so a fourth outcome cannot be quietly read as one of these three.
+        if isinstance(outcome, Updated):
+            return FreshBase()
+        if isinstance(outcome, RefMissingOnRemote):
+            # The remote has no default branch under that name either. Nothing
+            # more to try -- there is no third ref -- and the branch creation
+            # still has the cache's own default branch to start from.
+            # Unverifiable is stale here: nothing fetched backs it.
+            return StaleBase(
+                base=default_branch,
+                reason=f"the remote has no branch '{default_branch}' to refresh from",
+            )
+        if isinstance(outcome, FetchFailed):
+            # Warned here as well as reported, because the reason is carried
+            # precisely so it can be printed: the new branch is about to be cut
+            # from a possibly stale cache.
+            logger.warning(f"Could not fetch {default_branch} for {owner}/{repo}: {outcome.reason}")
+            return StaleBase(base=default_branch, reason=outcome.reason)
+        unhandled_fetch_outcome(outcome)
 
     def _prepare_workspace(
         self,
