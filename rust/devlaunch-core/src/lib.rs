@@ -16,6 +16,20 @@
 //! else; no user-facing English lives here — text and exit codes are the
 //! `dl` binary's rendering.
 
+// The four layers. Everything is crate-private until the day-one public API
+// (#250's closure) is frozen at the end of M6; publishing later is free,
+// un-publishing is a break. `runner` is pub so devlaunch-test-support can
+// implement the trait; that crate is dev-only and never shipped.
+pub mod runner;
+
+// Leaf like `runner`: the env-gated span registry everything above may use
+// (even `locks` spans a contended wait), depending on nothing itself.
+pub(crate) mod timing;
+
+pub(crate) mod clients;
+pub(crate) mod domain;
+pub(crate) mod flows;
+
 #[cfg(test)]
 mod tests {
     #[test]
