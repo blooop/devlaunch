@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.29] - 2026-08-18
+
 ### Fixed
 
 - **The host's Agent Skills reach the container: `~/.claude/skills/` and
@@ -22,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   onto the host — a skill is executable instructions. The one cost: `wf` refreshes
   its links on every launch, so a `wf` run from *inside* a container now prints
   that it could not, and carries on.
+
+- **A launch reads every arm of the base answer, so a third one cannot be mistaken
+  for a fresh base** ([#245](https://github.com/blooop/devlaunch/issues/245)).
+  0.0.28 shipped the stale-base report; `prepare_cold` still consumed it with a bare
+  `isinstance` check, which would have read an arm added later as a fresh base — the
+  silent launch-from-stale-cache the sum type was introduced to close. The dispatch
+  now names both arms and refuses an unhandled one, and the default branch travels
+  as one name-or-why value rather than a name and a reason that can disagree.
 
 ## [0.0.28] - 2026-08-18
 
