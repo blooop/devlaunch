@@ -5,8 +5,14 @@
 //! `resolve_known_workspace`, `prune_command`, `purge_all_data`,
 //! `reconcile_command`, `update_cache_background` and `sweep_repo_fetches`. See
 //! docs/rust-rewrite-plan.md (M6); this is also `wf`'s consumption surface
-//! (#250), which is why everything here is `pub(crate)` rather than module-private
-//! and why the names are the ones a caller outside dl would reach for.
+//! (#250), which is why everything here is public rather than module-private and
+//! why the names are the ones a caller outside dl would reach for.
+//!
+//! Everything reachable here is **binary surface — not part of the frozen wf API
+//! (#250 §7)**, except the three §7 names (`list`, `remove`, `up`): the `dl`
+//! binary is a separate crate and every sentence a user reads is written there,
+//! so a rendering layer that could not name these typed results would not be a
+//! rendering layer. The distinction is what stays frozen at the end of M6.
 //!
 //! # Three commands remove things, and none of them decides what is finished
 //!
@@ -88,7 +94,7 @@ use crate::timing;
 /// from several of these flows. Every arm is one `logging.*` call Python made,
 /// carrying what that line interpolated; nothing here is a sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum LifecycleNotice {
+pub enum LifecycleNotice {
     /// The workspace's local clone was removed with it.
     CloneRemoved { workspace_id: String },
     /// devpod let go of the workspace and the clone could not be removed. The
@@ -149,14 +155,14 @@ fn extend_with_store(notices: &mut Vec<LifecycleNotice>, store: Vec<metadata::No
 /// is why the leading arguments are a list rather than nothing: the Python build's
 /// re-invocation needs two of them and the Rust binary's needs none.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SelfInvocation {
+pub struct SelfInvocation {
     program: String,
     leading_args: Vec<String>,
 }
 
 impl SelfInvocation {
     /// `program`, run with no leading arguments — the Rust binary's own shape.
-    pub(crate) fn new(program: impl Into<String>) -> Self {
+    pub fn new(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
             leading_args: Vec::new(),
@@ -166,7 +172,7 @@ impl SelfInvocation {
     /// `program`, run with these arguments in front of the command — Python's
     /// `-m devlaunch.dl`.
     #[must_use]
-    pub(crate) fn with_leading_args<I, S>(mut self, args: I) -> Self
+    pub fn with_leading_args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -181,7 +187,7 @@ impl SelfInvocation {
     /// `--force` is passed on rather than re-decided by the child, because the
     /// child re-checks the TTL and would otherwise skip a refresh that follows a
     /// workspace change — where the cache is wrong however new it is.
-    pub(crate) fn refresh_child(&self, reason: RefreshReason) -> Invocation {
+    pub fn refresh_child(&self, reason: RefreshReason) -> Invocation {
         let mut invocation = Invocation::new(&self.program)
             .with_args(self.leading_args.iter().cloned())
             .with_arg(UPDATE_CACHE_FLAG);
@@ -193,17 +199,17 @@ impl SelfInvocation {
 }
 
 /// The flag that puts a `dl` run in refresh-child mode.
-pub(crate) const UPDATE_CACHE_FLAG: &str = "--update-cache";
+pub const UPDATE_CACHE_FLAG: &str = "--update-cache";
 
 /// The flag that tells a refresh — parent or child — to ignore the TTL.
-pub(crate) const FORCE_FLAG: &str = "--force";
+pub const FORCE_FLAG: &str = "--force";
 
 /// Why a background refresh is being asked for.
 ///
 /// Named arms rather than Python's `force: bool`, because at the call site `True`
 /// says nothing about *what* is being overridden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RefreshReason {
+pub enum RefreshReason {
     /// This command has just changed what the cache describes — a workspace
     /// created, stopped or deleted — so the cache is wrong however recently it was
     /// written.
@@ -214,7 +220,7 @@ pub(crate) enum RefreshReason {
 
 /// What asking for a background refresh turned out to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RefreshSpawn {
+pub enum RefreshSpawn {
     /// A detached child is running. `pid` is here so a test can observe it;
     /// nothing in devlaunch waits on it.
     Spawned { pid: u32 },
@@ -231,7 +237,7 @@ pub(crate) enum RefreshSpawn {
 
 /// Why the refresh child never started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SpawnRefused {
+pub enum SpawnRefused {
     /// This build's own program is not where it said it was.
     ProgramNotFound,
     /// The OS refused the fork or exec.
@@ -251,7 +257,7 @@ pub(crate) enum SpawnRefused {
 /// command that changed the workspace list forces a refresh" is something a caller
 /// cannot forget: [`workspace_stop`] and [`workspace_delete`] cannot be called
 /// without one.
-pub(crate) struct Refresh<'a> {
+pub struct Refresh<'a> {
     updater: &'a SelfInvocation,
     /// The completion cache whose mtime decides whether an unforced refresh is
     /// worth spawning.
@@ -260,7 +266,7 @@ pub(crate) struct Refresh<'a> {
 }
 
 impl<'a> Refresh<'a> {
-    pub(crate) fn new(updater: &'a SelfInvocation, cache_path: &'a Path) -> Self {
+    pub fn new(updater: &'a SelfInvocation, cache_path: &'a Path) -> Self {
         Self {
             updater,
             cache_path,
@@ -269,7 +275,7 @@ impl<'a> Refresh<'a> {
     }
 
     /// Whether this command has already spawned its refresh.
-    pub(crate) fn spawned(&self) -> bool {
+    pub fn spawned(&self) -> bool {
         self.spawned
     }
 
@@ -277,7 +283,7 @@ impl<'a> Refresh<'a> {
     ///
     /// Skipped entirely when this command already spawned one, and — under
     /// [`RefreshReason::IfStale`] — when the cache is still fresh.
-    pub(crate) fn ask(&mut self, runner: &dyn Runner, reason: RefreshReason) -> RefreshSpawn {
+    pub fn ask(&mut self, runner: &dyn Runner, reason: RefreshReason) -> RefreshSpawn {
         if self.spawned {
             return RefreshSpawn::AlreadySpawned;
         }
@@ -308,7 +314,7 @@ impl<'a> Refresh<'a> {
 /// two parents can both see a stale cache before either child has written one, and
 /// the second sweep would be pure waste.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChildWork {
+pub enum ChildWork {
     /// Rewrite the completion cache, then sweep the bare-clone cache's fetches.
     ///
     /// Both or neither, and in that order: the completion cache is what the user's
@@ -320,7 +326,7 @@ pub(crate) enum ChildWork {
 }
 
 /// Whether the refresh child has anything to do.
-pub(crate) fn child_work(cache_path: &Path, reason: RefreshReason) -> ChildWork {
+pub fn child_work(cache_path: &Path, reason: RefreshReason) -> ChildWork {
     match reason {
         RefreshReason::Forced => ChildWork::RefreshAndSweep,
         RefreshReason::IfStale if completion_cache::completion_cache_is_fresh(cache_path) => {
@@ -341,7 +347,7 @@ pub(crate) fn child_work(cache_path: &Path, reason: RefreshReason) -> ChildWork 
 /// child with no terminal attached — so these exist to be *counted* and to be
 /// visible under `DEVLAUNCH_TIMING`, not to be printed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SweptRepo {
+pub enum SweptRepo {
     /// The interval had elapsed and the fetch worked.
     Fetched { owner: String, repo: String },
     /// The interval had not elapsed. Nothing was asked of the remote.
@@ -371,9 +377,9 @@ pub(crate) enum SweptRepo {
 
 /// Everything one sweep did.
 #[derive(Debug, Default)]
-pub(crate) struct SweepReport {
-    pub(crate) repos: Vec<SweptRepo>,
-    pub(crate) notices: Vec<LifecycleNotice>,
+pub struct SweepReport {
+    pub repos: Vec<SweptRepo>,
+    pub notices: Vec<LifecycleNotice>,
 }
 
 /// Bring the bare-clone cache up to date, one repository at a time.
@@ -405,7 +411,7 @@ pub(crate) struct SweepReport {
 /// (`last_fetched` in metadata), which is what lets the launch path go on
 /// consulting it: whichever side fetches first, the other sees a fresh clock and
 /// does nothing.
-pub(crate) fn sweep_repo_fetches(
+pub fn sweep_repo_fetches(
     repos: &RepositoryManager<'_>,
     storage: &mut MetadataStorage,
 ) -> SweepReport {
@@ -458,7 +464,7 @@ pub(crate) fn sweep_repo_fetches(
 /// [`timing::stage_result`](crate::timing::stage_result), because an unreadable
 /// answer is Python's `None` return and not an exception — the stage completed,
 /// devpod just had nothing to say.
-pub(crate) fn workspace_state(
+pub fn workspace_state(
     runner: &dyn Runner,
     workspace_id: &str,
 ) -> Result<ContainerState, StatusUnreadable> {
@@ -475,7 +481,7 @@ pub(crate) fn workspace_state(
 /// [`KnownWorkspace::Unknown`] carrying a recorded id, and no way to read a state
 /// off one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum KnownWorkspace {
+pub enum KnownWorkspace {
     /// devpod knows this workspace and reported this state. The two come from one
     /// round trip: asking "which id" and then "what state" separately is how a
     /// command ends up addressing one workspace and reporting another's state.
@@ -490,7 +496,7 @@ pub(crate) enum KnownWorkspace {
 
 impl KnownWorkspace {
     /// The id every later step addresses, whichever arm this is.
-    pub(crate) fn workspace_id(&self) -> &str {
+    pub fn workspace_id(&self) -> &str {
         match self {
             Self::Known { workspace_id, .. } => workspace_id,
             Self::Unknown { derived } => derived,
@@ -498,7 +504,7 @@ impl KnownWorkspace {
     }
 
     /// The state devpod gave, or nothing when it knows no such workspace.
-    pub(crate) fn state(&self) -> Option<&ContainerState> {
+    pub fn state(&self) -> Option<&ContainerState> {
         match self {
             Self::Known { state, .. } => Some(state),
             Self::Unknown { .. } => None,
@@ -506,7 +512,7 @@ impl KnownWorkspace {
     }
 
     /// Whether a launch may attach straight away.
-    pub(crate) fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         matches!(self.state(), Some(state) if state.is_running())
     }
 }
@@ -539,7 +545,7 @@ impl KnownWorkspace {
 /// and nothing prunes it, so a record naming a workspace deleted months ago is
 /// ordinary; addressing it would substitute one absent workspace for another and
 /// lose the derived id a create needs.
-pub(crate) fn resolve_known_workspace(
+pub fn resolve_known_workspace(
     runner: &dyn Runner,
     triple: (&str, &str, &str),
     derived: &str,
@@ -589,7 +595,7 @@ pub(crate) fn resolve_known_workspace(
 /// holding one has already handled the failure — and the way it handles it is to
 /// pass a closure that answers `None`, because a lookup that failed must not be
 /// able to stop a command that would otherwise have worked.
-pub(crate) fn recorded_devpod_workspace_id(
+pub fn recorded_devpod_workspace_id(
     storage: &MetadataStorage,
     owner: &str,
     repo: &str,
@@ -607,7 +613,7 @@ pub(crate) fn recorded_devpod_workspace_id(
 
 /// How a stop ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StopOutcome {
+pub enum StopOutcome {
     Stopped,
     /// devpod refused. Its own diagnostics are already on the user's stderr — the
     /// call inherits this process's streams, as Python's does — so there is
@@ -622,7 +628,7 @@ pub(crate) enum StopOutcome {
 /// A stopped workspace still appears in `devpod list`, with different details, so
 /// the snapshot is forgotten either way — and the completion cache is wrong
 /// regardless of age, which is why the refresh is [`RefreshReason::Forced`].
-pub(crate) fn workspace_stop(
+pub fn workspace_stop(
     context: &mut CommandContext<'_>,
     refresh: &mut Refresh<'_>,
     workspace_id: &str,
@@ -652,7 +658,7 @@ fn stop_call(workspace_id: &str) -> Call {
 /// this path and both are decisions: it carries a delete past the unsaved-work
 /// guard, *and* it makes an already-absent workspace count as deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Insistence {
+pub enum Insistence {
     Insisted,
     NotInsisted,
 }
@@ -662,7 +668,7 @@ pub(crate) enum Insistence {
 /// Two arms and no third, because [`Unsaved`] has three and one of them is
 /// permission. Each carries what its sentence interpolates and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RemovalRefused {
+pub enum RemovalRefused {
     /// The clone holds work that exists nowhere else.
     WouldLose {
         workspace_id: String,
@@ -680,7 +686,7 @@ pub(crate) enum RemovalRefused {
 
 /// What the guard decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Guarded {
+pub enum Guarded {
     /// Nothing dl can establish would be lost, or the caller insisted.
     MayRemove,
     Refused(RemovalRefused),
@@ -701,11 +707,7 @@ pub(crate) enum Guarded {
 /// `--force` is checked *after* the answer is read, not instead of reading it, so
 /// the refusal a forced delete carried past is still available to the caller — and
 /// so a future `--force` that wanted to report what it overrode has it.
-pub(crate) fn guard_removal(
-    workspace_id: &str,
-    unsaved: Unsaved,
-    insistence: Insistence,
-) -> Guarded {
+pub fn guard_removal(workspace_id: &str, unsaved: Unsaved, insistence: Insistence) -> Guarded {
     let refusal = match unsaved {
         Unsaved::NothingToLose => return Guarded::MayRemove,
         Unsaved::WouldLose(losses) => RemovalRefused::WouldLose {
@@ -733,13 +735,13 @@ pub(crate) fn guard_removal(
 /// which is the whole of devlaunch#174: they used to name it separately and could
 /// disagree, with the guard clearing an absent directory while the delete removed
 /// the one holding the work.
-pub(crate) struct CloneDirectories<'a, 'r> {
+pub struct CloneDirectories<'a, 'r> {
     clones: &'a WorkspaceCloneManager<'r>,
     notices: RefCell<Vec<CacheNotice>>,
 }
 
 impl<'a, 'r> CloneDirectories<'a, 'r> {
-    pub(crate) fn of(clones: &'a WorkspaceCloneManager<'r>) -> Self {
+    pub fn of(clones: &'a WorkspaceCloneManager<'r>) -> Self {
         Self {
             clones,
             notices: RefCell::new(Vec::new()),
@@ -747,7 +749,7 @@ impl<'a, 'r> CloneDirectories<'a, 'r> {
     }
 
     /// The notices resolving produced, leaving none behind.
-    pub(crate) fn take_notices(&self) -> Vec<CacheNotice> {
+    pub fn take_notices(&self) -> Vec<CacheNotice> {
         std::mem::take(&mut self.notices.borrow_mut())
     }
 }
@@ -767,7 +769,7 @@ impl ClonePathResolver for CloneDirectories<'_, '_> {
 /// from a path or a URL that dl never cloned and does not manage, so it has no
 /// clone of its own to protect and no business inspecting somebody's checkout to
 /// find one.
-pub(crate) fn unsaved_work_in(
+pub fn unsaved_work_in(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     git: &Git<'_>,
@@ -792,7 +794,7 @@ pub(crate) fn unsaved_work_in(
 
 /// How a delete ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeleteOutcome {
+pub enum DeleteOutcome {
     /// devpod let go of the workspace. `clone` says whether there was a local
     /// clone to remove with it.
     Deleted { clone: Removed },
@@ -814,7 +816,7 @@ pub(crate) enum DeleteOutcome {
 /// absent" the way `rm -f` is. The clone cleanup still runs on that path: a stale
 /// clone with no workspace is exactly what a half-finished delete leaves, and what
 /// a cold-bench reset (devlaunch#140) must clear.
-pub(crate) fn workspace_delete(
+pub fn workspace_delete(
     context: &mut CommandContext<'_>,
     refresh: &mut Refresh<'_>,
     clones: &WorkspaceCloneManager<'_>,
@@ -880,14 +882,14 @@ fn remove_workspace_reason(error: &RemoveWorkspaceError) -> String {
 /// and the set that actually dies must come from the same object, and here they
 /// cannot disagree — [`purge_all_data`] deletes exactly `ownership.mine`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PurgePlan {
+pub struct PurgePlan {
     /// Everything devlaunch stores on this machine. Removed whole.
-    pub(crate) cache_dir: PathBuf,
+    pub cache_dir: PathBuf,
     /// The workspaces devlaunch made, and the ones it did not. The second half is
     /// *named* rather than merely excluded from the count: a user who asked for a
     /// clean slate and gets survivors should learn it while saying no is still an
     /// option, rather than from a later `dl --ls`.
-    pub(crate) ownership: WorkspaceOwnership,
+    pub ownership: WorkspaceOwnership,
 }
 
 /// What a purge would do. One `devpod list`, read before anything is destroyed.
@@ -895,7 +897,7 @@ pub(crate) struct PurgePlan {
 /// A listing devpod could not answer is an error rather than an empty plan: a
 /// purge that quietly did nothing used to look exactly like a purge that had
 /// nothing to do.
-pub(crate) fn purge_plan(
+pub fn purge_plan(
     context: &mut CommandContext<'_>,
     cache_dir: &Path,
 ) -> Result<PurgePlan, ListingUnreadable> {
@@ -912,7 +914,7 @@ pub(crate) fn purge_plan(
 /// is said *before* the round trip that may take a while, and a report assembled
 /// afterwards cannot say it in time.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PurgeStep {
+pub enum PurgeStep {
     /// About to ask devpod to delete this workspace.
     Deleting { workspace_id: String },
     /// devpod refused, and the purge carried on.
@@ -931,7 +933,7 @@ pub(crate) enum PurgeStep {
 /// printed the first's sentence — and they are kept apart here rather than
 /// re-derived from a refusal list.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PurgeOutcome {
+pub enum PurgeOutcome {
     /// Nothing of devlaunch's on this machine: no workspaces of its own, and no
     /// cache directory.
     NothingToPurge,
@@ -957,7 +959,7 @@ pub(crate) enum PurgeOutcome {
 
 impl PurgeOutcome {
     /// Whether the cache is gone. The one distinction an exit code can carry.
-    pub(crate) fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         matches!(
             self,
             Self::NothingToPurge | Self::NoCacheDirectory | Self::Removed { .. }
@@ -984,7 +986,7 @@ impl PurgeOutcome {
 ///
 /// A cache that does not come away completely is reported rather than raised: see
 /// [`remove_tree_as_far_as_it_goes`] for why it is removed as far as it goes.
-pub(crate) fn purge_all_data(
+pub fn purge_all_data(
     context: &mut CommandContext<'_>,
     plan: &PurgePlan,
     on_step: &mut dyn FnMut(PurgeStep),
@@ -1051,7 +1053,7 @@ fn purge_delete_call(workspace_id: &str) -> Call {
 /// no directory on this disk, so there is nothing to compare and no clone it could
 /// be holding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SourcePlaces {
+pub enum SourcePlaces {
     Placeable(Vec<String>),
     /// The source opens a folder here and devlaunch cannot say which one. Kept
     /// apart from `Placeable(vec![])` because reading them alike is how a live
@@ -1086,7 +1088,7 @@ pub(crate) enum SourcePlaces {
 /// directory on this machine — but never usably: the callers resolve plain paths,
 /// so it only ever produced `<cwd>/file:/…` garbage. Contributing nothing is
 /// strictly less wrong.
-pub(crate) fn names_a_remote(text: &str) -> bool {
+pub fn names_a_remote(text: &str) -> bool {
     has_url_scheme(text) || is_scp_like(text)
 }
 
@@ -1129,7 +1131,7 @@ fn is_scp_like(text: &str) -> bool {
 /// refuses the same arm on purpose — but refusing there means declining to delete
 /// somebody else's *workspace*, which is the opposite direction, so its answer must
 /// not be reused here.
-pub(crate) fn source_places(source: &WorkspaceSource) -> SourcePlaces {
+pub fn source_places(source: &WorkspaceSource) -> SourcePlaces {
     match source {
         WorkspaceSource::LocalFolder(path) => SourcePlaces::Placeable(vec![path.clone()]),
         WorkspaceSource::GitRepository(url) => SourcePlaces::Placeable(if names_a_remote(url) {
@@ -1152,11 +1154,11 @@ pub(crate) fn source_places(source: &WorkspaceSource) -> SourcePlaces {
 /// be opening *any* of the candidates, so while one exists there is no directory
 /// either command can honestly call unreferenced.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unlocatable {
-    pub(crate) workspace_id: String,
+pub struct Unlocatable {
+    pub workspace_id: String,
     /// The source text, or devpod's own source object where there was no text to
     /// follow.
-    pub(crate) detail: String,
+    pub detail: String,
 }
 
 /// A live workspace devpod records inside a repository's clone tree, at something
@@ -1168,14 +1170,14 @@ pub(crate) struct Unlocatable {
 /// two records cannot be joined by workspace id — the id is exactly what changed —
 /// so the join is made from the path instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Misplaced {
-    pub(crate) workspace_id: String,
-    pub(crate) sourced_at: String,
+pub struct Misplaced {
+    pub workspace_id: String,
+    pub sourced_at: String,
 }
 
 /// Where devpod's workspaces are on this disk, and which ones are unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WorkspaceLocations {
+pub struct WorkspaceLocations {
     /// Resolved source path to the workspace that opens it.
     by_path: IndexMap<PathBuf, String>,
     /// `unlocatable` is not an empty result with a note on it — see
@@ -1195,7 +1197,7 @@ impl WorkspaceLocations {
     ///
     /// A [`NonEmpty`] rather than a list, because the caller's response to it is to
     /// stop, and "stop, and here are no reasons" is not a thing to say.
-    pub(crate) fn unlocatable(&self) -> Option<NonEmpty<Unlocatable>> {
+    pub fn unlocatable(&self) -> Option<NonEmpty<Unlocatable>> {
         NonEmpty::of(self.unlocatable.iter().cloned())
     }
 
@@ -1211,7 +1213,7 @@ impl WorkspaceLocations {
     /// being the lexical prefix test the reporting surface uses:
     /// `<clone>-scratch` is not under `<clone>`, and a symlinked source has already
     /// been resolved before it gets here.
-    pub(crate) fn holder(&self, candidate: &Path) -> Option<&str> {
+    pub fn holder(&self, candidate: &Path) -> Option<&str> {
         if let Some(held_by) = self.by_path.get(candidate) {
             return Some(held_by);
         }
@@ -1222,7 +1224,7 @@ impl WorkspaceLocations {
     }
 
     /// The workspace disputing every clone of `(owner, repo)`, if any.
-    pub(crate) fn misplaced_in(&self, owner: &str, repo: &str) -> Option<&Misplaced> {
+    pub fn misplaced_in(&self, owner: &str, repo: &str) -> Option<&Misplaced> {
         self.misplaced.get(&(owner.to_owned(), repo.to_owned()))
     }
 }
@@ -1234,7 +1236,7 @@ impl WorkspaceLocations {
 /// still says `<root>/blooop/devlaunch/<old-leaf>`, which names the repository
 /// exactly even though the leaf and the workspace id match nothing any more.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SourceSite {
+pub enum SourceSite {
     /// Not in devlaunch's clone tree, so no clone answers for it.
     Outside,
     /// At or under `clone`, a directory that holds a checkout.
@@ -1250,7 +1252,7 @@ pub(crate) enum SourceSite {
 /// The clone is the *third* component under the root and the source may be
 /// deeper — `devpod up <clone>/subproject` is a live workspace whose source is
 /// inside a clone, and the clone is what answers for it.
-pub(crate) fn site_of(source: &Path, root: &Path) -> SourceSite {
+pub fn site_of(source: &Path, root: &Path) -> SourceSite {
     let Ok(relative) = source.strip_prefix(root) else {
         return SourceSite::Outside;
     };
@@ -1293,7 +1295,7 @@ pub(crate) fn site_of(source: &Path, root: &Path) -> SourceSite {
 /// candidate and stop the command; a source that lands inside a repository's clone
 /// tree on something with no `.git` in it means the workspace could be opening any
 /// of *that repository's* clones, and disputes only those.
-pub(crate) fn workspace_locations(workspaces: &[Workspace], root: &Path) -> WorkspaceLocations {
+pub fn workspace_locations(workspaces: &[Workspace], root: &Path) -> WorkspaceLocations {
     let mut located = WorkspaceLocations::default();
     for workspace in workspaces {
         let places = match source_places(&workspace.source) {
@@ -1354,7 +1356,7 @@ pub(crate) fn workspace_locations(workspaces: &[Workspace], root: &Path) -> Work
 ///
 /// `.git` may be a directory or a *file* (`git clone --separate-git-dir`), so this
 /// asks whether anything is there rather than whether a directory is.
-pub(crate) fn is_populated_clone(path: &Path) -> bool {
+pub fn is_populated_clone(path: &Path) -> bool {
     std::fs::metadata(path.join(".git")).is_ok()
 }
 
@@ -1376,7 +1378,7 @@ pub(crate) fn is_populated_clone(path: &Path) -> bool {
 /// and the empty string, which names no directory (Python read it as `Path(".")`
 /// and resolved it to the working directory — the cwd-shaped answer devlaunch#224
 /// is about).
-pub(crate) fn canonical(path: &str) -> Option<PathBuf> {
+pub fn canonical(path: &str) -> Option<PathBuf> {
     // A NUL byte is refused *here* rather than at the first syscall, because Rust
     // — unlike Python, where `Path(text)` raises `ValueError` before the `lstat` —
     // lets one into a `PathBuf` quite happily. Without this the walk below climbs
@@ -1443,7 +1445,7 @@ fn subdirectories(path: &Path) -> Vec<PathBuf> {
 /// rather than as an absence, so the clone is kept for the same reason unpushed
 /// work keeps one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Objection {
+pub enum Objection {
     /// Deleting it would destroy this. Carries the losses, so the description a
     /// report prints is derived rather than passed along as text.
     WouldLose(Losses),
@@ -1456,7 +1458,7 @@ pub(crate) enum Objection {
 ///
 /// Total over [`Unsaved`]'s arms, so a fourth answer stops the build rather than
 /// falling through into a deletion.
-pub(crate) fn objection(unsaved: &Unsaved) -> Option<Objection> {
+pub fn objection(unsaved: &Unsaved) -> Option<Objection> {
     match unsaved {
         Unsaved::NothingToLose => None,
         Unsaved::WouldLose(losses) => Some(Objection::WouldLose(losses.clone())),
@@ -1466,7 +1468,7 @@ pub(crate) fn objection(unsaved: &Unsaved) -> Option<Objection> {
 
 /// Which arm one clone directory is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CloneStatus {
+pub enum CloneStatus {
     /// A live devpod workspace opens this exact clone directory.
     Referenced { workspace_id: String },
     /// Nothing opens this directory and no record ties it to a live workspace.
@@ -1510,7 +1512,7 @@ pub(crate) enum CloneStatus {
 /// removed. Together they are the expensive half of a scan (593 ms of git over 37
 /// clones on the reference host, plus a walk with no ceiling), and asking them
 /// about a directory no answer could affect is time spent to learn nothing.
-pub(crate) fn clone_status(
+pub fn clone_status(
     git: &Git<'_>,
     clone: &Path,
     owner: &str,
@@ -1549,7 +1551,7 @@ pub(crate) fn clone_status(
 /// A sum rather than Python's `because: str`, so the sentence is the binary's and
 /// each arm carries what that sentence interpolates.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum KeptBecause {
+pub enum KeptBecause {
     /// A live workspace still opens it.
     StillOpened { workspace_id: String },
     /// It holds something, and `--force` was not typed.
@@ -1572,7 +1574,7 @@ pub(crate) enum KeptBecause {
 /// reading the report, was skipped for clones `--force` had not promoted at all. A
 /// promotion belongs to the directory it promoted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Promotion {
+pub enum Promotion {
     Unopposed,
     Insisted { despite: Objection },
 }
@@ -1589,7 +1591,7 @@ impl Promotion {
 
 /// What `--prune` does about one clone directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Decision {
+pub enum Decision {
     /// This directory goes, this is what it gives back, and this is what was
     /// insisted past to get here.
     ///
@@ -1615,7 +1617,7 @@ pub(crate) enum Decision {
 /// be insisted past", they are devlaunch saying the directory is still in use or
 /// that its own records disagree, and there is nothing for a user to mean by
 /// insisting.
-pub(crate) fn decide(status: CloneStatus, insistence: Insistence) -> Decision {
+pub fn decide(status: CloneStatus, insistence: Insistence) -> Decision {
     match status {
         CloneStatus::Referenced { workspace_id } => {
             Decision::Keep(KeptBecause::StillOpened { workspace_id })
@@ -1649,20 +1651,20 @@ pub(crate) fn decide(status: CloneStatus, insistence: Insistence) -> Decision {
 
 /// One clone directory this run will remove, what it frees, and why it may.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Reclaimable {
-    pub(crate) path: PathBuf,
-    pub(crate) owner: String,
-    pub(crate) repo: String,
-    pub(crate) usage: DiskUsage,
+pub struct Reclaimable {
+    pub path: PathBuf,
+    pub owner: String,
+    pub repo: String,
+    pub usage: DiskUsage,
     /// How the second pass knows whether `--force` was answering *this* directory.
-    pub(crate) promotion: Promotion,
+    pub promotion: Promotion,
 }
 
 /// One clone directory this run will leave standing, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Kept {
-    pub(crate) path: PathBuf,
-    pub(crate) because: KeptBecause,
+pub struct Kept {
+    pub path: PathBuf,
+    pub because: KeptBecause,
 }
 
 /// Everything one `dl --prune` will do, settled before anything is asked.
@@ -1676,25 +1678,25 @@ pub(crate) struct Kept {
 /// `--force` had promoted nothing about. What `--force` answered rides on each
 /// [`Reclaimable`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PrunePlan {
-    pub(crate) root: PathBuf,
+pub struct PrunePlan {
+    pub root: PathBuf,
     /// Biggest first: the report's job is to be acted on, and "which of these is
     /// worth reclaiming" is the comparative question. Path breaks ties so two runs
     /// over an unchanged cache read alike.
-    pub(crate) removing: Vec<Reclaimable>,
-    pub(crate) keeping: Vec<Kept>,
+    pub removing: Vec<Reclaimable>,
+    pub keeping: Vec<Kept>,
     /// Worktree records whose directory is definitively not there any more.
-    pub(crate) stale_records: Vec<WorktreeInfo>,
+    pub stale_records: Vec<WorktreeInfo>,
 }
 
 impl PrunePlan {
     /// Whether this run would change nothing at all.
-    pub(crate) fn nothing_to_do(&self) -> bool {
+    pub fn nothing_to_do(&self) -> bool {
         self.removing.is_empty() && self.stale_records.is_empty()
     }
 
     /// What the whole run would free.
-    pub(crate) fn freed(&self) -> DiskUsage {
+    pub fn freed(&self) -> DiskUsage {
         disk_usage::total_usage(self.removing.iter().map(|it| it.usage.clone()))
     }
 }
@@ -1710,14 +1712,14 @@ impl PrunePlan {
 ///
 /// Absent is not a failure — a fresh install has no repos directory yet, and
 /// resolving one that is not there is what says so.
-pub(crate) fn clone_root(clones: &WorkspaceCloneManager<'_>) -> PathBuf {
+pub fn clone_root(clones: &WorkspaceCloneManager<'_>) -> PathBuf {
     let repos_dir = clones.repos_dir();
     canonical(&repos_dir.to_string_lossy()).unwrap_or_else(|| repos_dir.to_path_buf())
 }
 
 /// Why a prune could not be carried out.
 #[derive(Debug)]
-pub(crate) enum PruneError {
+pub enum PruneError {
     /// A repository's lock could not be taken, so its clones were neither weighed
     /// nor removed. Fatal rather than skipped: a scan that silently left out a
     /// repository would report a plan that is not the plan.
@@ -1738,7 +1740,7 @@ pub(crate) enum PruneError {
 /// clone *after* the lock is released, so a clone whose launch has finished cloning
 /// and not yet registered a workspace is briefly indistinguishable from a stale
 /// one.
-pub(crate) fn prune_plan(
+pub fn prune_plan(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     workspaces: &[Workspace],
@@ -1903,40 +1905,40 @@ fn leaf_of(path: &Path) -> Option<String> {
 
 /// One directory the plan meant to remove that the second pass would not.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Withheld {
-    pub(crate) path: PathBuf,
+pub struct Withheld {
+    pub path: PathBuf,
     /// Why it is staying — and it is worth saying that this was not so when the
     /// plan was printed.
-    pub(crate) because: KeptBecause,
+    pub because: KeptBecause,
 }
 
 /// What the acting pass did.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PruneReport {
-    pub(crate) removed: Vec<Reclaimable>,
-    pub(crate) withheld: Vec<Withheld>,
+pub struct PruneReport {
+    pub removed: Vec<Reclaimable>,
+    pub withheld: Vec<Withheld>,
     /// Directories that would not come away. Not empty means the run is
     /// unfinished, and the clones that *did* go are still gone — which is why this
     /// is a report and not an abort.
-    pub(crate) refused: Vec<Refusal>,
+    pub refused: Vec<Refusal>,
 }
 
 impl PruneReport {
     /// What this run actually freed — a total over the things it removed, with the
     /// figures the plan measured, so what a person is told they got back is what
     /// they said yes to.
-    pub(crate) fn freed(&self) -> DiskUsage {
+    pub fn freed(&self) -> DiskUsage {
         disk_usage::total_usage(self.removed.iter().map(|it| it.usage.clone()))
     }
 
-    pub(crate) fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.refused.is_empty()
     }
 }
 
 /// How the acting pass ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PruneOutcome {
+pub enum PruneOutcome {
     /// A live workspace's source could not be followed, so nothing was removed:
     /// no clone is unreferenced while a workspace is unaccounted for.
     Unlocatable(NonEmpty<Unlocatable>),
@@ -1964,7 +1966,7 @@ pub(crate) enum PruneOutcome {
 /// clone's unsaved work does not turn the re-probe off for the others. The approved
 /// set can therefore shrink between the report and the act, and can never grow —
 /// the direction that costs a command rather than a morning's work.
-pub(crate) fn prune_clones(
+pub fn prune_clones(
     context: &mut CommandContext<'_>,
     clones: &WorkspaceCloneManager<'_>,
     storage: &mut MetadataStorage,
@@ -2118,14 +2120,14 @@ fn leaf_spellings(record: &WorktreeInfo) -> [String; 3] {
 /// the user consented to and the change that is applied cannot be built from two
 /// different reads of `metadata.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Adoptable {
-    pub(crate) workspace_id: String,
+pub struct Adoptable {
+    pub workspace_id: String,
     /// The devpod context this workspace belongs to: ids are unique per context,
     /// so it is half of the workspace's address on disk.
-    pub(crate) context: String,
-    pub(crate) sourced_at: String,
-    pub(crate) clone: PathBuf,
-    pub(crate) record: WorktreeInfo,
+    pub context: String,
+    pub sourced_at: String,
+    pub clone: PathBuf,
+    pub record: WorktreeInfo,
 }
 
 /// Why `dl` will not repair one orphaned devpod record.
@@ -2133,7 +2135,7 @@ pub(crate) struct Adoptable {
 /// Refusing costs a line in a report. Guessing costs a workspace, so every
 /// ambiguity fails towards the report.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NotAdopted {
+pub enum NotAdopted {
     /// No clone of that repository answers to this name.
     NoCloneAnswers,
     /// More than one clone answers to this name, so none of them can.
@@ -2156,22 +2158,22 @@ pub(crate) enum NotAdopted {
 /// record costs a line in `devpod list`, removing a live one costs whatever was in
 /// the container.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unadoptable {
-    pub(crate) workspace_id: String,
-    pub(crate) sourced_at: String,
-    pub(crate) because: NotAdopted,
+pub struct Unadoptable {
+    pub workspace_id: String,
+    pub sourced_at: String,
+    pub because: NotAdopted,
 }
 
 /// What `--reconcile` would change, and what it would only report.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReconcilePlan {
-    pub(crate) root: PathBuf,
-    pub(crate) adopting: Vec<Adoptable>,
-    pub(crate) reporting: Vec<Unadoptable>,
+pub struct ReconcilePlan {
+    pub root: PathBuf,
+    pub adopting: Vec<Adoptable>,
+    pub reporting: Vec<Unadoptable>,
 }
 
 impl ReconcilePlan {
-    pub(crate) fn nothing_to_do(&self) -> bool {
+    pub fn nothing_to_do(&self) -> bool {
         self.adopting.is_empty() && self.reporting.is_empty()
     }
 }
@@ -2217,7 +2219,7 @@ fn orphaned_workspaces(workspaces: &[Workspace], root: &Path) -> Vec<(Workspace,
 /// [`WorkspaceLocations::holder`] is for — is not a candidate at all: adopting it
 /// would point two workspaces at one directory and leave the working one sharing its
 /// checkout with a dead one. The rest is [`NotAdopted`]'s three arms.
-pub(crate) fn reconcile_plan(
+pub fn reconcile_plan(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     workspaces: &[Workspace],
@@ -2351,7 +2353,7 @@ fn repository_of(source: &Path, root: &Path) -> Option<(String, String)> {
 ///
 /// Honours `DEVPOD_HOME` for the same reason the rest of dl does: it is what scopes
 /// devpod, and the test suite sets it.
-pub(crate) fn devpod_home() -> Option<PathBuf> {
+pub fn devpod_home() -> Option<PathBuf> {
     match std::env::var_os("DEVPOD_HOME") {
         Some(home) if !home.is_empty() => Some(PathBuf::from(home)),
         _ => std::env::home_dir().map(|home| home.join(".devpod")),
@@ -2359,11 +2361,7 @@ pub(crate) fn devpod_home() -> Option<PathBuf> {
 }
 
 /// devpod's own record for one workspace.
-pub(crate) fn devpod_workspace_record(
-    devpod_home: &Path,
-    context: &str,
-    workspace_id: &str,
-) -> PathBuf {
+pub fn devpod_workspace_record(devpod_home: &Path, context: &str, workspace_id: &str) -> PathBuf {
     devpod_home
         .join("contexts")
         .join(context)
@@ -2374,7 +2372,7 @@ pub(crate) fn devpod_workspace_record(
 
 /// Why one devpod record could not be re-pointed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RepointFailure {
+pub enum RepointFailure {
     /// devpod's record could not be read, or is not JSON.
     Unreadable { path: PathBuf, reason: String },
     /// Not the shape this repair understands. Refusing is the whole of the
@@ -2399,7 +2397,7 @@ pub(crate) enum RepointFailure {
 /// provider options, timestamps — survives untouched. Written through a temporary
 /// file in the same directory and renamed over the original, so a failure partway
 /// leaves devpod's record whole rather than truncated.
-pub(crate) fn repoint_devpod_source(
+pub fn repoint_devpod_source(
     devpod_home: &Path,
     adoptable: &Adoptable,
 ) -> Result<(), RepointFailure> {
@@ -2451,20 +2449,20 @@ pub(crate) fn repoint_devpod_source(
 
 /// One adoption that could not be made.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RepointRefused {
-    pub(crate) workspace_id: String,
-    pub(crate) failure: RepointFailure,
+pub struct RepointRefused {
+    pub workspace_id: String,
+    pub failure: RepointFailure,
 }
 
 /// What applying a reconcile plan did.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReconcileReport {
-    pub(crate) repointed: Vec<Adoptable>,
-    pub(crate) refused: Vec<RepointRefused>,
+pub struct ReconcileReport {
+    pub repointed: Vec<Adoptable>,
+    pub refused: Vec<RepointRefused>,
 }
 
 impl ReconcileReport {
-    pub(crate) fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.refused.is_empty()
     }
 }
@@ -2476,7 +2474,7 @@ impl ReconcileReport {
 /// the right clone and a record that has not yet said so, which the next run
 /// repairs; the other order would leave `dl` following a record to a workspace still
 /// sourced at a dead path, which is the fault this command exists to clear.
-pub(crate) fn apply_reconciliation(
+pub fn apply_reconciliation(
     context: &mut CommandContext<'_>,
     refresh: &mut Refresh<'_>,
     storage: &mut MetadataStorage,

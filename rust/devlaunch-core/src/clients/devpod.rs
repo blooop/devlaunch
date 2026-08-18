@@ -385,7 +385,8 @@ pub(crate) fn session(
 /// heard of is data, not a parse failure, and a reader asking
 /// [`ContainerState::is_running`] gets the same answer either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ContainerState {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum ContainerState {
     Running,
     /// devpod is working on this workspace right now.
     Busy,
@@ -433,7 +434,8 @@ impl ContainerState {
 /// baked into the parser: a devpod that refused the question and a devpod whose
 /// answer was unreadable are different facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum StatusUnreadable {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum StatusUnreadable {
     NotRun(NotRun),
     /// devpod ran and refused — which is what it does for a workspace it has
     /// never heard of.
@@ -517,7 +519,7 @@ impl JsonKind {
 /// per workspace, so a field for it here would be a field nothing could fill.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Workspace {
-    pub(crate) id: String,
+    pub id: String,
     pub(crate) source: WorkspaceSource,
     pub(crate) last_used: String,
     pub(crate) provider: String,
@@ -537,7 +539,8 @@ pub struct Workspace {
 /// third put a rendering of devpod's object in the same field. Each arm carries
 /// only what that arm has, so the tag and the value are one fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum WorkspaceSource {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum WorkspaceSource {
     /// devpod is opening this directory on this machine. Never empty: `git -C ""`
     /// is a no-op that succeeds, so an empty path would be credited with
     /// whatever repository the person running `dl` was standing in.

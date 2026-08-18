@@ -259,7 +259,8 @@ pub(crate) struct PreparedWorkspace {
 
 /// What removing a workspace clone did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Removed {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum Removed {
     /// The clone was there and is gone.
     Clone,
     /// There was no clone to remove — or dl could not name one, which answers the
@@ -328,7 +329,8 @@ impl<'r> WorkspaceCloneManager<'r> {
         }
     }
 
-    pub(crate) fn repo_manager(&self) -> &RepositoryManager<'r> {
+    // binary surface — not part of the frozen wf API (#250 §7)
+    pub fn repo_manager(&self) -> &RepositoryManager<'r> {
         &self.repo_manager
     }
 

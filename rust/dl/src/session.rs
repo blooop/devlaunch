@@ -20,9 +20,8 @@ use std::path::PathBuf;
 use devlaunch_core::clients::git::Git;
 use devlaunch_core::domain::config::{self, ConfigError, WorktreeConfig};
 use devlaunch_core::domain::metadata::{MetadataError, MetadataStorage, Notice};
-use devlaunch_core::domain::model::WorktreeInfo;
 use devlaunch_core::domain::xdg::{self, NoHomeDirectory};
-use devlaunch_core::flows::listing::ClonePathResolver;
+use devlaunch_core::flows::lifecycle::SelfInvocation;
 use devlaunch_core::flows::migration;
 use devlaunch_core::flows::workspace_clone::WorkspaceCloneManager;
 use devlaunch_core::runner::Runner;
@@ -63,6 +62,25 @@ pub(crate) fn cache_dir() -> Result<PathBuf, NoHomeDirectory> {
     xdg::devlaunch_cache()
 }
 
+/// How to re-run *this* build as a detached child.
+///
+/// `current_exe()` is asked here and nowhere in core: a library that asked the OS
+/// who it is would answer `wf` when wf links it and `python` when the harness
+/// drives it, so the one process that knows which program it is hands the answer
+/// down. No leading arguments — Python's re-invocation needs `-m devlaunch.dl` and
+/// a compiled binary needs nothing.
+///
+/// A build whose own path cannot be read falls back to the name a shell would
+/// resolve, which is the only other honest guess; a spawn that then finds nothing
+/// is [`lifecycle::SpawnRefused::ProgramNotFound`], and a refresh that could not be
+/// spawned costs completions their freshness and nothing else.
+pub(crate) fn self_invocation() -> SelfInvocation {
+    let program = std::env::current_exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "dl".to_owned());
+    SelfInvocation::new(program)
+}
+
 /// The worktree config, for the commands that need only `repos_dir`.
 pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
     config::worktree_config()
@@ -71,14 +89,17 @@ pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
 /// dl's own records and clones, with the cache migration already run.
 ///
 /// Holds the manager and the store together because the listing reads both and
-/// they have to describe the same cache.
+/// they have to describe the same cache. There is deliberately no second copy of
+/// the config here: `repos_dir` is what the commands want from it, and the manager
+/// is what answers for that (see [`lifecycle::clone_root`]), so a command cannot
+/// scan one tree while locking against another.
 pub(crate) struct Records<'r> {
-    /// The config the manager was built from — `repos_dir` is what `--prune` and
-    /// the launch flows need, and they are the ones that will read it.
-    #[allow(dead_code)] // consumed from M6 on
-    pub(crate) config: WorktreeConfig,
     pub(crate) storage: MetadataStorage,
-    pub(crate) clones: Clones<'r>,
+    /// The clone manager, which is the one thing that names a record's clone
+    /// directory: the listing, the `dl <ws> rm` guard and the delete itself all
+    /// have to name the *same* directory, and they used to name it separately and
+    /// could disagree (devlaunch#174).
+    pub(crate) clones: WorkspaceCloneManager<'r>,
     /// Everything the load and the migration had to say, in the order it happened.
     /// Rendered by the caller: these are typed events, and the sentences are the
     /// binary's.
@@ -104,30 +125,11 @@ pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, St
     // migration writes (the orphan and unmigrated listings) are what it leaves
     // behind for a person to read.
     let migration_refused = migration::migrate_cache(&mut storage, &config.repos_dir).err();
-    let clones = Clones {
-        manager: WorkspaceCloneManager::from_config(&config, Git::new(runner)),
-    };
+    let clones = WorkspaceCloneManager::from_config(&config, Git::new(runner));
     Ok(Records {
-        config,
         storage,
         clones,
         notices,
         migration_refused,
     })
-}
-
-/// The clone manager, as the listing's [`ClonePathResolver`].
-///
-/// The listing, the `dl <ws> rm` guard and the delete itself all have to name the
-/// *same* directory, and they used to name it separately and could disagree
-/// (devlaunch#174). This is the seam that keeps the listing reading the one
-/// function that names it rather than a second copy of the rule.
-pub(crate) struct Clones<'r> {
-    manager: WorkspaceCloneManager<'r>,
-}
-
-impl ClonePathResolver for Clones<'_> {
-    fn clone_path(&self, record: &WorktreeInfo) -> Option<PathBuf> {
-        self.manager.clone_path(record)
-    }
 }

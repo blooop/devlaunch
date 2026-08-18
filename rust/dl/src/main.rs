@@ -16,10 +16,12 @@ mod cli;
 mod commands;
 mod render;
 mod session;
+mod target;
 
 use std::io::Write as _;
 
 use devlaunch_core::flows::completion_cache;
+use devlaunch_core::flows::lifecycle::{Refresh, RefreshReason};
 use devlaunch_core::runner::ProcessRunner;
 use devlaunch_core::timing;
 
@@ -51,11 +53,47 @@ fn run() -> i32 {
 
     // Before the command runs and before anything is parsed into: `dl --help` must
     // not pay for a refresh it has no use for, and the predicate is a pure
-    // function of argv for exactly that reason.
-    warm_completion_cache(completion_cache::wants_startup_cache_refresh(
-        &cli::argv_without_devcontainer(&argv),
-    ));
+    // function of argv for exactly that reason. Asked here rather than after the
+    // parse because Python asks it there too — a command line dl goes on to refuse
+    // has still warmed the cache.
+    let wanted =
+        completion_cache::wants_startup_cache_refresh(&cli::argv_without_devcontainer(&argv));
 
+    // One process, one cache directory, and one background refresh. Both are
+    // resolved out here rather than per command: two halves of one run that
+    // resolved the cache separately could disagree about where it is, and two
+    // `Refresh` values would spawn the child Python's process-wide latch spawns
+    // once.
+    let updater = session::self_invocation();
+    match session::cache_dir() {
+        Ok(cache) => {
+            let cache_path = completion_cache::cache_path(&cache);
+            let mut refresh = Refresh::new(&updater, &cache_path);
+            if wanted {
+                // Nothing is printed either way: a refresh nobody asked to see is
+                // not news, and a child that could not be started costs
+                // completions their freshness and nothing else.
+                refresh.ask(&ProcessRunner, RefreshReason::IfStale);
+            }
+            match command_line() {
+                Err(ending) => ending,
+                Ok(command) => {
+                    commands::dispatch(&ProcessRunner, &cache, &mut refresh, command).code()
+                }
+            }
+        }
+        // No home directory and no `XDG_CACHE_HOME`: there is nowhere to warm and
+        // nowhere to run most commands against, so the parse still happens (a
+        // usage error is still a usage error) and the command says why.
+        Err(_) => match command_line() {
+            Err(ending) => ending,
+            Ok(command) => commands::without_a_cache_directory(command).code(),
+        },
+    }
+}
+
+/// The command this argv asks for, or the exit code the refusal already printed.
+fn command_line() -> Result<cli::Command, i32> {
     let parsed = match <cli::Cli as clap::Parser>::try_parse_from(std::env::args_os()) {
         Ok(parsed) => parsed,
         Err(usage) => {
@@ -64,19 +102,16 @@ fn run() -> i32 {
             // error reaches stderr, and handled here rather than by clap's
             // `parse()` so the timing summary still lands.
             let _ = usage.print();
-            return usage.exit_code();
+            return Err(usage.exit_code());
         }
     };
-    match cli::resolve(parsed) {
-        Err(grammar) => {
-            eprintln!("{}", grammar_refusal(&grammar));
-            // Python's `logging.error(...); return 1` for every shape it refused
-            // after parsing. Deliberately not clap's 2: these are the refusals
-            // Python also made, and they keep its code.
-            commands::Ending::Refused.code()
-        }
-        Ok(command) => commands::dispatch(&ProcessRunner, command).code(),
-    }
+    cli::resolve(parsed).map_err(|grammar| {
+        eprintln!("{}", grammar_refusal(&grammar));
+        // Python's `logging.error(...); return 1` for every shape it refused after
+        // parsing. Deliberately not clap's 2: these are the refusals Python also
+        // made, and they keep its code.
+        commands::Ending::Refused.code()
+    })
 }
 
 /// What a command line clap accepted but `dl` could not make a command of.
@@ -118,18 +153,6 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
             render::python_repr(raw)
         ),
     }
-}
-
-/// Warm the completion cache in a detached child, if this invocation wants it.
-///
-/// The seam, and for now only the seam: the predicate is wired and answered here,
-/// and the spawn itself lands with the other detached child in M6 (`sweep_repo_
-/// fetches` shares it). Nothing is printed either way — a refresh nobody asked to
-/// see is not news.
-fn warm_completion_cache(wanted: bool) {
-    // TODO(M6): spawn `dl --update-cache [--force]` detached, at most once per
-    // process, when `wanted`.
-    let _ = wanted;
 }
 
 /// Write the timing summary, if `DEVLAUNCH_TIMING` asked for one.

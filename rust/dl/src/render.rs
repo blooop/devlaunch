@@ -7,12 +7,20 @@
 
 use std::fmt::Write as _;
 use std::io;
+use std::path::Path;
 
 use devlaunch_core::clients::devpod::{self, ListingUnreadable, NotAListing, NotRun};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::metadata;
+use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
+use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::flows::disk_usage::describe_usage;
+use devlaunch_core::flows::lifecycle::{
+    KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
+    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
+};
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
+use devlaunch_core::flows::repo_manager::{CacheNotice, Refusal, RefusalReason};
 use devlaunch_runner::Exit;
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
@@ -391,6 +399,24 @@ pub(crate) fn listing_refusal(refused: &ListingUnreadable) -> String {
     }
 }
 
+/// Why a devpod call never ran at all, in one line.
+///
+/// The listing has its own copy of this because Python's message for it names
+/// `devpod list` and predates the shared one; this is every other call, named by the
+/// subcommand that did not happen.
+pub(crate) fn devpod_not_run(call: &str, refused: &NotRun) -> String {
+    match refused {
+        NotRun::NotInstalled => DEVPOD_MISSING.to_owned(),
+        NotRun::TimedOut => format!("error: `devpod {call}` did not answer in time"),
+        NotRun::Blocked(failure) => {
+            format!(
+                "error: `devpod {call}` could not be run ({:?})",
+                failure.kind
+            )
+        }
+    }
+}
+
 /// Whether this refusal is the one that means "devpod is not installed", which is
 /// the only one that exits 127.
 pub(crate) fn is_devpod_missing(refused: &ListingUnreadable) -> bool {
@@ -576,9 +602,594 @@ pub(crate) fn metadata_error(error: &metadata::MetadataError) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// the lifecycle notices
+// ---------------------------------------------------------------------------
+
+/// The lines the lifecycle flows' notices read as, in the order they happened.
+///
+/// Every one of them is a `logging.*` call Python made, so every one of them goes
+/// to stderr — printed by the caller, which is the only thing that knows whether
+/// a command has finished saying what it has to say.
+pub(crate) fn lifecycle_notices(notices: &[LifecycleNotice]) -> Vec<String> {
+    notices.iter().map(lifecycle_notice).collect()
+}
+
+fn lifecycle_notice(notice: &LifecycleNotice) -> String {
+    match notice {
+        LifecycleNotice::CloneRemoved { workspace_id } => {
+            format!("Removed local clone for {workspace_id}")
+        }
+        LifecycleNotice::CloneNotRemoved { reason, .. } => {
+            format!("Failed to remove local clone: {reason}")
+        }
+        LifecycleNotice::WorkspaceNotDeleted {
+            workspace_id,
+            stderr,
+            ..
+        } => format!("Failed to delete workspace {workspace_id}: {stderr}"),
+        LifecycleNotice::RecordNotDropped { path, reason } => {
+            format!("Could not drop the record for {}: {reason}", path.display())
+        }
+        LifecycleNotice::AddressingRecordedWorkspace {
+            recorded,
+            derived,
+            owner,
+            repo,
+            branch,
+        } => format!(
+            "Addressing devpod workspace '{recorded}' from the record for {owner}/{repo}@{branch}; \
+             this build derives '{derived}'"
+        ),
+        LifecycleNotice::Cache(cache) => cache_notice(cache),
+    }
+}
+
+/// One storage-flow notice, in the words the module that logged it used.
+///
+/// `worktree/repo_manager.py` and `worktree/workspace_clone.py` write these
+/// through module loggers, which `dl.py`'s `basicConfig(format="%(message)s")`
+/// sends to stderr as the bare message — so there is no logger name, no level and
+/// no prefix in any of them.
+fn cache_notice(notice: &CacheNotice) -> String {
+    match notice {
+        CacheNotice::AdoptedBareClone { owner, repo, bare } => {
+            format!(
+                "Repository {owner}/{repo} already exists at {}",
+                bare.display()
+            )
+        }
+        CacheNotice::ClearedPartialClone { bare } => {
+            format!("Removing partial clone at {}", bare.display())
+        }
+        CacheNotice::RecordWithoutClone { owner, repo, .. } => {
+            format!("Repository {owner}/{repo} metadata exists but directory missing")
+        }
+        CacheNotice::RefNotFetched {
+            owner,
+            repo,
+            branch,
+            reason,
+        } => format!("Could not fetch {branch} for {owner}/{repo}: {reason}"),
+        CacheNotice::DefaultBranchUnknown { reason, .. } => {
+            format!("Failed to resolve default branch: {reason}")
+        }
+        CacheNotice::PreparedFromStaleBase {
+            owner,
+            repo,
+            branch,
+            base,
+            reason,
+        } => format!(
+            "Prepared '{owner}/{repo}@{branch}' from the cache's '{base}', which could not be \
+             refreshed ({reason}); it may be behind the remote."
+        ),
+        CacheNotice::LfsCacheNotFilled { reason } => {
+            format!("Could not fill the cache's git-lfs store: {reason}")
+        }
+        CacheNotice::LfsNotPulledFromCache { reason } => {
+            format!("Could not materialize git-lfs objects from the cache: {reason}")
+        }
+        CacheNotice::TrackedFilesNotListed { reason } => {
+            format!("Could not list tracked files: {reason}")
+        }
+        CacheNotice::LfsFilesNotListed { reason } => {
+            format!("Could not list git-lfs files: {reason}")
+        }
+        CacheNotice::WorkspaceNotRecorded { reason } => {
+            format!("Failed to save workspace metadata: {reason}")
+        }
+        CacheNotice::WorkspaceRecordNotRemoved { reason } => {
+            format!("Failed to remove workspace metadata: {reason}")
+        }
+        CacheNotice::CloneNotNamed {
+            owner,
+            repo,
+            branch,
+            reason,
+        } => format!("cannot name the clone directory for {owner}/{repo}@{branch}: {reason}"),
+        CacheNotice::Metadata(notice) => metadata_notice(notice),
+    }
+}
+
+/// Why an owner, repo or ref is not a name `dl` will build a path out of.
+pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
+    let part = match refused.part {
+        NamePart::Owner => "owner",
+        NamePart::Repo => "repo",
+        NamePart::Ref => "ref",
+    };
+    format!("Invalid git {part} name: {}", python_repr(&refused.name))
+}
+
+// ---------------------------------------------------------------------------
+// dl <ws> rm, and the delete under it
+// ---------------------------------------------------------------------------
+
+/// Why `dl <ws> rm` will not delete this workspace, and the way past it.
+///
+/// `spec` is the target *as the user typed it*, because the sentence ends in a
+/// command they can run: a refusal that echoed the resolved id would print a line
+/// that works, but not the line they typed.
+pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
+    match refused {
+        RemovalRefused::WouldLose {
+            workspace_id,
+            losses,
+        } => format!(
+            "{workspace_id} holds {}. Push or commit it, or run: dl {spec} rm --force",
+            losses.describe()
+        ),
+        RemovalRefused::CouldNotTell {
+            workspace_id,
+            reason,
+        } => format!(
+            "{workspace_id}: {reason}. devlaunch will not delete a clone it cannot check. Look at \
+             it, or run: dl {spec} rm --force"
+        ),
+    }
+}
+
+/// devpod would not let go of the workspace, and the clone was kept.
+pub(crate) fn delete_refused(workspace: &str) -> String {
+    format!(
+        "devpod could not delete {workspace}; keeping the local clone so it stays retryable. If \
+         its devcontainer.json moved, restore the path or run: devpod delete {workspace} --force"
+    )
+}
+
+/// The one sentence a target no command can address gets.
+pub(crate) fn unknown_workspace(target: &str) -> String {
+    format!(
+        "Unknown workspace '{target}'. Use 'dl --ls' to list workspaces, or specify owner/repo or \
+         ./path"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// the disk neither cleanup frees
+// ---------------------------------------------------------------------------
+
+/// Named by `--purge` on every ending, and by `--prune` on every ending that got
+/// as far as looking at a directory.
+///
+/// A sentence and not a measurement: nothing here runs `docker`, so there is
+/// nothing to fail on a machine where Docker is absent, and nothing that takes a
+/// moment on a command whose work is already done.
+pub(crate) const DOCKER_BOUNDARY: &str = concat!(
+    "devlaunch does not manage Docker images or volumes: the containers these workspaces used ",
+    "may still hold disk, and `docker system df` shows what Docker is holding."
+);
+
+// ---------------------------------------------------------------------------
+// --purge
+// ---------------------------------------------------------------------------
+
+/// What a purge would take, printed before the question is asked.
+///
+/// The workspaces devlaunch did not create are *named* rather than merely left out
+/// of the count: a user who asked for a clean slate and gets survivors should
+/// learn it while saying no is still an option.
+pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
+    let mut lines = vec![
+        "This will remove all devlaunch data:".to_owned(),
+        format!("  - {} DevPod workspace(s)", plan.ownership.mine.len()),
+        format!(
+            "  - {}/ (workspace clones, repo caches, the shared pixi cache, completions)",
+            plan.cache_dir.display()
+        ),
+    ];
+    if !plan.ownership.foreign.is_empty() {
+        lines.push(String::new());
+        lines.push(format!(
+            "Leaving {} workspace(s) devlaunch did not create:",
+            plan.ownership.foreign.len()
+        ));
+        lines.extend(
+            plan.ownership
+                .foreign
+                .iter()
+                .map(|workspace| format!("  - {}", workspace.id)),
+        );
+    }
+    lines.push(String::new());
+    lines
+}
+
+/// One rendered line, and which stream it belongs on.
+///
+/// Every other renderer here answers with lines for one stream, because its caller
+/// knows which. A purge step does not: the step that says what is about to happen
+/// is output, and the step that says it did not happen is a `logging.warning`, and
+/// they arrive through the same callback.
+pub(crate) enum Line {
+    Out(String),
+    Err(String),
+}
+
+/// The line a purge says before a round trip that may take a while.
+///
+/// Handed over as it happens rather than collected, which is why this renders one
+/// step rather than a report: "Deleting workspace X" said afterwards is not said in
+/// time. A failure is the same event as [`LifecycleNotice::WorkspaceNotDeleted`] and
+/// is said here, where it happens, rather than twice.
+pub(crate) fn purge_step(step: &PurgeStep) -> Line {
+    match step {
+        PurgeStep::Deleting { workspace_id } => {
+            Line::Out(format!("Deleting DevPod workspace: {workspace_id}"))
+        }
+        PurgeStep::NotDeleted {
+            workspace_id,
+            stderr,
+            ..
+        } => Line::Err(format!(
+            "Failed to delete workspace {workspace_id}: {stderr}"
+        )),
+    }
+}
+
+/// How a purge ended, in the words for that ending.
+pub(crate) fn purge_outcome(outcome: &PurgeOutcome) -> Vec<String> {
+    match outcome {
+        PurgeOutcome::NothingToPurge => vec!["No data to purge.".to_owned()],
+        // Deliberately nothing: a purge that deleted four workspaces and found no
+        // cache directory has not done nothing, and Python's branch for it prints
+        // neither sentence.
+        PurgeOutcome::NoCacheDirectory => Vec::new(),
+        PurgeOutcome::Removed { cache_dir } => {
+            vec![format!("Removed: {}", cache_dir.display())]
+        }
+        PurgeOutcome::RemovedWhatItCould { cache_dir, refused } => report_refusals(
+            refused.iter(),
+            &format!(
+                "Removed what was permitted under {}. These refused:",
+                cache_dir.display()
+            ),
+            std::slice::from_ref(cache_dir),
+        ),
+        PurgeOutcome::RemovedNothing { cache_dir, refused } => report_refusals(
+            refused.iter(),
+            &format!(
+                "Removed nothing under {}. These refused:",
+                cache_dir.display()
+            ),
+            std::slice::from_ref(cache_dir),
+        ),
+    }
+}
+
+/// What would not come away, and the one thing that usually clears it.
+///
+/// Shared by `--purge` and `--prune`, because a second copy of this advice is a
+/// second copy to keep true — and the advice is the part most likely to change,
+/// being the only part that is a guess.
+pub(crate) fn report_refusals<'a>(
+    refused: impl Iterator<Item = &'a Refusal>,
+    headline: &str,
+    remove_by_hand: &[std::path::PathBuf],
+) -> Vec<String> {
+    let mut lines = vec![headline.to_owned()];
+    for refusal in refused {
+        lines.push(format!(
+            "  - {}: {}",
+            refusal.path.display(),
+            refusal_reason(&refusal.reason)
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Usually this means a container wrote them as a different user, and:".to_owned());
+    // Quoted: these paths descend from $XDG_CACHE_HOME or $HOME, and a space in one
+    // turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
+    lines.push(format!(
+        "  sudo rm -rf {}",
+        remove_by_hand
+            .iter()
+            .map(|path| shell_quoted(path))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    lines.push(
+        "clears them. Check the reasons above first -- it does not fix all of them.".to_owned(),
+    );
+    lines
+}
+
+fn refusal_reason(reason: &RefusalReason) -> String {
+    match reason {
+        RefusalReason::System(words) => words.clone(),
+        RefusalReason::RootIsSymlink { points_at } => {
+            let to = match points_at {
+                Some(target) => format!(" to {}", target.display()),
+                None => String::new(),
+            };
+            format!("is a symbolic link{to}, which a purge will not follow")
+        }
+    }
+}
+
+/// `path` as `shlex.quote` would write it.
+///
+/// The safe set is Python's: a path built only of those characters is printed
+/// bare, and anything else is single-quoted with embedded quotes broken out.
+fn shell_quoted(path: &Path) -> String {
+    let text = path.display().to_string();
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if !text.is_empty() && text.chars().all(safe) {
+        return text;
+    }
+    format!("'{}'", text.replace('\'', "'\"'\"'"))
+}
+
+// ---------------------------------------------------------------------------
+// --prune
+// ---------------------------------------------------------------------------
+
+/// What is going, what is staying and why, before anything is asked.
+///
+/// Printed whether or not there is anything to do, because the reason a directory
+/// is *staying* is the half a person cannot get anywhere else — `dl --ls` lists
+/// workspaces, and a clone with no workspace has no row there to appear in.
+pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
+    let mut lines = vec![
+        format!("Clone directories under {}:", plan.root.display()),
+        String::new(),
+    ];
+    if !plan.removing.is_empty() {
+        lines.push(format!(
+            "Removing {} that nothing references -- {}:",
+            plan.removing.len(),
+            describe_usage(&plan.freed())
+        ));
+        for reclaimable in &plan.removing {
+            let mut line = format!(
+                "  - {} ({})",
+                reclaimable.path.display(),
+                describe_usage(&reclaimable.usage)
+            );
+            // What `--force` is answering, on the line of the directory it answers
+            // for. Without it the plan reads the same for a clone holding an
+            // afternoon's uncommitted work as for an empty one.
+            if let Promotion::Insisted { despite } = &reclaimable.promotion {
+                line = format!("{line} -- holds {}, removing anyway", objection(despite));
+            }
+            lines.push(line);
+        }
+        lines.push(String::new());
+    }
+    if !plan.keeping.is_empty() {
+        lines.push(format!("Leaving {}:", plan.keeping.len()));
+        for kept in &plan.keeping {
+            lines.push(format!(
+                "  - {}: {}",
+                kept.path.display(),
+                kept_because(&kept.because)
+            ));
+        }
+        lines.push(String::new());
+    }
+    if !plan.stale_records.is_empty() {
+        lines.push(format!(
+            "Dropping {} record(s) of directories already gone.",
+            plan.stale_records.len()
+        ));
+        lines.push(String::new());
+    }
+    if plan.nothing_to_do() {
+        lines.push("Nothing to prune.".to_owned());
+    }
+    lines
+}
+
+/// Why one clone directory is staying, as the report says it.
+fn kept_because(because: &KeptBecause) -> String {
+    match because {
+        KeptBecause::StillOpened { workspace_id } => {
+            format!("workspace {workspace_id} still opens it")
+        }
+        KeptBecause::Objected(objected) => {
+            format!(
+                "holds {} -- add --force to remove it anyway",
+                objection(objected)
+            )
+        }
+        KeptBecause::RecordsDisagree {
+            workspace_id,
+            sourced_at,
+        } => format!(
+            "devpod lists workspace {workspace_id} and sources it at {sourced_at}; see \
+             devlaunch#88"
+        ),
+    }
+}
+
+/// What removing a clone would destroy or risk, as the clause after "holds".
+fn objection(objected: &Objection) -> String {
+    match objected {
+        Objection::WouldLose(losses) => losses.describe(),
+        Objection::CouldNotTell(reason) => {
+            format!("work git could not be asked about ({reason})")
+        }
+    }
+}
+
+/// Which live workspaces could not be placed, and that nothing went.
+///
+/// Not a warning above a report: a workspace whose source cannot be followed could
+/// be opening *any* of the candidates, so while one exists there is no directory
+/// either command can honestly call unreferenced. The two callers differ in two
+/// words, and the sentence under them is deliberately the same one.
+pub(crate) fn report_unlocatable(
+    unlocatable: &NonEmpty<Unlocatable>,
+    command: &str,
+    outcome: &str,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "dl {command} cannot follow these live workspaces' sources:"
+    )];
+    for source in unlocatable.iter() {
+        lines.push(format!("  - {}: {}", source.workspace_id, source.detail));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "{outcome}: no clone is unreferenced while a workspace is unaccounted for."
+    ));
+    lines
+}
+
+/// What the acting pass did.
+///
+/// The withheld lines say *that this was not so when the plan was printed*, which
+/// is the whole of what a second classification has to tell somebody who has
+/// already read the first one.
+pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Removed {} clone director(ies) -- {}.",
+        report.removed.len(),
+        describe_usage(&report.freed())
+    )];
+    for withheld in &report.withheld {
+        lines.push(format!(
+            "Left {}: {}. That was not so when the plan above was printed.",
+            withheld.path.display(),
+            kept_because(&withheld.because)
+        ));
+    }
+    if !report.refused.is_empty() {
+        let by_hand: Vec<std::path::PathBuf> = report
+            .refused
+            .iter()
+            .map(|refusal| refusal.path.clone())
+            .collect();
+        lines.extend(report_refusals(
+            report.refused.iter(),
+            "Some directories would not come away. These refused:",
+            &by_hand,
+        ));
+    }
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// --reconcile
+// ---------------------------------------------------------------------------
+
+/// What would be re-pointed and what would only be named.
+pub(crate) fn reconcile_plan_lines(plan: &ReconcilePlan) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "devpod workspaces sourced under {} at something that is not a clone:",
+            plan.root.display()
+        ),
+        String::new(),
+    ];
+    if !plan.adopting.is_empty() {
+        lines.push(format!("Re-pointing {}:", plan.adopting.len()));
+        for adoptable in &plan.adopting {
+            lines.push(format!(
+                "  - {}: {} -> {}",
+                adoptable.workspace_id,
+                adoptable.sourced_at,
+                adoptable.clone.display()
+            ));
+        }
+        lines.push(String::new());
+        // Stated before the confirmation rather than after the change, because it is
+        // part of what is being consented to: the container was built with the dead
+        // path bind-mounted into it, and no record change moves a running mount.
+        lines.push(
+            "Each of these needs `dl <workspace> recreate` afterwards: the container".to_owned(),
+        );
+        lines.push(
+            "still has the old source bind-mounted, and no record change moves a mount.".to_owned(),
+        );
+        lines.push(String::new());
+    }
+    if !plan.reporting.is_empty() {
+        lines.push(format!(
+            "Leaving {}, which dl will not guess at:",
+            plan.reporting.len()
+        ));
+        for unadoptable in &plan.reporting {
+            lines.push(format!(
+                "  - {} ({}): {}",
+                unadoptable.workspace_id,
+                unadoptable.sourced_at,
+                not_adopted(&unadoptable.because)
+            ));
+        }
+        lines.push(String::new());
+        // Named as the user's decision, not offered as a follow-up dl will make.
+        lines.push(
+            "Nothing here is deleted. `dl <workspace> rm` is how one goes, if it should."
+                .to_owned(),
+        );
+        lines.push(String::new());
+    }
+    if plan.nothing_to_do() {
+        lines.push("Nothing to reconcile.".to_owned());
+    }
+    lines
+}
+
+fn not_adopted(because: &NotAdopted) -> String {
+    match because {
+        NotAdopted::NoCloneAnswers => "no clone of that repository answers to this name".to_owned(),
+        NotAdopted::NameAnsweredByManyClones(answers) => format!(
+            "{} clones answer to this name, so none of them can: {}",
+            answers.iter().count(),
+            answers
+                .iter()
+                .map(|answer| answer.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        NotAdopted::CloneWantedByManyWorkspaces { clone, workspaces } => {
+            format!(
+                "{workspaces} workspaces match {}, so none of them can",
+                clone.display()
+            )
+        }
+    }
+}
+
+/// Why one devpod record could not be re-pointed.
+pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
+    match failure {
+        RepointFailure::Unreadable { path, reason } => {
+            format!("could not read {}: {reason}", path.display())
+        }
+        RepointFailure::NotADevpodRecord { path } => format!(
+            "{} is not a devpod workspace record dl can repair",
+            path.display()
+        ),
+        RepointFailure::Unwritable { path, reason } => {
+            format!("could not write {}: {reason}", path.display())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use devlaunch_core::domain::workspace_state::NonEmpty;
     use devlaunch_core::flows::disk_usage::DiskUsage;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 

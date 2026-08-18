@@ -525,7 +525,6 @@ const DEVPOD_MISSING: &str = "devpod not found on PATH: dl cannot manage workspa
 
 #[test]
 fn a_missing_devpod_is_exit_127_on_every_command_that_needs_one() {
-    let world = World::with_devpod(None);
     for args in [
         vec!["--ls"],
         vec!["--ls", "--json"],
@@ -534,6 +533,12 @@ fn a_missing_devpod_is_exit_127_on_every_command_that_needs_one() {
         vec!["--completion-data"],
         vec!["--install"],
     ] {
+        // A world each, because these commands warm the completion cache in a
+        // detached child: one that got as far as writing a cache would answer the
+        // next command's question, and then the run under test would not be the
+        // one being described. Python's is the same hazard, and it is why a golden
+        // for these was captured one command per world.
+        let world = World::with_devpod(None);
         let run = world.dl(&args);
         run.exited(127);
         assert!(
@@ -546,10 +551,14 @@ fn a_missing_devpod_is_exit_127_on_every_command_that_needs_one() {
 
 #[test]
 fn a_devpod_that_refuses_the_listing_is_exit_1_and_one_line() {
-    let world = World::with_devpod(Some(
-        "#!/bin/sh\necho \"context not found: default\" >&2\nexit 1\n",
-    ));
     for args in [vec!["--ls"], vec!["--ls", "--json"], vec!["--repos"]] {
+        // A world each, for the reason above — and here it is not hypothetical:
+        // this devpod runs and refuses, so the background refresh *can* write a
+        // cache (an empty one), and `--repos` reading that cache is a command that
+        // succeeds with nothing to say. The Python build does the same.
+        let world = World::with_devpod(Some(
+            "#!/bin/sh\necho \"context not found: default\" >&2\nexit 1\n",
+        ));
         let run = world.dl(&args);
         run.exited(1);
         assert_eq!(
@@ -733,19 +742,22 @@ fn the_timing_summary_is_asked_for_by_the_environment_and_lands_on_stderr() {
 #[test]
 fn a_command_whose_flow_is_not_ported_refuses_and_names_the_milestone() {
     // The alternative — succeeding silently — is what would let a mid-port build
-    // look like it had stopped a workspace.
+    // look like it had opened a workspace. M6 took `--purge`, `--prune`,
+    // `--reconcile` and the two lifecycle verbs out of this list; what is left is
+    // the launch family and the selector.
     let world = World::full();
     for (args, expected) in [
-        (vec!["--purge"], "--purge is not in this build yet"),
-        (vec!["--prune"], "--prune is not in this build yet"),
-        (vec!["--reconcile"], "--reconcile is not in this build yet"),
         (
-            vec!["some-workspace", "stop"],
-            "`dl <workspace> stop` is not in this build yet",
+            vec!["blooop-devlaunch-main-4f3a2b1c"],
+            "`dl <workspace> attach` is not in this build yet",
         ),
         (
-            vec!["some-workspace"],
-            "`dl <workspace> attach` is not in this build yet",
+            vec!["blooop-devlaunch-main-4f3a2b1c", "up"],
+            "`dl <workspace> up` is not in this build yet",
+        ),
+        (
+            vec!["blooop-devlaunch-main-4f3a2b1c", "--", "make", "test"],
+            "`dl <workspace> --` is not in this build yet",
         ),
         (
             vec!["stop"],

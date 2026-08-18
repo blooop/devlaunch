@@ -41,7 +41,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_cold_launch_fetches.py` | re-pinned in Rust | flows/workspace_clone.rs: the 8-call cold sequence, one targeted refspec in the bare, no wildcard/--tags/--prune |
 | `test/test_concurrent_launches.py` | pending | clone/adoption race + launch-lock exclusion re-pinned (repo_manager.rs, launch.rs); metadata lost-updates in domain/metadata.rs; three cross-process drivers await M9 boundary |
 | `test/test_devpod_spawn_counts.py` | pending | launch classes re-pinned (flows/launch.rs: hot rows, dotfiles/zellij opt-ins, cold up argv); listing/lifecycle rows in their flows; exit-127 line + cold ssh trips await M8-wiring/M9 boundary |
-| `test/test_dl.py` | pending | flow classes re-pinned (listing, completion_cache, lifecycle, launch incl. refresh-after-verbs); read-side dispatch at boundary (dl/tests); verb dispatch + spawn wiring await M6/M7-wiring |
+| `test/test_dl.py` | pending | flow classes re-pinned; read-side + lifecycle dispatch and refresh spawning at boundary (dl/tests); launch-verb dispatch awaits M7-wiring |
 | `test/test_interactive_command.py` | pending | typed side full (flows/launch.rs: routing, both argvs, payload parity, exit propagation, token forwarding); pty rendering + aid transport await M8-wiring/M9 |
 | `test/test_lending_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_locks.py` | re-pinned in Rust | domain/locks.rs; the literal "dl: waiting" stderr line is rendering (typed event pinned; words are the dl binary's) |
@@ -50,7 +50,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_timing.py` | pending | gate/vocabulary/handoff/prewarm re-pinned (timing.rs) + launch-path spans (launch.rs); prose-mode devpod round-trip names + tools spans await wiring/M9; bench-harness classes out of scope with scripts/ |
 | `test/test_workspace_clone.py` | re-pinned in Rust | flows/workspace_clone.rs: argv-exact over the fake runner (real objects where Python mocked the managers) |
 | `test/test_workspace_id.py` | re-pinned in Rust | all 53 behaviors; 55 Rust tests in domain/workspace_id.rs incl. 45 Python-generated golden ids |
-| `test/test_workspace_state.py` | pending | state/listing/DeleteGuard arms/ForcedRemove argv re-pinned (workspace_state.rs, listing.rs, lifecycle.rs); caplog text assertions await wiring |
+| `test/test_workspace_state.py` | re-pinned in Rust | state/listing/DeleteGuard/ForcedRemove in workspace_state.rs, listing.rs, lifecycle.rs; caplog texts byte-pinned at the boundary (uncommitted/unpushed/could-not-tell/--force) |
 | `test/test_worktree_branch_manager.py` | re-pinned in Rust | flows/branch_manager.rs: 4-state branch decision table as argv sequences; RemoteRefs/CreateRemote sums keep all four boolean combinations |
 | `test/test_worktree_config.py` | re-pinned in Rust | domain/config.rs; to_dict untested — no production caller writes config.toml |
 | `test/test_worktree_migration.py` | re-pinned in Rust | flows/migration.rs (runner-free by type); TestWiring re-expressed at boundary (rust/dl/tests/read_side.rs: the json listing migrates, the table does not) |
@@ -74,15 +74,15 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_gh_auth.py` | pending | decisions re-pinned (clients/gh.rs); memoization re-pinned (flows/launch.rs HostToken); warning-text rendering awaits wiring |
 | `test/unit/test_launch_serialization.py` | re-pinned in Rust | flows/launch.rs: all four classes; per-OFD flock makes the in-process pin two real acquisitions, stronger than Python's stub |
 | `test/unit/test_locks.py` | re-pinned in Rust | domain/locks.rs; the Python-language API-shape guards have no Rust analogue |
-| `test/unit/test_prune_orphaned_clones.py` | pending | classification/force promotion/second-pass withholding/refusals re-pinned (flows/lifecycle.rs); report+input() classes await wiring; cross-process lock timing awaits M9 |
-| `test/unit/test_purge_ownership.py` | pending | ownership split + deletes-only-devlaunchs re-pinned (listing.rs + lifecycle.rs; asked-once patch test unportable, its property pinned); leaving-behind printed lines await wiring |
-| `test/unit/test_purge_partial_removal.py` | pending | walk/three arms/obstruction/symlink refusals/randomised invariants re-pinned (repo_manager.rs + lifecycle.rs); printed sentences + sudo line await wiring |
-| `test/unit/test_reconcile_orphaned_workspaces.py` | pending | adoption/refusal arms/idempotence/repoint re-pinned (flows/lifecycle.rs); migration-notice join + report/confirm classes await wiring |
+| `test/unit/test_prune_orphaned_clones.py` | pending | classification/promotion/withholding re-pinned (lifecycle.rs); report/input/disk classes + unknown-option byte-pinned at boundary; cross-process lock timing awaits M9 |
+| `test/unit/test_purge_ownership.py` | re-pinned in Rust | ownership split + action in listing.rs/lifecycle.rs (asked-once patch test unportable, its property pinned); leaving-behind lines byte-pinned at the boundary |
+| `test/unit/test_purge_partial_removal.py` | re-pinned in Rust | walk/arms/obstruction/randomised invariants in repo_manager.rs + lifecycle.rs; the three arms' sentences, sudo line and symlink reason byte-pinned at the boundary (dl/tests/lifecycle.rs) |
+| `test/unit/test_reconcile_orphaned_workspaces.py` | pending | adoption/refusals/apply re-pinned (lifecycle.rs) and report/confirm at boundary; migration-notice join not yet built from migrate_cache's real leavings |
 | `test/unit/test_spec_parsing.py` | re-pinned in Rust | misnamed file: model/config serialization, covered by domain/model.rs + config.rs tests |
-| `test/unit/test_stored_workspace_id.py` | pending | record-vs-derivation, warm-path-reads-no-metadata (as the never-called closure), failed-lookup re-pinned (flows/lifecycle.rs); subcommand addressing awaits wiring |
+| `test/unit/test_stored_workspace_id.py` | re-pinned in Rust | record-vs-derivation, warm-path-reads-no-metadata (never-called closure), failed-lookup in lifecycle.rs; subcommand addressing byte-pinned at the boundary |
 | `test/unit/test_tools.py` | pending | all classes re-pinned (flows/provision.rs: scripts byte-golden vs the Python module, shlex round-trips, ustar payload) except TestWorkspaceUpInstallsTools — awaits launch/provision wiring |
 | `test/unit/test_tty_session.py` | re-pinned in Rust | clients/ssh.rs; chmod-000 case re-expressed root-proof |
-| `test/unit/test_updater_fetch_sweep.py` | pending | four sweep classes re-pinned (flows/lifecycle.rs); child-migrates case awaits --update-cache wiring; subprocess-boundary class is harness infrastructure |
-| `test/unit/test_workspace_listing.py` | pending | reads re-pinned (flows/listing.rs) and pinned again at the boundary with Python goldens (dl/tests); purge-will-not-act main exit code awaits wiring |
+| `test/unit/test_updater_fetch_sweep.py` | re-pinned in Rust | sweep classes in lifecycle.rs; child-migrates at the boundary (v1 cache migrated by --update-cache); subprocess-boundary class is harness infrastructure |
+| `test/unit/test_workspace_listing.py` | re-pinned in Rust | reads in flows/listing.rs, pinned again at the boundary with Python goldens; purge-will-not-act exit + stderr at the boundary |
 | `test/unit/test_workspace_source.py` | pending | source arms re-pinned in clients/devpod.rs; describe_source + unreadable-repo discovery re-pinned (flows/listing.rs); the fuzzy-picker class awaits M8 |
 | `test/unit/test_workspace_source_placement.py` | re-pinned in Rust | flows/lifecycle.rs placement: names_a_remote/source_places/site_of/holder/canonical; direction-independence and git-source-with-local-path pinned |

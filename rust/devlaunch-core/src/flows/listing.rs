@@ -304,9 +304,10 @@ pub(crate) fn measurable_clone(workspace: &Workspace, cache_dir: &Path) -> Optio
 /// somewhere to be named from, which is the difference between a purge that
 /// surprises a user with survivors and one that lists them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct WorkspaceOwnership {
-    pub(crate) mine: Vec<Workspace>,
-    pub(crate) foreign: Vec<Workspace>,
+// binary surface — not part of the frozen wf API (#250 §7)
+pub struct WorkspaceOwnership {
+    pub mine: Vec<Workspace>,
+    pub foreign: Vec<Workspace>,
 }
 
 /// Split *workspaces* into the ones devlaunch made and the ones it did not.

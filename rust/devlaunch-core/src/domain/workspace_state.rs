@@ -84,7 +84,8 @@ use crate::clients::git::{Git, GitAnswer};
 /// answer `disk_usage` gives such a directory (`Measured(0)`), and what lets a
 /// caller clear away a workspace whose clone was already removed by hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Unsaved {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum Unsaved {
     /// Everything in the clone exists somewhere else. Deleting it costs nothing.
     ///
     /// Carries no payload on purpose: there is nothing to say. It is an arm of
@@ -152,7 +153,8 @@ impl Unsaved {
 /// site building one names the *directory* it is about, which is the specific
 /// thing the shipped bug got wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Reason(String);
+// binary surface — not part of the frozen wf API (#250 §7)
+pub struct Reason(String);
 
 impl Reason {
     /// A reason in whatever words the failure came with.
@@ -172,7 +174,8 @@ impl std::fmt::Display for Reason {
 }
 
 /// What a clone holds that exists nowhere else: at least one thing, always.
-pub(crate) type Losses = NonEmpty<Loss>;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub type Losses = NonEmpty<Loss>;
 
 /// One kind of loss.
 ///
@@ -181,7 +184,8 @@ pub(crate) type Losses = NonEmpty<Loss>;
 /// from them, and so are the names, which is what makes a description
 /// unforgeable.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Loss {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum Loss {
     /// A dirty tree, **untracked files included** — an agent's scratch notes are
     /// not less lost for never having been added. One `git status --porcelain`
     /// line per changed path.
@@ -209,7 +213,9 @@ impl Loss {
 
 impl Losses {
     /// The whole loss in words, the two kinds joined as Python joins them.
-    pub(crate) fn describe(&self) -> String {
+    ///
+    /// binary surface — not part of the frozen wf API (#250 §7)
+    pub fn describe(&self) -> String {
         self.iter()
             .map(Loss::describe)
             .collect::<Vec<_>>()

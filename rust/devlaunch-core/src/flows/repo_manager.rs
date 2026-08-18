@@ -127,7 +127,8 @@ pub(crate) fn clone_dir(repos_dir: &Path, owner: &str, repo: &str, workspace_id:
 /// three. Every arm is one `logging.warning` or `logging.error` Python wrote,
 /// carrying what that line interpolated; nothing here is a sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CacheNotice {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum CacheNotice {
     /// A working bare clone was already on disk for a repository this process has
     /// no record of, so the record was rebuilt from the clone rather than the
     /// clone from the remote. Either another process cloned it just now, or a run
@@ -465,9 +466,10 @@ pub(crate) fn system_words(error: &std::io::Error) -> String {
 /// immutable file and a busy mountpoint all reach here too — and for the last two
 /// the advice that fixes the common case does not work.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Refusal {
-    pub(crate) path: PathBuf,
-    pub(crate) reason: RefusalReason,
+// binary surface — not part of the frozen wf API (#250 §7)
+pub struct Refusal {
+    pub path: PathBuf,
+    pub reason: RefusalReason,
 }
 
 /// Why one path would not come away.
@@ -476,7 +478,8 @@ pub(crate) struct Refusal {
 /// different data and only one of them has an errno to quote. The words are the
 /// `dl` binary's (#251).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RefusalReason {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum RefusalReason {
     /// What the OS said, in the words it used.
     System(String),
     /// The root of the removal is a symbolic link, and neither of the two things
@@ -787,7 +790,8 @@ pub(crate) enum CloneError {
 
 /// Why a repository's whole ref set could not be swept.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FetchRepoError {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum FetchRepoError {
     /// There is no clone to fetch into.
     NoLocalClone {
         owner: String,
@@ -812,7 +816,8 @@ pub(crate) enum FetchRepoError {
 
 /// Why a conditional sweep could not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum LazyFetchError {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub enum LazyFetchError {
     /// The repository is not in `metadata.json`, so there is no clock to compare
     /// against.
     NotInMetadata {
@@ -886,7 +891,8 @@ pub(crate) enum RemoveRepositoryError {
 /// [`crate::flows::workspace_clone`] without either of them borrowing it for the
 /// length of the run. Python injected it in the constructor and had two managers
 /// sharing one object; the parameter is that, said out loud.
-pub(crate) struct RepositoryManager<'r> {
+// binary surface — not part of the frozen wf API (#250 §7)
+pub struct RepositoryManager<'r> {
     repos_dir: PathBuf,
     fetch_interval: Duration,
     git: Git<'r>,
@@ -1459,7 +1465,7 @@ impl<'r> RepositoryManager<'r> {
     /// falls back to `main`. The remote question is bounded inside the client (ten
     /// seconds): it stands in front of a guess, so a remote that hangs must cost a
     /// pause rather than the launch.
-    pub(crate) fn get_default_branch(
+    pub fn get_default_branch(
         &self,
         storage: &MetadataStorage,
         owner: &str,
