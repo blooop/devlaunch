@@ -604,6 +604,28 @@ class TestPrepareCold:
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_a_base_answer_this_launch_does_not_name_is_refused(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+    ):
+        """The exhaustiveness check at the surface that reports staleness.
+
+        A third base arm added later must arrive here as a crash, not as
+        silence: the bare ``isinstance(base, StaleBase)`` this replaced read
+        anything it had no case for as a fresh base, which is precisely the
+        "launched from a stale cache without saying so" this whole change
+        exists to make impossible.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+
+        with patch.object(clone_manager, "ensure_branch", return_value="fresh, honest"):
+            with pytest.raises(AssertionError, match="Unhandled branch base"):
+                clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_a_stale_base_launch_says_so_in_dls_own_output(
         self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir, caplog
     ):

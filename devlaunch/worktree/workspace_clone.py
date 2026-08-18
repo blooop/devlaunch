@@ -21,7 +21,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import NoReturn, Optional, Union
 
 from .. import timing
 from ..workspace_id import WorkspaceId, validate_ref_name
@@ -79,6 +79,21 @@ class StaleBase:
 # Two arms and no third: every path through ensure_branch answers one of these,
 # so "the fetch quietly did not back the base" cannot exist as an unnamed state.
 BranchBase = Union[FreshBase, StaleBase]
+
+
+def unhandled_branch_base(base: NoReturn) -> NoReturn:
+    """Reject a base answer nobody handled -- at type-check time, not at runtime.
+
+    Exported for the same reason
+    :func:`devlaunch.worktree.repo_manager.unhandled_fetch_outcome` is: an
+    ``else`` hand-rolled at a call site is exactly how a third arm gets read as
+    "the base is fresh", which is the one thing this sum exists to prevent.
+
+    Hand-rolled rather than :func:`typing.assert_never`, which is 3.11+ while
+    this package supports 3.10; a parameter typed ``NoReturn`` gets the same
+    treatment from the checker.
+    """
+    raise AssertionError(f"Unhandled branch base: {base!r}")
 
 
 def _on_disk(path: Path) -> Optional[bool]:
@@ -498,7 +513,12 @@ class WorkspaceCloneManager:
         with self.repo_manager.hold_repo_lock(owner, repo) as lock:
             self.repo_manager.clone_if_missing(lock, owner, repo, remote_url)
             base = self.ensure_branch(lock, owner, repo, branch)
-            if isinstance(base, StaleBase):
+            # Named arm by arm, like every other sum this package reads: a third
+            # arm absorbed by a bare `else` here would launch from a stale cache
+            # in silence, which is the defect this reporting was built to close.
+            if isinstance(base, FreshBase):
+                pass
+            elif isinstance(base, StaleBase):
                 # The one consequence-stating line for the whole degraded
                 # family, in dl's own output because wf reads that output: the
                 # fetch-level warnings above it say what failed, this says what
@@ -508,6 +528,8 @@ class WorkspaceCloneManager:
                     f"which could not be refreshed ({base.reason}); "
                     f"it may be behind the remote."
                 )
+            else:
+                unhandled_branch_base(base)
             return self._prepare_workspace(
                 lock,
                 workspace,
