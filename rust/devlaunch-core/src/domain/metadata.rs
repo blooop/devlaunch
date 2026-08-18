@@ -282,6 +282,22 @@ pub(crate) enum MetadataError {
     },
 }
 
+/// Whether a migration finished, and therefore whether the header may move.
+///
+/// A sum rather than a bool because the two answers are not "yes/no" about one
+/// fact: [`SchemaHeader::LeaveBehind`] is the deliberate outcome of a refusal —
+/// the header stays where it was so the next run migrates the same directories
+/// again (#180) — and a caller reading a bare `false` as "nothing to do" would
+/// promote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemaHeader {
+    /// Every rename the migration could ever perform is done, so the header may
+    /// claim the new shape.
+    Promote,
+    /// Something was refused and left behind, so the header stays where it is.
+    LeaveBehind,
+}
+
 /// Which worktrees a listing asks for.
 ///
 /// A sum type rather than Python's two optional arguments, where "a repo with no
@@ -600,6 +616,38 @@ impl MetadataStorage {
                 failure: error.error.into(),
             })?;
         Ok(())
+    }
+
+    /// The one write a migration makes: edit every record, then save once.
+    ///
+    /// `edit` runs against the in-memory worktree records — the v1→v2 migration
+    /// renames clone directories and repoints the records that name them — and
+    /// answers whether the header may move. Both halves reach disk in the single
+    /// atomic save this makes, which is what keeps a header saying `2` from ever
+    /// claiming more than the filesystem has done (#180). A refusal therefore
+    /// costs the run the header and not the renames that did work: those are
+    /// recorded immediately, and the next run finds each of them as "destination
+    /// present, source gone" and catches metadata up to it.
+    ///
+    /// **No lock and no reload**, which is what [`MetadataStorage::save`] alone
+    /// has always been and what `storage.py`'s migration used: the migration runs
+    /// once, before the command the user typed, from a store loaded a moment
+    /// earlier. Reloading under a lock would throw away the very edits `edit` is
+    /// about to make, and holding the metadata lock across a whole-cache walk of
+    /// renames would block every other dl run for the length of it.
+    ///
+    /// This is the only mutator that does not go through
+    /// [`MetadataStorage::exclusive`], and the only one that may promote the
+    /// header — every other write preserves the loaded version, because promoting
+    /// it is the migration's job and no one else's.
+    pub(crate) fn commit_migration(
+        &mut self,
+        edit: impl FnOnce(&mut IndexMap<String, WorktreeInfo>) -> SchemaHeader,
+    ) -> Result<(), MetadataError> {
+        if let SchemaHeader::Promote = edit(&mut self.worktrees) {
+            self.schema_version = SCHEMA_VERSION;
+        }
+        self.save()
     }
 
     // --- loading ----------------------------------------------------------

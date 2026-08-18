@@ -26,36 +26,36 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/fixtures/shim_fixtures.py` | out of port scope (harness infrastructure) | shim wiring for the tiers |
 | `test/fixtures/subprocess_drivers.py` | out of port scope (harness infrastructure) |  |
 | `test/integration/__init__.py` | out of port scope (harness infrastructure) |  |
-| `test/integration/test_clone_object_sharing.py` | pending |  |
-| `test/integration/test_clone_race.py` | pending |  |
-| `test/integration/test_lfs_object_sharing.py` | pending |  |
-| `test/integration/test_lfs_probe_real.py` | pending |  |
-| `test/integration/test_repo_manager_real.py` | pending |  |
-| `test/integration/test_repo_manager_recovery.py` | pending |  |
+| `test/integration/test_clone_object_sharing.py` | re-pinned in Rust | flows/workspace_clone.rs real-git: pack sharing by (st_dev, st_ino) + st_nlink, repack breaks links + fsck passes |
+| `test/integration/test_clone_race.py` | re-pinned in Rust | flows/repo_manager.rs: in-process two-OFD contention (deterministic, no sleeps), waiter adopts winner's clone, one cross-process flock test |
+| `test/integration/test_lfs_object_sharing.py` | re-pinned in Rust | flows/workspace_clone.rs real-git-lfs; steps aside (with eprintln) when git-lfs or filter.lfs.smudge is absent |
+| `test/integration/test_lfs_probe_real.py` | re-pinned in Rust | flows/workspace_clone.rs: LFS pointer sniff over real repos |
+| `test/integration/test_repo_manager_real.py` | re-pinned in Rust | flows/repo_manager.rs real-git: clone/fetch/adoption/default-branch off the clone |
+| `test/integration/test_repo_manager_recovery.py` | re-pinned in Rust | flows/repo_manager.rs: partial-clone clearing, failed clone keeps the lock file, second attempt succeeds |
 | `test/test_agents_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bash_completion.py` | out of port scope | pins devlaunch/completions/dl.bash, embedded verbatim by both binaries; never spawns dl |
 | `test/test_bench_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bench_points.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bench_record_schema.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bench_workflow.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
-| `test/test_cold_launch_fetches.py` | pending |  |
-| `test/test_concurrent_launches.py` | pending |  |
+| `test/test_cold_launch_fetches.py` | re-pinned in Rust | flows/workspace_clone.rs: the 8-call cold sequence, one targeted refspec in the bare, no wildcard/--tags/--prune |
+| `test/test_concurrent_launches.py` | pending | clone/adoption race re-pinned (repo_manager.rs); metadata lost-updates covered by domain/metadata.rs; cross-process launch drivers await M7/M9 at the boundary |
 | `test/test_devpod_spawn_counts.py` | pending |  |
-| `test/test_dl.py` | pending |  |
+| `test/test_dl.py` | pending | listing/discovery/branches/completion-cache/freshness/workspace-state classes re-pinned (flows/listing.rs + completion_cache.rs); background-refresh spawning awaits M6, dispatch awaits M5c |
 | `test/test_interactive_command.py` | pending |  |
 | `test/test_lending_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_locks.py` | re-pinned in Rust | domain/locks.rs; the literal "dl: waiting" stderr line is rendering (typed event pinned; words are the dl binary's) |
 | `test/test_pty_helpers.py` | out of port scope (harness infrastructure) | pins test/fixtures/pty_helpers.py, which survives as the judge |
-| `test/test_repo_lock_cycles.py` | pending |  |
+| `test/test_repo_lock_cycles.py` | pending | RepoLock token + holds-throughout re-pinned (repo_manager.rs); the per-launch-shape cycle counts await M7 |
 | `test/test_timing.py` | pending | gate/json/stage-vocabulary/handoff/prewarm classes re-pinned (timing.rs); launch-path span classes await M5b/M7; bench-harness classes out of scope with scripts/ |
-| `test/test_workspace_clone.py` | pending |  |
+| `test/test_workspace_clone.py` | re-pinned in Rust | flows/workspace_clone.rs: argv-exact over the fake runner (real objects where Python mocked the managers) |
 | `test/test_workspace_id.py` | re-pinned in Rust | all 53 behaviors; 55 Rust tests in domain/workspace_id.rs incl. 45 Python-generated golden ids |
-| `test/test_workspace_state.py` | pending | six module-level classes re-pinned (domain/workspace_state.rs, real-git broken-clone shapes); TestTheJsonListing/DeleteGuard/ForcedRemove classes await M5/M6 |
-| `test/test_worktree_branch_manager.py` | pending |  |
+| `test/test_workspace_state.py` | pending | six module-level classes re-pinned (domain/workspace_state.rs); TestTheJsonListing re-pinned (flows/listing.rs, byte-pinned Python goldens); DeleteGuard/ForcedRemove await M6 |
+| `test/test_worktree_branch_manager.py` | re-pinned in Rust | flows/branch_manager.rs: 4-state branch decision table as argv sequences; RemoteRefs/CreateRemote sums keep all four boolean combinations |
 | `test/test_worktree_config.py` | re-pinned in Rust | domain/config.rs; to_dict untested — no production caller writes config.toml |
-| `test/test_worktree_migration.py` | pending |  |
+| `test/test_worktree_migration.py` | pending | all re-pinned in flows/migration.rs (runner-free by type) except TestWiring — the run-once factory awaits M5c |
 | `test/test_worktree_models.py` | re-pinned in Rust | domain/model.rs; byte-compat golden JSON from Python |
-| `test/test_worktree_repo_manager.py` | pending |  |
+| `test/test_worktree_repo_manager.py` | re-pinned in Rust | flows/repo_manager.rs: RepoLock minting structural (private fields), FetchOutcome exhaustive, one-lstat symlinked-root refusal |
 | `test/test_worktree_storage.py` | re-pinned in Rust | domain/metadata.rs; seam-patched tests re-expressed as behavior |
 | `test/unit/__init__.py` | out of port scope (harness infrastructure) |  |
 | `test/unit/test_aid.py` | pending |  |
@@ -75,7 +75,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_launch_serialization.py` | pending |  |
 | `test/unit/test_locks.py` | re-pinned in Rust | domain/locks.rs; the Python-language API-shape guards have no Rust analogue |
 | `test/unit/test_prune_orphaned_clones.py` | pending |  |
-| `test/unit/test_purge_ownership.py` | pending |  |
+| `test/unit/test_purge_ownership.py` | pending | ownership split re-pinned (flows/listing.rs; the asked-once patch test is unportable — its property, every workspace in exactly one arm in order, is pinned); purge action classes await M6 |
 | `test/unit/test_purge_partial_removal.py` | pending |  |
 | `test/unit/test_reconcile_orphaned_workspaces.py` | pending |  |
 | `test/unit/test_spec_parsing.py` | re-pinned in Rust | misnamed file: model/config serialization, covered by domain/model.rs + config.rs tests |
@@ -83,6 +83,6 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_tools.py` | pending |  |
 | `test/unit/test_tty_session.py` | re-pinned in Rust | clients/ssh.rs; chmod-000 case re-expressed root-proof |
 | `test/unit/test_updater_fetch_sweep.py` | pending |  |
-| `test/unit/test_workspace_listing.py` | pending |  |
-| `test/unit/test_workspace_source.py` | pending | source arms re-pinned in clients/devpod.rs; describe_source/discovery await M5b |
+| `test/unit/test_workspace_listing.py` | pending | failed/unparsable/empty listing reads + completions-from-whatever-can-be-read re-pinned (flows/listing.rs); the purge-action class awaits M6 |
+| `test/unit/test_workspace_source.py` | pending | source arms re-pinned in clients/devpod.rs; describe_source + unreadable-repo discovery re-pinned (flows/listing.rs); the fuzzy-picker class awaits M8 |
 | `test/unit/test_workspace_source_placement.py` | pending |  |
