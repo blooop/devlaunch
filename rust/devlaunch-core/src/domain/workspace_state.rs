@@ -229,7 +229,7 @@ const NAME_AT_MOST: usize = 3;
 /// output becomes [`Unsaved::NothingToLose`] instead of a `WouldLose` with
 /// nothing to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NonEmpty<T> {
+pub struct NonEmpty<T> {
     first: T,
     rest: Vec<T>,
 }
@@ -243,7 +243,7 @@ impl<T> NonEmpty<T> {
     }
 
     /// The sequence, or nothing when there was nothing in it.
-    pub(crate) fn of(items: impl IntoIterator<Item = T>) -> Option<Self> {
+    pub fn of(items: impl IntoIterator<Item = T>) -> Option<Self> {
         let mut items = items.into_iter();
         let first = items.next()?;
         Some(Self {
@@ -256,7 +256,7 @@ impl<T> NonEmpty<T> {
         1 + self.rest.len()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
         std::iter::once(&self.first).chain(self.rest.iter())
     }
 }

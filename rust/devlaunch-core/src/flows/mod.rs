@@ -1,11 +1,17 @@
 pub(crate) mod branch_manager;
-pub(crate) mod completion;
-pub(crate) mod completion_cache;
-pub(crate) mod disk_usage;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod completion;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod completion_cache;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod disk_usage;
 pub(crate) mod launch;
 pub(crate) mod lifecycle;
-pub(crate) mod listing;
-pub(crate) mod migration;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod listing;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod migration;
 pub(crate) mod provision;
 pub(crate) mod repo_manager;
-pub(crate) mod workspace_clone;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod workspace_clone;

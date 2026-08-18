@@ -72,7 +72,7 @@ argv→response table, devpod workspace state machine.
 
 **M2 (∥) — domain.** `workspace_id` (the #55/#64 parse boundary; one
 constructor over the unsanitized triple), `spec` parsing
-(`owner/repo@branch#variant` and friends), `model` (Workspace, container-state
+(`owner/repo@branch` and friends), `model` (Workspace, container-state
 enum with `Unknown(String)`, the four-arm `Unsaved` sum), `metadata` (serde
 over the version-headered v2 document, forward-tolerant, plus the ported v1→v2
 migration), `config` (TOML), `xdg` (written once), `locks` (fd-lock over the
@@ -148,16 +148,19 @@ Nothing diverges silently.
 | 1 | Reserved verb words (`stop`, `prune`, …) win over bare workspace specs; verb-first with no target opens the fuzzy selector. Python parses `dl stop` as a spec. | Owner requirement folded into #251 §6. |
 | 2 | clap strictness: unknown flags are rejected; no argparse-style prefix abbreviation. | Correctness aim winning over accidental laxity. |
 | 3 | `--help` layout is clap's, not the hand-rolled text. | Generated help feeds the README rule. |
-| 4 | Failure output: no Python tracebacks, ever; typed errors rendered as one-line diagnostics with the same exit codes. | #251 §5. |
+| 4 | Failure output: no Python tracebacks, ever; typed errors rendered as one-line diagnostics with the same exit codes. OS-level reasons inside diagnostics use Rust's phrasing (`Permission denied (os error 13)`) rather than Python's `[Errno 13] …`, and JSON type names in refusals may differ (`int` where Python said `float`). | #251 §5. |
 | 5 | Startup/perf deltas asserted nowhere; `bench.yml` stays outside the gate. | Perf is not a parity dimension. |
 | 6 | The fuzzy selector is embedded skim, not spawned fzf; `iterfzf`/fzf are no longer runtime dependencies. | Removes a launch-failure class (#251 §6). |
-| 7 | Safe-name validation accepts a measured superset of Python's `\w` (Unicode combining marks, enclosed letters, and codepoints newer than Python's UCD). Every name Python accepts keeps its exact id — no workspace on disk moves; only names Python refused are now accepted. | `char::is_alphanumeric` vs `\w`; verified per-codepoint against Python 3.14. |
+| 7 | Safe-name validation accepts a measured superset of Python's `\w` (Unicode combining marks, enclosed letters, and codepoints newer than Python's UCD). Every name Python accepts keeps its exact id — no workspace on disk moves; only names Python refused are now accepted. | `char::is_alphanumeric` vs `\w`; verified per-codepoint against Python 3.14. The same superset applies to `--reconcile`'s legacy leaf spelling, reachable only via a hand-edited record. |
 | 8 | Metadata/config loads refuse wrong-typed values where Python coerced: a mistyped entry field skips the entry (with backup) instead of loading a mistyped model; `fetch_interval`/`prune_after_days` of the wrong type are typed refusals; a falsy-but-non-null `last_fetched` (`[]`, `false`, `0`) skips the entry. | Correctness aim winning; parse-don't-validate at the storage boundary. |
 | 9 | `repos_dir = "~/…"` in `config.toml` is tilde-expanded (Python's loader wrapped the string in `Path()` before expansion could run, so `~` was taken literally); the mkdir-if-under-home-or-`/tmp` check is path-component-wise, so `/tmp2/x` no longer counts. | Fixes a latent config bug rather than porting it. |
 | 10 | `dl --install` re-run over an already-current install rewrites nothing (Python rewrote byte-identical files, touching rc mtimes on every run); the outcome is reported as already-installed. | Idempotence made observable. |
 | 11 | Boundary documents are read typed, not sniffed: a completion cache missing a key reads as empty (Python's `--repos` fell back to asking devpod when the `repos` key was absent); `--completion-data` re-serializes the four known keys, dropping a newer writer's extras; a non-string `state` from `devpod status` renders as `null`; `remote_branch_exists` counts parsed `ls-remote` lines, not any non-empty stdout. | Parse-don't-validate at every input boundary (row 8's aim); the distinguishing inputs are malformed documents no released tool writes. |
 | 12 | Non-UTF-8 clone paths render lossily (U+FFFD) where Python round-tripped the bytes via surrogateescape. | Rust has no surrogateescape; only undecodable paths differ. |
 | 13 | The primary failure survives compound failures: a failed clone reports its git reason even when the debris cleanup also fails (Python raised the cleanup `OSError`, masking the clone's), and a migration that cannot write its orphan/unmigrated listing files says so in the migration report instead of aborting. | #251 §5 error shaping — no cause is masked. |
+| 14 | CLI usage errors (unknown flags, malformed combinations clap itself rejects) exit 2, clap's convention, where Python exited 1. Refusals Python also made keep exit 1 and Python's wording. Input: `dl --nope`. | Generated parser owns its usage errors (companion to rows 2–3). |
+| 15 | Grammar completions and tightenings: `--stop`/`--rm` flag spellings work as verbs (dl.py's docstring promised them; its dispatch parsed them as a spec and failed); `--json`/`--size` require `--ls`; a global command refuses a stray target, a meaningless `-y`/`--force`, or `--devcontainer`; a trailing `-- <cmd>` beside a non-attach verb is refused; no-target verb forms (`dl --stop`, `dl -- <cmd>`) open the selector. Python silently discarded all of these. | Documented grammar made real; silent discards made refusals (rows 1–2's aim). |
+| 16 | `--version` always prints the bare version; Python appended `(dev, editable from <tree>)` for editable installs. A compiled binary has no editable-install metadata. | PEP 610 provenance has no Rust analogue; released builds printed identically anyway. |
 
 Additions require a PR that updates this table; the row number is cited by any
 per-binary harness branch.

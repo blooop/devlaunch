@@ -42,19 +42,19 @@ const DEFAULT_PRUNE_AFTER_DAYS: u64 = 30;
 /// repos_dir/owner/repo/clones/   the workspace clones, one per branch
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorktreeConfig {
-    pub(crate) enabled: bool,
-    pub(crate) repos_dir: PathBuf,
-    pub(crate) fetch_interval: u64,
-    pub(crate) auto_prune: bool,
-    pub(crate) prune_after_days: u64,
+pub struct WorktreeConfig {
+    pub enabled: bool,
+    pub repos_dir: PathBuf,
+    pub fetch_interval: u64,
+    pub auto_prune: bool,
+    pub prune_after_days: u64,
     /// Docker image for repositories with no `devcontainer.json`.
-    pub(crate) fallback_image: Option<String>,
+    pub fallback_image: Option<String>,
 }
 
 /// Why the configuration could not be read.
 #[derive(Debug)]
-pub(crate) enum ConfigError {
+pub enum ConfigError {
     /// This machine names no home directory, so no config path can be built.
     NoHomeDirectory,
     /// The file exists but could not be read.
@@ -94,7 +94,7 @@ pub(crate) fn config_path() -> Result<PathBuf, NoHomeDirectory> {
 /// Reads `config_home()/devlaunch/config.toml` if it is there, defaults if it is
 /// not, and then makes sure `repos_dir` exists — see [`ensure_repos_dir`] for
 /// why that is a side effect of loading rather than of using it.
-pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
+pub fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
     let path = config_path()?;
     let defaults = WorktreeConfig::defaults_in(&xdg::devlaunch_cache()?);
     let config = worktree_config_at(&path, &defaults)?;

@@ -317,10 +317,10 @@ fn is_branch_part(part: &str) -> bool {
 /// A `--devcontainer` value that has been through the parse boundary: a path
 /// devpod can be handed as `--devcontainer-path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DevcontainerPath(String);
+pub struct DevcontainerPath(String);
 
 impl DevcontainerPath {
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -328,7 +328,7 @@ impl DevcontainerPath {
 /// Why a `--devcontainer` value cannot be a path. The offending value is the
 /// caller's own argument, so the refusal does not repeat it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DevcontainerRefError {
+pub enum DevcontainerRefError {
     /// Empty or blank: `dl --devcontainer ''`.
     Missing,
     /// A flag turned up where the value should be: `dl --devcontainer --help`.
@@ -347,9 +347,7 @@ pub(crate) enum DevcontainerRefError {
 /// `.devcontainer/devcontainer.json` and stores no devContainerID, while
 /// `--devcontainer-path` selects the variant correctly. Build the path here until
 /// that is fixed upstream.
-pub(crate) fn resolve_devcontainer_ref(
-    raw: &str,
-) -> Result<DevcontainerPath, DevcontainerRefError> {
+pub fn resolve_devcontainer_ref(raw: &str) -> Result<DevcontainerPath, DevcontainerRefError> {
     if raw.chars().all(is_python_space) {
         return Err(DevcontainerRefError::Missing);
     }

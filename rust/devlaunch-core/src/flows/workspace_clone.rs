@@ -279,7 +279,7 @@ pub(crate) enum RemoveWorkspaceError {
 // ---------------------------------------------------------- the manager
 
 /// The workspace clones, over one `repos_dir`.
-pub(crate) struct WorkspaceCloneManager<'r> {
+pub struct WorkspaceCloneManager<'r> {
     repos_dir: PathBuf,
     git: Git<'r>,
     repo_manager: RepositoryManager<'r>,
@@ -299,7 +299,7 @@ impl std::fmt::Debug for WorkspaceCloneManager<'_> {
 
 impl<'r> WorkspaceCloneManager<'r> {
     /// A manager over the cache `config` describes.
-    pub(crate) fn from_config(config: &WorktreeConfig, git: Git<'r>) -> Self {
+    pub fn from_config(config: &WorktreeConfig, git: Git<'r>) -> Self {
         Self::new(
             &config.repos_dir,
             std::time::Duration::from_secs(config.fetch_interval),
@@ -396,6 +396,21 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// answer, which is why it is an absent answer rather than an error: deriving
     /// raises on an unsafe ref, and one hand-edited record must not be able to
     /// take down the whole of `dl --ls --json`.
+    /// [`Self::resolve_clone_path`] for a caller with nowhere to put the notices.
+    ///
+    /// binary surface — not part of the frozen wf API (#250 §7).
+    ///
+    /// The one notice the resolution can raise ([`CacheNotice::CloneNotNamed`])
+    /// is a diagnostic the Python build never printed at all, so dropping it here
+    /// is what parity means for now — and there is nowhere else to drop it,
+    /// because `CacheNotice` is still crate-private and a `pub fn` cannot name
+    /// it. When it is promoted, this wrapper is what goes away: the binary takes
+    /// the notices and renders them, as it does for every other typed event.
+    pub fn clone_path(&self, recorded: &WorktreeInfo) -> Option<PathBuf> {
+        let mut dropped = Vec::new();
+        self.resolve_clone_path(recorded, &mut dropped)
+    }
+
     pub(crate) fn resolve_clone_path(
         &self,
         recorded: &WorktreeInfo,

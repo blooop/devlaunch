@@ -38,6 +38,7 @@
 // consumers; until they land the port's own tests are the only ones.
 #![allow(dead_code)] // consumed from M6/M7
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -46,6 +47,7 @@ use crate::domain::locks::{self, Contention, LockError, LockGuard};
 use crate::domain::metadata::{self, MetadataError, MetadataStorage};
 use crate::domain::model::{BaseRepository, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
+use crate::domain::workspace_state::NonEmpty;
 use crate::timing;
 
 /// The bare repository's directory name, inside the repo directory.
@@ -413,6 +415,328 @@ pub(crate) fn remove_tree(tree: &Path) -> Result<TreeRemoval, RemoveTreeError> {
             reason: error.to_string(),
         }),
     }
+}
+
+// ------------------------------------------- removal that keeps going (#131)
+
+/// Whether something is at *path*, where "cannot tell" counts as there.
+///
+/// Only [`std::io::ErrorKind::NotFound`] means there is nothing to do. Any other
+/// refusal — an unreadable parent directory, say — means something is there that
+/// this process cannot look at, and treating that as absent is how a purge reports
+/// a clean sweep over an intact cache.
+///
+/// [`Path::exists`] cannot make that distinction: it collapses every error into
+/// `false`, which is exactly the sentinel Python's `Path.exists()` produced on
+/// 3.14 (and it raised on 3.13, so the same expression was two behaviours across
+/// the versions dl supported). A symlink counts as present whether or not it
+/// resolves, because the link itself is a thing to remove.
+pub(crate) fn present(path: &Path) -> bool {
+    !matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// The system's own words for a failure, as Python's `OSError.strerror` gives
+/// them.
+///
+/// [`std::io::Error`]'s `Display` is `"{strerror} (os error {errno})"` for an OS
+/// error, and the errno is already carried by the arm that holds this string —
+/// where it is carried at all. So the suffix is dropped: the reason is printed to
+/// a person beside the path it is about, and `Permission denied` is the whole of
+/// what they need from it.
+pub(crate) fn system_words(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match error.raw_os_error() {
+        Some(errno) => text
+            .strip_suffix(&format!(" (os error {errno})"))
+            .unwrap_or(&text)
+            .to_owned(),
+        None => text,
+    }
+}
+
+/// One path a removal could not remove, and what the system said about it.
+///
+/// The reason is carried rather than reconstructed at the print site because the
+/// cause is not guessable from the path. A container writing as another user is
+/// the common one and the one devlaunch#131 is about, but a read-only mount, an
+/// immutable file and a busy mountpoint all reach here too — and for the last two
+/// the advice that fixes the common case does not work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    pub(crate) path: PathBuf,
+    pub(crate) reason: RefusalReason,
+}
+
+/// Why one path would not come away.
+///
+/// A sum rather than the sentence Python interpolated, because the two arms carry
+/// different data and only one of them has an errno to quote. The words are the
+/// `dl` binary's (#251).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefusalReason {
+    /// What the OS said, in the words it used.
+    System(String),
+    /// The root of the removal is a symbolic link, and neither of the two things
+    /// that could be done with it is honest — see [`RemoveTreeError::RootIsSymlink`].
+    ///
+    /// `points_at` is carried because the advice a report gives is
+    /// `sudo rm -rf <path>`, which would remove the link and nothing else, so the
+    /// reader needs the real location to act on.
+    RootIsSymlink { points_at: Option<PathBuf> },
+}
+
+/// What became of a tree a removal was allowed to get part-way through.
+///
+/// Three arms, because a removal permitted to remove *part* of a tree has three
+/// answers and a flat list of refusals records only two of them: what refused,
+/// never whether anything went. devlaunch#182 is what that cost — a purge whose
+/// cache root was itself the obstruction removed not one path and printed the
+/// sentence for a partial success, because the only question its caller could ask
+/// was "were there refusals".
+///
+/// A `(removed_something, refused)` pair would answer it and would also make
+/// "removed everything, and here is what it refused" expressible, leaving every
+/// reader to be trusted not to build it. These arms cannot say it: the arm that
+/// means a clean sweep has nowhere to put a refusal, and each refusal arm carries
+/// a [`NonEmpty`], so "refused, and here is the empty list" has no representation
+/// either (Python's `Tuple[Refusal, ...]` had both).
+///
+/// The exit status a caller derives from this stays two-valued on purpose: zero
+/// means the tree is gone and nothing else does. Which of the two failures
+/// happened is in the report, where somebody can act on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Removal {
+    /// The tree is gone, and so is everything that was under it — including when
+    /// it was never there: a purge run twice is not a failure the second time.
+    Everything,
+    /// Some of it went. `refused` is what the filesystem would not let go.
+    WhatItCould(NonEmpty<Refusal>),
+    /// None of it went. `refused` is what the filesystem would not let go.
+    Nothing(NonEmpty<Refusal>),
+}
+
+/// Remove `tree` and everything under it, **keeping going past a refusal**, and
+/// say which of [`Removal`]'s three things happened.
+///
+/// [`remove_tree`] is the other half of this pair and is the one the cache's own
+/// steps use: it stops at the first failure, which is right when the tree is one
+/// this process just created and a refusal is the caller's error to report.
+/// `dl --purge` needs the opposite. A container writes into its bind-mounted
+/// clone as its own user — uid 1000 in the standard devcontainer base image — and
+/// where the host user is not also uid 1000 the directories it made cannot be
+/// emptied by us. That is one clone out of a cache full of them, and abandoning
+/// the other clones, the completion caches and `metadata.json` on account of it is
+/// a worse outcome than the permission error (devlaunch#131).
+///
+/// **Only the obstruction is named**, which is not the same as the path that
+/// failed. Unlinking needs write permission on the *directory*, not on the file,
+/// so a clone directory owned by the container's user refuses every one of its
+/// children separately — on a real e2e workspace that is forty-odd
+/// `.git/objects` entries, hooks and a README, none of them an ancestor of
+/// another and every one of them the same single fact. So a failure is attributed
+/// upward to the outermost directory that cannot be written into, which is the
+/// directory the original errno named and the one a person would go and look at.
+///
+/// A path is then suppressed when something already reported accounts for it: a
+/// directory that cannot be removed because a child refused adds nothing. A
+/// *separately* sealed ancestor is not suppressed and should not be, because
+/// fixing the one below it would not free it — so a chain of two sealed
+/// directories is two lines, and each is work somebody has to do.
+///
+/// **What refused is decided from the disk, not from what failed.** A failure
+/// during the walk is only a candidate; the report keeps the ones still on disk
+/// when it is over, and both suppression rules are applied to that surviving list.
+/// That is load-bearing rather than belt-and-braces, and randomised trees found
+/// the case: a directory that cannot be listed is reported as unscannable and then
+/// `rmdir`s fine if it is *empty*, so noting it where it failed named a path that
+/// is not there and — through the ancestor rule — could have silenced a genuine
+/// refusal above it.
+///
+/// **Whether anything came away is answered, not inferred.** A path that went is
+/// counted as it goes, so the two refusal arms are told apart by what the removal
+/// did rather than by what its report happens to look like.
+///
+/// A symlinked root is refused outright, and that is the only one of the three
+/// available answers that is not a lie: following it empties a directory the
+/// caller never named, and unlinking just the link reports a clean sweep over
+/// clones that are still on disk somewhere else. Symlinks *inside* the tree are
+/// unlinked and never descended.
+pub(crate) fn remove_tree_as_far_as_it_goes(tree: &Path) -> Removal {
+    // One lstat, three outcomes, none of them inferred — see `present` for why
+    // this question cannot be asked with an existence check.
+    let stat = match std::fs::symlink_metadata(tree) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Removal::Everything;
+        }
+        Err(error) => {
+            // Something is there that we are not allowed to look at. Nothing was
+            // attempted, so nothing came away.
+            return refused_nothing(Refusal {
+                path: tree.to_path_buf(),
+                reason: RefusalReason::System(system_words(&error)),
+            });
+        }
+    };
+    if stat.file_type().is_symlink() {
+        // Refused before anything was attempted: the link is still there and so
+        // is everything it points at.
+        return refused_nothing(Refusal {
+            path: tree.to_path_buf(),
+            reason: RefusalReason::RootIsSymlink {
+                points_at: std::fs::read_link(tree).ok(),
+            },
+        });
+    }
+
+    let mut walk = Walk::default();
+    if stat.is_dir() {
+        walk.sweep(tree);
+    }
+    // The root is in nobody's directory listing, so it is removed by name.
+    walk.remove_one(tree);
+
+    // Bottom-up order is what the ancestor rule needs, and the candidate list is
+    // already in it: `sweep` recurses into a directory before it attempts the
+    // directory itself.
+    let mut refused: Vec<Refusal> = Vec::new();
+    let mut blocked: HashSet<PathBuf> = HashSet::new();
+    for candidate in walk.candidates {
+        // `present`, not an existence check: a path this process cannot look at
+        // must be reported, not dropped. Dropping it is how the filter that exists
+        // to prevent phantom refusals would have started causing silent ones.
+        if !present(&candidate.path) {
+            continue; // it went in the end, so there is nothing to report
+        }
+        let path = obstruction(&candidate.path, tree);
+        if blocked.insert(path.clone()) {
+            refused.push(Refusal {
+                path: path.clone(),
+                reason: candidate.reason,
+            });
+        }
+        if let Some(parent) = path.parent() {
+            blocked.insert(parent.to_path_buf());
+        }
+    }
+    match NonEmpty::of(refused) {
+        // Nothing survived that anybody needs to know about, so the tree is gone —
+        // including the case where the walk hit failures the disk then
+        // contradicted.
+        None => Removal::Everything,
+        Some(refused) if walk.removed_any => Removal::WhatItCould(refused),
+        Some(refused) => Removal::Nothing(refused),
+    }
+}
+
+fn refused_nothing(refusal: Refusal) -> Removal {
+    Removal::Nothing(NonEmpty::one(refusal))
+}
+
+/// The bottom-up walk's running state: what failed, and whether anything went.
+#[derive(Default)]
+struct Walk {
+    candidates: Vec<Refusal>,
+    /// Counted where it happens. Deriving this from the refusal list afterwards is
+    /// exactly the inference that cannot be made: a cache root that refuses its
+    /// own entries reports one refusal whether there were two clones beside it or
+    /// none.
+    removed_any: bool,
+}
+
+impl Walk {
+    /// Empty `dir`, deepest first. Does not remove `dir` itself.
+    fn sweep(&mut self, dir: &Path) {
+        let listed = match std::fs::read_dir(dir) {
+            Ok(listed) => listed,
+            Err(error) => {
+                // A directory that cannot be listed must not pass for empty: it
+                // may hold files, and walking it as though it held none would
+                // leave them neither removed nor mentioned.
+                self.candidates.push(Refusal {
+                    path: dir.to_path_buf(),
+                    reason: RefusalReason::System(system_words(&error)),
+                });
+                return;
+            }
+        };
+        let mut children: Vec<PathBuf> = Vec::new();
+        for entry in listed {
+            match entry {
+                Ok(entry) => children.push(entry.path()),
+                Err(error) => self.candidates.push(Refusal {
+                    path: dir.to_path_buf(),
+                    reason: RefusalReason::System(system_words(&error)),
+                }),
+            }
+        }
+        for child in children {
+            // A symlink is unlinked, never followed — descending one would put a
+            // purge outside the tree it was asked to remove.
+            if matches!(std::fs::symlink_metadata(&child), Ok(stat) if stat.is_dir()) {
+                self.sweep(&child);
+            }
+            self.remove_one(&child);
+        }
+    }
+
+    fn remove_one(&mut self, path: &Path) {
+        let removed = match std::fs::symlink_metadata(path) {
+            Ok(stat) if stat.is_dir() => std::fs::remove_dir(path),
+            Ok(_) => std::fs::remove_file(path),
+            // Already gone, or unlookable. Try the unlink anyway: it either
+            // succeeds (which is the answer) or reports the same refusal the stat
+            // did, on the path a person would go and look at.
+            Err(_) => std::fs::remove_file(path),
+        };
+        match removed {
+            Ok(()) => self.removed_any = true,
+            Err(error) => self.candidates.push(Refusal {
+                path: path.to_path_buf(),
+                reason: RefusalReason::System(system_words(&error)),
+            }),
+        }
+    }
+}
+
+/// The outermost path that actually explains a failure to remove `path`.
+///
+/// `access(2)` is advisory — it answers for the real uid and knows nothing about
+/// ACLs — and that is acceptable precisely here, because it only decides *which*
+/// path is named. A wrong answer makes the report less pointed; it can never turn
+/// a refusal into a success.
+///
+/// The walk is bounded at `tree` and at the filesystem root. Nothing reaches here
+/// from outside `tree` today; the second bound is so that a future caller that
+/// does gets a wrong answer rather than a hung purge.
+fn obstruction(path: &Path, tree: &Path) -> PathBuf {
+    let mut path = path.to_path_buf();
+    while path != tree {
+        let Some(parent) = path.parent() else {
+            break;
+        };
+        if parent == path {
+            break; // the filesystem root: there is nothing above to blame
+        }
+        if writable_directory(parent) {
+            break; // this one is reachable, so `path` is where it stops
+        }
+        path = parent.to_path_buf();
+    }
+    path
+}
+
+/// Whether this process could unlink an entry from `directory`, as far as
+/// `access(2)` will say.
+fn writable_directory(directory: &Path) -> bool {
+    rustix::fs::access(
+        directory,
+        rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
+    )
+    .is_ok()
 }
 
 /// What became of the debris a failed step left, reported *alongside* the failure

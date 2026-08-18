@@ -78,14 +78,14 @@ const MAX_LINK_DEPTH: usize = 40;
 
 /// Which stored section something was found in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Section {
+pub enum Section {
     Repositories,
     Worktrees,
 }
 
 impl Section {
     /// The key this section is stored under.
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Section::Repositories => "repositories",
             Section::Worktrees => "worktrees",
@@ -95,7 +95,7 @@ impl Section {
 
 /// The JSON type something turned out to be, where a report names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonKind {
+pub enum JsonKind {
     Null,
     Bool,
     Number,
@@ -122,9 +122,9 @@ impl JsonKind {
 /// The kind is what code branches on; the message is the OS's own words, quoted
 /// the way Python's warnings quote the `OSError` they caught.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OsFailure {
-    pub(crate) kind: io::ErrorKind,
-    pub(crate) message: String,
+pub struct OsFailure {
+    pub kind: io::ErrorKind,
+    pub message: String,
 }
 
 impl From<io::Error> for OsFailure {
@@ -138,7 +138,7 @@ impl From<io::Error> for OsFailure {
 
 /// Why a metadata file could not be used at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FileProblem {
+pub enum FileProblem {
     /// The bytes could not be read.
     Unreadable(OsFailure),
     /// The bytes are not JSON — or not UTF-8, which arrives here for the same
@@ -150,7 +150,7 @@ pub(crate) enum FileProblem {
 
 /// Why one stored entry could not be rebuilt, and is therefore skipped.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EntryProblem {
+pub enum EntryProblem {
     NotAnObject { found: JsonKind },
     NotRebuilt { reason: String },
 }
@@ -160,14 +160,14 @@ pub(crate) enum EntryProblem {
 /// A single quarantine slot, overwritten on repeat corruption, kept apart from
 /// the backup slot so the two recovery cases cannot clobber each other.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Quarantine {
+pub enum Quarantine {
     MovedAside { path: PathBuf },
     CouldNotMove { path: PathBuf, failure: OsFailure },
 }
 
 /// What became of the original bytes before a lossy rewrite could overwrite them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Backup {
+pub enum Backup {
     Copied { path: PathBuf },
     CouldNotCopy { path: PathBuf, failure: OsFailure },
 }
@@ -178,7 +178,7 @@ pub(crate) enum Backup {
 /// interpolated. Collected in the order they were found and returned; nothing
 /// here is a sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Notice {
+pub enum Notice {
     /// The whole file was unusable, so it was moved aside and the run started
     /// with empty metadata.
     FileUnusable {
@@ -254,7 +254,7 @@ impl Notice {
 /// Write failures are deliberately not swallowed: silently losing the workspace
 /// list is worse than an error.
 #[derive(Debug)]
-pub(crate) enum MetadataError {
+pub enum MetadataError {
     /// The directory the file lives in could not be created.
     CreateDir { path: PathBuf, failure: OsFailure },
     /// The metadata lock could not be taken.
@@ -310,7 +310,7 @@ pub(crate) enum WorktreeFilter<'a> {
 }
 
 /// The persistent record of what the cache holds.
-pub(crate) struct MetadataStorage {
+pub struct MetadataStorage {
     /// The path as the caller gave it, which may be a symlink.
     metadata_path: PathBuf,
     /// The real file every operation targets.
@@ -338,7 +338,7 @@ impl std::fmt::Debug for MetadataStorage {
 
 impl MetadataStorage {
     /// Where the file lives when nothing says otherwise.
-    pub(crate) fn default_path() -> Result<PathBuf, NoHomeDirectory> {
+    pub fn default_path() -> Result<PathBuf, NoHomeDirectory> {
         xdg::devlaunch_cache().map(|cache| cache.join("metadata.json"))
     }
 
@@ -346,9 +346,7 @@ impl MetadataStorage {
     ///
     /// Returns the notices the load produced; a damaged file is recovered from
     /// rather than reported as an error.
-    pub(crate) fn open(
-        metadata_path: impl Into<PathBuf>,
-    ) -> Result<(Self, Vec<Notice>), MetadataError> {
+    pub fn open(metadata_path: impl Into<PathBuf>) -> Result<(Self, Vec<Notice>), MetadataError> {
         let metadata_path = metadata_path.into();
         if let Some(parent) = metadata_path.parent()
             && !parent.as_os_str().is_empty()

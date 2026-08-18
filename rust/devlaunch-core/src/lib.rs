@@ -20,6 +20,17 @@
 // (#250's closure) is frozen at the end of M6; publishing later is free,
 // un-publishing is a break. `runner` is pub so devlaunch-test-support can
 // implement the trait; that crate is dev-only and never shipped.
+//
+// # The binary surface
+//
+// From M5c the four layer modules are `pub`, because the `dl` binary is a
+// separate crate and every string a user sees is written there — a rendering
+// layer that cannot name the typed results it renders is not a rendering layer.
+// The items reached that way carry the note **binary surface — not part of the
+// frozen wf API (#250 §7)** so that the day-one public API and the binary's
+// working set stay distinguishable: only the former is frozen at the end of M6,
+// and only the former is what `wf` may link against. Everything the binary does
+// not need stays `pub(crate)`.
 pub mod runner {
     //! Re-export of the `devlaunch-runner` leaf crate, kept at its original
     //! path so nothing above this line knows the runner moved crates. It moved
@@ -31,11 +42,16 @@ pub mod runner {
 
 // Leaf like `runner`: the env-gated span registry everything above may use
 // (even `locks` spans a contended wait), depending on nothing itself.
-pub(crate) mod timing;
+//
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod timing;
 
-pub(crate) mod clients;
-pub(crate) mod domain;
-pub(crate) mod flows;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod clients;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod domain;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod flows;
 
 #[cfg(test)]
 mod tests {

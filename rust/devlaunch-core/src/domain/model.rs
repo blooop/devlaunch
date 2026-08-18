@@ -158,7 +158,7 @@ pub(crate) struct BaseRepository {
 
 /// A workspace clone of one branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct WorktreeInfo {
+pub struct WorktreeInfo {
     pub(crate) owner: String,
     pub(crate) repo: String,
     pub(crate) branch: String,

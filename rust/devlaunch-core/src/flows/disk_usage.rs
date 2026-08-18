@@ -81,7 +81,7 @@ const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
 /// The paths are carried rather than counted so a caller can say *which* door,
 /// which is the difference between a report someone can act on and a caveat.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClosedDoors {
+pub struct ClosedDoors {
     first: PathBuf,
     rest: Vec<PathBuf>,
 }
@@ -130,7 +130,7 @@ impl ClosedDoors {
 /// the same answer the listing gives for a clone that has already been removed by
 /// hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DiskUsage {
+pub enum DiskUsage {
     /// A complete walk: what removing the tree would free.
     Measured { exclusive_bytes: u64 },
     /// A walk that hit a door it could not open, and what it got to before that.
@@ -149,7 +149,11 @@ pub(crate) enum DiskUsage {
 
 impl DiskUsage {
     /// A complete measurement of `bytes`.
-    pub(crate) fn measured(bytes: u64) -> Self {
+    ///
+    /// `pub` for the binary's sake — its rendering tests build the cell the table
+    /// draws from, and there is no reachable measurement to borrow inside a unit
+    /// test. Binary surface, not part of the frozen `wf` API.
+    pub fn measured(bytes: u64) -> Self {
         DiskUsage::Measured {
             exclusive_bytes: bytes,
         }
@@ -383,7 +387,7 @@ pub(crate) fn total_usage(usages: impl IntoIterator<Item = DiskUsage>) -> DiskUs
 /// The one rendering core keeps, because the `≥` is not a word anyone will
 /// translate — it is what stops a floor from being read as a total, and a caller
 /// that formatted the bytes itself would have to remember to add it.
-pub(crate) fn describe_usage(usage: &DiskUsage) -> String {
+pub fn describe_usage(usage: &DiskUsage) -> String {
     match usage {
         DiskUsage::Measured { exclusive_bytes } => human(*exclusive_bytes),
         DiskUsage::PartlyUnreadable { at_least_bytes, .. } => {

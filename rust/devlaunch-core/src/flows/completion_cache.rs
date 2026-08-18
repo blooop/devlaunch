@@ -85,7 +85,7 @@ pub(crate) fn cache_dir() -> Result<PathBuf, NoHomeDirectory> {
 }
 
 /// The JSON cache inside *cache_dir*.
-pub(crate) fn cache_path(cache_dir: &Path) -> PathBuf {
+pub fn cache_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CACHE_FILE)
 }
 
@@ -100,25 +100,25 @@ pub(crate) fn bash_cache_path(cache_dir: &Path) -> PathBuf {
 /// checklist requires both binaries to write this file identically, so this
 /// declaration is the wire format.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CompletionData {
+pub struct CompletionData {
     /// Every devpod workspace id.
     #[serde(default)]
-    pub(crate) workspaces: Vec<String>,
+    pub workspaces: Vec<String>,
     /// Every known `owner/repo`, sorted.
     #[serde(default)]
-    pub(crate) repos: Vec<String>,
+    pub repos: Vec<String>,
     /// Every known owner, sorted.
     #[serde(default)]
-    pub(crate) owners: Vec<String>,
+    pub owners: Vec<String>,
     /// Every known `owner/repo@branch`, sorted within each repo.
     #[serde(default)]
-    pub(crate) branches: Vec<String>,
+    pub branches: Vec<String>,
 }
 
 impl CompletionData {
     /// The document as `dl --completion-data` prints it: one line, Python's
     /// spacing.
-    pub(crate) fn as_json_line(&self) -> String {
+    pub fn as_json_line(&self) -> String {
         json_as_python_writes_it(
             &serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({})),
         )
@@ -150,7 +150,7 @@ impl CompletionData {
 /// writes all answer the same thing: there is no cache. That is what Python
 /// answers too — its readers then either fall back to asking devpod
 /// (`--completion-data`, `--repos`) or refresh.
-pub(crate) fn read_completion_cache(path: &Path) -> Option<CompletionData> {
+pub fn read_completion_cache(path: &Path) -> Option<CompletionData> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -201,7 +201,7 @@ pub(crate) fn completion_cache_age(path: &Path, now: SystemTime) -> Option<Durat
 }
 
 /// Whether the cache is new enough to leave alone.
-pub(crate) fn completion_cache_is_fresh(path: &Path) -> bool {
+pub fn completion_cache_is_fresh(path: &Path) -> bool {
     is_fresh_at(path, SystemTime::now())
 }
 
@@ -226,7 +226,7 @@ const CACHE_READING_COMMANDS: [&str; 3] = ["--ls", "--repos", "--completion-data
 /// A pure predicate over argv, and deliberately over *argv* rather than over parsed
 /// arguments: the decision has to be made before the command runs, and `dl --help`
 /// must not pay for a refresh it has no use for.
-pub(crate) fn wants_startup_cache_refresh<S: AsRef<str>>(args: &[S]) -> bool {
+pub fn wants_startup_cache_refresh<S: AsRef<str>>(args: &[S]) -> bool {
     match args.first() {
         None => true,
         Some(first) => CACHE_READING_COMMANDS.contains(&first.as_ref()),
@@ -239,14 +239,14 @@ pub(crate) fn wants_startup_cache_refresh<S: AsRef<str>>(args: &[S]) -> bool {
 /// could not be written is not a reason to fail the command that was warming it.
 /// They are carried out rather than dropped so a caller *may* say so.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CacheNotWritten {
-    pub(crate) path: PathBuf,
-    pub(crate) reason: String,
+pub struct CacheNotWritten {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 /// What a refresh collected, and what it could not.
-pub(crate) struct Refreshed {
-    pub(crate) data: CompletionData,
+pub struct Refreshed {
+    pub data: CompletionData,
     /// Why the workspace names are missing, when they are.
     ///
     /// The one reader of the workspace list that has something to do with a
@@ -260,10 +260,10 @@ pub(crate) struct Refreshed {
     /// Carried rather than swallowed because `dl --refresh` prints the workspace
     /// count it got, and zero-because-we-could-not-ask must not read as
     /// zero-because-there-are-none.
-    pub(crate) listing_refused: Option<ListingUnreadable>,
+    pub listing_refused: Option<ListingUnreadable>,
     /// Workspaces whose source devlaunch could not read, so a caller can say which.
-    pub(crate) unreadable_sources: Vec<UnreadableSource>,
-    pub(crate) not_written: Vec<CacheNotWritten>,
+    pub unreadable_sources: Vec<UnreadableSource>,
+    pub not_written: Vec<CacheNotWritten>,
 }
 
 /// Rebuild the completion cache and write both files.
@@ -271,7 +271,7 @@ pub(crate) struct Refreshed {
 /// The workspace names come from devpod; the repos, owners and branches come off
 /// the local disk and a `git ls-remote` per repo. Everything is sorted, so two
 /// refreshes that saw the same world write the same bytes.
-pub(crate) fn update_completion_cache(
+pub fn update_completion_cache(
     context: &mut CommandContext<'_>,
     cache_dir: &Path,
     repos_dir: &Path,

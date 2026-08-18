@@ -271,9 +271,9 @@ fn now_epoch() -> f64 {
 
 /// One timed round trip: what it was, and how long it took.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SpanRecord {
+pub struct SpanRecord {
     pub(crate) label: String,
-    pub(crate) seconds: Duration,
+    pub seconds: Duration,
 }
 
 /// One owner's arm: how long it held the launch, and what it spawned.
@@ -548,7 +548,7 @@ enum Prewarm {
 
 /// A run's report: the bytes the binary writes, and the data behind them.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Report {
+pub enum Report {
     Prose(Prose),
     Document(Document),
 }
@@ -556,7 +556,7 @@ pub(crate) enum Report {
 impl Report {
     /// The lines to write, in order — stderr, because stdout is parsed by the
     /// completion machinery.
-    pub(crate) fn lines(&self) -> Vec<String> {
+    pub fn lines(&self) -> Vec<String> {
         match self {
             Report::Prose(prose) => prose.lines(),
             Report::Document(document) => vec![document.line()],
@@ -574,9 +574,9 @@ impl Report {
 
 /// The human summary: one line per round trip, then the total.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Prose {
-    pub(crate) spans: Vec<SpanRecord>,
-    pub(crate) total: Duration,
+pub struct Prose {
+    pub spans: Vec<SpanRecord>,
+    pub total: Duration,
 }
 
 impl Prose {
@@ -607,7 +607,7 @@ impl Prose {
 /// Field order is the order Python's dict was built in, so the two binaries'
 /// documents are byte-comparable.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct Document {
+pub struct Document {
     pub(crate) total: f64,
     pub(crate) total_epoch: &'static str,
     pub(crate) stages: Vec<StageReport>,
@@ -732,7 +732,7 @@ fn with_registry<T>(with: impl FnOnce(&mut Registry) -> T) -> Option<T> {
 /// Called once at the top of the command, replacing any registry left from an
 /// earlier one in the same process, so one command's spans never leak into the
 /// next command's summary.
-pub(crate) fn begin() {
+pub fn begin() {
     install(Mode::from_env().map(|mode| Registry::start(mode, Seam::from_env(), now_epoch())));
 }
 
@@ -747,7 +747,7 @@ pub(crate) fn install(registry_to_install: Option<Registry>) {
 }
 
 /// The report for this run, and stop recording; `None` if recording never began.
-pub(crate) fn emit() -> Option<Report> {
+pub fn emit() -> Option<Report> {
     RECORDING.store(false, Ordering::Relaxed);
     registry().take().map(Registry::finish)
 }

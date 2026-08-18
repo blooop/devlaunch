@@ -87,7 +87,7 @@ const LEGACY_LINES: [&str; 2] = [
 /// not change — and a file rewritten with identical bytes is not something to
 /// announce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileState {
+pub enum FileState {
     /// The file's content was not what it should be, and has been replaced.
     Written,
     /// The file already held exactly this content; nothing was written.
@@ -107,7 +107,7 @@ impl FileState {
 
 /// What the rc file looked like before the install, and so what the install did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RcChange {
+pub enum RcChange {
     /// The rc file already carried exactly this block; it is untouched.
     AlreadyInstalled,
     /// No devlaunch block was there, and one has been appended.
@@ -119,13 +119,13 @@ pub(crate) enum RcChange {
 
 /// What one install left behind.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Installed {
+pub struct Installed {
     /// Where the completion script now is.
-    pub(crate) script: PathBuf,
-    pub(crate) script_state: FileState,
+    pub script: PathBuf,
+    pub script_state: FileState,
     /// The rc file that sources it — what the binary tells the user to `source`.
-    pub(crate) rc: PathBuf,
-    pub(crate) rc_change: RcChange,
+    pub rc: PathBuf,
+    pub rc_change: RcChange,
 }
 
 /// Which step of installing failed, and what the OS said about it.
@@ -134,7 +134,7 @@ pub(crate) struct Installed {
 /// are separated here because they fail for different reasons and only the binary
 /// can decide which of them is worth a user's attention.
 #[derive(Debug)]
-pub(crate) enum InstallError {
+pub enum InstallError {
     /// This machine names no home directory, so no default path can be built.
     NoHomeDirectory,
     /// A parent directory of one of the two files could not be created.
@@ -158,7 +158,7 @@ impl From<NoHomeDirectory> for InstallError {
 ///
 /// The default rc file is `~/.bashrc`; a caller that names another one gets it
 /// used as given, which is what `dl --install <path>` is for.
-pub(crate) fn install(rc_path: Option<&Path>) -> Result<Installed, InstallError> {
+pub fn install(rc_path: Option<&Path>) -> Result<Installed, InstallError> {
     let script = completion_file_path()?;
     let rc = match rc_path {
         Some(named) => expand_tilde(named),

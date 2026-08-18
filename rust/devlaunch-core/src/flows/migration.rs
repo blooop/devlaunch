@@ -137,7 +137,7 @@ pub(crate) enum Listing {
 
 /// What one migration run did, for the caller and for the notices.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct MigrationReport {
+pub struct MigrationReport {
     /// Each directory actually renamed.
     pub(crate) renamed: Vec<Renamed>,
     /// Each rename the filesystem refused. Non-empty is what keeps the version
@@ -163,7 +163,7 @@ pub(crate) struct MigrationReport {
 ///
 /// Answers `None` when the cache is already current, which is the common case and
 /// costs a single integer comparison — no filesystem scan and no devpod call.
-pub(crate) fn migrate_cache(
+pub fn migrate_cache(
     storage: &mut MetadataStorage,
     repos_dir: &Path,
 ) -> Result<Option<MigrationReport>, MetadataError> {

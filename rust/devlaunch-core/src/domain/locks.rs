@@ -122,7 +122,7 @@ pub(crate) struct WaitStarted {
 
 /// Which step of taking a lock failed, and what the OS said about it.
 #[derive(Debug)]
-pub(crate) enum LockError {
+pub enum LockError {
     /// The lock file's directory could not be created. A first launch locks a
     /// repo directory that does not exist yet, so this is a real step.
     CreateParent { path: PathBuf, source: io::Error },

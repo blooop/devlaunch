@@ -8,7 +8,14 @@ repository.workspace = true
 
 [dependencies]
 devlaunch-core = { workspace = true }
+# The runner's own types (`Exit`) reach the rendering, so the leaf crate core
+# re-exports is named here too rather than through a re-export path.
+devlaunch-runner = { workspace = true }
 clap = { workspace = true }
+# `signal(2)`, so Ctrl-C exits 130 the way Python's KeyboardInterrupt did rather
+# than killing this process by signal (which has no exit code at all).
+libc = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 skim = { workspace = true }
 

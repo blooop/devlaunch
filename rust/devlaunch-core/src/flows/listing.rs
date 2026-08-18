@@ -86,7 +86,7 @@ use crate::runner::Runner;
 /// a snapshot taken through one runner and read through another is a state worth
 /// not having: the fake runner a test drives and the real one differ in exactly
 /// the answer being memoized.
-pub(crate) struct CommandContext<'r> {
+pub struct CommandContext<'r> {
     runner: &'r dyn Runner,
     /// `None` until devpod has answered once. Never holds an answer devpod did
     /// not give.
@@ -95,7 +95,7 @@ pub(crate) struct CommandContext<'r> {
 
 impl<'r> CommandContext<'r> {
     /// The context one command runs in.
-    pub(crate) fn new(runner: &'r dyn Runner) -> Self {
+    pub fn new(runner: &'r dyn Runner) -> Self {
         Self {
             runner,
             snapshot: None,
@@ -108,7 +108,7 @@ impl<'r> CommandContext<'r> {
     }
 
     /// The git client for this command.
-    pub(crate) fn git(&self) -> Git<'r> {
+    pub fn git(&self) -> Git<'r> {
         Git::new(self.runner)
     }
 
@@ -116,7 +116,7 @@ impl<'r> CommandContext<'r> {
     ///
     /// A copy, as Python hands out a copy: a caller that sorts or filters its list
     /// in place must not be rewriting what the next caller sees.
-    pub(crate) fn workspaces(&mut self) -> Result<Vec<Workspace>, ListingUnreadable> {
+    pub fn workspaces(&mut self) -> Result<Vec<Workspace>, ListingUnreadable> {
         if let Some(remembered) = &self.snapshot {
             return Ok(remembered.clone());
         }
@@ -167,7 +167,7 @@ impl<'r> CommandContext<'r> {
 /// tests and read by people scanning a column — so they live beside the arm they
 /// belong to, the way [`ContainerState::as_devpod_word`] does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SourceKind {
+pub enum SourceKind {
     Local,
     Git,
     /// devlaunch cannot read this source. The detail beside it is devpod's own
@@ -178,7 +178,7 @@ pub(crate) enum SourceKind {
 }
 
 impl SourceKind {
-    pub(crate) fn word(self) -> &'static str {
+    pub fn word(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Git => "git",
@@ -193,9 +193,9 @@ impl SourceKind {
 /// shown and the detail shown cannot come from two different readings of the same
 /// source — which is what a tag beside a parallel field allowed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SourceDescription {
-    pub(crate) kind: SourceKind,
-    pub(crate) detail: String,
+pub struct SourceDescription {
+    pub kind: SourceKind,
+    pub detail: String,
 }
 
 /// [`SourceDescription`] for one source. Total over the arms.
@@ -342,18 +342,18 @@ pub(crate) fn workspace_ownership(
 /// so there is no third answer to give; what there was, before, was silence
 /// indistinguishable from a source read fine and holding no repo.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UnreadableSource {
-    pub(crate) workspace_id: String,
+pub struct UnreadableSource {
+    pub workspace_id: String,
     /// devpod's own source object, as JSON.
-    pub(crate) payload: String,
+    pub payload: String,
 }
 
 /// Owner-to-repos, plus the workspaces whose sources could not be read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RepoDiscovery {
+pub struct RepoDiscovery {
     /// Insertion-ordered, as Python's dict is; every consumer sorts.
-    pub(crate) repos: IndexMap<String, Vec<String>>,
-    pub(crate) unreadable: Vec<UnreadableSource>,
+    pub repos: IndexMap<String, Vec<String>>,
+    pub unreadable: Vec<UnreadableSource>,
 }
 
 /// Discover `owner/repo` from the workspaces devpod lists.
@@ -361,10 +361,7 @@ pub(crate) struct RepoDiscovery {
 /// A git source is read straight off its URL; a local folder is asked for its
 /// origin remote (one `git -C <path> remote get-url origin` per local
 /// workspace). Every arm is answered, including the ones devlaunch cannot read.
-pub(crate) fn discover_repos_from_workspaces(
-    git: &Git<'_>,
-    workspaces: &[Workspace],
-) -> RepoDiscovery {
+pub fn discover_repos_from_workspaces(git: &Git<'_>, workspaces: &[Workspace]) -> RepoDiscovery {
     let mut found = RepoDiscovery::default();
     for workspace in workspaces {
         let owner_repo = match &workspace.source {
@@ -425,7 +422,7 @@ pub(crate) fn discover_repos_from_cache_dir(repos_dir: &Path) -> IndexMap<String
 }
 
 /// The `owner/repo` strings in *repos*, sorted by owner then repo.
-pub(crate) fn flatten_repos(repos: &IndexMap<String, Vec<String>>) -> Vec<String> {
+pub fn flatten_repos(repos: &IndexMap<String, Vec<String>>) -> Vec<String> {
     let mut owners: Vec<&String> = repos.keys().collect();
     owners.sort();
     let mut flattened = Vec::new();
@@ -550,17 +547,17 @@ fn file_name(path: &Path) -> Option<String> {
 /// path is unusable *and* the derivation refuses the record's own
 /// owner/repo/branch. Every caller treats that as a refusal rather than as an
 /// empty answer.
-pub(crate) trait ClonePathResolver {
+pub trait ClonePathResolver {
     fn clone_path(&self, record: &WorktreeInfo) -> Option<PathBuf>;
 }
 
 /// Everything the enriched listing reads besides devpod.
-pub(crate) struct DlView<'a> {
+pub struct DlView<'a> {
     /// Where devlaunch keeps its own clones — the directory `--purge` removes and
     /// ownership is decided by.
-    pub(crate) cache_dir: &'a Path,
-    pub(crate) storage: &'a MetadataStorage,
-    pub(crate) clones: &'a dyn ClonePathResolver,
+    pub cache_dir: &'a Path,
+    pub storage: &'a MetadataStorage,
+    pub clones: &'a dyn ClonePathResolver,
 }
 
 /// Whether `--size` was asked for.
@@ -568,7 +565,7 @@ pub(crate) struct DlView<'a> {
 /// A named pair rather than a bool at the call sites, because it decides whether
 /// a `disk` field exists at all — see [`DiskField`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Sizes {
+pub enum Sizes {
     Skip,
     Measure,
 }
@@ -672,7 +669,7 @@ impl DiskField {
 /// the document; whether there is a clone to measure is a fact about the row; and
 /// the three-armed [`DiskField`] is the flattest shape that says both.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ListedWorkspace {
+pub struct ListedWorkspace {
     pub(crate) id: String,
     /// devpod's `lastUsed`, verbatim.
     pub(crate) last_used: String,
@@ -692,7 +689,7 @@ pub(crate) struct ListedWorkspace {
 /// about too. Under [`Sizes::Measure`] it also walks each of dl's own clones,
 /// which is O(files) with no ceiling and the reason `--size` is asked for rather
 /// than always answered.
-pub(crate) fn enriched_listing(
+pub fn enriched_listing(
     context: &mut CommandContext<'_>,
     view: &DlView<'_>,
     sizes: Sizes,
@@ -797,7 +794,7 @@ pub(crate) fn unsaved_work_in(git: &Git<'_>, view: &DlView<'_>, workspace_id: &s
 /// which fields are null where are the contract. The document is a value rather
 /// than printed text — the binary spells it, with two-space indentation as
 /// Python's `json.dumps(…, indent=2)` does.
-pub(crate) fn json_document(rows: &[ListedWorkspace]) -> serde_json::Value {
+pub fn json_document(rows: &[ListedWorkspace]) -> serde_json::Value {
     serde_json::Value::Array(rows.iter().map(json_row).collect())
 }
 
@@ -884,7 +881,7 @@ fn insert(object: &mut serde_json::Value, key: &str, field: serde_json::Value) {
 /// measured there, and a zero would say the opposite of that. The dash and the
 /// empty cell are the binary's spelling.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SizeCell {
+pub enum SizeCell {
     NoColumn,
     NotOurs,
     Measured(DiskUsage),
@@ -896,7 +893,7 @@ pub(crate) enum SizeCell {
 /// The empty string devpod sends for a workspace it has never opened is an arm
 /// here rather than a value, because the word standing in for it is the binary's.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LastUsed {
+pub enum LastUsed {
     Never,
     At(String),
 }
@@ -920,11 +917,11 @@ impl LastUsed {
 
 /// One row of `dl --ls`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TableRow {
-    pub(crate) id: String,
-    pub(crate) source: SourceDescription,
-    pub(crate) size: SizeCell,
-    pub(crate) last_used: LastUsed,
+pub struct TableRow {
+    pub id: String,
+    pub source: SourceDescription,
+    pub size: SizeCell,
+    pub last_used: LastUsed,
 }
 
 /// What `dl --ls` has to show.
@@ -934,7 +931,7 @@ pub(crate) struct TableRow {
 /// the table is laid out from are maxima over the rows, which an empty list has
 /// none of.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum WorkspaceTable {
+pub enum WorkspaceTable {
     Nothing,
     Rows(NonEmpty<TableRow>),
 }
@@ -944,7 +941,7 @@ pub(crate) enum WorkspaceTable {
 /// Each source is described once, so the widths the binary measures are measured
 /// on the same strings it prints — sizes included, which is also why the walk
 /// happens here and not again at print time.
-pub(crate) fn workspace_table(
+pub fn workspace_table(
     context: &mut CommandContext<'_>,
     cache_dir: &Path,
     sizes: Sizes,

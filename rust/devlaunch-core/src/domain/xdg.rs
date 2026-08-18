@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 /// functions total: the alternative — a relative `.config` — resolves against
 /// the working directory, which is the defect the module exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NoHomeDirectory;
+pub struct NoHomeDirectory;
 
 /// `$XDG_CONFIG_HOME`, or the `~/.config` the spec falls back to.
 pub(crate) fn config_home() -> Result<PathBuf, NoHomeDirectory> {
@@ -56,7 +56,7 @@ pub(crate) fn cache_home() -> Result<PathBuf, NoHomeDirectory> {
 /// `metadata.json` all live here, and `dl --purge` removes exactly this. One
 /// function rather than a copy per caller, because a purge decides what is its
 /// own to delete by asking whether a workspace's source is inside it.
-pub(crate) fn devlaunch_cache() -> Result<PathBuf, NoHomeDirectory> {
+pub fn devlaunch_cache() -> Result<PathBuf, NoHomeDirectory> {
     cache_home().map(|cache| devlaunch_cache_in(&cache))
 }
 

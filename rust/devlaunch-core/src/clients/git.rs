@@ -253,12 +253,12 @@ fn returncode(exit: Exit) -> i32 {
 /// The one git client. Holds the runner and nothing else — no cache, no state,
 /// no configuration: every verb is told which repository it is about.
 #[derive(Clone, Copy)]
-pub(crate) struct Git<'r> {
+pub struct Git<'r> {
     runner: &'r dyn Runner,
 }
 
 impl<'r> Git<'r> {
-    pub(crate) fn new(runner: &'r dyn Runner) -> Self {
+    pub fn new(runner: &'r dyn Runner) -> Self {
         Self { runner }
     }
 

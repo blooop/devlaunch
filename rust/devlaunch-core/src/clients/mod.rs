@@ -1,4 +1,6 @@
-pub(crate) mod devpod;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod devpod;
 pub(crate) mod gh;
-pub(crate) mod git;
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod git;
 pub(crate) mod ssh;

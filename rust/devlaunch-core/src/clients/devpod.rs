@@ -75,7 +75,7 @@ pub(crate) const PROGRAM: &str = "devpod";
 ///   working directory that is gone — carrying the errno and no message, because
 ///   a message for a person is the binary's to write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NotRun {
+pub enum NotRun {
     NotInstalled,
     TimedOut,
     Blocked(OsFailure),
@@ -489,7 +489,7 @@ pub(crate) fn parse_status(output: &str) -> Result<ContainerState, StatusUnreada
 /// Data for a report, not a sentence: Python's messages name the Python type
 /// (`dict`, `str`, `NoneType`), which is a spelling the `dl` binary chooses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum JsonKind {
+pub enum JsonKind {
     Null,
     Bool,
     Number,
@@ -516,7 +516,7 @@ impl JsonKind {
 /// No container state, deliberately: real devpod answers state only to `status`,
 /// per workspace, so a field for it here would be a field nothing could fill.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Workspace {
+pub struct Workspace {
     pub(crate) id: String,
     pub(crate) source: WorkspaceSource,
     pub(crate) last_used: String,
@@ -577,7 +577,7 @@ pub(crate) enum WorkspaceSource {
 /// so `dl --purge` could report that there was nothing to purge when the truth
 /// was that it never found out.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NotAListing {
+pub enum NotAListing {
     /// devpod said nothing. It prints `[]` when there are none, so silence is
     /// devpod failing to answer — and it gets an arm of its own rather than
     /// falling into the JSON parser, whose report of it (`not JSON: ''`) reads
@@ -604,7 +604,7 @@ pub(crate) enum NotAListing {
 
 /// Why asking devpod for the workspace list produced no workspaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ListingUnreadable {
+pub enum ListingUnreadable {
     NotRun(NotRun),
     /// devpod ran and refused. Its stderr travels whole; keeping a report to one
     /// line is the binary's rendering.
