@@ -149,6 +149,7 @@ Nothing diverges silently.
 | 7 | Safe-name validation accepts a measured superset of Python's `\w` (Unicode combining marks, enclosed letters, and codepoints newer than Python's UCD). Every name Python accepts keeps its exact id — no workspace on disk moves; only names Python refused are now accepted. | `char::is_alphanumeric` vs `\w`; verified per-codepoint against Python 3.14. |
 | 8 | Metadata/config loads refuse wrong-typed values where Python coerced: a mistyped entry field skips the entry (with backup) instead of loading a mistyped model; `fetch_interval`/`prune_after_days` of the wrong type are typed refusals; a falsy-but-non-null `last_fetched` (`[]`, `false`, `0`) skips the entry. | Correctness aim winning; parse-don't-validate at the storage boundary. |
 | 9 | `repos_dir = "~/…"` in `config.toml` is tilde-expanded (Python's loader wrapped the string in `Path()` before expansion could run, so `~` was taken literally); the mkdir-if-under-home-or-`/tmp` check is path-component-wise, so `/tmp2/x` no longer counts. | Fixes a latent config bug rather than porting it. |
+| 10 | `dl --install` re-run over an already-current install rewrites nothing (Python rewrote byte-identical files, touching rc mtimes on every run); the outcome is reported as already-installed. | Idempotence made observable. |
 
 Additions require a PR that updates this table; the row number is cited by any
 per-binary harness branch.

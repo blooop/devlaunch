@@ -33,7 +33,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/integration/test_repo_manager_real.py` | pending |  |
 | `test/integration/test_repo_manager_recovery.py` | pending |  |
 | `test/test_agents_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
-| `test/test_bash_completion.py` | pending |  |
+| `test/test_bash_completion.py` | out of port scope | pins devlaunch/completions/dl.bash, embedded verbatim by both binaries; never spawns dl |
 | `test/test_bench_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bench_points.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bench_record_schema.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
@@ -47,10 +47,10 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_locks.py` | re-pinned in Rust | domain/locks.rs; the literal "dl: waiting" stderr line is rendering (typed event pinned; words are the dl binary's) |
 | `test/test_pty_helpers.py` | out of port scope (harness infrastructure) | pins test/fixtures/pty_helpers.py, which survives as the judge |
 | `test/test_repo_lock_cycles.py` | pending |  |
-| `test/test_timing.py` | pending |  |
+| `test/test_timing.py` | pending | gate/json/stage-vocabulary/handoff/prewarm classes re-pinned (timing.rs); launch-path span classes await M5b/M7; bench-harness classes out of scope with scripts/ |
 | `test/test_workspace_clone.py` | pending |  |
 | `test/test_workspace_id.py` | re-pinned in Rust | all 53 behaviors; 55 Rust tests in domain/workspace_id.rs incl. 45 Python-generated golden ids |
-| `test/test_workspace_state.py` | pending |  |
+| `test/test_workspace_state.py` | pending | six module-level classes re-pinned (domain/workspace_state.rs, real-git broken-clone shapes); TestTheJsonListing/DeleteGuard/ForcedRemove classes await M5/M6 |
 | `test/test_worktree_branch_manager.py` | pending |  |
 | `test/test_worktree_config.py` | re-pinned in Rust | domain/config.rs; to_dict untested — no production caller writes config.toml |
 | `test/test_worktree_migration.py` | pending |  |
@@ -61,17 +61,17 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_aid.py` | pending |  |
 | `test/unit/test_claude_code_feature_mounts.py` | pending |  |
 | `test/unit/test_devcontainer_manifest.py` | pending |  |
-| `test/unit/test_devpod_provider.py` | pending |  |
+| `test/unit/test_devpod_provider.py` | re-pinned in Rust | clients/devpod.rs; the standalone `python -m` CLI tests are out of port scope (defect class absent in Rust) |
 | `test/unit/test_devpod_scoping.py` | out of port scope (harness infrastructure) | pins test/devpod_scoping.py, suite-side scoping |
 | `test/unit/test_devpod_shim.py` | out of port scope (harness infrastructure) | pins the shim, which is the judge's own tooling |
 | `test/unit/test_devpod_shim_fixture.py` | out of port scope (harness infrastructure) | pins the shim fixture wiring |
-| `test/unit/test_devpod_ssh.py` | pending |  |
-| `test/unit/test_disk_usage.py` | pending |  |
+| `test/unit/test_devpod_ssh.py` | re-pinned in Rust | clients/devpod.rs: SshOutcome + StderrFilter, incl. session round trip |
+| `test/unit/test_disk_usage.py` | re-pinned in Rust | flows/disk_usage.rs; mid-walk races pinned at the classifier functions |
 | `test/unit/test_dl_cmd_seam.py` | out of port scope (harness infrastructure) | pins the DEVLAUNCH_DL_CMD seam itself |
 | `test/unit/test_docker_boundary.py` | pending |  |
 | `test/unit/test_e2e_guard.py` | out of port scope (harness infrastructure) | pins the e2e guard fixture, which survives as the judge |
 | `test/unit/test_e2e_workspace_helper.py` | out of port scope (harness infrastructure) | pins e2e_helpers.py, which survives as the judge |
-| `test/unit/test_gh_auth.py` | pending |  |
+| `test/unit/test_gh_auth.py` | pending | decisions re-pinned in clients/gh.rs as typed events; memoization (asked-once/warns-once) awaits the flow |
 | `test/unit/test_launch_serialization.py` | pending |  |
 | `test/unit/test_locks.py` | re-pinned in Rust | domain/locks.rs; the Python-language API-shape guards have no Rust analogue |
 | `test/unit/test_prune_orphaned_clones.py` | pending |  |
@@ -81,8 +81,8 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_spec_parsing.py` | re-pinned in Rust | misnamed file: model/config serialization, covered by domain/model.rs + config.rs tests |
 | `test/unit/test_stored_workspace_id.py` | pending |  |
 | `test/unit/test_tools.py` | pending |  |
-| `test/unit/test_tty_session.py` | pending |  |
+| `test/unit/test_tty_session.py` | re-pinned in Rust | clients/ssh.rs; chmod-000 case re-expressed root-proof |
 | `test/unit/test_updater_fetch_sweep.py` | pending |  |
 | `test/unit/test_workspace_listing.py` | pending |  |
-| `test/unit/test_workspace_source.py` | pending |  |
+| `test/unit/test_workspace_source.py` | pending | source arms re-pinned in clients/devpod.rs; describe_source/discovery await M5b |
 | `test/unit/test_workspace_source_placement.py` | pending |  |
