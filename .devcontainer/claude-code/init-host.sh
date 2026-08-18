@@ -6,8 +6,9 @@
 
 # The claude-code feature mounts the developer's Claude configuration a path at
 # a time rather than as one directory, so that the files holding *executable
-# instructions* -- CLAUDE.md, settings.json, agents/, commands/, hooks/ -- can be
-# read-only while credentials and onboarding state stay writable. Every one of
+# instructions* -- CLAUDE.md, settings.json, agents/, commands/, hooks/, skills/
+# and wf-skills/ -- can be read-only while credentials and onboarding state stay
+# writable. Every one of
 # those sources has to exist before the container is created, and the cost of a
 # missing one is not a warning: the create is refused outright with `bind mount
 # source path does not exist`, measured on devpod 0.26.1. That is the same
@@ -30,7 +31,8 @@
 # zero-length because Claude parses them, and the pair holding secrets is created
 # 600 -- applied only when this script is the one creating the file, so a
 # developer's existing permissions are never rewritten.
-mkdir -p "$HOME/.claude" "$HOME/.claude/agents" "$HOME/.claude/commands" "$HOME/.claude/hooks"
+mkdir -p "$HOME/.claude" "$HOME/.claude/agents" "$HOME/.claude/commands" \
+    "$HOME/.claude/hooks" "$HOME/.claude/skills" "$HOME/.claude/wf-skills"
 [ -e "$HOME/.claude/CLAUDE.md" ] || touch "$HOME/.claude/CLAUDE.md"
 [ -e "$HOME/.claude/settings.json" ] || echo '{}' > "$HOME/.claude/settings.json"
 [ -e "$HOME/.claude/.credentials.json" ] || {
