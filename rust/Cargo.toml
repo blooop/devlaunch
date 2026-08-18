@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["devlaunch-core", "dl", "devlaunch-test-support"]
+members = [
+    "devlaunch-runner","devlaunch-core", "dl", "devlaunch-test-support"]
 
 # The single source of the version (docs/rust-rewrite-plan.md: cutover ships
 # 0.1.0, version read from Cargo.toml).
@@ -11,6 +12,7 @@ license = "MIT"
 repository = "https://github.com/blooop/devlaunch"
 
 [workspace.dependencies]
+devlaunch-runner = { path = "devlaunch-runner", version = "0.1.0" }
 sha2 = "0.10"
 devlaunch-core = { path = "devlaunch-core" }
 devlaunch-test-support = { path = "devlaunch-test-support" }

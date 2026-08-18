@@ -3,7 +3,7 @@
 //! what it hands back is the same shape the production runner hands back.
 
 use super::*;
-use devlaunch_core::runner::{EnvSpec, Exit, OsFailure, StdinPlan};
+use devlaunch_runner::{EnvSpec, Exit, OsFailure, StdinPlan};
 use std::time::Duration;
 
 fn devpod(args: &[&str]) -> SpawnSpec {

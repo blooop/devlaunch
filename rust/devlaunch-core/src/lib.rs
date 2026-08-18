@@ -20,7 +20,14 @@
 // (#250's closure) is frozen at the end of M6; publishing later is free,
 // un-publishing is a break. `runner` is pub so devlaunch-test-support can
 // implement the trait; that crate is dev-only and never shipped.
-pub mod runner;
+pub mod runner {
+    //! Re-export of the `devlaunch-runner` leaf crate, kept at its original
+    //! path so nothing above this line knows the runner moved crates. It moved
+    //! so `devlaunch-test-support` (which implements [`Runner`]) need not
+    //! depend on this crate — a dev-dependency back-edge that made core's own
+    //! unit tests see two different `Runner` traits.
+    pub use devlaunch_runner::*;
+}
 
 // Leaf like `runner`: the env-gated span registry everything above may use
 // (even `locks` spans a contended wait), depending on nothing itself.

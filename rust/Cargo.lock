@@ -431,6 +431,7 @@ dependencies = [
 name = "devlaunch-core"
 version = "0.1.0"
 dependencies = [
+ "devlaunch-runner",
  "devlaunch-test-support",
  "indexmap",
  "jiff",
@@ -445,10 +446,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "devlaunch-runner"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "devlaunch-test-support"
 version = "0.1.0"
 dependencies = [
- "devlaunch-core",
+ "devlaunch-runner",
  "serde_json",
  "tempfile",
 ]

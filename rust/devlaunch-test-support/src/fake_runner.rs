@@ -20,7 +20,7 @@
 
 use std::sync::Mutex;
 
-use devlaunch_core::runner::{CapturedText, DetachOutcome, Invocation, Outcome, Runner, SpawnSpec};
+use devlaunch_runner::{CapturedText, DetachOutcome, Invocation, Outcome, Runner, SpawnSpec};
 
 use crate::devpod::{DevpodMachine, FakeWorkspace, Source, WorkspaceState};
 use crate::response::Response;

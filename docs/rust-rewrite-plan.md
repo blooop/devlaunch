@@ -15,9 +15,14 @@ restates a ticket, the ticket is the authority.
 
 ## Standing decisions (inputs, not open questions)
 
-- **One cargo workspace, three crates**, living in this repo under `rust/`:
-  `devlaunch-core` (lib), `dl` (bin), `devlaunch-test-support` (dev-only fake
-  runner + fixtures). Versioned together, single-sourced in `Cargo.toml`.
+- **One cargo workspace, three crates** (#251), living in this repo under
+  `rust/`: `devlaunch-core` (lib), `dl` (bin), `devlaunch-test-support`
+  (dev-only fake runner + fixtures). Versioned together, single-sourced in
+  `Cargo.toml`. *Amendment (M3):* a fourth, internal leaf crate
+  `devlaunch-runner` holds the runner layer, re-exported by core at its
+  original path — the fake implements `Runner`, and test-support depending on
+  core while core dev-depends on test-support made core's unit tests see two
+  different `Runner` traits. wf still consumes only `devlaunch-core`.
 - **Two binding invariants**: the `dl` binary holds nothing beyond parsing,
   rendering, and interactive selection; the acceptance harness targets the CLI
   binary.

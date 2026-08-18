@@ -9,7 +9,7 @@
 //! never produces, and it is why the conversions below drop it rather than
 //! handing an empty string to a caller that asked for none.
 
-use devlaunch_core::runner::{CapturedText, DetachOutcome, Exit, OsFailure, Outcome};
+use devlaunch_runner::{CapturedText, DetachOutcome, Exit, OsFailure, Outcome};
 
 /// A scripted answer to one spawn. The arms are [`Outcome`]'s arms, minus the
 /// distinction between a captured and an inherited run.

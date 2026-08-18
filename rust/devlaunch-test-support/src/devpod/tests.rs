@@ -7,7 +7,7 @@
 //! they are the ones a port could pass tests without honouring.
 
 use super::*;
-use devlaunch_core::runner::Exit;
+use devlaunch_runner::Exit;
 
 /// One devpod call, spelled the way a caller does.
 fn call(machine: &mut DevpodMachine, args: &[&str]) -> Response {

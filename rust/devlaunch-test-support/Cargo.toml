@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-devlaunch-core = { workspace = true }
+devlaunch-runner = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

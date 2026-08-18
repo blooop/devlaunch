@@ -1,6 +1,11 @@
+pub(crate) mod branch_manager;
 pub(crate) mod completion;
+pub(crate) mod completion_cache;
 pub(crate) mod disk_usage;
 pub(crate) mod launch;
 pub(crate) mod lifecycle;
 pub(crate) mod listing;
+pub(crate) mod migration;
 pub(crate) mod provision;
+pub(crate) mod repo_manager;
+pub(crate) mod workspace_clone;

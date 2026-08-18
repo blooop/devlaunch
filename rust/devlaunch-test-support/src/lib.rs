@@ -5,7 +5,7 @@
 //! tests, dl's tests, and wf's contract tests.
 //!
 //! ```no_run
-//! use devlaunch_core::runner::{Invocation, Runner, SpawnSpec};
+//! use devlaunch_runner::{Invocation, Runner, SpawnSpec};
 //! use devlaunch_test_support::{FakeRunner, Response, WorkspaceState};
 //!
 //! let fake = FakeRunner::new()
