@@ -27,6 +27,7 @@ import pytest
 
 from devlaunch import tty_session
 from fixtures.e2e_guard import opt_out
+from fixtures.e2e_helpers import aid_command, dl_command
 from fixtures.pty_helpers import PtySession
 
 # Announce readiness, then block on stdin with no exit of its own.
@@ -97,7 +98,7 @@ def running_workspace() -> str:
 
 def dl(workspace_id: str, *args: str) -> PtySession:
     """`dl` on a pty, the way a developer runs it."""
-    return PtySession(["python", "-m", "devlaunch.dl", workspace_id, *args], timeout=120)
+    return PtySession([*dl_command(), workspace_id, *args], timeout=120)
 
 
 def reported_cwd(output: str) -> str:
@@ -228,7 +229,7 @@ class TestAidStartsAnAgent:
         """Skipped unless the workspace actually has claude, since that is the
         one thing about this path that is not dl's to guarantee."""
         probe = PtySession(
-            ["python", "-m", "devlaunch.dl", running_workspace, "--", "command -v claude"],
+            [*dl_command(), running_workspace, "--", "command -v claude"],
             timeout=90,
         )
         with probe:
@@ -236,7 +237,7 @@ class TestAidStartsAnAgent:
             if "claude" not in probe.text:
                 opt_out("no claude in this workspace")
 
-        session = PtySession(["python", "-m", "devlaunch.aid", running_workspace], timeout=180)
+        session = PtySession([*aid_command(), running_workspace], timeout=180)
         with session:
             # Claude Code prints its banner once the TUI is up; without a
             # terminal it exits before ever getting there.

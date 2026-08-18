@@ -125,6 +125,54 @@ jobs:
       - name: E2E
         run: pixi run test-e2e
 
+  # The Rust port's gate (docs/rust-rewrite-plan.md). Required from day one:
+  # red always means something real. Until the port produces a binary that
+  # passes tests, this is the scaffold gate -- cargo build/test/clippy/fmt,
+  # the spec-ledger lint (every test file has a disposition row; `pending`
+  # only shrinks), and parity.py's own unit tests. `parity.py run` becomes the
+  # two-way expected-failure ratchet the moment rust/parity-manifest.txt stops
+  # saying ALL: it then runs both pytest tiers against the Rust binary via
+  # DEVLAUNCH_DL_CMD and fails on any unlisted failure (regression) or any
+  # listed pass (stale manifest). The lint and self-test need only a bare
+  # python3 (stdlib), so pixi is restored solely for `run`'s pytest tiers.
+  rust-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Kept in lockstep with rust/rust-toolchain.toml (the pin of record).
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build
+        working-directory: rust
+        run: cargo build --locked --all-targets
+      - name: Test
+        working-directory: rust
+        run: cargo test --locked
+      - name: Clippy
+        working-directory: rust
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Format
+        working-directory: rust
+        run: cargo fmt --check
+      - name: Spec-ledger and manifest lint
+        run: python3 rust/parity.py lint
+      - name: parity.py self-test
+        run: python3 rust/parity.py self-test
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          cache: true
+          frozen: true
+          environments: default
+      - name: Parity ratchet
+        run: python3 rust/parity.py run
+
   # One name for a branch ruleset to require, standing for every job above it.
   #
   # A ruleset names required checks as literal strings, so requiring the jobs
@@ -155,7 +203,7 @@ jobs:
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
   gate:
-    needs: [ci, e2e]
+    needs: [ci, e2e, rust-parity]
     if: always()
     runs-on: ubuntu-latest
     steps:

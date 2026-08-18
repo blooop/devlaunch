@@ -1,0 +1,15 @@
+# Expected-failure manifest for the rust-parity job (the two-way ratchet).
+#
+# Entries are pytest node ids (or fnmatch globs over them) that are expected
+# to FAIL when the suite runs against the Rust binary via DEVLAUNCH_DL_CMD.
+# `python3 rust/parity.py run` fails on any failure NOT listed here (a
+# regression) and on any entry that PASSES (a stale entry — shrink the
+# manifest in the same PR). This file's git history is the parity dashboard;
+# cutover requires it empty on both tiers (docs/rust-rewrite-plan.md).
+#
+# Day one: the single sentinel `ALL` below means "the Rust binary is not
+# expected to pass anything yet" — parity.py skips the pytest tiers entirely
+# and only the scaffold checks gate. The moment the first test passes, ALL is
+# replaced by the explicit list of tests still expected to fail, and the
+# ratchet takes over. ALL cannot be mixed with per-test entries.
+ALL

@@ -1,0 +1,4 @@
+# One pinned toolchain, no MSRV (#254). Bumped deliberately, never by drift.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

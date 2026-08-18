@@ -5,7 +5,9 @@ or other IDEs, which would break automated testing.
 """
 
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -17,6 +19,38 @@ from fixtures.e2e_guard import LEDGER
 # The real runner, captured once. `create_e2e_workspace` compares against it to
 # decide whether anything was actually built; see the note there.
 _REAL_RUN = subprocess.run
+
+
+def _command_seam(env_var: str, module: str) -> List[str]:
+    """The argv prefix that runs one of devlaunch's entry points.
+
+    This is the acceptance harness's one knob (#252): unset, the suite judges
+    the Python implementation in this environment; set, the same tests judge
+    whatever command the variable names — the Rust `dl` during the port. The
+    value is shell-split, so it may be a bare path or a command with arguments.
+
+    An empty or blank value counts as unset: it is what a shell leaves behind
+    (`DEVLAUNCH_DL_CMD= pytest ...`), not a request to run the empty command.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        return shlex.split(override)
+    return [sys.executable, "-m", module]
+
+
+def dl_command() -> List[str]:
+    """The command under test for `dl`, as an argv prefix."""
+    return _command_seam("DEVLAUNCH_DL_CMD", "devlaunch.dl")
+
+
+def aid_command() -> List[str]:
+    """The command under test for `aid`, as an argv prefix.
+
+    A seam of its own rather than a suffix rule on DEVLAUNCH_DL_CMD: the two
+    entry points are separate binaries on the Rust side, and pointing the
+    harness at one must not silently redirect the other.
+    """
+    return _command_seam("DEVLAUNCH_AID_CMD", "devlaunch.aid")
 
 
 def require_devpod() -> None:
@@ -89,7 +123,7 @@ class DLRunner:
                 "Use the default command or '--' to run commands instead."
             )
 
-        cmd = ["python", "-m", "devlaunch.dl"] + list(args)
+        cmd = dl_command() + list(args)
         self.last_result = subprocess.run(
             cmd,
             env=self.env,

@@ -186,3 +186,6 @@ uv.lock
 
 # Agent worktrees (local scratch; never committed)
 .claude/worktrees/
+
+# Rust workspace build output (rust/)
+rust/target/

@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from fixtures.e2e_guard import opt_out
-from fixtures.e2e_helpers import create_e2e_workspace
+from fixtures.e2e_helpers import create_e2e_workspace, dl_command
 
 
 def real_devpod_workspace_ids() -> set:
@@ -213,7 +213,7 @@ class TestDLCommandsE2E:
         env = isolated_devlaunch_env
 
         result = subprocess.run(
-            ["python", "-m", "devlaunch.dl", "--ls"],
+            [*dl_command(), "--ls"],
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
             text=True,
@@ -229,7 +229,7 @@ class TestDLCommandsE2E:
         env = isolated_devlaunch_env
 
         result = subprocess.run(
-            ["python", "-m", "devlaunch.dl", "--help"],
+            [*dl_command(), "--help"],
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
             text=True,
@@ -245,7 +245,7 @@ class TestDLCommandsE2E:
         env = isolated_devlaunch_env
 
         result = subprocess.run(
-            ["python", "-m", "devlaunch.dl", "--version"],
+            [*dl_command(), "--version"],
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
             text=True,
@@ -306,7 +306,7 @@ class TestPurgeE2E:
 
         # Run purge
         purge_result = subprocess.run(
-            ["python", "-m", "devlaunch.dl", "--purge", "-y"],
+            [*dl_command(), "--purge", "-y"],
             env=devpod_env,
             capture_output=True,
             text=True,
@@ -384,7 +384,7 @@ class TestPurgeE2E:
 
         # Run purge
         purge_result = subprocess.run(
-            ["python", "-m", "devlaunch.dl", "--purge", "-y"],
+            [*dl_command(), "--purge", "-y"],
             env={**os.environ, "XDG_CACHE_HOME": str(env["cache_dir"])},
             capture_output=True,
             text=True,

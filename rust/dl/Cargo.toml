@@ -1,0 +1,21 @@
+[package]
+name = "dl"
+description = "devlaunch: launch a devcontainer workspace for a repo in one command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+devlaunch-core = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+skim = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+devlaunch-test-support = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
