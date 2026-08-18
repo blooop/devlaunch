@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-08-18
+
+### Fixed
+
+- **A launch that could not refresh the ref it bases on now says so, instead of only
+  logging it** ([#245](https://github.com/blooop/devlaunch/issues/245)). 0.0.27 shipped the
+  guarantee that a new branch is cut from the default branch's freshly fetched tip; this
+  closes the three degraded arms beside that happy path, each of which used to proceed
+  from a cache of unbounded age behind nothing but a `logger.warning`: the follow-up fetch
+  of the default branch failing after the remote had confirmed the branch is new, the
+  default branch not resolving at all (which cut the branch from the bare cache's own
+  `HEAD`), and a recorded default-branch name the fetch validator refuses. Observed in the
+  wild on `blooop/bencher`: a workspace checked out **201 commits behind** `origin/main`
+  reporting success, which then reproduced a deprecation warning upstream had already
+  fixed.
+
+  `ensure_branch` now answers with which of the two things it delivered — a fresh base, or
+  a stale one naming the unrefreshed ref and the reason nothing refreshed it — and a cold
+  launch turns a stale answer into one consequence-stating line: `Prepared
+  'owner/repo@branch' from the cache's 'main', which could not be refreshed (…); it may be
+  behind the remote.` That is the line an agent harness reading `dl`'s output can act on,
+  and it is emitted only when it is true.
+
+  **Nothing became fatal, deliberately.** Launch-from-cache on an unreachable remote is
+  the contract [#144](https://github.com/blooop/devlaunch/issues/144) settled and it is
+  unchanged: losing the network still costs you freshness rather than the workspace. The
+  happy path's network cost is unchanged too — still one targeted fetch, two when the
+  branch is brand new. What changed is that a stale base can no longer pass for a fresh
+  one silently.
+
+  Two limits worth stating, both unchanged and both scoped out on purpose. Relaunching a
+  workspace clone that already exists does not advance it — a plain checkout preserves
+  local work, and the fast attach skips host preparation altogether — so freshness is a
+  property of the launch that *creates* a workspace. And a branch that already exists on
+  the remote is launched at its own tip, which may legitimately sit behind the default
+  branch.
+
 ## [0.0.27] - 2026-08-18
 
 The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
