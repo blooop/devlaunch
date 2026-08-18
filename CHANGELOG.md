@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-08-18
+
 The Rust rewrite is deferred, and Python remains the implementation. 0.0.11 called
 itself the last release of the Python implementation, on the go decision recorded in
 [#53](https://github.com/blooop/devlaunch/issues/53); 0.0.12 and 0.0.13 have shipped
@@ -220,6 +222,23 @@ table and should be judged on its own merits.
   a list of "yours" would be a guess.
 
 ### Fixed
+
+- **Launching a branch now fetches exactly that ref first, every time — push upstream,
+  then `dl` the branch, and you get the pushed tip**
+  ([#144](https://github.com/blooop/devlaunch/issues/144), built in
+  [#149](https://github.com/blooop/devlaunch/issues/149)/[#150](https://github.com/blooop/devlaunch/issues/150),
+  merged as [#185](https://github.com/blooop/devlaunch/pull/185), which shipped without a
+  changelog entry of its own; this adds it). The launch path used to refresh the bare
+  cache through an interval-gated fetch, so any launch within `fetch_interval` (an hour
+  by default) of the last one ran against whatever the cache held. The visible casualty
+  was every brand-new branch — including each ticket branch `wf` asks devlaunch to cut —
+  which was based on the cached default-branch tip rather than the remote's current one,
+  silently up to an hour out of date with `main`. Now the requested ref is fetched
+  unconditionally, and a branch that exists nowhere yet is created from a freshly
+  fetched default-branch tip — one more targeted fetch, and no more than one. Offline
+  behaviour is unchanged by design: a fetch failure warns and the launch of a cached
+  branch proceeds. Every other ref still converges within `fetch_interval` via the
+  detached updater sweep, so nothing new blocks the launch path.
 
 - **An ssh key stored under a directory with a space in its name now reaches ssh whole**
   ([#225](https://github.com/blooop/devlaunch/issues/225)). Pushing a new branch with a
