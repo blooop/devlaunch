@@ -497,7 +497,17 @@ class WorkspaceCloneManager:
         workspace = WorkspaceId(owner, repo, branch)
         with self.repo_manager.hold_repo_lock(owner, repo) as lock:
             self.repo_manager.clone_if_missing(lock, owner, repo, remote_url)
-            self.ensure_branch(lock, owner, repo, branch)
+            base = self.ensure_branch(lock, owner, repo, branch)
+            if isinstance(base, StaleBase):
+                # The one consequence-stating line for the whole degraded
+                # family, in dl's own output because wf reads that output: the
+                # fetch-level warnings above it say what failed, this says what
+                # it means for the tree the agent is about to work on.
+                logger.warning(
+                    f"Prepared '{owner}/{repo}@{branch}' from the cache's '{base.base}', "
+                    f"which could not be refreshed ({base.reason}); "
+                    f"it may be behind the remote."
+                )
             return self._prepare_workspace(
                 lock,
                 workspace,

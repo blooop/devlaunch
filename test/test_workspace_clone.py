@@ -604,6 +604,59 @@ class TestPrepareCold:
 
     @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
     @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_a_stale_base_launch_says_so_in_dls_own_output(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir, caplog
+    ):
+        """A launch cut from an unrefreshed base names the base, the reason and
+        the consequence — the line wf reads (devlaunch#245).
+
+        The report crosses ensure_branch's boundary as a value; this is where
+        it becomes output. The path prepare_cold returns is unchanged, because
+        the workspace is still handed to devpod exactly as before.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.side_effect = [
+            RefMissingOnRemote(),
+            FetchFailed("no such host"),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            ws_path = clone_manager.prepare_cold(
+                "owner", "repo", "nb4", "git@github.com:owner/repo.git"
+            )
+
+        assert ws_path == repo_root / leaf()
+        stale_lines = [r.message for r in caplog.records if "may be behind" in r.message]
+        assert len(stale_lines) == 1
+        assert "owner/repo@nb4" in stale_lines[0]
+        assert "'main'" in stale_lines[0]
+        assert "no such host" in stale_lines[0]
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
+    def test_a_fresh_base_launch_claims_nothing_about_staleness(
+        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir, caplog
+    ):
+        """The warning exists only when it is true, or it trains readers to
+        skip it and wf to distrust it."""
+        mock_run.return_value = MagicMock(returncode=0)
+        repo_root = tmp_repos_dir / "owner" / "repo"
+        mock_repo_manager.get_repo_path.return_value = repo_root
+        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+        mock_repo_manager.get_default_branch.return_value = "main"
+        mock_repo_manager.fetch_ref.return_value = Updated()
+
+        with caplog.at_level(logging.WARNING):
+            clone_manager.prepare_cold("owner", "repo", "nb4", "git@github.com:owner/repo.git")
+
+        assert "may be behind" not in caplog.text
+
+    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
+    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_clones_from_bare_repo(
         self, mock_run, _mock_which, clone_manager, mock_repo_manager, mock_storage, tmp_repos_dir
     ):
