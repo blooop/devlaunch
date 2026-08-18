@@ -670,12 +670,17 @@ class WorkspaceCloneManager:
         rather than being left to read as falsey downstream: a branch named
         ``""`` is not a thing, so the one place that can tell is the one place
         that asked.
+
+        Both arms guard against an empty *reason* for the same underlying
+        rule: whatever ends up in a :class:`StaleBase` gets printed inside
+        "could not be refreshed (…)", and an exception whose ``str()`` is empty
+        would print that as "()" -- a sentence with the reason cut out of it.
         """
         try:
             name = self.repo_manager.get_default_branch(owner, repo)
         except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
             logger.warning(f"Failed to resolve default branch: {e}")
-            return _DefaultBranchUnknown(reason=str(e))
+            return _DefaultBranchUnknown(reason=str(e) or f"{type(e).__name__} with no message")
         if not name:
             return _DefaultBranchUnknown(reason="no default branch is recorded")
         return _DefaultBranchNamed(name=name)

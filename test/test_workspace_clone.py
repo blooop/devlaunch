@@ -470,6 +470,29 @@ class TestEnsureBranch:
         assert base.reason == "no default branch is recorded"
         # No second fetch: there was no name to fetch.
         mock_repo_manager.fetch_ref.assert_called_once_with("owner", "repo", "newbranch")
+        # And the branch is cut from HEAD, not from a branch named "".
+        assert mock_branch_manager.ensure_branch_exists.call_args[1]["start_point"] == "HEAD"
+
+    def test_a_resolver_failure_with_no_message_still_reports_a_reason(
+        self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
+    ):
+        """A stale base always has something printable to say for itself.
+
+        The reason is printed inside "could not be refreshed (…)", so an
+        exception whose ``str()`` is empty — ``OSError()`` with no args — would
+        render that as "()", a sentence with its reason cut out. The exception's
+        type is the fallback, because "which error" is the part a reader can
+        still act on.
+        """
+        bare_path = tmp_repos_dir / "owner" / "repo" / ".bare"
+        mock_repo_manager.get_bare_path.return_value = bare_path
+        mock_repo_manager.get_default_branch.side_effect = OSError()
+        mock_repo_manager.fetch_ref.return_value = RefMissingOnRemote()
+
+        base = clone_manager.ensure_branch(repo_lock, "owner", "repo", "newbranch")
+
+        assert isinstance(base, StaleBase)
+        assert base.reason == "OSError with no message"
 
     def test_a_fresh_requested_ref_reports_a_fresh_base(
         self, clone_manager, mock_repo_manager, mock_branch_manager, tmp_repos_dir, repo_lock
@@ -625,10 +648,8 @@ class TestEnsureBranch:
 class TestPrepareCold:
     """Tests for prepare_cold, the cold path's one locked entrypoint."""
 
-    @patch("devlaunch.worktree.workspace_clone.shutil.which", return_value=None)
-    @patch("devlaunch.worktree.workspace_clone.subprocess.run")
     def test_a_base_answer_this_launch_does_not_name_is_refused(
-        self, mock_run, _mock_which, clone_manager, mock_repo_manager, tmp_repos_dir
+        self, clone_manager, mock_repo_manager, tmp_repos_dir
     ):
         """The exhaustiveness check at the surface that reports staleness.
 
@@ -636,12 +657,16 @@ class TestPrepareCold:
         silence: the bare ``isinstance(base, StaleBase)`` this replaced read
         anything it had no case for as a fresh base, which is precisely the
         "launched from a stale cache without saying so" this whole change
-        exists to make impossible.
+        exists to make impossible. Pinned because ``unhandled_branch_base`` is
+        exported, and this file already pins its sibling
+        ``unhandled_fetch_outcome`` the same way.
+
+        The producer is patched rather than driven, because there is nothing to
+        drive: ``ensure_branch``'s own dispatch is total, so no input to it
+        yields a fourth arm. Same move as the delete guard's totality test in
+        ``test_workspace_state.py``, which patches what answers it.
         """
-        mock_run.return_value = MagicMock(returncode=0)
-        repo_root = tmp_repos_dir / "owner" / "repo"
-        mock_repo_manager.get_repo_path.return_value = repo_root
-        mock_repo_manager.get_bare_path.return_value = repo_root / ".bare"
+        mock_repo_manager.get_bare_path.return_value = tmp_repos_dir / "owner" / "repo" / ".bare"
 
         with patch.object(clone_manager, "ensure_branch", return_value="fresh, honest"):
             with pytest.raises(AssertionError, match="Unhandled branch base"):
