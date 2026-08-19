@@ -127,13 +127,46 @@ pub(crate) const STAGE_KEY: &str = "stage";
 const STAGE_OK_WORD: &str = "ok";
 const STAGE_FAILED_WORD: &str = "failed";
 
+/// A name the stage-outcome protocol can carry on its marked line.
+///
+/// The outcome line is `<mark> stage <name> <status>`, split on spaces by both
+/// readers, so a name with a space in it shears every line it is on:
+/// `Stage::new("set hostname")` would silently report the stage — and the parse
+/// of everything after it — as not reached. The constructor is a `const fn` that
+/// panics on a space or an empty name, and every definition site calls it in
+/// `const` context, so an invalid name is E0080 at compile time rather than a
+/// run of phantom "not reached" reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StageName(&'static str);
+
+impl StageName {
+    /// The one way to name a stage. Call it in `const` context.
+    pub(crate) const fn new(name: &'static str) -> Self {
+        assert!(!name.is_empty(), "a stage name must not be empty");
+        let bytes = name.as_bytes();
+        let mut at = 0;
+        while at < bytes.len() {
+            assert!(
+                bytes[at] != b' ',
+                "a stage name must not contain a space: stage_outcomes splits the marked line on them"
+            );
+            at += 1;
+        }
+        Self(name)
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
 /// The stage that names the container. Its outcome is what "can this image set a
 /// hostname" detection is, and it costs nothing: the trip is the probe's.
-pub(crate) const HOSTNAME_STAGE: &str = "hostname";
+pub(crate) const HOSTNAME_STAGE: StageName = StageName::new("hostname");
 
 /// The stage that puts `zellij` in the container (see [`ZELLIJ_TOOL`]). Also free
 /// of round trips: it rides the pass every entry into Running already pays.
-pub(crate) const ZELLIJ_STAGE: &str = "zellij";
+pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
 
 // ===========================================================================
 // quoting
@@ -694,13 +727,10 @@ pub enum FailureLevel {
 /// is an ordinary command rather than something that has to know about this
 /// protocol.
 ///
-/// Two constraints on what a stage may be, both unenforced, because the protocol
-/// shares the stage's stdout:
+/// One constraint on what a stage may be, unenforced, because the protocol
+/// shares the stage's stdout ([`StageName`] carries the other one to compile
+/// time):
 ///
-/// - `name` must contain no space. It is interpolated raw into the outcome line,
-///   which [`stage_outcomes`] splits on the first space; a two-word name makes every
-///   stage's outcome unreadable. It is `&'static str` here, so every name in this
-///   build is one of the two written above.
 /// - A stage's own stdout is *not* redirected — [`probe_script`]'s output comes
 ///   behind the stages, not in front of them — so a stage that prints a
 ///   [`PROBE_MARK`] line of its own is read as protocol. Both readers keep the last
@@ -708,14 +738,14 @@ pub enum FailureLevel {
 ///   Keep stages silent, or redirect their output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Stage {
-    pub(crate) name: &'static str,
+    pub(crate) name: StageName,
     pub(crate) command: String,
     pub(crate) failure_level: FailureLevel,
 }
 
 impl Stage {
     /// A stage whose failure is worth a warning — the default a new stage gets.
-    pub(crate) fn new(name: &'static str, command: impl Into<String>) -> Self {
+    pub(crate) fn new(name: StageName, command: impl Into<String>) -> Self {
         Self {
             name,
             command: command.into(),
@@ -790,12 +820,12 @@ fn stage_snippet(stage: &Stage) -> String {
         format!("if {}; then", stage.command),
         format!(
             "  echo \"{PROBE_MARK} {STAGE_KEY} {} {STAGE_OK_WORD}\"",
-            stage.name
+            stage.name.as_str()
         ),
         "else".to_owned(),
         format!(
             "  echo \"{PROBE_MARK} {STAGE_KEY} {} {STAGE_FAILED_WORD} $?\"",
-            stage.name
+            stage.name.as_str()
         ),
         "fi".to_owned(),
     ]
@@ -852,7 +882,7 @@ pub(crate) enum StageResult {
 /// One stage's name and what became of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StageOutcome {
-    pub(crate) stage: &'static str,
+    pub(crate) stage: StageName,
     pub(crate) result: StageResult,
 }
 
@@ -880,7 +910,7 @@ pub(crate) fn stage_outcomes(report: &str, stages: &[Stage]) -> Vec<StageOutcome
         .iter()
         .map(|stage| StageOutcome {
             stage: stage.name,
-            result: read_outcome(reported.get(stage.name).copied()),
+            result: read_outcome(reported.get(stage.name.as_str()).copied()),
         })
         .collect()
 }
@@ -1618,13 +1648,13 @@ fn report_outcome(
         StageResult::Ok => {}
         StageResult::Failed { status } => events.push(ProvisionEvent::StageFailed {
             workspace: workspace.to_owned(),
-            stage: outcome.stage,
+            stage: outcome.stage.as_str(),
             status,
             loudness,
         }),
         StageResult::NotReached => events.push(ProvisionEvent::StageNotReported {
             workspace: workspace.to_owned(),
-            stage: outcome.stage,
+            stage: outcome.stage.as_str(),
             loudness,
         }),
     }
@@ -3349,7 +3379,7 @@ fi
             assert!(
                 script.find(&stage.command).expect("the stage") < probe_at,
                 "{}",
-                stage.name
+                stage.name.as_str()
             );
         }
     }
@@ -3371,6 +3401,17 @@ fi
         let script = setup_script(&setup_stages(name, ToolsSwitch::Install));
         assert!(script.contains(&format!("hostname {}", quote(name))));
         assert!(!script.contains("hostname myws;"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must not contain a space")]
+    fn a_stage_name_with_a_space_has_no_representation() {
+        // A two-word name shears every outcome line, so every stage reads as not
+        // reached. At the definition sites the constructor runs in `const`
+        // context, so there this panic is E0080 — a compile error — rather than
+        // anything a launch can hit; this pins the rule the constant evaluator
+        // enforces.
+        let _ = StageName::new("set hostname");
     }
 
     /// Run the whole pass for real, and read it the way the host reads it.
@@ -3409,7 +3450,7 @@ fi
     }
 
     /// One stage's outcome out of a pass that runs more than one, by name.
-    fn outcome_of(report: &str, stage: &str) -> Option<StageOutcome> {
+    fn outcome_of(report: &str, stage: StageName) -> Option<StageOutcome> {
         stage_outcomes(report, &setup_stages("myws", ToolsSwitch::Install))
             .into_iter()
             .find(|outcome| outcome.stage == stage)
@@ -3818,13 +3859,9 @@ fi
         assert!(
             !events.iter().any(|event| matches!(
                 event,
-                ProvisionEvent::StageFailed {
-                    stage: ZELLIJ_STAGE,
-                    ..
-                } | ProvisionEvent::StageNotReported {
-                    stage: ZELLIJ_STAGE,
-                    ..
-                }
+                ProvisionEvent::StageFailed { stage, .. }
+                | ProvisionEvent::StageNotReported { stage, .. }
+                    if *stage == ZELLIJ_STAGE.as_str()
             )),
             "{events:?}"
         );
@@ -3861,7 +3898,9 @@ fi
             .into_iter()
             .filter(|event| match event {
                 ProvisionEvent::StageFailed { stage, .. }
-                | ProvisionEvent::StageNotReported { stage, .. } => *stage == HOSTNAME_STAGE,
+                | ProvisionEvent::StageNotReported { stage, .. } => {
+                    *stage == HOSTNAME_STAGE.as_str()
+                }
                 _ => false,
             })
             .collect()
@@ -3878,7 +3917,7 @@ fi
             reported,
             vec![ProvisionEvent::StageFailed {
                 workspace: "myws".to_owned(),
-                stage: HOSTNAME_STAGE,
+                stage: HOSTNAME_STAGE.as_str(),
                 status: 1,
                 loudness: FailureLevel::Info,
             }]
@@ -3901,7 +3940,7 @@ fi
             hostname_events(REPORT_PROVISIONED, 0),
             vec![ProvisionEvent::StageNotReported {
                 workspace: "myws".to_owned(),
-                stage: HOSTNAME_STAGE,
+                stage: HOSTNAME_STAGE.as_str(),
                 loudness: FailureLevel::Info,
             }]
         );
@@ -3919,8 +3958,11 @@ fi
         // Warning is the default a new stage gets: naming a stage that did not work
         // is the whole point of the composition, and the hostname's info level is an
         // exception it has to declare, measured (#167), rather than the rule.
-        assert_eq!(Stage::new("x", "true").failure_level, FailureLevel::Warning);
-        let levels: Vec<(&str, FailureLevel)> = setup_stages("myws", ToolsSwitch::Install)
+        assert_eq!(
+            Stage::new(StageName::new("x"), "true").failure_level,
+            FailureLevel::Warning
+        );
+        let levels: Vec<(StageName, FailureLevel)> = setup_stages("myws", ToolsSwitch::Install)
             .iter()
             .map(|stage| (stage.name, stage.failure_level))
             .collect();
@@ -4412,7 +4454,7 @@ fi
         // The guarantee, stated where it is made: the pass every entry into Running
         // goes through carries a zellij stage. No dotfiles, no devcontainer.json, no
         // repo cooperation — the ask comes from the invocation.
-        let names: Vec<&str> = setup_stages("myws", ToolsSwitch::Install)
+        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Install)
             .iter()
             .map(|stage| stage.name)
             .collect();
@@ -4541,7 +4583,7 @@ fi
         // the hostname stage, which is not tools work and is deliberately left
         // outside that switch — a machine that turned tool installs off has not
         // thereby asked for unnamed containers.
-        let names: Vec<&str> = setup_stages("myws", ToolsSwitch::Skip)
+        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Skip)
             .iter()
             .map(|stage| stage.name)
             .collect();
