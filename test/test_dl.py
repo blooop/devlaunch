@@ -62,6 +62,7 @@ from devlaunch.dl import (
     reset_cache_refresh_state,
     COMPLETION_CACHE_TTL_SECONDS,
 )
+from fixtures.e2e_helpers import dl_command
 
 
 def stub_devpod_session(mock_popen, returncode=0, stderr=""):
@@ -3383,7 +3384,12 @@ class TestMissingDevpodBinary:
             "DEVLAUNCH_NO_GH_TOKEN": "1",
         }
         proc = subprocess.run(
-            [sys.executable, "-m", "devlaunch.dl", "--ls"],
+            # Through the seam (#252 §1), like every other spawn of the entry
+            # point: this is the one assertion in this file that judges a
+            # *binary* rather than a function, so it has to judge whichever
+            # binary is under test. Unset, the seam is the hardcoded argv this
+            # replaced.
+            [*dl_command(), "--ls"],
             cwd=str(pathlib.Path(__file__).resolve().parent.parent),
             capture_output=True,
             text=True,

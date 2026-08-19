@@ -13,21 +13,51 @@ on `claude` would be testing Anthropic's uptime.
 These require a real devpod and are excluded from the default run. To run them:
 
     pixi run pytest -m e2e test/e2e/test_interactive_session.py
+
+Everything they need is built by the module. That is a change from the version
+that asked for `DEVLAUNCH_E2E_WORKSPACE` to name a workspace somebody had
+already started, which could not work and had opted out of all thirteen tests on
+every run since the suite began scoping `DEVPOD_HOME` to a fresh directory: a
+workspace outside that directory is one this run's devpod cannot describe,
+attach to, or find an ssh alias for. So the variable is gone rather than fixed --
+an opt-in that cannot be taken is worse than no opt-in, and it was buying a
+saved image pull at the price of thirteen invisible tests.
 """
 
 # Requesting a fixture shadows its name; that is how pytest is written.
 # pylint: disable=redefined-outer-name
 
+from __future__ import annotations
+
 import os
 import re
 import shlex
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterator
 
 import pytest
 
 from devlaunch import tty_session
 from fixtures.e2e_guard import opt_out
+from fixtures.e2e_helpers import (
+    ScopedSsh,
+    WorkspaceTracker,
+    aid_command,
+    create_e2e_workspace,
+    dl_command,
+    route_ssh_through,
+    scoped_ssh_config,
+)
+from fixtures.git_fixtures import build_repo_with_devcontainer
 from fixtures.pty_helpers import PtySession
+
+# One id for the module, private to the run: `DEVPOD_HOME` is a fresh directory
+# every session, so two concurrent runs cannot collide on it. No other e2e
+# workspace id contains this one as a substring, which is a property the purge
+# test's assertions depend on across the suite.
+WORKSPACE_ID = "e2e-test-interactive"
 
 # Announce readiness, then block on stdin with no exit of its own.
 LONG_RUNNING = (
@@ -60,44 +90,98 @@ NEEDS_A_TTY = 'if [ -t 0 ]; then S=HAVE; else S=MISSING; fi; echo "TTY-STATUS:$S
 # Same trick: the literal `SHELL-PATH:` exists only in the output.
 LOGIN_SHELL_PROBE = 'P=PATH; echo "SHELL-${P}:$PATH"'
 
+# Whether the workspace has a coding agent in it, and the trick again -- for the
+# one probe where getting it wrong is invisible rather than loud. `command -v
+# claude` names claude in the payload, and dl echoes the payload it is about to
+# run, so a test that searched the buffer for "claude" found it in dl's own log
+# line and concluded the agent was installed. Assembled at runtime, `AGENT-YES`
+# exists only in the output.
+CLAUDE_PROBE = (
+    'if command -v claude >/dev/null 2>&1; then S=YES; else S=NO; fi; A=AGENT; echo "${A}-$S"'
+)
+
+
+@dataclass(frozen=True)
+class InteractiveWorkspace:
+    """A started workspace, and an environment from which dl can reach it."""
+
+    workspace_id: str
+    routing: ScopedSsh
+    cache_dir: Path
+
+    @property
+    def ssh_config(self) -> Path:
+        """The ssh config both dl and OpenSSH resolve in this environment."""
+        return self.routing.config
+
+    def env(self) -> Dict[str, str]:
+        """The environment for one invocation, read fresh every time.
+
+        Fresh rather than captured at fixture setup, and the difference is not
+        cosmetic: this fixture is module-scoped, so it is built *before* the
+        function-scoped autouse fixtures in `test/conftest.py` have run for the
+        first test. A snapshot taken there predates
+        `no_gh_token_forwarding` and would carry the developer's own environment
+        into every dl in the file -- which is exactly what it did, until the run
+        that printed `gh auth token exited 1` said so.
+        """
+        return self.routing.env({**os.environ, "XDG_CACHE_HOME": str(self.cache_dir)})
+
+    def dl(self, *args: str, timeout: float = 120) -> PtySession:
+        """`dl` on a pty, the way a developer runs it."""
+        return PtySession(
+            [*dl_command(), self.workspace_id, *args], env=self.env(), timeout=timeout
+        )
+
+    def aid(self, *args: str, timeout: float = 180) -> PtySession:
+        """`aid` on a pty. Its own seam, because it is its own binary (#252 §1)."""
+        return PtySession(
+            [*aid_command(), self.workspace_id, *args], env=self.env(), timeout=timeout
+        )
+
 
 @pytest.fixture(scope="module")
-def running_workspace() -> str:
-    """A started workspace to attach to, reused by every test in the module.
+def workspace(tmp_path_factory) -> Iterator[InteractiveWorkspace]:
+    """One started workspace, built by this run, reused by every test here.
 
-    Creating one costs an image pull and a container build, so it is worth
-    doing once. The id is read back from devpod rather than assumed.
+    Module-scoped because creating one costs an image pull and a container
+    build, and every test in the file wants the same thing from it. Built rather
+    than adopted: a workspace this run did not create is not in this run's
+    `DEVPOD_HOME` and so cannot be reached at all -- see the module docstring.
 
-    Two outcomes short of that, and they are not the same outcome. Naming no
-    workspace is declining these tests, which is what every run that has not
-    set the variable is doing -- thirteen opt-outs, and the reason the suite's
-    baseline is skip-heavy enough to hide a fourteenth. Naming one that devpod
-    cannot describe is a broken workspace, and asking for these tests and not
-    getting them is a failure however grey the text would look.
+    Two things beyond `devpod up` are needed before dl's *pty* transport can be
+    exercised, and both come from `route_ssh_through`: dl's own "is there a
+    host alias" check has to look at this run's ssh config, and OpenSSH has to be
+    given it with `-F`, since it resolves `~` through `getpwuid` and no
+    environment variable reaches it. Without them dl would find no alias, warn,
+    and silently fall back to the transport that has no terminal -- which is the
+    transport every assertion in this file exists to distinguish itself from.
+
+    The tracker is this module's own, and `cleanup()` runs whether the tests
+    passed, failed, or never got that far. `devpod_cleanup` is function-scoped
+    and pytest will not hand a function-scoped fixture to a module-scoped one;
+    the class behind both is the same, so a leak is caught the same way.
 
     Whether devpod runs at all is settled once, in the directory's conftest.
     """
-    workspace_id = os.environ.get("DEVLAUNCH_E2E_WORKSPACE")
-    if not workspace_id:
-        opt_out("set DEVLAUNCH_E2E_WORKSPACE to a started devpod workspace to run these tests")
-
-    state = subprocess.run(
-        ["devpod", "status", workspace_id, "--output", "json"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if state.returncode != 0:
-        pytest.fail(
-            f"DEVLAUNCH_E2E_WORKSPACE names {workspace_id!r}, which devpod cannot "
-            f"report on: {state.stderr.strip()}"
+    root = tmp_path_factory.mktemp("interactive-session")
+    cache_dir = root / "cache"
+    source = build_repo_with_devcontainer(root / "repo")
+    tracker = WorkspaceTracker()
+    try:
+        create_e2e_workspace(
+            str(source),
+            WORKSPACE_ID,
+            cleanup=tracker,
+            env={**os.environ, "XDG_CACHE_HOME": str(cache_dir)},
         )
-    return workspace_id
-
-
-def dl(workspace_id: str, *args: str) -> PtySession:
-    """`dl` on a pty, the way a developer runs it."""
-    return PtySession(["python", "-m", "devlaunch.dl", workspace_id, *args], timeout=120)
+        yield InteractiveWorkspace(
+            workspace_id=WORKSPACE_ID,
+            routing=route_ssh_through(scoped_ssh_config(), root / "ssh"),
+            cache_dir=cache_dir,
+        )
+    finally:
+        tracker.cleanup()
 
 
 def reported_cwd(output: str) -> str:
@@ -108,46 +192,55 @@ def reported_cwd(output: str) -> str:
 
 
 @pytest.mark.e2e
+@pytest.mark.creates_workspace
 class TestCommandGetsATerminal:
     """The half the user reported working -- kept working, now with a terminal."""
 
-    def test_host_alias_exists_for_the_workspace(self, running_workspace):
-        """The pty transport reads devpod's own alias; without it dl falls back."""
-        assert tty_session.devpod_host_configured(running_workspace), (
+    def test_host_alias_exists_for_the_workspace(self, workspace):
+        """The pty transport reads devpod's own alias; without it dl falls back.
+
+        Asked of the config this run's `devpod up` writes to, which is the file
+        dl reads in this environment -- `HOME` points at a directory whose
+        `.ssh/config` is that file. Asking about the developer's real config
+        instead would be a question about their machine.
+        """
+        assert tty_session.devpod_host_configured(
+            workspace.workspace_id, config_path=workspace.ssh_config
+        ), (
             "devpod wrote no ssh host alias for this workspace, so dl will fall "
             "back to the transport that has no terminal"
         )
 
-    def test_one_shot_command_still_runs_and_reports_its_output(self, running_workspace):
-        with dl(running_workspace, "--", "echo one-shot-worked") as s:
+    def test_one_shot_command_still_runs_and_reports_its_output(self, workspace):
+        with workspace.dl("--", "echo one-shot-worked") as s:
             s.expect("one-shot-worked")
             assert s.wait(timeout=30) == 0
 
-    def test_one_shot_command_propagates_failure(self, running_workspace):
-        with dl(running_workspace, "--", "exit 7") as s:
+    def test_one_shot_command_propagates_failure(self, workspace):
+        with workspace.dl("--", "exit 7") as s:
             assert s.wait(timeout=60) == 7
 
-    def test_command_runs_under_a_login_shell(self, running_workspace):
+    def test_command_runs_under_a_login_shell(self, workspace):
         """The reason the payload is wrapped in bash -lc; it must survive."""
-        with dl(running_workspace, "--", LOGIN_SHELL_PROBE) as s:
+        with workspace.dl("--", LOGIN_SHELL_PROBE) as s:
             s.expect("SHELL-PATH:")
             assert "/.pixi/bin" in s.text or "/usr/local" in s.text
 
-    def test_command_gets_a_controlling_terminal(self, running_workspace):
+    def test_command_gets_a_controlling_terminal(self, workspace):
         """The root cause, asserted directly."""
-        with dl(running_workspace, "--", NEEDS_A_TTY) as s:
+        with workspace.dl("--", NEEDS_A_TTY) as s:
             s.expect("TTY-STATUS:HAVE")
             s.expect(r"/dev/pts/\d+")
             assert "TTY-STATUS:MISSING" not in s.text
             assert s.wait(timeout=30) == 0
 
-    def test_term_is_usable_inside_the_workspace(self, running_workspace):
+    def test_term_is_usable_inside_the_workspace(self, workspace):
         """The old transport set TERM=dumb, which TUIs treat as no terminal."""
-        with dl(running_workspace, "--", 'T=TERM; echo "IS-${T}:$TERM"') as s:
+        with workspace.dl("--", 'T=TERM; echo "IS-${T}:$TERM"') as s:
             s.expect("IS-TERM:")
             assert "IS-TERM:dumb" not in s.text
 
-    def test_lands_in_the_same_directory_as_the_devpod_transport(self, running_workspace):
+    def test_lands_in_the_same_directory_as_the_devpod_transport(self, workspace):
         """Changing transport must not quietly change where the command runs.
 
         Neither invocation passes a working directory -- devpod's ssh server
@@ -156,12 +249,18 @@ class TestCommandGetsATerminal:
         a silent, confusing regression rather than a visible failure.
         """
         probe = 'D=PWD; echo "IN-${D}:$PWD"'
-        with dl(running_workspace, "--", probe) as s:
+        with workspace.dl("--", probe) as s:
             s.expect(r"IN-PWD:\S+")
             through_ssh = reported_cwd(s.text)
 
         direct = subprocess.run(
-            ["devpod", "ssh", running_workspace, "--command", f"bash -lc {shlex.quote(probe)}"],
+            [
+                "devpod",
+                "ssh",
+                workspace.workspace_id,
+                "--command",
+                f"bash -lc {shlex.quote(probe)}",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -172,45 +271,46 @@ class TestCommandGetsATerminal:
 
 
 @pytest.mark.e2e
+@pytest.mark.creates_workspace
 class TestLongRunningSession:
     """The half the user reported broken: a command that is meant not to exit."""
 
-    def test_session_stays_up_instead_of_exiting_immediately(self, running_workspace):
-        with dl(running_workspace, "--", LONG_RUNNING) as s:
+    def test_session_stays_up_instead_of_exiting_immediately(self, workspace):
+        with workspace.dl("--", LONG_RUNNING) as s:
             s.expect("READY-")
             s.assert_running(grace=5.0)
 
-    def test_session_still_accepts_input_after_starting(self, running_workspace):
+    def test_session_still_accepts_input_after_starting(self, workspace):
         """Alive is not the claim -- interactive is."""
-        with dl(running_workspace, "--", LONG_RUNNING) as s:
+        with workspace.dl("--", LONG_RUNNING) as s:
             s.expect("READY-")
             s.send("hello")
             s.expect("ECHO:hello")
 
-    def test_session_survives_several_round_trips(self, running_workspace):
-        with dl(running_workspace, "--", LONG_RUNNING) as s:
+    def test_session_survives_several_round_trips(self, workspace):
+        with workspace.dl("--", LONG_RUNNING) as s:
             s.expect("READY-")
             for n in range(3):
                 s.send(f"msg{n}")
                 s.expect(f"ECHO:msg{n}")
             s.assert_running(grace=2.0)
 
-    def test_session_exits_cleanly_when_the_command_ends(self, running_workspace):
+    def test_session_exits_cleanly_when_the_command_ends(self, workspace):
         """It must not exit on its own, and must exit when told."""
-        with dl(running_workspace, "--", LONG_RUNNING) as s:
+        with workspace.dl("--", LONG_RUNNING) as s:
             s.expect("READY-")
             s.assert_running(grace=2.0)
             s.send("quit")
             assert s.wait(timeout=60) == 0
 
-    def test_agent_shaped_payload_starts_and_stays(self, running_workspace):
+    def test_agent_shaped_payload_starts_and_stays(self, workspace):
         """The reported bug, reproduced without depending on a coding agent.
 
         A payload that needs a terminal to start and then never exits is what
         `aid <repo>` runs. On the transport that has no pty this stops at
         TTY-STATUS:MISSING and exits 42 before READY is ever printed.
         """
-        with dl(running_workspace, "--", NEEDS_A_TTY_AND_STAYS) as s:
+        with workspace.dl("--", NEEDS_A_TTY_AND_STAYS) as s:
             s.expect("TTY-STATUS:HAVE")
             s.expect("READY-")
             s.assert_running(grace=5.0)
@@ -221,22 +321,30 @@ class TestLongRunningSession:
 
 
 @pytest.mark.e2e
+@pytest.mark.creates_workspace
 class TestAidStartsAnAgent:
     """`aid <ws>` is the reported failure, end to end."""
 
-    def test_aid_leaves_an_interactive_agent_running(self, running_workspace):
+    def test_aid_leaves_an_interactive_agent_running(self, workspace):
         """Skipped unless the workspace actually has claude, since that is the
-        one thing about this path that is not dl's to guarantee."""
-        probe = PtySession(
-            ["python", "-m", "devlaunch.dl", running_workspace, "--", "command -v claude"],
-            timeout=90,
-        )
+        one thing about this path that is not dl's to guarantee.
+
+        Which is what happens on every machine that runs this suite as written:
+        the fixture's devcontainer is `devcontainers/base:ubuntu` and carries no
+        coding agent. Installing one would put an npm registry and an
+        Anthropic-shaped download inside an e2e run, which is the dependency the
+        payloads above were built to avoid -- so this is the one test in the file
+        that declines rather than runs, and it says so in its own words. What it
+        would add over `test_agent_shaped_payload_starts_and_stays` is the `aid`
+        entry point rather than the transport, and the transport is the subject.
+        """
+        probe = workspace.dl("--", CLAUDE_PROBE, timeout=90)
         with probe:
-            probe.wait(timeout=90)
-            if "claude" not in probe.text:
+            probe.expect("AGENT-(YES|NO)")
+            if "AGENT-YES" not in probe.text:
                 opt_out("no claude in this workspace")
 
-        session = PtySession(["python", "-m", "devlaunch.aid", running_workspace], timeout=180)
+        session = workspace.aid()
         with session:
             # Claude Code prints its banner once the TUI is up; without a
             # terminal it exits before ever getting there.

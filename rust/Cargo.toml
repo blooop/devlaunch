@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "devlaunch-runner",
+    "devlaunch-core",
+    "dl",
+    "aid",
+    "devlaunch-test-support",
+]
+
+# The single source of the version (docs/rust-rewrite-plan.md: cutover ships
+# 0.1.0, version read from Cargo.toml).
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/blooop/devlaunch"
+
+[workspace.dependencies]
+devlaunch-runner = { path = "devlaunch-runner" }
+sha2 = "0.10"
+devlaunch-core = { path = "devlaunch-core" }
+dl = { path = "dl" }
+devlaunch-test-support = { path = "devlaunch-test-support" }
+# `setsid`, which is what Python's `start_new_session=True` means and what
+# `std::os::unix::process::CommandExt` has no equivalent of (`process_group` is
+# setpgid: a new group in the same session, still holding the terminal).
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+# preserve_order: metadata.json's section maps keep the order they were written
+# in, so a file Python and Rust take turns rewriting does not churn its key
+# order (docs/rust-rewrite-plan.md cutover check 3).
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+toml = "0.9"
+clap = { version = "4", features = ["derive"] }
+skim = "0.20"
+# flock(2) — per open file description, kernel-released — as Python's
+# fcntl.flock. fd-lock 4 gets its semantics from the same rustix call, but its
+# guard borrows the RwLock and unlocks on drop, so an owned guard would have to
+# leak it; calling flock directly is the same syscall without the trick.
+rustix = { version = "1", features = ["fs"] }
+# Local civil time in Python's `datetime.now().isoformat()` spelling.
+jiff = "0.2"
+shlex = "2"
+tempfile = "3"
+assert_cmd = "2"
+portable-pty = "0.9"
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

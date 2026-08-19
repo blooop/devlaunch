@@ -17,6 +17,20 @@
 # from another.
 **/.pixi/
 
+# The cargo build directory is .pixi's story again, with a different number in
+# the error. It is ~15000 files on a checkout that has built the Rust workspace
+# once, and devpod's context hasher stops at 5000:
+#
+#   failed to compute context hash: directory hash incomplete: exceeded limit of
+#   5000 files (partial hash computed from first 5000 files)
+#
+# So `test/e2e/test_ssh_config_isolation.py`, which brings this repo up as a
+# devcontainer, failed on any checkout where `cargo build` had run -- which is
+# every checkout the parity gate runs in, since `rust/parity.py run` builds the
+# binaries and then runs the e2e tier against them. Nothing is copied out of it,
+# same as the rest of this file.
+rust/target/
+
 # Local state with the same story: never copied, and only ever slows the build.
 .git/
 .pytest_cache/

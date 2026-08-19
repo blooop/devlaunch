@@ -1,0 +1,28 @@
+# Expected-failure manifest for the rust-parity job (the two-way ratchet).
+#
+# Entries are pytest node ids (or fnmatch globs over them) that are expected
+# to FAIL when the suite runs against the Rust binaries via DEVLAUNCH_DL_CMD
+# and DEVLAUNCH_AID_CMD. `python3 rust/parity.py run` fails on any failure NOT
+# listed here (a regression) and on any entry that PASSES (a stale entry —
+# shrink the manifest in the same PR). This file's git history is the parity
+# dashboard; cutover requires it empty on both tiers
+# (docs/rust-rewrite-plan.md).
+#
+# **It is empty, and that is cutover checklist item 1**: both tiers — the shim
+# tier (`-m 'not e2e'`) and the real-devpod tier (`-m e2e`) — pass in full
+# against the Rust binaries. The day-one `ALL` sentinel is gone; the parser
+# still understands the word, so a wave that has to stand the gate down again
+# has it available, but nothing after M9 should need it.
+#
+# One test asserts a behaviour the divergence table licenses a different answer
+# to, and it branches per-binary at the test rather than being listed here — a
+# manifest row hides the Rust behaviour where a branch pins both sides:
+#
+#   test/e2e/test_full_workflow.py::TestDLCommandsE2E::test_dl_help_command
+#       divergence row 3 — `--help` is clap's layout, so the hand-rolled
+#       banner line is asserted for the Python build only.
+#
+# Nothing else under test/ asserts a divergent behaviour of a spawned binary.
+# The rest of the suite either exercises the shared contract, or never spawns
+# dl at all — see rust/spec-ledger.md for which is which, and rust/dl/tests/
+# for where each divergence row is pinned against the Rust build.

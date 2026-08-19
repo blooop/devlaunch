@@ -1,11 +1,30 @@
+# This manifest is the *development* one, and since 0.1.0 it is no longer
+# the one that is published.
+#
+# What ships is a linux-64 wheel of the two compiled binaries, built by maturin
+# from `packaging/wheel/pyproject.toml` (and a conda package of the same two
+# binaries from `conda.recipe/recipe.yaml`). What is here is the pixi workspace
+# and the frozen Python build the parity harness still runs as the reference
+# implementation: `test/fixtures/e2e_helpers.py` defaults `DEVLAUNCH_DL_CMD` to
+# `python -m devlaunch.dl`, most of `test/` imports `devlaunch.*` directly, and
+# `.devcontainer/devcontainer.json`'s `postCreateCommand` is a bare `pixi install`
+# with no Rust toolchain behind it. So hatchling and the editable self-install
+# below stay exactly as they were; they serve the suite, not the release.
 [project]
 name = "devlaunch"
-version = "0.0.29"
+# Read, not written -- from `rust/Cargo.toml`'s `[workspace.package] version`, the
+# one place the version lives (docs/rust-rewrite-plan.md M10). The published
+# wheel's metadata and the conda recipe read the same file; a release is one edit.
+dynamic = ["version"]
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
 license = "MIT"
 
+# The frozen Python build's imports. Neither is a dependency of the shipped
+# artifact any more: the selector is embedded skim (docs/rust-rewrite-plan.md
+# divergence row 6) and TOML is parsed in-process, so `packaging/wheel` and the
+# conda recipe declare neither.
 dependencies = [
   "iterfzf>=1.0.0",
   "tomli>=2.0.0",
@@ -65,6 +84,15 @@ test = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# `dynamic = ["version"]` above, resolved here: hatchling's regex source, pointed
+# at the cargo manifest. The first `version = "..."` line in `rust/Cargo.toml` is
+# `[workspace.package]`'s, which every crate inherits with `version.workspace =
+# true` -- so the frozen Python build in this environment reports the same version
+# the binaries do, without a second number to keep in step.
+[tool.hatch.version]
+path = "rust/Cargo.toml"
+pattern = '(?m)^version = "(?P<version>[^"]+)"'
 
 [tool.hatch.build]
 include = ["devlaunch"]

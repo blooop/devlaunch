@@ -2,21 +2,86 @@
 
 These helpers ensure that E2E tests don't accidentally launch VSCode
 or other IDEs, which would break automated testing.
+
+They also own the two other things an e2e test needs before it can reach a
+workspace at all: the argv prefix of the implementation under test (the
+`DEVLAUNCH_DL_CMD` seam), and -- for the pty transport -- an environment in
+which both ssh lookups resolve this run's own ssh config. See `route_ssh_through`.
 """
 
 import os
+import shlex
+import shutil
+import stat
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import pytest
 
+from devpod_scoping import DEVPOD_SSH_CONFIG_VAR
 from fixtures.e2e_guard import LEDGER
 
 
 # The real runner, captured once. `create_e2e_workspace` compares against it to
 # decide whether anything was actually built; see the note there.
 _REAL_RUN = subprocess.run
+
+
+def _command_seam(env_var: str, module: str) -> List[str]:
+    """The argv prefix that runs one of devlaunch's entry points.
+
+    This is the acceptance harness's one knob (#252): unset, the suite judges
+    the Python implementation in this environment; set, the same tests judge
+    whatever command the variable names — the Rust `dl` during the port. The
+    value is shell-split, so it may be a bare path or a command with arguments.
+
+    An empty or blank value counts as unset: it is what a shell leaves behind
+    (`DEVLAUNCH_DL_CMD= pytest ...`), not a request to run the empty command.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        return shlex.split(override)
+    return [sys.executable, "-m", module]
+
+
+def dl_command() -> List[str]:
+    """The command under test for `dl`, as an argv prefix."""
+    return _command_seam("DEVLAUNCH_DL_CMD", "devlaunch.dl")
+
+
+def aid_command() -> List[str]:
+    """The command under test for `aid`, as an argv prefix.
+
+    A seam of its own rather than a suffix rule on DEVLAUNCH_DL_CMD: the two
+    entry points are separate binaries on the Rust side, and pointing the
+    harness at one must not silently redirect the other.
+    """
+    return _command_seam("DEVLAUNCH_AID_CMD", "devlaunch.aid")
+
+
+def dl_is_python() -> bool:
+    """True when the command under test is this checkout's Python `dl`.
+
+    The one place a test is allowed to ask which implementation it is judging,
+    and it exists for exactly one purpose: the divergence table in
+    docs/rust-rewrite-plan.md licenses a numbered list of deliberate behavioural
+    differences, and a test that pins one of them has to pin *both* sides. Every
+    caller cites its row number, and the Python branch keeps asserting exactly
+    what it asserted before the branch existed.
+
+    Derived from the seam rather than from a separate variable, so there is one
+    switch and not two that can disagree: unset means the default argv prefix,
+    which is `python -m devlaunch.dl`.
+    """
+    return not os.environ.get("DEVLAUNCH_DL_CMD", "").strip()
+
+
+def aid_is_python() -> bool:
+    """True when the command under test for `aid` is this checkout's Python one."""
+    return not os.environ.get("DEVLAUNCH_AID_CMD", "").strip()
 
 
 def require_devpod() -> None:
@@ -89,7 +154,7 @@ class DLRunner:
                 "Use the default command or '--' to run commands instead."
             )
 
-        cmd = ["python", "-m", "devlaunch.dl"] + list(args)
+        cmd = dl_command() + list(args)
         self.last_result = subprocess.run(
             cmd,
             env=self.env,
@@ -172,6 +237,37 @@ def dl_no_ide(isolated_devlaunch_env: Dict[str, Path]) -> DLRunner:
     return DLRunner(env=env)
 
 
+class WorkspaceTracker:
+    """The workspaces one scope created, and the promise to delete them.
+
+    A class at module level rather than a closure inside the fixture below,
+    because the scope that needs one is not always a test. A module-scoped
+    fixture cannot request a function-scoped one, so a module that builds a
+    single workspace for all its tests -- `test_interactive_session.py` -- owns a
+    tracker of its own and calls `cleanup()` from its own teardown. One
+    implementation either way: a leak is a leak whichever scope leaked it.
+    """
+
+    def __init__(self):
+        self.workspaces: List[str] = []
+
+    def track(self, workspace_id: str) -> None:
+        """Track a workspace for cleanup."""
+        self.workspaces.append(workspace_id)
+
+    def cleanup(self) -> None:
+        """Delete all tracked workspaces."""
+        for workspace_id in self.workspaces:
+            try:
+                subprocess.run(
+                    ["devpod", "delete", workspace_id, "--force"],
+                    capture_output=True,
+                    check=False,
+                )
+            except Exception:
+                pass  # Best effort cleanup
+
+
 @pytest.fixture
 def devpod_cleanup():
     """Fixture that tracks and cleans up DevPod workspaces after tests.
@@ -183,27 +279,6 @@ def devpod_cleanup():
             # ... test code ...
             # Workspace automatically deleted after test
     """
-
-    class WorkspaceTracker:
-        def __init__(self):
-            self.workspaces: List[str] = []
-
-        def track(self, workspace_id: str) -> None:
-            """Track a workspace for cleanup."""
-            self.workspaces.append(workspace_id)
-
-        def cleanup(self) -> None:
-            """Delete all tracked workspaces."""
-            for workspace_id in self.workspaces:
-                try:
-                    subprocess.run(
-                        ["devpod", "delete", workspace_id, "--force"],
-                        capture_output=True,
-                        check=False,
-                    )
-                except Exception:
-                    pass  # Best effort cleanup
-
     tracker = WorkspaceTracker()
     yield tracker
     tracker.cleanup()
@@ -265,3 +340,112 @@ def create_e2e_workspace(
     if run is _REAL_RUN:
         LEDGER.record_workspace_created(workspace_id)
     return result
+
+
+# --------------------------------------------------------------------------
+# Reaching a workspace over the pty transport
+#
+# Let dl's pty transport find the run's own ssh config instead of the developer's.
+#
+# `dl <ws> -- <cmd>` reaches a workspace two ways, and the interesting one goes
+# through OpenSSH: `ssh -t <workspace>.devpod <payload>`, using the host alias
+# `devpod up` publishes. The suite scopes that publication away from the developer
+# with `DEVPOD_SSH_CONFIG` (see `test/devpod_scoping.py`), which leaves the alias
+# somewhere nothing looks for it by default. Two separate lookups have to be
+# pointed at it, and they need two different mechanisms because they disagree about
+# what a home directory is.
+#
+# **dl's own check** -- "did devpod publish an alias for this workspace, or should
+# this command fall back to the transport with no terminal?" -- reads
+# `$HOME/.ssh/config`. Both implementations resolve that through the environment
+# (Python's `Path.home()`, Rust's `std::env::home_dir()`), so a scratch `HOME`
+# whose `.ssh/config` *is* the run's config redirects it. A symlink rather than a
+# copy, so a later `devpod up` in the same run is visible through it.
+#
+# **OpenSSH itself** does not read `$HOME`. It expands `~` for the default user
+# config through `getpwuid(getuid())`, so the scratch home above is invisible to
+# it and `ssh <alias>` fails with "Could not resolve hostname" -- measured on this
+# suite's own ssh, and the reason this needs a shim rather than a one-line
+# `monkeypatch.setenv`. What does work is `-F <path>`, so an `ssh` shim first on
+# `PATH` supplies it.
+#
+# The shim passes `-F` *before* the caller's arguments, which makes it a default
+# and not an override: OpenSSH takes the last `-F` on the command line, so a
+# command that names its own config still gets it. Nothing else about the
+# invocation is touched -- the argv dl composed, `-t` included, is what reaches
+# ssh, so what the tests measure is still dl's transport and a real tunnel into a
+# real container.
+# --------------------------------------------------------------------------
+
+
+def scoped_ssh_config() -> Path:
+    """The ssh config this run's `devpod up` writes its host aliases into.
+
+    Asserted rather than defaulted. Unset means `devpod up` published the alias
+    into the developer's real `~/.ssh/config`, and a test that quietly read it
+    from there would be passing on the strength of the write this suite exists
+    to prevent.
+    """
+    configured = os.environ.get(DEVPOD_SSH_CONFIG_VAR)
+    if not configured:
+        pytest.fail(
+            f"{DEVPOD_SSH_CONFIG_VAR} is unset, so `devpod up` published its host "
+            "alias into the developer's real ~/.ssh/config rather than into this "
+            "run's own -- see test/devpod_scoping.py"
+        )
+    return Path(configured)
+
+
+@dataclass(frozen=True)
+class ScopedSsh:
+    """Where the redirected home and the `ssh` shim live, and the env that uses them."""
+
+    home: Path
+    bin_dir: Path
+    config: Path
+
+    def env(self, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """An environment in which both ssh lookups find this run's config.
+
+        Built on the caller's (or the current) environment, so everything the
+        suite already scopes -- `DEVPOD_HOME`, `DEVPOD_SSH_CONFIG`,
+        `XDG_CACHE_HOME` -- rides along untouched.
+
+        Only ever handed to a subprocess. Putting `HOME` into this process's own
+        environment would move it under the feet of the tests that read the
+        developer's real `~/.ssh` to prove nothing was written there.
+        """
+        env = dict(os.environ if base is None else base)
+        env["HOME"] = str(self.home)
+        env["PATH"] = f"{self.bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        return env
+
+
+def route_ssh_through(config: Path, root: Path) -> ScopedSsh:
+    """Materialize a scratch home and an `ssh` shim that both resolve `config`.
+
+    `root` is a directory this run owns; two subdirectories are created under it.
+    """
+    real_ssh = shutil.which("ssh")
+    if real_ssh is None:
+        pytest.fail(
+            "no `ssh` on PATH, so dl's pty transport cannot run at all -- it is "
+            "OpenSSH that carries the terminal into the workspace"
+        )
+
+    home = root / "home"
+    (home / ".ssh").mkdir(parents=True, exist_ok=True)
+    alias_config = home / ".ssh" / "config"
+    if not alias_config.exists():
+        # A symlink, so the file devpod rewrites on the next `up` is the file dl
+        # reads. `devpod up` replaces the path rather than editing in place, and
+        # a copy taken now would answer for the workspaces of a moment ago.
+        alias_config.symlink_to(config)
+
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "ssh"
+    shim.write_text(f'#!/bin/sh\nexec {shlex.quote(real_ssh)} -F {shlex.quote(str(config))} "$@"\n')
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    return ScopedSsh(home=home, bin_dir=bin_dir, config=config)

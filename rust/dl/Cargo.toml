@@ -1,0 +1,50 @@
+[package]
+name = "dl"
+description = "devlaunch: launch a devcontainer workspace for a repo in one command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+devlaunch-core = { workspace = true }
+# The runner's own types (`Exit`) reach the rendering, so the leaf crate core
+# re-exports is named here too rather than through a re-export path.
+devlaunch-runner = { workspace = true }
+clap = { workspace = true }
+# `signal(2)`, so Ctrl-C exits 130 the way Python's KeyboardInterrupt did rather
+# than killing this process by signal (which has no exit code at all).
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+skim = { workspace = true }
+
+# The released package ships two binaries, and a maturin bin-wheel ships the bin
+# targets of exactly *one* cargo package (maturin 1.14 asks cargo metadata for
+# `root_package()` and takes its targets; there is no cross-package collection).
+# So the package the wheel is built from has to own both bin targets, and this is
+# that package -- see `packaging/wheel/pyproject.toml`.
+#
+# Nothing forks: the bin below compiles the very `aid/src/main.rs` the `aid`
+# crate compiles, and `aid`'s own package keeps its own bin target (its tests
+# reach it through `env!("CARGO_BIN_EXE_aid")`, which only exists for a bin of
+# the package under test). `required-features` is what keeps the two from
+# colliding -- a bin whose required features are off is skipped, so an ordinary
+# `cargo build --workspace --all-targets` builds `target/*/aid` from the `aid`
+# package alone and cargo has no output-filename collision to warn about. Only
+# the wheel and conda builds pass `--features wheel`.
+[features]
+wheel = []
+
+[[bin]]
+name = "aid"
+path = "../aid/src/main.rs"
+required-features = ["wheel"]
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+devlaunch-test-support = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+# Variant config, auto-discovered by rattler-build because it sits next to
+# `recipe.yaml` (the render log names it: "Loading variant config from ...").
+#
+# The one thing it pins is a floor under the Rust compiler. `recipe.yaml` builds
+# with `${{ compiler('rust') }}`, which on its own resolves to whatever
+# `rust_linux-64` conda-forge happens to serve, with no lower bound. The crates
+# are `edition = "2024"` (rust/Cargo.toml), and edition 2024 needs rustc >= 1.85;
+# an older compiler is a build failure that would land on prefix.dev *after* the
+# PyPI wheel and the tag already shipped (conda-publish.yml chains off
+# Auto-publish), which is the desync worth spending a line to avoid.
+#
+# A floor, not an exact pin: conda-forge's rust is already well past this, so
+# `>=1.85` never constrains the solve today — it only refuses a channel that
+# somehow offers something too old to compile the edition. The `rust-toolchain.toml`
+# 1.97.1 pin governs the cargo builds in CI; this governs the conda toolchain,
+# which is a separate package resolved from the channels.
+rust_compiler_version:
+  - ">=1.85"

@@ -60,6 +60,49 @@ def isolated_devlaunch_env(tmp_path: Path) -> Generator[Dict[str, Path], None, N
         os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
+# The devcontainer every fixture here writes. One image for the whole suite: an
+# e2e run pays for each distinct image it pulls, and nothing under test depends
+# on which one it is beyond it holding a shell and a devpod agent.
+DEVCONTAINER_JSON = """{
+    "name": "Test Container",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu"
+}
+"""
+
+
+def build_repo_with_devcontainer(root: Path) -> Path:
+    """A committed git repo with a devcontainer, built outside pytest's scoping.
+
+    The same thing `local_git_repo_with_devcontainer` yields, reachable from a
+    scope that cannot ask for it: fixtures are resolved by scope, and a
+    module-scoped fixture requesting a function-scoped one is an error. A module
+    that builds one workspace for all its tests needs the repo to live as long as
+    the workspace does, so it calls this instead.
+
+    Smaller than the fixture chain on purpose -- one branch, one commit, no bare
+    stand-in remote. What devpod is given is a working copy, so a work tree is
+    the whole requirement; the branches the fixture publishes exist for tests
+    about resolving branches, and this is not one.
+
+    Returns the working copy, which is what `devpod up` takes as its source.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+
+    def run(*args: str) -> None:
+        subprocess.run(list(args), cwd=root, check=True, capture_output=True)
+
+    run("git", "init", "--initial-branch=main")
+    run("git", "config", "user.email", "test@example.com")
+    run("git", "config", "user.name", "Test User")
+    (root / "README.md").write_text("# Test Repository\n")
+    devcontainer = root / ".devcontainer"
+    devcontainer.mkdir(exist_ok=True)
+    (devcontainer / "devcontainer.json").write_text(DEVCONTAINER_JSON)
+    run("git", "add", "-A")
+    run("git", "commit", "-m", "Initial commit")
+    return root
+
+
 @pytest.fixture
 def local_git_repo(tmp_path: Path) -> Dict[str, Any]:
     """Create a real local git repository as a 'remote'.
@@ -183,13 +226,7 @@ def local_git_repo_with_devcontainer(local_git_repo: Dict[str, Any]) -> Dict[str
     devcontainer_dir = work_dir / ".devcontainer"
     devcontainer_dir.mkdir()
     devcontainer_json = devcontainer_dir / "devcontainer.json"
-    devcontainer_json.write_text(
-        """{
-    "name": "Test Container",
-    "image": "mcr.microsoft.com/devcontainers/base:ubuntu"
-}
-"""
-    )
+    devcontainer_json.write_text(DEVCONTAINER_JSON)
 
     # Commit and push
     subprocess.run(

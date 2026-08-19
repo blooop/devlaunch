@@ -48,11 +48,20 @@ jobs:
         id: decide
         run: |
           set -euo pipefail
+          # `rust/Cargo.toml` since 0.1.0: the version moved there and the recipe
+          # reads it from there too (`load_from_file`), so this is the same number
+          # the package will be named with. `[workspace.package] version` is the
+          # first `version = "..."` line in the file. Auto-publish decides the same
+          # way -- keep the two in step.
+          #
+          # Note what is deliberately *not* here: Auto-publish also skips a version
+          # that is already tagged, because it is the workflow that creates the tag.
+          # By the time this one runs, the tag exists on purpose.
           read_version() { sed -n 's/^version = "\(.*\)"/\1/p' "$1" | head -1; }
 
-          version=$(read_version pyproject.toml)
+          version=$(read_version rust/Cargo.toml)
           if [ -z "$version" ]; then
-            echo "could not read a version from pyproject.toml" >&2
+            echo "could not read a version from rust/Cargo.toml" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -63,8 +72,8 @@ jobs:
             exit 0
           fi
 
-          git show HEAD^:pyproject.toml > /tmp/previous-pyproject.toml 2>/dev/null || : > /tmp/previous-pyproject.toml
-          previous=$(read_version /tmp/previous-pyproject.toml)
+          git show HEAD^:rust/Cargo.toml > /tmp/previous-cargo.toml 2>/dev/null || : > /tmp/previous-cargo.toml
+          previous=$(read_version /tmp/previous-cargo.toml)
 
           if [ "$version" = "$previous" ]; then
             echo "version is still ${version:-unset}; nothing to publish"
@@ -108,7 +117,17 @@ jobs:
         uses: prefix-dev/rattler-build-action@v0.2.38
         with:
           recipe-path: conda.recipe/recipe.yaml
-          build-args: --channel conda-forge --channel https://prefix.dev/blooop --no-include-recipe
+          # `--experimental` is what enables the recipe's `load_from_file`, which
+          # is how its version comes from `rust/Cargo.toml` instead of being a
+          # second number to bump. It gates that jinja function only; nothing about
+          # the package it produces is experimental.
+          #
+          # The recipe compiles Rust now, with `${{ compiler('rust') }}` from
+          # conda-forge -- no toolchain step is needed here, and none should be
+          # added: the toolchain is a build dependency resolved from the channels
+          # like any other, which is what makes the build reproducible from the
+          # recipe alone.
+          build-args: --experimental --channel conda-forge --channel https://prefix.dev/blooop --no-include-recipe
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

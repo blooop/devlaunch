@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-19
+
+### Changed
+
+- **`dl` and `aid` are Rust.** Same commands, same cache, same `metadata.json`; a compiled
+  binary instead of a Python package. The port, its order, and the complete list of what
+  changed on purpose are in
+  [docs/rust-rewrite-plan.md](https://github.com/blooop/devlaunch/blob/main/docs/rust-rewrite-plan.md)
+  — the [divergence table](https://github.com/blooop/devlaunch/blob/main/docs/rust-rewrite-plan.md#divergence-table-grade-c)
+  is that list, 24 numbered rows, and nothing outside it changed by intent. The Python build is
+  feature-frozen at 0.0.29 and stays in the repository as the reference the parity harness runs
+  against.
+
+  The four rows most likely to be noticed:
+
+  - **The fuzzy selector is built in** (row 6). No `fzf` on `PATH`, no `iterfzf` — one launch-failure
+    class gone. With no terminal (`dl < /dev/null`) the picker declines silently where fzf wrote
+    `inappropriate ioctl for device`; stdout and the exit code are unchanged.
+  - **Reserved verbs win over bare workspace specs** (row 1). `dl stop` opens the selector to stop
+    something rather than looking for a workspace named `stop`, and every verb takes the workspace
+    on either side (`dl stop <ws>` and `dl <ws> stop`).
+  - **Usage errors exit 2** (row 14), clap's convention, where the old build exited 1: unknown flags,
+    `--json`/`--size` without `--ls`, two global commands at once, and the other combinations the
+    documented grammar never meant to accept and used to discard silently (row 15).
+  - **No tracebacks, ever** (row 4). A failure is one line with the same exit code; OS reasons read in
+    Rust's phrasing (`Permission denied (os error 13)`).
+
+- **Both channels ship two binaries and nothing else.** The PyPI wheel is a maturin bin-wheel
+  (linux-64, `manylinux_2_28`: glibc 2.28 and newer — Ubuntu 20.04, RHEL 8) and the conda package is
+  built with `cargo install`. Neither depends on Python, `iterfzf` or `tomli` any more; `devpod` on
+  `PATH` is still the one requirement, and the conda package still declares it. The version is read
+  from `rust/Cargo.toml` by everything that names one, so the wheel, the conda package and
+  `dl --version` cannot disagree.
+
+### Removed
+
+- **The `(dev, editable from <tree>)` suffix on `--version`** (row 16). It came from the installed
+  Python package's PEP 610 metadata, which a compiled binary does not have; `dl --version` now always
+  prints the bare version. Released builds printed identically before.
+
+### Rollback
+
+0.0.29 is the last Python release, and going back to it needs no cleanup: both builds read and write
+`metadata.json` at schema 2 under the same locks, so every workspace survives the downgrade.
+
+```bash
+pixi global install --channel conda-forge --channel https://prefix.dev/blooop "devlaunch<0.1"
+pip install "devlaunch<0.1"
+```
+
 ## [0.0.29] - 2026-08-18
 
 ### Fixed

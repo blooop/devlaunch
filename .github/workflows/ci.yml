@@ -125,6 +125,238 @@ jobs:
       - name: E2E
         run: pixi run test-e2e
 
+  # The Rust port's gate (docs/rust-rewrite-plan.md). Required from day one:
+  # red always means something real. Two halves. The scaffold checks -- cargo
+  # build/test/clippy/fmt, the spec-ledger lint (every test file has a
+  # disposition row; the `pending` count in rust/pending-count.txt is kept in
+  # step with the ledger and reviewed in the PR), and parity.py's own unit tests.
+  # And `parity.py run`, the two-way expected-failure ratchet: it builds the
+  # release `dl` and `aid`, points DEVLAUNCH_DL_CMD and DEVLAUNCH_AID_CMD at
+  # them, runs both pytest tiers, and fails on any failure outside
+  # rust/parity-manifest.txt (a regression) or any manifest entry that passed (a
+  # stale entry to shrink in the same PR).
+  #
+  # **Tier 2 is the real e2e suite**, and has been since the manifest stopped
+  # saying ALL: `parity.py run` runs `pytest -m e2e` as well as
+  # `-m "not e2e"`, so this job builds real containers through real devpod
+  # exactly as the `e2e` job above does. It needs no provisioning step for that,
+  # for the same two reasons that job needs none -- `ubuntu-latest` is an
+  # ephemeral VM with Docker preinstalled, and devpod is a pixi dependency
+  # already in the lockfile setup-pixi restores. The one requirement is
+  # ordering: setup-pixi has to come before `parity.py run`, which is why it
+  # sits at the bottom of the step list rather than beside the toolchain. The
+  # lint and self-test are stdlib-only and deliberately run before it.
+  rust-parity:
+    runs-on: ubuntu-latest
+    # Larger than the 25 of the `e2e` job because this job is a superset of it.
+    # On top of a full e2e tier it does: a Rust toolchain install, a cold
+    # `--all-targets` debug build, ~1400 cargo tests, clippy over all targets, a
+    # *second* build in the release profile (parity.py's own, since the release
+    # binaries are what the tiers judge), and the 1874-test tier-1 pytest run.
+    # Measured locally, the whole of `parity.py run` -- release build, both
+    # tiers, eight real containers -- is 3m42s against a warm cache, so what this
+    # number is really sized for is the two Rust builds on a *cold* `rust-cache`
+    # plus the same slow-registry image pull the `e2e` job's 25 accounts for.
+    # Bounded at all is the point: unbounded, a stalled pull is a job that hangs
+    # for six hours and reports a timeout nobody reads.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Kept in lockstep with rust/rust-toolchain.toml (the pin of record).
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build
+        working-directory: rust
+        run: cargo build --locked --all-targets
+      # Split per test binary, each `timeout`-bounded, so a wedged binary fails
+      # its own short step instead of holding the runner ~46m until it loses
+      # contact — and the step left `in_progress` at a crash names the culprit
+      # even when the runner dies before uploading logs. Single-threaded so the
+      # concurrency tests do not interleave. If this is stable it becomes the
+      # permanent shape.
+      - name: Test devlaunch-runner
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p devlaunch-runner -- --test-threads=1 --nocapture
+      - name: Test devlaunch-core
+        working-directory: rust
+        run: timeout 600 cargo test --locked -p devlaunch-core -- --test-threads=1 --nocapture
+      - name: Test aid (bins + rewrite)
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p aid --bins --test rewrite -- --test-threads=1 --nocapture
+      # Spawns and kills a real process tree (a blocking `devpod up`), so it gets
+      # the same log-pipe fence as `dl`'s interrupt/lock_wait: output to a file,
+      # cat after — an orphaned test child can hold the file, never this step's
+      # log pipe, which is what the runner waits on before ending the step.
+      - name: Test aid interrupt
+        working-directory: rust
+        run: |
+          timeout -k 10 300 cargo test --locked -p aid --test interrupt -- --test-threads=1 --nocapture > aid_interrupt.log 2>&1; ec=$?
+          cat aid_interrupt.log; exit $ec
+      - name: Test dl (lib + unit)
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --lib --bins -- --test-threads=1 --nocapture
+      - name: Test dl read_side
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test read_side -- --test-threads=1 --nocapture
+      - name: Test dl grammar
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test grammar -- --test-threads=1 --nocapture
+      - name: Test dl lifecycle
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test lifecycle -- --test-threads=1 --nocapture
+      - name: Test dl launch
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test launch -- --test-threads=1 --nocapture
+      - name: Test dl migration
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test migration -- --test-threads=1 --nocapture
+      # These two suites spawn and kill real process trees. Their cargo output
+      # goes to a file and is cat'ed after, so a test child that outlives the
+      # timeout can only hold the file open — never this step's log pipe, which
+      # is what the runner waits on before it will end the step. A held pipe
+      # here is what killed whole runners at exactly 46m ("lost communication
+      # with the server") with the step still showing in_progress.
+      - name: Test dl lock_wait
+        working-directory: rust
+        run: |
+          timeout -k 10 300 cargo test --locked -p dl --test lock_wait -- --test-threads=1 --nocapture > lock_wait.log 2>&1; ec=$?
+          cat lock_wait.log; exit $ec
+      - name: Test dl interrupt
+        working-directory: rust
+        run: |
+          timeout -k 10 300 cargo test --locked -p dl --test interrupt -- --test-threads=1 --nocapture > interrupt.log 2>&1; ec=$?
+          cat interrupt.log; exit $ec
+      - name: Clippy
+        working-directory: rust
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Format
+        working-directory: rust
+        run: cargo fmt --check
+      - name: Spec-ledger and manifest lint
+        run: python3 rust/parity.py lint
+      - name: parity.py self-test
+        run: python3 rust/parity.py self-test
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          cache: true
+          frozen: true
+          environments: default
+      - name: Parity ratchet
+        run: python3 rust/parity.py run
+      # The checked-in compare cases (rust/tools/parity_cases.txt): the frozen
+      # Python dl and the release Rust dl run in identical scratch worlds and are
+      # diffed on exit code, stdout, stderr, the devpod call log AND the on-disk
+      # cache state. This is the tripwire the harness-honesty review asked for --
+      # the compare sweeps were manual and unrecorded before, so a regression on
+      # the clean surface (listing, --purge -y, --prune -y, --reconcile, launch
+      # fast-attach) had nothing watching it. `--release` because that is the
+      # binary the gate judges; the release build is explicit because
+      # `parity.py run` above skips its own release build while the manifest is
+      # still the day-one ALL sentinel.
+      - name: Build the release binaries the compare cases judge
+        working-directory: rust
+        run: cargo build --release --locked -p dl -p aid
+      - name: Parity compare (checked-in cases)
+        run: python3 rust/tools/compare.py --cases rust/tools/parity_cases.txt --release --fingerprint
+
+  # The release mechanics, exercised on every pull request instead of on release
+  # day. Both published artifacts are compiled now (docs/rust-rewrite-plan.md M10):
+  # a maturin bin-wheel for PyPI and a `cargo install` conda package for
+  # prefix.dev, both taking their version from `rust/Cargo.toml`. Nothing else in
+  # this workflow builds either, so without this job a broken recipe or a lost
+  # `wheel` feature flag would first be discovered by `Auto-publish` on `main`,
+  # after the merge that caused it -- and a release that fails halfway leaves a
+  # version published to one channel and not the other.
+  #
+  # It is not the release: the wheel here is built on the runner rather than in the
+  # manylinux container `publish.yml` uses (so its platform tag is the runner's,
+  # which this job deliberately does not assert), and the conda side is rendered
+  # rather than built, because building it means a second full cargo build in a
+  # conda environment for no answer this job does not already get. What it proves
+  # is the wiring: both bin targets reach the wheel, the version is the
+  # single-sourced one everywhere it is read, and the recipe parses.
+  packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Kept in lockstep with rust/rust-toolchain.toml (the pin of record).
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the bin-wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: packaging/wheel
+          # Pinned, and kept in lockstep with `publish.yml`'s build step. The
+          # action's default is `latest`, which is how maturin 1.14 arrived
+          # unbidden and broke the build (1.14 rejects a `readme` path resolving
+          # outside the metadata root; see the symlink note in
+          # `packaging/wheel/pyproject.toml`). A pin means the maturin CI builds
+          # with only ever moves when someone edits these two files.
+          maturin-version: v1.14.1
+          # The one difference from `publish.yml`: no manylinux container, so the
+          # build reuses this job's toolchain and cargo cache and takes a couple of
+          # minutes instead of a cold container build. The wheel it produces is
+          # tagged for the runner's own glibc, which is exactly why the check below
+          # asserts contents and version and says nothing about the tag.
+          container: off
+          args: --release --locked --out dist
+      - name: The wheel is the two binaries, at the version rust/Cargo.toml names
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          wheel=$(ls -1 packaging/wheel/dist/*.whl)
+          python3 scripts/check_wheel.py "$wheel" --version "$version"
+          python3 -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install --quiet "$wheel"
+          test "$(/tmp/wheel-check/bin/dl --version)" = "dl $version"
+          test "$(/tmp/wheel-check/bin/aid --version)" = "aid $version"
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          run-install: false
+      - name: The conda recipe parses and names the same version
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          # `--experimental` for the recipe's `load_from_file`; see the comment in
+          # conda-publish.yml's build step. `--render-only` prints the rendered
+          # recipe as JSON on *stdout*; rattler-build's `devlaunch-<ver>-<hash>`
+          # build-string line is fancy-formatted logging on stderr, so a
+          # `grep devlaunch-$version-` over stdout matches nothing -- assert against
+          # the JSON instead, which is stable across rattler-build versions. This
+          # also confirms the `conda.recipe/variants.yaml` rust floor rendered into
+          # the build requirements rather than silently dropping out.
+          pixi exec rattler-build build --experimental --render-only \
+            --recipe conda.recipe/recipe.yaml > /tmp/rendered.txt
+          python3 -c '
+          import json, sys
+          expected = sys.argv[1]
+          rendered = json.load(open("/tmp/rendered.txt"))
+          if not rendered:
+              sys.exit("render produced no recipe variants")
+          for variant in rendered:
+              pkg = variant["recipe"]["package"]
+              if pkg["name"] != "devlaunch":
+                  sys.exit("recipe names package " + repr(pkg["name"]) + ", expected devlaunch")
+              if pkg["version"] != expected:
+                  sys.exit("recipe version " + repr(pkg["version"]) + " != rust/Cargo.toml " + repr(expected))
+              build = variant["recipe"]["requirements"]["build"]
+              if not any(dep.startswith("rust_") and ">=1.85" in dep for dep in build):
+                  sys.exit("rust compiler floor >=1.85 missing from build deps: " + repr(build))
+          print("conda recipe renders devlaunch " + expected + " with the rust >=1.85 floor")
+          ' "$version"
+
   # One name for a branch ruleset to require, standing for every job above it.
   #
   # A ruleset names required checks as literal strings, so requiring the jobs
@@ -155,7 +387,7 @@ jobs:
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
   gate:
-    needs: [ci, e2e]
+    needs: [ci, e2e, rust-parity, packaging]
     if: always()
     runs-on: ubuntu-latest
     steps:

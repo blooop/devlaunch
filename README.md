@@ -1,6 +1,6 @@
 # devlaunch
 
-A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete and fzf fuzzy selection.
+A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete and a built-in fuzzy selector.
 
 ## Continuous Integration Status
 
@@ -12,7 +12,7 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
 [![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
 ## Installation
@@ -30,6 +30,10 @@ This installs `devlaunch` along with `devpod` and all dependencies automatically
 ```bash
 pip install devlaunch
 ```
+
+`dl` and `aid` are compiled binaries: the wheel is linux-64 and needs a glibc no older than 2.28
+(Ubuntu 20.04, RHEL 8), and once installed it needs no Python at all — pip is only how it gets onto
+`PATH`. The conda package above has no such floor, so prefer it on an older distribution.
 
 Note: When using pip, you must install [devpod](https://devpod.sh/docs/getting-started/install) separately.
 If `devpod` is not on `PATH`, every command that needs it prints a single install hint on stderr and exits `127`
@@ -51,14 +55,37 @@ dl --install
 source ~/.bashrc  # or restart your terminal
 ```
 
+### Going back to the Python build
+
+`0.1.0` is the Rust rewrite: same commands, same cache, same `metadata.json`, different
+implementation (the whole of it is in [docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md), whose
+divergence table is the complete list of what changed on purpose). The last Python release is
+`0.0.29`, and nothing in the cache stops you going back to it:
+
+```bash
+pixi global install --channel conda-forge --channel https://prefix.dev/blooop "devlaunch<0.1"
+pip install "devlaunch<0.1"
+```
+
+Both builds read and write the same `metadata.json` at schema 2 under the same locks, so a downgrade
+keeps every workspace you already have and needs no cleanup. Please open an issue for whatever sent
+you back.
+
 ## Usage
 
 ```bash
-dl                               # Interactive workspace selector (fzf)
+dl                               # Interactive workspace selector
 dl <user/repo>                   # Start workspace and attach shell
 dl <user/repo> <cmd>             # Run workspace command (stop, code, etc.)
+dl <cmd> <user/repo>             # The same, verb first
+dl <cmd>                         # The verb, on a workspace you pick interactively
 dl <user/repo> -- <command>      # Run shell command in workspace
 ```
+
+The selector is built in — no `fzf` on `PATH` and no `iterfzf`, which is why there is nothing to
+install for it and why `dl` with its input redirected away from a terminal simply declines to open
+one. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
+stop something, it does not look for a workspace called `stop`.
 
 ### Commands that need a terminal
 
@@ -175,8 +202,8 @@ a leading dash is rejected rather than quietly rewritten.
 
 This id format is new, and the directories and containers on your machine were named by
 the previous scheme. The first `dl user/repo…` command after upgrading migrates the cache
-once and prints what it did. `dl --help`, `dl --version`, `dl --ls` and opening an existing
-workspace by name do not trigger it.
+once, and leaves what it did behind in the cache directory (the two listings named below).
+`dl --help`, `dl --version`, `dl --ls` and opening an existing workspace by name do not trigger it.
 
 **Your clone directories are renamed.** What was
 `~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
@@ -200,7 +227,7 @@ under the new id, and deleting the old one is all that remains for it.
 
 dl does not delete containers for you — deleting by id is how a running sidecar got
 destroyed the last time something tried ([kinisi_ros#9766](https://github.com/kinisi-robotics/kinisi_ros/pull/9766)) —
-so it prints a one-line notice with the count and writes the old ids to
+so it writes the old ids to
 `~/.cache/devlaunch/orphaned-workspaces.txt`. For the workspaces you are finished with,
 the disposal command reads from that listing:
 
@@ -236,6 +263,10 @@ fixed by hand.
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
 | `dl <user/repo> dotfiles` | Refresh dotfiles in the running workspace (`chezmoi update`) |
 | `dl <user/repo> -- <command>` | Run shell command in workspace (with a terminal, when `dl` has one) |
+
+Every verb in that table also takes the workspace second — `dl stop <user/repo>` — and with no
+workspace at all it opens the selector and applies itself to what you pick. `stop` and `rm` answer to
+`--stop` and `--rm` as well, since the flag spellings were documented long before they worked.
 
 ## Options
 
@@ -640,23 +671,18 @@ user's own again.
 | `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
 | `dl --refresh` | Refresh completion cache |
 | `dl --help, -h` | Show this help |
-| `dl --version` | Show version (an editable install also names the tree it runs from) |
-
-A released install prints the version and nothing else. An install made in
-editable mode says so and names the checkout it resolves to, so two builds of
-the same version are told apart at a glance:
+| `dl --version` | Show version |
 
 ```bash
 $ dl --version
-dl 0.0.9
-
-$ dl-next --version          # editable install of a working tree
-dl 0.0.9 (dev, editable from /path/to/your/devlaunch)
+dl 0.1.0
 ```
 
-`aid --version` reports the same thing under its own name. The provenance comes
-from the installed package's own PEP 610 metadata; an install that records none
-just prints the bare version.
+The version and nothing else. `aid --version` reports the same version under its
+own name — the two binaries are built from one cargo package and cannot disagree
+about it. (Through 0.0.29 an editable install appended `(dev, editable from
+<tree>)`, read out of the installed package's PEP 610 metadata. A compiled binary
+has no such metadata and no editable installs, so there is nothing left to say.)
 
 ### What purge deletes
 
@@ -1183,7 +1209,7 @@ when they finish.
 ## Examples
 
 ```bash
-dl                               # Select workspace with fzf
+dl                               # Select a workspace interactively
 dl devpod                        # Open existing workspace
 dl loft-sh/devpod                # Create from GitHub
 dl blooop/devlaunch@main         # Create from specific branch
@@ -1195,7 +1221,7 @@ dl blooop/devlaunch stop         # Stop workspace
 
 ## Features
 
-- **Fuzzy Selection**: When called without arguments, uses fzf for interactive workspace selection
+- **Fuzzy Selection**: When called without arguments — or with a verb and no workspace — opens a built-in fuzzy selector; nothing to install, and no `fzf` on `PATH` to find
 - **Smart Completion**: Tab completion for workspaces, GitHub repos (owner/repo format), and paths
 - **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
 - **Branch Support**: Specify branches with `owner/repo@branch` syntax
@@ -1464,7 +1490,39 @@ A branch created on a remote in the last hour may therefore not be offered yet.
 
 ## Development
 
-This project uses [pixi](https://pixi.sh) for environment management.
+`dl` and `aid` are Rust, and the tree has two halves. `rust/` is what ships: one cargo workspace,
+built and tested with cargo. The Python package under `devlaunch/` is the frozen reference
+implementation the parity harness still runs — feature-frozen at 0.0.29, kept importable in the pixi
+environment because the test suite runs both sides against the same fixtures and compares them. See
+[docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md).
+
+```bash
+cd rust
+cargo build --release                          # target/release/{dl,aid}
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+cd .. && python3 rust/parity.py lint           # the spec-ledger and manifest gate
+python3 rust/parity.py run                     # both pytest tiers against the release binaries
+```
+
+`pixi run dl` and `pixi run aid` in this repository's environment are still the **Python** build (that
+is what the harness needs installed); the binaries are `rust/target/release/dl` and `…/aid`, and
+`DEVLAUNCH_DL_CMD` / `DEVLAUNCH_AID_CMD` are the seams that point the suite at them.
+
+The two published artifacts are built from the same cargo package, both taking their version from
+`rust/Cargo.toml` — the only place it is written down:
+
+```bash
+cd packaging/wheel && maturin build --release --locked -o dist    # the PyPI wheel: two binaries
+rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the conda package
+```
+
+`.github/workflows/publish.yml` and `conda-publish.yml` do exactly that on a version bump, in that
+order, off one tag; `ci.yml`'s `packaging` job builds the wheel and renders the recipe on every pull
+request, so a broken release is a red tick rather than a surprise.
+
+The Python half uses [pixi](https://pixi.sh) for environment management.
 
 ```bash
 # Run tests
@@ -1521,11 +1579,8 @@ a healthy one. Every run also prints what it actually built:
 A run whose workspace-building tests built nothing does not pass: the shortfall
 is counted into the last line of the run, so `4 passed, 18 skipped` becomes
 `1 failed, 4 passed, 18 skipped`. A run with no workspace-building tests in it —
-`pytest -m e2e test/e2e/test_interactive_session.py`, say — has nothing to
-answer for and says so instead.
-
-`DEVLAUNCH_E2E_WORKSPACE=<id>` opts in to the interactive-session tests, which
-attach to a workspace you already have running rather than building one.
+`pytest -m e2e -k TestDLCommandsE2E`, say — has nothing to answer for and says
+so instead.
 
 The nested daemon is also why the devcontainer does not join the host's network
 namespace: a nested daemon needs a namespace of its own, or it co-manages the
