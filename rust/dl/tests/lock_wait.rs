@@ -81,8 +81,17 @@ fn a_prune_blocked_on_the_repo_lock_says_it_is_waiting() {
     // `dl --prune -y` to completion: it blocks on the held lock (printing the line
     // under test), then the sibling's short sleep ends, the lock frees and dl
     // finishes on its own. Startup reaches the lock well inside the hold.
+    //
+    // stderr goes to a FILE, not a pipe, and dl runs in its own process group.
+    // Both are load-bearing: `--prune` spawns the detached completion-refresh
+    // child, and a pipe stays unread-until-EOF while any writer — including that
+    // detached grandchild if it races the parent's exit — still holds it, which
+    // wedged the CI runner here (locally the parent won the race). A file has no
+    // EOF to wait on, and a deadline with a process-group kill means a genuinely
+    // stuck dl fails this one test in seconds instead of holding the runner.
     let rootstr = root.display().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_dl"))
+    let err_path = root.join("prune.stderr");
+    let mut prune = Command::new(env!("CARGO_BIN_EXE_dl"))
         .args(["--prune", "-y"])
         .env_clear()
         .env("PATH", format!("{rootstr}/bin:/usr/bin:/bin"))
@@ -96,9 +105,27 @@ fn a_prune_blocked_on_the_repo_lock_says_it_is_waiting() {
         .env("GIT_SSH_COMMAND", "false")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .process_group(0)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&err_path).expect("a stderr file"))
+        .spawn()
         .expect("the dl binary runs");
+
+    let prune_deadline = Instant::now() + Duration::from_secs(30);
+    let timed_out = loop {
+        match prune.try_wait().expect("waiting on dl") {
+            Some(_) => break false,
+            None if Instant::now() >= prune_deadline => {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &format!("-{}", prune.id())])
+                    .status();
+                let _ = prune.wait();
+                break true;
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
 
     // The holder's group, killed so its `sleep` never outlives the test.
     let _ = Command::new("kill")
@@ -106,7 +133,12 @@ fn a_prune_blocked_on_the_repo_lock_says_it_is_waiting() {
         .status();
     let _ = holder.wait();
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+    assert!(
+        !timed_out,
+        "dl --prune did not finish within 30s of the lock being released; \
+         stderr so far:\n{stderr}"
+    );
     assert!(
         stderr
             .lines()
