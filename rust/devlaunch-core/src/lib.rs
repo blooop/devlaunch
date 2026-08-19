@@ -44,6 +44,7 @@ pub mod runner {
 // (even `locks` spans a contended wait), depending on nothing itself.
 //
 // binary surface — not part of the frozen wf API (#250 §7)
+pub(crate) mod json;
 pub mod timing;
 
 // Also a leaf, and for the same reason: the sink every flow reports its notices

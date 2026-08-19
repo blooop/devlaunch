@@ -31,7 +31,7 @@
 //! `./x`" is one answer too many, so the naming is now core's for both, and it is
 //! the lexical one.
 
-use devlaunch_core::clients::devpod::ListingUnreadable;
+use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::domain::workspace_id::{UnsafeName, WorkspaceId};
 use devlaunch_core::flows::launch::{self, LaunchNotice, Plan, Resolution};
 use devlaunch_core::flows::lifecycle;
@@ -67,6 +67,11 @@ pub(crate) enum Unaddressable {
     /// devpod's listing could not be read, so "no such workspace" could not be
     /// told from "devpod did not answer".
     Listing(ListingUnreadable),
+    /// The `devpod status` that would have said which workspace this is could not
+    /// be run at all — devpod missing, blocked, or out of time. Its own arm rather
+    /// than [`Unaddressable::Unknown`]: a devpod nobody can run has not denied
+    /// anything, and Python raises out of `get_workspace_state` here.
+    DevpodNotRun(NotRun),
     /// dl's own records or config could not be opened.
     Startup(StartupError),
 }
@@ -141,7 +146,9 @@ fn triple(
     // Constructing the WorkspaceId is the parse boundary: an unsafe owner, repo or
     // ref is rejected here, before it can name a container or a directory.
     let workspace = WorkspaceId::new(&owner, &repo, &branch)?;
-    let workspace_id = match launch::resolve_triple(context, cold, &workspace, &mut notices) {
+    let resolved = launch::resolve_triple(context, cold, &workspace, &mut notices)
+        .map_err(Unaddressable::DevpodNotRun)?;
+    let workspace_id = match resolved {
         Resolution::Warm { placement } => placement.workspace_id().to_owned(),
         // devpod knows nothing about it. The derived id is what the verb addresses,
         // and devpod's own refusal is what the user sees — no clone, no record.

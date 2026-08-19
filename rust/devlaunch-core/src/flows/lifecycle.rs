@@ -570,21 +570,39 @@ impl KnownWorkspace {
 /// and nothing prunes it, so a record naming a workspace deleted months ago is
 /// ordinary; addressing it would substitute one absent workspace for another and
 /// lose the derived id a create needs.
+///
+/// **A devpod that could not be run at all is not a denial.** Python's
+/// `get_workspace_state` folds a non-zero exit into `None` but *raises*
+/// `DevpodNotInstalled` (and its siblings) out of `run_devpod`, so a host with no
+/// devpod on it ends the command here rather than being told its workspace is
+/// unknown. Reading the two the same way is worse than a wrong message: the cold
+/// path it sends a launch down fetches a branch and builds a workspace clone on a
+/// host that cannot open it, and leaves both behind for the exit-127 to be
+/// discovered after. So the error is the runner's, and it travels.
 pub fn resolve_known_workspace(
     runner: &dyn Runner,
     triple: (&str, &str, &str),
     derived: &str,
     recorded_id: impl FnOnce() -> Option<String>,
     notices: &mut dyn Notices<LifecycleNotice>,
-) -> KnownWorkspace {
-    if let Ok(state) = workspace_state(runner, derived) {
-        return KnownWorkspace::Known {
-            workspace_id: derived.to_owned(),
-            state,
-        };
+) -> Result<KnownWorkspace, NotRun> {
+    match workspace_state(runner, derived) {
+        Ok(state) => {
+            return Ok(KnownWorkspace::Known {
+                workspace_id: derived.to_owned(),
+                state,
+            });
+        }
+        Err(StatusUnreadable::NotRun(not_run)) => return Err(not_run),
+        // devpod ran and refused, answered something unparsable, or answered
+        // without a state: Python's three `None`s, and all three mean "devpod
+        // knows no workspace by this name".
+        Err(_) => {}
     }
-    let unknown = || KnownWorkspace::Unknown {
-        derived: derived.to_owned(),
+    let unknown = || {
+        Ok(KnownWorkspace::Unknown {
+            derived: derived.to_owned(),
+        })
     };
     let Some(recorded) = recorded_id() else {
         return unknown();
@@ -592,8 +610,10 @@ pub fn resolve_known_workspace(
     if recorded == derived {
         return unknown();
     }
-    let Ok(state) = workspace_state(runner, &recorded) else {
-        return unknown();
+    let state = match workspace_state(runner, &recorded) {
+        Ok(state) => state,
+        Err(StatusUnreadable::NotRun(not_run)) => return Err(not_run),
+        Err(_) => return unknown(),
     };
     let (owner, repo, branch) = triple;
     notices.say(LifecycleNotice::AddressingRecordedWorkspace {
@@ -603,10 +623,10 @@ pub fn resolve_known_workspace(
         repo: repo.to_owned(),
         branch: branch.to_owned(),
     });
-    KnownWorkspace::Known {
+    Ok(KnownWorkspace::Known {
         workspace_id: recorded,
         state,
-    }
+    })
 }
 
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
@@ -4863,10 +4883,10 @@ mod tests {
 
         assert_eq!(
             resolved,
-            KnownWorkspace::Known {
+            Ok(KnownWorkspace::Known {
                 workspace_id: "r-main-aaa".to_owned(),
                 state: ContainerState::Running
-            }
+            })
         );
         assert!(!asked, "the warm path reads no metadata");
     }
@@ -4889,10 +4909,10 @@ mod tests {
 
         assert_eq!(
             resolved,
-            KnownWorkspace::Known {
+            Ok(KnownWorkspace::Known {
                 workspace_id: "r-main-old".to_owned(),
                 state: ContainerState::Stopped
-            }
+            })
         );
         assert_eq!(
             notices,
@@ -4918,9 +4938,9 @@ mod tests {
         );
         assert_eq!(
             resolved,
-            KnownWorkspace::Unknown {
+            Ok(KnownWorkspace::Unknown {
                 derived: "r-main-new".to_owned()
-            }
+            })
         );
     }
 
@@ -4939,9 +4959,9 @@ mod tests {
         );
         assert_eq!(
             resolved,
-            KnownWorkspace::Unknown {
+            Ok(KnownWorkspace::Unknown {
                 derived: "r-main-new".to_owned()
-            }
+            })
         );
     }
 
@@ -4957,6 +4977,7 @@ mod tests {
             || None,
             &mut ignoring(),
         );
+        let resolved = resolved.expect("devpod ran and denied it");
         assert_eq!(
             resolved,
             KnownWorkspace::Unknown {
@@ -4966,6 +4987,55 @@ mod tests {
         assert!(resolved.state().is_none());
         assert_eq!(resolved.workspace_id(), "r-main-new");
         assert!(!resolved.is_running());
+    }
+
+    #[test]
+    fn a_devpod_nobody_can_run_is_not_a_workspace_nobody_knows() {
+        // Python's `get_workspace_state` folds a non-zero exit into `None` but
+        // *raises* `DevpodNotInstalled`, so this is the point a devpod-less host's
+        // command ends. Answering `Unknown` instead sends a launch down the cold
+        // path, which clones a repository the host cannot open a container from
+        // and leaves it and its record behind (dl/tests/launch.rs pins the
+        // observable half).
+        let missing = FakeRunner::new().with_missing("devpod");
+        let mut asked = false;
+
+        let resolved = resolve_known_workspace(
+            &missing,
+            (OWNER, REPO, "main"),
+            "r-main-new",
+            || {
+                asked = true;
+                Some("r-main-old".to_owned())
+            },
+            &mut ignoring(),
+        );
+
+        assert_eq!(resolved, Err(NotRun::NotInstalled));
+        assert!(
+            !asked,
+            "a devpod that cannot be run makes the record irrelevant, so it is not read"
+        );
+    }
+
+    #[test]
+    fn a_devpod_that_refused_the_derived_id_is_a_denial_and_not_a_failure() {
+        // The other side of the line above: devpod ran, said it has no such
+        // workspace, and that is the cold path -- exit code and all.
+        let devpod = devpod_knowing(&[]);
+        let resolved = resolve_known_workspace(
+            &devpod,
+            (OWNER, REPO, "main"),
+            "r-main-new",
+            || None,
+            &mut ignoring(),
+        );
+        assert_eq!(
+            resolved,
+            Ok(KnownWorkspace::Unknown {
+                derived: "r-main-new".to_owned()
+            })
+        );
     }
 
     #[test]

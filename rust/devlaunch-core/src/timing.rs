@@ -618,9 +618,14 @@ pub struct Document {
 impl Document {
     /// The one line this document is written as.
     pub(crate) fn line(&self) -> String {
-        // Serializing a struct of numbers and `&'static str`s cannot fail; the
-        // fallback keeps the marker greppable rather than swallowing the line.
-        let json = serde_json::to_string(self).unwrap_or_else(|_| String::from("{}"));
+        // Spelled the way `json.dumps` spells it (`", "` / `": "` separators, and
+        // `ensure_ascii` for a span label that carries a non-ASCII path), which is
+        // what makes the byte-comparability above true rather than intended:
+        // `serde_json::to_string` writes the compact form and Python never does.
+        //
+        // Serializing a struct of numbers and strings cannot fail; the fallback
+        // keeps the marker greppable rather than swallowing the line.
+        let json = crate::json::serialize_as_python(self).unwrap_or_else(|| String::from("{}"));
         format!("{JSON_PREFIX} {json}")
     }
 }
@@ -1082,6 +1087,39 @@ mod tests {
         assert!(parsed["total"].as_f64().expect("a total") >= 0.0);
         assert_eq!(parsed["stages"].as_array().expect("stages").len(), 0);
         assert!(!line.contains('\n'), "one line, whatever else is on stderr");
+    }
+
+    #[test]
+    fn the_document_is_spelled_the_way_json_dumps_spells_it() {
+        // The byte-comparability the `Document` docstring promises: Python writes
+        // `{"total": 0.1, …}` and `serde_json::to_string` writes `{"total":0.1,…}`.
+        // Measured against the Python build's own line, whose separators are
+        // `json.dumps`' defaults.
+        let mut registry = recording();
+        registry.enter(Stage::Tools);
+        registry.record("devpod ssh", Duration::from_millis(500));
+        registry.leave(Stage::Tools, Outcome::Ok);
+        let line = registry.finish().lines().remove(0);
+
+        let json = line
+            .strip_prefix(&format!("{JSON_PREFIX} "))
+            .expect("the marker, then the document");
+        assert!(
+            json.starts_with(r#"{"total": "#),
+            "a key and its value are separated by `: `, as Python's default is: {json}"
+        );
+        assert!(
+            json.contains(r#", "total_epoch": "#),
+            "and members by `, `: {json}"
+        );
+        assert!(
+            json.contains(r#"{"label": "devpod ssh", "seconds": "#),
+            "including inside the nested span reports: {json}"
+        );
+        assert!(
+            json.ends_with(r#""spans": [{"label": "devpod ssh", "seconds": 0.5}]}]}"#),
+            "right down to the innermost object: {json}"
+        );
     }
 
     #[test]
@@ -1572,14 +1610,14 @@ mod tests {
         let json = line
             .strip_prefix(&format!("{JSON_PREFIX} "))
             .expect("the marker, then the document");
-        assert!(json.starts_with(r#"{"total":"#), "{json}");
-        let keys: Vec<usize> = [r#""total_epoch":"#, r#""stages":"#, r#""prewarm":"#]
+        assert!(json.starts_with(r#"{"total": "#), "{json}");
+        let keys: Vec<usize> = [r#""total_epoch": "#, r#""stages": "#, r#""prewarm": "#]
             .iter()
             .map(|key| json.find(key).unwrap_or_else(|| panic!("{key} in {json}")))
             .collect();
         assert!(keys[0] < keys[1] && keys[1] < keys[2], "{json}");
         assert!(
-            json.ends_with(r#""head_start_seconds":30.0,"shape":"hit"}}"#),
+            json.ends_with(r#""head_start_seconds": 30.0, "shape": "hit"}}"#),
             "the prewarm's facts, last and in Python's order: {json}"
         );
     }

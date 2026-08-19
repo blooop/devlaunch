@@ -211,10 +211,16 @@ def cmd_self_test() -> int:
     return 0 if result.wasSuccessful() else 1
 
 
-def _run_tier(name: str, marker: str, dl_cmd: str) -> list[str]:
-    """Run one pytest tier against the Rust binary; return failed node ids."""
+def _run_tier(name: str, marker: str, dl_cmd: str, aid_cmd: str) -> list[str]:
+    """Run one pytest tier against the Rust binaries; return failed node ids.
+
+    Both seams are exported, not just `dl`'s: `aid` is a second binary on the
+    Rust side (#252 §1) and a tier that redirected only `dl` would judge the
+    Python `aid` against the Rust `dl` -- a pair that ships together and would
+    then never be tested together.
+    """
     junit = Path(tempfile.mkstemp(prefix=f"parity-{name}-", suffix=".xml")[1])
-    env = dict(os.environ, DEVLAUNCH_DL_CMD=dl_cmd)
+    env = dict(os.environ, DEVLAUNCH_DL_CMD=dl_cmd, DEVLAUNCH_AID_CMD=aid_cmd)
     # Through pixi so the tier runs in the project environment CI already
     # restores; parity failures are read from junit, not the exit code.
     subprocess.run(
@@ -224,6 +230,16 @@ def _run_tier(name: str, marker: str, dl_cmd: str) -> list[str]:
         env=env,
         check=False,
     )
+    # A tier that never got as far as writing a report has not passed and has
+    # not failed a listed test either: it did not run. Saying so beats an
+    # ElementTree traceback, and beats an empty failure list read as success --
+    # which would take the manifest's stale-entry half down with it.
+    if not junit.exists() or junit.stat().st_size == 0:
+        raise ManifestError(
+            f"tier {name}: pytest wrote no junit report, so the tier's result is "
+            "unknown (a collection error, or an environment that could not start "
+            "pytest at all)"
+        )
     failed = []
     root = ET.parse(junit).getroot()
     for case in root.iter("testcase"):
@@ -244,12 +260,15 @@ def cmd_run() -> int:
         )
         return 0
     subprocess.run(
-        ["cargo", "build", "--release", "--locked", "-p", "dl"],
+        ["cargo", "build", "--release", "--locked", "-p", "dl", "-p", "aid"],
         cwd=RUST_DIR,
         check=True,
     )
-    dl_cmd = str(RUST_DIR / "target" / "release" / "dl")
-    failed = _run_tier("tier1", "not e2e", dl_cmd) + _run_tier("tier2", "e2e", dl_cmd)
+    release = RUST_DIR / "target" / "release"
+    dl_cmd, aid_cmd = str(release / "dl"), str(release / "aid")
+    failed = _run_tier("tier1", "not e2e", dl_cmd, aid_cmd) + _run_tier(
+        "tier2", "e2e", dl_cmd, aid_cmd
+    )
     unexpected, stale = compare_failures(failed, manifest.patterns)
     for f in unexpected:
         print(f"parity run: UNEXPECTED FAILURE {f} (not in the manifest)", file=sys.stderr)
@@ -268,7 +287,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["lint", "self-test", "run"])
     args = parser.parse_args()
-    return {"lint": cmd_lint, "self-test": cmd_self_test, "run": cmd_run}[args.command]()
+    try:
+        return {"lint": cmd_lint, "self-test": cmd_self_test, "run": cmd_run}[args.command]()
+    except ManifestError as error:
+        # The gate's own complaints are sentences, not tracebacks: a manifest
+        # that mixes the ALL sentinel with entries, or a tier that never wrote a
+        # report, is a thing to read and act on rather than a stack to decode.
+        print(f"parity {args.command}: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

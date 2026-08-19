@@ -11,7 +11,13 @@ import subprocess
 import sys
 from unittest.mock import patch
 
-from fixtures.e2e_helpers import DLRunner, aid_command, dl_command
+from fixtures.e2e_helpers import (
+    DLRunner,
+    aid_command,
+    aid_is_python,
+    dl_command,
+    dl_is_python,
+)
 
 
 class TestDlCommand:
@@ -57,6 +63,32 @@ class TestAidCommand:
         monkeypatch.setenv("DEVLAUNCH_DL_CMD", "/opt/rust/dl")
         monkeypatch.delenv("DEVLAUNCH_AID_CMD", raising=False)
         assert aid_command() == [sys.executable, "-m", "devlaunch.aid"]
+
+
+class TestWhichImplementationIsUnderTest:
+    """The one switch a divergence-row branch is allowed to read.
+
+    Derived from the same variable as `dl_command`, so a test cannot be told one
+    thing by the seam and another by the switch.
+    """
+
+    def test_unset_means_python(self, monkeypatch):
+        monkeypatch.delenv("DEVLAUNCH_DL_CMD", raising=False)
+        assert dl_is_python() is True
+
+    def test_a_named_binary_is_not_python(self, monkeypatch):
+        monkeypatch.setenv("DEVLAUNCH_DL_CMD", "/opt/devlaunch/target/release/dl")
+        assert dl_is_python() is False
+
+    def test_blank_is_unset_here_too(self, monkeypatch):
+        monkeypatch.setenv("DEVLAUNCH_DL_CMD", "   ")
+        assert dl_is_python() is True
+
+    def test_aid_has_its_own_switch(self, monkeypatch):
+        monkeypatch.setenv("DEVLAUNCH_DL_CMD", "/opt/rust/dl")
+        monkeypatch.delenv("DEVLAUNCH_AID_CMD", raising=False)
+        assert dl_is_python() is False
+        assert aid_is_python() is True
 
 
 class TestDLRunnerRoutesThroughSeam:

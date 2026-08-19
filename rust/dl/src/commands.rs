@@ -1093,6 +1093,16 @@ fn refuse_target(refused: &Unaddressable) -> Ending {
             Ending::Refused
         }
         Unaddressable::Listing(refused) => refuse_listing(refused),
+        Unaddressable::DevpodNotRun(refused) => {
+            // Named by the subcommand that did not happen, like every other
+            // could-not-run line; `NotInstalled` is the one that exits 127.
+            eprintln!("{}", render::devpod_not_run("status", refused));
+            if matches!(refused, NotRun::NotInstalled) {
+                Ending::DevpodMissing
+            } else {
+                Ending::Refused
+            }
+        }
         Unaddressable::Startup(refused) => refuse_startup(refused),
     }
 }

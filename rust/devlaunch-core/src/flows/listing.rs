@@ -58,7 +58,6 @@
 // `--purge`) and the lifecycle flows, which land in M5c and M6.
 #![allow(dead_code)] // consumed from M5c binary
 
-use std::io;
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -71,6 +70,7 @@ use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_state::{self, CloneState, NonEmpty, Reason, Unsaved};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
+use crate::timing;
 
 // ---------------------------------------------------------------------------
 // the per-command snapshot
@@ -753,6 +753,12 @@ fn enriched_row(
 /// ([`devpod::StatusUnreadable`]) for a caller that has something different to do
 /// about each; this one does not.
 fn container_state(runner: &dyn Runner, workspace_id: &str) -> Option<ContainerState> {
+    // Staged, because Python stages `get_workspace_state` itself
+    // (`@timing.staged("devpod-up")`), and the JSON timing document reports spans
+    // *inside* the stage that was open. Unstaged, the `devpod status` round trips
+    // this makes are in the prose summary and missing from the document — which is
+    // the shape a listing of five workspaces reports the most of.
+    let _stage = timing::stage(timing::Stage::DevpodUp);
     devpod::status(runner, workspace_id).ok()
 }
 
@@ -976,73 +982,12 @@ fn size_cell(workspace: &Workspace, cache_dir: &Path, sizes: Sizes) -> SizeCell 
 
 /// A JSON value spelled the way Python's `json.dumps` spells it.
 ///
-/// Three surfaces need it and all three are compared byte for byte against the
-/// Python build: the `SOURCE` column's rendering of a source dl cannot read, the
-/// `completions.json` cache (which the cutover checklist requires both binaries to
-/// write identically), and `dl --completion-data`'s echo of it.
-///
-/// Two differences from `serde_json::to_string`, both of them Python's defaults:
-///
-/// - separators are `", "` and `": "`, not `","` and `":"`;
-/// - non-ASCII is escaped (`ensure_ascii=True`), as `\uXXXX` in lowercase hex,
-///   with astral characters written as the surrogate pair Python writes.
-pub(crate) fn json_as_python_writes_it(value: &serde_json::Value) -> String {
-    let mut out = Vec::new();
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonFormatter);
-    if value.serialize(&mut serializer).is_err() {
-        return String::new();
-    }
-    String::from_utf8(out).unwrap_or_default()
-}
-
-/// `json.dumps`' default spacing and `ensure_ascii`.
-struct PythonFormatter;
-
-impl serde_json::ser::Formatter for PythonFormatter {
-    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        writer.write_all(if first { b"" } else { b", " })
-    }
-
-    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        writer.write_all(if first { b"" } else { b", " })
-    }
-
-    fn begin_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        writer.write_all(b": ")
-    }
-
-    /// The run of string bytes serde did not have to escape — which includes every
-    /// non-ASCII byte, since serde escapes only the control characters, `"` and
-    /// `\`. Python escapes the rest too, so this is where `ensure_ascii` lives.
-    fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        if fragment.is_ascii() {
-            return writer.write_all(fragment.as_bytes());
-        }
-        let mut buffer = [0u16; 2];
-        for character in fragment.chars() {
-            if character.is_ascii() {
-                writer.write_all(character.encode_utf8(&mut [0u8; 4]).as_bytes())?;
-            } else {
-                for unit in character.encode_utf16(&mut buffer) {
-                    writer.write_all(format!("\\u{unit:04x}").as_bytes())?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
+/// Three surfaces here need it and all three are compared byte for byte against
+/// the Python build: the `SOURCE` column's rendering of a source dl cannot read,
+/// the `completions.json` cache (which the cutover checklist requires both
+/// binaries to write identically), and `dl --completion-data`'s echo of it. The
+/// spelling itself lives in [`crate::json`], which the timing document shares.
+pub(crate) use crate::json::as_python_writes_it as json_as_python_writes_it;
 
 #[cfg(test)]
 mod tests {

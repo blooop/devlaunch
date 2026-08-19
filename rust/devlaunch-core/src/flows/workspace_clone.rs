@@ -310,6 +310,14 @@ impl std::fmt::Debug for WorkspaceCloneManager<'_> {
 impl<'r> WorkspaceCloneManager<'r> {
     /// A manager over the cache `config` describes.
     pub fn from_config(config: &WorktreeConfig, git: Git<'r>) -> Self {
+        // Python stages the *construction* of this manager, not just its work
+        // (`@timing.staged("host-prep")` on `dl.py`'s `_get_clone_manager`), so
+        // every command that reaches for the cache reports a `host-prep` stage
+        // even when nothing in it had anything to measure — `--prune`, `--reconcile`
+        // and `<ws> rm` all do. Without it those documents carry no stage at all,
+        // and the one thing a reader can compare between the two builds is which
+        // stages a command opened.
+        let _stage = timing::stage(timing::Stage::HostPrep);
         Self::new(
             &config.repos_dir,
             std::time::Duration::from_secs(config.fetch_interval),

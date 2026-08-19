@@ -961,17 +961,52 @@ fn a_remote_program_that_exited_130_ends_130_and_not_devpods_1() {
     );
 }
 
+/// The one line a host with no devpod on it gets, whatever it asked for.
+const MISSING_DEVPOD: &str = "devpod not found on PATH: dl cannot manage workspaces without it. Install devpod from \
+     https://devpod.sh/docs/getting-started/install (pixi/conda installs of devlaunch include \
+     it; pip installs do not).\n";
+
 #[test]
 fn a_missing_devpod_is_exit_127_and_the_line_that_names_both_installs() {
     let world = World::with(&["--warm", "--no-devpod"]);
     let run = world.dl(&[MAIN]);
     run.exited(127);
-    assert_eq!(
-        run.err,
-        "devpod not found on PATH: dl cannot manage workspaces without it. Install devpod from \
-         https://devpod.sh/docs/getting-started/install (pixi/conda installs of devlaunch include \
-         it; pip installs do not).\n"
+    assert_eq!(run.err, MISSING_DEVPOD);
+}
+
+#[test]
+fn a_missing_devpod_stops_a_cold_launch_before_it_clones_anything() {
+    // The fast-attach probe is the first thing a `owner/repo@branch` launch does,
+    // and a devpod that is not installed is not an answer of "no such workspace":
+    // Python's `get_workspace_state` raises `DevpodNotInstalled` out of
+    // `resolve_known_workspace`, so the launch ends at the probe with nothing on
+    // disk. Reading that failure as a denial instead sends the launch down the
+    // cold path -- which fetches the branch and builds a workspace clone on a host
+    // that cannot open it, prints three progress lines nobody can act on, and
+    // leaves the clone and its record behind for the 127 to be discovered after.
+    let world = World::with(&["--no-devpod"]);
+    let run = world.dl(&["blooop/devlaunch@main"]);
+    run.exited(127);
+    assert_eq!(run.err, MISSING_DEVPOD);
+    let clone = world
+        .root
+        .join("cache/devlaunch/repos/blooop/devlaunch")
+        .join(MAIN);
+    assert!(
+        !clone.exists(),
+        "a host with no devpod built the workspace clone at {}",
+        clone.display()
     );
+}
+
+#[test]
+fn a_missing_devpod_stops_a_default_branch_launch_before_it_clones_anything() {
+    // The same, for the shape that has to name the default branch first: the bare
+    // cache is read (offline, off the fixture's clone) and then the probe ends it.
+    let world = World::with(&["--no-devpod"]);
+    let run = world.dl(&["blooop/devlaunch"]);
+    run.exited(127);
+    assert_eq!(run.err, MISSING_DEVPOD);
 }
 
 // ===========================================================================

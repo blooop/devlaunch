@@ -53,6 +53,28 @@ def aid_command() -> List[str]:
     return _command_seam("DEVLAUNCH_AID_CMD", "devlaunch.aid")
 
 
+def dl_is_python() -> bool:
+    """True when the command under test is this checkout's Python `dl`.
+
+    The one place a test is allowed to ask which implementation it is judging,
+    and it exists for exactly one purpose: the divergence table in
+    docs/rust-rewrite-plan.md licenses a numbered list of deliberate behavioural
+    differences, and a test that pins one of them has to pin *both* sides. Every
+    caller cites its row number, and the Python branch keeps asserting exactly
+    what it asserted before the branch existed.
+
+    Derived from the seam rather than from a separate variable, so there is one
+    switch and not two that can disagree: unset means the default argv prefix,
+    which is `python -m devlaunch.dl`.
+    """
+    return not os.environ.get("DEVLAUNCH_DL_CMD", "").strip()
+
+
+def aid_is_python() -> bool:
+    """True when the command under test for `aid` is this checkout's Python one."""
+    return not os.environ.get("DEVLAUNCH_AID_CMD", "").strip()
+
+
 def require_devpod() -> None:
     """Fail the session -- not skip it -- if devpod cannot be executed.
 

@@ -1921,12 +1921,15 @@ pub enum Resolution {
 /// Charged to the `devpod-up` stage with a `devpod status` span, for the reason
 /// [`is_running`] gives: the span belongs inside the stage the lifecycle helper
 /// opens, and a guard around the call would drop after that stage had closed.
+/// A devpod that could not be run at all travels out as [`NotRun`] rather than
+/// becoming a cold launch: see [`lifecycle::resolve_known_workspace`] for what a
+/// cold launch on a devpod-less host costs.
 pub fn resolve_triple(
     context: &mut CommandContext<'_>,
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
     notices: &mut dyn Notices<LaunchNotice>,
-) -> Resolution {
+) -> Result<Resolution, NotRun> {
     let derived = workspace.value();
     let triple = (workspace.owner(), workspace.repo(), workspace.git_ref());
     let known = lifecycle::resolve_known_workspace(
@@ -1935,8 +1938,8 @@ pub fn resolve_triple(
         &derived,
         || recorded_id(cold, triple),
         &mut as_lifecycle(notices),
-    );
-    match known {
+    )?;
+    Ok(match known {
         KnownWorkspace::Known {
             workspace_id,
             state,
@@ -1949,7 +1952,7 @@ pub fn resolve_triple(
         KnownWorkspace::Unknown { .. } => Resolution::Cold {
             workspace: workspace.clone(),
         },
-    }
+    })
 }
 
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
@@ -2327,7 +2330,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Ok(workspace) => workspace,
             Err(unsafe_name) => return Ok(Err(LaunchRefusal::UnsafeSpec(unsafe_name))),
         };
-        match resolve_triple(self.context, self.cold, &workspace, &mut *self.notices) {
+        // A devpod that could not be run ends the launch here, before the clone:
+        // it is the probe Python raises `DevpodNotInstalled` out of.
+        let resolved = resolve_triple(self.context, self.cold, &workspace, &mut *self.notices)
+            .map_err(LaunchAborted::DevpodNotRun)?;
+        match resolved {
             Resolution::Warm { placement } => Ok(Ok(placement)),
             Resolution::Cold { workspace } => {
                 match prepare(self.cold, &workspace, &remote_url, &mut *self.notices) {
@@ -4443,12 +4450,12 @@ mod tests {
 
         assert_eq!(
             resolution,
-            Resolution::Warm {
+            Ok(Resolution::Warm {
                 placement: Placement::Known {
                     workspace_id: workspace.value(),
                     state: ContainerState::Running,
                 }
-            }
+            })
         );
         assert_eq!(
             scene.devpod_commands(),
@@ -4473,9 +4480,9 @@ mod tests {
 
         assert_eq!(
             resolution,
-            Resolution::Cold {
+            Ok(Resolution::Cold {
                 workspace: workspace.clone()
-            }
+            })
         );
         assert_eq!(cold.opens.get(), 1, "the record was consulted exactly once");
     }
