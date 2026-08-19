@@ -31,8 +31,8 @@ use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, Worksp
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::repo_manager::{
-    CacheNotice, Cleanup, CloneError, EnsureRepoError, Refusal, RefusalReason, RemoveTreeError,
-    WrongRepoLock,
+    CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
+    RemoveTreeError, WrongRepoLock,
 };
 use devlaunch_core::flows::workspace_clone::{
     EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
@@ -750,7 +750,10 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
         config::ConfigError::Unreadable { path, source } => {
             format!("could not read {} ({source})", path.display())
         }
-        config::ConfigError::Malformed { path, reason } => {
+        // One sentence for both parse arms: the reason already says whether the
+        // parser or the typed read refused, and the arms exist for callers.
+        config::ConfigError::NotToml { path, reason }
+        | config::ConfigError::WrongType { path, reason } => {
             format!("{} is not usable: {reason}", path.display())
         }
     }
@@ -954,9 +957,24 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             repo,
             branch,
             reason,
-        } => format!("Could not fetch {branch} for {owner}/{repo}: {reason}"),
+        } => format!(
+            "Could not fetch {branch} for {owner}/{repo}: {}",
+            not_refreshed(reason)
+        ),
+        // Python's own sentence for this site (`workspace_clone.py`'s "Cannot
+        // fetch recorded default branch: {e}"): the name came out of
+        // `metadata.json` with no proof, and the line says so.
+        CacheNotice::RecordedDefaultBranchUnsafe { refused } => {
+            format!(
+                "Cannot fetch recorded default branch: {}",
+                unsafe_name(refused)
+            )
+        }
         CacheNotice::DefaultBranchUnknown { reason, .. } => {
-            format!("Failed to resolve default branch: {reason}")
+            format!(
+                "Failed to resolve default branch: {}",
+                not_refreshed(reason)
+            )
         }
         CacheNotice::PreparedFromStaleBase {
             owner,
@@ -966,7 +984,8 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             reason,
         } => format!(
             "Prepared '{owner}/{repo}@{branch}' from the cache's '{base}', which could not be \
-             refreshed ({reason}); it may be behind the remote."
+             refreshed ({}); it may be behind the remote.",
+            not_refreshed(reason)
         ),
         CacheNotice::LfsCacheNotFilled { reason } => {
             format!("Could not fill the cache's git-lfs store: {reason}")
@@ -996,10 +1015,31 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             owner,
             repo,
             branch,
-            reason,
-        } => format!("cannot name the clone directory for {owner}/{repo}@{branch}: {reason}"),
+            refused,
+        } => format!(
+            "cannot name the clone directory for {owner}/{repo}@{branch}: {}",
+            unsafe_name(refused)
+        ),
         CacheNotice::Metadata(notice) => metadata_notice(notice),
     })
+}
+
+/// Why nothing refreshed a ref, as the clause inside the fetch warnings and the
+/// stale-base report.
+///
+/// Every arm renders the words Python put there: git's own for a failed fetch,
+/// and `str(ValueError)` — [`unsafe_name`]'s sentence — for a name git was never
+/// asked about (`workspace_clone.py`'s `_fetch_base_branch` interpolates exactly
+/// that into its `StaleBase.reason`).
+fn not_refreshed(reason: &NotRefreshed) -> String {
+    match reason {
+        NotRefreshed::FetchFailed { reason } => reason.clone(),
+        NotRefreshed::NoBranchOnRemote { branch } => {
+            format!("the remote has no branch '{branch}' to refresh from")
+        }
+        NotRefreshed::UnsafeName(refused) => unsafe_name(refused),
+        NotRefreshed::NoDefaultBranchRecorded => "no default branch is recorded".to_owned(),
+    }
 }
 
 /// Why a workspace clone directory is still on disk.
@@ -1067,10 +1107,11 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
         ),
         RemovalRefused::CouldNotTell {
             workspace_id,
-            reason,
+            cause,
         } => format!(
-            "{workspace_id}: {reason}. devlaunch will not delete a clone it cannot check. Look at \
-             it, or run: dl {spec} rm --force"
+            "{workspace_id}: {}. devlaunch will not delete a clone it cannot check. Look at it, \
+             or run: dl {spec} rm --force",
+            cause.describe()
         ),
     }
 }
@@ -1352,8 +1393,8 @@ fn kept_because(because: &KeptBecause) -> String {
 fn objection(objected: &Objection) -> String {
     match objected {
         Objection::WouldLose(losses) => losses.describe(),
-        Objection::CouldNotTell(reason) => {
-            format!("work git could not be asked about ({reason})")
+        Objection::CouldNotTell(cause) => {
+            format!("work git could not be asked about ({})", cause.describe())
         }
     }
 }
@@ -1501,7 +1542,9 @@ fn not_adopted(because: &NotAdopted) -> String {
 /// Why one devpod record could not be re-pointed.
 pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
     match failure {
-        RepointFailure::Unreadable { path, reason } => {
+        // One sentence for both, as Python's one `except (OSError,
+        // json.JSONDecodeError)` wrote it; the arms differ so a caller can.
+        RepointFailure::Unreadable { path, reason } | RepointFailure::NotJson { path, reason } => {
             format!("could not read {}: {reason}", path.display())
         }
         RepointFailure::NotADevpodRecord { path } => format!(

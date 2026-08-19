@@ -69,7 +69,7 @@
 //!
 //! Ported from `devlaunch/workspace_state.py`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::clients::git::{Git, GitAnswer};
 
@@ -104,13 +104,13 @@ pub enum Unsaved {
     /// for the same reason [`Unsaved::WouldLose`] does: the files are still on
     /// disk, and nothing has established that they exist anywhere else.
     ///
-    /// The reason is carried rather than reconstructed at the point of printing,
-    /// because the cause is not guessable from the path: an interrupted delete, a
+    /// The cause is carried rather than reconstructed at the point of printing,
+    /// because it is not guessable from the path: an interrupted delete, a
     /// `.git` written by a container as another user, a truncated gitfile and a
     /// directory that was never a clone all arrive here and read differently to
     /// the person who has to decide what to do about it. It names the directory
     /// it is about, which is the specific thing the shipped bug got wrong.
-    CouldNotTell(Reason),
+    CouldNotTell(CouldNotTell),
 }
 
 impl Unsaved {
@@ -128,7 +128,7 @@ impl Unsaved {
         match self {
             Self::NothingToLose => serde_json::json!({ "nothingToLose": true }),
             Self::WouldLose(losses) => serde_json::json!({ "wouldLose": losses.describe() }),
-            Self::CouldNotTell(reason) => serde_json::json!({ "couldNotTell": reason.as_str() }),
+            Self::CouldNotTell(cause) => serde_json::json!({ "couldNotTell": cause.describe() }),
         }
     }
 }
@@ -139,33 +139,63 @@ impl Unsaved {
 // could not be told — so a `match` costs it nothing and a fourth arm added later
 // breaks it rather than being read as permission.
 
-/// Why git could not be asked, in words meant to reach a person.
+/// Why git could not be asked, one arm per cause.
 ///
-/// Free text, because that is what it carries: git's own stderr, the OS's own
-/// message, or — one layer up, in the delete guard — dl's own account of a record
-/// it could not read or a directory it could not name. Unlike
-/// [`Unsaved::WouldLose`]'s description there is no structural guarantee of
-/// non-emptiness, and Python had none either; what there is instead is that every
-/// site building one names the *directory* it is about, which is the specific
-/// thing the shipped bug got wrong.
+/// One `reason: String` held all four before, which collapsed causes that read
+/// differently to the person deciding what to do — and nothing but convention
+/// kept it non-empty or naming the directory it was about, which is the specific
+/// thing the shipped bug got wrong. Each arm here carries the directory (or the
+/// workspace, for the one cause with no directory to name) plus the words the
+/// failure came with, and [`CouldNotTell::describe`] is derived from them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // binary surface — not part of the frozen wf API (#251 §7)
-pub struct Reason(String);
-
-impl Reason {
-    /// A reason in whatever words the failure came with.
-    pub(crate) fn new(text: impl Into<String>) -> Self {
-        Self(text.into())
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
+pub enum CouldNotTell {
+    /// dl was stopped before it could look at the directory at all; `error` is
+    /// the OS's words.
+    CouldNotLook { clone: PathBuf, error: String },
+    /// git could not read the directory as a repository; `reason` is git's words.
+    GitCouldNotRead { clone: PathBuf, reason: String },
+    /// The repository read fine, and listing unpushed commits then refused —
+    /// broken remote-tracking refs, usually.
+    UnpushedNotListed {
+        clone: PathBuf,
+        branch: String,
+        reason: String,
+    },
+    /// No directory could be named for this workspace's record at all: the
+    /// recorded path is unusable and the derivation refused the record's own
+    /// triple (the `dl <ws> rm` guard's arm — see
+    /// [`crate::flows::listing::unsaved_work_in`]).
+    DirectoryUnknown { workspace_id: String },
 }
 
-impl std::fmt::Display for Reason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+impl CouldNotTell {
+    /// Python's phrasing, exactly: this text reaches a person through
+    /// `dl <ws> rm`'s refusal and a tool through `--ls --json`'s `couldNotTell`,
+    /// so it is a wire payload and not rendering — [`Losses::describe`]'s rule.
+    /// Every arm opens with words of its own, so it cannot read as empty.
+    ///
+    /// binary surface — not part of the frozen wf API (#251 §7)
+    pub fn describe(&self) -> String {
+        match self {
+            Self::CouldNotLook { clone, error } => {
+                format!("could not look at {}: {error}", clone.display())
+            }
+            Self::GitCouldNotRead { clone, reason } => {
+                format!("git could not read {}: {reason}", clone.display())
+            }
+            Self::UnpushedNotListed {
+                clone,
+                branch,
+                reason,
+            } => format!(
+                "git could not list unpushed commits on {branch} in {}: {reason}",
+                clone.display()
+            ),
+            Self::DirectoryUnknown { workspace_id } => {
+                format!("could not work out which directory {workspace_id}'s clone is in")
+            }
+        }
     }
 }
 
@@ -341,10 +371,10 @@ pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
         Err(error) => {
             return CloneState {
                 branch: None,
-                unsaved: Unsaved::CouldNotTell(Reason::new(format!(
-                    "could not look at {}: {error}",
-                    clone.display()
-                ))),
+                unsaved: Unsaved::CouldNotTell(CouldNotTell::CouldNotLook {
+                    clone: clone.to_path_buf(),
+                    error: error.to_string(),
+                }),
             };
         }
     };
@@ -427,11 +457,10 @@ fn unsaved(git: &Git<'_>, clone: &Path, branch: Option<&str>) -> Unsaved {
     let status = match git.status_porcelain(clone) {
         GitAnswer::Said(status) => status,
         GitAnswer::Refused(refused) => {
-            return Unsaved::CouldNotTell(Reason::new(format!(
-                "git could not read {}: {}",
-                clone.display(),
-                refused.reason()
-            )));
+            return Unsaved::CouldNotTell(CouldNotTell::GitCouldNotRead {
+                clone: clone.to_path_buf(),
+                reason: refused.reason().to_owned(),
+            });
         }
     };
 
@@ -447,11 +476,11 @@ fn unsaved(git: &Git<'_>, clone: &Path, branch: Option<&str>) -> Unsaved {
                 }
             }
             GitAnswer::Refused(refused) => {
-                return Unsaved::CouldNotTell(Reason::new(format!(
-                    "git could not list unpushed commits on {branch} in {}: {}",
-                    clone.display(),
-                    refused.reason()
-                )));
+                return Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
+                    clone: clone.to_path_buf(),
+                    branch: branch.to_owned(),
+                    reason: refused.reason().to_owned(),
+                });
             }
         }
     }

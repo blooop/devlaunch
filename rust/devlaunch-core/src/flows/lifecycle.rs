@@ -67,7 +67,7 @@ use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
 use crate::domain::metadata::{self, MetadataStorage, WorktreeFilter};
 use crate::domain::model::WorktreeInfo;
-use crate::domain::workspace_state::{self, Losses, NonEmpty, Reason, Unsaved};
+use crate::domain::workspace_state::{self, CouldNotTell, Losses, NonEmpty, Unsaved};
 use crate::flows::completion_cache;
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::listing::{
@@ -732,7 +732,7 @@ pub enum RemovalRefused {
     /// the same refusal and the same way past it (devlaunch#171).
     CouldNotTell {
         workspace_id: String,
-        reason: Reason,
+        cause: CouldNotTell,
     },
 }
 
@@ -766,9 +766,9 @@ pub fn guard_removal(workspace_id: &str, unsaved: Unsaved, insistence: Insistenc
             workspace_id: workspace_id.to_owned(),
             losses,
         },
-        Unsaved::CouldNotTell(reason) => RemovalRefused::CouldNotTell {
+        Unsaved::CouldNotTell(cause) => RemovalRefused::CouldNotTell {
             workspace_id: workspace_id.to_owned(),
-            reason,
+            cause,
         },
     };
     match insistence {
@@ -1528,7 +1528,7 @@ pub enum Objection {
     /// report prints is derived rather than passed along as text.
     WouldLose(Losses),
     /// git could not be asked about it, and this is what it said.
-    CouldNotTell(Reason),
+    CouldNotTell(CouldNotTell),
 }
 
 /// What removing `unsaved`'s clone would cost, or nothing when it would cost
@@ -1540,7 +1540,7 @@ pub fn objection(unsaved: &Unsaved) -> Option<Objection> {
     match unsaved {
         Unsaved::NothingToLose => None,
         Unsaved::WouldLose(losses) => Some(Objection::WouldLose(losses.clone())),
-        Unsaved::CouldNotTell(reason) => Some(Objection::CouldNotTell(reason.clone())),
+        Unsaved::CouldNotTell(cause) => Some(Objection::CouldNotTell(cause.clone())),
     }
 }
 
@@ -2524,10 +2524,17 @@ pub fn devpod_workspace_record(devpod_home: &Path, context: &str, workspace_id: 
 }
 
 /// Why one devpod record could not be re-pointed.
+///
+/// Unreadable and not-JSON are two arms where Python's one `except` clause caught
+/// both: an `OSError` and a decode error read the same to its f-string but not to
+/// a caller, and one `reason: String` could not say which had happened. Both
+/// render through the same sentence, so the split changes no output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepointFailure {
-    /// devpod's record could not be read, or is not JSON.
+    /// devpod's record's bytes could not be read; `reason` is the OS's words.
     Unreadable { path: PathBuf, reason: String },
+    /// The bytes are not JSON; `reason` is the parser's words.
+    NotJson { path: PathBuf, reason: String },
     /// Not the shape this repair understands. Refusing is the whole of the
     /// response: a source key dl cannot read is one it cannot safely replace.
     NotADevpodRecord { path: PathBuf },
@@ -2560,7 +2567,7 @@ pub fn repoint_devpod_source(
         reason: system_words(&error),
     })?;
     let mut record: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| RepointFailure::Unreadable {
+        serde_json::from_str(&text).map_err(|error| RepointFailure::NotJson {
             path: path.clone(),
             reason: error.to_string(),
         })?;
@@ -4406,16 +4413,20 @@ mod tests {
         // devlaunch#171: "could not tell" refuses exactly as "would lose" does. The
         // files are still on disk and nothing has established that they exist
         // anywhere else.
+        let cause = CouldNotTell::GitCouldNotRead {
+            clone: PathBuf::from("/x"),
+            reason: "not a repository".to_owned(),
+        };
         let guarded = guard_removal(
             "ws",
-            Unsaved::CouldNotTell(Reason::new("git could not read /x")),
+            Unsaved::CouldNotTell(cause.clone()),
             Insistence::NotInsisted,
         );
         assert_eq!(
             guarded,
             Guarded::Refused(RemovalRefused::CouldNotTell {
                 workspace_id: "ws".to_owned(),
-                reason: Reason::new("git could not read /x")
+                cause
             })
         );
     }
@@ -4427,7 +4438,9 @@ mod tests {
             Unsaved::WouldLose(Losses::one(workspace_state::Loss::Uncommitted(
                 NonEmpty::one("?? scratch.md".to_owned()),
             ))),
-            Unsaved::CouldNotTell(Reason::new("no idea")),
+            Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown {
+                workspace_id: "ws".to_owned(),
+            }),
         ] {
             assert_eq!(
                 guard_removal("ws", unsaved, Insistence::Insisted),
@@ -4523,10 +4536,14 @@ mod tests {
 
         let unsaved = guard_reads(&world, "r-evil-aaa");
 
-        let Unsaved::CouldNotTell(reason) = &unsaved else {
+        let Unsaved::CouldNotTell(cause) = &unsaved else {
             panic!("expected a refusal, got {unsaved:?}");
         };
-        assert!(reason.as_str().contains("r-evil-aaa"), "{reason}");
+        assert!(
+            cause.describe().contains("r-evil-aaa"),
+            "{}",
+            cause.describe()
+        );
     }
 
     #[test]
