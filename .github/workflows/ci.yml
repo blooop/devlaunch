@@ -176,7 +176,11 @@ jobs:
         run: cargo build --locked --all-targets
       - name: Test
         working-directory: rust
-        run: cargo test --locked
+        # A `timeout` so a wedged test fails the step (with logs) instead of
+        # silently holding the runner until it loses contact ~46m in; single
+        # threaded with `--nocapture` so the last "test <name> ..." line names
+        # whatever is hanging. If this proves stable it stays as the guard.
+        run: timeout 1500 cargo test --locked -- --test-threads=1 --nocapture
       - name: Clippy
         working-directory: rust
         run: cargo clippy --locked --all-targets -- -D warnings
