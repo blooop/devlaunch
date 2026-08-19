@@ -841,11 +841,6 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         LifecycleNotice::CloneNotRemoved { refusal, .. } => {
             format!("Failed to remove local clone: {}", not_removed(refusal))
         }
-        LifecycleNotice::WorkspaceNotDeleted {
-            workspace_id,
-            stderr,
-            ..
-        } => format!("Failed to delete workspace {workspace_id}: {stderr}"),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -1188,8 +1183,8 @@ pub(crate) enum Line {
 ///
 /// Handed over as it happens rather than collected, which is why this renders one
 /// step rather than a report: "Deleting workspace X" said afterwards is not said in
-/// time. A failure is the same event as [`LifecycleNotice::WorkspaceNotDeleted`] and
-/// is said here, where it happens, rather than twice.
+/// time. A failed delete is said here too — the step is its one report, so nothing
+/// upstream can print it a second time.
 pub(crate) fn purge_step(step: &PurgeStep) -> Line {
     match step {
         PurgeStep::Deleting { workspace_id } => {

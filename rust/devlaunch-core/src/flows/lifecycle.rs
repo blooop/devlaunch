@@ -105,14 +105,6 @@ pub enum LifecycleNotice {
         workspace_id: String,
         refusal: RemoveWorkspaceError,
     },
-    /// A purge asked devpod to delete one of its own workspaces and devpod
-    /// refused. The purge carries on: one failed delete must not cost the rest of
-    /// the cache its removal.
-    WorkspaceNotDeleted {
-        workspace_id: String,
-        exit: Exit,
-        stderr: String,
-    },
     /// A clone directory went and its `metadata.json` record could not be
     /// dropped. Named by the path, which is what the record described.
     ///
@@ -995,7 +987,10 @@ pub fn purge_plan(
 pub enum PurgeStep {
     /// About to ask devpod to delete this workspace.
     Deleting { workspace_id: String },
-    /// devpod refused, and the purge carried on.
+    /// devpod refused, and the purge carried on: one failed delete must not cost
+    /// the rest of the cache its removal. The step is the failure's one report —
+    /// it used to be doubled as a [`LifecycleNotice`] too, and the binary carried
+    /// a filter whose whole job was to drop the second copy.
     NotDeleted {
         workspace_id: String,
         exit: Exit,
@@ -1068,7 +1063,6 @@ pub fn purge_all_data(
     context: &mut CommandContext<'_>,
     plan: &PurgePlan,
     on_step: &mut dyn FnMut(PurgeStep),
-    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PurgeOutcome, NotRun> {
     for workspace in &plan.ownership.mine {
         on_step(PurgeStep::Deleting {
@@ -1076,11 +1070,6 @@ pub fn purge_all_data(
         });
         let answer = devpod::capture(context.runner(), &purge_delete_call(&workspace.id))?;
         if !answer.succeeded() {
-            notices.say(LifecycleNotice::WorkspaceNotDeleted {
-                workspace_id: workspace.id.clone(),
-                exit: answer.exit,
-                stderr: answer.stderr().to_owned(),
-            });
             on_step(PurgeStep::NotDeleted {
                 workspace_id: workspace.id.clone(),
                 exit: answer.exit,
@@ -2607,23 +2596,56 @@ pub fn repoint_devpod_source(
     Ok(())
 }
 
-/// One adoption that could not be made.
+/// What became of one of the plan's adoptions.
+///
+/// Each carries its own ending, so a caller reads how an adoption went straight
+/// off the arm. The report used to be two lists — re-pointed and refused — and the
+/// binary re-derived each adoption's ending by scanning the refusal list for an
+/// absence: quadratic, and an inference ("not refused") standing in for a record
+/// ("re-pointed") that was already being kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepointRefused {
-    pub workspace_id: String,
-    pub failure: RepointFailure,
+pub enum Adoption {
+    /// devpod's record now points at the clone, and metadata carries the id.
+    /// Boxed because an [`Adoptable`] carries the whole [`WorktreeInfo`] and the
+    /// refusal arm is a fraction of its size (clippy::large_enum_variant).
+    Repointed(Box<Adoptable>),
+    /// devpod's record could not be re-pointed. The plan's other adoptions went
+    /// on: one unrepairable record must not cost the rest their repair.
+    Refused {
+        workspace_id: String,
+        failure: RepointFailure,
+    },
 }
 
-/// What applying a reconcile plan did.
+/// What applying a reconcile plan did: one [`Adoption`] per adoption the plan
+/// asked for, in the order they were attempted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileReport {
-    pub repointed: Vec<Adoptable>,
-    pub refused: Vec<RepointRefused>,
+    // Private for [`ReconcilePlan`]'s reason: a report a caller could assemble is
+    // one whose endings need not be the attempts'.
+    adoptions: Vec<Adoption>,
 }
 
 impl ReconcileReport {
+    /// Each adoption with what became of it, in the order they were attempted.
+    pub fn adoptions(&self) -> &[Adoption] {
+        &self.adoptions
+    }
+
+    /// The adoptions that landed.
+    pub fn repointed(&self) -> impl Iterator<Item = &Adoptable> {
+        self.adoptions.iter().filter_map(|adoption| match adoption {
+            Adoption::Repointed(adoptable) => Some(adoptable.as_ref()),
+            Adoption::Refused { .. } => None,
+        })
+    }
+
+    /// Whether every adoption landed. The one distinction an exit code carries.
     pub fn finished(&self) -> bool {
-        self.refused.is_empty()
+        !self
+            .adoptions
+            .iter()
+            .any(|adoption| matches!(adoption, Adoption::Refused { .. }))
     }
 }
 
@@ -2642,13 +2664,10 @@ pub fn apply_reconciliation(
     plan: &ReconcilePlan,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> ReconcileReport {
-    let mut report = ReconcileReport {
-        repointed: Vec::new(),
-        refused: Vec::new(),
-    };
+    let mut adoptions = Vec::new();
     for adoptable in &plan.adopting {
         if let Err(failure) = repoint_devpod_source(devpod_home, adoptable) {
-            report.refused.push(RepointRefused {
+            adoptions.push(Adoption::Refused {
                 workspace_id: adoptable.workspace_id.clone(),
                 failure,
             });
@@ -2666,13 +2685,13 @@ pub fn apply_reconciliation(
                 refusal: error,
             }),
         }
-        report.repointed.push(adoptable.clone());
+        adoptions.push(Adoption::Repointed(Box::new(adoptable.clone())));
     }
     // devpod's records just changed, so any listing dl is holding describes the
     // world before the repair.
     context.forget_workspaces();
     refresh.ask(context.runner(), RefreshReason::Forced);
-    report
+    ReconcileReport { adoptions }
 }
 
 #[cfg(test)]
@@ -3765,13 +3784,10 @@ mod tests {
         cache
     }
 
-    fn purge(devpod: &Devpod, cache_dir: &Path) -> (PurgeOutcome, Vec<LifecycleNotice>) {
+    fn purge(devpod: &Devpod, cache_dir: &Path) -> PurgeOutcome {
         let mut context = CommandContext::new(devpod);
         let plan = purge_plan(&mut context, cache_dir).expect("a plan");
-        let mut notices = Vec::new();
-        let outcome =
-            purge_all_data(&mut context, &plan, &mut |_| {}, &mut notices).expect("devpod ran");
-        (outcome, notices)
+        purge_all_data(&mut context, &plan, &mut |_| {}).expect("devpod ran")
     }
 
     #[test]
@@ -3781,7 +3797,7 @@ mod tests {
         let devpod = Devpod::new();
         devpod.lists(&six_workspaces(&cache));
 
-        let (outcome, _) = purge(&devpod, &cache);
+        let outcome = purge(&devpod, &cache);
 
         assert_eq!(devpod.deleted(), CLONED_BY_DEVLAUNCH);
         assert!(!cache.exists(), "the cache goes too");
@@ -3856,7 +3872,7 @@ mod tests {
         let devpod = Devpod::new();
         devpod.lists(&six_workspaces(&real_cache));
 
-        let (outcome, _) = purge(&devpod, &scratch);
+        let outcome = purge(&devpod, &scratch);
 
         assert_eq!(devpod.deleted(), Vec::<String>::new());
         assert_eq!(outcome, PurgeOutcome::NothingToPurge);
@@ -3872,7 +3888,7 @@ mod tests {
             Path::new("/home/dev/projects/python_template"),
         )]);
 
-        let (outcome, _) = purge(&devpod, &dir.path().join("never-made"));
+        let outcome = purge(&devpod, &dir.path().join("never-made"));
 
         assert_eq!(outcome, PurgeOutcome::NothingToPurge);
         assert_eq!(devpod.deleted(), Vec::<String>::new());
@@ -3895,7 +3911,7 @@ mod tests {
                 .join("r-main-aa"),
         )]);
 
-        let (outcome, _) = purge(&devpod, &cache);
+        let outcome = purge(&devpod, &cache);
 
         assert_eq!(outcome, PurgeOutcome::NoCacheDirectory);
         assert_eq!(devpod.deleted(), ["r-main-aa"]);
@@ -3940,7 +3956,7 @@ mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        purge_all_data(&mut context, &plan, &mut |_| {}, &mut ignoring()).expect("devpod ran");
+        purge_all_data(&mut context, &plan, &mut |_| {}).expect("devpod ran");
         devpod.lists(&[]);
         assert_eq!(
             context.workspaces().expect("a listing"),
@@ -3969,25 +3985,18 @@ mod tests {
         let mut steps = Vec::new();
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
-        let mut notices = Vec::new();
 
-        let outcome = purge_all_data(
-            &mut context,
-            &plan,
-            &mut |step| steps.push(step),
-            &mut notices,
-        )
-        .expect("devpod ran");
+        let outcome =
+            purge_all_data(&mut context, &plan, &mut |step| steps.push(step)).expect("devpod ran");
 
         assert_eq!(outcome, PurgeOutcome::Removed { cache_dir: cache });
-        assert!(matches!(
-            notices.as_slice(),
-            [LifecycleNotice::WorkspaceNotDeleted { workspace_id, stderr, .. }]
-                if workspace_id == "r-main-aa" && stderr.contains("container is busy")
-        ));
+        // The step is the failure's one report — no notice doubles it.
         assert!(matches!(
             steps.as_slice(),
-            [PurgeStep::Deleting { .. }, PurgeStep::NotDeleted { .. },]
+            [
+                PurgeStep::Deleting { .. },
+                PurgeStep::NotDeleted { workspace_id, stderr, .. },
+            ] if workspace_id == "r-main-aa" && stderr.contains("container is busy")
         ));
     }
 
@@ -4003,7 +4012,7 @@ mod tests {
             return;
         };
 
-        let (outcome, _) = purge(&devpod, &cache.root);
+        let outcome = purge(&devpod, &cache.root);
 
         let PurgeOutcome::RemovedWhatItCould { refused, .. } = &outcome else {
             panic!("expected a partial removal, got {outcome:?}");
@@ -4037,7 +4046,7 @@ mod tests {
         let devpod = Devpod::new();
         devpod.lists(&[]);
 
-        let (outcome, _) = purge(&devpod, &root);
+        let outcome = purge(&devpod, &root);
 
         assert!(
             matches!(outcome, PurgeOutcome::RemovedNothing { .. }),
@@ -4066,7 +4075,7 @@ mod tests {
             return;
         };
 
-        let (outcome, _) = purge(&devpod, &root);
+        let outcome = purge(&devpod, &root);
 
         assert!(
             matches!(outcome, PurgeOutcome::RemovedNothing { .. }),
@@ -6239,7 +6248,7 @@ mod tests {
         );
 
         assert!(report.finished());
-        assert_eq!(report.repointed.len(), 1);
+        assert_eq!(report.repointed().count(), 1);
         assert_eq!(
             sourced_at(&record),
             canonical(&clone.to_string_lossy())
@@ -6447,10 +6456,12 @@ mod tests {
         );
 
         assert!(!report.finished());
-        assert!(report.repointed.is_empty());
         assert!(matches!(
-            report.refused[0].failure,
-            RepointFailure::Unreadable { .. }
+            report.adoptions(),
+            [Adoption::Refused {
+                failure: RepointFailure::Unreadable { .. },
+                ..
+            }]
         ));
         assert_eq!(
             recorded_devpod_workspace_id(&world.storage, OWNER, REPO, "main"),
