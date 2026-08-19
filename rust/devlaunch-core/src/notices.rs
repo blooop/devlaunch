@@ -39,7 +39,7 @@ pub trait Notices<T> {
 /// so could not be called through the `&mut dyn` the flows are handed. There is
 /// nothing for a sink to get wrong here: saying several is saying each.
 impl<T> dyn Notices<T> + '_ {
-    pub fn say_all(&mut self, notices: impl IntoIterator<Item = T>) {
+    pub(crate) fn say_all(&mut self, notices: impl IntoIterator<Item = T>) {
         for notice in notices {
             self.say(notice);
         }
@@ -63,7 +63,7 @@ impl<T> Notices<T> for Vec<T> {
 /// pointer and not a closure because every use of it *is* a plain function — an
 /// enum variant's constructor, or a `match` over the arms — and a function pointer
 /// keeps the type free of the lifetime a closure would carry.
-pub struct Wrapped<'a, T, U> {
+pub(crate) struct Wrapped<'a, T, U> {
     inner: &'a mut dyn Notices<U>,
     wrap: fn(T) -> U,
 }

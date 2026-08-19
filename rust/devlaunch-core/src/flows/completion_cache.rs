@@ -197,7 +197,7 @@ pub(crate) fn completion_cache_age(path: &Path, now: SystemTime) -> Option<Durat
 }
 
 /// Whether the cache is new enough to leave alone.
-pub fn completion_cache_is_fresh(path: &Path) -> bool {
+pub(crate) fn completion_cache_is_fresh(path: &Path) -> bool {
     is_fresh_at(path, SystemTime::now())
 }
 
@@ -235,7 +235,7 @@ pub fn wants_startup_cache_refresh<S: AsRef<str>>(args: &[S]) -> bool {
 /// could not be written is not a reason to fail the command that was warming it.
 /// They are carried out rather than dropped so a caller *may* say so.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CacheNotWritten {
+pub(crate) struct CacheNotWritten {
     pub path: PathBuf,
     pub reason: String,
 }
@@ -259,7 +259,10 @@ pub struct Refreshed {
     pub listing_refused: Option<ListingUnreadable>,
     /// Workspaces whose source devlaunch could not read, so a caller can say which.
     pub unreadable_sources: Vec<UnreadableSource>,
-    pub not_written: Vec<CacheNotWritten>,
+    /// Cache writes that failed. Deliberately unrendered — Python's
+    /// `except OSError: pass` — so only this module's tests read it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) not_written: Vec<CacheNotWritten>,
 }
 
 /// Rebuild the completion cache and write both files.

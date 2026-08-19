@@ -905,8 +905,7 @@ pub enum CloneError {
 
 /// Why a repository's whole ref set could not be swept.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#251 §7)
-pub enum FetchRepoError {
+pub(crate) enum FetchRepoError {
     /// There is no clone to fetch into.
     NoLocalClone {
         owner: String,
@@ -932,8 +931,7 @@ pub enum FetchRepoError {
 
 /// Why a conditional sweep could not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#251 §7)
-pub enum LazyFetchError {
+pub(crate) enum LazyFetchError {
     /// The repository is not in `metadata.json`, so there is no clock to compare
     /// against.
     NotInMetadata {

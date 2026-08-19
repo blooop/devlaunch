@@ -76,6 +76,11 @@ const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
 ///
 /// The paths are carried rather than counted so a caller can say *which* door,
 /// which is the difference between a report someone can act on and a caveat.
+///
+/// `pub` only because the [`DiskUsage::PartlyUnreadable`] variant carries it
+/// and variant fields inherit the enum's visibility; the binary matches on
+/// `DiskUsage` without naming this type.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedDoors {
     first: PathBuf,

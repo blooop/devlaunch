@@ -55,7 +55,7 @@ pub fn join<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
 /// [`quote`], because who has to care differs: a `-- <cmd>` from a command line is
 /// refused with it (row 19), and a generated script's interpolated workspace id
 /// cannot contain one to begin with.
-pub fn holds_nul(word: &str) -> bool {
+pub(crate) fn holds_nul(word: &str) -> bool {
     word.contains('\0')
 }
 

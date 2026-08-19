@@ -1424,8 +1424,10 @@ pub enum Provisioning {
 }
 
 impl Provisioning {
-    /// Whether the tools are now there — the bool Python returns.
-    pub fn tools_present(&self) -> bool {
+    /// Whether the tools are now there — the bool Python returns. Only this
+    /// module's tests read it; the binary matches the arms directly.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn tools_present(&self) -> bool {
         match self {
             Self::AlreadyProvisioned | Self::Lent | Self::ShimKept | Self::Installed => true,
             Self::InstallRefused { .. } | Self::Disabled | Self::TripRefused { .. } => false,

@@ -180,9 +180,11 @@ impl SelfInvocation {
     }
 
     /// `program`, run with these arguments in front of the command — Python's
-    /// `-m devlaunch.dl`.
+    /// `-m devlaunch.dl`. Only this module's tests build that shape; the Rust
+    /// binary is [`SelfInvocation::new`] with no leading arguments.
     #[must_use]
-    pub fn with_leading_args<I, S>(mut self, args: I) -> Self
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_leading_args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -197,7 +199,7 @@ impl SelfInvocation {
     /// `--force` is passed on rather than re-decided by the child, because the
     /// child re-checks the TTL and would otherwise skip a refresh that follows a
     /// workspace change — where the cache is wrong however new it is.
-    pub fn refresh_child(&self, reason: RefreshReason) -> Invocation {
+    pub(crate) fn refresh_child(&self, reason: RefreshReason) -> Invocation {
         let mut invocation = Invocation::new(&self.program)
             .with_args(self.leading_args.iter().cloned())
             .with_arg(UPDATE_CACHE_FLAG);
@@ -209,10 +211,10 @@ impl SelfInvocation {
 }
 
 /// The flag that puts a `dl` run in refresh-child mode.
-pub const UPDATE_CACHE_FLAG: &str = "--update-cache";
+pub(crate) const UPDATE_CACHE_FLAG: &str = "--update-cache";
 
 /// The flag that tells a refresh — parent or child — to ignore the TTL.
-pub const FORCE_FLAG: &str = "--force";
+pub(crate) const FORCE_FLAG: &str = "--force";
 
 /// Why a background refresh is being asked for.
 ///
@@ -357,7 +359,7 @@ pub fn child_work(cache_path: &Path, reason: RefreshReason) -> ChildWork {
 /// child with no terminal attached — so these exist to be *counted* and to be
 /// visible under `DEVLAUNCH_TIMING`, not to be printed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SweptRepo {
+pub(crate) enum SweptRepo {
     /// The interval had elapsed and the fetch worked.
     Fetched { owner: String, repo: String },
     /// The interval had not elapsed. Nothing was asked of the remote.
@@ -392,7 +394,7 @@ pub enum SweptRepo {
 /// Everything one sweep did.
 #[derive(Debug, Default)]
 pub struct SweepReport {
-    pub repos: Vec<SweptRepo>,
+    pub(crate) repos: Vec<SweptRepo>,
     pub notices: Vec<LifecycleNotice>,
 }
 
@@ -505,7 +507,7 @@ pub fn workspace_state(
 /// [`KnownWorkspace::Unknown`] carrying a recorded id, and no way to read a state
 /// off one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KnownWorkspace {
+pub(crate) enum KnownWorkspace {
     /// devpod knows this workspace and reported this state. The two come from one
     /// round trip: asking "which id" and then "what state" separately is how a
     /// command ends up addressing one workspace and reporting another's state.
@@ -520,7 +522,10 @@ pub enum KnownWorkspace {
 
 impl KnownWorkspace {
     /// The id every later step addresses, whichever arm this is.
-    pub fn workspace_id(&self) -> &str {
+    ///
+    /// Only this module's tests read it; the flows match the arms directly.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn workspace_id(&self) -> &str {
         match self {
             Self::Known { workspace_id, .. } => workspace_id,
             Self::Unknown { derived } => derived,
@@ -528,7 +533,11 @@ impl KnownWorkspace {
     }
 
     /// The state devpod gave, or nothing when it knows no such workspace.
-    pub fn state(&self) -> Option<&ContainerState> {
+    ///
+    /// Only this module's tests (via [`Self::is_running`]) read it; the flows
+    /// match the arms directly.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn state(&self) -> Option<&ContainerState> {
         match self {
             Self::Known { state, .. } => Some(state),
             Self::Unknown { .. } => None,
@@ -536,7 +545,10 @@ impl KnownWorkspace {
     }
 
     /// Whether a launch may attach straight away.
-    pub fn is_running(&self) -> bool {
+    ///
+    /// Only this module's tests read it; the flows match the arms directly.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_running(&self) -> bool {
         matches!(self.state(), Some(state) if state.is_running())
     }
 }
@@ -578,7 +590,7 @@ impl KnownWorkspace {
 /// path it sends a launch down fetches a branch and builds a workspace clone on a
 /// host that cannot open it, and leaves both behind for the exit-127 to be
 /// discovered after. So the error is the runner's, and it travels.
-pub fn resolve_known_workspace(
+pub(crate) fn resolve_known_workspace(
     runner: &dyn Runner,
     triple: (&str, &str, &str),
     derived: &str,
@@ -639,7 +651,7 @@ pub fn resolve_known_workspace(
 /// holding one has already handled the failure — and the way it handles it is to
 /// pass a closure that answers `None`, because a lookup that failed must not be
 /// able to stop a command that would otherwise have worked.
-pub fn recorded_devpod_workspace_id(
+pub(crate) fn recorded_devpod_workspace_id(
     storage: &MetadataStorage,
     owner: &str,
     repo: &str,
@@ -1120,7 +1132,7 @@ fn purge_delete_call(workspace_id: &str) -> Call {
 /// no directory on this disk, so there is nothing to compare and no clone it could
 /// be holding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourcePlaces {
+pub(crate) enum SourcePlaces {
     Placeable(Vec<String>),
     /// The source opens a folder here and devlaunch cannot say which one. Kept
     /// apart from `Placeable(vec![])` because reading them alike is how a live
@@ -1155,7 +1167,7 @@ pub enum SourcePlaces {
 /// directory on this machine — but never usably: the callers resolve plain paths,
 /// so it only ever produced `<cwd>/file:/…` garbage. Contributing nothing is
 /// strictly less wrong.
-pub fn names_a_remote(text: &str) -> bool {
+pub(crate) fn names_a_remote(text: &str) -> bool {
     has_url_scheme(text) || is_scp_like(text)
 }
 
@@ -1198,7 +1210,7 @@ fn is_scp_like(text: &str) -> bool {
 /// refuses the same arm on purpose — but refusing there means declining to delete
 /// somebody else's *workspace*, which is the opposite direction, so its answer must
 /// not be reused here.
-pub fn source_places(source: &WorkspaceSource) -> SourcePlaces {
+pub(crate) fn source_places(source: &WorkspaceSource) -> SourcePlaces {
     match source {
         WorkspaceSource::LocalFolder(path) => SourcePlaces::Placeable(vec![path.clone()]),
         WorkspaceSource::GitRepository(url) => SourcePlaces::Placeable(if names_a_remote(url) {
@@ -1237,14 +1249,14 @@ pub struct Unlocatable {
 /// two records cannot be joined by workspace id — the id is exactly what changed —
 /// so the join is made from the path instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Misplaced {
+pub(crate) struct Misplaced {
     pub workspace_id: String,
     pub sourced_at: String,
 }
 
 /// Where devpod's workspaces are on this disk, and which ones are unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkspaceLocations {
+pub(crate) struct WorkspaceLocations {
     /// Resolved source path to the workspace that opens it.
     by_path: IndexMap<PathBuf, String>,
     /// `unlocatable` is not an empty result with a note on it — see
@@ -1291,7 +1303,7 @@ impl WorkspaceLocations {
     }
 
     /// The workspace disputing every clone of `(owner, repo)`, if any.
-    pub fn misplaced_in(&self, owner: &str, repo: &str) -> Option<&Misplaced> {
+    pub(crate) fn misplaced_in(&self, owner: &str, repo: &str) -> Option<&Misplaced> {
         self.misplaced.get(&(owner.to_owned(), repo.to_owned()))
     }
 }
@@ -1303,7 +1315,7 @@ impl WorkspaceLocations {
 /// still says `<root>/blooop/devlaunch/<old-leaf>`, which names the repository
 /// exactly even though the leaf and the workspace id match nothing any more.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceSite {
+pub(crate) enum SourceSite {
     /// Not in devlaunch's clone tree, so no clone answers for it.
     Outside,
     /// At or under `clone`, a directory that holds a checkout.
@@ -1319,7 +1331,7 @@ pub enum SourceSite {
 /// The clone is the *third* component under the root and the source may be
 /// deeper — `devpod up <clone>/subproject` is a live workspace whose source is
 /// inside a clone, and the clone is what answers for it.
-pub fn site_of(source: &Path, root: &Path) -> SourceSite {
+pub(crate) fn site_of(source: &Path, root: &Path) -> SourceSite {
     let Ok(relative) = source.strip_prefix(root) else {
         return SourceSite::Outside;
     };
@@ -1423,7 +1435,7 @@ pub(crate) fn workspace_locations(workspaces: &[Workspace], root: &Path) -> Work
 ///
 /// `.git` may be a directory or a *file* (`git clone --separate-git-dir`), so this
 /// asks whether anything is there rather than whether a directory is.
-pub fn is_populated_clone(path: &Path) -> bool {
+pub(crate) fn is_populated_clone(path: &Path) -> bool {
     std::fs::metadata(path.join(".git")).is_ok()
 }
 
@@ -1445,7 +1457,7 @@ pub fn is_populated_clone(path: &Path) -> bool {
 /// and the empty string, which names no directory (Python read it as `Path(".")`
 /// and resolved it to the working directory — the cwd-shaped answer devlaunch#224
 /// is about).
-pub fn canonical(path: &str) -> Option<PathBuf> {
+pub(crate) fn canonical(path: &str) -> Option<PathBuf> {
     // A NUL byte is refused *here* rather than at the first syscall, because Rust
     // — unlike Python, where `Path(text)` raises `ValueError` before the `lstat` —
     // lets one into a `PathBuf` quite happily. Without this the walk below climbs
@@ -1535,7 +1547,7 @@ pub fn objection(unsaved: &Unsaved) -> Option<Objection> {
 
 /// Which arm one clone directory is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CloneStatus {
+pub(crate) enum CloneStatus {
     /// A live devpod workspace opens this exact clone directory.
     Referenced { workspace_id: String },
     /// Nothing opens this directory and no record ties it to a live workspace.
@@ -1579,7 +1591,7 @@ pub enum CloneStatus {
 /// removed. Together they are the expensive half of a scan (593 ms of git over 37
 /// clones on the reference host, plus a walk with no ceiling), and asking them
 /// about a directory no answer could affect is time spent to learn nothing.
-pub fn clone_status(
+pub(crate) fn clone_status(
     git: &Git<'_>,
     clone: &Path,
     owner: &str,
@@ -1658,7 +1670,7 @@ impl Promotion {
 
 /// What `--prune` does about one clone directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
+pub(crate) enum Decision {
     /// This directory goes, this is what it gives back, and this is what was
     /// insisted past to get here.
     ///
@@ -1684,7 +1696,7 @@ pub enum Decision {
 /// be insisted past", they are devlaunch saying the directory is still in use or
 /// that its own records disagree, and there is nothing for a user to mean by
 /// insisting.
-pub fn decide(status: CloneStatus, insistence: Insistence) -> Decision {
+pub(crate) fn decide(status: CloneStatus, insistence: Insistence) -> Decision {
     match status {
         CloneStatus::Referenced { workspace_id } => {
             Decision::Keep(KeptBecause::StillOpened { workspace_id })
@@ -2503,7 +2515,11 @@ pub fn devpod_home() -> Option<PathBuf> {
 }
 
 /// devpod's own record for one workspace.
-pub fn devpod_workspace_record(devpod_home: &Path, context: &str, workspace_id: &str) -> PathBuf {
+pub(crate) fn devpod_workspace_record(
+    devpod_home: &Path,
+    context: &str,
+    workspace_id: &str,
+) -> PathBuf {
     devpod_home
         .join("contexts")
         .join(context)
@@ -2546,7 +2562,7 @@ pub enum RepointFailure {
 /// provider options, timestamps — survives untouched. Written through a temporary
 /// file in the same directory and renamed over the original, so a failure partway
 /// leaves devpod's record whole rather than truncated.
-pub fn repoint_devpod_source(
+pub(crate) fn repoint_devpod_source(
     devpod_home: &Path,
     adoptable: &Adoptable,
 ) -> Result<(), RepointFailure> {
@@ -2632,8 +2648,10 @@ impl ReconcileReport {
         &self.adoptions
     }
 
-    /// The adoptions that landed.
-    pub fn repointed(&self) -> impl Iterator<Item = &Adoptable> {
+    /// The adoptions that landed. Only this module's tests read it; the binary
+    /// renders each [`Adoption`] from [`ReconcileReport::adoptions`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn repointed(&self) -> impl Iterator<Item = &Adoptable> {
         self.adoptions.iter().filter_map(|adoption| match adoption {
             Adoption::Repointed(adoptable) => Some(adoptable.as_ref()),
             Adoption::Refused { .. } => None,
