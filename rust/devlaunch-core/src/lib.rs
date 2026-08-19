@@ -38,8 +38,10 @@
 //!
 //! So a `pub` item here is not automatically part of the promised API. Only
 //! what [`api`] re-exports is. The distinction is enforced by keeping [`api`]
-//! the single re-export point and by a `cargo public-api` snapshot in CI;
-//! until that lands the two tiers are told apart by the doc note above.
+//! the single re-export point, by the doc note above on every binary-surface
+//! item, and by the `cargo public-api` snapshot in `public-api.txt`, which CI
+//! diffs on every pull request: any change to the crate's public surface is a
+//! committed, reviewed diff or a red tick.
 
 // `runner` is pub so `devlaunch-test-support` can implement the trait; that
 // crate is dev-only and never shipped.
