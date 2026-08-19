@@ -186,9 +186,18 @@ jobs:
       - name: Test devlaunch-core
         working-directory: rust
         run: timeout 600 cargo test --locked -p devlaunch-core -- --test-threads=1 --nocapture
-      - name: Test aid
+      - name: Test aid (bins + rewrite)
         working-directory: rust
-        run: timeout 300 cargo test --locked -p aid -- --test-threads=1 --nocapture
+        run: timeout 300 cargo test --locked -p aid --bins --test rewrite -- --test-threads=1 --nocapture
+      # Spawns and kills a real process tree (a blocking `devpod up`), so it gets
+      # the same log-pipe fence as `dl`'s interrupt/lock_wait: output to a file,
+      # cat after — an orphaned test child can hold the file, never this step's
+      # log pipe, which is what the runner waits on before ending the step.
+      - name: Test aid interrupt
+        working-directory: rust
+        run: |
+          timeout -k 10 300 cargo test --locked -p aid --test interrupt -- --test-threads=1 --nocapture > aid_interrupt.log 2>&1; ec=$?
+          cat aid_interrupt.log; exit $ec
       - name: Test dl (lib + unit)
         working-directory: rust
         run: timeout 300 cargo test --locked -p dl --lib --bins -- --test-threads=1 --nocapture

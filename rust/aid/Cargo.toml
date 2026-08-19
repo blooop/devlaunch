@@ -14,9 +14,6 @@ repository.workspace = true
 # refuses any use of `dl` beyond `main`, `get_version` and `DL_VALUE_OPTIONS`);
 # here it is the dependency graph.
 dl = { path = "../dl" }
-# `signal(2)`, so Ctrl-C exits 130 rather than killing this process by signal —
-# the same disposition `dl` installs, since aid is a dl run under another name.
-libc = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

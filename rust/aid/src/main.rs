@@ -32,7 +32,7 @@ use std::io::Write as _;
 use rewrite::UsageError;
 
 fn main() {
-    interrupt_exits_130();
+    dl::install_interrupt_handler();
     // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
     // argument that is not valid UTF-8, which would end `aid $'\xff'` with an exit
     // 101 and a traceback. Python decoded argv lossily and carried on
@@ -170,24 +170,6 @@ Examples:
 Everything else — listing, stopping, deleting, VS Code — is dl's job:
     dl --help\n\n"
     )
-}
-
-/// Make Ctrl-C exit 130 rather than killing this process by signal.
-///
-/// `dl`'s own disposition, under aid's name and for aid's reason: `python -m
-/// devlaunch.aid` caught `KeyboardInterrupt` and exited 130, and an agent session a
-/// user interrupts is the commonest way this binary ends.
-fn interrupt_exits_130() {
-    extern "C" fn interrupted(_signal: libc::c_int) {
-        // SAFETY: `_exit` is async-signal-safe; it makes the exit-status syscall and
-        // returns to no one.
-        unsafe { libc::_exit(dl::INTERRUPTED) }
-    }
-    // SAFETY: installing a handler for SIGINT before any thread is started. The
-    // handler is `extern "C"` and does nothing but `_exit`.
-    unsafe {
-        libc::signal(libc::SIGINT, interrupted as *const () as libc::sighandler_t);
-    }
 }
 
 #[cfg(test)]

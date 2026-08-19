@@ -62,6 +62,40 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `130`.
 pub const INTERRUPTED: i32 = 130;
 
+/// Install the SIGINT disposition both binaries share: a Ctrl-C exits
+/// [`INTERRUPTED`] after cleaning up, rather than killing the process by signal.
+///
+/// The handler does the little a signal handler safely may:
+/// [`devlaunch_runner::interrupt::cleanup_and_exit`] kills the foreground child's
+/// process group (so a `devpod up` cannot outlive the run), `unlink`s the temp
+/// files registered at their creation — chiefly the plaintext GitHub-token file a
+/// Ctrl-C mid-`up` used to leave on disk — and then `_exit`s. Everything it calls
+/// is async-signal-safe; see that module. The one thing still not done is the
+/// timing summary of an interrupted run, which Python's unwinding
+/// `KeyboardInterrupt` managed to write and which docs/rust-rewrite-plan.md row 5
+/// says is not a parity dimension — it cannot be, as none of what it needs
+/// (allocation, formatting, a lock) is safe here.
+///
+/// It lives in the library both entry points share rather than in either `main`
+/// because `dl` and `aid` must install the *same* disposition: `aid` runs [`run`]
+/// in-process, so a Ctrl-C during an `aid` launch stages and orphans exactly what a
+/// `dl` launch does. Two copies in two `main`s drifted once — aid's stayed a bare
+/// `_exit` that left the token file on disk and the `up` child running — which is
+/// the drift a single definition ends.
+pub fn install_interrupt_handler() {
+    extern "C" fn interrupted(_signal: libc::c_int) {
+        // SAFETY: called only as a signal handler; `cleanup_and_exit` is
+        // async-signal-safe and never returns.
+        unsafe { devlaunch_runner::interrupt::cleanup_and_exit(INTERRUPTED) }
+    }
+    // SAFETY: installing a handler for SIGINT before any thread is started. The
+    // handler is `extern "C"` and does nothing but call the async-signal-safe
+    // cleanup, which does not return.
+    unsafe {
+        libc::signal(libc::SIGINT, interrupted as *const () as libc::sighandler_t);
+    }
+}
+
 /// Run one `dl` command line — the words after the program name — and say how it
 /// ended.
 ///
