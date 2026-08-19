@@ -58,6 +58,13 @@ impl From<MetadataError> for StartupError {
 
 /// Where devlaunch keeps everything: the directory ownership is decided by and
 /// `--purge` removes.
+///
+/// The answer comes from `xdg` so that this, the worktree config's default
+/// `repos_dir` and `metadata.json`'s default path cannot drift apart — ownership
+/// decides what `--purge` may delete by asking whether a workspace's source is
+/// under this directory, and the clones it is asking about were put there by the
+/// other two. (`flows::completion_cache` carried a second copy of this call until
+/// the port finished and there was one caller left.)
 pub(crate) fn cache_dir() -> Result<PathBuf, NoHomeDirectory> {
     xdg::devlaunch_cache()
 }

@@ -1521,11 +1521,8 @@ a healthy one. Every run also prints what it actually built:
 A run whose workspace-building tests built nothing does not pass: the shortfall
 is counted into the last line of the run, so `4 passed, 18 skipped` becomes
 `1 failed, 4 passed, 18 skipped`. A run with no workspace-building tests in it —
-`pytest -m e2e test/e2e/test_interactive_session.py`, say — has nothing to
-answer for and says so instead.
-
-`DEVLAUNCH_E2E_WORKSPACE=<id>` opts in to the interactive-session tests, which
-attach to a workspace you already have running rather than building one.
+`pytest -m e2e -k TestDLCommandsE2E`, say — has nothing to answer for and says
+so instead.
 
 The nested daemon is also why the devcontainer does not join the host's network
 namespace: a nested daemon needs a namespace of its own, or it co-manages the

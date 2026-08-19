@@ -60,11 +60,6 @@
 //! wait it cost comes back on the guard as [`Contention`]. Both are ignorable:
 //! [`hold_lock`] is the same call without either.
 
-// The consumers of these locks are the storage flows (M4) and the launch path
-// (M7), which are not ported yet: until then the typed failure data has no
-// reader outside the tests. Remove this when they land.
-#![allow(dead_code)]
-
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
@@ -107,6 +102,9 @@ pub(crate) enum Contention {
 
 impl Contention {
     /// Whether this process had to wait — Python's `waited` flag.
+    ///
+    /// Only this module's tests ask; the flows above match on the arm itself.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn waited(self) -> bool {
         matches!(self, Contention::Queued { .. })
     }
@@ -171,6 +169,9 @@ impl Drop for LockGuard {
 ///
 /// Blocks until the lock is free. The guard reports whether the wait happened;
 /// nothing is printed and nothing is announced.
+/// Only this module's tests take an unwatched lock; every flow above wants the
+/// callback, so they call [`hold_lock_watching`] directly.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn hold_lock(lock_path: &Path) -> Result<LockGuard, LockError> {
     hold_lock_watching(lock_path, |_| {})
 }

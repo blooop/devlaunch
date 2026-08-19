@@ -34,10 +34,6 @@
 //! the data the line interpolated, and each failure is a typed error. The words
 //! are the `dl` binary's.
 
-// The launch path (M7) and the lifecycle flows (M6) are this module's remaining
-// consumers; until they land the port's own tests are the only ones.
-#![allow(dead_code)] // consumed from M6/M7
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -65,6 +61,9 @@ const FALLBACK_DEFAULT_BRANCH: &str = "main";
 
 /// Seconds between background fetches when no configuration says otherwise —
 /// `WorktreeConfig`'s default, repeated here for a manager built without one.
+///
+/// Only [`RepositoryManager::new`] reads it, which only tests call today.
+#[cfg_attr(not(test), allow(dead_code))]
 const DEFAULT_FETCH_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// How long the background sweep may spend fetching one repository before it
@@ -355,6 +354,7 @@ pub(crate) struct RepoLock {
     owner: String,
     repo: String,
     /// The flock itself. Never read; dropping it is the release.
+    #[allow(dead_code)]
     guard: LockGuard,
 }
 
@@ -368,15 +368,21 @@ pub struct WrongRepoLock {
 }
 
 impl RepoLock {
+    /// Only this module's tests read the token's repository back; the flows above
+    /// state which repository they want and let [`RepoLock::require`] refuse.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn owner(&self) -> &str {
         &self.owner
     }
 
+    /// See [`RepoLock::owner`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn repo(&self) -> &str {
         &self.repo
     }
 
     /// Whether this token is evidence about `owner`/`repo` specifically.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn covers(&self, owner: &str, repo: &str) -> bool {
         self.owner == owner && self.repo == repo
     }
@@ -394,6 +400,10 @@ impl RepoLock {
     }
 
     /// Whether this acquisition had to queue behind another holder.
+    ///
+    /// Only this module's tests ask a token about its wait; the flows above take
+    /// the measurement where the blocking call is.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn contention(&self) -> Contention {
         self.guard.contention()
     }
@@ -940,6 +950,9 @@ impl From<CloneIfMissingError> for EnsureRepoError {
 ///
 /// Named arms rather than Python's `remove_directory: bool`, because at the call
 /// site `false` says nothing about *what* is not being removed.
+/// Held for the #251 §7 public-API freeze — the `remove` verb's two shapes. Only
+/// this module's tests name one today.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoveScope {
     /// Forget the repository and delete everything under its directory — the
@@ -950,10 +963,15 @@ pub(crate) enum RemoveScope {
 }
 
 /// Why a repository could not be removed from management.
+///
+/// Held for the #251 §7 public-API freeze — the `remove` verb's failures. Only
+/// this module's tests name them today, which is also why the payloads are
+/// unread: the binary that renders them is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) enum RemoveRepositoryError {
-    NotUnrecorded(MetadataError),
-    DirectoryLeft(RemoveTreeError),
+    NotUnrecorded(#[allow(dead_code)] MetadataError),
+    DirectoryLeft(#[allow(dead_code)] RemoveTreeError),
 }
 
 // ---------------------------------------------------------- the manager
@@ -990,6 +1008,7 @@ impl<'r> RepositoryManager<'r> {
     /// run's convenience, not a step anything depends on. A `repos_dir` that
     /// cannot be created fails at the step that actually needs it — the clone —
     /// which is where the reason belongs.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(repos_dir: impl Into<PathBuf>, git: Git<'r>) -> Self {
         Self::with_fetch_interval(repos_dir, git, DEFAULT_FETCH_INTERVAL)
     }
@@ -1014,22 +1033,21 @@ impl<'r> RepositoryManager<'r> {
     /// The one thing a returned notice cannot cover: the point of saying it is to
     /// explain a run that has gone quiet, so it has to be said before the wait
     /// rather than after it. Nothing has to subscribe.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn watch_waits(&mut self, watcher: impl Fn(RepoWait) + 'static) {
         self.wait_watcher = Some(Box::new(watcher));
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn repos_dir(&self) -> &Path {
         &self.repos_dir
-    }
-
-    pub(crate) fn fetch_interval(&self) -> Duration {
-        self.fetch_interval
     }
 
     pub(crate) fn git(&self) -> Git<'r> {
         self.git
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn repo_dir(&self, owner: &str, repo: &str) -> PathBuf {
         repo_dir(&self.repos_dir, owner, repo)
     }
@@ -1598,6 +1616,10 @@ impl<'r> RepositoryManager<'r> {
     /// the clones and the lock file with it — which is what makes it different
     /// from the cleanup a failed clone does, where the lock file is the one thing
     /// that must survive.
+    ///
+    /// Held for the #251 §7 public-API freeze — the `remove` verb. Only this
+    /// module's tests call it today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn remove_repository(
         &self,
         storage: &mut MetadataStorage,

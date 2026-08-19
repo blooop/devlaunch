@@ -54,10 +54,6 @@
 //! "`unsaved: null` iff `devlaunch: false`" is one `Option` and cannot come
 //! apart.
 
-// The readers are the `dl` binary (`--ls`, `--repos`, `--completion-data`,
-// `--purge`) and the lifecycle flows, which land in M5c and M6.
-#![allow(dead_code)] // consumed from M5c binary
-
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -142,6 +138,10 @@ impl<'r> CommandContext<'r> {
     }
 
     /// The workspace ids, for completion.
+    ///
+    /// Held for the #251 §7 public-API freeze — the `list` verb's id-only form.
+    /// Only this module's tests ask today; the binary reads the whole listing.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn workspace_ids(&mut self) -> Result<Vec<String>, ListingUnreadable> {
         Ok(self
             .workspaces()?
@@ -461,6 +461,9 @@ pub(crate) fn merge_repos(
 /// The known `owner/repo` strings, from the workspaces devpod lists.
 ///
 /// `dl --repos`' answer when there is no completion cache to read.
+/// Held for the #251 §7 public-API freeze — `list`'s repository form. Only this
+/// module's tests ask today; the binary reads the completion cache first.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn known_repos(
     context: &mut CommandContext<'_>,
 ) -> Result<Vec<String>, ListingUnreadable> {
@@ -1028,13 +1031,24 @@ mod tests {
     struct FakeDevpodRealGit {
         devpod: FakeRunner,
         processes: ProcessRunner,
+        /// See [`timing::exclusive`]. Last field, so it is dropped last.
+        _serialized: timing::Exclusive,
     }
 
     impl FakeDevpodRealGit {
+        /// The runner, and the timing exclusion for as long as it lives.
+        ///
+        /// [`container_state`] opens the `devpod-up` stage on the **process-global**
+        /// registry, once per row — so an enriched listing built without the guard
+        /// writes into whatever document a concurrent measured test installed, and
+        /// its stage guard closes a stage that test opened rather than one of its
+        /// own. In the fixture rather than per test, as `lifecycle`'s `Devpod` and
+        /// `launch`'s `Scene` do it, so a new test cannot forget.
         fn new() -> Self {
             Self {
                 devpod: FakeRunner::new(),
                 processes: ProcessRunner,
+                _serialized: timing::exclusive(),
             }
         }
 
@@ -1886,7 +1900,8 @@ mod tests {
 
     /// The four kinds of row, on one machine.
     struct Scene {
-        root: tempfile::TempDir,
+        /// Held for its `Drop`: the whole world below lives under it.
+        _root: tempfile::TempDir,
         cache: PathBuf,
         runner: FakeDevpodRealGit,
         storage: MetadataStorage,
@@ -1894,7 +1909,6 @@ mod tests {
         clean: PathBuf,
         dirty: PathBuf,
         unrecorded: PathBuf,
-        foreign: PathBuf,
         ids: BTreeMap<&'static str, String>,
     }
 
@@ -1994,13 +2008,12 @@ mod tests {
             Self {
                 resolver: RecordedOrDerived { repos_dir: repos },
                 cache,
-                root,
+                _root: root,
                 runner,
                 storage,
                 clean,
                 dirty,
                 unrecorded,
-                foreign,
                 ids,
             }
         }
@@ -2112,7 +2125,10 @@ mod tests {
 
     #[test]
     fn an_empty_machine_is_an_empty_document() {
-        let fake = FakeRunner::new();
+        // The one route into `enriched_listing` that does not go through
+        // [`FakeDevpodRealGit`], so it takes the timing exclusion from the shared
+        // fixture instead: every caller of the enriched listing holds it.
+        let fake = crate::testing::ScriptedRunner::new();
         let root = temp_dir();
         let storage = storage_at(&root.path().join("metadata.json"));
         let resolver = NamesNothing;

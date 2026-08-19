@@ -67,6 +67,11 @@ pub mod domain;
 // binary surface — not part of the frozen wf API (#250 §7)
 pub mod flows;
 
+// The one fake runner every unit test in this crate drives, wrapped in the one
+// thing `devlaunch-test-support` cannot reach from below: the timing exclusion.
+#[cfg(test)]
+pub(crate) mod testing;
+
 #[cfg(test)]
 mod tests {
     #[test]

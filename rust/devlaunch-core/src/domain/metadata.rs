@@ -33,10 +33,6 @@
 //! [`super::locks`] — the metadata lock may be taken while a repo lock is held,
 //! never the reverse.
 
-// The flows that read and write metadata land in M4–M6; until then the entries,
-// the notices and their typed reasons have no reader outside the tests.
-#![allow(dead_code)]
-
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -309,8 +305,16 @@ pub(crate) enum SchemaHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorktreeFilter<'a> {
     All,
+    /// Held for the #251 §7 public-API freeze — `list` scoped to one owner. Only
+    /// this module's tests narrow the filter today.
+    #[cfg_attr(not(test), allow(dead_code))]
     Owner(&'a str),
-    OwnerAndRepo { owner: &'a str, repo: &'a str },
+    /// Held for the #251 §7 public-API freeze — `list` scoped to one repository.
+    #[cfg_attr(not(test), allow(dead_code))]
+    OwnerAndRepo {
+        owner: &'a str,
+        repo: &'a str,
+    },
 }
 
 /// The persistent record of what the cache holds.
@@ -383,6 +387,7 @@ impl MetadataStorage {
     /// The one thing a returned notice cannot cover: the point of saying it is
     /// to explain a run that has gone quiet, so it has to be said before the
     /// wait rather than after it. Nothing has to subscribe.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn watch_waits(&mut self, watcher: impl Fn(WaitStarted) + 'static) {
         self.wait_watcher = Some(Box::new(watcher));
     }
@@ -397,10 +402,16 @@ impl MetadataStorage {
         self.schema_version
     }
 
+    /// Held for the #251 §7 public-API freeze — the whole map `list` reads. Only
+    /// this module's tests read it wholesale today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn repositories(&self) -> &IndexMap<String, BaseRepository> {
         &self.repositories
     }
 
+    /// Held for the #251 §7 public-API freeze — the whole map `list` reads. Only
+    /// this module's tests read it wholesale today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn worktrees(&self) -> &IndexMap<String, WorktreeInfo> {
         &self.worktrees
     }
@@ -459,6 +470,10 @@ impl MetadataStorage {
     }
 
     /// Remove a repository, writing only if it was there.
+    ///
+    /// Held for the #251 §7 public-API freeze — what the `remove` verb writes.
+    /// Only this module's tests call it today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn remove_repository(
         &mut self,
         owner: &str,

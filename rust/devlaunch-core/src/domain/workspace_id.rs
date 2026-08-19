@@ -65,10 +65,6 @@
 //! `slug` needs no such caveat: it was checked against Python for all 1114112
 //! codepoints and agrees on every one.
 
-// Callers land in M4 (storage flows) through M7 (launch); until then the port's
-// own tests are the only consumers of this module.
-#![allow(dead_code)]
-
 use std::fmt;
 
 /// Total id budget. devpod's own ceiling is 48, but the setup pass's hostname
@@ -98,6 +94,9 @@ const VOWELS: &[u8; 4] = b"aeio";
 const SYLLABLES: usize = 4;
 
 /// Bits of the digest the suffix encodes (6 per syllable).
+///
+/// Only this module's tests read it; the encoder walks the syllables instead.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SUFFIX_BITS: usize = SYLLABLES * 6;
 
 /// Length of the identity-bearing suffix, in characters.

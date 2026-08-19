@@ -13,7 +13,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/e2e/conftest.py` | out of port scope (harness infrastructure) |  |
 | `test/e2e/test_claude_config_protection.py` | re-expressed at boundary | passes on real devpod + docker in the parity run (never spawns dl; guards the harness's own mounts) |
 | `test/e2e/test_full_workflow.py` | re-expressed at boundary | passes on real devpod + docker against the Rust binary; one row-3 branch (--help layout) |
-| `test/e2e/test_interactive_session.py` | pending | all 13 tests opt out for either binary: the fixture wants a pre-existing workspace no scoped DEVPOD_HOME can reach, and OpenSSH resolves ~/.ssh/config via getpwuid. Fix the fixture to build its own workspace, or close honestly; pty parity meanwhile verified manually (M9) |
+| `test/e2e/test_interactive_session.py` | re-expressed at boundary | 12 of 13 tests run and pass against both binaries: the module builds its own workspace under the scoped DEVPOD_HOME and routes both dl's alias lookup and OpenSSH's at $DEVPOD_SSH_CONFIG. The aid test declines by design: the fixture image carries no coding agent |
 | `test/e2e/test_ssh_config_isolation.py` | re-expressed at boundary | passes on real devpod + docker (rust/target added to .dockerignore -- context-hash limit, binary-independent) |
 | `test/fixtures/__init__.py` | out of port scope (harness infrastructure) |  |
 | `test/fixtures/devpod_mock.py` | out of port scope (harness infrastructure) |  |

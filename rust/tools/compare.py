@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the frozen Python dl and the Rust dl in identical worlds and diff them.
 
-    compare.py [--lifecycle] [--aid] [fixtures...] -- <args...>
+compare.py [--lifecycle] [--aid] [fixtures...] -- <args...>
 """
 
 import json
@@ -27,6 +27,7 @@ def one_run(cmd, scenario, fixtures, args, extra_env):
         ["python3", str(scenario), str(root), str(SHIM), *fixtures],
         capture_output=True,
         text=True,
+        check=False,
     )
     if built.returncode != 0:
         raise SystemExit(f"scenario failed: {built.stderr}")
@@ -52,6 +53,7 @@ def one_run(cmd, scenario, fixtures, args, extra_env):
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
 
     def t(text):

@@ -166,9 +166,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
     devpod = root / "bin" / "devpod"
-    devpod.write_text(
-        f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8"
-    )
+    devpod.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8")
     devpod.chmod(0o755)
 
     # A bare repository standing in for GitHub, with one commit on `main`.
@@ -215,18 +213,12 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     }
     worktrees = {
         "blooop/devlaunch/main": _record("blooop", "devlaunch", "main", clean, CLEAN_WS),
-        "blooop/devlaunch/dirty": _record(
-            "blooop", "devlaunch", "dirty", dirty, DIRTY_WS
-        ),
+        "blooop/devlaunch/dirty": _record("blooop", "devlaunch", "dirty", dirty, DIRTY_WS),
     }
     workspaces = {
-        CLEAN_WS: _workspace(
-            CLEAN_WS, {"localFolder": str(clean)}, RECORDED, "Running"
-        ),
+        CLEAN_WS: _workspace(CLEAN_WS, {"localFolder": str(clean)}, RECORDED, "Running"),
         DIRTY_WS: _workspace(DIRTY_WS, {"localFolder": str(dirty)}, OLDER, "Stopped"),
-        FOREIGN_WS: _workspace(
-            FOREIGN_WS, {"localFolder": str(foreign)}, NEVER, "Stopped"
-        ),
+        FOREIGN_WS: _workspace(FOREIGN_WS, {"localFolder": str(foreign)}, NEVER, "Stopped"),
     }
 
     if "prunable" in wanted:
@@ -244,9 +236,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     if "unpushed" in wanted:
         # A commit that exists in this clone and nowhere else. Uncommitted work and
         # unpushed commits are different losses and the refusal names which.
-        held = _clone(
-            root, origin, repos / "blooop" / "devlaunch" / UNPUSHED_LEAF, "unpushed"
-        )
+        held = _clone(root, origin, repos / "blooop" / "devlaunch" / UNPUSHED_LEAF, "unpushed")
         (held / "kept.txt").write_text("committed, unpushed\n", encoding="utf-8")
         git(held, "add", "-A")
         git(held, "commit", "-q", "-m", "work nobody else has")
@@ -278,9 +268,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         )
 
     if "unwritable" in wanted:
-        locked = _clone(
-            root, origin, repos / "blooop" / "devlaunch" / UNWRITABLE_LEAF, "locked"
-        )
+        locked = _clone(root, origin, repos / "blooop" / "devlaunch" / UNWRITABLE_LEAF, "locked")
         held = locked / "held"
         held.mkdir()
         (held / "keep.txt").write_text("cannot be unlinked\n", encoding="utf-8")

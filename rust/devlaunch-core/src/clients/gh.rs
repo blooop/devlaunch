@@ -47,9 +47,6 @@
 //! also the thing that can decide to render one warning for a launch rather than
 //! one per ask.
 
-// The launch and lifecycle flows that forward a token land in M6/M7.
-#![allow(dead_code)] // consumed from M5 on
-
 use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -379,8 +376,9 @@ fn forwarding(token: Option<&Token>, args: impl FnOnce(&Token) -> Vec<String>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::devpod::tests::{Recorded, Reply, ScriptedRunner};
     use crate::runner::{EnvBase, StdinPlan};
+    use crate::testing::ScriptedRunner;
+    use devlaunch_test_support::{Call, Response};
 
     /// A host with nothing exported: no opt-out and no token, which is the state
     /// the forwarding is interesting in.
@@ -473,7 +471,7 @@ mod tests {
         // A shell profile that set GH_TOKEN to a sentence must not become the
         // workspace's credential; gh is asked instead.
         let fake = ScriptedRunner::new()
-            .with_script(["gh", "auth", "token"], Reply::stdout("gho_fromcli\n"));
+            .with_script(["gh", "auth", "token"], Response::stdout("gho_fromcli\n"));
         let host = HostEnv {
             gh_token: Some("not a token".to_owned()),
             ..bare_host()
@@ -491,7 +489,7 @@ mod tests {
         // It must not eat stdin belonging to the command `dl` was asked to run,
         // and it may have to unlock a keyring, so it does not get forever.
         let fake = ScriptedRunner::new()
-            .with_script(["gh", "auth", "token"], Reply::stdout("gho_fromcli\n"));
+            .with_script(["gh", "auth", "token"], Response::stdout("gho_fromcli\n"));
 
         let lookup = resolve_token(&fake, &bare_host());
 
@@ -501,9 +499,10 @@ mod tests {
             vec![vec!["gh".to_owned(), "auth".to_owned(), "token".to_owned()]]
         );
         let call = fake.only_call();
-        assert!(matches!(call, Recorded::Capture(_)), "{call:?}");
-        assert_eq!(call.spec().stdin, StdinPlan::Null);
-        assert_eq!(call.spec().timeout, Some(GH_TIMEOUT));
+        assert!(matches!(call, Call::Capture(_)), "{call:?}");
+        let spec = call.spec().expect("gh is never detached");
+        assert_eq!(spec.stdin, StdinPlan::Null);
+        assert_eq!(spec.timeout, Some(GH_TIMEOUT));
     }
 
     #[test]
@@ -519,7 +518,7 @@ mod tests {
 
     #[test]
     fn a_gh_that_refused_is_reported_so_the_workspace_does_not_open_logged_out_in_silence() {
-        let fake = ScriptedRunner::new().with_script(["gh", "auth", "token"], Reply::exited(1));
+        let fake = ScriptedRunner::new().with_script(["gh", "auth", "token"], Response::exited(1));
 
         assert_eq!(
             resolve_token(&fake, &bare_host()),
@@ -534,7 +533,7 @@ mod tests {
         // A wrapper script that prints a message must not become GH_TOKEN.
         let fake = ScriptedRunner::new().with_script(
             ["gh", "auth", "token"],
-            Reply::stdout("error: sorry, ~SECRETish~ value here\n"),
+            Response::stdout("error: sorry, ~SECRETish~ value here\n"),
         );
 
         let lookup = resolve_token(&fake, &bare_host());
@@ -549,7 +548,7 @@ mod tests {
     #[test]
     fn a_hung_gh_does_not_hang_the_launch() {
         // gh may block on a locked keyring; a workspace must still open.
-        let fake = ScriptedRunner::new().with_script(["gh"], Reply::TimedOut);
+        let fake = ScriptedRunner::new().with_script(["gh"], Response::TimedOut);
 
         assert_eq!(
             resolve_token(&fake, &bare_host()),
@@ -563,7 +562,7 @@ mod tests {
             kind: std::io::ErrorKind::PermissionDenied,
             errno: Some(13),
         };
-        let fake = ScriptedRunner::new().with_script(["gh"], Reply::NotStarted(failure));
+        let fake = ScriptedRunner::new().with_script(["gh"], Response::NotStarted(failure));
 
         assert_eq!(
             resolve_token(&fake, &bare_host()),
@@ -613,7 +612,7 @@ mod tests {
         // launch it happens.
         let fake = ScriptedRunner::new().with_script(
             ["gh", "auth", "token"],
-            Reply::stdout(format!("gho_{}\n", "a".repeat(36))),
+            Response::stdout(format!("gho_{}\n", "a".repeat(36))),
         );
 
         let document = measured(|| {
@@ -627,7 +626,7 @@ mod tests {
     #[test]
     fn a_gh_that_refused_is_still_named_and_timed() {
         // The span wraps the trip, not the answer: a refusal took time too.
-        let fake = ScriptedRunner::new().with_script(["gh"], Reply::exited(1));
+        let fake = ScriptedRunner::new().with_script(["gh"], Response::exited(1));
 
         let document = measured(|| {
             assert!(resolve_token(&fake, &bare_host()).token().is_none());

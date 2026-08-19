@@ -52,9 +52,6 @@
 //!   what this module owns is the spawn they go through and the answers they
 //!   read back.
 
-// The flows that ask these questions land in M5 onward.
-#![allow(dead_code)] // consumed from M5 on
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -136,6 +133,9 @@ impl Call {
         self
     }
 
+    /// Only this module's tests set a bound directly; each verb above carries
+    /// its own.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub(crate) fn with_timeout(mut self, limit: Duration) -> Self {
         self.timeout = Some(limit);
@@ -792,6 +792,9 @@ fn named(value: Option<&serde_json::Value>) -> String {
 /// devpod's colourised table, and output it could not read came back as an empty
 /// set of providers — and an empty set means "go add one", so an unreadable
 /// answer turned into an action.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NotAProviderListing {
     NotJson { output: String, reason: String },
@@ -799,6 +802,9 @@ pub(crate) enum NotAProviderListing {
 }
 
 /// Why asking devpod which providers are registered produced no answer.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProviderListUnreadable {
     NotRun(NotRun),
@@ -810,6 +816,9 @@ pub(crate) enum ProviderListUnreadable {
 ///
 /// Kept apart from a listing that could not be read: devpod answered the
 /// question it was asked, and then refused to do the thing.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AddFailed {
     NotRun(NotRun),
@@ -817,6 +826,9 @@ pub(crate) enum AddFailed {
 }
 
 /// Why the provider guard could not finish.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EnsureProviderFailed {
     ListUnreadable(ProviderListUnreadable),
@@ -824,6 +836,9 @@ pub(crate) enum EnsureProviderFailed {
 }
 
 /// Whether the guard had to register the provider, or found it already there.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProviderRegistration {
     AlreadyRegistered,
@@ -831,6 +846,9 @@ pub(crate) enum ProviderRegistration {
 }
 
 /// The names of the providers devpod has registered.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn provider_names(
     runner: &dyn Runner,
 ) -> Result<BTreeSet<String>, ProviderListUnreadable> {
@@ -848,6 +866,9 @@ pub(crate) fn provider_names(
 /// Every registered provider in a `--output json` listing: an object keyed by
 /// provider name, which is the same information as devpod's table in a form that
 /// has no rendering to change.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_provider_names(listing: &str) -> Result<BTreeSet<String>, NotAProviderListing> {
     let parsed: serde_json::Value =
         serde_json::from_str(listing).map_err(|error| NotAProviderListing::NotJson {
@@ -868,6 +889,9 @@ pub(crate) fn parse_provider_names(listing: &str) -> Result<BTreeSet<String>, No
 ///
 /// Refuses rather than guessing when devpod's answer cannot be read: acting on an
 /// unreadable listing is the defect this guard exists to have fixed.
+// The provider guard is complete and tested here; the flow that registers a
+// provider is not wired yet.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn ensure_provider(
     runner: &dyn Runner,
     name: &str,
@@ -953,276 +977,24 @@ pub(crate) fn parse_context_options(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    //! # Why the fake runner is a local one
+mod tests {
+    //! # The fake runner
     //!
-    //! `devlaunch-test-support`'s [`FakeRunner`](devlaunch_test_support::FakeRunner)
-    //! is the workspace's one fake, and it cannot be used from here: it is a
-    //! dev-dependency that depends back on this crate, so a unit-test build links
-    //! *two* `devlaunch-core`s — the `cfg(test)` one being tested and the plain
-    //! one the fake was compiled against — and their `Runner` traits are
-    //! different traits. Only a test outside the crate (`tests/`, or `dl`'s) can
-    //! use it, and every item in this layer is `pub(crate)` until #250's surface
-    //! is frozen at M6.
-    //!
-    //! So the recorder lives here, small and in the same three parts: the calls
-    //! it saw, an argv-prefix response table, and a default of quiet success. It
-    //! is `pub(crate)` because `clients::gh` and `clients::ssh` need exactly the
-    //! same thing and a third copy would be two too many.
-
-    use std::sync::Mutex;
+    //! [`ScriptedRunner`](crate::testing::ScriptedRunner) is the workspace's one
+    //! fake — `devlaunch-test-support`'s recorder, its argv-prefix response table
+    //! and the devpod state machine behind them — wrapped in the timing exclusion
+    //! this crate owns. A smaller copy used to live in this module, because
+    //! `devlaunch-test-support` depended back on `devlaunch-core` and a unit-test
+    //! build therefore saw two different `Runner` traits. The trait moved down to
+    //! the `devlaunch-runner` leaf crate, so the copy went with it and
+    //! `clients::gh`, `clients::ssh` and `clients::git` share the one fake.
 
     use super::*;
-    use crate::runner::{DetachOutcome, EnvBase};
-
-    /// One recorded spawn. The mode is an arm rather than a field, because the
-    /// modes do not take the same spec.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(crate) enum Recorded {
-        Capture(SpawnSpec),
-        Passthrough(SpawnSpec),
-        Session(SpawnSpec),
-        Detach(Invocation),
-    }
-
-    impl Recorded {
-        pub(crate) fn invocation(&self) -> &Invocation {
-            match self {
-                Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => {
-                    &spec.invocation
-                }
-                Self::Detach(invocation) => invocation,
-            }
-        }
-
-        pub(crate) fn argv(&self) -> Vec<String> {
-            self.invocation().argv()
-        }
-
-        pub(crate) fn spec(&self) -> &SpawnSpec {
-            match self {
-                Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => spec,
-                Self::Detach(_) => panic!("a detached spawn has no spec"),
-            }
-        }
-    }
-
-    /// A scripted answer to one spawn: [`Outcome`]'s arms, minus the distinction
-    /// between a captured and an inherited run.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(crate) enum Reply {
-        Ran {
-            exit: Exit,
-            stdout: String,
-            stderr: String,
-        },
-        ProgramNotFound,
-        TimedOut,
-        NotStarted(OsFailure),
-    }
-
-    impl Reply {
-        pub(crate) fn ok() -> Self {
-            Self::exited(0)
-        }
-
-        pub(crate) fn exited(code: i32) -> Self {
-            Self::Ran {
-                exit: Exit::Code(code),
-                stdout: String::new(),
-                stderr: String::new(),
-            }
-        }
-
-        pub(crate) fn stdout(text: impl Into<String>) -> Self {
-            Self::Ran {
-                exit: Exit::Code(0),
-                stdout: text.into(),
-                stderr: String::new(),
-            }
-        }
-
-        pub(crate) fn failed(code: i32, stderr: impl Into<String>) -> Self {
-            Self::Ran {
-                exit: Exit::Code(code),
-                stdout: String::new(),
-                stderr: stderr.into(),
-            }
-        }
-
-        #[must_use]
-        pub(crate) fn and_stderr(mut self, text: impl Into<String>) -> Self {
-            if let Self::Ran { stderr, .. } = &mut self {
-                *stderr = text.into();
-            }
-            self
-        }
-
-        fn captured(self) -> Outcome<CapturedText> {
-            match self {
-                Self::Ran {
-                    exit,
-                    stdout,
-                    stderr,
-                } => Outcome::Ran {
-                    exit,
-                    io: CapturedText { stdout, stderr },
-                },
-                Self::ProgramNotFound => Outcome::ProgramNotFound,
-                Self::TimedOut => Outcome::TimedOut,
-                Self::NotStarted(failure) => Outcome::NotStarted(failure),
-            }
-        }
-
-        /// The outcome of a call that captured nothing: the text is dropped
-        /// rather than travelling as a pair of empty strings.
-        fn quiet(self) -> Outcome {
-            match self.captured() {
-                Outcome::Ran { exit, .. } => Outcome::Ran { exit, io: () },
-                Outcome::ProgramNotFound => Outcome::ProgramNotFound,
-                Outcome::TimedOut => Outcome::TimedOut,
-                Outcome::NotStarted(failure) => Outcome::NotStarted(failure),
-            }
-        }
-
-        /// stderr as the lines a session is handed: no newlines, and no empty
-        /// last line for a stream that ended with one.
-        fn stderr_lines(&self) -> Vec<String> {
-            match self {
-                Self::Ran { stderr, .. } => stderr
-                    .split_inclusive('\n')
-                    .map(|line| line.trim_end_matches(['\n', '\r']).to_owned())
-                    .collect(),
-                _ => Vec::new(),
-            }
-        }
-    }
-
-    /// A recording [`Runner`] whose answers a test writes.
-    ///
-    /// It holds [`timing::exclusive`] for its own lifetime, because every call
-    /// through it is spanned against the **process-global** registry: without it, a
-    /// test that merely asks devpod something writes into whatever document a
-    /// concurrent measured test installed. In the fixture rather than per test, so
-    /// no test has to remember.
-    #[derive(Debug)]
-    pub(crate) struct ScriptedRunner {
-        inner: Mutex<Recording>,
-        /// See [`timing::exclusive`]. Last field, so it is dropped last.
-        _serialized: timing::Exclusive,
-    }
-
-    #[derive(Debug, Default)]
-    struct Recording {
-        calls: Vec<Recorded>,
-        scripts: Vec<(Vec<String>, Reply)>,
-    }
-
-    impl ScriptedRunner {
-        pub(crate) fn new() -> Self {
-            Self {
-                inner: Mutex::default(),
-                _serialized: timing::exclusive(),
-            }
-        }
-
-        /// Answer `reply` to any call whose whole argv starts this way. Entries
-        /// are searched in the order they were added and the first match wins.
-        #[must_use]
-        pub(crate) fn with_script<I, S>(self, argv: I, reply: Reply) -> Self
-        where
-            I: IntoIterator<Item = S>,
-            S: Into<String>,
-        {
-            self.inner()
-                .scripts
-                .push((argv.into_iter().map(Into::into).collect(), reply));
-            self
-        }
-
-        /// This program is not installed.
-        #[must_use]
-        pub(crate) fn with_missing(self, program: &str) -> Self {
-            self.with_script([program], Reply::ProgramNotFound)
-        }
-
-        fn inner(&self) -> std::sync::MutexGuard<'_, Recording> {
-            self.inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-        }
-
-        pub(crate) fn calls(&self) -> Vec<Recorded> {
-            self.inner().calls.clone()
-        }
-
-        pub(crate) fn call_count(&self) -> usize {
-            self.inner().calls.len()
-        }
-
-        /// Every call's whole argv, in order.
-        pub(crate) fn argvs(&self) -> Vec<Vec<String>> {
-            self.inner().calls.iter().map(Recorded::argv).collect()
-        }
-
-        /// The argv **after** the program name, for each call to `program`: the
-        /// shape a devpod assertion wants, since callers build subcommand tails.
-        pub(crate) fn args_to(&self, program: &str) -> Vec<Vec<String>> {
-            self.inner()
-                .calls
-                .iter()
-                .filter(|call| call.invocation().program == program)
-                .map(|call| call.invocation().args.clone())
-                .collect()
-        }
-
-        /// The one call this test made, or a panic naming what it found instead.
-        pub(crate) fn only_call(&self) -> Recorded {
-            let calls = self.calls();
-            assert_eq!(calls.len(), 1, "expected exactly one spawn: {calls:?}");
-            calls.into_iter().next().expect("one call")
-        }
-
-        fn answer(&self, call: Recorded) -> Reply {
-            let mut inner = self.inner();
-            let argv = call.argv();
-            inner.calls.push(call);
-            inner
-                .scripts
-                .iter()
-                .find(|(prefix, _)| argv.starts_with(prefix))
-                .map(|(_, reply)| reply.clone())
-                // Quiet success, so the tools that run opportunistically need
-                // not be scripted by every test that does not care about them.
-                .unwrap_or_else(Reply::ok)
-        }
-    }
-
-    impl Runner for ScriptedRunner {
-        fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-            self.answer(Recorded::Capture(spec.clone())).captured()
-        }
-
-        fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-            self.answer(Recorded::Passthrough(spec.clone())).quiet()
-        }
-
-        fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-            let reply = self.answer(Recorded::Session(spec.clone()));
-            for line in reply.stderr_lines() {
-                on_stderr_line(&line);
-            }
-            reply.quiet()
-        }
-
-        fn detach(&self, what: &Invocation) -> DetachOutcome {
-            match self.answer(Recorded::Detach(what.clone())) {
-                Reply::Ran { .. } | Reply::TimedOut => DetachOutcome::Started { pid: 900_001 },
-                Reply::ProgramNotFound => DetachOutcome::ProgramNotFound,
-                Reply::NotStarted(failure) => DetachOutcome::NotStarted(failure),
-            }
-        }
-    }
+    use crate::runner::EnvBase;
+    use crate::testing::ScriptedRunner;
+    // `devpod::Call` is this module's own type, so the recorded-spawn type keeps
+    // the name the assertions here already give it.
+    use devlaunch_test_support::{Call as Recorded, Response};
 
     // ------------------------------------------------------------ the spawn
 
@@ -1247,7 +1019,7 @@ pub(crate) mod tests {
     fn a_captured_call_reads_both_streams() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "version"],
-            Reply::stdout("v0.26.1\n").and_stderr("a warning\n"),
+            Response::stdout("v0.26.1\n").and_stderr("a warning\n"),
         );
 
         let answer = capture(&fake, &Call::new(["version"])).expect("devpod ran");
@@ -1291,7 +1063,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_call_that_outstayed_its_timeout_is_not_an_exit_status() {
-        let fake = ScriptedRunner::new().with_script(["devpod"], Reply::TimedOut);
+        let fake = ScriptedRunner::new().with_script(["devpod"], Response::TimedOut);
 
         assert_eq!(
             capture(&fake, &Call::new(["list"])).expect_err("killed"),
@@ -1305,7 +1077,7 @@ pub(crate) mod tests {
             kind: std::io::ErrorKind::PermissionDenied,
             errno: Some(13),
         };
-        let fake = ScriptedRunner::new().with_script(["devpod"], Reply::NotStarted(failure));
+        let fake = ScriptedRunner::new().with_script(["devpod"], Response::NotStarted(failure));
 
         assert_eq!(
             capture(&fake, &Call::new(["list"])).expect_err("never ran"),
@@ -1422,10 +1194,10 @@ pub(crate) mod tests {
         // Python spans each call as `" ".join(cmd[:2])`, and all three shapes of
         // call go through it: captured, inherited, and the session.
         let fake = ScriptedRunner::new()
-            .with_script(["devpod", "list"], Reply::stdout("[]"))
+            .with_script(["devpod", "list"], Response::stdout("[]"))
             .with_script(
                 ["devpod", "status"],
-                Reply::stdout(r#"{"state": "Running"}"#),
+                Response::stdout(r#"{"state": "Running"}"#),
             );
 
         let labels = spans_of(|| {
@@ -1643,7 +1415,7 @@ pub(crate) mod tests {
     fn a_session_holds_back_the_report_it_recovers_and_answers_with_it() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "ssh"],
-            Reply::exited(1).and_stderr(format!("{DEBUG_HINT_LINE}\n{REMOTE_EXIT_LINE}\n")),
+            Response::exited(1).and_stderr(format!("{DEBUG_HINT_LINE}\n{REMOTE_EXIT_LINE}\n")),
         );
         let mut shown = Vec::new();
 
@@ -1679,8 +1451,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_status_of_a_workspace_is_asked_for_in_json() {
-        let fake =
-            ScriptedRunner::new().with_script(["devpod", "status"], Reply::stdout(RUNNING_STATUS));
+        let fake = ScriptedRunner::new()
+            .with_script(["devpod", "status"], Response::stdout(RUNNING_STATUS));
 
         let state = status(&fake, "myws").expect("devpod answered");
 
@@ -1706,7 +1478,7 @@ pub(crate) mod tests {
         ] {
             let fake = ScriptedRunner::new().with_script(
                 ["devpod", "status"],
-                Reply::stdout(format!("{{\"state\":\"{word}\"}}\n")),
+                Response::stdout(format!("{{\"state\":\"{word}\"}}\n")),
             );
 
             assert_eq!(status(&fake, "myws"), Ok(expected));
@@ -1719,7 +1491,7 @@ pub(crate) mod tests {
         // and a reader asking "is it Running" gets the same answer either way.
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "status"],
-            Reply::stdout("{\"state\":\"Hibernating\"}\n"),
+            Response::stdout("{\"state\":\"Hibernating\"}\n"),
         );
 
         assert_eq!(
@@ -1735,7 +1507,7 @@ pub(crate) mod tests {
         // decides that rather than inheriting it from a parser.
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "status"],
-            Reply::failed(
+            Response::failed(
                 1,
                 "devpod: couldn't find workspace never-heard-of-it\n".to_owned(),
             ),
@@ -1754,8 +1526,10 @@ pub(crate) mod tests {
 
     #[test]
     fn status_output_that_is_not_json_is_unreadable_rather_than_a_state() {
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "status"], Reply::stdout("Error: no context\n"));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "status"],
+            Response::stdout("Error: no context\n"),
+        );
 
         match status(&fake, "myws").expect_err("not readable") {
             StatusUnreadable::NotJson { output, reason } => {
@@ -1768,8 +1542,10 @@ pub(crate) mod tests {
 
     #[test]
     fn status_json_with_no_state_in_it_is_unreadable() {
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "status"], Reply::stdout("{\"id\":\"myws\"}\n"));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "status"],
+            Response::stdout("{\"id\":\"myws\"}\n"),
+        );
 
         match status(&fake, "myws").expect_err("not readable") {
             StatusUnreadable::NoState { output } => assert!(output.contains("myws")),
@@ -1816,7 +1592,7 @@ pub(crate) mod tests {
     #[test]
     fn the_listing_is_asked_for_in_json_and_read_back() {
         let fake =
-            ScriptedRunner::new().with_script(["devpod", "list"], Reply::stdout(TWO_WORKSPACES));
+            ScriptedRunner::new().with_script(["devpod", "list"], Response::stdout(TWO_WORKSPACES));
 
         let workspaces = list_workspaces(&fake).expect("a readable listing");
 
@@ -1945,7 +1721,7 @@ pub(crate) mod tests {
         // do about it, and keeping the report to one line is rendering.
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "list"],
-            Reply::failed(1, "Error: line one\nline two\nline three\n"),
+            Response::failed(1, "Error: line one\nline two\nline three\n"),
         );
 
         match list_workspaces(&fake).expect_err("not an answer") {
@@ -2181,8 +1957,10 @@ pub(crate) mod tests {
     #[test]
     fn the_listing_is_requested_in_machine_readable_form() {
         // The guard must never be handed the coloured table in the first place.
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "provider", "list"], Reply::stdout(PROVIDER_LIST));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "provider", "list"],
+            Response::stdout(PROVIDER_LIST),
+        );
 
         let registered = provider_names(&fake).expect("a readable listing");
 
@@ -2201,8 +1979,10 @@ pub(crate) mod tests {
 
     #[test]
     fn an_existing_provider_is_not_added_again() {
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "provider", "list"], Reply::stdout(PROVIDER_LIST));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "provider", "list"],
+            Response::stdout(PROVIDER_LIST),
+        );
 
         assert_eq!(
             ensure_provider(&fake, "docker"),
@@ -2213,8 +1993,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_missing_provider_is_added() {
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "provider", "list"], Reply::stdout(NO_PROVIDERS));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "provider", "list"],
+            Response::stdout(NO_PROVIDERS),
+        );
 
         assert_eq!(
             ensure_provider(&fake, "docker"),
@@ -2238,7 +2020,7 @@ pub(crate) mod tests {
     fn an_unreadable_listing_stops_the_guard_rather_than_being_acted_on() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "provider", "list"],
-            Reply::stdout(COLOURISED_TABLE),
+            Response::stdout(COLOURISED_TABLE),
         );
 
         assert!(matches!(
@@ -2250,8 +2032,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_failed_listing_is_reported_rather_than_swallowed() {
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "provider", "list"], Reply::failed(1, "boom\n"));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "provider", "list"],
+            Response::failed(1, "boom\n"),
+        );
 
         match ensure_provider(&fake, "docker").expect_err("not readable") {
             EnsureProviderFailed::ListUnreadable(ProviderListUnreadable::Failed {
@@ -2271,10 +2055,13 @@ pub(crate) mod tests {
         // The listing failure next door quotes devpod's stderr, and this one
         // used not to — so the one failure a user can act on was the quiet one.
         let fake = ScriptedRunner::new()
-            .with_script(["devpod", "provider", "list"], Reply::stdout(NO_PROVIDERS))
+            .with_script(
+                ["devpod", "provider", "list"],
+                Response::stdout(NO_PROVIDERS),
+            )
             .with_script(
                 ["devpod", "provider", "add"],
-                Reply::failed(1, "provider docker already exists\n"),
+                Response::failed(1, "provider docker already exists\n"),
             );
 
         match ensure_provider(&fake, "docker").expect_err("the add failed") {
@@ -2290,8 +2077,10 @@ pub(crate) mod tests {
     fn both_provider_calls_are_captured_so_devpods_words_survive() {
         // Quoting devpod's stderr means capturing it: without capture there is
         // nothing on the result to quote.
-        let fake = ScriptedRunner::new()
-            .with_script(["devpod", "provider", "list"], Reply::stdout(NO_PROVIDERS));
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "provider", "list"],
+            Response::stdout(NO_PROVIDERS),
+        );
 
         let _ = ensure_provider(&fake, "docker");
 
@@ -2321,7 +2110,7 @@ pub(crate) mod tests {
     fn the_context_options_are_asked_for_in_json() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "context", "options"],
-            Reply::stdout(
+            Response::stdout(
                 r#"{"DOTFILES_URL":{"value":"https://github.com/o/dotfiles"},
                     "DOTFILES_SCRIPT":{"value":""},
                     "SSH_INJECT_DOCKER_CREDENTIALS":{},
@@ -2361,7 +2150,7 @@ pub(crate) mod tests {
         // both silence and a failure; the failure keeps its arm here so a flow
         // can say so, and defaults to the same empty map.
         let fake = ScriptedRunner::new()
-            .with_script(["devpod", "context", "options"], Reply::stdout("   \n"));
+            .with_script(["devpod", "context", "options"], Response::stdout("   \n"));
 
         assert_eq!(context_options(&fake), Ok(BTreeMap::new()));
     }
@@ -2369,7 +2158,7 @@ pub(crate) mod tests {
     #[test]
     fn context_options_that_are_not_an_object_are_unreadable() {
         let fake = ScriptedRunner::new()
-            .with_script(["devpod", "context", "options"], Reply::stdout("[1,2]"));
+            .with_script(["devpod", "context", "options"], Response::stdout("[1,2]"));
 
         assert_eq!(
             context_options(&fake),
@@ -2383,7 +2172,7 @@ pub(crate) mod tests {
     fn context_options_that_are_not_json_are_unreadable() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "context", "options"],
-            Reply::stdout("Error: no context selected\n"),
+            Response::stdout("Error: no context selected\n"),
         );
 
         assert!(matches!(
@@ -2396,7 +2185,7 @@ pub(crate) mod tests {
     fn a_devpod_that_refused_the_options_has_not_answered_them() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "context", "options"],
-            Reply::failed(1, "context not found\n"),
+            Response::failed(1, "context not found\n"),
         );
 
         assert_eq!(

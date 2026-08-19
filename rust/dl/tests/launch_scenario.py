@@ -194,9 +194,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         clone = repos / "blooop" / "devlaunch" / MAIN_LEAF
         git(root, "clone", "-q", str(origin), str(clone))
         git(clone, "checkout", "-q", "-B", "main")
-        worktrees["blooop/devlaunch/main"] = _record(
-            "blooop", "devlaunch", "main", clone, MAIN_WS
-        )
+        worktrees["blooop/devlaunch/main"] = _record("blooop", "devlaunch", "main", clone, MAIN_WS)
         state = "Running" if "warm" in wanted else "Stopped"
         workspaces[MAIN_WS] = _workspace(MAIN_WS, clone, state)
 

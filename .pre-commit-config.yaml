@@ -25,6 +25,12 @@ repos:
       - id: check-executables-have-shebangs
       - id: check-shebang-scripts-are-executable
       - id: name-tests-test
+        # The hook takes any `.py` under a `tests/` directory for a pytest
+        # module. `rust/dl/tests/` is Cargo's integration-test directory, and
+        # the Python files in it are scenario builders the Rust tests shell out
+        # to -- named by what they build, and renamed only at the cost of the
+        # `include!`s and `Command::new`s that reach them.
+        exclude: ^rust/dl/tests/
       - id: detect-private-key
       - id: check-symlinks
       - id: check-toml

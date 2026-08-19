@@ -9,227 +9,28 @@
 //! yet, and a client that never retries and never falls back has no sequence of
 //! its own to pin.
 //!
-//! # Why the fake is local
+//! # The fake runner
 //!
-//! `devlaunch-test-support`'s `FakeRunner` is the fake, and these tests cannot
-//! use it: it depends on `devlaunch-core`, so inside core's own unit tests it
-//! implements the *library* crate's `Runner` while the test code names the test
-//! crate's — two different traits to the compiler. [`ScriptedRunner`] below is
-//! the same three ideas (recorder, argv→reply table, quiet success by default) at
-//! the size these tests need, and it is `pub(crate)` because
-//! [`crate::domain::workspace_state`]'s tests need one spawn to fail without
-//! touching PATH. `clients::devpod` keeps its own copy for the same reason.
+//! [`ScriptedRunner`](crate::testing::ScriptedRunner) is the workspace's one fake
+//! — `devlaunch-test-support`'s recorder, its argv-prefix response table and a
+//! default of quiet success — wrapped in the timing exclusion this crate owns. A
+//! smaller copy used to live here, because `devlaunch-test-support` depended back
+//! on `devlaunch-core` and a unit-test build therefore saw two different `Runner`
+//! traits: the `cfg(test)` core being tested, and the plain one the fake was
+//! compiled against. The trait moved down to the `devlaunch-runner` leaf crate,
+//! so the copy went with it and `clients::devpod`, `clients::gh` and
+//! `clients::ssh` share the one fake. `domain::workspace_state`'s tests, which
+//! reached in here for the local copy so one git spawn could fail without
+//! touching this process's PATH, take it from `crate::testing` too — so this
+//! module is private again.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use super::*;
-use crate::runner::{DetachOutcome, EnvBase, Exit, OsFailure};
-
-// ------------------------------------------------------------- the fake
-
-/// One recorded spawn. The mode is an arm rather than a field, because a detached
-/// child has no stdin and no timeout for those fields to say anything about.
-#[derive(Clone, Debug)]
-pub(crate) enum Recorded {
-    Capture(SpawnSpec),
-    Passthrough(SpawnSpec),
-    Session(SpawnSpec),
-    Detach(Invocation),
-}
-
-impl Recorded {
-    pub(crate) fn invocation(&self) -> &Invocation {
-        match self {
-            Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => &spec.invocation,
-            Self::Detach(invocation) => invocation,
-        }
-    }
-
-    pub(crate) fn argv(&self) -> Vec<String> {
-        self.invocation().argv()
-    }
-
-    /// The whole spec, for the assertions about a bound. A detached spawn has
-    /// none, which is why this is an option rather than a field.
-    pub(crate) fn spec(&self) -> Option<&SpawnSpec> {
-        match self {
-            Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => Some(spec),
-            Self::Detach(_) => None,
-        }
-    }
-}
-
-/// A scripted answer to one spawn: the runner's outcome, minus the capture
-/// decision, so one reply serves a captured call and an uncaptured one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Reply {
-    Ran {
-        exit: Exit,
-        stdout: String,
-        stderr: String,
-    },
-    ProgramNotFound,
-    TimedOut,
-    NotStarted(OsFailure),
-}
-
-impl Reply {
-    pub(crate) fn ok() -> Self {
-        Self::exited(0)
-    }
-
-    pub(crate) fn stdout(text: impl Into<String>) -> Self {
-        Self::Ran {
-            exit: Exit::Code(0),
-            stdout: text.into(),
-            stderr: String::new(),
-        }
-    }
-
-    pub(crate) fn exited(code: i32) -> Self {
-        Self::Ran {
-            exit: Exit::Code(code),
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-
-    pub(crate) fn failed(code: i32, stderr: impl Into<String>) -> Self {
-        Self::Ran {
-            exit: Exit::Code(code),
-            stdout: String::new(),
-            stderr: stderr.into(),
-        }
-    }
-
-    pub(crate) fn signalled(signal: i32) -> Self {
-        Self::Ran {
-            exit: Exit::Signal(signal),
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-
-    fn captured(self) -> Outcome<CapturedText> {
-        match self {
-            Self::Ran {
-                exit,
-                stdout,
-                stderr,
-            } => Outcome::Ran {
-                exit,
-                io: CapturedText { stdout, stderr },
-            },
-            Self::ProgramNotFound => Outcome::ProgramNotFound,
-            Self::TimedOut => Outcome::TimedOut,
-            Self::NotStarted(failure) => Outcome::NotStarted(failure),
-        }
-    }
-
-    fn quiet(self) -> Outcome {
-        match self {
-            Self::Ran { exit, .. } => Outcome::Ran { exit, io: () },
-            Self::ProgramNotFound => Outcome::ProgramNotFound,
-            Self::TimedOut => Outcome::TimedOut,
-            Self::NotStarted(failure) => Outcome::NotStarted(failure),
-        }
-    }
-}
-
-/// A recorder with an argv→reply table in front of it. Unscripted spawns are a
-/// quiet success, so a test that cares only about argv scripts nothing.
-#[derive(Debug, Default)]
-pub(crate) struct ScriptedRunner {
-    inner: Mutex<Inner>,
-}
-
-#[derive(Debug, Default)]
-struct Inner {
-    calls: Vec<Recorded>,
-    scripts: Vec<(Vec<String>, Reply)>,
-}
-
-impl ScriptedRunner {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Answer `reply` to any spawn whose whole argv starts this way.
-    #[must_use]
-    pub(crate) fn with_script<I, S>(self, argv: I, reply: Reply) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.lock()
-            .scripts
-            .push((argv.into_iter().map(Into::into).collect(), reply));
-        self
-    }
-
-    pub(crate) fn calls(&self) -> Vec<Recorded> {
-        self.lock().calls.clone()
-    }
-
-    pub(crate) fn call_count(&self) -> usize {
-        self.lock().calls.len()
-    }
-
-    /// Forget the calls so far, keeping the scripts: for a test that walks
-    /// several verbs past one fake.
-    pub(crate) fn forget_calls(&self) {
-        self.lock().calls.clear();
-    }
-
-    /// The one call this test made, or a panic naming what it found instead.
-    pub(crate) fn only_call(&self) -> Recorded {
-        let calls = self.calls();
-        assert_eq!(calls.len(), 1, "expected exactly one spawn: {calls:?}");
-        calls.into_iter().next().expect("one call")
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn answer(&self, call: Recorded) -> Reply {
-        let mut inner = self.lock();
-        let argv = call.argv();
-        inner.calls.push(call);
-        inner
-            .scripts
-            .iter()
-            .find(|(prefix, _)| argv.starts_with(prefix))
-            .map(|(_, reply)| reply.clone())
-            .unwrap_or_else(Reply::ok)
-    }
-}
-
-impl Runner for ScriptedRunner {
-    fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-        self.answer(Recorded::Capture(spec.clone())).captured()
-    }
-
-    fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-        self.answer(Recorded::Passthrough(spec.clone())).quiet()
-    }
-
-    fn session(&self, spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-        self.answer(Recorded::Session(spec.clone())).quiet()
-    }
-
-    fn detach(&self, what: &Invocation) -> DetachOutcome {
-        match self.answer(Recorded::Detach(what.clone())) {
-            Reply::Ran { .. } | Reply::TimedOut => DetachOutcome::Started { pid: 900_001 },
-            Reply::ProgramNotFound => DetachOutcome::ProgramNotFound,
-            Reply::NotStarted(failure) => DetachOutcome::NotStarted(failure),
-        }
-    }
-}
+use crate::runner::{EnvBase, Exit, OsFailure};
+use crate::testing::ScriptedRunner;
+use devlaunch_test_support::{Call, Response};
 
 // ----------------------------------------------------------------- helpers
 
@@ -348,7 +149,7 @@ fn a_pinned_answer_keeps_its_leading_status_column() {
     // path was then reported one character short.
     let (dir, _root) = a_clone();
     let fake =
-        ScriptedRunner::new().with_script(["git"], Reply::stdout(" M pixi.lock\n?? notes.md\n"));
+        ScriptedRunner::new().with_script(["git"], Response::stdout(" M pixi.lock\n?? notes.md\n"));
 
     let answer = Git::new(&fake).status_porcelain(dir.path());
 
@@ -361,7 +162,7 @@ fn a_pinned_answer_keeps_its_leading_status_column() {
 #[test]
 fn a_pinned_answer_trims_every_trailing_newline_and_no_other_whitespace() {
     let (dir, _root) = a_clone();
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::stdout("feature\n\n"));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout("feature\n\n"));
 
     assert_eq!(
         Git::new(&fake).head_branch(dir.path()),
@@ -373,7 +174,7 @@ fn a_pinned_answer_trims_every_trailing_newline_and_no_other_whitespace() {
 fn an_empty_pinned_answer_is_an_answer() {
     // A clean tree and a refused status are different facts; `""` is the first.
     let (dir, _root) = a_clone();
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::stdout(""));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout(""));
 
     let answer = Git::new(&fake).status_porcelain(dir.path());
 
@@ -386,7 +187,7 @@ fn a_silent_pinned_refusal_is_named_by_the_whole_argument_list() {
     // workspace_state._git's fallback spells out what was asked, where every
     // other site names the subcommand alone.
     let (dir, _root) = a_clone();
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::exited(128));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::exited(128));
 
     let answer = Git::new(&fake).status_porcelain(dir.path());
 
@@ -399,8 +200,10 @@ fn a_silent_pinned_refusal_is_named_by_the_whole_argument_list() {
 
 #[test]
 fn git_s_own_words_are_what_a_refusal_carries() {
-    let fake = ScriptedRunner::new()
-        .with_script(["git"], Reply::failed(128, "fatal: not a git repository\n"));
+    let fake = ScriptedRunner::new().with_script(
+        ["git"],
+        Response::failed(128, "fatal: not a git repository\n"),
+    );
 
     let answer = Git::new(&fake).fetch_ref(Path::new("/cache/.bare"), "feature");
 
@@ -412,7 +215,7 @@ fn git_s_own_words_are_what_a_refusal_carries() {
 
 #[test]
 fn a_silent_failure_is_named_by_its_verb_and_its_status() {
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::exited(1));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::exited(1));
 
     let answer = Git::new(&fake).push_branch(Path::new("/cache/.bare"), "origin", "feature", None);
 
@@ -426,7 +229,7 @@ fn a_silent_failure_is_named_by_its_verb_and_its_status() {
 fn a_signal_is_spelled_the_way_python_spells_a_returncode() {
     // `subprocess` reports a child killed by SIGTERM as -15, and this text is
     // compared as text.
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::signalled(15));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::signalled(15));
 
     let answer = Git::new(&fake).clone_bare("url", Path::new("/cache/.bare"));
 
@@ -439,7 +242,7 @@ fn a_signal_is_spelled_the_way_python_spells_a_returncode() {
 fn a_git_that_is_not_installed_is_its_own_refusal() {
     // Not an exit status: a caller that branched on the status would carry on as
     // though git had answered.
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::ProgramNotFound);
+    let fake = ScriptedRunner::new().with_script(["git"], Response::ProgramNotFound);
 
     let answer = Git::new(&fake).status_porcelain(Path::new("/nowhere"));
 
@@ -451,7 +254,7 @@ fn a_git_that_is_not_installed_is_its_own_refusal() {
 #[test]
 fn a_bound_that_elapsed_says_what_the_bound_was() {
     let (dir, _root) = a_clone();
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::TimedOut);
+    let fake = ScriptedRunner::new().with_script(["git"], Response::TimedOut);
 
     let answer = Git::new(&fake).status_porcelain(dir.path());
 
@@ -469,7 +272,7 @@ fn an_os_refusal_carries_the_os_s_own_words() {
         kind: std::io::ErrorKind::PermissionDenied,
         errno: Some(13),
     };
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::NotStarted(failure));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::NotStarted(failure));
 
     let answer = Git::new(&fake).status_porcelain(Path::new("/locked/ws"));
 
@@ -488,11 +291,11 @@ fn a_refusal_never_has_nothing_to_say() {
     // "…: " with nothing after the colon, which tells the reader only that
     // something went wrong.
     for reply in [
-        Reply::exited(1),
-        Reply::failed(1, "   \n"),
-        Reply::TimedOut,
-        Reply::ProgramNotFound,
-        Reply::NotStarted(OsFailure {
+        Response::exited(1),
+        Response::failed(1, "   \n"),
+        Response::TimedOut,
+        Response::ProgramNotFound,
+        Response::NotStarted(OsFailure {
             kind: std::io::ErrorKind::Other,
             errno: None,
         }),
@@ -589,7 +392,7 @@ fn fetching_one_ref_moves_exactly_that_ref_in_the_c_locale() {
 
 #[test]
 fn a_symbolic_ref_is_asked_for_by_name_and_comes_back_trimmed() {
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::stdout("refs/heads/main\n"));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout("refs/heads/main\n"));
 
     let answer = Git::new(&fake).symbolic_ref(Path::new("/cache/o/r/.bare"), "HEAD");
 
@@ -601,7 +404,7 @@ fn a_symbolic_ref_is_asked_for_by_name_and_comes_back_trimmed() {
 fn the_remote_branch_listing_is_left_as_text_for_its_caller_to_search() {
     let fake = ScriptedRunner::new().with_script(
         ["git"],
-        Reply::stdout("  origin/HEAD -> origin/main\n  origin/main\n"),
+        Response::stdout("  origin/HEAD -> origin/main\n  origin/main\n"),
     );
 
     let answer = Git::new(&fake).remote_branch_listing(Path::new("/cache/o/r/.bare"));
@@ -635,7 +438,7 @@ fn asking_a_remote_for_its_head_is_bounded_at_ten_seconds() {
 
 #[test]
 fn the_local_branches_of_the_cache_are_read_off_disk_under_a_short_bound() {
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::stdout("main\nfeature\n\n"));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout("main\nfeature\n\n"));
 
     let answer = Git::new(&fake).local_branches(Path::new("/cache/o/r/.bare"));
 
@@ -710,7 +513,7 @@ fn a_verify_that_exits_non_zero_is_a_refusal_rather_than_a_false() {
     // show-ref --verify exits non-zero both for an absent ref and for a
     // directory that is not a repository; collapsing those to one bool is the
     // caller's decision to keep or to reconsider, not this layer's to make.
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::exited(1));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::exited(1));
 
     let answer = Git::new(&fake).verify_ref(Path::new("/ws"), &refs_heads("gone"));
 
@@ -720,7 +523,7 @@ fn a_verify_that_exits_non_zero_is_a_refusal_rather_than_a_false() {
 #[test]
 fn remote_heads_can_be_asked_about_one_branch_or_all_of_them() {
     let listing = "abc123\trefs/heads/main\ndef456\trefs/heads/feature\n";
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::stdout(listing));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout(listing));
     let git = Git::new(&fake);
 
     let all = git.ls_remote_heads(Path::new("/cache/o/r/.bare"), "origin", None);
@@ -840,8 +643,8 @@ fn an_existing_workspace_is_checked_out_plainly_and_a_new_one_is_reset() {
 
 #[test]
 fn tracked_files_are_the_union_of_head_and_the_index_nul_separated() {
-    let fake =
-        ScriptedRunner::new().with_script(["git"], Reply::stdout("a.bin\0dir/b with\nnewline\0"));
+    let fake = ScriptedRunner::new()
+        .with_script(["git"], Response::stdout("a.bin\0dir/b with\nnewline\0"));
 
     let answer = Git::new(&fake).tracked_files(Path::new("/ws"));
 
@@ -860,7 +663,7 @@ fn tracked_files_are_the_union_of_head_and_the_index_nul_separated() {
 
 #[test]
 fn the_lfs_file_list_is_asked_for_by_name_only() {
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::stdout("big.bin\nother.bin\n"));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout("big.bin\nother.bin\n"));
 
     let answer = Git::new(&fake).lfs_tracked_files(Path::new("/ws"));
 
@@ -913,7 +716,7 @@ fn the_lfs_verbs_leave_their_output_on_the_user_s_terminal() {
 
     for call in fake.calls() {
         assert!(
-            matches!(call, Recorded::Passthrough(_)),
+            matches!(call, Call::Passthrough(_)),
             "captured an LFS transfer: {call:?}"
         );
     }
@@ -948,7 +751,7 @@ fn the_network_phase_pulls_from_origin() {
 fn an_uncaptured_verb_that_refuses_reports_what_ran_and_how_it_ended() {
     // There is no stderr to quote, so naming the command and its status is all
     // there is — which is what Python's CalledProcessError message says too.
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::exited(2));
+    let fake = ScriptedRunner::new().with_script(["git"], Response::exited(2));
 
     let answer = Git::new(&fake).lfs_pull_origin(Path::new("/ws"));
 
@@ -973,7 +776,7 @@ fn an_uncaptured_verb_that_succeeds_carries_no_output_at_all() {
 #[test]
 fn the_origin_url_is_asked_for_with_dash_c_rather_than_a_cwd() {
     let fake =
-        ScriptedRunner::new().with_script(["git"], Reply::stdout("git@github.com:o/r.git\n"));
+        ScriptedRunner::new().with_script(["git"], Response::stdout("git@github.com:o/r.git\n"));
 
     let answer = Git::new(&fake).origin_url_at(Path::new("/projects/mine"));
 

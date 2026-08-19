@@ -616,6 +616,26 @@ fn a_usage_error_is_claps_exit_2() {
     assert!(help.out.contains("Usage: dl"), "{:?}", help.out);
 }
 
+#[test]
+fn the_other_shapes_clap_refuses_that_python_did_not() {
+    // Divergence rows 14 and 15, the inputs named in the table. Python probed
+    // `-leading-dash` as a workspace name (one devpod status round trip),
+    // accepted a repeated `--ls`, and ran whichever of two global commands
+    // argparse checked first.
+    let world = World::full();
+    for argv in [
+        &["-leading-dash"][..],
+        &["--ls", "--ls"][..],
+        &["--refresh", "--ls"][..],
+        &["--repos", "--ls"][..],
+    ] {
+        let run = world.dl(argv);
+        run.exited(2);
+        assert_eq!(run.out, "", "usage error reached stdout for {argv:?}");
+        assert!(run.err.contains("Usage: dl"), "{argv:?}: {:?}", run.err);
+    }
+}
+
 // ===========================================================================
 // --install
 // ===========================================================================

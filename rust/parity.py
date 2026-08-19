@@ -224,8 +224,18 @@ def _run_tier(name: str, marker: str, dl_cmd: str, aid_cmd: str) -> list[str]:
     # Through pixi so the tier runs in the project environment CI already
     # restores; parity failures are read from junit, not the exit code.
     subprocess.run(
-        ["pixi", "run", "pytest", "-m", marker, "-p", "no:cacheprovider",
-         "--junit-xml", str(junit), "-q"],
+        [
+            "pixi",
+            "run",
+            "pytest",
+            "-m",
+            marker,
+            "-p",
+            "no:cacheprovider",
+            "--junit-xml",
+            str(junit),
+            "-q",
+        ],
         cwd=REPO_ROOT,
         env=env,
         check=False,
@@ -274,8 +284,7 @@ def cmd_run() -> int:
         print(f"parity run: UNEXPECTED FAILURE {f} (not in the manifest)", file=sys.stderr)
     for p in stale:
         print(
-            f"parity run: STALE MANIFEST ENTRY {p} (now passes — shrink the "
-            "manifest in this PR)",
+            f"parity run: STALE MANIFEST ENTRY {p} (now passes — shrink the manifest in this PR)",
             file=sys.stderr,
         )
     if not unexpected and not stale:

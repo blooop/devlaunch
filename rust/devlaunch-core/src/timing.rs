@@ -43,10 +43,6 @@
 //! ("lock wait", the label Python's `locks.py` spanned it under). Both land in
 //! the same place: the flat prose list, and the innermost open stage.
 
-// The binary that renders these reports and the flows that sprinkle the spans
-// land from M5b on; until then the port's own tests are the only consumers.
-#![allow(dead_code)] // consumed from M5b on
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -112,6 +108,10 @@ pub(crate) enum Stage {
 
 impl Stage {
     /// The vocabulary, in the order a launch meets it — Python's `STAGES`.
+    ///
+    /// Held for the #251 §7 public-API freeze: these are the handoff stage names,
+    /// which cross the process boundary. Only this module's tests read them today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const ALL: [Stage; 5] = [
         Stage::Handoff,
         Stage::HostPrep,
@@ -366,10 +366,6 @@ impl Registry {
         registry
     }
 
-    pub(crate) fn mode(&self) -> Mode {
-        self.mode
-    }
-
     /// Record one finished measurement: the flat prose list, and the innermost
     /// open stage if there is one.
     ///
@@ -564,6 +560,9 @@ impl Report {
     }
 
     /// The document, for a caller that wants the numbers rather than the line.
+    ///
+    /// Only this module's tests read it; the binary renders [`Report::lines`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn document(&self) -> Option<&Document> {
         match self {
             Report::Prose(_) => None,

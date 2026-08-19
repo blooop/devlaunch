@@ -123,9 +123,7 @@ class FailureRatchet(unittest.TestCase):
         self.assertEqual(stale, ["test/unit/test_tools.py::*"])
 
     def test_unexpected_failure_is_flagged(self):
-        unexpected, _ = parity.compare_failures(
-            failed=["test/test_new.py::test_z"], patterns=[]
-        )
+        unexpected, _ = parity.compare_failures(failed=["test/test_new.py::test_z"], patterns=[])
         self.assertEqual(unexpected, ["test/test_new.py::test_z"])
 
     def test_glob_pattern_matches_node_ids(self):

@@ -43,11 +43,6 @@
 //! module, so the spans are wired in M4b/M5 against the real registry rather than
 //! guessed at here. The names above are the list to wire.
 
-// Nothing above this layer is ported yet: the flows that call these verbs are
-// M4b's, and `domain::workspace_state` (this wave) consumes only the pinned
-// family. Remove when the flows land.
-#![allow(dead_code)] // consumed from M4b/M5 on
-
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -865,6 +860,9 @@ impl<'r> Git<'r> {
     /// `git ls-remote <url> <args…>` — the URL before the options, which is the
     /// order `dl.py`'s helper built and therefore the order the shim log
     /// compares.
+    /// Only this module's tests ask for the raw form; the completion flows go
+    /// through [`Git::ls_remote_heads`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn ls_remote(&self, remote_url: &str, args: &[&str]) -> GitAnswer<String> {
         let mut argv = vec!["ls-remote".to_owned(), remote_url.to_owned()];
         argv.extend(args.iter().map(|arg| (*arg).to_owned()));
@@ -1089,9 +1087,8 @@ pub(crate) fn is_lfs_pointer(path: &Path) -> bool {
     file.read_exact(&mut head).is_ok() && head == LFS_POINTER_PREFIX
 }
 
-// `pub(crate)` for the fake runner it defines: `domain::workspace_state`'s tests
-// need one git spawn to fail without touching this process's PATH, and the
-// dev-dependency cycle keeps `devlaunch-test-support`'s fake out of core's own
-// unit tests (see the module docs there).
+// Private again: the fake runner this module used to define for
+// `domain::workspace_state`'s tests is now `crate::testing`'s, so nothing outside
+// reaches in here.
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;

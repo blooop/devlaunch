@@ -40,9 +40,6 @@
 //!   install actually did — or a typed [`InstallError`], and the words and the
 //!   exit code belong to the binary.
 
-// The `--install` path in the binary lands in M5b.
-#![allow(dead_code)] // consumed from M5b on
-
 use std::io;
 use std::path::{Path, PathBuf};
 

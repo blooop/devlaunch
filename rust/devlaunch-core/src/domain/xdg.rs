@@ -17,10 +17,6 @@
 //!
 //! Ported from `devlaunch/xdg.py`; see docs/rust-rewrite-plan.md (M2).
 
-// Callers land in M4 (storage flows) onward; until then the port's own tests
-// are the only consumers of this module.
-#![allow(dead_code)]
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

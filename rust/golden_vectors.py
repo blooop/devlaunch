@@ -4,6 +4,9 @@ Run from the worktree root with `pixi run python`. Every expected value in the
 Rust tests comes from here, so nothing is transcribed by hand.
 """
 
+import sys
+import tempfile
+
 from devlaunch.workspace_id import (
     WorkspaceId,
     slug,
@@ -18,8 +21,6 @@ from devlaunch.dl import (
     parse_owner_repo_branch,
     _resolve_devcontainer_ref,
 )
-
-OUT = "/tmp/claude-1000/-home-ags-projects-devlaunch/ee37469e-2012-451c-97dc-b72f2ffd7999/scratchpad/"
 
 
 def rs(s):
@@ -334,74 +335,95 @@ def identity(spec):
     return "Expect::ExistingName(%s)" % rs(got)
 
 
-with open(OUT + "wid_tables.rs.txt", "w") as f:
-    w = f.write
-    w("    /// (owner, repo, ref) -> (suffix, value), straight out of the Python\n")
-    w("    /// implementation. FROZEN: every workspace directory and devpod workspace\n")
-    w("    /// on disk is named by this output.\n")
-    w("    const GOLDEN_TRIPLES: &[(&str, &str, &str, &str, &str)] = &[\n")
-    for o, r, g in TRIPLES:
-        ws = WorkspaceId(o, r, g)
-        w("        (%s, %s, %s, %s, %s),\n" % (rs(o), rs(r), rs(g), rs(ws.suffix), rs(ws.value)))
-    w("    ];\n\n")
-    w("    /// source -> id, for git sources that name no ref.\n")
-    w("    const GOLDEN_SOURCES: &[(&str, &str)] = &[\n")
-    for s in SOURCES:
-        w("        (%s, %s),\n" % (rs(s), rs(source_workspace_id(s))))
-    w("    ];\n\n")
-    w("    /// text -> slug.\n")
-    w("    const GOLDEN_SLUGS: &[(&str, &str)] = &[\n")
-    for s in SLUGS:
-        w("        (%s, %s),\n" % (rs(s), rs(slug(s))))
-    w("    ];\n\n")
-    w("    /// name -> whether Python's `^[\\w][\\w./-]*$` accepts it.\n")
-    w("    const GOLDEN_SAFE_NAMES: &[(&str, bool)] = &[\n")
-    for n in NAMES:
-        try:
-            validate_ref_name(n)
-            ok = "true"
-        except ValueError:
-            ok = "false"
-        w("        (%s, %s),\n" % (rs(n), ok))
-    w("    ];\n\n")
-    w("    /// Names Python refuses and this port accepts: see the module docs.\n")
-    w("    const DIVERGENT_NAMES: &[&str] = &[\n")
-    for n in DIVERGENT:
-        try:
-            validate_ref_name(n)
-            raise SystemExit("expected Python to refuse %r" % n)
-        except ValueError:
-            pass
-        w("        %s,\n" % rs(n))
-    w("    ];\n")
+def main(out_dir=None):
+    """Write both tables into `out_dir`, defaulting to the system temp dir.
 
-with open(OUT + "spec_tables.rs.txt", "w") as f:
-    w = f.write
-    w("    /// spec -> (shape, expansion, identity), straight out of the Python\n")
-    w("    /// implementation (`dl.py`: parse_owner_repo_branch, is_path_spec,\n")
-    w("    /// is_git_spec, expand_workspace_spec, spec_to_workspace_id).\n")
-    w("    #[rustfmt::skip]\n")
-    w("    fn golden_specs() -> Vec<Case> {\n")
-    w("        vec![\n")
-    for s in SPECS:
-        w(
-            "            Case { spec: %s, shape: %s, expanded: %s, identity: %s },\n"
-            % (rs(s), shape(s), rs(expand_workspace_spec(s)), identity(s))
-        )
-    w("        ]\n")
-    w("    }\n\n")
-    w("    /// --devcontainer value -> resolved path, or the refusal.\n")
-    w("    const GOLDEN_DEVCONTAINERS: &[(&str, Result<&str, DevcontainerRefError>)] = &[\n")
-    for d in DEVCONTAINERS:
-        try:
-            got = "Ok(%s)" % rs(_resolve_devcontainer_ref(d))
-        except ValueError as exc:
-            got = (
-                "Err(DevcontainerRefError::Missing)"
-                if "requires a variant" in str(exc)
-                else "Err(DevcontainerRefError::FlagLike)"
+    A function rather than module-level script body, so the loop variables in
+    here are locals: at module level they were globals that every helper above
+    shadowed by taking a parameter of the same name, which reads as a mistake
+    even where it is not one.
+
+    A directory argument rather than a constant, because the output is copied
+    into the Rust tests by hand and nothing reads it from a fixed place -- and
+    because the alternative, a path baked in from whichever machine last ran
+    this, is a script only that machine can run.
+    """
+    out = (out_dir or tempfile.gettempdir()).rstrip("/") + "/"
+    with open(out + "wid_tables.rs.txt", "w", encoding="utf-8") as f:
+        w = f.write
+        w("    /// (owner, repo, ref) -> (suffix, value), straight out of the Python\n")
+        w("    /// implementation. FROZEN: every workspace directory and devpod workspace\n")
+        w("    /// on disk is named by this output.\n")
+        w("    const GOLDEN_TRIPLES: &[(&str, &str, &str, &str, &str)] = &[\n")
+        for owner, repo, ref in TRIPLES:
+            ws = WorkspaceId(owner, repo, ref)
+            w(
+                "        (%s, %s, %s, %s, %s),\n"
+                % (rs(owner), rs(repo), rs(ref), rs(ws.suffix), rs(ws.value))
             )
-        w("        (%s, %s),\n" % (rs(d), got))
-    w("    ];\n")
+        w("    ];\n\n")
+        w("    /// source -> id, for git sources that name no ref.\n")
+        w("    const GOLDEN_SOURCES: &[(&str, &str)] = &[\n")
+        for source in SOURCES:
+            w("        (%s, %s),\n" % (rs(source), rs(source_workspace_id(source))))
+        w("    ];\n\n")
+        w("    /// text -> slug.\n")
+        w("    const GOLDEN_SLUGS: &[(&str, &str)] = &[\n")
+        for text in SLUGS:
+            w("        (%s, %s),\n" % (rs(text), rs(slug(text))))
+        w("    ];\n\n")
+        w("    /// name -> whether Python's `^[\\w][\\w./-]*$` accepts it.\n")
+        w("    const GOLDEN_SAFE_NAMES: &[(&str, bool)] = &[\n")
+        for n in NAMES:
+            try:
+                validate_ref_name(n)
+                ok = "true"
+            except ValueError:
+                ok = "false"
+            w("        (%s, %s),\n" % (rs(n), ok))
+        w("    ];\n\n")
+        w("    /// Names Python refuses and this port accepts: see the module docs.\n")
+        w("    const DIVERGENT_NAMES: &[&str] = &[\n")
+        for n in DIVERGENT:
+            try:
+                validate_ref_name(n)
+                raise SystemExit("expected Python to refuse %r" % n)
+            except ValueError:
+                pass
+            w("        %s,\n" % rs(n))
+        w("    ];\n")
 
-print("wrote tables")
+    with open(out + "spec_tables.rs.txt", "w", encoding="utf-8") as f:
+        w = f.write
+        w("    /// spec -> (shape, expansion, identity), straight out of the Python\n")
+        w("    /// implementation (`dl.py`: parse_owner_repo_branch, is_path_spec,\n")
+        w("    /// is_git_spec, expand_workspace_spec, spec_to_workspace_id).\n")
+        w("    #[rustfmt::skip]\n")
+        w("    fn golden_specs() -> Vec<Case> {\n")
+        w("        vec![\n")
+        for spec in SPECS:
+            w(
+                "            Case { spec: %s, shape: %s, expanded: %s, identity: %s },\n"
+                % (rs(spec), shape(spec), rs(expand_workspace_spec(spec)), identity(spec))
+            )
+        w("        ]\n")
+        w("    }\n\n")
+        w("    /// --devcontainer value -> resolved path, or the refusal.\n")
+        w("    const GOLDEN_DEVCONTAINERS: &[(&str, Result<&str, DevcontainerRefError>)] = &[\n")
+        for d in DEVCONTAINERS:
+            try:
+                rendered = "Ok(%s)" % rs(_resolve_devcontainer_ref(d))
+            except ValueError as exc:
+                rendered = (
+                    "Err(DevcontainerRefError::Missing)"
+                    if "requires a variant" in str(exc)
+                    else "Err(DevcontainerRefError::FlagLike)"
+                )
+            w("        (%s, %s),\n" % (rs(d), rendered))
+        w("    ];\n")
+
+    print("wrote tables")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

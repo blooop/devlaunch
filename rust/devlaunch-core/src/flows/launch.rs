@@ -57,10 +57,6 @@
 //! *is* a string here is a remote payload — `bash -lc <quoted>` — because those
 //! bytes are a contract with a shell rather than prose for a person.
 
-// The `dl` binary wires these up in the M7 rendering wave; wf links `up` at or
-// after cutover.
-#![allow(dead_code)] // consumed from M7-wiring on
-
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -363,6 +359,7 @@ fn from_lifecycle(notice: LifecycleNotice) -> LaunchNotice {
 pub(crate) struct ContextOptions(BTreeMap<String, String>);
 
 impl ContextOptions {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_map(options: BTreeMap<String, String>) -> Self {
         Self(options)
     }
@@ -389,10 +386,6 @@ impl ContextOptions {
             args.push(script.to_owned());
         }
         args
-    }
-
-    pub(crate) fn as_map(&self) -> &BTreeMap<String, String> {
-        &self.0
     }
 }
 
@@ -831,10 +824,19 @@ pub(crate) fn up_args(
 #[derive(Debug)]
 pub(crate) enum Serialization {
     /// The lock was free: no sibling was mid-launch.
-    WalkedIn { guard: locks::LockGuard },
+    WalkedIn {
+        /// The flock itself. Never read; dropping it is the release.
+        #[allow(dead_code)]
+        guard: locks::LockGuard,
+    },
     /// A sibling held it, and this launch waited this long.
     Queued {
+        /// The flock itself. Never read; dropping it is the release.
+        #[allow(dead_code)]
         guard: locks::LockGuard,
+        /// Held for the #251 §7 public-API freeze — how long `up` queued, which
+        /// the binary will report. Nothing reads it yet.
+        #[allow(dead_code)]
         waited: Duration,
     },
     /// Nothing named the workspace, so there was nothing to key a lock on.
@@ -844,11 +846,19 @@ pub(crate) enum Serialization {
     /// cache — or a full or read-only disk. Serialization guards against a race
     /// that may not even be happening, so taking the whole command down in front
     /// of a `devpod up` that would have worked is the worse answer.
-    Unavailable { reason: String },
+    Unavailable {
+        /// Held for the #251 §7 public-API freeze — why `up` ran unserialized.
+        /// Nothing reads it yet.
+        #[allow(dead_code)]
+        reason: String,
+    },
 }
 
 impl Serialization {
     /// Whether this launch had to queue behind a sibling — Python's `waited`.
+    ///
+    /// Held for the #251 §7 public-API freeze — part of `up`. Only tests ask today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn waited(&self) -> bool {
         matches!(self, Self::Queued { .. })
     }
@@ -929,6 +939,9 @@ pub trait Provision {
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
 /// about provisioning.
+/// Held for the #251 §7 public-API freeze — the `up` a caller asks for with
+/// nothing lent. Only tests choose it today.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Default)]
 pub(crate) struct NoProvisioning;
 
@@ -968,6 +981,9 @@ pub(crate) enum UpOutcome {
 
 impl UpOutcome {
     /// Whether the workspace can be attached to.
+    ///
+    /// Held for the #251 §7 public-API freeze — part of `up`. No caller yet.
+    #[allow(dead_code)]
     pub(crate) fn succeeded(self) -> bool {
         !matches!(self, Self::Refused { .. })
     }
@@ -1811,6 +1827,9 @@ pub trait ColdMachinery<'r> {
 
 /// A launcher that must never reach the cold path, for callers that have already
 /// established it is warm.
+/// Held for the #251 §7 public-API freeze — the `up` of a caller that has
+/// established the workspace is warm. Nothing constructs one yet.
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct NoColdPath;
 

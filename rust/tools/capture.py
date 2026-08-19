@@ -10,8 +10,6 @@ Reproduces rust/dl/tests/launch.rs's World: same scenario builder, same env, sam
 import json
 import os
 import pathlib
-import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,6 +48,7 @@ def main(argv):
         ["python3", str(scenario), str(root), str(SHIM), *fixtures],
         capture_output=True,
         text=True,
+        check=False,
     )
     if built.returncode != 0:
         raise SystemExit(f"scenario failed: {built.stderr}")
@@ -78,6 +77,7 @@ def main(argv):
         env={**env, "PYTHONPATH": str(REPO)},
         capture_output=True,
         text=True,
+        check=False,
     )
 
     def t(text):

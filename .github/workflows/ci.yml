@@ -126,18 +126,39 @@ jobs:
         run: pixi run test-e2e
 
   # The Rust port's gate (docs/rust-rewrite-plan.md). Required from day one:
-  # red always means something real. Until the port produces a binary that
-  # passes tests, this is the scaffold gate -- cargo build/test/clippy/fmt,
-  # the spec-ledger lint (every test file has a disposition row; `pending`
-  # only shrinks), and parity.py's own unit tests. `parity.py run` becomes the
-  # two-way expected-failure ratchet the moment rust/parity-manifest.txt stops
-  # saying ALL: it then runs both pytest tiers against the Rust binary via
-  # DEVLAUNCH_DL_CMD and fails on any unlisted failure (regression) or any
-  # listed pass (stale manifest). The lint and self-test need only a bare
-  # python3 (stdlib), so pixi is restored solely for `run`'s pytest tiers.
+  # red always means something real. Two halves. The scaffold checks -- cargo
+  # build/test/clippy/fmt, the spec-ledger lint (every test file has a
+  # disposition row; `pending` only shrinks), and parity.py's own unit tests.
+  # And `parity.py run`, the two-way expected-failure ratchet: it builds the
+  # release `dl` and `aid`, points DEVLAUNCH_DL_CMD and DEVLAUNCH_AID_CMD at
+  # them, runs both pytest tiers, and fails on any failure outside
+  # rust/parity-manifest.txt (a regression) or any manifest entry that passed (a
+  # stale entry to shrink in the same PR).
+  #
+  # **Tier 2 is the real e2e suite**, and has been since the manifest stopped
+  # saying ALL: `parity.py run` runs `pytest -m e2e` as well as
+  # `-m "not e2e"`, so this job builds real containers through real devpod
+  # exactly as the `e2e` job above does. It needs no provisioning step for that,
+  # for the same two reasons that job needs none -- `ubuntu-latest` is an
+  # ephemeral VM with Docker preinstalled, and devpod is a pixi dependency
+  # already in the lockfile setup-pixi restores. The one requirement is
+  # ordering: setup-pixi has to come before `parity.py run`, which is why it
+  # sits at the bottom of the step list rather than beside the toolchain. The
+  # lint and self-test are stdlib-only and deliberately run before it.
   rust-parity:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Larger than the 25 of the `e2e` job because this job is a superset of it.
+    # On top of a full e2e tier it does: a Rust toolchain install, a cold
+    # `--all-targets` debug build, ~1400 cargo tests, clippy over all targets, a
+    # *second* build in the release profile (parity.py's own, since the release
+    # binaries are what the tiers judge), and the 1874-test tier-1 pytest run.
+    # Measured locally, the whole of `parity.py run` -- release build, both
+    # tiers, eight real containers -- is 3m42s against a warm cache, so what this
+    # number is really sized for is the two Rust builds on a *cold* `rust-cache`
+    # plus the same slow-registry image pull the `e2e` job's 25 accounts for.
+    # Bounded at all is the point: unbounded, a stalled pull is a job that hangs
+    # for six hours and reports a timeout nobody reads.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v6

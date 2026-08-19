@@ -31,9 +31,6 @@
 //! get the same PATH), and the `DEVLAUNCH_DOTFILES_ON_ATTACH` gate, which is not
 //! in `tty_session.py` at all.
 
-// The launch flow that chooses this transport lands in M7.
-#![allow(dead_code)] // consumed from M5 on
-
 use std::path::{Path, PathBuf};
 
 use crate::runner::{EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec};
@@ -167,22 +164,6 @@ pub(crate) fn terminal_usable(disable: Option<&str>, stdin_tty: bool, stdout_tty
     !tty_disabled(disable) && stdin_tty && stdout_tty
 }
 
-/// [`terminal_usable`] for this process, as the launch flow asks it.
-pub(crate) fn have_terminal() -> bool {
-    terminal_usable(
-        std::env::var(DISABLE_VAR).ok().as_deref(),
-        is_a_terminal(libc::STDIN_FILENO),
-        is_a_terminal(libc::STDOUT_FILENO),
-    )
-}
-
-fn is_a_terminal(descriptor: std::ffi::c_int) -> bool {
-    // SAFETY: `isatty` reads one descriptor and returns a flag; it cannot fail in
-    // a way that matters here, since "not a terminal" and "no such descriptor"
-    // are the same answer to this question.
-    unsafe { libc::isatty(descriptor) == 1 }
-}
-
 /// Where devpod writes its host aliases.
 pub(crate) fn config_path() -> Option<PathBuf> {
     std::env::home_dir().map(|home| home.join(".ssh").join("config"))
@@ -244,7 +225,8 @@ pub(crate) fn run(runner: &dyn Runner, args: &[String], env: EnvSpec) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::devpod::tests::{Recorded, Reply, ScriptedRunner};
+    use crate::testing::ScriptedRunner;
+    use devlaunch_test_support::{Call, Response};
 
     /// An ssh config in the exact shape `devpod up` leaves behind.
     fn devpod_config(workspace_ids: &[&str]) -> String {
@@ -562,7 +544,7 @@ mod tests {
         assert_eq!(exit, Exit::Code(0));
         assert_eq!(fake.argvs(), vec![args]);
         let call = fake.only_call();
-        assert!(matches!(call, Recorded::Passthrough(_)), "{call:?}");
+        assert!(matches!(call, Call::Passthrough(_)), "{call:?}");
         assert_eq!(call.invocation().env, env);
     }
 
@@ -571,7 +553,7 @@ mod tests {
         // Nothing to recover here, unlike `devpod ssh`: OpenSSH exits with the
         // remote program's status, which is the thing devpod loses by wrapping
         // its *ssh.ExitError three times before type-asserting on it.
-        let fake = ScriptedRunner::new().with_script(["ssh"], Reply::exited(130));
+        let fake = ScriptedRunner::new().with_script(["ssh"], Response::exited(130));
 
         assert_eq!(
             run(

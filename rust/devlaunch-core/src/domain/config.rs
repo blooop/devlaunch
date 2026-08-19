@@ -17,9 +17,6 @@
 //! Here it is a typed refusal at load, which is the whole reason for a parse
 //! step.
 
-// The consumers are the storage flows (M4) and the listing flows (M5).
-#![allow(dead_code)]
-
 use std::io;
 use std::path::{Path, PathBuf};
 

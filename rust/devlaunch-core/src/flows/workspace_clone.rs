@@ -37,9 +37,6 @@
 //! Nothing here prints: every warning Python wrote is a [`CacheNotice`] carrying
 //! that line's data, and every failure is a typed error.
 
-// The launch path (M7) and the lifecycle flows (M6) are the remaining consumers.
-#![allow(dead_code)] // consumed from M6/M7
-
 use std::path::{Path, PathBuf};
 
 use super::branch_manager::{
@@ -351,10 +348,6 @@ impl<'r> WorkspaceCloneManager<'r> {
         &self.repo_manager
     }
 
-    pub(crate) fn repo_manager_mut(&mut self) -> &mut RepositoryManager<'r> {
-        &mut self.repo_manager
-    }
-
     pub(crate) fn repos_dir(&self) -> &Path {
         &self.repos_dir
     }
@@ -451,6 +444,9 @@ impl<'r> WorkspaceCloneManager<'r> {
     }
 
     /// Whether a workspace clone is on disk.
+    ///
+    /// Only this module's tests ask; the flows above resolve the path and look.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn workspace_exists(
         &self,
         owner: &str,
@@ -1158,6 +1154,11 @@ impl<'r> WorkspaceCloneManager<'r> {
     // ------------------------------------------------------------- removal
 
     /// Remove a workspace clone, locating it by deriving its path.
+    ///
+    /// Held for the #251 §7 public-API freeze — the `remove` verb's derived
+    /// form. Only this module's tests call it today; the binary knows the id and
+    /// goes through [`WorkspaceCloneManager::remove_workspace_by_id`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn remove_workspace(
         &self,
         storage: &mut MetadataStorage,
@@ -1346,10 +1347,6 @@ mod tests {
         WorkspaceId::new("owner", "repo", branch)
             .expect("a safe triple")
             .value()
-    }
-
-    fn a_workspace(branch: &str) -> WorkspaceId {
-        WorkspaceId::new("owner", "repo", branch).expect("a safe triple")
     }
 
     fn a_clone_manager<'r>(cache: &Cache, git: Git<'r>, lfs: GitLfs) -> WorkspaceCloneManager<'r> {

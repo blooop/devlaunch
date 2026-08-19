@@ -19,9 +19,6 @@
 //! (`workspace_clone::ensure_branch`), which keeps this module a decision procedure
 //! over four git verbs and nothing else.
 
-// The callers are the storage flows in this wave and the launch path in M7.
-#![allow(dead_code)] // consumed from M6/M7
-
 use std::path::Path;
 
 use crate::clients::git::{self, Git};
@@ -33,6 +30,10 @@ use crate::clients::git::{self, Git};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteRefs {
     /// Ask the remote with `git ls-remote`.
+    ///
+    /// Only this module's tests choose it: the launch path infers from local refs
+    /// to keep its network use to the one targeted fetch.
+    #[cfg_attr(not(test), allow(dead_code))]
     Ask,
     /// Infer remote existence from the local refs.
     ///
@@ -48,6 +49,10 @@ pub(crate) enum RemoteRefs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CreateRemote<'key> {
     /// Push it, optionally with a named ssh key.
+    ///
+    /// Only this module's tests choose it; the launch path asks for
+    /// [`CreateRemote::Never`].
+    #[cfg_attr(not(test), allow(dead_code))]
     Push { ssh_key: Option<&'key Path> },
     /// Leave the remote alone. What the launch path asks for: a branch exists on
     /// the remote when somebody pushes it, not when somebody launches it.
@@ -292,6 +297,7 @@ impl<'r> BranchManager<'r> {
     /// An empty list for a refusal, which is what Python answered after logging
     /// the reason. Nothing in devlaunch calls this today; it is the readable half
     /// of the `ls-remote` pair and the completion flows (M5) may want it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn get_remote_branches(&self, repo: &Path, remote: &str) -> Vec<String> {
         self.git
             .ls_remote_heads(repo, remote, None)

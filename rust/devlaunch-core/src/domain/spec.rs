@@ -45,10 +45,6 @@
 //! belongs to the binary (M5). [`resolve_devcontainer_ref`] is the part that
 //! decides what a `--devcontainer` value means.
 
-// Callers land in M5 (the binary) through M7 (launch); until then the port's own
-// tests are the only consumers of this module.
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 
 use super::workspace_id::{TARGET_LENGTH, UnsafeName, WorkspaceId, slug, source_workspace_id};

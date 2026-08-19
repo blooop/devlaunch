@@ -22,10 +22,6 @@
 //!   remembers the exact source string, so a value this build only passes
 //!   through is written back byte for byte.
 
-// Nothing above this layer is ported yet (M4 onwards), so the entries and their
-// typed rebuild failures have no reader outside the tests. Remove when they land.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -100,6 +96,9 @@ impl Timestamp {
     }
 
     /// The stored spelling, which is what a save writes.
+    ///
+    /// Only this module's tests read it; a save goes through [`Serialize`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn as_str(&self) -> &str {
         &self.spelling
     }
@@ -192,6 +191,10 @@ pub(crate) struct NotRebuilt {
 
 impl BaseRepository {
     /// A repository with the defaults `models.py` declares.
+    ///
+    /// Held for the #251 §7 public-API freeze — the record `up` writes on a first
+    /// clone. Only tests build one today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(owner: &str, repo: &str, remote_url: &str, local_path: PathBuf) -> Self {
         Self {
             owner: owner.to_owned(),

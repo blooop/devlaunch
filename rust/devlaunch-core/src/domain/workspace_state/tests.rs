@@ -28,8 +28,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::*;
-use crate::clients::git::tests::{Reply, ScriptedRunner};
 use crate::runner::ProcessRunner;
+use crate::testing::ScriptedRunner;
+use devlaunch_test_support::Response;
 
 // --------------------------------------------------------------- fixtures
 
@@ -614,7 +615,7 @@ fn git_that_cannot_be_run_at_all_is_could_not_tell() {
     // process-wide change in a threaded test binary.
     let fixture = Fixture::new();
     let clone = fixture.clone();
-    let fake = ScriptedRunner::new().with_script(["git"], Reply::ProgramNotFound);
+    let fake = ScriptedRunner::new().with_script(["git"], Response::ProgramNotFound);
 
     let state = read_clone(&Git::new(&fake), &clone);
 
@@ -631,8 +632,8 @@ fn a_refused_status_is_never_read_as_a_clean_tree() {
     // Python, so `if status:` read a refused `git status` as a clean tree. Here
     // the empty answer and the refusal are different arms, and only one of them
     // is permission.
-    let clean = ScriptedRunner::new().with_script(["git"], Reply::stdout(""));
-    let refused = ScriptedRunner::new().with_script(["git"], Reply::failed(128, "fatal: nope"));
+    let clean = ScriptedRunner::new().with_script(["git"], Response::stdout(""));
+    let refused = ScriptedRunner::new().with_script(["git"], Response::failed(128, "fatal: nope"));
     let dir = tempfile::tempdir().expect("a temp dir");
 
     assert_eq!(
@@ -799,7 +800,7 @@ fn a_would_lose_with_nothing_to_say_has_no_representation() {
     assert_eq!(Losses::of(Vec::<Loss>::new()), None);
     assert_eq!(NonEmpty::<String>::of(Vec::new()), None);
 
-    let nothing_changed = ScriptedRunner::new().with_script(["git"], Reply::stdout(""));
+    let nothing_changed = ScriptedRunner::new().with_script(["git"], Response::stdout(""));
     let dir = tempfile::tempdir().expect("a temp dir");
     assert_eq!(
         holds_unsaved_work(&Git::new(&nothing_changed), dir.path()),

@@ -69,10 +69,6 @@
 //!
 //! Ported from `devlaunch/workspace_state.py`.
 
-// The readers are the `--ls --json` listing (M5) and the `dl <ws> rm` guard
-// (M6). Remove when they land.
-#![allow(dead_code)] // consumed from M4b/M5 on
-
 use std::path::Path;
 
 use crate::clients::git::{Git, GitAnswer};

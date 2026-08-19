@@ -54,10 +54,6 @@
 //! arms — has no analogue: `match` on [`DiskUsage`] is exhaustive by the
 //! compiler, which is the guarantee that shim was reaching for.
 
-// The callers are the listing flow (`--ls --size`) and `--prune`'s orphan
-// report, which land from M5b on.
-#![allow(dead_code)] // consumed from M5b on
-
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -107,6 +103,10 @@ impl ClosedDoors {
     }
 
     /// Every door, in the order it was met.
+    ///
+    /// Only this module's tests walk them; the binary names the first and counts
+    /// the rest.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn paths(&self) -> impl Iterator<Item = &Path> {
         std::iter::once(self.first.as_path()).chain(self.rest.iter().map(PathBuf::as_path))
     }

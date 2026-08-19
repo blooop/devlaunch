@@ -62,9 +62,6 @@
 //! written here, because their contents are data — one path or one id per line —
 //! and the notice that names them needs to know whether they exist.
 
-// The caller is the clone-manager factory, which lands with the binary (M5).
-#![allow(dead_code)] // consumed from M5 on
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

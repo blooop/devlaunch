@@ -53,9 +53,6 @@
 //! that mutates devpod cannot be handed a shared reference, so it cannot quietly
 //! leave a stale snapshot behind.
 
-// The `dl` binary wires these up in M5c/M9; wf links them at or after cutover.
-#![allow(dead_code)] // consumed from M5c on
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -2919,20 +2916,6 @@ mod tests {
             record
         }
 
-        /// The repository record the fetch sweep reads its clock off.
-        fn repository(&mut self, last_fetched: Option<Timestamp>) {
-            let mut recorded = BaseRepository::new(
-                OWNER,
-                REPO,
-                &format!("git@github.com:{OWNER}/{REPO}.git"),
-                self.bare.clone(),
-            );
-            recorded.last_fetched = last_fetched;
-            self.storage
-                .add_repository(recorded)
-                .expect("the repository is recorded");
-        }
-
         fn branches_on_record(&self) -> Vec<String> {
             let mut branches: Vec<String> = self
                 .storage
@@ -4616,7 +4599,8 @@ mod tests {
     /// A world whose git calls are faked, so a fetch's argv is observable without a
     /// remote to reach.
     struct Sweeping {
-        dir: tempfile::TempDir,
+        /// Held for its `Drop`: the whole world below lives under it.
+        _dir: tempfile::TempDir,
         repos_dir: PathBuf,
         bare: PathBuf,
         storage: MetadataStorage,
@@ -4632,7 +4616,7 @@ mod tests {
         let (storage, _) =
             MetadataStorage::open(dir.path().join("metadata.json")).expect("a metadata store");
         Sweeping {
-            dir,
+            _dir: dir,
             repos_dir,
             bare,
             storage,

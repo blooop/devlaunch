@@ -1,13 +1,17 @@
 """Make an e2e run say what it actually did, not just that it finished.
 
 `skipped` means two unrelated things in this suite, and the summary line cannot
-tell them apart. One is *opted out by design*: `test_interactive_session.py`
-wants a workspace named in `DEVLAUNCH_E2E_WORKSPACE` and there is none, so those
-thirteen tests do not apply. The other is *could not run*: a registry served the
-1.25 GB fixture image at 640 B/s, the first workspace test gave up, and the run
-reported `7 passed, 14 skipped` having created no containers at all -- the same
-line a healthy run prints. Thirteen declared skips is exactly the noise floor
-that makes the fourteenth invisible.
+tell them apart. One is *opted out by design*: `test_ssh_config_isolation.py`
+needs a forwarded ssh agent that no CI runner has, and the `aid` test wants a
+coding agent inside a container that carries none, so on those machines those
+tests do not apply. The other is *could not run*: a registry served the 1.25 GB
+fixture image at 640 B/s, the first workspace test gave up, and the run reported
+`7 passed, 14 skipped` having created no containers at all -- the same line a
+healthy run prints. A pile of declared skips is exactly the noise floor that
+makes the one undeclared skip invisible, and this suite once carried thirteen of
+them at once: `test_interactive_session.py` asked for a pre-existing workspace
+through an environment variable, and no run could give it one. It builds its own
+now, which is the honest fix and also why the floor is lower.
 
 This module gives the deliberate case a type of its own, so everything else that
 skips can be treated as the absence it is, and keeps a tally of what the session
@@ -125,10 +129,10 @@ class E2ELedger:
 
         The question is not "did any e2e test run" but "did the tests that
         promised a container produce one". Those are different runs, and
-        conflating them fails an honest one: `pytest -m e2e
-        test/e2e/test_interactive_session.py` with `DEVLAUNCH_E2E_WORKSPACE`
-        set attaches to a workspace somebody else built, correctly creates
-        none, and has nothing to answer for.
+        conflating them fails an honest one: `pytest -m e2e -k TestDLCommandsE2E`
+        runs `--ls`, `--help` and `--version` against a real dl, needs no
+        container to do it, correctly creates none, and has nothing to answer
+        for.
 
         Which tests promise a container is declared by them, with
         `@pytest.mark.creates_workspace`, rather than guessed at from the far

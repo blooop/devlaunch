@@ -56,6 +56,18 @@ impl Call {
     pub fn argv(&self) -> Vec<String> {
         self.invocation().argv()
     }
+
+    /// The whole spec, for the assertions about a bound: stdin, timeout, cwd.
+    ///
+    /// An option rather than a field, for the reason the arms are arms: a
+    /// detached spawn carries an [`Invocation`] and no [`SpawnSpec`], so there is
+    /// no bound for this to answer with.
+    pub fn spec(&self) -> Option<&SpawnSpec> {
+        match self {
+            Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => Some(spec),
+            Self::Detach(_) => None,
+        }
+    }
 }
 
 /// One response-table entry: this program, whose argv starts this way, answers
@@ -273,6 +285,17 @@ impl FakeRunner {
 
     pub fn call_count(&self) -> usize {
         self.inner().calls.len()
+    }
+
+    /// The one call this test made, or a panic naming what it found instead.
+    ///
+    /// The assertion is here rather than at each site because "exactly one
+    /// spawn, and this is it" is two facts, and a test that indexed `calls()[0]`
+    /// would be asserting only the second.
+    pub fn only_call(&self) -> Call {
+        let calls = self.calls();
+        assert_eq!(calls.len(), 1, "expected exactly one spawn: {calls:?}");
+        calls.into_iter().next().expect("one call")
     }
 
     /// Every call's whole argv, in order.

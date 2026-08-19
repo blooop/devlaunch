@@ -139,9 +139,7 @@ def build(root: pathlib.Path, shim: pathlib.Path) -> None:
             }
         },
     }
-    (cache / "metadata.json").write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
-    )
+    (cache / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
     # The fake devpod's workspaces, in listing order.
     state = {
@@ -156,23 +154,17 @@ def build(root: pathlib.Path, shim: pathlib.Path) -> None:
                 OLDER,
                 "Stopped",
             ),
-            FOREIGN: _workspace(
-                FOREIGN, {"localFolder": str(foreign)}, NEVER, "Stopped"
-            ),
+            FOREIGN: _workspace(FOREIGN, {"localFolder": str(foreign)}, NEVER, "Stopped"),
             FROM_GIT: _workspace(
                 FROM_GIT,
                 {"gitRepository": "https://github.com/loft-sh/devpod.git"},
                 RECORDED,
                 "Running",
             ),
-            UNREADABLE: _workspace(
-                UNREADABLE, {"image": "ubuntu:22.04"}, OLDER, "Stopped"
-            ),
+            UNREADABLE: _workspace(UNREADABLE, {"image": "ubuntu:22.04"}, OLDER, "Stopped"),
         },
     }
-    (root / "shim-state.json").write_text(
-        json.dumps(state, indent=1), encoding="utf-8"
-    )
+    (root / "shim-state.json").write_text(json.dumps(state, indent=1), encoding="utf-8")
 
 
 def _workspace(workspace_id, source, last_used, state):

@@ -58,10 +58,6 @@
 //! arm of [`ProvisionEvent`], carrying what that line interpolated, and the words
 //! and levels are the `dl` binary's rendering (#251 §5).
 
-// The launch and lifecycle flows that call `provision_tools` wire it up in the
-// M8 wiring pass; the scripts and the reading are complete here.
-#![allow(dead_code)] // consumed from M8-wiring on
-
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
 use std::io::{BufWriter, Read, Write};
@@ -551,6 +547,7 @@ pub(crate) enum ProbeResult {
 impl ProbeResult {
     /// The word Python's enum carried, which is also the word the probe may never
     /// print: a token on the wire would mean the container had decided.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn word(self) -> &'static str {
         match self {
             Self::Provisioned => "provisioned",
@@ -560,6 +557,7 @@ impl ProbeResult {
     }
 
     /// The three states, for a test that asks about all of them.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const ALL: [ProbeResult; 3] = [Self::Provisioned, Self::Lendable, Self::Absent];
 
     /// Read a probe's report. Total: anything unreadable is [`ProbeResult::Absent`].
