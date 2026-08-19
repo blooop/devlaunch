@@ -26,7 +26,12 @@ name = "devlaunch"
 # maturin clearing the Cargo-sourced fields it fills in.
 dynamic = ["version"]
 description = "DevLaunch - A streamlined CLI for devpod workspaces"
-readme = "../../README.md"
+# `README.md` here is a symlink to the repository's own `../../README.md`, and it
+# has to be: maturin >=1.14 refuses a `readme` path that resolves outside the
+# metadata root (this directory), so the literal `../../README.md` that worked
+# through 1.13 fails the build. The symlink keeps the one canonical README as the
+# PyPI long-description while giving maturin a path that stays inside the root.
+readme = "README.md"
 license = "MIT"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
 # No dependencies, and no `requires-python`. The wheel carries two statically

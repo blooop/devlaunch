@@ -97,17 +97,17 @@ class LedgerCoverage(unittest.TestCase):
         self.assertIn("duplicate", errs[0])
 
 
-class PendingRatchet(unittest.TestCase):
+class PendingCount(unittest.TestCase):
     def test_equal_passes(self):
-        self.assertEqual(parity.lint_pending_ratchet(50, 50), [])
+        self.assertEqual(parity.lint_pending_count(50, 50), [])
 
     def test_growth_fails(self):
-        errs = parity.lint_pending_ratchet(51, 50)
+        errs = parity.lint_pending_count(51, 50)
         self.assertEqual(len(errs), 1)
         self.assertIn("grew", errs[0])
 
     def test_shrink_requires_recording(self):
-        errs = parity.lint_pending_ratchet(49, 50)
+        errs = parity.lint_pending_count(49, 50)
         self.assertEqual(len(errs), 1)
         self.assertIn("pending-count.txt", errs[0])
 
@@ -140,6 +140,82 @@ class FailureRatchet(unittest.TestCase):
         )
         self.assertEqual(unexpected, [])
         self.assertEqual(stale, [])
+
+
+class ReconstructNodeId(unittest.TestCase):
+    # The real test tree, as junit's dotted `classname` would report it.
+    FILES = {
+        "test/test_dl.py",
+        "test/test_worktree_migration.py",
+        "test/unit/test_tools.py",
+    }
+
+    def is_file(self, rel):
+        return rel in self.FILES
+
+    def test_module_level_function(self):
+        # classname is the module's dotted import path, no class component.
+        self.assertEqual(
+            parity.reconstruct_node_id("test.test_dl", "test_x", self.is_file),
+            "test/test_dl.py::test_x",
+        )
+
+    def test_class_based_test(self):
+        # The regression H5 names: the old `.replace(".", "/") + ".py::"` turned
+        # this into `test/test_worktree_migration/TestRenaming.py::...`, which
+        # matched nothing. The class dot must stay a `::`, not a `/`.
+        self.assertEqual(
+            parity.reconstruct_node_id(
+                "test.test_worktree_migration.TestRenaming",
+                "test_dirs_are_renamed",
+                self.is_file,
+            ),
+            "test/test_worktree_migration.py::TestRenaming::test_dirs_are_renamed",
+        )
+
+    def test_nested_directory(self):
+        self.assertEqual(
+            parity.reconstruct_node_id("test.unit.test_tools", "test_q", self.is_file),
+            "test/unit/test_tools.py::test_q",
+        )
+
+    def test_parametrized_name_is_preserved(self):
+        self.assertEqual(
+            parity.reconstruct_node_id("test.test_dl", "test_x[case-2]", self.is_file),
+            "test/test_dl.py::test_x[case-2]",
+        )
+
+    def test_unknown_file_falls_back_without_crashing(self):
+        # No known file matches: legible best-effort id, never a dropped failure.
+        self.assertEqual(
+            parity.reconstruct_node_id("pkg.mystery", "test_z", self.is_file),
+            "pkg/mystery.py::test_z",
+        )
+
+
+class CheckTierRan(unittest.TestCase):
+    def test_healthy_tier_with_expected_failures_passes(self):
+        # rc != 0 is normal while the manifest still expects failures.
+        parity.check_tier_ran("tier1", rc=1, total=1800, floor=1000, n_failures=5)
+
+    def test_all_green_tier_passes(self):
+        parity.check_tier_ran("tier1", rc=0, total=1800, floor=1000, n_failures=0)
+
+    def test_no_tests_collected_is_an_error(self):
+        with self.assertRaises(parity.ManifestError) as cm:
+            parity.check_tier_ran("tier1", rc=5, total=0, floor=1000, n_failures=0)
+        self.assertIn("collected no tests", str(cm.exception))
+
+    def test_below_floor_is_an_error(self):
+        with self.assertRaises(parity.ManifestError) as cm:
+            parity.check_tier_ran("tier2", rc=0, total=1, floor=3, n_failures=0)
+        self.assertIn("below the floor", str(cm.exception))
+
+    def test_nonzero_rc_with_no_junit_failures_is_an_error(self):
+        # The session-floor / crash shape: exit code says failed, junit is clean.
+        with self.assertRaises(parity.ManifestError) as cm:
+            parity.check_tier_ran("tier2", rc=1, total=20, floor=3, n_failures=0)
+        self.assertIn("lists no", str(cm.exception))
 
 
 if __name__ == "__main__":

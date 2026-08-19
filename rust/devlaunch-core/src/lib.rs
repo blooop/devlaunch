@@ -10,27 +10,39 @@
 //! 3. **domain** — `workspace_id`, `spec`, `model`, `metadata`, `config`,
 //!    `xdg`, `locks`: the data model, written once.
 //! 4. **flows** — `launch`, `lifecycle`, `listing`, `provision`,
-//!    `completion`, `disk_usage`, `timing`: the operations.
+//!    `completion`, `disk_usage`, `timing`: the operations. Dependencies run
+//!    strictly downward, so a flow or a domain type may name a tool client
+//!    (`workspace_state` reads `clients::git`); a client never names a flow.
 //!
-//! The public API is the day-one wf consumption surface (#250) and nothing
-//! else; no user-facing English lives here — text and exit codes are the
-//! `dl` binary's rendering.
+//! No user-facing English lives here — text and exit codes are the `dl`
+//! binary's rendering.
+//!
+//! # Two tiers of public surface, not one
+//!
+//! The crate exposes two distinct kinds of `pub`, and they must not be
+//! conflated:
+//!
+//! 1. **The frozen wf API** — what `wf` may link against, re-exported from
+//!    [`api`] and nothing else. It is the day-one consumption surface #250
+//!    charted, frozen by #251 §7 at the end of M6: `list`/`remove`/`up`
+//!    equivalents, the spec and branch helpers, and the hand-off constants.
+//!    `wf` should import from [`api`] alone; adding to it is a deliberate PR,
+//!    removing from it is a breaking change.
+//! 2. **The binary surface** — the four layer modules are `pub` so the `dl` and
+//!    `aid` binaries, which live in separate crates, can name the typed results
+//!    they render: a rendering layer that cannot name what it renders is not a
+//!    rendering layer. Every item reached that way carries the note **binary
+//!    surface — not part of the frozen wf API (#251 §7)**. It is *not* frozen
+//!    and *not* for `wf`; it is an artefact of the crate split, and everything
+//!    the binaries do not need stays `pub(crate)`.
+//!
+//! So a `pub` item here is not automatically part of the promised API. Only
+//! what [`api`] re-exports is. The distinction is enforced by keeping [`api`]
+//! the single re-export point and by a `cargo public-api` snapshot in CI;
+//! until that lands the two tiers are told apart by the doc note above.
 
-// The four layers. Everything is crate-private until the day-one public API
-// (#250's closure) is frozen at the end of M6; publishing later is free,
-// un-publishing is a break. `runner` is pub so devlaunch-test-support can
-// implement the trait; that crate is dev-only and never shipped.
-//
-// # The binary surface
-//
-// From M5c the four layer modules are `pub`, because the `dl` binary is a
-// separate crate and every string a user sees is written there — a rendering
-// layer that cannot name the typed results it renders is not a rendering layer.
-// The items reached that way carry the note **binary surface — not part of the
-// frozen wf API (#250 §7)** so that the day-one public API and the binary's
-// working set stay distinguishable: only the former is frozen at the end of M6,
-// and only the former is what `wf` may link against. Everything the binary does
-// not need stays `pub(crate)`.
+// `runner` is pub so `devlaunch-test-support` can implement the trait; that
+// crate is dev-only and never shipped.
 pub mod runner {
     //! Re-export of the `devlaunch-runner` leaf crate, kept at its original
     //! path so nothing above this line knows the runner moved crates. It moved
@@ -40,10 +52,16 @@ pub mod runner {
     pub use devlaunch_runner::*;
 }
 
+// A leaf below everything: the process boundary (env vars, home, temp dir)
+// ported to Python's `os`/`posixpath` semantics rather than std's defaults. It
+// depends on nothing in the crate and every layer above reads the host through
+// it.
+pub(crate) mod osext;
+
 // Leaf like `runner`: the env-gated span registry everything above may use
 // (even `locks` spans a contended wait), depending on nothing itself.
 //
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub(crate) mod json;
 pub mod timing;
 
@@ -51,21 +69,53 @@ pub mod timing;
 // through. It depends on none of them, and all of them name it in their
 // signatures.
 //
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod notices;
 
 // A leaf too: `shlex.quote`, which every remote payload in the crate is composed
 // out of — and which the `aid` binary composes a dl command line out of.
 //
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod shell;
 
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod clients;
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod domain;
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod flows;
+
+/// The frozen wf consumption surface — and only this.
+///
+/// `wf` links against these re-exports and nothing else: the day-one surface
+/// #250 charted, frozen by #251 §7. Everything else the crate marks `pub` is
+/// binary-rendering surface (see the crate docs), reachable but not promised.
+///
+/// The names are re-exports of the items that already implement each verb, not
+/// new wrappers: the crate split forced their promotion out of `pub(crate)`, and
+/// gathering them behind one door is what turns "reachable from outside" into
+/// "part of the promise". The hand-off constants are promoted from `pub(crate)`
+/// here, which is the only place they are meant to be reached from.
+pub mod api {
+    // up: start or attach a workspace.
+    pub use crate::flows::launch::{Launch, LaunchVerb};
+
+    // list: the workspace listing, and the two shapes wf renders it in.
+    pub use crate::flows::listing::{CommandContext, enriched_listing, json_document};
+
+    // remove / stop: the two lifecycle verbs that take a workspace away.
+    pub use crate::flows::lifecycle::{workspace_delete, workspace_stop};
+
+    // spec and branch helpers: parsing `owner/repo@branch` and friends, the
+    // identity a safe name derives, and the `--devcontainer` reference.
+    pub use crate::domain::spec::{
+        DevcontainerPath, SpecIdentity, WorkspaceSpec, identity, parse, resolve_devcontainer_ref,
+    };
+
+    // hand-off constants: the environment-variable names the launch seam writes
+    // and reads across the process boundary.
+    pub use crate::timing::{HANDOFF_VAR, PREWARM_VAR};
+}
 
 // The one fake runner every unit test in this crate drives, wrapped in the one
 // thing `devlaunch-test-support` cannot reach from below: the timing exclusion.

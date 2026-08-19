@@ -298,6 +298,19 @@ pub(crate) enum SchemaHeader {
     LeaveBehind,
 }
 
+/// Whether [`MetadataStorage::commit_migration`] actually ran the edit.
+///
+/// The version is re-checked under the lock after the reload, so a migration
+/// that finds a concurrent process already promoted the header does nothing and
+/// says so — the caller must then report no migration rather than an empty one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationCommit {
+    /// The edit ran and the store was saved.
+    Committed,
+    /// The reload under the lock showed the cache already current; nothing ran.
+    AlreadyCurrent,
+}
+
 /// Which worktrees a listing asks for.
 ///
 /// A sum type rather than Python's two optional arguments, where "a repo with no
@@ -646,25 +659,47 @@ impl MetadataStorage {
     /// recorded immediately, and the next run finds each of them as "destination
     /// present, source gone" and catches metadata up to it.
     ///
-    /// **No lock and no reload**, which is what [`MetadataStorage::save`] alone
-    /// has always been and what `storage.py`'s migration used: the migration runs
-    /// once, before the command the user typed, from a store loaded a moment
-    /// earlier. Reloading under a lock would throw away the very edits `edit` is
-    /// about to make, and holding the metadata lock across a whole-cache walk of
-    /// renames would block every other dl run for the length of it.
+    /// **Under the metadata lock, reloading first**, exactly as Python's
+    /// `storage.exclusive()` wraps its `migrate_cache` call (dl.py:4377). Two dl
+    /// processes cannot migrate at once — the renames are not idempotent
+    /// mid-flight, and one migrator saving from a stale in-memory copy would
+    /// erase a record a properly-locked writer had just committed. The reload is
+    /// what makes the version re-check below authoritative: a concurrent migrator
+    /// that already promoted the header is seen, and this run does nothing rather
+    /// than walking an already-migrated cache a second time.
     ///
-    /// This is the only mutator that does not go through
-    /// [`MetadataStorage::exclusive`], and the only one that may promote the
-    /// header — every other write preserves the loaded version, because promoting
-    /// it is the migration's job and no one else's.
+    /// The reload discards its own load notices: the session surfaced them once
+    /// when it first opened the store a moment earlier, and this reads the same
+    /// file.
+    ///
+    /// This is the only mutator that may promote the header — every other write
+    /// preserves the loaded version, because promoting it is the migration's job
+    /// and no one else's. Like [`MetadataStorage::exclusive`] it is not reentrant:
+    /// `edit` must not call another mutator.
     pub(crate) fn commit_migration(
         &mut self,
         edit: impl FnOnce(&mut IndexMap<String, WorktreeInfo>) -> SchemaHeader,
-    ) -> Result<(), MetadataError> {
+    ) -> Result<MigrationCommit, MetadataError> {
+        let lock_path = self.lock_path.clone();
+        let watcher = self.wait_watcher.as_deref();
+        let guard = hold_lock_watching(&lock_path, |wait| {
+            if let Some(watcher) = watcher {
+                watcher(wait);
+            }
+        })
+        .map_err(MetadataError::Lock)?;
+        // Reload under the lock so the version below reflects any concurrent
+        // migrator's result, not the copy this process loaded at startup.
+        let _ = self.load();
+        if self.schema_version >= SCHEMA_VERSION {
+            return Ok(MigrationCommit::AlreadyCurrent);
+        }
         if let SchemaHeader::Promote = edit(&mut self.worktrees) {
             self.schema_version = SCHEMA_VERSION;
         }
-        self.save()
+        self.save()?;
+        drop(guard);
+        Ok(MigrationCommit::Committed)
     }
 
     // --- loading ----------------------------------------------------------

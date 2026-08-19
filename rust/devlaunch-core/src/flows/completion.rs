@@ -50,6 +50,13 @@ use crate::domain::xdg::NoHomeDirectory;
 /// One source of truth: the file the Python package ships. Python resolved it as
 /// package data at runtime (`importlib.resources`), which could fail; embedding
 /// it removes that failure entirely — a build that compiled has the script.
+///
+/// The path escapes this crate's package root — it reaches up into the sibling
+/// `devlaunch/` Python package — so `devlaunch-core` is **not** `cargo publish`-
+/// able and is consumed only as a path or git dependency, which is exactly how
+/// `wf` links it. That is a deliberate constraint of the single-source rule
+/// above, not an oversight: the day the Python package is gone this include
+/// moves in-tree; until then it must point at the file that actually ships.
 pub(crate) const DL_COMPLETION_BASH: &str =
     include_str!("../../../../devlaunch/completions/dl.bash");
 
@@ -216,8 +223,8 @@ pub(crate) fn completion_script() -> String {
 /// Where the completion script is written on this machine.
 pub(crate) fn completion_file_path() -> Result<PathBuf, NoHomeDirectory> {
     completion_file_in(
-        std::env::var(COMPLETION_FILE_VAR).ok().as_deref(),
-        std::env::home_dir(),
+        crate::osext::env_str(COMPLETION_FILE_VAR).as_deref(),
+        crate::osext::home_dir(),
     )
 }
 
@@ -247,7 +254,7 @@ pub(crate) fn completion_file_in(
 
 /// The rc file an install edits when the caller names none.
 pub(crate) fn default_rc_path() -> Result<PathBuf, NoHomeDirectory> {
-    std::env::home_dir()
+    crate::osext::home_dir()
         .map(|home| home.join(".bashrc"))
         .ok_or(NoHomeDirectory)
 }
@@ -393,7 +400,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
     let Some(rest) = raw.strip_prefix('~') else {
         return path.to_path_buf();
     };
-    let Some(home) = std::env::home_dir() else {
+    let Some(home) = crate::osext::home_dir() else {
         return path.to_path_buf();
     };
     match rest {

@@ -17,7 +17,7 @@ license = "MIT"
 repository = "https://github.com/blooop/devlaunch"
 
 [workspace.dependencies]
-devlaunch-runner = { path = "devlaunch-runner", version = "0.1.0" }
+devlaunch-runner = { path = "devlaunch-runner" }
 sha2 = "0.10"
 devlaunch-core = { path = "devlaunch-core" }
 dl = { path = "dl" }

@@ -292,21 +292,33 @@ pub fn update_completion_cache(
         branches,
     };
     let mut not_written = Vec::new();
-    for (path, written) in [
-        (
-            cache_path(cache_dir),
-            write_completion_cache(&cache_path(cache_dir), &data),
-        ),
-        (
-            bash_cache_path(cache_dir),
-            write_bash_completion_cache(&bash_cache_path(cache_dir), &data),
-        ),
-    ] {
-        if let Err(reason) = written {
-            not_written.push(CacheNotWritten {
-                path,
-                reason: reason.to_string(),
-            });
+    // Python writes the cache when devpod RAN but its listing could not be read
+    // (`update_completion_cache` catches `UnreadableWorkspaceList` and defaults
+    // the workspace names to empty), and does NOT write when devpod could not be
+    // run at all: `run_devpod` raises `DevpodNotInstalled`, and any other spawn
+    // failure raises an `OSError`, neither of which that `except` catches — so the
+    // exception propagates before either file is touched. A spawn failure
+    // (`NotRun`: devpod missing, timed out, or unspawnable) must therefore poison
+    // nothing — the existing cache is left intact and the next run re-asks —
+    // rather than being overwritten with an empty workspace list (P11).
+    let devpod_ran = !matches!(listing_refused, Some(ListingUnreadable::NotRun(_)));
+    if devpod_ran {
+        for (path, written) in [
+            (
+                cache_path(cache_dir),
+                write_completion_cache(&cache_path(cache_dir), &data),
+            ),
+            (
+                bash_cache_path(cache_dir),
+                write_bash_completion_cache(&bash_cache_path(cache_dir), &data),
+            ),
+        ] {
+            if let Err(reason) = written {
+                not_written.push(CacheNotWritten {
+                    path,
+                    reason: reason.to_string(),
+                });
+            }
         }
     }
     Refreshed {
@@ -848,6 +860,42 @@ mod tests {
         // And the caches are still written, so completion still offers the repos.
         assert!(cache_path(&scene.cache()).is_file());
         assert!(bash_cache_path(&scene.cache()).is_file());
+    }
+
+    #[test]
+    fn a_devpod_that_could_not_be_run_writes_no_cache_and_re_asks() {
+        // Python's update_completion_cache catches only UnreadableWorkspaceList; a
+        // devpod that could not be spawned raises DevpodNotInstalled, which
+        // propagates before either cache file is written. Overwriting the cache
+        // with an empty workspace list on a spawn failure would poison completions
+        // until the next successful refresh (P11).
+        let scene = Refresher::new();
+        scene.with_bare("blooop", "devlaunch");
+        scene
+            .fake
+            .script(["devpod", "list"], Response::ProgramNotFound);
+        scene
+            .fake
+            .script(["git", "ls-remote"], Response::stdout(""));
+
+        let refreshed = scene.refresh();
+
+        assert!(
+            matches!(
+                refreshed.listing_refused,
+                Some(ListingUnreadable::NotRun(_))
+            ),
+            "the spawn failure must travel, got {:?}",
+            refreshed.listing_refused
+        );
+        assert!(
+            !cache_path(&scene.cache()).exists(),
+            "a spawn failure must not overwrite the json cache"
+        );
+        assert!(
+            !bash_cache_path(&scene.cache()).exists(),
+            "a spawn failure must not overwrite the bash cache"
+        );
     }
 
     #[test]

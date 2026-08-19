@@ -531,6 +531,9 @@ fn remote_heads_can_be_asked_about_one_branch_or_all_of_them() {
         strs(&argv(&fake)),
         ["git", "ls-remote", "--heads", "origin"]
     );
+    // A network round trip on the refresh path: bounded like every remote
+    // ls-remote dl.py issued (timeout=5), never left to hang (R9).
+    assert_eq!(timeout(&fake), Some(Duration::from_secs(5)));
     assert_eq!(
         all,
         GitAnswer::Said(vec!["main".to_owned(), "feature".to_owned()])

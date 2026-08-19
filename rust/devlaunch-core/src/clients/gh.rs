@@ -88,9 +88,9 @@ impl HostEnv {
     /// What this process's environment says.
     pub(crate) fn from_process() -> Self {
         Self {
-            disable: std::env::var(DISABLE_VAR).ok(),
-            gh_token: std::env::var(TOKEN_VAR).ok(),
-            github_token: std::env::var("GITHUB_TOKEN").ok(),
+            disable: crate::osext::env_str(DISABLE_VAR),
+            gh_token: crate::osext::env_str(TOKEN_VAR),
+            github_token: crate::osext::env_str("GITHUB_TOKEN"),
         }
     }
 
@@ -117,7 +117,7 @@ impl HostEnv {
 pub(crate) fn forwarding_disabled(value: Option<&str>) -> bool {
     match value {
         None => false,
-        Some(value) => !FALSEY.contains(&value.trim().to_lowercase().as_str()),
+        Some(value) => !FALSEY.contains(&crate::osext::strip(value).to_lowercase().as_str()),
     }
 }
 
@@ -139,7 +139,7 @@ impl Token {
     /// Every GitHub token form is a flat ASCII string; anything else came from a
     /// broken gh install or a wrapper script that printed on stdout.
     pub(crate) fn parse(raw: &str) -> Option<Self> {
-        let trimmed = raw.trim();
+        let trimmed = crate::osext::strip(raw);
         let flat = !trimmed.is_empty()
             && trimmed
                 .chars()
@@ -309,7 +309,7 @@ impl StagedToken {
         let mut file = tempfile::Builder::new()
             .prefix("devlaunch-gh-")
             .suffix(".env")
-            .tempfile()?;
+            .tempfile_in(crate::osext::temp_dir())?;
         writeln!(file, "{TOKEN_VAR}={}", token.as_str())?;
         file.flush()?;
         Ok(Self { file })
@@ -695,6 +695,33 @@ mod tests {
         assert!(!forwarding_disabled(None), "unset leaves forwarding on");
         assert!(forwarding_disabled(Some("1")));
         assert!(forwarding_disabled(Some("yes")));
+    }
+
+    #[test]
+    fn the_control_separators_python_strips_do_not_invert_the_switch() {
+        // Python's str.strip() removes U+001C–U+001F; str::trim does not. A "0"
+        // wrapped in them is still a falsey opt-out (forwarding stays on), not a
+        // set-therefore-yes opt-out. `\u{1c}` alone must strip to empty, which is
+        // falsey too.
+        for value in [
+            "\u{1c}0\u{1c}",
+            "\u{1f}false\u{1f}",
+            "\u{1c}",
+            "\u{1e}no\u{1d}",
+        ] {
+            assert!(
+                !forwarding_disabled(Some(value)),
+                "{value:?} strips to a falsey value"
+            );
+        }
+    }
+
+    #[test]
+    fn a_token_wrapped_in_control_separators_still_parses() {
+        // A valid token surrounded by U+001C–U+001F must survive: str::trim would
+        // leave the separators in place and the shape check would reject it.
+        let token = Token::parse("\u{1c}gho_secret\u{1f}").expect("a token strips clean");
+        assert_eq!(token.as_str(), "gho_secret");
     }
 
     // -------------------------------------------------------------- the token

@@ -80,7 +80,7 @@ use crate::clients::git::{Git, GitAnswer};
 /// answer `disk_usage` gives such a directory (`Measured(0)`), and what lets a
 /// caller clear away a workspace whose clone was already removed by hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum Unsaved {
     /// Everything in the clone exists somewhere else. Deleting it costs nothing.
     ///
@@ -149,7 +149,7 @@ impl Unsaved {
 /// site building one names the *directory* it is about, which is the specific
 /// thing the shipped bug got wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub struct Reason(String);
 
 impl Reason {
@@ -170,7 +170,7 @@ impl std::fmt::Display for Reason {
 }
 
 /// What a clone holds that exists nowhere else: at least one thing, always.
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub type Losses = NonEmpty<Loss>;
 
 /// One kind of loss.
@@ -180,7 +180,7 @@ pub type Losses = NonEmpty<Loss>;
 /// from them, and so are the names, which is what makes a description
 /// unforgeable.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum Loss {
     /// A dirty tree, **untracked files included** — an agent's scratch notes are
     /// not less lost for never having been added. One `git status --porcelain`
@@ -210,7 +210,7 @@ impl Loss {
 impl Losses {
     /// The whole loss in words, the two kinds joined as Python joins them.
     ///
-    /// binary surface — not part of the frozen wf API (#250 §7)
+    /// binary surface — not part of the frozen wf API (#251 §7)
     pub fn describe(&self) -> String {
         self.iter()
             .map(Loss::describe)

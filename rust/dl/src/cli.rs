@@ -391,7 +391,7 @@ impl Cli {
 ///
 /// Total over [`Cli`]: every accepted command line is either a [`Command`] or a
 /// named [`GrammarError`], and nothing is left to be worked out later.
-pub(crate) fn resolve(cli: Cli) -> Result<Command, GrammarError> {
+pub(crate) fn resolve(cli: Cli, argv: &[String]) -> Result<Command, GrammarError> {
     match cli.chosen() {
         // The two flag-spelled verbs are the verb-first grammar under another
         // name, so they go through the same words handling and inherit its
@@ -399,7 +399,53 @@ pub(crate) fn resolve(cli: Cli) -> Result<Command, GrammarError> {
         Some(Chosen::Stop) => verb_command(&cli, VerbWord::Stop),
         Some(Chosen::Remove) => verb_command(&cli, VerbWord::Remove),
         Some(global) => global_command(&cli, global),
-        None => workspace_command(cli),
+        None => workspace_command(cli, argv),
+    }
+}
+
+/// Where `--force` sits in the positional word stream, as Python reads it.
+///
+/// clap accepts `--force` in any position and strips it, but Python never had a
+/// `--force` flag: it read `sys.argv` positionally and asked `"--force" in
+/// args[2:]` (dl.py:4726), with `args[0]` the workspace and `args[1]` the verb. So
+/// a `--force` in the workspace slot became an unknown workspace, and one in the
+/// verb slot an unknown command — both refusals (exit 1), where clap-parsed Rust
+/// silently accepted the flag and *deleted*. This recovers the position clap threw
+/// away, from the same word stream `argv_without_devcontainer` builds (the command
+/// tail after `--` is not `dl`'s to read).
+enum ForcePlace {
+    /// `--force` in `args[0]`: the workspace name is `--force`.
+    WorkspaceSlot,
+    /// `--force` in `args[1]`: the verb is `--force`, and this is the target it
+    /// followed.
+    VerbSlot { target: String },
+    /// `--force` in `args[2:]`, where it means what it says.
+    Trailing,
+}
+
+fn force_placement(argv: &[String]) -> Option<ForcePlace> {
+    let mut stream = Vec::new();
+    let mut rest = argv.iter();
+    while let Some(argument) = rest.next() {
+        if argument == "--" {
+            break;
+        }
+        if argument.starts_with("--devcontainer=") {
+            continue;
+        }
+        if argument == "--devcontainer" {
+            rest.next();
+            continue;
+        }
+        stream.push(argument.as_str());
+    }
+    match stream.iter().position(|word| *word == "--force") {
+        None => None,
+        Some(0) => Some(ForcePlace::WorkspaceSlot),
+        Some(1) => Some(ForcePlace::VerbSlot {
+            target: stream[0].to_owned(),
+        }),
+        Some(_) => Some(ForcePlace::Trailing),
     }
 }
 
@@ -515,13 +561,37 @@ fn verb_command(cli: &Cli, word: VerbWord) -> Result<Command, GrammarError> {
 }
 
 /// The workspace-first and verb-first grammar: up to two words, plus `-- <cmd>`.
-fn workspace_command(cli: Cli) -> Result<Command, GrammarError> {
+fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError> {
     let devcontainer = devcontainer_of(&cli)?;
     if cli.yes {
         return Err(GrammarError::ModifierNotAllowed {
             modifier: "--yes",
             command: "a workspace command",
         });
+    }
+    // `--force` only means force where Python read it — after the workspace and the
+    // verb. Anywhere earlier it is the word in that slot, and the refusal is
+    // Python's for that slot, not a silent forced delete.
+    if let Some(place) = force_placement(argv) {
+        match place {
+            ForcePlace::WorkspaceSlot => {
+                // The workspace named `--force`: routed through the normal target
+                // path so it earns the same "Unknown workspace '--force'" a bare
+                // unknown name does.
+                return Ok(Command::Workspace {
+                    target: "--force".to_owned(),
+                    verb: Verb::Attach,
+                    devcontainer,
+                });
+            }
+            ForcePlace::VerbSlot { target } => {
+                return Err(GrammarError::UnknownVerb {
+                    target,
+                    word: "--force".to_owned(),
+                });
+            }
+            ForcePlace::Trailing => {}
+        }
     }
     let run = NonEmpty::of(cli.command.iter().cloned()).map(Verb::Run);
     let (target, verb) = match cli.words.as_slice() {
@@ -626,7 +696,8 @@ mod tests {
     fn parse(argv: &[&str]) -> Result<Command, GrammarError> {
         let cli = Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied()))
             .unwrap_or_else(|error| panic!("clap refused {argv:?}: {error}"));
-        resolve(cli)
+        let raw: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+        resolve(cli, &raw)
     }
 
     fn refused(argv: &[&str]) -> clap::error::ErrorKind {

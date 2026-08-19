@@ -39,21 +39,21 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_bench_record_schema.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_bench_workflow.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_cold_launch_fetches.py` | re-pinned in Rust | flows/workspace_clone.rs: the 8-call cold sequence, one targeted refspec in the bare, no wildcard/--tags/--prune |
-| `test/test_concurrent_launches.py` | re-expressed at boundary | clone/adoption + launch-lock races re-pinned in Rust; the cross-process drivers pass against the binary in the parity run (in-process halves judge Python; Rust's judge is dl/tests + repo_manager races) |
+| `test/test_concurrent_launches.py` | re-pinned in Rust | clone/adoption + launch-lock exclusion in repo_manager.rs/launch.rs; metadata lost-updates in domain/metadata.rs; two-/same-branch cross-process races are the concurrency tests in those modules (the pytest drivers are in-process and judge Python) |
 | `test/test_devpod_spawn_counts.py` | re-pinned in Rust | warm/cold spawn chains, opt-ins, no-metadata-io, exit-127 line and cold ssh trips at the boundary (dl/tests/launch.rs); listing/lifecycle rows in their flows |
 | `test/test_dl.py` | re-pinned in Rust | flow classes in listing/completion_cache/lifecycle/launch; read-side, lifecycle and launch-verb dispatch byte-pinned at the boundary (dl/tests) |
 | `test/test_interactive_command.py` | re-expressed at boundary | typed side, devpod route and aid transport pinned (launch.rs + dl/tests); pty payload parity verified over a real container both routes (M9), payload contract byte-pinned in Rust |
 | `test/test_lending_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_locks.py` | re-pinned in Rust | domain/locks.rs; the literal "dl: waiting" stderr line is rendering (typed event pinned; words are the dl binary's) |
 | `test/test_pty_helpers.py` | out of port scope (harness infrastructure) | pins test/fixtures/pty_helpers.py, which survives as the judge |
-| `test/test_repo_lock_cycles.py` | re-expressed at boundary | token/holds/warm counts re-pinned in Rust; cycle-count drivers pass against the binary in the parity run |
+| `test/test_repo_lock_cycles.py` | re-pinned in Rust | token/holds/warm re-pinned; the per-launch-shape acquisition COUNTS (#200: cold-named=1, cold-bare=2, prepare_cold=1) pinned by a #[cfg(test)] acquisition counter in repo_manager.rs at the ensure_repo/prepare_cold seams |
 | `test/test_timing.py` | re-expressed at boundary | gate/vocabulary/spans re-pinned (timing.rs, launch.rs); JSON document byte-comparable via core json.rs (CPython float spelling); parity run green |
 | `test/test_workspace_clone.py` | re-pinned in Rust | flows/workspace_clone.rs: argv-exact over the fake runner (real objects where Python mocked the managers) |
 | `test/test_workspace_id.py` | re-pinned in Rust | all 53 behaviors; 55 Rust tests in domain/workspace_id.rs incl. 45 Python-generated golden ids |
 | `test/test_workspace_state.py` | re-pinned in Rust | state/listing/DeleteGuard/ForcedRemove in workspace_state.rs, listing.rs, lifecycle.rs; caplog texts byte-pinned at the boundary (uncommitted/unpushed/could-not-tell/--force) |
 | `test/test_worktree_branch_manager.py` | re-pinned in Rust | flows/branch_manager.rs: 4-state branch decision table as argv sequences; RemoteRefs/CreateRemote sums keep all four boolean combinations |
 | `test/test_worktree_config.py` | re-pinned in Rust | domain/config.rs; to_dict untested — no production caller writes config.toml |
-| `test/test_worktree_migration.py` | re-pinned in Rust | flows/migration.rs (runner-free by type); TestWiring re-expressed at boundary (rust/dl/tests/read_side.rs: the json listing migrates, the table does not) |
+| `test/test_worktree_migration.py` | re-pinned in Rust | flows/migration.rs (runner-free by type); the migration NOTICES byte-pinned at the boundary over a v1 world (rust/dl/tests/migration.rs) after the silent-migration bug was fixed; TestWiring at read_side.rs (json migrates, table does not) |
 | `test/test_worktree_models.py` | re-pinned in Rust | domain/model.rs; byte-compat golden JSON from Python |
 | `test/test_worktree_repo_manager.py` | re-pinned in Rust | flows/repo_manager.rs: RepoLock minting structural (private fields), FetchOutcome exhaustive, one-lstat symlinked-root refusal |
 | `test/test_worktree_storage.py` | re-pinned in Rust | domain/metadata.rs; seam-patched tests re-expressed as behavior |
@@ -74,10 +74,10 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_gh_auth.py` | re-pinned in Rust | decisions in clients/gh.rs; memoization in launch.rs HostToken; warning texts pinned in render unit tests + token staging at the boundary |
 | `test/unit/test_launch_serialization.py` | re-pinned in Rust | flows/launch.rs: all four classes; per-OFD flock makes the in-process pin two real acquisitions, stronger than Python's stub |
 | `test/unit/test_locks.py` | re-pinned in Rust | domain/locks.rs; the Python-language API-shape guards have no Rust analogue |
-| `test/unit/test_prune_orphaned_clones.py` | re-expressed at boundary | classification/promotion/withholding re-pinned (lifecycle.rs); report/input/lock classes pass against the binary in the parity run |
+| `test/unit/test_prune_orphaned_clones.py` | re-pinned in Rust | classification/promotion/withholding in lifecycle.rs; report/input classes byte-pinned at the boundary (dl/tests); cross-process lock-wait pinned by a real subprocess holding the repo .lock (lifecycle.rs prune-scan test) |
 | `test/unit/test_purge_ownership.py` | re-pinned in Rust | ownership split + action in listing.rs/lifecycle.rs (asked-once patch test unportable, its property pinned); leaving-behind lines byte-pinned at the boundary |
 | `test/unit/test_purge_partial_removal.py` | re-pinned in Rust | walk/arms/obstruction/randomised invariants in repo_manager.rs + lifecycle.rs; the three arms' sentences, sudo line and symlink reason byte-pinned at the boundary (dl/tests/lifecycle.rs) |
-| `test/unit/test_reconcile_orphaned_workspaces.py` | re-expressed at boundary | adoption/refusals/apply re-pinned (lifecycle.rs); report/confirm + migration-notice classes pass against the binary in the parity run |
+| `test/unit/test_reconcile_orphaned_workspaces.py` | re-pinned in Rust | adoption/refusals/apply in lifecycle.rs; report/confirm at the boundary; the reconcile<->migration join (#224) pinned by a test running real migrate_cache then reconcile_plan over its orphaned_ids (paths absolute → cwd-independent by construction) |
 | `test/unit/test_spec_parsing.py` | re-pinned in Rust | misnamed file: model/config serialization, covered by domain/model.rs + config.rs tests |
 | `test/unit/test_stored_workspace_id.py` | re-pinned in Rust | record-vs-derivation, warm-path-reads-no-metadata (never-called closure), failed-lookup in lifecycle.rs; subcommand addressing byte-pinned at the boundary |
 | `test/unit/test_tools.py` | re-pinned in Rust | flows/provision.rs: scripts byte-golden vs the Python module, shlex round-trips, ustar payload; TestWorkspaceUpInstallsTools boundary-pinned (up installs / failed up does not / running tops up) |

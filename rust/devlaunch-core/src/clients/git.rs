@@ -563,6 +563,11 @@ impl<'r> Git<'r> {
 
     /// The branch names a remote has, asked from inside *repo* — one named
     /// branch, or all of them.
+    ///
+    /// Bounded at five seconds, `dl.py`'s cap on every remote `ls-remote` it
+    /// issued (`get_remote_branches`/`_git_ls_remote`, both `timeout=5`): this is
+    /// a network round trip on the refresh and completion paths, so an
+    /// unreachable remote must cost a pause, not an unbounded hang.
     pub(crate) fn ls_remote_heads(
         &self,
         repo: &Path,
@@ -581,7 +586,8 @@ impl<'r> Git<'r> {
                 Invocation::new(PROGRAM)
                     .with_args(argv)
                     .with_cwd(repo.to_path_buf()),
-            ),
+            )
+            .with_timeout(ASK_REMOTE_FOR_REFS),
         )
         .map(|stdout| branches_in_ls_remote(&stdout))
     }

@@ -261,19 +261,33 @@ pub(crate) struct PreparedWorkspace {
 }
 
 /// What removing a workspace clone did.
+///
+/// The three no-op arms were one `Nothing` until the reasons diverged in the
+/// telling: a `dl <ws> rm --force` on a record whose `local_path` no longer
+/// resolves ([`Removed::DirectoryNotNamed`]) leaves a directory of possibly
+/// uncommitted work on disk, where a workspace nothing ever recorded
+/// ([`Removed::NothingRecorded`]) has none to leave. Collapsed to one value a
+/// caller could not tell them apart to say so. No arm renders a *new* line today
+/// — Python emits none here either — but each carries its own fact so a caller
+/// that ever needs to can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum Removed {
     /// The clone was there and is gone.
     Clone,
-    /// There was no clone to remove — or dl could not name one, which answers the
-    /// same way: it removed nothing, and says so.
-    Nothing,
+    /// No record named this workspace, so there was nothing to name or remove.
+    NothingRecorded,
+    /// A record named it, but dl could not turn that record into a clone
+    /// directory, so it removed nothing — the directory, if any, is left on disk.
+    DirectoryNotNamed,
+    /// dl named the directory, but it was already gone, so there was nothing to
+    /// remove.
+    DirectoryAbsent,
 }
 
 /// Why a workspace clone could not be removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7). Public because
+// binary surface — not part of the frozen wf API (#251 §7). Public because
 // `LifecycleNotice::CloneNotRemoved` carries it rather than a rendering of it, so
 // the words for each arm can be the binary's.
 pub enum RemoveWorkspaceError {
@@ -343,7 +357,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         }
     }
 
-    // binary surface — not part of the frozen wf API (#250 §7)
+    // binary surface — not part of the frozen wf API (#251 §7)
     pub fn repo_manager(&self) -> &RepositoryManager<'r> {
         &self.repo_manager
     }
@@ -1195,12 +1209,13 @@ impl<'r> WorkspaceCloneManager<'r> {
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<Removed, RemoveWorkspaceError> {
         let Some(recorded) = storage.get_worktree_by_workspace_id(workspace_id).cloned() else {
-            return Ok(Removed::Nothing);
+            return Ok(Removed::NothingRecorded);
         };
         let Some(ws_path) = self.resolve_clone_path(&recorded, notices) else {
-            // dl cannot name the directory, so it must not delete one. Same answer
-            // as "no record": removes nothing, says so.
-            return Ok(Removed::Nothing);
+            // dl cannot name the directory, so it must not delete one. It removes
+            // nothing and says so — but, unlike "no record", a directory of the
+            // record's may be left on disk.
+            return Ok(Removed::DirectoryNotNamed);
         };
         self.remove_clone(
             storage,
@@ -1227,7 +1242,7 @@ impl<'r> WorkspaceCloneManager<'r> {
                 notices.say(CacheNotice::NoWorkspaceCloneToRemove {
                     path: ws_path.to_path_buf(),
                 });
-                return Ok(Removed::Nothing);
+                return Ok(Removed::DirectoryAbsent);
             }
             Ok(TreeRemoval::Removed) => notices.say(CacheNotice::WorkspaceCloneRemoved {
                 path: ws_path.to_path_buf(),
@@ -1556,6 +1571,80 @@ mod tests {
                 vec!["git", "show-ref", "--verify", "refs/remotes/origin/nb4"],
                 vec!["git", "checkout", "-B", "nb4", "origin/nb4"],
             ]
+        );
+    }
+
+    #[test]
+    fn a_cold_named_branch_launch_takes_the_repo_lock_once() {
+        // devlaunch#200: a spec that already names its branch clones the bare and
+        // prepares the workspace under a single repo-lock acquisition — the cold
+        // path holds one lock across the whole of `prepare_cold`. Pinned by
+        // counting acquisitions, not lock files: the file is created once and
+        // never unlinked, so it could only ever say "more than zero".
+        let mut cache = a_cache();
+        let fake = FakeGit::new().headed_at_main();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        manager
+            .prepare_cold(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                "nb4",
+                REMOTE_URL,
+                &mut ignoring(),
+            )
+            .expect("prepared");
+
+        assert_eq!(
+            manager.repo_manager().repo_lock_acquisitions(),
+            1,
+            "the cold path holds one lock across clone-and-prepare"
+        );
+    }
+
+    #[test]
+    fn a_cold_bare_spec_launch_takes_the_repo_lock_twice() {
+        // devlaunch#200: a bare `owner/repo` pays one extra acquisition to learn
+        // the default branch (`ensure_repo`) before the clone-and-prepare
+        // acquisition (`prepare_cold`). Folding the two into one would mean holding
+        // the repo lock across the fast-attach probe every sibling launch queues
+        // behind, which is the trade the extra cycle buys out of.
+        let mut cache = a_cache();
+        let fake = FakeGit::new().headed_at_main();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let named = manager
+            .repo_manager()
+            .ensure_repo(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                REMOTE_URL,
+                &mut ignoring(),
+            )
+            .expect("named the default branch");
+        assert_eq!(
+            manager.repo_manager().repo_lock_acquisitions(),
+            1,
+            "naming the default branch is the first acquisition"
+        );
+
+        manager
+            .prepare_cold(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                &named.default_branch,
+                REMOTE_URL,
+                &mut ignoring(),
+            )
+            .expect("prepared");
+
+        assert_eq!(
+            manager.repo_manager().repo_lock_acquisitions(),
+            2,
+            "clone-and-prepare is the second acquisition"
         );
     }
 
@@ -3079,7 +3168,7 @@ mod tests {
             manager
                 .remove_workspace_by_id(&mut cache.storage, "repo-evil", &mut ignoring())
                 .expect("no error"),
-            Removed::Nothing,
+            Removed::DirectoryNotNamed,
             "dl cannot name the directory, so it must not delete one"
         );
     }
@@ -3154,7 +3243,7 @@ mod tests {
             manager
                 .remove_workspace_by_id(&mut cache.storage, "nonexistent", &mut notices)
                 .expect("no error"),
-            Removed::Nothing
+            Removed::NothingRecorded
         );
 
         assert_eq!(notices, Vec::new());
@@ -3176,14 +3265,15 @@ mod tests {
                     &mut ignoring()
                 )
                 .expect("no error"),
-            Removed::Nothing
+            Removed::DirectoryAbsent,
+            "the derived directory was never there"
         );
         assert_eq!(
             manager
                 .remove_workspace_by_id(&mut cache.storage, "nonexistent", &mut ignoring())
                 .expect("no error"),
-            Removed::Nothing,
-            "a workspace id nothing recorded answers the same way"
+            Removed::NothingRecorded,
+            "a workspace id nothing recorded is its own reason, not the same as an absent directory"
         );
     }
 

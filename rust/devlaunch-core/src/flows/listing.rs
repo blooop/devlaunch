@@ -200,7 +200,7 @@ pub struct SourceDescription {
 
 /// [`SourceDescription`] for one source. Total over the arms.
 ///
-/// binary surface — not part of the frozen wf API (#250 §7)
+/// binary surface — not part of the frozen wf API (#251 §7)
 pub fn describe_source(source: &WorkspaceSource) -> SourceDescription {
     let (kind, detail) = match source {
         WorkspaceSource::LocalFolder(path) => (SourceKind::Local, path.clone()),
@@ -306,7 +306,7 @@ pub(crate) fn measurable_clone(workspace: &Workspace, cache_dir: &Path) -> Optio
 /// somewhere to be named from, which is the difference between a purge that
 /// surprises a user with survivors and one that lists them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub struct WorkspaceOwnership {
     pub mine: Vec<Workspace>,
     pub foreign: Vec<Workspace>,
@@ -761,8 +761,17 @@ fn container_state(runner: &dyn Runner, workspace_id: &str) -> Option<ContainerS
     // *inside* the stage that was open. Unstaged, the `devpod status` round trips
     // this makes are in the prose summary and missing from the document — which is
     // the shape a listing of five workspaces reports the most of.
-    let _stage = timing::stage(timing::Stage::DevpodUp);
-    devpod::status(runner, workspace_id).ok()
+    let mut stage = timing::stage(timing::Stage::DevpodUp);
+    let answer = devpod::status(runner, workspace_id);
+    // Python stages `get_workspace_state`, which returns `None` (stage `ok`) for a
+    // devpod that ran and refused, gave non-JSON, or omitted `state`, and only
+    // marks the stage `failed` when devpod could not be run at all — the spawn
+    // that raises `DevpodNotInstalled`. Mirror that: a `NotRun` fails the stage so
+    // the timing document does not report `ok` for a step devpod never ran (P12).
+    if matches!(answer, Err(devpod::StatusUnreadable::NotRun(_))) {
+        stage.fail();
+    }
+    answer.ok()
 }
 
 /// What deleting *workspace_id* would destroy, as far as dl can establish.

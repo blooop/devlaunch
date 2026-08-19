@@ -9,7 +9,15 @@ use std::io::Write as _;
 
 fn main() {
     interrupt_exits_130();
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
+    // argument that is not valid UTF-8, which would end `dl $'\xff'` with an exit
+    // 101 and a traceback. Python decoded argv lossily and carried on, and
+    // docs/rust-rewrite-plan.md row 4 forbids the traceback; row 12 licenses the
+    // lossy render.
+    let argv: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let ending = dl::run(&argv);
     // `process::exit` runs no destructors, and one of the things not run is the
     // flush of a stdout that ended without a newline.

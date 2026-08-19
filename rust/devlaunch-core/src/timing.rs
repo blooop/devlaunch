@@ -68,11 +68,17 @@ pub(crate) const JSON_PREFIX: &str = "dl-timing-json:";
 /// string, which is what `date +%s.%N` prints. Wall clock rather than a
 /// monotonic counter because the two ends are different processes, and there is
 /// no clock they share whose zero survives an exec.
-pub(crate) const HANDOFF_VAR: &str = "DEVLAUNCH_HANDOFF_T0";
+///
+/// Part of the frozen wf API (#251 §7), re-exported from [`crate::api`]: `wf`
+/// stamps this for the `dl` it hands off to, so the name is a contract between
+/// the two and `pub` for that reason.
+pub const HANDOFF_VAR: &str = "DEVLAUNCH_HANDOFF_T0";
 
 /// The stamp's other half, same format: when a prewarm was fired for this
 /// workspace, if one was. Absent means nothing was prewarmed.
-pub(crate) const PREWARM_VAR: &str = "DEVLAUNCH_PREWARM_FIRED_AT";
+///
+/// Part of the frozen wf API (#251 §7), re-exported from [`crate::api`].
+pub const PREWARM_VAR: &str = "DEVLAUNCH_PREWARM_FIRED_AT";
 
 /// Which clock `total` came from, quoted in the prose line and in the document.
 ///
@@ -195,7 +201,7 @@ impl Mode {
     /// prose, so a habit of `DEVLAUNCH_TIMING=true` still gets what it always
     /// got.
     pub(crate) fn requested(raw: Option<&str>) -> Option<Mode> {
-        let asked = raw.unwrap_or("").trim();
+        let asked = crate::osext::strip(raw.unwrap_or(""));
         if asked.is_empty() || asked == "0" {
             return None;
         }
@@ -208,7 +214,7 @@ impl Mode {
 
     /// What the process environment asks for.
     pub(crate) fn from_env() -> Option<Mode> {
-        Mode::requested(std::env::var(ENV_VAR).ok().as_deref())
+        Mode::requested(crate::osext::env_str(ENV_VAR).as_deref())
     }
 }
 
@@ -240,15 +246,15 @@ impl Seam {
     /// The seam as the process environment holds it.
     pub(crate) fn from_env() -> Seam {
         Seam::parse(
-            std::env::var(HANDOFF_VAR).ok().as_deref(),
-            std::env::var(PREWARM_VAR).ok().as_deref(),
+            crate::osext::env_str(HANDOFF_VAR).as_deref(),
+            crate::osext::env_str(PREWARM_VAR).as_deref(),
         )
     }
 }
 
 /// The wall-clock instant `raw` holds, or `None` if it holds no instant.
 fn stamp(raw: Option<&str>) -> Option<f64> {
-    let stamped = raw.unwrap_or("").trim();
+    let stamped = crate::osext::strip(raw.unwrap_or(""));
     if stamped.is_empty() {
         return None;
     }

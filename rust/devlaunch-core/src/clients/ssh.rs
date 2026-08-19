@@ -150,7 +150,7 @@ fn payload(command: &str, workdir: Option<&str>) -> Result<String, UnsafeRequest
 pub(crate) fn tty_disabled(value: Option<&str>) -> bool {
     match value {
         None => false,
-        Some(value) => !FALSEY.contains(&value.trim().to_lowercase().as_str()),
+        Some(value) => !FALSEY.contains(&crate::osext::strip(value).to_lowercase().as_str()),
     }
 }
 
@@ -166,7 +166,7 @@ pub(crate) fn terminal_usable(disable: Option<&str>, stdin_tty: bool, stdout_tty
 
 /// Where devpod writes its host aliases.
 pub(crate) fn config_path() -> Option<PathBuf> {
-    std::env::home_dir().map(|home| home.join(".ssh").join("config"))
+    crate::osext::home_dir().map(|home| home.join(".ssh").join("config"))
 }
 
 /// Whether devpod has published an ssh alias for this workspace.

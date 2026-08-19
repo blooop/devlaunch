@@ -229,7 +229,7 @@ pub(crate) const ZELLIJ_TOOL: Tool = Tool::new("zellij", "zellij");
 pub(crate) fn provisioning_disabled(value: Option<&str>) -> bool {
     match value {
         None => false,
-        Some(value) => !FALSEY.contains(&value.trim().to_lowercase().as_str()),
+        Some(value) => !FALSEY.contains(&crate::osext::strip(value).to_lowercase().as_str()),
     }
 }
 
@@ -257,7 +257,7 @@ impl ToolsSwitch {
 
     /// What the process environment asks for.
     pub fn from_env() -> Self {
-        Self::requested(std::env::var(DISABLE_VAR).ok().as_deref())
+        Self::requested(crate::osext::env_str(DISABLE_VAR).as_deref())
     }
 }
 
@@ -964,7 +964,7 @@ impl HostLayout {
     /// This machine, as `Path.home()` and `shutil.which("gh")` read it.
     pub fn from_env() -> Option<Self> {
         Some(Self {
-            home: std::env::home_dir()?,
+            home: crate::osext::home_dir()?,
             gh_on_path: which("gh"),
         })
     }
@@ -1651,7 +1651,7 @@ fn transfer(
         .tempdir()
         .map_err(|error| {
             TransferFailed::Bundle(BundleFailed::NotWritten {
-                path: std::env::temp_dir(),
+                path: crate::osext::temp_dir(),
                 error: OsFailure::from(&error),
             })
         })?;

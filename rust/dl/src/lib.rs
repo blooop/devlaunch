@@ -42,6 +42,13 @@ use devlaunch_core::timing;
 /// composes one.
 pub use devlaunch_core::shell;
 
+/// Python's `repr()`, for the entry point that quotes an untrusted name the way
+/// Python did: `aid` names a bad `DEVLAUNCH_AID_AGENT` value with `{name!r}`, and
+/// reaches the one renderer through here rather than carrying a second copy, so a
+/// name holding a quote or a control byte is spelled the same as everywhere else
+/// `dl` quotes what a tool or an environment said.
+pub use render::python_repr;
+
 /// The version both binaries print, single-sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -131,7 +138,7 @@ fn command_line(argv: &[String]) -> Result<cli::Command, i32> {
             return Err(usage.exit_code());
         }
     };
-    cli::resolve(parsed).map_err(|grammar| {
+    cli::resolve(parsed, argv).map_err(|grammar| {
         eprintln!("{}", grammar_refusal(&grammar));
         // Python's `logging.error(...); return 1` for every shape it refused after
         // parsing. Deliberately not clap's 2: these are the refusals Python also

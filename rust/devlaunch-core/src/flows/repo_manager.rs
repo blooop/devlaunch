@@ -137,7 +137,7 @@ pub(crate) fn clone_dir(repos_dir: &Path, owner: &str, repo: &str, workspace_id:
 /// either way, which is the whole reason the progress lines can travel this way at
 /// all.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum CacheNotice {
     // --- progress: what the flow is doing (Python's `logger.info` lines) ---
     /// A bare clone is about to be made, because there is none.
@@ -422,7 +422,7 @@ pub(crate) enum TreeRemoval {
 
 /// Why a tree could not be removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7). Public because
+// binary surface — not part of the frozen wf API (#251 §7). Public because
 // `RemoveWorkspaceError` carries it and reaches the binary through
 // `LifecycleNotice::CloneNotRemoved`, unrendered.
 pub enum RemoveTreeError {
@@ -546,7 +546,7 @@ pub(crate) fn system_words(error: &std::io::Error) -> String {
 /// immutable file and a busy mountpoint all reach here too — and for the last two
 /// the advice that fixes the common case does not work.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub struct Refusal {
     pub path: PathBuf,
     pub reason: RefusalReason,
@@ -558,7 +558,7 @@ pub struct Refusal {
 /// different data and only one of them has an errno to quote. The words are the
 /// `dl` binary's (#251).
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum RefusalReason {
     /// What the OS said, in the words it used.
     System(String),
@@ -873,7 +873,7 @@ pub enum CloneError {
 
 /// Why a repository's whole ref set could not be swept.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum FetchRepoError {
     /// There is no clone to fetch into.
     NoLocalClone {
@@ -900,7 +900,7 @@ pub enum FetchRepoError {
 
 /// Why a conditional sweep could not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum LazyFetchError {
     /// The repository is not in `metadata.json`, so there is no clock to compare
     /// against.
@@ -983,12 +983,21 @@ pub(crate) enum RemoveRepositoryError {
 /// [`crate::flows::workspace_clone`] without either of them borrowing it for the
 /// length of the run. Python injected it in the constructor and had two managers
 /// sharing one object; the parameter is that, said out loud.
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub struct RepositoryManager<'r> {
     repos_dir: PathBuf,
     fetch_interval: Duration,
     git: Git<'r>,
     wait_watcher: Option<Box<dyn Fn(RepoWait)>>,
+    /// How many times this manager has acquired a per-repo lock.
+    ///
+    /// Per-instance rather than a process-global counter, so parallel tests do
+    /// not corrupt each other's count — and per *acquisition* rather than per
+    /// lock *file*, because the files are never unlinked, so counting them can
+    /// only tell 0 from more-than-0 and misses the 1-vs-2 the launch-shape
+    /// cycle-count ledger (devlaunch#200) is about.
+    #[cfg(test)]
+    acquisitions: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for RepositoryManager<'_> {
@@ -1025,7 +1034,16 @@ impl<'r> RepositoryManager<'r> {
             fetch_interval,
             git,
             wait_watcher: None,
+            #[cfg(test)]
+            acquisitions: std::cell::Cell::new(0),
         }
+    }
+
+    /// How many per-repo lock acquisitions this manager has made, for the
+    /// cycle-count tests (devlaunch#200).
+    #[cfg(test)]
+    pub(crate) fn repo_lock_acquisitions(&self) -> usize {
+        self.acquisitions.get()
     }
 
     /// Be told when an acquisition of a per-repo lock is about to queue.
@@ -1092,6 +1110,11 @@ impl<'r> RepositoryManager<'r> {
                 });
             }
         })?;
+        // One acquisition, counted the way Python's `hold_lock` patch counts them:
+        // each successful hold of a `.lock`, so a launch shape's cycle count is
+        // exactly this (devlaunch#200).
+        #[cfg(test)]
+        self.acquisitions.set(self.acquisitions.get() + 1);
         // Only the queueing is measured, not the holding: an uncontended lock
         // costs nothing and records nothing, and what a summary should show is
         // the time this process spent behind a sibling rather than the time its

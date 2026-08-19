@@ -111,7 +111,7 @@ const SOURCE_KIND: &str = "source";
 /// The part travels with the refusal because the caller renders it (Python's
 /// `Invalid git {kind} name: ...`); core holds no user-facing English.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum NamePart {
     Owner,
     Repo,
@@ -120,7 +120,7 @@ pub enum NamePart {
 
 /// A name that is not safe as a git ref or a path component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub struct UnsafeName {
     pub part: NamePart,
     pub name: String,
@@ -154,7 +154,7 @@ fn is_word(c: char) -> bool {
 }
 
 /// [`is_safe_name`] as a refusal that names the part it rejected.
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub fn validate_ref_name(name: &str, part: NamePart) -> Result<(), UnsafeName> {
     if is_safe_name(name) {
         Ok(())

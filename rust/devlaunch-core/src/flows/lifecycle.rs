@@ -9,7 +9,7 @@
 //! why the names are the ones a caller outside dl would reach for.
 //!
 //! Everything reachable here is **binary surface — not part of the frozen wf API
-//! (#250 §7)**, except the three §7 names (`list`, `remove`, `up`): the `dl`
+//! (#251 §7)**, except the three §7 names (`list`, `remove`, `up`): the `dl`
 //! binary is a separate crate and every sentence a user reads is written there,
 //! so a rendering layer that could not name these typed results would not be a
 //! rendering layer. The distinction is what stays frozen at the end of M6.
@@ -490,8 +490,18 @@ pub fn workspace_state(
     runner: &dyn Runner,
     workspace_id: &str,
 ) -> Result<ContainerState, StatusUnreadable> {
-    let _stage = timing::stage(timing::Stage::DevpodUp);
-    devpod::status(runner, workspace_id)
+    let mut stage = timing::stage(timing::Stage::DevpodUp);
+    let answer = devpod::status(runner, workspace_id);
+    // Python's `@timing.staged("devpod-up") get_workspace_state` returns `None`
+    // for a devpod that ran and refused, gave non-JSON, or omitted `state` — the
+    // stage stays `ok`. Only a devpod that could not be run at all raises
+    // (`DevpodNotInstalled`, or another spawn `OSError`) and the decorator marks
+    // the stage `failed`. `NotRun` is that case; mark it so the timing document
+    // does not report `ok` for a launch step devpod never performed (P12/C8).
+    if matches!(answer, Err(StatusUnreadable::NotRun(_))) {
+        stage.fail();
+    }
+    answer
 }
 
 /// Which devpod workspace a triple is, and what devpod said about it.
@@ -835,11 +845,17 @@ pub fn unsaved_work_in(
 // ===========================================================================
 
 /// How a delete ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteOutcome {
-    /// devpod let go of the workspace. `clone` says whether there was a local
-    /// clone to remove with it.
-    Deleted { clone: Removed },
+    /// devpod let go of the workspace. `clone` says what became of the local
+    /// clone: `Ok` with which no-op or removal happened, or `Err` when the
+    /// removal was attempted and refused (the workspace is gone regardless, which
+    /// is why this is still `Deleted` and the refusal rides in the field rather
+    /// than failing the delete). The `Err` was a fourth meaning crammed into the
+    /// old `Removed::Nothing`; it is its own channel now.
+    Deleted {
+        clone: Result<Removed, RemoveWorkspaceError>,
+    },
     /// devpod refused, and the local clone was **kept** so the delete stays
     /// retryable. devpod re-parses the workspace's `devcontainer.json` to tear the
     /// container down, so a config that has since moved makes deletion fail — and
@@ -882,22 +898,30 @@ pub fn workspace_delete(
     let removal = clones.remove_workspace_by_id(storage, workspace_id, &mut as_cache(notices));
     let clone = match removal {
         Ok(removed) => {
-            if let Removed::Clone = removed {
-                notices.say(LifecycleNotice::CloneRemoved {
+            // Exhaustive rather than `if let`: only the clone actually removed gets
+            // the `Removed local clone` line, and a new no-op arm must be a compile
+            // error here rather than silently join the silent ones.
+            match removed {
+                Removed::Clone => notices.say(LifecycleNotice::CloneRemoved {
                     workspace_id: workspace_id.to_owned(),
-                });
+                }),
+                Removed::NothingRecorded
+                | Removed::DirectoryNotNamed
+                | Removed::DirectoryAbsent => {}
             }
-            removed
+            Ok(removed)
         }
         Err(error) => {
             // The workspace is gone whatever happened to the clone, so this is a
             // notice rather than the delete failing: reporting failure would send
-            // the caller looking for a workspace that is not there.
+            // the caller looking for a workspace that is not there. The refusal is
+            // carried in the outcome too, so a caller reads it without re-deriving
+            // it from the notice stream.
             notices.say(LifecycleNotice::CloneNotRemoved {
                 workspace_id: workspace_id.to_owned(),
-                refusal: error,
+                refusal: error.clone(),
             });
-            Removed::Nothing
+            Err(error)
         }
     };
     refresh.ask(context.runner(), RefreshReason::Forced);
@@ -2396,7 +2420,7 @@ fn repository_of(source: &Path, root: &Path) -> Option<(String, String)> {
 pub fn devpod_home() -> Option<PathBuf> {
     match std::env::var_os("DEVPOD_HOME") {
         Some(home) if !home.is_empty() => Some(PathBuf::from(home)),
-        _ => std::env::home_dir().map(|home| home.join(".devpod")),
+        _ => crate::osext::home_dir().map(|home| home.join(".devpod")),
     }
 }
 
@@ -2613,6 +2637,51 @@ mod tests {
     use crate::flows::repo_manager::tests::{refusing_reads, refusing_writes, run_git};
     use crate::flows::repo_manager::{RefusalReason, RemoveTreeError, bare_dir};
     use crate::flows::workspace_clone::GitLfs;
+
+    #[test]
+    fn a_devpod_that_cannot_be_run_fails_the_stage_but_one_that_refuses_does_not() {
+        // Python's `@timing.staged("devpod-up") get_workspace_state` returns None
+        // for a devpod that ran and refused, gave non-JSON, or omitted `state`, so
+        // the stage stays `ok`; only a devpod that could not be run at all raises
+        // (`DevpodNotInstalled`) and the decorator marks the stage `failed`.
+        // Rust's `NotRun` is that case and nothing else (P12/C8).
+        let _serialized = timing::exclusive();
+
+        fn devpod_up_outcome(runner: &dyn devlaunch_runner::Runner) -> &'static str {
+            timing::install(Some(timing::Registry::start(
+                timing::Mode::Document,
+                timing::Seam::default(),
+                0.0,
+            )));
+            let _ = workspace_state(runner, "dl-ws");
+            let report = timing::emit().expect("a report");
+            let document = report.document().expect("a document");
+            document
+                .stages
+                .iter()
+                .find(|stage| stage.stage == "devpod-up")
+                .expect("a devpod-up stage")
+                .outcome
+        }
+
+        let missing = FakeRunner::new();
+        missing.script(["devpod"], Response::ProgramNotFound);
+        assert_eq!(
+            devpod_up_outcome(&missing),
+            "failed",
+            "a devpod that could not be run must fail the stage"
+        );
+
+        let refused = FakeRunner::new();
+        refused.script(["devpod"], Response::failed(1, "no such workspace\n"));
+        assert_eq!(
+            devpod_up_outcome(&refused),
+            "ok",
+            "a devpod that ran and refused is Python's None return — the stage stays ok"
+        );
+
+        timing::install(None);
+    }
 
     // ------------------------------------------------------------ test doubles
 
@@ -4008,7 +4077,7 @@ mod tests {
         assert_eq!(
             outcome,
             DeleteOutcome::Deleted {
-                clone: Removed::Nothing
+                clone: Ok(Removed::NothingRecorded)
             }
         );
         assert_eq!(world.devpod.devpod_argvs(), [vec!["delete", "myws"]]);
@@ -4110,7 +4179,7 @@ mod tests {
         assert_eq!(
             outcome,
             DeleteOutcome::Deleted {
-                clone: Removed::Clone
+                clone: Ok(Removed::Clone)
             }
         );
         assert!(!clone.exists());
@@ -4151,11 +4220,19 @@ mod tests {
         )
         .expect("devpod ran");
 
-        assert_eq!(
-            outcome,
-            DeleteOutcome::Deleted {
-                clone: Removed::Nothing
-            }
+        // The removal errored, so the clone outcome is the refusal itself — its own
+        // channel now, not a `Removed::Nothing` that could not tell an error from a
+        // no-op.
+        assert!(
+            matches!(
+                &outcome,
+                DeleteOutcome::Deleted {
+                    clone: Err(RemoveWorkspaceError::DirectoryLeft(
+                        RemoveTreeError::RootIsSymlink { .. }
+                    ))
+                }
+            ),
+            "{outcome:?}"
         );
         assert_eq!(
             notices,
@@ -4751,6 +4828,84 @@ mod tests {
             Some(stale),
             "nothing was fetched, so nothing may claim it was"
         );
+    }
+
+    #[test]
+    fn the_prune_scan_blocks_on_a_repository_another_process_is_holding() {
+        // `dl --prune`'s scan takes each repo's lock, blocking, before it weighs
+        // the clones under it (prune_plan → hold_repo_lock), so it never walks a
+        // directory a cold launch is still cloning into. Unlike the hourly sweep —
+        // which declines a held lock (`run_if_lock_free`) and comes back later —
+        // the scan must WAIT, the way Python's
+        // test_it_blocks_while_another_process_holds_the_repository_lock proves.
+        // Pinned at the acquisition itself, against a real second process, because
+        // driving prune_plan across a thread would carry the fake runner (which is
+        // neither Send nor free of the process-global timing lock).
+        use std::process::{Child, Command, Stdio};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        const BOUND: Duration = Duration::from_secs(10);
+
+        fn spawn_holder(lock: &Path) -> Child {
+            Command::new("sh")
+                .arg("-c")
+                .arg(r#"exec 9>"$1"; flock --exclusive 9; exec sleep 300"#)
+                .arg("sh")
+                .arg(lock)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("a shell and flock(1) from util-linux")
+        }
+
+        fn wait_until(mut condition: impl FnMut() -> bool) {
+            let deadline = Instant::now() + BOUND;
+            while Instant::now() < deadline {
+                if condition() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the condition never held within {BOUND:?}");
+        }
+
+        let cache = a_sweeping_cache();
+        let repos_dir = cache.repos_dir.clone();
+        let lock_path = {
+            let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+            manager.lock_path(OWNER, REPO)
+        };
+        std::fs::create_dir_all(lock_path.parent().expect("a parent")).expect("the repo directory");
+
+        let mut holder = spawn_holder(&lock_path);
+        wait_until(|| {
+            locks::run_if_lock_free(&lock_path, || ())
+                .expect("no lock error")
+                .is_none()
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // A fresh manager over the same repos_dir; the acquisition is the scan's.
+            let runner = ProcessRunner::new();
+            let manager = RepositoryManager::new(&repos_dir, Git::new(&runner));
+            let _lock = manager.hold_repo_lock(OWNER, REPO).expect("acquired");
+            tx.send(()).expect("the parent listens");
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the scan acquired the repo lock while another process held it"
+        );
+
+        holder.kill().expect("kill the holder");
+        holder.wait().expect("reap the holder");
+
+        rx.recv_timeout(BOUND)
+            .expect("the scan acquired the lock once it was free");
+        worker.join().expect("the worker finished");
     }
 
     #[test]

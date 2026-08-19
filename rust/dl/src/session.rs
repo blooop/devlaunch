@@ -22,7 +22,7 @@ use devlaunch_core::domain::config::{self, ConfigError, WorktreeConfig};
 use devlaunch_core::domain::metadata::{MetadataError, MetadataStorage, Notice};
 use devlaunch_core::domain::xdg::{self, NoHomeDirectory};
 use devlaunch_core::flows::lifecycle::SelfInvocation;
-use devlaunch_core::flows::migration;
+use devlaunch_core::flows::migration::{self, MigrationReport};
 use devlaunch_core::flows::workspace_clone::WorkspaceCloneManager;
 use devlaunch_core::runner::Runner;
 
@@ -111,6 +111,13 @@ pub(crate) struct Records<'r> {
     /// Rendered by the caller: these are typed events, and the sentences are the
     /// binary's.
     pub(crate) notices: Vec<Notice>,
+    /// What the cache migration did, when it ran and produced a report. `None`
+    /// covers both the common already-current case (a single integer comparison,
+    /// no scan) and a migration that a concurrent process had already finished.
+    /// Rendered by the caller: the report carries the facts, and the sentences —
+    /// Python's `_announce`, up to nine notice classes and the only pointer to
+    /// `dl --reconcile` for orphaned containers — are the binary's (#251).
+    pub(crate) migration: Option<MigrationReport>,
     /// Why the cache could not be migrated, when it could not.
     ///
     /// A failed migration must not take the command with it — the renames that did
@@ -128,15 +135,22 @@ pub(crate) struct Records<'r> {
 pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, StartupError> {
     let config = worktree_config()?;
     let (mut storage, notices) = MetadataStorage::open(MetadataStorage::default_path()?)?;
-    // The report is not rendered: Python discards it too, and the files the
-    // migration writes (the orphan and unmigrated listings) are what it leaves
-    // behind for a person to read.
-    let migration_refused = migration::migrate_cache(&mut storage, &config.repos_dir).err();
+    // The report is kept and rendered by the caller. Python's `migrate_cache`
+    // announces inside itself (migration.py `_announce`); core renders no English
+    // (#251), so the report travels up and the binary writes the sentences — the
+    // migration's orphan/unmigrated notices, including the only pointer a user
+    // gets to `dl --reconcile`/`recreate` for the containers it orphaned.
+    let (migration, migration_refused) =
+        match migration::migrate_cache(&mut storage, &config.repos_dir) {
+            Ok(report) => (report, None),
+            Err(refused) => (None, Some(refused)),
+        };
     let clones = WorkspaceCloneManager::from_config(&config, Git::new(runner));
     Ok(Records {
         storage,
         clones,
         notices,
+        migration,
         migration_refused,
     })
 }

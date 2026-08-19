@@ -28,6 +28,7 @@ use devlaunch_core::flows::lifecycle::{
     PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
+use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, Refusal, RefusalReason, RemoveTreeError,
@@ -37,7 +38,7 @@ use devlaunch_core::flows::workspace_clone::{
     EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
 };
 use devlaunch_core::notices::Notices;
-use devlaunch_runner::Exit;
+use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
 
@@ -302,7 +303,7 @@ impl Formatter for PythonPretty {
 /// here: single quotes unless the text holds one and no double quote, backslash
 /// and the quote escaped, `\n`/`\r`/`\t` named, anything else unprintable as
 /// `\xNN`, and printable non-ASCII left alone.
-pub(crate) fn python_repr(text: &str) -> String {
+pub fn python_repr(text: &str) -> String {
     let quote = if text.contains('\'') && !text.contains('"') {
         '"'
     } else {
@@ -385,7 +386,10 @@ pub(crate) fn listing_refusal(refused: &ListingUnreadable) -> String {
             "error: `devpod list` did not answer in time".to_owned()
         }
         ListingUnreadable::NotRun(NotRun::Blocked(failure)) => {
-            format!("error: `devpod list` could not be run ({:?})", failure.kind)
+            format!(
+                "error: `devpod list` could not be run ({})",
+                os_error_phrase(failure)
+            )
         }
         ListingUnreadable::Failed { exit, stderr } => format!(
             "error: `devpod list` exited {}: {}",
@@ -428,8 +432,8 @@ pub(crate) fn devpod_not_run(call: &str, refused: &NotRun) -> String {
         NotRun::TimedOut => format!("error: `devpod {call}` did not answer in time"),
         NotRun::Blocked(failure) => {
             format!(
-                "error: `devpod {call}` could not be run ({:?})",
-                failure.kind
+                "error: `devpod {call}` could not be run ({})",
+                os_error_phrase(failure)
             )
         }
     }
@@ -439,6 +443,23 @@ pub(crate) fn devpod_not_run(call: &str, refused: &NotRun) -> String {
 /// the only one that exits 127.
 pub(crate) fn is_devpod_missing(refused: &ListingUnreadable) -> bool {
     matches!(refused, ListingUnreadable::NotRun(NotRun::NotInstalled))
+}
+
+/// The OS's own phrasing for a refusal to start a program, as Python's
+/// `str(OSError)` carries it.
+///
+/// `from_raw_os_error` turns the errno into the sentence the C library gives it
+/// (`Permission denied (os error 13)`), which is what `dl --install` already
+/// renders and what docs/rust-rewrite-plan.md row 4 promised for every OS refusal.
+/// Debug-printing the [`std::io::ErrorKind`] instead (`(Uncategorized)`,
+/// `(NotFound)`) leaked Rust's own vocabulary into a diagnostic Python spelled
+/// differently. Only when the runner had no errno to carry does this fall back to
+/// naming the kind.
+fn os_error_phrase(failure: &OsFailure) -> String {
+    match failure.errno {
+        Some(errno) => std::io::Error::from_raw_os_error(errno).to_string(),
+        None => format!("{:?}", failure.kind),
+    }
 }
 
 /// A child's ending, as Python's `returncode` spells it: negative for a signal.
@@ -583,6 +604,136 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
         }
     };
     format!("dl: {line}")
+}
+
+/// The `dl: …` lines the cache migration has to say, Python's `_announce`.
+///
+/// One line per kind of outcome, on stderr — stdout is parsed by the completion
+/// machinery, which is why `migration.py::_notice` chose stderr. Core renders no
+/// English (#251): the [`MigrationReport`] carries every fact these sentences
+/// interpolate, and the words are Python's, byte for byte, because a user reading
+/// them mid-migration is reading the same instructions the shipping `dl` printed —
+/// most load-bearingly the orphaned-container line, the only pointer they get to
+/// `dl --reconcile` and `dl <workspace> recreate`.
+///
+/// The order is `migrate_cache`'s: the record-less scan's refusals first (Python's
+/// `_clone_dirs` said them during the walk), then `_announce`'s block.
+pub(crate) fn migration_notices(report: &MigrationReport) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for not_scanned in &report.not_scanned {
+        lines.push(format!(
+            "dl: could not scan {} for old workspace clones ({})",
+            not_scanned.path.display(),
+            not_scanned.reason
+        ));
+    }
+
+    if let Some(first) = report.renamed.first() {
+        let count = report.renamed.len();
+        lines.push(format!(
+            "dl: migrated {count} workspace clone director{} to the new id scheme (e.g. {} -> {})",
+            plural_directory(count),
+            leaf(&first.from),
+            leaf(&first.to),
+        ));
+    }
+
+    for failed in &report.failed {
+        lines.push(format!(
+            "dl: could not rename {} to {} ({}); it was left where it is",
+            failed.from.display(),
+            failed.to.display(),
+            failed.reason
+        ));
+    }
+
+    if !report.missing.is_empty() {
+        let count = report.missing.len();
+        lines.push(format!(
+            "dl: {count} metadata record(s) pointed at a clone directory that is no longer \
+             there; they now point at their new-scheme path"
+        ));
+    }
+
+    for unusable in &report.unusable {
+        lines.push(format!(
+            "dl: left {} as it is: its recorded branch {} is not a usable git ref, so no id \
+             can be derived for it",
+            unusable.path.display(),
+            python_repr(&unusable.branch)
+        ));
+    }
+
+    for blocked in &report.blocked {
+        lines.push(format!(
+            "dl: left {} as it is: its new name {} is already another workspace's clone \
+             directory; move or delete one of them by hand",
+            blocked.from.display(),
+            leaf(&blocked.to)
+        ));
+    }
+
+    if !report.unmigrated.is_empty() {
+        let count = report.unmigrated.len();
+        // Python's `_write_lines` announces its own failure in place, before the
+        // summary line, and returns None so the summary drops its "; listed in".
+        let suffix = match listing_path(&report.unmigrated_listing, &mut lines) {
+            Some(path) => format!("; listed in {}", path.display()),
+            None => String::new(),
+        };
+        lines.push(format!(
+            "dl: {count} clone director{} could not be renamed (no metadata record, so the \
+             branch they were cloned for is unknown) and were left as they are{suffix}",
+            plural_directory(count),
+        ));
+    }
+
+    if !report.orphaned_ids.is_empty() {
+        let count = report.orphaned_ids.len();
+        let cleanup = match listing_path(&report.orphan_listing, &mut lines) {
+            Some(path) => format!("xargs -r -n1 devpod delete < {}", path.display()),
+            None => "devpod delete <old-id>, one per workspace".to_owned(),
+        };
+        lines.push(format!(
+            "dl: {count} devpod container(s) still carry the old workspace ids and are now \
+             orphaned; dl --reconcile re-points them at the renamed clones, and dl <workspace> \
+             recreate finishes each repair -- that restores the clone association and the \
+             workspace, not state that lived only inside the old container, and only until the \
+             branch is launched again (a fresh launch claims the clone, and reconcile never \
+             re-points a clone a live container holds). dl deletes nothing for you; for the ones \
+             you are finished with: {cleanup}"
+        ));
+    }
+
+    lines
+}
+
+/// Python's `'y' if n == 1 else 'ies'`, appended to `director`.
+fn plural_directory(count: usize) -> &'static str {
+    if count == 1 { "y" } else { "ies" }
+}
+
+/// A path's final component, Python's `Path.name`.
+fn leaf(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Python's `_write_lines` return, folded into rendering: the path when the listing
+/// was written, and — when it could not be — the `dl: could not write …` line said
+/// in place (as `_write_lines` printed it before returning None) plus `None`, so the
+/// caller degrades to its no-listing wording.
+fn listing_path<'a>(listing: &'a Listing, lines: &mut Vec<String>) -> Option<&'a Path> {
+    match listing {
+        Listing::Written { path, .. } => Some(path),
+        Listing::CouldNotWrite { path, reason } => {
+            lines.push(format!("dl: could not write {} ({reason})", path.display()));
+            None
+        }
+        Listing::NothingToList => None,
+    }
 }
 
 /// Why the config could not be read, in one line.
@@ -1528,14 +1679,17 @@ pub(crate) fn launch_abort(aborted: &LaunchAborted) -> String {
             "error: devpod did not answer in time".to_owned()
         }
         LaunchAborted::DevpodNotRun(NotRun::Blocked(failure)) => {
-            format!("error: devpod could not be run ({:?})", failure.kind)
+            format!(
+                "error: devpod could not be run ({})",
+                os_error_phrase(failure)
+            )
         }
         LaunchAborted::SshNotRun(SshNotRun::NotInstalled) => SSH_MISSING.to_owned(),
         LaunchAborted::SshNotRun(SshNotRun::TimedOut) => {
             "error: ssh did not answer in time".to_owned()
         }
         LaunchAborted::SshNotRun(SshNotRun::Blocked(failure)) => {
-            format!("error: ssh could not be run ({:?})", failure.kind)
+            format!("error: ssh could not be run ({})", os_error_phrase(failure))
         }
         LaunchAborted::ListingUnreadable(refused) => listing_refusal(refused),
     }
@@ -1740,7 +1894,7 @@ fn session_refusal(refused: &SessionRefused) -> String {
         SessionRefused::Ssh(SshNotRun::NotInstalled) => SSH_MISSING.to_owned(),
         SessionRefused::Ssh(SshNotRun::TimedOut) => "error: ssh did not answer in time".to_owned(),
         SessionRefused::Ssh(SshNotRun::Blocked(failure)) => {
-            format!("error: ssh could not be run ({:?})", failure.kind)
+            format!("error: ssh could not be run ({})", os_error_phrase(failure))
         }
     }
 }

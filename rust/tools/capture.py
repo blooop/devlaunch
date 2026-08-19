@@ -98,8 +98,10 @@ def main(argv):
             words = []
             for word in call["argv"]:
                 word = t(word)
-                if len(word) > 24:
-                    word = word.splitlines()[0][:24] + "…"
+                # 400, matching compare.py's WORD_LIMIT: long enough to keep the
+                # `--command bash -lc <payload>` a launch sends (24 hid it).
+                if len(word) > 400:
+                    word = word.splitlines()[0][:400] + "…"
                 words.append(word)
             print("  devpod " + " ".join(words))
     print("== root:", root)

@@ -173,9 +173,9 @@ impl Host {
     pub fn from_process(cache_dir: impl Into<PathBuf>) -> Self {
         Self {
             gh: gh::HostEnv::from_process(),
-            dotfiles_on_attach: std::env::var(DOTFILES_ON_ATTACH_VAR).ok(),
-            zellij: std::env::var(ZELLIJ_WRAP_VAR).ok(),
-            no_tty: std::env::var(ssh::DISABLE_VAR).ok(),
+            dotfiles_on_attach: crate::osext::env_str(DOTFILES_ON_ATTACH_VAR),
+            zellij: crate::osext::env_str(ZELLIJ_WRAP_VAR),
+            no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             ssh_config: ssh::config_path(),
@@ -235,7 +235,7 @@ const FALSEY: [&str; 4] = ["", "0", "false", "no"];
 fn switched_on(value: Option<&str>) -> bool {
     match value {
         None => false,
-        Some(value) => !FALSEY.contains(&value.trim().to_lowercase().as_str()),
+        Some(value) => !FALSEY.contains(&crate::osext::strip(value).to_lowercase().as_str()),
     }
 }
 
@@ -1280,36 +1280,43 @@ pub(crate) fn terminal_for(host: &Host, workspace_id: &str) -> Terminal {
 /// Deliberately the same decision ssh itself makes — use a terminal when there is
 /// a terminal to use — so a redirected `dl <ws> -- ls > out.txt` keeps the devpod
 /// transport and keeps its output free of escape sequences.
+///
+/// Each arm that runs a command carries the payload it runs, so a command route
+/// with no command cannot be built: the correlation ("there is a command exactly
+/// when this is not a bare attach") is the type, not a comment. Collapsed to a
+/// payload-free tag, a `DevpodCommand` paired with no payload dispatched an
+/// interactive attach that ran nothing and reported nothing, and a `Terminal`
+/// paired with no payload panicked an `expect`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Route {
+pub(crate) enum Route<'p> {
     /// A bare attach. It stays on devpod whatever the terminal says: devpod
     /// requests a pty for exactly this case, so there is nothing to escape.
     DevpodAttach,
     /// A command under a pty, through the ssh alias `devpod up` published.
-    Terminal,
+    Terminal(&'p RemotePayload),
     /// A command through `devpod ssh --command`, which never asks for a pty.
-    DevpodCommand,
+    DevpodCommand(&'p RemotePayload),
 }
 
 /// Route this session, reporting a terminal dl had and could not use.
-pub(crate) fn route(
-    command: Option<&RemotePayload>,
+pub(crate) fn route<'p>(
+    command: Option<&'p RemotePayload>,
     terminal: Terminal,
     workspace_id: &str,
     notices: &mut dyn Notices<LaunchNotice>,
-) -> Route {
-    let Some(_) = command else {
+) -> Route<'p> {
+    let Some(command) = command else {
         return Route::DevpodAttach;
     };
     match terminal {
-        Terminal::Usable => Route::Terminal,
+        Terminal::Usable => Route::Terminal(command),
         Terminal::NoAlias => {
             notices.say(LaunchNotice::NoTerminalAlias {
                 workspace_id: workspace_id.to_owned(),
             });
-            Route::DevpodCommand
+            Route::DevpodCommand(command)
         }
-        Terminal::Absent => Route::DevpodCommand,
+        Terminal::Absent => Route::DevpodCommand(command),
     }
 }
 
@@ -1432,14 +1439,16 @@ pub(crate) fn workspace_ssh(
     };
     let terminal = terminal_for(session.host, workspace_id);
     match route(payload.as_ref(), terminal, workspace_id, notices) {
-        Route::Terminal => {
-            let payload = payload.expect("a terminal route carries a command");
-            ssh_with_terminal(session, workspace_id, &payload, workdir, notices)
+        Route::Terminal(payload) => {
+            ssh_with_terminal(session, workspace_id, payload, workdir, notices)
         }
-        Route::DevpodAttach | Route::DevpodCommand => devpod_session(
+        Route::DevpodAttach => {
+            devpod_session(session, workspace_id, None, workdir, forward, notices)
+        }
+        Route::DevpodCommand(payload) => devpod_session(
             session,
             workspace_id,
-            payload.as_ref(),
+            Some(payload),
             workdir,
             forward,
             notices,
@@ -1760,7 +1769,7 @@ pub fn plan(raw_spec: &str) -> Result<Plan, UnsafeName> {
 /// Python's answer is the lexical one too.
 fn path_leaf(path: &str) -> String {
     let expanded = match path.strip_prefix('~') {
-        Some(rest) => match std::env::home_dir() {
+        Some(rest) => match crate::osext::home_dir() {
             Some(home) => home.join(rest.trim_start_matches('/')),
             None => PathBuf::from(path),
         },
@@ -3738,7 +3747,7 @@ mod tests {
         let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
         assert_eq!(
             route(Some(&payload), Terminal::Usable, "myws", &mut no_notices()),
-            Route::Terminal
+            Route::Terminal(&payload)
         );
     }
 
@@ -3771,7 +3780,7 @@ mod tests {
         let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
         assert_eq!(
             route(Some(&payload), Terminal::NoAlias, "myws", &mut notices),
-            Route::DevpodCommand
+            Route::DevpodCommand(&payload)
         );
         assert_eq!(
             notices,

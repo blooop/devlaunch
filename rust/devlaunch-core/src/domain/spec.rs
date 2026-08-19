@@ -56,7 +56,7 @@ use super::workspace_id::{TARGET_LENGTH, UnsafeName, WorkspaceId, slug, source_w
 /// total — the last arm is the fallback Python spelled "otherwise return as-is" —
 /// so parsing cannot fail and there is no error type here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum WorkspaceSpec<'a> {
     /// A directory on this machine: `./x`, `/x`, `~/x`.
     Path(&'a str),
@@ -77,7 +77,7 @@ pub enum WorkspaceSpec<'a> {
 }
 
 /// Classify a raw spec. Total: every string is one of the six.
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub fn parse(spec: &str) -> WorkspaceSpec<'_> {
     if is_path(spec) {
         return WorkspaceSpec::Path(spec);
@@ -148,7 +148,7 @@ impl<'a> WorkspaceSpec<'a> {
 /// the same type and a caller could spend one for the other. These four arms are
 /// the four different things that string could be.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum SpecIdentity<'a> {
     /// A workspace id: names the devpod workspace and the clone-directory leaf.
     Workspace(String),
@@ -168,7 +168,7 @@ pub enum SpecIdentity<'a> {
 
 /// Derive what *spec* names, or refuse an owner, repo or ref that is not a safe
 /// git name.
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub fn identity(spec: &str) -> Result<SpecIdentity<'_>, UnsafeName> {
     // Python splits at the first `@` and gates on the *base*; see the module docs.
     let base = match spec.split_once('@') {

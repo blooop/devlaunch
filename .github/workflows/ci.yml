@@ -128,7 +128,8 @@ jobs:
   # The Rust port's gate (docs/rust-rewrite-plan.md). Required from day one:
   # red always means something real. Two halves. The scaffold checks -- cargo
   # build/test/clippy/fmt, the spec-ledger lint (every test file has a
-  # disposition row; `pending` only shrinks), and parity.py's own unit tests.
+  # disposition row; the `pending` count in rust/pending-count.txt is kept in
+  # step with the ledger and reviewed in the PR), and parity.py's own unit tests.
   # And `parity.py run`, the two-way expected-failure ratchet: it builds the
   # release `dl` and `aid`, points DEVLAUNCH_DL_CMD and DEVLAUNCH_AID_CMD at
   # them, runs both pytest tiers, and fails on any failure outside
@@ -193,6 +194,21 @@ jobs:
           environments: default
       - name: Parity ratchet
         run: python3 rust/parity.py run
+      # The checked-in compare cases (rust/tools/parity_cases.txt): the frozen
+      # Python dl and the release Rust dl run in identical scratch worlds and are
+      # diffed on exit code, stdout, stderr, the devpod call log AND the on-disk
+      # cache state. This is the tripwire the harness-honesty review asked for --
+      # the compare sweeps were manual and unrecorded before, so a regression on
+      # the clean surface (listing, --purge -y, --prune -y, --reconcile, launch
+      # fast-attach) had nothing watching it. `--release` because that is the
+      # binary the gate judges; the release build is explicit because
+      # `parity.py run` above skips its own release build while the manifest is
+      # still the day-one ALL sentinel.
+      - name: Build the release binaries the compare cases judge
+        working-directory: rust
+        run: cargo build --release --locked -p dl -p aid
+      - name: Parity compare (checked-in cases)
+        run: python3 rust/tools/compare.py --cases rust/tools/parity_cases.txt --release --fingerprint
 
   # The release mechanics, exercised on every pull request instead of on release
   # day. Both published artifacts are compiled now (docs/rust-rewrite-plan.md M10):
@@ -227,6 +243,13 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           working-directory: packaging/wheel
+          # Pinned, and kept in lockstep with `publish.yml`'s build step. The
+          # action's default is `latest`, which is how maturin 1.14 arrived
+          # unbidden and broke the build (1.14 rejects a `readme` path resolving
+          # outside the metadata root; see the symlink note in
+          # `packaging/wheel/pyproject.toml`). A pin means the maturin CI builds
+          # with only ever moves when someone edits these two files.
+          maturin-version: v1.14.1
           # The one difference from `publish.yml`: no manylinux container, so the
           # build reuses this job's toolchain and cargo cache and takes a couple of
           # minutes instead of a cold container build. The wheel it produces is
@@ -252,10 +275,32 @@ jobs:
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
           # `--experimental` for the recipe's `load_from_file`; see the comment in
-          # conda-publish.yml's build step.
+          # conda-publish.yml's build step. `--render-only` prints the rendered
+          # recipe as JSON on *stdout*; rattler-build's `devlaunch-<ver>-<hash>`
+          # build-string line is fancy-formatted logging on stderr, so a
+          # `grep devlaunch-$version-` over stdout matches nothing -- assert against
+          # the JSON instead, which is stable across rattler-build versions. This
+          # also confirms the `conda.recipe/variants.yaml` rust floor rendered into
+          # the build requirements rather than silently dropping out.
           pixi exec rattler-build build --experimental --render-only \
             --recipe conda.recipe/recipe.yaml > /tmp/rendered.txt
-          grep -F "devlaunch-$version-" /tmp/rendered.txt
+          python3 -c '
+          import json, sys
+          expected = sys.argv[1]
+          rendered = json.load(open("/tmp/rendered.txt"))
+          if not rendered:
+              sys.exit("render produced no recipe variants")
+          for variant in rendered:
+              pkg = variant["recipe"]["package"]
+              if pkg["name"] != "devlaunch":
+                  sys.exit("recipe names package " + repr(pkg["name"]) + ", expected devlaunch")
+              if pkg["version"] != expected:
+                  sys.exit("recipe version " + repr(pkg["version"]) + " != rust/Cargo.toml " + repr(expected))
+              build = variant["recipe"]["requirements"]["build"]
+              if not any(dep.startswith("rust_") and ">=1.85" in dep for dep in build):
+                  sys.exit("rust compiler floor >=1.85 missing from build deps: " + repr(build))
+          print("conda recipe renders devlaunch " + expected + " with the rust >=1.85 floor")
+          ' "$version"
 
   # One name for a branch ruleset to require, standing for every job above it.
   #

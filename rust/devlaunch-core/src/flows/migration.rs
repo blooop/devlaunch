@@ -66,7 +66,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::repo_manager::{BARE_DIR_NAME, clone_dir};
-use crate::domain::metadata::{MetadataError, MetadataStorage, SCHEMA_VERSION, SchemaHeader};
+use crate::domain::metadata::{
+    MetadataError, MetadataStorage, MigrationCommit, SCHEMA_VERSION, SchemaHeader,
+};
 use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_id::WorkspaceId;
 
@@ -78,38 +80,38 @@ pub(crate) const UNMIGRATED_LIST_NAME: &str = "unmigrated-clones.txt";
 
 /// One directory that moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Renamed {
-    pub(crate) from: PathBuf,
-    pub(crate) to: PathBuf,
+pub struct Renamed {
+    pub from: PathBuf,
+    pub to: PathBuf,
 }
 
 /// One rename the filesystem refused, and what it said.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RenameRefused {
-    pub(crate) from: PathBuf,
-    pub(crate) to: PathBuf,
-    pub(crate) reason: String,
+pub struct RenameRefused {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub reason: String,
 }
 
 /// A record holding a ref no id can be derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnusableRecord {
-    pub(crate) path: PathBuf,
-    pub(crate) branch: String,
+pub struct UnusableRecord {
+    pub path: PathBuf,
+    pub branch: String,
 }
 
 /// A rename whose destination is another record's clone directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Blocked {
-    pub(crate) from: PathBuf,
-    pub(crate) to: PathBuf,
+pub struct Blocked {
+    pub from: PathBuf,
+    pub to: PathBuf,
 }
 
 /// A directory the scan could not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotScanned {
-    pub(crate) path: PathBuf,
-    pub(crate) reason: String,
+pub struct NotScanned {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 /// What became of one of the two listing files.
@@ -118,7 +120,7 @@ pub(crate) struct NotScanned {
 /// a path that is not there: naming a file that does not exist is worse than
 /// naming none, because the user runs the pasted command against nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum Listing {
+pub enum Listing {
     /// There was nothing to list, so no file was written.
     #[default]
     NothingToList,
@@ -136,24 +138,24 @@ pub(crate) enum Listing {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MigrationReport {
     /// Each directory actually renamed.
-    pub(crate) renamed: Vec<Renamed>,
+    pub renamed: Vec<Renamed>,
     /// Each rename the filesystem refused. Non-empty is what keeps the version
     /// header behind (#180).
-    pub(crate) failed: Vec<RenameRefused>,
+    pub failed: Vec<RenameRefused>,
     /// Recorded paths that no longer exist, so there was nothing to rename.
-    pub(crate) missing: Vec<PathBuf>,
+    pub missing: Vec<PathBuf>,
     /// Directories left under their old name because no record names their ref.
-    pub(crate) unmigrated: Vec<PathBuf>,
+    pub unmigrated: Vec<PathBuf>,
     /// Records holding a ref no id can be derived from.
-    pub(crate) unusable: Vec<UnusableRecord>,
+    pub unusable: Vec<UnusableRecord>,
     /// Renames whose derived name is another record's clone.
-    pub(crate) blocked: Vec<Blocked>,
+    pub blocked: Vec<Blocked>,
     /// Old devpod workspace ids, now orphaned because the id derivation changed.
-    pub(crate) orphaned_ids: Vec<String>,
+    pub orphaned_ids: Vec<String>,
     /// Corners of the cache the record-less scan could not read.
-    pub(crate) not_scanned: Vec<NotScanned>,
-    pub(crate) orphan_listing: Listing,
-    pub(crate) unmigrated_listing: Listing,
+    pub not_scanned: Vec<NotScanned>,
+    pub orphan_listing: Listing,
+    pub unmigrated_listing: Listing,
 }
 
 /// Migrate `storage` and the clone directories under `repos_dir`, once.
@@ -176,9 +178,11 @@ pub fn migrate_cache(
         .unwrap_or(Path::new("."))
         .to_path_buf();
 
-    // One edit, one save: the new paths and the new header travel together, so the
-    // header can never claim more than the filesystem has done.
-    storage.commit_migration(|worktrees| {
+    // One edit, one save, under the metadata lock: the new paths and the new
+    // header travel together, so the header can never claim more than the
+    // filesystem has done. `commit_migration` reloads under the lock and re-checks
+    // the version, so a concurrent process that already migrated is seen here.
+    let committed = storage.commit_migration(|worktrees| {
         // Snapshotted before any record is touched: it has to describe the layout
         // the run started from, not one the run is halfway through rewriting.
         let claimed: HashSet<PathBuf> = worktrees
@@ -208,6 +212,13 @@ pub fn migrate_cache(
             SchemaHeader::LeaveBehind
         }
     })?;
+
+    // A concurrent process migrated while this one waited for the lock: the
+    // reload showed the cache already current and the edit never ran, so there is
+    // nothing to report.
+    if let MigrationCommit::AlreadyCurrent = committed {
+        return Ok(None);
+    }
 
     // Written after the save, because they describe what the save recorded. Each
     // one is data — one path or one id per line — and the words that name them are
@@ -1074,6 +1085,94 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_held_metadata_lock_blocks_the_migration_until_it_is_released() {
+        // Mirrors Python's proof that migrate_cache runs inside storage.exclusive()
+        // (dl.py:4377): while another process holds metadata.json.lock, the
+        // migration must not touch the file, and must complete once it is free. A
+        // migration that ran unlocked (as the port did before this fix) would race
+        // a properly-locked writer and could erase its record.
+        use std::process::{Child, Command, Stdio};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        const BOUND: Duration = Duration::from_secs(10);
+
+        fn spawn_holder(lock: &Path) -> Child {
+            // One process, one descriptor: the shell takes the lock and then execs
+            // sleep, so the surviving holder is the one this test can kill.
+            Command::new("sh")
+                .arg("-c")
+                .arg(r#"exec 9>"$1"; flock --exclusive 9; exec sleep 300"#)
+                .arg("sh")
+                .arg(lock)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("a shell and flock(1) from util-linux")
+        }
+
+        fn wait_until(mut condition: impl FnMut() -> bool) {
+            let deadline = Instant::now() + BOUND;
+            while Instant::now() < deadline {
+                if condition() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the condition never held within {BOUND:?}");
+        }
+
+        let cache = a_simple_cache();
+        let repos_dir = cache.repos_dir.clone();
+        let lock_path = cache.metadata.with_file_name(format!(
+            "{}.lock",
+            cache
+                .metadata
+                .file_name()
+                .expect("a name")
+                .to_string_lossy()
+        ));
+
+        let mut holder = spawn_holder(&lock_path);
+        wait_until(|| {
+            crate::domain::locks::run_if_lock_free(&lock_path, || ())
+                .expect("no lock error")
+                .is_none()
+        });
+
+        let metadata = cache.metadata.clone();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut storage = MetadataStorage::open(&metadata).expect("a store").0;
+            let migrated = migrate_cache(&mut storage, &repos_dir)
+                .expect("the save")
+                .is_some();
+            tx.send(migrated).expect("the parent listens");
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the migration ran while another process held the metadata lock"
+        );
+        assert_eq!(
+            cache.version(),
+            1,
+            "nothing was written while the lock was held"
+        );
+
+        holder.kill().expect("kill the holder");
+        holder.wait().expect("reap the holder");
+
+        let migrated = rx
+            .recv_timeout(BOUND)
+            .expect("the migration finished once the lock was free");
+        assert!(migrated, "a v1 cache migrates to a report");
+        assert_eq!(cache.version(), SCHEMA_VERSION);
+        worker.join().expect("the worker finished");
+    }
+
     // ==================================================== orphaned containers
 
     #[test]
@@ -1105,6 +1204,112 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected,
             "one id per line, sorted, so the cleanup command reads deterministically"
+        );
+    }
+
+    #[test]
+    fn a_workspace_the_migration_orphans_is_one_reconcile_adopts() {
+        use crate::clients::devpod::{Workspace, WorkspaceSource};
+        use crate::clients::git::Git;
+        use crate::flows::lifecycle::{
+            LifecycleNotice, canonical, clone_root, reconcile_plan, workspace_locations,
+        };
+        use crate::flows::workspace_clone::{GitLfs, WorkspaceCloneManager};
+        use devlaunch_runner::ProcessRunner;
+        use std::time::Duration;
+
+        // The join devlaunch#88/#224 promises, over the migration's *real* leavings
+        // rather than a hand-built record: migrate_cache renames the old-scheme
+        // clone and reports the devpod id it orphaned; reconcile then matches that
+        // orphan — by the flattened legacy leaf its source still spells, never by
+        // the id the scheme change moved — to the renamed clone the migration
+        // repointed the record onto. `feature/auth` is chosen because its flattened
+        // legacy leaf (`feature-auth`) differs from the derived id, so the match is
+        // the flattened-spelling one and not an accident of equality.
+        let cache = build_legacy_cache(&[("blooop", "devlaunch", &["feature/auth"])]);
+
+        // The directory devpod still points at: the pre-migration, flattened leaf.
+        let old_source = cache
+            .repo_root("blooop", "devlaunch")
+            .join(old_leaf("feature/auth"));
+
+        let report = cache.migrate().expect("a migration ran");
+        assert_eq!(report.orphaned_ids.len(), 1, "one orphaned workspace");
+        let orphaned_id = report.orphaned_ids[0].clone();
+
+        // The clone the migration renamed the old directory to.
+        let renamed = cache.repo_root("blooop", "devlaunch").join(new_leaf(
+            "blooop",
+            "devlaunch",
+            "feature/auth",
+        ));
+        assert!(
+            renamed.join(".git").exists(),
+            "the migration renamed the old-scheme clone onto the derived leaf"
+        );
+
+        let storage = cache.store();
+        let runner = ProcessRunner::new();
+        let clones = WorkspaceCloneManager::new(
+            &cache.repos_dir,
+            Duration::from_secs(3600),
+            Git::new(&runner),
+            GitLfs::NotInstalled,
+        );
+
+        // devpod still knows the workspace under its old id, sourced at the
+        // moved-from directory the migration renamed away.
+        let workspaces = [Workspace {
+            id: orphaned_id.clone(),
+            source: WorkspaceSource::LocalFolder(old_source.display().to_string()),
+            last_used: String::new(),
+            provider: "docker".to_owned(),
+            ide: "none".to_owned(),
+            context: "default".to_owned(),
+        }];
+
+        let root = clone_root(&clones);
+        let locations = workspace_locations(&workspaces, &root);
+        let plan = reconcile_plan(
+            &clones,
+            &storage,
+            &workspaces,
+            &locations,
+            &root,
+            &mut Vec::<LifecycleNotice>::new(),
+        );
+
+        assert_eq!(
+            plan.adopting.len(),
+            1,
+            "the migration's orphan is adopted: {plan:?}"
+        );
+        let adopted = &plan.adopting[0];
+        assert_eq!(adopted.workspace_id, orphaned_id);
+        assert_eq!(
+            adopted.clone,
+            canonical(&renamed.display().to_string()).expect("the renamed clone resolves"),
+            "adopted onto the very clone the migration produced"
+        );
+        assert_eq!(
+            adopted.record.branch, "feature/auth",
+            "carrying the migrated record, whose id join reconcile writes"
+        );
+        assert!(
+            plan.reporting.is_empty(),
+            "nothing was left unadopted: {plan:?}"
+        );
+
+        // cwd-independence (devlaunch#224) is a property of the inputs, not an
+        // extra pass: every path reconcile matched — the orphan's resolved source,
+        // the record's resolved clone, the plan's root — is absolute and
+        // canonicalised, so the same plan falls out whatever directory the command
+        // was run from. Asserting it with a second `set_current_dir` pass would
+        // mutate a process-global other parallel tests share, so the guarantee is
+        // pinned here as the absoluteness of the adopted clone path.
+        assert!(
+            adopted.clone.is_absolute(),
+            "the adopted clone is an absolute path, independent of the cwd"
         );
     }
 

@@ -1132,6 +1132,14 @@ pub(crate) fn report(records: &Records<'_>) {
     for line in render::metadata_notices(&records.notices) {
         eprintln!("{line}");
     }
+    // The cache migration's notices, said after the load's and before any refusal:
+    // Python's factory ran the load then `migrate_cache`, which announced inside
+    // itself. On an already-current cache there is no report and nothing to say.
+    if let Some(report) = &records.migration {
+        for line in render::migration_notices(report) {
+            eprintln!("{line}");
+        }
+    }
     if let Some(refused) = &records.migration_refused {
         eprintln!(
             "Could not migrate the workspace cache: {}",

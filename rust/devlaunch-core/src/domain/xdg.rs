@@ -32,7 +32,7 @@ pub struct NoHomeDirectory;
 pub fn config_home() -> Result<PathBuf, NoHomeDirectory> {
     resolve(
         std::env::var_os("XDG_CONFIG_HOME"),
-        std::env::home_dir(),
+        crate::osext::home_dir(),
         ".config",
     )
 }
@@ -41,7 +41,7 @@ pub fn config_home() -> Result<PathBuf, NoHomeDirectory> {
 pub(crate) fn cache_home() -> Result<PathBuf, NoHomeDirectory> {
     resolve(
         std::env::var_os("XDG_CACHE_HOME"),
-        std::env::home_dir(),
+        crate::osext::home_dir(),
         ".cache",
     )
 }

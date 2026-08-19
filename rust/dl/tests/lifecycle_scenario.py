@@ -185,6 +185,43 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     bare.parent.mkdir(parents=True, exist_ok=True)
     git(root, "clone", "-q", "--bare", str(origin), str(bare))
 
+    if "v1-cache" in wanted:
+        # A cache written by a *pre-#64* devlaunch: schema **1**, one clone under
+        # the old flattened-branch leaf (`.../devlaunch/main`), and a record whose
+        # `workspace_id` is the old `repo-branch` id (`devlaunch-main`). The first
+        # command that builds the clone manager migrates it once — renaming the
+        # directory onto the derived id and announcing what it did on stderr — so
+        # this is the world the migration notices are compared against. devpod
+        # lists nothing (the migration reads no devpod), keeping stdout
+        # deterministic. Runs `dl --ls --json` (not the plain `--ls` table): as in
+        # Python, only the paths that build the clone manager migrate, and the
+        # table path is not one of them (dl.py:_get_clone_manager).
+        old_clone = _clone(root, origin, repos / "blooop" / "devlaunch" / "main", "main")
+        worktrees = {
+            "blooop/devlaunch/main": _record(
+                "blooop", "devlaunch", "main", old_clone, "devlaunch-main"
+            ),
+        }
+        # `_record` names the workspace id after the clone's leaf; the old scheme's
+        # is the flattened branch, so override it to the pre-#64 `repo-branch` id.
+        worktrees["blooop/devlaunch/main"]["workspace_id"] = "devlaunch-main"
+        (cache / "metadata.json").write_text(
+            json.dumps(
+                {"version": 1, "repositories": {}, "worktrees": worktrees},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (root / "shim-state.json").write_text(
+            json.dumps(
+                {"providers": {"docker": {"config": {"name": "docker"}}}, "workspaces": {}},
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        return
+
     clean = _clone(root, origin, repos / "blooop" / "devlaunch" / CLEAN_LEAF, "main")
     dirty = _clone(
         root,
@@ -374,7 +411,7 @@ if __name__ == "__main__":
             "usage: lifecycle_scenario.py <root> <devpod_shim.py> [--prunable] "
             "[--stale-record] [--orphan] [--unplaceable] [--unwritable] "
             "[--no-cache] [--no-workspaces] [--not-a-clone] [--unpushed] "
-            "[--sealed-cache] [--symlinked-cache]"
+            "[--sealed-cache] [--symlinked-cache] [--v1-cache]"
         )
     flags = {argument.lstrip("-") for argument in sys.argv[3:]}
     unknown = flags - {
@@ -389,6 +426,7 @@ if __name__ == "__main__":
         "unpushed",
         "sealed-cache",
         "symlinked-cache",
+        "v1-cache",
     }
     if unknown:
         raise SystemExit(f"lifecycle_scenario.py: unknown fixture(s): {sorted(unknown)}")

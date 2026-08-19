@@ -33,7 +33,14 @@ use rewrite::UsageError;
 
 fn main() {
     interrupt_exits_130();
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
+    // argument that is not valid UTF-8, which would end `aid $'\xff'` with an exit
+    // 101 and a traceback. Python decoded argv lossily and carried on
+    // (docs/rust-rewrite-plan.md rows 4 and 12).
+    let argv: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let ending = run(&argv);
     // `process::exit` runs no destructors, and one of the things not run is the
     // flush of a stdout that ended without a newline.
@@ -103,12 +110,14 @@ fn refusal(refused: &UsageError) -> String {
         UsageError::NoWorkspace => {
             "aid needs a workspace: aid <user/repo>[@branch] [prompt]".to_owned()
         }
-        // `{name!r}` in Python, which single-quotes a string: written out here
-        // rather than reached for through dl's renderer, because aid's only view of
-        // dl is its command line.
+        // `{name!r}` in Python: `dl::python_repr` is that repr, reached through dl
+        // rather than hand-quoted here, so a name holding a quote or a control byte
+        // is spelled the way Python's `repr` spelled it and not merely wrapped in
+        // single quotes.
         UsageError::UnknownAgentInEnvironment { name } => format!(
-            "{}='{name}' is not a known agent. Choose one of: {}.",
+            "{}={} is not a known agent. Choose one of: {}.",
             rewrite::AGENT_ENV_VAR,
+            dl::python_repr(name),
             rewrite::agent_names().join(", ")
         ),
     }

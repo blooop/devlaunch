@@ -102,6 +102,13 @@ jobs:
           # the other channel.
           manylinux: '2_28'
           rust-toolchain: '1.97.1'
+          # Pinned, and kept in lockstep with `ci.yml`'s packaging job. The
+          # action's default is `latest`, which is how maturin 1.14 arrived
+          # unbidden and broke the build (1.14 rejects a `readme` path resolving
+          # outside the metadata root; see the symlink note in
+          # `packaging/wheel/pyproject.toml`). A pin means the maturin a release
+          # is cut with only ever moves when someone edits these two files.
+          maturin-version: v1.14.1
           # `--locked`: the dependency versions are rust/Cargo.lock's, not
           # whatever crates.io holds on release day. Same reason the conda recipe
           # passes it.

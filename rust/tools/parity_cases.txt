@@ -1,0 +1,52 @@
+# Checked-in parity cases for the CI `rust-parity` compare step.
+#
+# Each non-comment line is one `compare.py` case: its argv (`[--lifecycle|--read]
+# [--aid] [fixtures...] -- <dl args>`), optionally followed by a policy:
+#
+#   ## same         (default) the Python and Rust builds must agree exactly.
+#   ## diff: <why>  the case is allowed to differ; <why> must name a divergence
+#                   row from docs/rust-rewrite-plan.md (or a tracked follow-up).
+#   ## skip: <why>  not run yet -- <why> says what has to land first.
+#
+# The step runs `compare.py --cases <this file> --release --fingerprint`, so a
+# case is judged on exit code, stdout, stderr, the devpod call log AND the
+# on-disk cache state. `--release` points it at the release binaries the gate
+# builds; `--fingerprint` adds the state check. A `same` case that diverges
+# fails the build.
+#
+# These are drawn from the surface the parity review found clean (0 diffs across
+# metadata, listing, --purge -y, --prune -y, --reconcile, launch fast-attach).
+# They are the regression tripwire: if a later change breaks one of them, the
+# build goes red on the case that broke.
+
+# --- read / listing ---
+--lifecycle -- --ls
+--lifecycle -- --ls --json
+--lifecycle -- --repos
+
+# --- launch fast-attach (warm cache) ---
+--warm -- blooop/devlaunch
+# A command payload after a SECOND `--`: only the first `--` is the fixture/argv
+# separator, so this reaches dl as `blooop/devlaunch -- echo hi`. The old
+# every-`--`-is-a-separator made this case impossible to express.
+--warm -- blooop/devlaunch -- echo hi
+
+# --- lifecycle mutation (fingerprint proves the on-disk result matches) ---
+--lifecycle -- --purge -y
+--lifecycle --prunable --orphan -- --prune -y
+--lifecycle --stale-record --orphan -- --reconcile -y
+
+# --- aid ---
+--aid -- --help
+
+# --- v1 cache migration ---
+# The one case the harness-honesty review flagged as an untested blind spot: a
+# version-1 cache that the first command migrates in place. It is SKIPPED until
+# two things land on the BINARY side, both tracked in the fix plan (B3/H1):
+#   1. a v1-cache fixture in rust/dl/tests/lifecycle_scenario.py (the scenarios
+#      only build version-2 worlds today, and they are not in this agent's tree);
+#   2. dl rendering the MigrationReport notices Python prints from migrate_cache
+#      (the Rust side is silent today, so a v1 world DIFFs on stderr).
+# When both are in, drop the skip: the case is `-- --ls` over the v1 fixture and
+# should be SAME on output AND on the migrated on-disk state.
+--lifecycle --v1-cache -- --ls  ## skip: needs BINARY's v1 fixture + MigrationReport rendering (fix plan B3/H1)

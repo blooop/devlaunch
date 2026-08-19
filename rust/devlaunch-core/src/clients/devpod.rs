@@ -217,6 +217,19 @@ fn ran<T>(outcome: Outcome<T>) -> Result<(Exit, T), NotRun> {
         Outcome::Ran { exit, io } => Ok((exit, io)),
         Outcome::ProgramNotFound => Err(NotRun::NotInstalled),
         Outcome::TimedOut => Err(NotRun::TimedOut),
+        // A devpod found on PATH but that could not be exec'd — the classic case
+        // is a wrapper whose interpreter is missing — fails with ENOENT at exec
+        // time, which arrives here as a `NotStarted` carrying `NotFound` rather
+        // than as `ProgramNotFound`. Python does not draw that line: `run_devpod`
+        // catches every `FileNotFoundError` `subprocess.run` raises — a devpod not
+        // on PATH and one that could not be exec'd alike — and turns both into
+        // `DevpodNotInstalled`, which renders exit 127 with the install hint. So a
+        // NotFound `NotStarted` reaches the same devpod-missing path here; only a
+        // different OS refusal (permission, a working directory that is gone)
+        // stays `Blocked`, carrying its errno for the binary to phrase (parity F1).
+        Outcome::NotStarted(failure) if failure.kind == std::io::ErrorKind::NotFound => {
+            Err(NotRun::NotInstalled)
+        }
         Outcome::NotStarted(failure) => Err(NotRun::Blocked(failure)),
     }
 }
@@ -412,7 +425,7 @@ pub(crate) fn session(
 /// heard of is data, not a parse failure, and a reader asking
 /// [`ContainerState::is_running`] gets the same answer either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum ContainerState {
     Running,
     /// devpod is working on this workspace right now.
@@ -461,7 +474,7 @@ impl ContainerState {
 /// baked into the parser: a devpod that refused the question and a devpod whose
 /// answer was unreadable are different facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum StatusUnreadable {
     NotRun(NotRun),
     /// devpod ran and refused — which is what it does for a workspace it has
@@ -567,7 +580,7 @@ impl Workspace {
     /// evidence that devpod said so. Readable because the `dl` binary renders it —
     /// the `--ls` table and the fuzzy picker both show how a source reads.
     ///
-    /// binary surface — not part of the frozen wf API (#250 §7)
+    /// binary surface — not part of the frozen wf API (#251 §7)
     pub fn source(&self) -> &WorkspaceSource {
         &self.source
     }
@@ -580,7 +593,7 @@ impl Workspace {
 /// third put a rendering of devpod's object in the same field. Each arm carries
 /// only what that arm has, so the tag and the value are one fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
+// binary surface — not part of the frozen wf API (#251 §7)
 pub enum WorkspaceSource {
     /// devpod is opening this directory on this machine. Never empty: `git -C ""`
     /// is a no-op that succeeds, so an empty path would be credited with
@@ -919,9 +932,26 @@ pub(crate) fn ensure_provider(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OptionsUnreadable {
     NotRun(NotRun),
-    Failed { exit: Exit, stderr: String },
-    NotJson { output: String, reason: String },
-    NotKeyedByOption { kind: JsonKind },
+    Failed {
+        exit: Exit,
+        stderr: String,
+    },
+    NotJson {
+        output: String,
+        reason: String,
+    },
+    NotKeyedByOption {
+        kind: JsonKind,
+    },
+    /// A top-level option whose body is not an object — `{"FOO": 3}` rather than
+    /// `{"FOO": {"value": …}}`. Python's `v.get("value")` raises `AttributeError`
+    /// on such a value and dl returns `{}` without caching it; this is that
+    /// refusal, so the unusable answer is re-asked next run rather than remembered
+    /// as an empty cache (P9).
+    OptionNotAnObject {
+        option: String,
+        kind: JsonKind,
+    },
 }
 
 /// The devpod context options that have a value set, as `{name: value}`.
@@ -970,10 +1000,25 @@ pub(crate) fn parse_context_options(
             kind: JsonKind::of(&parsed),
         });
     };
-    Ok(options
-        .into_iter()
-        .filter_map(|(name, option)| text(option.get("value")).map(|value| (name, value)))
-        .collect())
+    let mut kept = BTreeMap::new();
+    for (name, option) in options {
+        // Python evaluates `v.get("value")` for every option; a value that is not
+        // itself a JSON object raises AttributeError there, and dl returns `{}`
+        // WITHOUT caching. Refuse it here for the same reason: an answer that is
+        // not `{name: {value: …}}` is re-asked next run rather than remembered as
+        // an empty cache (P9). An empty object `{}` is still an object and simply
+        // contributes no option, matching `{}.get("value")` being falsey.
+        let serde_json::Value::Object(fields) = &option else {
+            return Err(OptionsUnreadable::OptionNotAnObject {
+                option: name,
+                kind: JsonKind::of(&option),
+            });
+        };
+        if let Some(value) = text(fields.get("value")) {
+            kept.insert(name, value);
+        }
+    }
+    Ok(kept)
 }
 
 #[cfg(test)]
@@ -1058,6 +1103,35 @@ mod tests {
         assert_eq!(
             run(&fake, &Call::new(["up", "/clone"])).expect_err("devpod is absent"),
             NotRun::NotInstalled
+        );
+    }
+
+    #[test]
+    fn a_devpod_found_but_not_executable_reaches_the_missing_path_not_a_generic_refusal() {
+        // A wrapper on PATH whose interpreter is missing execs to ENOENT, which the
+        // runner reports as a `NotStarted` carrying `NotFound` rather than
+        // `ProgramNotFound`. Python's subprocess raises FileNotFoundError for it
+        // exactly as for a devpod not on PATH, and `run_devpod` turns both into
+        // DevpodNotInstalled (exit 127). So it must reach `NotInstalled`, not the
+        // generic `Blocked` that renders exit 1 (parity F1).
+        let exec_enoent = OsFailure {
+            kind: std::io::ErrorKind::NotFound,
+            errno: Some(libc::ENOENT),
+        };
+        assert_eq!(
+            ran::<()>(Outcome::NotStarted(exec_enoent)),
+            Err(NotRun::NotInstalled)
+        );
+
+        // A different OS refusal is not the missing path: it stays Blocked and
+        // carries its errno for the binary to phrase.
+        let denied = OsFailure {
+            kind: std::io::ErrorKind::PermissionDenied,
+            errno: Some(libc::EACCES),
+        };
+        assert_eq!(
+            ran::<()>(Outcome::NotStarted(denied)),
+            Err(NotRun::Blocked(denied))
         );
     }
 
@@ -2164,6 +2238,25 @@ mod tests {
             context_options(&fake),
             Err(OptionsUnreadable::NotKeyedByOption {
                 kind: JsonKind::Array
+            })
+        );
+    }
+
+    #[test]
+    fn an_option_whose_body_is_not_an_object_is_unreadable_not_an_empty_answer() {
+        // Python's `v.get("value")` raises AttributeError on `3`, so dl returns {}
+        // WITHOUT caching and re-asks next run. Returning Ok({}) here would let the
+        // flow write an empty cache and trust it for the whole TTL (P9).
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "context", "options"],
+            Response::stdout(r#"{"FOO": 3}"#),
+        );
+
+        assert_eq!(
+            context_options(&fake),
+            Err(OptionsUnreadable::OptionNotAnObject {
+                option: "FOO".to_owned(),
+                kind: JsonKind::Number,
             })
         );
     }

@@ -34,7 +34,8 @@ use std::path::Path;
 
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::flows::launch::{
-    Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Provision, Session,
+    self, Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Plan, Provision,
+    Session,
 };
 use devlaunch_core::flows::lifecycle::Refresh;
 use devlaunch_core::flows::listing::CommandContext;
@@ -161,6 +162,23 @@ pub(crate) fn render_launch<'r>(
     verb: &LaunchVerb,
     devcontainer: Option<&DevcontainerPath>,
 ) -> Ending {
+    // A path or git source whose derived id is empty — `dl /`, `//`, `/.`, `/..`,
+    // all of which normalise to a leaf with no final component — would otherwise
+    // hand devpod `--id ""` and run a nameless workspace to a reported success
+    // (exit 0). Python derived the same empty name and devpod's own lookup failed
+    // it (exit 1). An empty id names nothing, so this refuses it before opening
+    // anything rather than opening one that cannot be addressed again. (Divergence:
+    // Python reached exit 1 through devpod; this reaches it by refusing, so the
+    // words differ while the ending matches — docs row for the empty derived id.)
+    if let Ok(Plan::Creatable { workspace_id, .. }) = launch::plan(target)
+        && workspace_id.is_empty()
+    {
+        eprintln!(
+            "{} does not name a workspace: its path has no final component to name one after.",
+            render::python_repr(target)
+        );
+        return Ending::Refused;
+    }
     let host = Host::from_process(cache);
     let provision = ToolProvisioning::from_env();
     // Verbatim and as it happens: this is devpod's own stderr, minus the line it

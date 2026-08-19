@@ -170,7 +170,7 @@ fn is_ours_to_create(path: &Path) -> bool {
     if path.starts_with("/tmp") {
         return true;
     }
-    std::env::home_dir().is_some_and(|home| path.starts_with(&home))
+    crate::osext::home_dir().is_some_and(|home| path.starts_with(&home))
 }
 
 /// `~` and `~/…` against `$HOME`, as Python's `expanduser` reads them.
@@ -182,7 +182,7 @@ fn expand_tilde(raw: &str) -> PathBuf {
     let Some(rest) = raw.strip_prefix('~') else {
         return PathBuf::from(raw);
     };
-    let Some(home) = std::env::home_dir() else {
+    let Some(home) = crate::osext::home_dir() else {
         return PathBuf::from(raw);
     };
     match rest {
