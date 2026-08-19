@@ -420,7 +420,7 @@ pub struct SweepReport {
 ///   the network's — [`BACKGROUND_FETCH_TIMEOUT`], without which a remote that
 ///   accepts a connection and then goes quiet holds the repository for as long as
 ///   the kernel keeps the socket.
-/// - **It never complains.** Every failure is an arm of [`SweptRepo`] and the loop
+/// - **It never complains.** Every failure is an arm of `SweptRepo` and the loop
 ///   carries on.
 ///
 /// The interval itself is unchanged and still recorded in the one shared place
@@ -1519,7 +1519,7 @@ fn subdirectories(path: &Path) -> Vec<PathBuf> {
 /// What removing a clone would destroy or risk — the two answers `--prune` acts
 /// on.
 ///
-/// The one place devlaunch#171's three answers become the two [`decide`] acts on:
+/// The one place devlaunch#171's three answers become the two `decide` acts on:
 /// something to say, or nothing. "Could not tell" arrives here as an *objection*
 /// rather than as an absence, so the clone is kept for the same reason unpushed
 /// work keeps one.
@@ -1748,11 +1748,11 @@ pub struct Kept {
 
 /// Everything one `dl --prune` will do, settled before anything is asked.
 ///
-/// The two lists are built by one pass over one [`decide`] call each, so a
+/// The two lists are built by one pass over one `decide` call each, so a
 /// directory cannot be in both and cannot be in neither.
 ///
 /// There is deliberately no `force` field. It was one, and a plan-wide boolean is
-/// exactly the shape [`decide`] refuses to have beside a status: the pass that acts
+/// exactly the shape `decide` refuses to have beside a status: the pass that acts
 /// read it and skipped its safety re-check for every directory, including the ones
 /// `--force` had promoted nothing about. What `--force` answered rides on each
 /// [`Reclaimable`] instead.
@@ -1847,7 +1847,7 @@ impl ClonePlacement {
     }
 
     /// The live workspaces this command cannot place, or nothing when every one
-    /// of them placed itself. See [`WorkspaceLocations::unlocatable`].
+    /// of them placed itself. See `WorkspaceLocations::unlocatable`.
     pub fn unlocatable(&self) -> Option<NonEmpty<Unlocatable>> {
         self.locations.unlocatable()
     }
@@ -2370,7 +2370,7 @@ fn orphaned_workspaces(workspaces: &[Workspace], root: &Path) -> Vec<(Workspace,
 ///
 /// Two candidates are refused rather than resolved, in both directions. A clone a
 /// live workspace already opens — at it *or under it*, which is what
-/// [`WorkspaceLocations::holder`] is for — is not a candidate at all: adopting it
+/// `WorkspaceLocations::holder` is for — is not a candidate at all: adopting it
 /// would point two workspaces at one directory and leave the working one sharing its
 /// checkout with a dead one. The rest is [`NotAdopted`]'s three arms.
 pub fn reconcile_plan(

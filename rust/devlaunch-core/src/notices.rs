@@ -16,7 +16,7 @@
 //!   what a command that prints its notices under a report still wants.
 //! - anything the caller writes — the `dl` binary's printer — says it now.
 //!
-//! [`Wrapped`] is the third piece, and it is what keeps one vocabulary per layer:
+//! `Wrapped` is the third piece, and it is what keeps one vocabulary per layer:
 //! a storage flow reports [`CacheNotice`](crate::flows::repo_manager::CacheNotice)
 //! whether it was called by a launch (whose vocabulary is `LaunchNotice`) or by a
 //! lifecycle command, and the wrapping happens in one place per boundary rather

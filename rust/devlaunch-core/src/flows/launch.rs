@@ -45,7 +45,7 @@
 //! one value.
 //!
 //! Same for the `up` request. Python takes `workspace_id`, `workspace_identity`,
-//! `recreate: bool` and `reset: bool`; [`Naming`] is the three shapes the first
+//! `recreate: bool` and `reset: bool`; `Naming` is the three shapes the first
 //! two are ever in (and makes "an `--id` with no identity" unrepresentable), and
 //! [`Rebuild`] is a sum so `--recreate --reset` cannot be asked for at once.
 //!
@@ -279,7 +279,7 @@ pub enum LaunchNotice {
 
     // --- the token (gh_auth.py, memoized here)
     /// The host has no GitHub token to forward, and this is why. One per launch
-    /// however often the token is asked for — see [`HostToken`].
+    /// however often the token is asked for — see `HostToken`.
     NoGitHubToken(GhEvent),
     /// The token could not be written to the private file `devpod up` reads it
     /// from, so this workspace opens without a GitHub login. Python distinguishes
@@ -1950,7 +1950,7 @@ pub enum Resolution {
 /// all.
 ///
 /// Charged to the `devpod-up` stage with a `devpod status` span, for the reason
-/// [`is_running`] gives: the span belongs inside the stage the lifecycle helper
+/// `is_running` gives: the span belongs inside the stage the lifecycle helper
 /// opens, and a guard around the call would drop after that stage had closed.
 /// A devpod that could not be run at all travels out as [`NotRun`] rather than
 /// becoming a cold launch: see [`lifecycle::resolve_known_workspace`] for what a

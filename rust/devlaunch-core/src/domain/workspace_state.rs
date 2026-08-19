@@ -63,7 +63,7 @@
 //!   being read as permission to delete — which is what the guard was for.
 //! - `WouldLose.__post_init__` raised on an empty description, because a
 //!   description was a string a caller could get wrong. Here a `WouldLose`
-//!   carries [`Losses`], which cannot be empty by construction, and the
+//!   carries `Losses`, which cannot be empty by construction, and the
 //!   description is *derived* from it — so the illegal value has no
 //!   representation rather than a check.
 //!
@@ -91,7 +91,7 @@ pub enum Unsaved {
     NothingToLose,
     /// Deleting the clone would destroy this.
     ///
-    /// [`Losses`] rather than a flag, and that is load-bearing: what it
+    /// `Losses` rather than a flag, and that is load-bearing: what it
     /// [`describes`](Losses::describe) is printed to a person deciding whether to
     /// force the delete, and "3 uncommitted change(s) (pixi.lock, notes.md, …)
     /// and 2 unpushed commit(s)" is the thing that answers them. See
