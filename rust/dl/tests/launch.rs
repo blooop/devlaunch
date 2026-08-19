@@ -109,6 +109,15 @@ impl World {
             .env("GIT_SSH_COMMAND", "false")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null");
+        // Make the world hermetic about gh: the `--gh` fixture puts a fake gh in
+        // gh-bin, and a test without it means "no gh". PATH still carries /usr/bin
+        // for git, and a CI runner has a real /usr/bin/gh there — so without this
+        // the runner's gh leaks in, runs against the scratch config, exits 1, and
+        // adds a "no GitHub login" line (and a `gh auth token` span) these tests
+        // do not expect. The opt-out reproduces the no-gh world deterministically.
+        if !self.root.join("gh-bin/gh").exists() {
+            command.env("DEVLAUNCH_NO_GH_TOKEN", "1");
+        }
         for (name, value) in extra {
             command.env(name, value);
         }
