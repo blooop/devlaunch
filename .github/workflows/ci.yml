@@ -194,6 +194,69 @@ jobs:
       - name: Parity ratchet
         run: python3 rust/parity.py run
 
+  # The release mechanics, exercised on every pull request instead of on release
+  # day. Both published artifacts are compiled now (docs/rust-rewrite-plan.md M10):
+  # a maturin bin-wheel for PyPI and a `cargo install` conda package for
+  # prefix.dev, both taking their version from `rust/Cargo.toml`. Nothing else in
+  # this workflow builds either, so without this job a broken recipe or a lost
+  # `wheel` feature flag would first be discovered by `Auto-publish` on `main`,
+  # after the merge that caused it -- and a release that fails halfway leaves a
+  # version published to one channel and not the other.
+  #
+  # It is not the release: the wheel here is built on the runner rather than in the
+  # manylinux container `publish.yml` uses (so its platform tag is the runner's,
+  # which this job deliberately does not assert), and the conda side is rendered
+  # rather than built, because building it means a second full cargo build in a
+  # conda environment for no answer this job does not already get. What it proves
+  # is the wiring: both bin targets reach the wheel, the version is the
+  # single-sourced one everywhere it is read, and the recipe parses.
+  packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Kept in lockstep with rust/rust-toolchain.toml (the pin of record).
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the bin-wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: packaging/wheel
+          # The one difference from `publish.yml`: no manylinux container, so the
+          # build reuses this job's toolchain and cargo cache and takes a couple of
+          # minutes instead of a cold container build. The wheel it produces is
+          # tagged for the runner's own glibc, which is exactly why the check below
+          # asserts contents and version and says nothing about the tag.
+          container: off
+          args: --release --locked --out dist
+      - name: The wheel is the two binaries, at the version rust/Cargo.toml names
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          wheel=$(ls -1 packaging/wheel/dist/*.whl)
+          python3 scripts/check_wheel.py "$wheel" --version "$version"
+          python3 -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install --quiet "$wheel"
+          test "$(/tmp/wheel-check/bin/dl --version)" = "dl $version"
+          test "$(/tmp/wheel-check/bin/aid --version)" = "aid $version"
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          run-install: false
+      - name: The conda recipe parses and names the same version
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          # `--experimental` for the recipe's `load_from_file`; see the comment in
+          # conda-publish.yml's build step.
+          pixi exec rattler-build build --experimental --render-only \
+            --recipe conda.recipe/recipe.yaml > /tmp/rendered.txt
+          grep -F "devlaunch-$version-" /tmp/rendered.txt
+
   # One name for a branch ruleset to require, standing for every job above it.
   #
   # A ruleset names required checks as literal strings, so requiring the jobs
@@ -224,7 +287,7 @@ jobs:
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
   gate:
-    needs: [ci, e2e, rust-parity]
+    needs: [ci, e2e, rust-parity, packaging]
     if: always()
     runs-on: ubuntu-latest
     steps:

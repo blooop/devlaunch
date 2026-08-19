@@ -1,46 +1,69 @@
 schema_version: 1
 
 context:
-  version: "0.0.29"
+  # The version is read, not written. `rust/Cargo.toml`'s `[workspace.package]
+  # version` is the one place it lives (docs/rust-rewrite-plan.md M10), and every
+  # other reader -- this recipe, the PyPI wheel's metadata, `dl --version` --
+  # resolves to it rather than repeating it. A release is one edit.
+  version: ${{ load_from_file("../rust/Cargo.toml").workspace.package.version }}
 
 package:
   name: devlaunch
   version: ${{ version }}
 
 source:
+  # Still the tag rather than the working tree, which is the ordering requirement
+  # `.github/workflows/conda-publish.yml` is built around: Auto-publish creates
+  # the tag, and only then can this fetch it.
   git: https://github.com/blooop/devlaunch.git
   tag: v${{ version }}
 
 build:
   number: 0
-  noarch: python
+  # No longer `noarch: python`: as of 0.1.0 the package is two compiled binaries
+  # for linux-64 and carries no Python at all.
   script:
-    - python -m pip install . -vv --no-deps --no-build-isolation
+    # Both binaries come out of the `dl` package -- its own `dl`, and an `aid`
+    # compiled from `rust/aid/src/main.rs` behind the `wheel` feature, which is
+    # the arrangement `rust/dl/Cargo.toml` explains and the one the PyPI wheel
+    # ships from too. One `cargo install` for both, so the two channels cannot
+    # ship different sets.
+    #
+    # `--locked` is the point of building from a tag: the dependency versions are
+    # `rust/Cargo.lock`'s, not whatever crates.io holds on release day.
+    # `--no-track` keeps cargo's install ledger (`.crates.toml`,
+    # `.crates2.json`) out of `$PREFIX`, where it would be shipped as package
+    # content.
+    - cargo install --locked --no-track --features wheel --bins --path rust/dl --root "${PREFIX}"
 
 requirements:
-  host:
-    - python >=3.10
-    - pip
-    - hatchling
+  build:
+    # The C compiler is here for the linker and its sysroot, which is what makes
+    # the binaries runnable on a glibc older than the build machine's.
+    - ${{ compiler('c') }}
+    - ${{ compiler('rust') }}
   run:
-    - python >=3.10
-    - iterfzf >=1.0.0
-    - tomli >=2.0.0
     # Floor raised from 0.8 to the version dl is developed and tested against.
     # dl's behaviour depends on devpod's, and the two differ across that range:
     # 0.8 gives `devpod ssh --command` a pty, 0.26 does not. Claiming support
     # for a span nothing exercises is how that difference went unnoticed.
     - devpod >=0.26.1
+    # `python`, `iterfzf` and `tomli` were run dependencies through 0.0.29 and are
+    # not any more: the selector is embedded skim (docs/rust-rewrite-plan.md
+    # divergence row 6), TOML is parsed in-process, and there is no interpreter
+    # left to need. `git` stays undeclared for the same reason it always was --
+    # `dl` resolves it from the user's PATH, and an env-local copy would not be
+    # the one it finds.
 
 tests:
-  - python:
-      imports:
-        - devlaunch
-        - devlaunch.dl
-        - devlaunch.aid
   - script:
       - dl --help
       - aid --help
+      # The version is single-sourced, so the artifact is the place to prove it:
+      # this fails if the binary in the package disagrees with the version the
+      # package was built and named under.
+      - test "$(dl --version)" = "dl ${{ version }}"
+      - test "$(aid --version)" = "aid ${{ version }}"
 
 about:
   homepage: https://github.com/blooop/devlaunch
@@ -49,7 +72,7 @@ about:
   summary: DevLaunch - A streamlined CLI for devpod workspaces
   description: |
     DevLaunch provides a streamlined interface for devpod workspaces with
-    interactive workspace selection using fzf fuzzy finder, intuitive
+    interactive workspace selection using an embedded fuzzy finder, intuitive
     autocomplete functionality, and GitHub integration.
   documentation: https://github.com/blooop/devlaunch#readme
   repository: https://github.com/blooop/devlaunch

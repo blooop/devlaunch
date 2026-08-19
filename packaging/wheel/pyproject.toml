@@ -1,0 +1,62 @@
+# The PyPI artifact: a wheel whose payload is the two compiled binaries.
+#
+# Why this is a second pyproject.toml rather than the repository's own. The root
+# `pyproject.toml` is the *development* manifest: it is the pixi workspace, and it
+# installs the frozen Python build into that workspace editable (`[tool.pixi
+# .pypi-dependencies]`) because the parity harness still runs `python -m
+# devlaunch.dl` as the reference implementation, and the devcontainer's
+# `postCreateCommand` is a bare `pixi install` with no Rust toolchain behind it.
+# A maturin backend at the root would make every `pixi install` -- five CI matrix
+# legs and every container create -- a cargo build, and would stop delivering the
+# importable `devlaunch` package the suite imports. So the root manifest keeps
+# hatchling and stays unpublished, and the artifact that goes to PyPI is built
+# from here.
+#
+# Build it with:
+#
+#     cd packaging/wheel && maturin build --release -o dist
+#
+# and see `.github/workflows/publish.yml` for the release path.
+
+[project]
+name = "devlaunch"
+# The version is not written here. maturin reads `package.version` of the cargo
+# package below -- which inherits `[workspace.package] version` from
+# `rust/Cargo.toml`, the one place the version lives. `dynamic` is also what stops
+# maturin clearing the Cargo-sourced fields it fills in.
+dynamic = ["version"]
+description = "DevLaunch - A streamlined CLI for devpod workspaces"
+readme = "../../README.md"
+license = "MIT"
+authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
+# No dependencies, and no `requires-python`. The wheel carries two statically
+# linked binaries; there is no Python in it to run and nothing to import. `dl`
+# needs `devpod` and `git` on PATH, which no Python metadata can express -- the
+# conda package is where those are declared (`conda.recipe/recipe.yaml`).
+#
+# `iterfzf` and `tomli` used to be here. The fuzzy selector is embedded skim now
+# (docs/rust-rewrite-plan.md divergence row 6) and TOML parsing is in-process, so
+# both are gone from the shipped artifact.
+
+[project.urls]
+Source = "https://github.com/blooop/devlaunch"
+Home = "https://github.com/blooop/devlaunch"
+
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+bindings = "bin"
+# The `dl` package owns both bin targets: its own `dl`, and an `aid` compiled from
+# `rust/aid/src/main.rs` behind the `wheel` feature. See the comment on that
+# feature in `rust/dl/Cargo.toml` for why it is arranged that way; the short of it
+# is that a bin-wheel ships one cargo package's bins and this release ships two.
+manifest-path = "../../rust/dl/Cargo.toml"
+features = ["wheel"]
+# No `[project.scripts]`: maturin refuses a bin-bindings project that defines any
+# ("Defining scripts and working with a binary doesn't mix well"), and there is
+# nothing to point one at. The wheel installs `dl` and `aid` as
+# `devlaunch-<version>.data/scripts/`, which pip drops straight into the
+# environment's `bin/` -- the binaries themselves, not Python wrappers around
+# them.

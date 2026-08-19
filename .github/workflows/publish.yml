@@ -1,18 +1,158 @@
 name: Auto-publish
 
+# The first half of a release: PyPI, the tag, and the GitHub release. The second
+# half is `conda-publish.yml`, which chains off *this workflow finishing* -- see
+# its header for why it has to be a chain and not a `release:` trigger. Both
+# halves read the same version from the same file, so one tag ships both channels
+# (docs/rust-rewrite-plan.md cutover check 4).
+#
+# This used to be one step, `etils-actions/pypi-auto-publish`, which read the
+# version out of `pyproject.toml` and built the project with a generic
+# `python -m build`. Neither survives 0.1.0: the artifact is two compiled Rust
+# binaries built by maturin from `packaging/wheel`, and the version lives in
+# `rust/Cargo.toml`. What that action did is spelled out below instead -- detect a
+# version bump, build, publish to PyPI, tag, write the release from the changelog
+# -- with the same trigger and the same two secrets it used (`PYPI_API_TOKEN` and
+# the default `GITHUB_TOKEN`). No new secret is involved.
+
 on: [push, workflow_dispatch]
 
 jobs:
-  # Auto-publish when version is increased
   publish-job:
     # Only publish on `main` branch
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:  # Don't forget permissions
+    permissions: # Don't forget permissions
       contents: write
     steps:
-    - uses: etils-actions/pypi-auto-publish@v1
-      with:
-        pypi-token: ${{ secrets.PYPI_API_TOKEN }}
-        gh-token: ${{ secrets.GITHUB_TOKEN }}
-        parse-changelog: true
+      - uses: actions/checkout@v6
+        with:
+          # This commit and its parent: a release is a version that changed, so
+          # deciding takes both. `fetch-tags` so the idempotence check below can
+          # see whether this version was already tagged.
+          fetch-depth: 2
+          fetch-tags: true
+
+      - name: Decide whether there is a release to publish
+        id: decide
+        run: |
+          set -euo pipefail
+          # `[workspace.package] version` is the first `version = "..."` line in
+          # the file; the crates inherit it with `version.workspace = true`.
+          # `conda-publish.yml` reads it exactly this way -- keep the two in step.
+          read_version() { sed -n 's/^version = "\(.*\)"/\1/p' "$1" | head -1; }
+
+          version=$(read_version rust/Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::could not read a version from rust/Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          # Already released: a re-run of this workflow over the same commit, or a
+          # later push that did not touch the version. Nothing to do, and saying
+          # so beats a failed upload.
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already tagged; nothing to publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git show HEAD^:rust/Cargo.toml > /tmp/previous-cargo.toml 2>/dev/null || : > /tmp/previous-cargo.toml
+          previous=$(read_version /tmp/previous-cargo.toml)
+
+          if [ "$version" = "$previous" ]; then
+            echo "version is still ${version:-unset}; nothing to publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "version went from ${previous:-none} to $version; publishing"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract the release notes from CHANGELOG.md
+        if: steps.decide.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          version='${{ steps.decide.outputs.version }}'
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if ! grep -q '[^[:space:]]' /tmp/release-notes.md; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section; a release nobody can read is not a release"
+            exit 1
+          fi
+          cat /tmp/release-notes.md
+
+      - name: Build the linux-64 bin-wheel
+        if: steps.decide.outputs.publish == 'true'
+        uses: PyO3/maturin-action@v1
+        with:
+          # `packaging/wheel/pyproject.toml` is the published project: maturin
+          # bin bindings over `rust/dl`, whose two bin targets are `dl` and (behind
+          # the `wheel` feature) `aid`.
+          working-directory: packaging/wheel
+          # Built in a manylinux container rather than on the runner, because the
+          # tag is computed from the glibc the binaries actually got linked
+          # against: a plain `ubuntu-latest` build is `manylinux_2_39`, which pip
+          # then refuses to install on anything older than the runner --
+          # Ubuntu 22.04 included. 2_28 reaches back to Ubuntu 20.04 and RHEL 8,
+          # and is what the conda package's `__glibc >=2.17` floor makes moot on
+          # the other channel.
+          manylinux: '2_28'
+          rust-toolchain: '1.97.1'
+          # `--locked`: the dependency versions are rust/Cargo.lock's, not
+          # whatever crates.io holds on release day. Same reason the conda recipe
+          # passes it.
+          args: --release --locked --out dist
+
+      - name: Check the wheel before it goes anywhere
+        if: steps.decide.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          version='${{ steps.decide.outputs.version }}'
+          # Exactly one wheel, and it is the two binaries at the version this
+          # release is being cut at. A mismatch means the version was read from one
+          # place and the binaries built from another, which is the failure mode
+          # single-sourcing exists to remove -- so it stops here, before PyPI.
+          count=$(ls -1 packaging/wheel/dist/*.whl | wc -l)
+          if [ "$count" != 1 ]; then
+            echo "::error::expected exactly one wheel, found $count"
+            ls -l packaging/wheel/dist/
+            exit 1
+          fi
+          wheel=$(ls -1 packaging/wheel/dist/*.whl)
+          python3 scripts/check_wheel.py "$wheel" --version "$version"
+          # And the binaries in it run, and agree about who they are.
+          python3 -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install --quiet "$wheel"
+          test "$(/tmp/wheel-check/bin/dl --version)" = "dl $version"
+          test "$(/tmp/wheel-check/bin/aid --version)" = "aid $version"
+
+      - name: Publish to PyPI
+        if: steps.decide.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: packaging/wheel/dist
+          # A re-run after a half-finished release re-uploads nothing and carries
+          # on to the tag, rather than failing on PyPI's 400 for a file that is
+          # already there.
+          skip-existing: true
+
+      - name: Tag the release and write it up
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version='${{ steps.decide.outputs.version }}'
+          # Last, deliberately: this tag is what `conda-publish.yml` waits for and
+          # what its recipe fetches its source from, so it must not exist until
+          # the wheel of the same version does.
+          gh release create "v$version" \
+            --target "$GITHUB_SHA" \
+            --title "v$version" \
+            --notes-file /tmp/release-notes.md \
+            packaging/wheel/dist/*.whl
