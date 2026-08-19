@@ -207,12 +207,22 @@ jobs:
       - name: Test dl migration
         working-directory: rust
         run: timeout 300 cargo test --locked -p dl --test migration -- --test-threads=1 --nocapture
+      # These two suites spawn and kill real process trees. Their cargo output
+      # goes to a file and is cat'ed after, so a test child that outlives the
+      # timeout can only hold the file open — never this step's log pipe, which
+      # is what the runner waits on before it will end the step. A held pipe
+      # here is what killed whole runners at exactly 46m ("lost communication
+      # with the server") with the step still showing in_progress.
       - name: Test dl lock_wait
         working-directory: rust
-        run: timeout 300 cargo test --locked -p dl --test lock_wait -- --test-threads=1 --nocapture
+        run: |
+          timeout -k 10 300 cargo test --locked -p dl --test lock_wait -- --test-threads=1 --nocapture > lock_wait.log 2>&1; ec=$?
+          cat lock_wait.log; exit $ec
       - name: Test dl interrupt
         working-directory: rust
-        run: timeout 300 cargo test --locked -p dl --test interrupt -- --test-threads=1 --nocapture
+        run: |
+          timeout -k 10 300 cargo test --locked -p dl --test interrupt -- --test-threads=1 --nocapture > interrupt.log 2>&1; ec=$?
+          cat interrupt.log; exit $ec
       - name: Clippy
         working-directory: rust
         run: cargo clippy --locked --all-targets -- -D warnings

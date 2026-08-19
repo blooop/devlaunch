@@ -117,8 +117,27 @@ fn a_prune_blocked_on_the_repo_lock_says_it_is_waiting() {
         match prune.try_wait().expect("waiting on dl") {
             Some(_) => break false,
             None if Instant::now() >= prune_deadline => {
+                // Where was it stuck? Captured before the kill, printed by the
+                // assert below — the one shot at diagnosing a CI-only hang.
+                let ps = Command::new("ps")
+                    .args(["-eo", "pid,ppid,pgid,stat,wchan:24,args"])
+                    .output()
+                    .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                    .unwrap_or_default();
+                let ours: String = ps
+                    .lines()
+                    .filter(|l| l.contains(&rootstr) || l.contains("PID"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                eprintln!("dl --prune still running at the deadline; processes:\n{ours}");
+                // `Child::kill` is the kill(2) syscall on the exact pid — no argv
+                // parsing. The group kill needs `--`: without it procps `kill`
+                // reads `-<pgid>` as another signal word and exits 0 having
+                // signalled nothing, which is how the first version of this
+                // deadline never actually killed anything.
+                let _ = prune.kill();
                 let _ = Command::new("kill")
-                    .args(["-KILL", &format!("-{}", prune.id())])
+                    .args(["-KILL", "--", &format!("-{}", prune.id())])
                     .status();
                 let _ = prune.wait();
                 break true;
@@ -129,7 +148,7 @@ fn a_prune_blocked_on_the_repo_lock_says_it_is_waiting() {
 
     // The holder's group, killed so its `sleep` never outlives the test.
     let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{}", holder.id())])
+        .args(["-KILL", "--", &format!("-{}", holder.id())])
         .status();
     let _ = holder.wait();
 
