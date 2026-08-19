@@ -1653,6 +1653,43 @@ mod tests {
     }
 
     #[test]
+    fn pythons_json_extensions_read_as_corruption_here() {
+        // Divergence row 28 (docs/rust-rewrite-plan.md): Python's `json.loads`
+        // accepts all four of these — `NaN` and `Infinity` as literals, `1e400`
+        // as `inf`, a lone surrogate escape as an unpaired code unit — where
+        // serde_json refuses them, so a file carrying one is quarantined (bytes
+        // intact, at `.corrupt`) and the run starts empty where Python kept the
+        // records. No released dl writes any of them; only a hand-edited or
+        // third-party-written file can.
+        for content in [
+            r#"{"x": NaN}"#,
+            r#"{"x": Infinity}"#,
+            r#"{"x": 1e400}"#,
+            r#"{"x": "\ud800"}"#,
+        ] {
+            let dir = temp_dir();
+            let path = dir.path().join("metadata.json");
+            write(&path, content);
+
+            let (storage, notices) = open_at(&path);
+
+            assert!(storage.repositories().is_empty(), "{content:?}");
+            let corrupt = dir.path().join("metadata.json.corrupt");
+            assert_eq!(read(&corrupt), content, "the bytes stay inspectable");
+            assert!(
+                matches!(
+                    notices.as_slice(),
+                    [Notice::FileUnusable {
+                        problem: FileProblem::NotJson { .. },
+                        ..
+                    }]
+                ),
+                "{content:?}: {notices:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_json_value_that_is_not_an_object_says_what_it_found() {
         let dir = temp_dir();
         let path = dir.path().join("metadata.json");
