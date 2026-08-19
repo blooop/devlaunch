@@ -1075,7 +1075,10 @@ fn up_under_stage(
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
     timing::observe_attach(timing::AttachShape::Miss);
-    let exit = devpod::run(context.runner(), &Call::new(args))?;
+    // The build runs for minutes in the foreground; it leads a process group of
+    // its own so a Ctrl-C (or `kill -INT <pid>`) tears the whole build down with
+    // `dl` rather than orphaning it holding the launch lock.
+    let exit = devpod::run(context.runner(), &Call::new(args).leading_its_own_group())?;
     // `up` creates and starts workspaces, so any snapshot of `devpod list` taken
     // before it is now out of date.
     context.forget_workspaces();

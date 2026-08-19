@@ -104,6 +104,10 @@ pub(crate) struct Call {
     env: EnvSpec,
     stdin: StdinPlan,
     timeout: Option<Duration>,
+    /// Whether a passthrough of this call leads a process group of its own, so
+    /// `dl`'s interrupt handler can tear it down independently. Only `devpod up`
+    /// sets it; see [`SpawnSpec::own_group`].
+    own_group: bool,
 }
 
 impl Call {
@@ -142,6 +146,15 @@ impl Call {
         self
     }
 
+    /// A passthrough of this call should lead a process group of its own, so
+    /// `dl`'s interrupt handler can `killpg` it — for the long `devpod up` build.
+    /// See [`SpawnSpec::own_group`].
+    #[must_use]
+    pub(crate) fn leading_its_own_group(mut self) -> Self {
+        self.own_group = true;
+        self
+    }
+
     /// The whole argv, `devpod` included — what a recorded call compares against.
     pub(crate) fn argv(&self) -> Vec<String> {
         self.spec().invocation.argv()
@@ -168,6 +181,7 @@ impl Call {
                 .with_env(self.env.clone()),
             stdin: self.stdin.clone(),
             timeout: self.timeout,
+            own_group: self.own_group,
         }
     }
 }
@@ -1235,6 +1249,21 @@ mod tests {
             }
             other => panic!("expected a passthrough call, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn own_group_is_off_unless_a_call_asks_for_it() {
+        assert!(
+            !Call::new(["up", "/clone"]).spec().own_group,
+            "a plain call stays in this process's group"
+        );
+        assert!(
+            Call::new(["up", "/clone"])
+                .leading_its_own_group()
+                .spec()
+                .own_group,
+            "leading_its_own_group threads through to the spec"
+        );
     }
 
     // ------------------------------------------------------- the timing spans

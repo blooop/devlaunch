@@ -505,22 +505,28 @@ fn the_default_spec_touches_nothing() {
 
 // ------------------------------------------------------- the foreground group
 
-/// `passthrough` is the one method that puts its child in a process group of its
-/// own (`OwnGroup::Yes`), so `dl`'s interrupt handler can `killpg` a `devpod up`
-/// rather than orphan it. The child records its own pgrp and pid; leading its own
-/// group means the two are equal, and that group is not this test's.
-#[test]
-fn passthrough_gives_the_child_its_own_process_group() {
-    let dir = tmp();
-    let out = dir.path().join("group");
+/// A script that writes its own pgrp and pid, `pgrp:pid`, to `out`.
+fn pgrp_probe(out: &std::path::Path) -> String {
     // /proc/self/stat, in the same after-`)` shape `session_of` reads: fields are
     // state, ppid, pgrp, session, so cut takes the third. `$$` is the child's pid.
-    let script = format!(
+    format!(
         "pgrp=$(sed 's/.*) //' /proc/self/stat | cut -d' ' -f3); \
          printf '%s:%s' \"$pgrp\" \"$$\" > {}",
         out.display()
-    );
-    let outcome = ProcessRunner.passthrough(&SpawnSpec::from(sh(&script)));
+    )
+}
+
+/// `passthrough` leads its child's own process group when the spec asks for it
+/// (`.leading_its_own_group()`), so `dl`'s interrupt handler can `killpg` a
+/// `devpod up` rather than orphan it. The child records its own pgrp and pid;
+/// leading its own group means the two are equal, and that group is not this
+/// test's.
+#[test]
+fn passthrough_gives_the_child_its_own_group_when_asked() {
+    let dir = tmp();
+    let out = dir.path().join("group");
+    let spec = SpawnSpec::from(sh(&pgrp_probe(&out))).leading_its_own_group();
+    let outcome = ProcessRunner.passthrough(&spec);
     assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
 
     let recorded = fs::read_to_string(&out).expect("the child wrote its group");
@@ -533,5 +539,27 @@ fn passthrough_gives_the_child_its_own_process_group() {
         pgrp.trim().parse::<i32>().expect("a numeric pgrp"),
         ours,
         "the child's group is not this process's"
+    );
+}
+
+/// A default-spec `passthrough` (own_group false) keeps its child in this
+/// process's group — required for an interactive `ssh -t`, which would take
+/// SIGTTIN and hang if it were moved out of the terminal's foreground group.
+#[test]
+fn passthrough_keeps_the_child_in_our_group_by_default() {
+    let dir = tmp();
+    let out = dir.path().join("group");
+    let outcome = ProcessRunner.passthrough(&SpawnSpec::from(sh(&pgrp_probe(&out))));
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    let recorded = fs::read_to_string(&out).expect("the child wrote its group");
+    let (pgrp, _pid) = recorded.split_once(':').expect("pgrp:pid");
+
+    // SAFETY: `getpgrp` reads this process's own process group; it cannot fail.
+    let ours = unsafe { libc::getpgrp() };
+    assert_eq!(
+        pgrp.trim().parse::<i32>().expect("a numeric pgrp"),
+        ours,
+        "the child stays in this process's group"
     );
 }

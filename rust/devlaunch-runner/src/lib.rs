@@ -218,6 +218,17 @@ pub struct SpawnSpec {
     /// How long the child may take before it is killed and reaped. `None` is
     /// Python's default: wait as long as it takes.
     pub timeout: Option<Duration>,
+    /// Whether a [`Runner::passthrough`] child leads a process group of its own.
+    ///
+    /// `true` means the child leads its own process group, so this process's
+    /// SIGINT handler can `killpg` it as a unit — the `devpod up` build comes
+    /// down with `dl` rather than outliving it, even when the interrupt arrived
+    /// as `kill -INT <pid>` rather than through the terminal. `false` (the
+    /// default) keeps the child in this process's group, so it stays the
+    /// controlling terminal's foreground group and can read the PTY without
+    /// taking SIGTTIN — required for an interactive `ssh -t`, and what the Python
+    /// original did. Only `passthrough` reads this field.
+    pub own_group: bool,
 }
 
 impl From<Invocation> for SpawnSpec {
@@ -249,6 +260,15 @@ impl SpawnSpec {
     #[must_use]
     pub fn with_timeout(mut self, limit: Duration) -> Self {
         self.timeout = Some(limit);
+        self
+    }
+
+    /// The [`Runner::passthrough`] child should lead a process group of its own,
+    /// so this process's SIGINT handler can tear it down independently. For
+    /// `devpod up`; see [`SpawnSpec::own_group`].
+    #[must_use]
+    pub fn leading_its_own_group(mut self) -> Self {
+        self.own_group = true;
         self
     }
 
@@ -420,33 +440,52 @@ impl Runner for ProcessRunner {
     }
 
     fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-        // `devpod up` is the one long-running foreground child, and the one a
-        // Ctrl-C used to orphan: `dl`'s `_exit(130)` released the launch lock
-        // while the build carried on holding it (concurrency review F3). So this
-        // child leads its own process group (see [`OwnGroup`]), its group is
-        // recorded, and `dl`'s interrupt handler kills the group before it exits
-        // — the build comes down with `dl` rather than outliving it. Only
-        // `passthrough` does this: `capture`'s children are short and pipe their
-        // streams, and `session`'s child must stay in this process's group so it
-        // keeps the terminal foreground and a Ctrl-C reaches the remote command.
-        let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
-            Ok(child) => child,
-            Err(outcome) => return outcome.retyped(),
-        };
-        // The child led its own group from its `pre_exec`, so its pgid is its
-        // pid; set it from the parent too to close the fork-to-exec window.
-        let pgid = child.id() as i32;
-        // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
-        // exec'd) or ESRCH (already gone) are both fine — the child's own
-        // `pre_exec` establishes the group regardless.
-        unsafe {
-            libc::setpgid(pgid, pgid);
+        // Whether this child leads a process group of its own is the caller's
+        // decision, carried on the spec (see [`SpawnSpec::own_group`]).
+        //
+        // `devpod up` sets it: it is the one long-running foreground child, and
+        // the one a Ctrl-C used to orphan — `dl`'s `_exit(130)` released the
+        // launch lock while the build carried on holding it (concurrency review
+        // F3). Leading its own group lets `dl`'s interrupt handler `killpg` the
+        // build before it exits, so the build comes down with `dl` rather than
+        // outliving it, even when the interrupt arrived as `kill -INT <pid>`.
+        //
+        // An interactive `ssh -t` (the other passthrough caller) must NOT: a
+        // child in a group of its own is no longer the controlling terminal's
+        // foreground group, so its first read of the PTY earns a SIGTTIN and the
+        // session hangs. It stays in this process's group, which is also what
+        // the Python original did. `capture`'s children are short and pipe their
+        // streams, and `session`'s child likewise stays in this process's group.
+        if spec.own_group {
+            let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
+                Ok(child) => child,
+                Err(outcome) => return outcome.retyped(),
+            };
+            // The child led its own group from its `pre_exec`, so its pgid is its
+            // pid; set it from the parent too to close the fork-to-exec window.
+            let pgid = child.id() as i32;
+            // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
+            // exec'd) or ESRCH (already gone) are both fine — the child's own
+            // `pre_exec` establishes the group regardless.
+            unsafe {
+                libc::setpgid(pgid, pgid);
+            }
+            interrupt::note_foreground_child(pgid);
+            let ending = wait(&mut child, spec.timeout);
+            // Reaped now, so the handler must not signal a possibly-recycled pgid.
+            interrupt::clear_foreground_child();
+            ending.into()
+        } else {
+            // The child stays in this process's group. Its "pgid" would be this
+            // process's own group, so it must NOT be noted for the interrupt
+            // handler — a `killpg` on it would fell `dl` and the whole foreground
+            // group. Just spawn, wait, and return.
+            let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::No) {
+                Ok(child) => child,
+                Err(outcome) => return outcome.retyped(),
+            };
+            wait(&mut child, spec.timeout).into()
         }
-        interrupt::note_foreground_child(pgid);
-        let ending = wait(&mut child, spec.timeout);
-        // Reaped now, so the handler must not signal a possibly-recycled pgid.
-        interrupt::clear_foreground_child();
-        ending.into()
     }
 
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
