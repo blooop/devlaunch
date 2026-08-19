@@ -132,24 +132,72 @@ pub struct Installed {
     pub rc_change: RcChange,
 }
 
+/// The completion script an install had already written when a later step failed.
+///
+/// Carried by exactly the [`InstallError`] arms that can only be reached after
+/// the script write succeeded, so the binary can still say the script was written
+/// — which is what Python did: it logged `Wrote completion script to ...` before
+/// the rc step that then raised (P17). The arms before the write cannot carry it,
+/// so "the rc step failed but the script was not written" is not representable.
+#[derive(Debug, Clone)]
+pub struct WrittenScript {
+    pub path: PathBuf,
+    pub state: FileState,
+}
+
 /// Which step of installing failed, and what the OS said about it.
 ///
 /// Python collapsed every `OSError` into one logged line and exit 1. The steps
 /// are separated here because they fail for different reasons and only the binary
-/// can decide which of them is worth a user's attention.
+/// can decide which of them is worth a user's attention — and because the three
+/// that happen after the script is written carry [`WrittenScript`], so the binary
+/// can report the write that did land before the failure that followed it.
 #[derive(Debug)]
 pub enum InstallError {
     /// This machine names no home directory, so no default path can be built.
     NoHomeDirectory,
-    /// A parent directory of one of the two files could not be created.
-    CreateDirectory { path: PathBuf, source: io::Error },
+    /// The completion script's own parent directory could not be created — so the
+    /// script was never written.
+    CreateScriptDirectory { path: PathBuf, source: io::Error },
     /// The completion script could not be written.
     WriteScript { path: PathBuf, source: io::Error },
+    /// The rc file's parent directory could not be created. The script was
+    /// written first, so [`WrittenScript`] rides along.
+    CreateRcDirectory {
+        written: WrittenScript,
+        path: PathBuf,
+        source: io::Error,
+    },
     /// The rc file exists but could not be read — so it cannot be edited either,
-    /// and overwriting it would delete whatever is in it.
-    ReadRc { path: PathBuf, source: io::Error },
-    /// The rc file could not be written.
-    WriteRc { path: PathBuf, source: io::Error },
+    /// and overwriting it would delete whatever is in it. The script was already
+    /// written.
+    ReadRc {
+        written: WrittenScript,
+        path: PathBuf,
+        source: io::Error,
+    },
+    /// The rc file could not be written. The script was already written.
+    WriteRc {
+        written: WrittenScript,
+        path: PathBuf,
+        source: io::Error,
+    },
+}
+
+impl InstallError {
+    /// The completion script this failure was reached after writing, if any — the
+    /// three rc-phase arms carry it, the earlier ones cannot. Lets the binary
+    /// report the write that landed before the step that failed (P17).
+    pub fn written_script(&self) -> Option<&WrittenScript> {
+        match self {
+            InstallError::CreateRcDirectory { written, .. }
+            | InstallError::ReadRc { written, .. }
+            | InstallError::WriteRc { written, .. } => Some(written),
+            InstallError::NoHomeDirectory
+            | InstallError::CreateScriptDirectory { .. }
+            | InstallError::WriteScript { .. } => None,
+        }
+    }
 }
 
 impl From<NoHomeDirectory> for InstallError {
@@ -177,7 +225,8 @@ pub fn install(rc_path: Option<&Path>) -> Result<Installed, InstallError> {
 /// drive: every rule about *which* files are edited is in the two resolvers
 /// above, and every rule about *what is written* is in here.
 pub(crate) fn install_into(script: &Path, rc: &Path) -> Result<Installed, InstallError> {
-    ensure_parent(script)?;
+    ensure_parent(script)
+        .map_err(|(path, source)| InstallError::CreateScriptDirectory { path, source })?;
     let script_state = write_if_changed(script, &completion_script()).map_err(|source| {
         InstallError::WriteScript {
             path: script.to_path_buf(),
@@ -185,17 +234,31 @@ pub(crate) fn install_into(script: &Path, rc: &Path) -> Result<Installed, Instal
         }
     })?;
 
+    // Past this point the script is on disk, so every failure carries that fact:
+    // Python logged `Wrote completion script to ...` before the rc step, and a
+    // failure there must not swallow it (P17).
+    let written = || WrittenScript {
+        path: script.to_path_buf(),
+        state: script_state,
+    };
+
     // The rc file's directory first, so a path that cannot hold a file at all
     // says which directory refused rather than reporting a read that never had a
     // chance — and so the read below is only ever about the file itself.
-    ensure_parent(rc)?;
+    ensure_parent(rc).map_err(|(path, source)| InstallError::CreateRcDirectory {
+        written: written(),
+        path,
+        source,
+    })?;
     let existing = read_if_there(rc).map_err(|source| InstallError::ReadRc {
+        written: written(),
         path: rc.to_path_buf(),
         source,
     })?;
     let wanted = rc_with_block(existing.as_deref().unwrap_or(""), script);
     let rc_change = change_from(existing.as_deref(), &wanted);
     write_if_changed(rc, &wanted).map_err(|source| InstallError::WriteRc {
+        written: written(),
         path: rc.to_path_buf(),
         source,
     })?;
@@ -360,14 +423,15 @@ fn read_if_there(path: &Path) -> io::Result<Option<String>> {
 }
 
 /// Create the directory `path` will live in, if it names one that is not there.
-fn ensure_parent(path: &Path) -> Result<(), InstallError> {
+///
+/// Returns the parent and the OS error on failure, so each caller can wrap it in
+/// the [`InstallError`] arm that says which file's directory refused — and, for
+/// the rc file, carry the script that was already written.
+fn ensure_parent(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).map_err(|source| InstallError::CreateDirectory {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        std::fs::create_dir_all(parent).map_err(|source| (parent.to_path_buf(), source))?;
     }
     Ok(())
 }
@@ -743,7 +807,13 @@ mod tests {
         let refused = install_into(&script_of(&dir), &rc).expect_err("no install");
 
         match refused {
-            InstallError::ReadRc { path, .. } => assert_eq!(path, rc),
+            InstallError::ReadRc { path, written, .. } => {
+                assert_eq!(path, rc);
+                // The script was written before the rc read failed, so the
+                // failure carries that fact for the binary to report (P17).
+                assert_eq!(written.path, script_of(&dir));
+                assert_eq!(written.state, FileState::Written);
+            }
             other => panic!("expected a read refusal, got {other:?}"),
         }
         assert!(rc.is_dir(), "and it is still there");
@@ -759,10 +829,10 @@ mod tests {
         let refused = install_into(&script, &rc_of(&dir)).expect_err("no install");
 
         match refused {
-            InstallError::CreateDirectory { path, .. } => {
+            InstallError::CreateScriptDirectory { path, .. } => {
                 assert_eq!(path, blocked.join("devlaunch"));
             }
-            other => panic!("expected a directory refusal, got {other:?}"),
+            other => panic!("expected a script-directory refusal, got {other:?}"),
         }
     }
 
@@ -775,8 +845,12 @@ mod tests {
         let refused = install_into(&script_of(&dir), &rc).expect_err("no install");
 
         match refused {
-            InstallError::CreateDirectory { .. } => {}
-            other => panic!("expected a directory refusal, got {other:?}"),
+            // The rc directory, reached only after the script was written — so
+            // the failure carries the written script (P17).
+            InstallError::CreateRcDirectory { written, .. } => {
+                assert_eq!(written.path, script_of(&dir));
+            }
+            other => panic!("expected an rc-directory refusal, got {other:?}"),
         }
     }
 }

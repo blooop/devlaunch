@@ -60,6 +60,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub mod interrupt;
+
 #[cfg(test)]
 mod tests;
 
@@ -396,7 +398,7 @@ impl ProcessRunner {
 
 impl Runner for ProcessRunner {
     fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-        let mut child = match start(spec, Stdio::piped(), Stdio::piped()) {
+        let mut child = match start(spec, Stdio::piped(), Stdio::piped(), OwnGroup::No) {
             Ok(child) => child,
             Err(outcome) => return outcome.retyped(),
         };
@@ -418,15 +420,37 @@ impl Runner for ProcessRunner {
     }
 
     fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-        let mut child = match start(spec, Stdio::inherit(), Stdio::inherit()) {
+        // `devpod up` is the one long-running foreground child, and the one a
+        // Ctrl-C used to orphan: `dl`'s `_exit(130)` released the launch lock
+        // while the build carried on holding it (concurrency review F3). So this
+        // child leads its own process group (see [`OwnGroup`]), its group is
+        // recorded, and `dl`'s interrupt handler kills the group before it exits
+        // — the build comes down with `dl` rather than outliving it. Only
+        // `passthrough` does this: `capture`'s children are short and pipe their
+        // streams, and `session`'s child must stay in this process's group so it
+        // keeps the terminal foreground and a Ctrl-C reaches the remote command.
+        let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
             Ok(child) => child,
             Err(outcome) => return outcome.retyped(),
         };
-        wait(&mut child, spec.timeout).into()
+        // The child led its own group from its `pre_exec`, so its pgid is its
+        // pid; set it from the parent too to close the fork-to-exec window.
+        let pgid = child.id() as i32;
+        // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
+        // exec'd) or ESRCH (already gone) are both fine — the child's own
+        // `pre_exec` establishes the group regardless.
+        unsafe {
+            libc::setpgid(pgid, pgid);
+        }
+        interrupt::note_foreground_child(pgid);
+        let ending = wait(&mut child, spec.timeout);
+        // Reaped now, so the handler must not signal a possibly-recycled pgid.
+        interrupt::clear_foreground_child();
+        ending.into()
     }
 
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-        let mut child = match start(spec, Stdio::inherit(), Stdio::piped()) {
+        let mut child = match start(spec, Stdio::inherit(), Stdio::piped(), OwnGroup::No) {
             Ok(child) => child,
             Err(outcome) => return outcome.retyped(),
         };
@@ -606,8 +630,25 @@ fn command(what: &Invocation) -> Command {
     command
 }
 
+/// Whether a child leads a process group of its own.
+///
+/// [`OwnGroup::Yes`] is `setpgid(0, 0)`, not `setsid`: the child stays in this
+/// process's *session* and keeps the controlling terminal (unlike a
+/// [`Runner::detach`], which starts a new session with null stdio), but leads
+/// its own process *group* so the interrupt handler can `killpg` it as a unit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnGroup {
+    No,
+    Yes,
+}
+
 /// Spawn `spec`, or say why there is no child.
-fn start(spec: &SpawnSpec, stdout: Stdio, stderr: Stdio) -> Result<Child, NoChild> {
+fn start(
+    spec: &SpawnSpec,
+    stdout: Stdio,
+    stderr: Stdio,
+    own_group: OwnGroup,
+) -> Result<Child, NoChild> {
     let stdin = match &spec.stdin {
         StdinPlan::Inherit => Stdio::inherit(),
         StdinPlan::Null => Stdio::null(),
@@ -622,6 +663,20 @@ fn start(spec: &SpawnSpec, stdout: Stdio, stderr: Stdio) -> Result<Child, NoChil
     };
     let mut command = command(&spec.invocation);
     command.stdin(stdin).stdout(stdout).stderr(stderr);
+    if let OwnGroup::Yes = own_group {
+        // SAFETY: `setpgid` is a bare syscall, which is all a pre-exec hook may
+        // do — no allocation, no locks. Just after a fork the child is never a
+        // process group leader, so `setpgid(0, 0)` cannot fail with EPERM; the
+        // only reason it ever refuses does not apply.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     command
         .spawn()
         .map_err(|error| NoChild(classify(&spec.invocation.program, &error)))

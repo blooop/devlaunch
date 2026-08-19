@@ -40,13 +40,11 @@
 --aid -- --help
 
 # --- v1 cache migration ---
-# The one case the harness-honesty review flagged as an untested blind spot: a
-# version-1 cache that the first command migrates in place. It is SKIPPED until
-# two things land on the BINARY side, both tracked in the fix plan (B3/H1):
-#   1. a v1-cache fixture in rust/dl/tests/lifecycle_scenario.py (the scenarios
-#      only build version-2 worlds today, and they are not in this agent's tree);
-#   2. dl rendering the MigrationReport notices Python prints from migrate_cache
-#      (the Rust side is silent today, so a v1 world DIFFs on stderr).
-# When both are in, drop the skip: the case is `-- --ls` over the v1 fixture and
-# should be SAME on output AND on the migrated on-disk state.
---lifecycle --v1-cache -- --ls  ## skip: needs BINARY's v1 fixture + MigrationReport rendering (fix plan B3/H1)
+# The case the harness-honesty review flagged as an untested blind spot: a
+# version-1 cache that the first command migrates in place. Both prerequisites
+# (the v1-cache fixture in lifecycle_scenario.py and dl rendering the
+# MigrationReport notices) have landed, so it is live. It must be `--ls --json`,
+# not the `--ls` table: only the json path builds the clone manager that runs
+# the migration in-process (the table's migration runs in the detached
+# --update-cache child, whose stderr is discarded in both builds).
+--lifecycle --v1-cache -- --ls --json

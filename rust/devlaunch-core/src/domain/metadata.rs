@@ -42,6 +42,8 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::runner::interrupt;
+
 use super::locks::{LockError, WaitStarted, hold_lock_watching};
 use super::model::{BaseRepository, NotRebuilt, Rebuilt, WorktreeInfo};
 use super::xdg::{self, NoHomeDirectory};
@@ -405,6 +407,15 @@ impl MetadataStorage {
         self.wait_watcher = Some(Box::new(watcher));
     }
 
+    // binary surface — not part of the frozen wf API (#251 §7)
+    /// Be told when a mutation is about to queue behind another dl run, so the
+    /// binary can say why a command has gone quiet (Python's
+    /// `hold_lock(..., waiting_note="another dl run updating the workspace
+    /// list")`). The sentence is the binary's (#251 §5).
+    pub fn on_metadata_lock_wait(&mut self, notify: impl Fn() + 'static) {
+        self.watch_waits(move |_| notify());
+    }
+
     /// The path as the caller gave it, symlink and all.
     pub(crate) fn metadata_path(&self) -> &Path {
         &self.metadata_path
@@ -619,6 +630,13 @@ impl MetadataStorage {
             })?;
 
         let temp_path = temp.path().to_path_buf();
+        // Registered for interrupt-time `unlink` for as long as the temp exists:
+        // a Ctrl-C between here and the rename runs no `Drop`, so without this the
+        // half-written `metadata.json.<rand>.tmp` would be left behind (a
+        // random-named, 0600 file — debris rather than a leak, but debris the
+        // ordinary drop was trusted to clear). Held until the function returns,
+        // by which point `persist` has renamed the temp away.
+        let _cleanup = interrupt::register_file(&temp_path);
         let write = temp
             .write_all(&bytes)
             .and_then(|()| temp.as_file().sync_all());

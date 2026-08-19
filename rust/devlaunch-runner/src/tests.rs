@@ -502,3 +502,36 @@ fn the_default_spec_touches_nothing() {
     assert!(spec.invocation.env.entries.is_empty());
     assert_eq!(spec.invocation.cwd, None);
 }
+
+// ------------------------------------------------------- the foreground group
+
+/// `passthrough` is the one method that puts its child in a process group of its
+/// own (`OwnGroup::Yes`), so `dl`'s interrupt handler can `killpg` a `devpod up`
+/// rather than orphan it. The child records its own pgrp and pid; leading its own
+/// group means the two are equal, and that group is not this test's.
+#[test]
+fn passthrough_gives_the_child_its_own_process_group() {
+    let dir = tmp();
+    let out = dir.path().join("group");
+    // /proc/self/stat, in the same after-`)` shape `session_of` reads: fields are
+    // state, ppid, pgrp, session, so cut takes the third. `$$` is the child's pid.
+    let script = format!(
+        "pgrp=$(sed 's/.*) //' /proc/self/stat | cut -d' ' -f3); \
+         printf '%s:%s' \"$pgrp\" \"$$\" > {}",
+        out.display()
+    );
+    let outcome = ProcessRunner.passthrough(&SpawnSpec::from(sh(&script)));
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    let recorded = fs::read_to_string(&out).expect("the child wrote its group");
+    let (pgrp, pid) = recorded.split_once(':').expect("pgrp:pid");
+    assert_eq!(pgrp.trim(), pid.trim(), "the child leads its own group");
+
+    // SAFETY: `getpgrp` reads this process's own process group; it cannot fail.
+    let ours = unsafe { libc::getpgrp() };
+    assert_ne!(
+        pgrp.trim().parse::<i32>().expect("a numeric pgrp"),
+        ours,
+        "the child's group is not this process's"
+    );
+}

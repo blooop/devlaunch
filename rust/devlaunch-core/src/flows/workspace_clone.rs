@@ -362,6 +362,17 @@ impl<'r> WorkspaceCloneManager<'r> {
         &self.repo_manager
     }
 
+    // binary surface — not part of the frozen wf API (#251 §7)
+    /// Be told when a per-repo lock is about to queue behind another dl run, so
+    /// the binary can say why a `--prune`/`--reconcile` has gone quiet (Python's
+    /// `hold_lock(..., waiting_note="another dl run preparing {owner}/{repo}")`).
+    /// `notify` receives the owner and repo; the sentence is the binary's
+    /// (#251 §5).
+    pub fn on_repo_lock_wait(&mut self, notify: impl Fn(&str, &str) + 'static) {
+        self.repo_manager
+            .watch_waits(move |wait| notify(&wait.owner, &wait.repo));
+    }
+
     pub(crate) fn repos_dir(&self) -> &Path {
         &self.repos_dir
     }

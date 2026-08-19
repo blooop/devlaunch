@@ -51,6 +51,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::runner::interrupt;
 use crate::runner::{EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec};
 use crate::timing;
 
@@ -290,10 +291,22 @@ fn token_from_gh_cli(runner: &dyn Runner) -> TokenLookup {
 /// on the host reaches even a container that is already running.
 ///
 /// The file is removed when this value is dropped, which is what Python's
-/// context manager does — including on the path where devpod fails.
+/// context manager does — including on the path where devpod fails. It is also
+/// registered for interrupt-time cleanup ([`interrupt::register_file`]): a drop
+/// does not run on `_exit(130)`, so a Ctrl-C during the minutes-long `devpod up`
+/// this file is handed to would otherwise leave the plaintext token on disk
+/// (concurrency review F2/H4/R8).
 #[derive(Debug)]
 pub(crate) struct StagedToken {
+    // `file` is declared before `_cleanup` so it drops first: the tempfile
+    // removes the file, and only then is the interrupt slot released — there is
+    // never a moment where the slot is clear but the file is still on disk.
     file: tempfile::NamedTempFile,
+    /// Keeps the path registered for interrupt-time `unlink` for exactly this
+    /// token's lifetime. `None` only if every slot was full or the path had a
+    /// NUL, which costs the interrupt cleanup nothing else can (the ordinary
+    /// drop still removes the file on a clean exit).
+    _cleanup: Option<interrupt::Registration>,
 }
 
 impl StagedToken {
@@ -312,7 +325,11 @@ impl StagedToken {
             .tempfile_in(crate::osext::temp_dir())?;
         writeln!(file, "{TOKEN_VAR}={}", token.as_str())?;
         file.flush()?;
-        Ok(Self { file })
+        let cleanup = interrupt::register_file(file.path());
+        Ok(Self {
+            file,
+            _cleanup: cleanup,
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {

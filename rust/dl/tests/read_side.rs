@@ -682,6 +682,33 @@ fn install_writes_the_script_and_the_rc_block_and_says_so_once() {
 }
 
 #[test]
+fn install_over_an_unwritable_rc_still_says_the_script_was_written() {
+    // P17: Python logs `Wrote completion script to ...` before the rc step, so a
+    // failure there still reports the script that landed. A regular file where the
+    // rc's parent directory would go makes the rc step fail — after the script has
+    // already been written.
+    let world = World::full();
+    std::fs::write(world.path("home/blocker"), "in the way").expect("a blocker file");
+    let run = world.dl(&["--install", "~/blocker/rc"]);
+    run.exited(1);
+    assert!(
+        run.err
+            .contains("Wrote completion script to {ROOT}/home/completions.sh"),
+        "the script-written line must precede the failure; stderr:\n{}",
+        run.err
+    );
+    assert!(
+        run.err.contains("Failed to install completions:"),
+        "and the failure is still reported; stderr:\n{}",
+        run.err
+    );
+    assert!(
+        world.read("home/completions.sh").contains("_dl_completion"),
+        "the script really was written to disk"
+    );
+}
+
+#[test]
 fn install_edits_the_rc_file_it_is_given() {
     let world = World::full();
     let run = world.dl(&["--install", "~/.zshrc"]);

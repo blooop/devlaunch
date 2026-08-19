@@ -323,6 +323,7 @@ fn render_update_cache(
                 Ok(records) => records,
             };
             report(&records);
+            announce_lock_waits(&mut records);
             let Records {
                 storage, clones, ..
             } = &mut records;
@@ -413,6 +414,13 @@ fn render_install(context: &mut CommandContext<'_>, cache: &Path, rc: Option<&Pa
     }
     match completion::install(rc) {
         Err(refused) => {
+            // Python logged `Wrote completion script to ...` before the rc step
+            // that then raised, so a failure after the script was written still
+            // says the script landed (P17). The error carries that fact on
+            // exactly the arms it is true for.
+            if let Some(written) = refused.written_script() {
+                report_script_state(&written.path, written.state);
+            }
             eprintln!(
                 "Failed to install completions: {}",
                 install_failure(&refused)
@@ -426,15 +434,22 @@ fn render_install(context: &mut CommandContext<'_>, cache: &Path, rc: Option<&Pa
     }
 }
 
-fn report_install(installed: &Installed) {
-    let script = installed.script.display();
-    let rc = installed.rc.display();
-    match installed.script_state {
-        FileState::Written => eprintln!("Wrote completion script to {script}"),
+/// The script-state line, shared by the success report and the P17 failure path.
+fn report_script_state(script: &Path, state: FileState) {
+    match state {
+        FileState::Written => eprintln!("Wrote completion script to {}", script.display()),
         FileState::AlreadyCurrent => {
-            eprintln!("Completion script at {script} is already current");
+            eprintln!(
+                "Completion script at {} is already current",
+                script.display()
+            );
         }
     }
+}
+
+fn report_install(installed: &Installed) {
+    let rc = installed.rc.display();
+    report_script_state(&installed.script, installed.script_state);
     match installed.rc_change {
         RcChange::Added => eprintln!("Added completion source block to {rc}"),
         RcChange::Refreshed => eprintln!("Refreshed the completion source block in {rc}"),
@@ -461,16 +476,17 @@ fn install_failure(error: &InstallError) -> String {
         InstallError::NoHomeDirectory => {
             "this machine names no home directory, so there is nowhere to install to".to_owned()
         }
-        InstallError::CreateDirectory { path, source } => {
+        InstallError::CreateScriptDirectory { path, source }
+        | InstallError::CreateRcDirectory { path, source, .. } => {
             format!("could not create {} ({source})", path.display())
         }
         InstallError::WriteScript { path, source } => {
             format!("could not write {} ({source})", path.display())
         }
-        InstallError::ReadRc { path, source } => {
+        InstallError::ReadRc { path, source, .. } => {
             format!("could not read {} ({source})", path.display())
         }
-        InstallError::WriteRc { path, source } => {
+        InstallError::WriteRc { path, source, .. } => {
             format!("could not write {} ({source})", path.display())
         }
     }
@@ -732,6 +748,26 @@ fn say_except_purge_failures(notices: &[LifecycleNotice]) {
     say(&rest);
 }
 
+/// Print the contended-lock wait notices Python prints, so a maintenance command
+/// that sits blocked on another dl run's lock says why it has gone quiet rather
+/// than leaving an empty stderr (concurrency review R7).
+///
+/// Python takes these two locks with a `waiting_note`: the per-repo lock a
+/// `--prune`/`--reconcile` holds while it weighs a repository's clones
+/// (`dl.py` `_repo_lock`), and the metadata lock every save takes
+/// (`storage.exclusive`). Each line is printed once, before the blocking
+/// acquisition — which is the only moment "this run is now waiting" can be said.
+/// The strings are byte-for-byte Python's (`worktree/locks.py:89`,
+/// `worktree/storage.py:105`).
+fn announce_lock_waits(records: &mut Records<'_>) {
+    records.clones.on_repo_lock_wait(|owner, repo| {
+        eprintln!("dl: waiting for another dl run preparing {owner}/{repo}");
+    });
+    records.storage.on_metadata_lock_wait(|| {
+        eprintln!("dl: waiting for another dl run updating the workspace list")
+    });
+}
+
 // ---------------------------------------------------------------------------
 // --prune
 // ---------------------------------------------------------------------------
@@ -763,6 +799,7 @@ fn prune_clone_directories(
         Ok(records) => records,
     };
     report(&records);
+    announce_lock_waits(&mut records);
     let root = lifecycle::clone_root(&records.clones);
     let workspaces = match context.workspaces() {
         Err(refused) => return Cleanup::Raised(refuse_listing(&refused)),
@@ -868,6 +905,7 @@ fn render_reconcile(
         Ok(records) => records,
     };
     report(&records);
+    announce_lock_waits(&mut records);
     let root = lifecycle::clone_root(&records.clones);
     let workspaces = match context.workspaces() {
         Err(refused) => return refuse_listing(&refused),

@@ -68,6 +68,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 use crate::clients::devpod::{self, Call, NotRun};
+use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
 use crate::timing;
 
@@ -1656,6 +1657,13 @@ fn transfer(
             })
         })?;
     let bundle = staging.path().join("tools.tar");
+    // Registered for interrupt-time cleanup: `_exit(130)` runs no `Drop`, so a
+    // Ctrl-C during this `devpod ssh` trip would otherwise leave the bundle and
+    // its staging directory behind. The handler unlinks files before it rmdirs
+    // directories, so removing `tools.tar` first leaves `staging` empty for its
+    // own `rmdir` — no residue. Both guards live until this function returns.
+    let _bundle_cleanup = interrupt::register_file(&bundle);
+    let _staging_cleanup = interrupt::register_dir(staging.path());
     write_payload_tar(payload, &bundle).map_err(TransferFailed::Bundle)?;
     // A real file rather than a pipe, so the stream stays on the one devpod spawn
     // point — and a failed trip can be retried by the fallback without a
