@@ -174,13 +174,45 @@ jobs:
       - name: Build
         working-directory: rust
         run: cargo build --locked --all-targets
-      - name: Test
+      # Split per test binary, each `timeout`-bounded, so a wedged binary fails
+      # its own short step instead of holding the runner ~46m until it loses
+      # contact — and the step left `in_progress` at a crash names the culprit
+      # even when the runner dies before uploading logs. Single-threaded so the
+      # concurrency tests do not interleave. If this is stable it becomes the
+      # permanent shape.
+      - name: Test devlaunch-runner
         working-directory: rust
-        # A `timeout` so a wedged test fails the step (with logs) instead of
-        # silently holding the runner until it loses contact ~46m in; single
-        # threaded with `--nocapture` so the last "test <name> ..." line names
-        # whatever is hanging. If this proves stable it stays as the guard.
-        run: timeout 1500 cargo test --locked -- --test-threads=1 --nocapture
+        run: timeout 300 cargo test --locked -p devlaunch-runner -- --test-threads=1 --nocapture
+      - name: Test devlaunch-core
+        working-directory: rust
+        run: timeout 600 cargo test --locked -p devlaunch-core -- --test-threads=1 --nocapture
+      - name: Test aid
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p aid -- --test-threads=1 --nocapture
+      - name: Test dl (lib + unit)
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --lib --bins -- --test-threads=1 --nocapture
+      - name: Test dl read_side
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test read_side -- --test-threads=1 --nocapture
+      - name: Test dl grammar
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test grammar -- --test-threads=1 --nocapture
+      - name: Test dl lifecycle
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test lifecycle -- --test-threads=1 --nocapture
+      - name: Test dl launch
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test launch -- --test-threads=1 --nocapture
+      - name: Test dl migration
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test migration -- --test-threads=1 --nocapture
+      - name: Test dl lock_wait
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test lock_wait -- --test-threads=1 --nocapture
+      - name: Test dl interrupt
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test interrupt -- --test-threads=1 --nocapture
       - name: Clippy
         working-directory: rust
         run: cargo clippy --locked --all-targets -- -D warnings
