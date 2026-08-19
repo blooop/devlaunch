@@ -55,8 +55,11 @@
 //! devpod that has gone missing between `up` and here ([`DevpodMissing`]) — which
 //! dl treats as fatal everywhere else and which this does not make an exception
 //! of. Nothing in this module prints: every `logging.*` call Python makes is an
-//! arm of [`ProvisionEvent`], carrying what that line interpolated, and the words
-//! and levels are the `dl` binary's rendering (#251 §5).
+//! arm of [`ProvisionEvent`], carrying what that line interpolated, said into the
+//! caller's [`Notices`] sink at the moment it happens — Python logs each line as
+//! it goes, and a cold install is minutes long, so an event held back to the end
+//! of the flow would arrive after the wait it explains. The words and levels are
+//! the `dl` binary's rendering (#251 §5).
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
@@ -68,6 +71,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 use crate::clients::devpod::{self, Call, NotRun};
+use crate::notices::Notices;
 use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
 use crate::timing;
@@ -1484,7 +1488,7 @@ pub fn provision_tools(
     workspace: &str,
     tools: ToolsSwitch,
     host: Option<&HostLayout>,
-    events: &mut Vec<ProvisionEvent>,
+    events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Provisioning, DevpodMissing> {
     timing::stage_result(timing::Stage::Tools, || {
         provision(runner, workspace, tools, host, events)
@@ -1497,7 +1501,7 @@ fn provision(
     workspace: &str,
     tools: ToolsSwitch,
     host: Option<&HostLayout>,
-    events: &mut Vec<ProvisionEvent>,
+    events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Provisioning, DevpodMissing> {
     let found = match setup_pass(runner, workspace, tools, events) {
         Ok(found) => found,
@@ -1505,7 +1509,7 @@ fn provision(
     };
 
     if let ToolsSwitch::Skip = tools {
-        events.push(ProvisionEvent::ProvisioningDisabled {
+        events.say(ProvisionEvent::ProvisioningDisabled {
             workspace: workspace.to_owned(),
         });
         return Ok(Provisioning::Disabled);
@@ -1519,7 +1523,7 @@ fn provision(
         match transfer(runner, workspace, &payload) {
             Ok(()) => return Ok(Provisioning::Lent),
             Err(TransferFailed::Bundle(failure)) => {
-                events.push(ProvisionEvent::PayloadNotBundled { failure });
+                events.say(ProvisionEvent::PayloadNotBundled { failure });
             }
             Err(TransferFailed::Trip(refusal)) => return refused(workspace, refusal, events),
             // The container would not run the lent binaries (a different arch or
@@ -1550,7 +1554,7 @@ fn provision(
     match devpod::run(runner, &call) {
         Ok(exit) if exit.is_success() => Ok(Provisioning::Installed),
         Ok(exit) => {
-            events.push(ProvisionEvent::NotInstalled {
+            events.say(ProvisionEvent::NotInstalled {
                 workspace: workspace.to_owned(),
                 tools: REQUIRED_TOOLS.iter().map(|tool| tool.command).collect(),
                 exit,
@@ -1568,7 +1572,7 @@ fn provision(
 fn refused(
     workspace: &str,
     refusal: NotRun,
-    events: &mut Vec<ProvisionEvent>,
+    events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Provisioning, DevpodMissing> {
     match refusal {
         NotRun::NotInstalled => Err(DevpodMissing),
@@ -1576,7 +1580,7 @@ fn refused(
         // process killed is one that never answered, which is the same fact the
         // OS refusals carry.
         refusal @ (NotRun::TimedOut | NotRun::Blocked(_)) => {
-            events.push(ProvisionEvent::TripRefused {
+            events.say(ProvisionEvent::TripRefused {
                 workspace: workspace.to_owned(),
                 refusal,
             });
@@ -1606,7 +1610,7 @@ fn setup_pass(
     runner: &dyn Runner,
     workspace: &str,
     tools: ToolsSwitch,
-    events: &mut Vec<ProvisionEvent>,
+    events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<ProbeResult, NotRun> {
     let stages = setup_stages(workspace, tools);
     let call = Call::new([
@@ -1637,7 +1641,7 @@ fn report_outcome(
     workspace: &str,
     stages: &[Stage],
     outcome: StageOutcome,
-    events: &mut Vec<ProvisionEvent>,
+    events: &mut dyn Notices<ProvisionEvent>,
 ) {
     let loudness = stages
         .iter()
@@ -1646,13 +1650,13 @@ fn report_outcome(
         .unwrap_or_default();
     match outcome.result {
         StageResult::Ok => {}
-        StageResult::Failed { status } => events.push(ProvisionEvent::StageFailed {
+        StageResult::Failed { status } => events.say(ProvisionEvent::StageFailed {
             workspace: workspace.to_owned(),
             stage: outcome.stage.as_str(),
             status,
             loudness,
         }),
-        StageResult::NotReached => events.push(ProvisionEvent::StageNotReported {
+        StageResult::NotReached => events.say(ProvisionEvent::StageNotReported {
             workspace: workspace.to_owned(),
             stage: outcome.stage.as_str(),
             loudness,

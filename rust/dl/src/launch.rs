@@ -122,20 +122,17 @@ impl Provision for ToolProvisioning {
         runner: &dyn Runner,
         workspace_id: &str,
     ) -> Result<(), DevpodMissing> {
-        let mut events = Vec::new();
+        // The events stream through the same sink as the launch's own notices —
+        // one line on stderr at the moment core says it, which is Python's order:
+        // a cold install streams hundreds of megabytes, and a warning about it is
+        // worth something while it is still happening.
         let provisioned = provision::provision_tools(
             runner,
             workspace_id,
             self.tools,
             self.host.as_ref(),
-            &mut events,
+            &mut render::Saying,
         );
-        // Said here rather than collected for the end of the command: a cold
-        // install streams hundreds of megabytes, and a warning about it is worth
-        // something while it is still happening.
-        for line in render::provision_events(&events) {
-            eprintln!("{line}");
-        }
         // Every way of coming up empty is an arm of `Provisioning`, and none of them
         // is worth a word beyond the events above: the workspace is up and the user
         // asked for a session, not for an install. A devpod that has gone missing is

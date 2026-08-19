@@ -1646,6 +1646,14 @@ impl Notices<LaunchNotice> for Saying {
     }
 }
 
+impl Notices<ProvisionEvent> for Saying {
+    fn say(&mut self, event: ProvisionEvent) {
+        if let Some(line) = provision_event(&event) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 /// Why this workspace opens without a GitHub login.
 ///
 /// The `Refused` arm names the directory gh read its config from, because that is
@@ -2007,11 +2015,6 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
             )
         }
     })
-}
-
-/// The lines a provisioning pass's events read as, with the debug ones dropped.
-pub(crate) fn provision_events(events: &[ProvisionEvent]) -> Vec<String> {
-    events.iter().filter_map(provision_event).collect()
 }
 
 #[cfg(test)]
