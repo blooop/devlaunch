@@ -383,12 +383,15 @@ fn a_clean_clone_is_deleted_with_its_workspace() {
         run.out,
         "Successfully deleted workspace devlaunch-main-legacy\n"
     );
-    // Python printed one line more here — `Removed workspace clone: <path>`,
-    // `worktree/workspace_clone.py`'s own `logger.info` — and this build has no
-    // typed event carrying that path: `Removed::Clone` says a clone went and not
-    // which directory it was. Named as a divergence candidate in the M6 report;
-    // no test in `test/` asserts the line.
-    assert_eq!(run.err, "Removed local clone for devlaunch-main-legacy\n");
+    // Both lines, in Python's order: `worktree/workspace_clone.py` logs the
+    // directory from inside the removal, and `dl.py` logs the workspace after it
+    // returns. The first one is why the notice channel is a sink — a storage flow's
+    // line has to land where the storage flow said it.
+    assert_eq!(
+        run.err,
+        "Removed workspace clone: {ROOT}/cache/devlaunch/repos/blooop/devlaunch/\
+         devlaunch-main-legacy\nRemoved local clone for devlaunch-main-legacy\n"
+    );
     assert!(!world.exists(clone), "the clone was left behind");
     assert!(
         !world
@@ -551,15 +554,16 @@ fn the_refresh_child_writes_the_cache_and_sweeps_the_bare_clones() {
     let world = World::base();
     let run = world.dl(&["--update-cache", "--force"]);
     run.exited(0);
-    // Nothing printed either way: it is a detached child's work (stdout and stderr
-    // go to /dev/null when it is spawned), and the arms it reports are Python's
-    // `logging.debug`. Python printed two lines more here — `Fetching updates for
-    // blooop/devlaunch` and `Successfully fetched updates for blooop/devlaunch`,
-    // `worktree/repo_manager.py`'s own `logger.info` — which no typed event in this
-    // build carries. Named as a divergence candidate in the M6 report; nothing in
-    // `test/` asserts them, and nobody sees them in the child that matters.
+    // Nothing on stdout: the arms this command reports of its own are Python's
+    // `logging.debug`. The sweep's two `logger.info` lines are on stderr, byte for
+    // byte as Python printed them — which nobody sees in the child that matters,
+    // since a detached refresh has both streams on /dev/null.
     assert_eq!(run.out, "");
-    assert_eq!(run.err, "");
+    assert_eq!(
+        run.err,
+        "Fetching updates for blooop/devlaunch\nSuccessfully fetched updates for \
+         blooop/devlaunch\n"
+    );
     assert!(
         world
             .read("cache/devlaunch/completions.json")

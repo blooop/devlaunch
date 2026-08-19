@@ -12,9 +12,12 @@
 //! offered, and they are kept: `dl` pushes no branch today, and the arm that does
 //! is one flag away rather than one rewrite away.
 //!
-//! Nothing here prints. Python logged five lines; the two that carried a decision
-//! are typed answers ([`Tracking`], [`BranchError`]) and the rest said what the
-//! caller had just asked for.
+//! Nothing here prints, and nothing here holds a notice channel either: the five
+//! lines Python logged are all *answers* — [`BranchEnsured`] names which of the four
+//! states was found and what was done about it, [`Tracking`] whether the upstream
+//! took, [`BranchError`] why it stopped. The caller with the channel says them
+//! (`workspace_clone::ensure_branch`), which keeps this module a decision procedure
+//! over four git verbs and nothing else.
 
 // The callers are the storage flows in this wave and the launch path in M7.
 #![allow(dead_code)] // consumed from M6/M7
@@ -97,9 +100,50 @@ pub(crate) enum Tracking {
     NotSet { reason: String },
 }
 
+/// Which of the four states ensuring a branch found, and what it did about it.
+///
+/// Python logged one line per arm and answered `None`, so a caller could not say
+/// what happened without re-deriving it from the same two probes — two answers to
+/// one question, one of them a guess. This is the answer, and the caller
+/// ([`crate::flows::workspace_clone::WorkspaceCloneManager::ensure_branch`]) is
+/// where the lines are reported from, because that is the layer holding the notice
+/// channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BranchEnsured {
+    /// Both sides had it, so nothing was created, pushed or pointed. The one arm
+    /// that sets no upstream — there is nothing new to point.
+    AlreadyBothSides,
+    /// The remote had it and the local side did not, so the local branch was cut
+    /// from `<remote>/<branch>` rather than from the start point.
+    CutFromRemote { tracking: Tracking },
+    /// The remote has not got it — either it never had it, or nobody asked.
+    RemoteWithoutIt {
+        local: LocalBranch,
+        push: RemotePush,
+        tracking: Tracking,
+    },
+}
+
+/// Whether the local branch had to be made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalBranch {
+    AlreadyThere,
+    Created,
+}
+
+/// What became of the remote side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemotePush {
+    /// It was pushed, which only ever happens for [`CreateRemote::Push`].
+    Pushed,
+    /// [`CreateRemote::Never`]: a branch exists on the remote when somebody pushes
+    /// it, not when somebody launches it. What the launch path asks for.
+    NotAsked,
+}
+
 /// Why a branch could not be ensured.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BranchError {
+pub enum BranchError {
     /// `git branch` refused for a reason that is not "it is already there".
     NotCreated { branch: String, reason: String },
     /// `git push` refused.
@@ -133,7 +177,7 @@ impl<'r> BranchManager<'r> {
     pub(crate) fn ensure_branch_exists(
         &self,
         request: EnsureBranch<'_>,
-    ) -> Result<Tracking, BranchError> {
+    ) -> Result<BranchEnsured, BranchError> {
         let EnsureBranch {
             repo,
             branch,
@@ -150,25 +194,38 @@ impl<'r> BranchManager<'r> {
         };
 
         if local_exists && remote_exists {
-            return Ok(Tracking::Set);
+            return Ok(BranchEnsured::AlreadyBothSides);
         }
 
         if !local_exists && remote_exists {
             // Track the remote branch that is already there, so the new local
             // branch starts where the remote is rather than at `start_point`.
             self.create_local_branch(repo, branch, &format!("{remote}/{branch}"))?;
-            return Ok(self.track_remote_branch(repo, branch, remote));
+            return Ok(BranchEnsured::CutFromRemote {
+                tracking: self.track_remote_branch(repo, branch, remote),
+            });
         }
 
-        if !local_exists {
+        let local = if local_exists {
+            LocalBranch::AlreadyThere
+        } else {
             self.create_local_branch(repo, branch, start_point)?;
-        }
+            LocalBranch::Created
+        };
 
-        if !remote_exists && let CreateRemote::Push { ssh_key } = create_remote {
-            self.push_branch_to_remote(repo, branch, remote, ssh_key)?;
-        }
+        let push = match create_remote {
+            CreateRemote::Push { ssh_key } => {
+                self.push_branch_to_remote(repo, branch, remote, ssh_key)?;
+                RemotePush::Pushed
+            }
+            CreateRemote::Never => RemotePush::NotAsked,
+        };
 
-        Ok(self.track_remote_branch(repo, branch, remote))
+        Ok(BranchEnsured::RemoteWithoutIt {
+            local,
+            push,
+            tracking: self.track_remote_branch(repo, branch, remote),
+        })
     }
 
     /// Create a local branch at `start_point`.
@@ -605,11 +662,13 @@ mod tests {
             Response::stdout("abc\trefs/heads/main\n"),
         );
 
-        let tracked = manager(&fake)
+        let ensured = manager(&fake)
             .ensure_branch_exists(asking(&repo, "main", "HEAD"))
             .expect("nothing to do");
 
-        assert_eq!(tracked, Tracking::Set);
+        // The answer names the state, and this is the one arm that sets no
+        // upstream: there is nothing new to point.
+        assert_eq!(ensured, BranchEnsured::AlreadyBothSides);
         assert_eq!(
             as_strs(&fake.argvs()),
             [
@@ -630,10 +689,16 @@ mod tests {
                 Response::stdout("abc\trefs/heads/main\n"),
             );
 
-        manager(&fake)
+        let ensured = manager(&fake)
             .ensure_branch_exists(asking(&repo, "main", "HEAD"))
             .expect("created");
 
+        assert_eq!(
+            ensured,
+            BranchEnsured::CutFromRemote {
+                tracking: Tracking::Set
+            }
+        );
         assert_eq!(
             as_strs(&fake.argvs()),
             [
@@ -654,10 +719,19 @@ mod tests {
             .with_script(["git", "show-ref"], Response::exited(1))
             .with_script(["git", "ls-remote"], Response::stdout(""));
 
-        manager(&fake)
+        let ensured = manager(&fake)
             .ensure_branch_exists(asking(&repo, "new-branch", "origin/main"))
             .expect("created");
 
+        assert_eq!(
+            ensured,
+            BranchEnsured::RemoteWithoutIt {
+                local: LocalBranch::Created,
+                push: RemotePush::Pushed,
+                // The upstream is set last, and the remote has the branch by then.
+                tracking: Tracking::Set,
+            }
+        );
         assert_eq!(
             as_strs(&fake.argvs()),
             [
@@ -682,13 +756,24 @@ mod tests {
             .with_script(["git", "show-ref"], Response::exited(1))
             .with_script(["git", "ls-remote"], Response::stdout(""));
 
-        manager(&fake)
+        let ensured = manager(&fake)
             .ensure_branch_exists(EnsureBranch {
                 create_remote: CreateRemote::Never,
                 ..asking(&repo, "new-branch", "HEAD")
             })
             .expect("created");
 
+        assert!(
+            matches!(
+                ensured,
+                BranchEnsured::RemoteWithoutIt {
+                    local: LocalBranch::Created,
+                    push: RemotePush::NotAsked,
+                    ..
+                }
+            ),
+            "{ensured:?}"
+        );
         let argvs = fake.argvs();
         let issued = as_strs(&argvs);
         assert!(issued.contains(&vec!["git", "branch", "new-branch", "HEAD"]));
@@ -736,6 +821,38 @@ mod tests {
             !issued.iter().any(|argv| argv.contains(&"push")),
             "and never pushed: {issued:?}"
         );
+    }
+
+    #[test]
+    fn a_branch_only_the_local_side_has_is_pushed_without_being_created_again() {
+        // The fourth state, and the only one where both halves of the answer differ
+        // from the arms above: nothing to create, something to push. Python logged
+        // one line here (`Pushed branch …`) and this is what carries it.
+        let repo = a_repo();
+        let fake = FakeGit::new().with_script(["git", "ls-remote"], Response::stdout(""));
+
+        let ensured = manager(&fake)
+            .ensure_branch_exists(asking(&repo, "main", "HEAD"))
+            .expect("pushed");
+
+        assert_eq!(
+            ensured,
+            BranchEnsured::RemoteWithoutIt {
+                local: LocalBranch::AlreadyThere,
+                push: RemotePush::Pushed,
+                tracking: Tracking::Set,
+            }
+        );
+        let argvs = fake.argvs();
+        let issued = as_strs(&argvs);
+        assert!(
+            !issued.iter().any(|argv| argv.contains(&"branch")
+                && !argv
+                    .iter()
+                    .any(|word| word.starts_with("--set-upstream-to"))),
+            "a branch that is already there is not created again: {issued:?}"
+        );
+        assert!(issued.contains(&vec!["git", "push", "-u", "origin", "main"]));
     }
 
     #[test]

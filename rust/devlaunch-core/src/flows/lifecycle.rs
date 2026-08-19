@@ -81,6 +81,7 @@ use crate::flows::repo_manager::{
     RepositoryManager, present, remove_tree_as_far_as_it_goes, system_words,
 };
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
+use crate::notices::{Notices, Wrapped};
 use crate::runner::{DetachOutcome, Exit, Invocation, Runner};
 use crate::timing;
 
@@ -123,7 +124,7 @@ pub enum LifecycleNotice {
     /// the record for {path}: {e}`, and the `{e}` is the binary's to write.
     RecordNotDropped {
         path: PathBuf,
-        refusal: RecordRefusal,
+        refusal: metadata::MetadataError,
     },
     /// This command is addressing a devpod workspace named by the record rather
     /// than the one this build derives (devlaunch#88).
@@ -138,129 +139,22 @@ pub enum LifecycleNotice {
     Cache(CacheNotice),
 }
 
-/// Why a `metadata.json` write refused, as much of it as a notice can carry.
-///
-/// Not [`metadata::MetadataError`] itself, and the reason is mechanical rather than
-/// principled: that type's lock arm holds an `io::Error`, which is neither `Clone`
-/// nor comparable, and a notice is both. Every one of its arms maps here through
-/// the one exhaustive [`From`] below, so a new way for a write to fail is a compile
-/// error at that conversion rather than a reason that quietly reads as an old one.
-/// If `MetadataError` ever becomes `Clone` and `Eq`, this type is what goes away.
-///
-/// Nothing here is a sentence. The strings are the *OS's* own words — the same
-/// standing [`metadata::OsFailure::message`] has — and the words a person reads
-/// are the `dl` binary's.
-#[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
-pub enum RecordRefusal {
-    /// The directory `metadata.json` lives in could not be created.
-    DirectoryNotCreated {
-        path: PathBuf,
-        failure: metadata::OsFailure,
-    },
-    /// The metadata lock could not be taken, at this step of taking it.
-    NotLocked {
-        step: LockStep,
-        path: PathBuf,
-        reason: String,
-    },
-    /// No temp file could be created next to the target.
-    TempNotCreated {
-        directory: PathBuf,
-        failure: metadata::OsFailure,
-    },
-    /// The document could not be turned into bytes.
-    NotEncoded { reason: String },
-    /// The bytes could not be written, flushed or fsynced.
-    NotWritten {
-        path: PathBuf,
-        failure: metadata::OsFailure,
-    },
-    /// The target's permissions could not be copied onto the temp file.
-    ModeNotSet {
-        path: PathBuf,
-        mode: u32,
-        failure: metadata::OsFailure,
-    },
-    /// The finished temp file could not be renamed over the target.
-    NotReplaced {
-        from: PathBuf,
-        to: PathBuf,
-        failure: metadata::OsFailure,
-    },
-}
-
-/// Which step of taking the metadata lock refused.
-///
-/// Kept apart rather than collapsed into one "could not lock", because the three
-/// are fixed in three different places: a parent directory that cannot be made, a
-/// lock file that cannot be opened, and an `flock` that failed for a reason other
-/// than somebody else holding it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#250 §7)
-pub enum LockStep {
-    CreateParent,
-    Open,
-    Acquire,
-}
-
-impl From<&metadata::MetadataError> for RecordRefusal {
-    fn from(error: &metadata::MetadataError) -> Self {
-        match error {
-            metadata::MetadataError::CreateDir { path, failure } => Self::DirectoryNotCreated {
-                path: path.clone(),
-                failure: failure.clone(),
-            },
-            metadata::MetadataError::Lock(lock) => {
-                let (step, path, source) = match lock {
-                    LockError::CreateParent { path, source } => {
-                        (LockStep::CreateParent, path, source)
-                    }
-                    LockError::Open { path, source } => (LockStep::Open, path, source),
-                    LockError::Acquire { path, source } => (LockStep::Acquire, path, source),
-                };
-                Self::NotLocked {
-                    step,
-                    path: path.clone(),
-                    reason: source.to_string(),
-                }
-            }
-            metadata::MetadataError::CreateTemp { directory, failure } => Self::TempNotCreated {
-                directory: directory.clone(),
-                failure: failure.clone(),
-            },
-            metadata::MetadataError::Encode { reason } => Self::NotEncoded {
-                reason: reason.clone(),
-            },
-            metadata::MetadataError::Write { path, failure } => Self::NotWritten {
-                path: path.clone(),
-                failure: failure.clone(),
-            },
-            metadata::MetadataError::SetMode {
-                path,
-                mode,
-                failure,
-            } => Self::ModeNotSet {
-                path: path.clone(),
-                mode: *mode,
-                failure: failure.clone(),
-            },
-            metadata::MetadataError::Replace { from, to, failure } => Self::NotReplaced {
-                from: from.clone(),
-                to: to.clone(),
-                failure: failure.clone(),
-            },
-        }
-    }
+/// A lifecycle channel, as a storage flow's — for the callers that hand it down
+/// rather than collecting a vector, which is what keeps a storage flow's own line in
+/// the place Python logged it.
+fn as_cache<'a>(
+    notices: &'a mut dyn Notices<LifecycleNotice>,
+) -> Wrapped<'a, CacheNotice, LifecycleNotice> {
+    Wrapped::new(notices, LifecycleNotice::Cache)
 }
 
 /// Collect the notices one of the storage flows produced.
-fn extend_with_cache(notices: &mut Vec<LifecycleNotice>, cache: Vec<CacheNotice>) {
-    notices.extend(cache.into_iter().map(LifecycleNotice::Cache));
+fn extend_with_cache(notices: &mut dyn Notices<LifecycleNotice>, cache: Vec<CacheNotice>) {
+    notices.say_all(cache.into_iter().map(LifecycleNotice::Cache));
 }
 
 /// Collect the notices a `metadata.json` write produced.
-fn extend_with_store(notices: &mut Vec<LifecycleNotice>, store: Vec<metadata::Notice>) {
+fn extend_with_store(notices: &mut dyn Notices<LifecycleNotice>, store: Vec<metadata::Notice>) {
     extend_with_cache(
         notices,
         store.into_iter().map(CacheNotice::Metadata).collect(),
@@ -495,10 +389,14 @@ pub enum SweptRepo {
         error: LazyFetchError,
     },
     /// The lock file itself could not be opened, so nothing was attempted.
+    ///
+    /// Carries the lock's own refusal rather than a rendering of it: which step
+    /// failed (a parent directory, the open, the `flock`) is what a reader acts on,
+    /// and the words are the `dl` binary's.
     LockUnavailable {
         owner: String,
         repo: String,
-        reason: String,
+        refusal: LockError,
     },
 }
 
@@ -564,10 +462,10 @@ pub fn sweep_repo_fetches(
         });
         extend_with_cache(&mut report.notices, cache_notices);
         report.repos.push(match swept {
-            Err(error) => SweptRepo::LockUnavailable {
+            Err(refusal) => SweptRepo::LockUnavailable {
                 owner,
                 repo,
-                reason: format!("{error:?}"),
+                refusal,
             },
             Ok(None) => SweptRepo::Contended { owner, repo },
             Ok(Some(Ok(Fetched::Fetched))) => SweptRepo::Fetched { owner, repo },
@@ -677,7 +575,7 @@ pub fn resolve_known_workspace(
     triple: (&str, &str, &str),
     derived: &str,
     recorded_id: impl FnOnce() -> Option<String>,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> KnownWorkspace {
     if let Ok(state) = workspace_state(runner, derived) {
         return KnownWorkspace::Known {
@@ -698,7 +596,7 @@ pub fn resolve_known_workspace(
         return unknown();
     };
     let (owner, repo, branch) = triple;
-    notices.push(LifecycleNotice::AddressingRecordedWorkspace {
+    notices.say(LifecycleNotice::AddressingRecordedWorkspace {
         recorded: recorded.clone(),
         derived: derived.to_owned(),
         owner: owner.to_owned(),
@@ -884,7 +782,7 @@ impl<'a, 'r> CloneDirectories<'a, 'r> {
 impl ClonePathResolver for CloneDirectories<'_, '_> {
     fn clone_path(&self, record: &WorktreeInfo) -> Option<PathBuf> {
         self.clones
-            .resolve_clone_path(record, &mut self.notices.borrow_mut())
+            .resolve_clone_path(record, &mut *self.notices.borrow_mut())
     }
 }
 
@@ -902,7 +800,7 @@ pub fn unsaved_work_in(
     git: &Git<'_>,
     cache_dir: &Path,
     workspace_id: &str,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Unsaved {
     let directories = CloneDirectories::of(clones);
     let view = listing::DlView {
@@ -950,7 +848,7 @@ pub fn workspace_delete(
     storage: &mut MetadataStorage,
     workspace_id: &str,
     insistence: Insistence,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<DeleteOutcome, NotRun> {
     let exit = devpod::run(context.runner(), &delete_call(workspace_id, insistence))?;
     // Unconditionally: a delete that reports failure may still have got far enough
@@ -961,11 +859,14 @@ pub fn workspace_delete(
         return Ok(DeleteOutcome::DevpodRefused { exit });
     }
 
-    let mut cache_notices = Vec::new();
-    let clone = match clones.remove_workspace_by_id(storage, workspace_id, &mut cache_notices) {
+    // Streamed rather than collected and appended, because the storage flow's own
+    // line comes *first* in Python: `Removed workspace clone: <path>` is logged
+    // inside the removal, and `Removed local clone for <id>` after it returns.
+    let removal = clones.remove_workspace_by_id(storage, workspace_id, &mut as_cache(notices));
+    let clone = match removal {
         Ok(removed) => {
             if let Removed::Clone = removed {
-                notices.push(LifecycleNotice::CloneRemoved {
+                notices.say(LifecycleNotice::CloneRemoved {
                     workspace_id: workspace_id.to_owned(),
                 });
             }
@@ -975,14 +876,13 @@ pub fn workspace_delete(
             // The workspace is gone whatever happened to the clone, so this is a
             // notice rather than the delete failing: reporting failure would send
             // the caller looking for a workspace that is not there.
-            notices.push(LifecycleNotice::CloneNotRemoved {
+            notices.say(LifecycleNotice::CloneNotRemoved {
                 workspace_id: workspace_id.to_owned(),
                 refusal: error,
             });
             Removed::Nothing
         }
     };
-    extend_with_cache(notices, cache_notices);
     refresh.ask(context.runner(), RefreshReason::Forced);
     Ok(DeleteOutcome::Deleted { clone })
 }
@@ -1113,7 +1013,7 @@ pub fn purge_all_data(
     context: &mut CommandContext<'_>,
     plan: &PurgePlan,
     on_step: &mut dyn FnMut(PurgeStep),
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PurgeOutcome, NotRun> {
     for workspace in &plan.ownership.mine {
         on_step(PurgeStep::Deleting {
@@ -1121,7 +1021,7 @@ pub fn purge_all_data(
         });
         let answer = devpod::capture(context.runner(), &purge_delete_call(&workspace.id))?;
         if !answer.succeeded() {
-            notices.push(LifecycleNotice::WorkspaceNotDeleted {
+            notices.say(LifecycleNotice::WorkspaceNotDeleted {
                 workspace_id: workspace.id.clone(),
                 exit: answer.exit,
                 stderr: answer.stderr().to_owned(),
@@ -1870,7 +1770,7 @@ pub fn prune_plan(
     locations: &WorkspaceLocations,
     root: &Path,
     insistence: Insistence,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PrunePlan, PruneError> {
     let mut removing: Vec<Reclaimable> = Vec::new();
     let mut keeping: Vec<Kept> = Vec::new();
@@ -1962,7 +1862,7 @@ pub fn prune_plan(
 fn records_by_directory(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
-    notices: &mut Vec<CacheNotice>,
+    notices: &mut dyn Notices<CacheNotice>,
 ) -> HashMap<PathBuf, WorktreeInfo> {
     let mut records = HashMap::new();
     for record in storage.list_worktrees(WorktreeFilter::All) {
@@ -1991,7 +1891,7 @@ fn records_by_directory(
 fn records_for_absent_directories(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
-    notices: &mut Vec<CacheNotice>,
+    notices: &mut dyn Notices<CacheNotice>,
 ) -> Vec<WorktreeInfo> {
     storage
         .list_worktrees(WorktreeFilter::All)
@@ -2094,7 +1994,7 @@ pub fn prune_clones(
     clones: &WorkspaceCloneManager<'_>,
     storage: &mut MetadataStorage,
     plan: &PrunePlan,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PruneOutcome, PruneError> {
     let workspaces = context
         .refreshed_workspaces()
@@ -2186,13 +2086,13 @@ pub fn prune_clones(
 fn forget_clone(
     storage: &mut MetadataStorage,
     record: &WorktreeInfo,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) {
     match storage.remove_worktree(&record.owner, &record.repo, &record.branch) {
         Ok(store_notices) => extend_with_store(notices, store_notices),
-        Err(error) => notices.push(LifecycleNotice::RecordNotDropped {
+        Err(error) => notices.say(LifecycleNotice::RecordNotDropped {
             path: record.local_path.clone(),
-            refusal: RecordRefusal::from(&error),
+            refusal: error,
         }),
     }
 }
@@ -2348,7 +2248,7 @@ pub fn reconcile_plan(
     workspaces: &[Workspace],
     locations: &WorkspaceLocations,
     root: &Path,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> ReconcilePlan {
     let orphans = orphaned_workspaces(workspaces, root);
     let mut cache_notices = Vec::new();
@@ -2603,7 +2503,7 @@ pub fn apply_reconciliation(
     storage: &mut MetadataStorage,
     devpod_home: &Path,
     plan: &ReconcilePlan,
-    notices: &mut Vec<LifecycleNotice>,
+    notices: &mut dyn Notices<LifecycleNotice>,
 ) -> ReconcileReport {
     let mut report = ReconcileReport {
         repointed: Vec::new(),
@@ -2624,9 +2524,9 @@ pub fn apply_reconciliation(
         record.devpod_workspace_id = Some(adoptable.workspace_id.clone());
         match storage.add_worktree(record) {
             Ok(store_notices) => extend_with_store(notices, store_notices),
-            Err(error) => notices.push(LifecycleNotice::RecordNotDropped {
+            Err(error) => notices.say(LifecycleNotice::RecordNotDropped {
                 path: adoptable.record.local_path.clone(),
-                refusal: RecordRefusal::from(&error),
+                refusal: error,
             }),
         }
         report.repointed.push(adoptable.clone());
@@ -4290,7 +4190,7 @@ mod tests {
                 notices.as_slice(),
                 [LifecycleNotice::RecordNotDropped {
                     path,
-                    refusal: RecordRefusal::TempNotCreated { directory, .. },
+                    refusal: metadata::MetadataError::CreateTemp { directory, .. },
                 }] if path == &clone && directory == &cache
             ),
             "{notices:?}"

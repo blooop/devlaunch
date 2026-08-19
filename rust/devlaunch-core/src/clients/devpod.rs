@@ -559,6 +559,20 @@ pub struct Workspace {
     pub(crate) context: String,
 }
 
+impl Workspace {
+    /// What this workspace opens.
+    ///
+    /// An accessor rather than a public field: the field is filled by this module's
+    /// parser and by nothing else, which is what makes holding a [`WorkspaceSource`]
+    /// evidence that devpod said so. Readable because the `dl` binary renders it —
+    /// the `--ls` table and the fuzzy picker both show how a source reads.
+    ///
+    /// binary surface — not part of the frozen wf API (#250 §7)
+    pub fn source(&self) -> &WorkspaceSource {
+        &self.source
+    }
+}
+
 /// What a workspace opens.
 ///
 /// A sum rather than Python's original tag-beside-a-parallel-string, where two

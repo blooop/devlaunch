@@ -13,20 +13,14 @@
 //! and a `debug` arrives not at all, which is why the launch lock's refusal and
 //! `devpod ssh failed with exit code N` appear in none of these goldens.
 //!
-//! # Three things that are deliberately not compared line for line
+//! Every golden below is Python's bytes **in Python's order**, notices and session
+//! output alike: core says each notice at the moment it happens (its channel is a
+//! sink, not a list the binary drains at the end), so `Workspace X is already
+//! running, attaching...` comes before the session it announces and the storage
+//! flows' progress lines come before the work they explain.
 //!
-//! - **The order of a notice against session output.** Core's `Launch` hands its
-//!   notices over when `run` returns, while devpod's own session stderr is
-//!   forwarded *as the session runs*, so a launch that ends in a failed session
-//!   prints devpod's line before dl's. Python prints them the other way round.
-//!   Every such golden is byte-identical as a *set* of lines and as an exit code;
-//!   the two that differ in order say so where they assert it. This is the
-//!   ordering divergence named in the M7-wiring report, whose fix is one field in
-//!   core rather than anything a renderer can do.
-//! - **The storage flows' progress lines.** `Fetching cold for blooop/devlaunch`
-//!   and its two neighbours are `logger.info` lines whose typed arms
-//!   (`CacheNotice::FetchingRef` and kin) have only just landed and are not
-//!   rendered yet. Every cold golden here is Python's minus those three lines.
+//! # The one thing that is deliberately not compared line for line
+//!
 //! - **A `--command` payload longer than 24 characters**, which is a 40-line POSIX
 //!   script for the two provisioning trips. [`Calls::summarised`] clips it the way
 //!   the golden-capture harness clipped it; the scripts themselves are pinned
@@ -519,14 +513,20 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
     run.exited(0);
     // devpod's own line, on stdout because the `up` inherits this process's streams.
     assert_eq!(run.out, format!("Workspace {COLD} is ready\n"));
-    // The two setup stages report nothing, because the fake devpod's `ssh` runs no
-    // remote command — which is the same answer a real container with no `readlink`
-    // gives, and is named rather than passed over.
+    // The host's own work first, said as it happens: the one targeted fetch, what the
+    // branch step found, and the clone about to be cut. Then the two setup stages,
+    // which report nothing because the fake devpod's `ssh` runs no remote command —
+    // the same answer a real container with no `readlink` gives, named rather than
+    // passed over.
     assert_eq!(
         run.stderr_lines(),
         [
-            &format!("{COLD}: the hostname setup stage did not report; it may not have run.")
-                as &str,
+            "Fetching cold for blooop/devlaunch",
+            "Branch cold already exists locally and remotely",
+            &format!(
+                "Creating workspace clone at {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD}"
+            ),
+            &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
             &format!("{COLD}: the zellij setup stage did not report; it may not have run."),
             &format!("SSH command: devpod ssh {COLD}"),
         ]
@@ -627,18 +627,15 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
     let world = World::with(&["--warm"]);
     let run = world.dl(&[MAIN, "up"]);
     run.exited(0);
-    let mut said = run.stderr_lines();
-    said.sort_unstable();
     assert_eq!(
-        said,
+        run.stderr_lines(),
         [
+            // In Python's order: the workspace is reported already up *before* the
+            // pass that tops its tools up runs, because that is when it was found.
             &format!("Workspace {MAIN} is already running.") as &str,
             &format!("{MAIN}: the hostname setup stage did not report; it may not have run."),
             &format!("{MAIN}: the zellij setup stage did not report; it may not have run."),
-        ],
-        // Sorted, not in order: Python says `already running.` before the pass runs
-        // and this says it after — the ordering divergence the module docs name.
-        "the three lines Python printed"
+        ]
     );
     assert_eq!(
         world.calls().summarised(&world.root),
@@ -877,6 +874,38 @@ fn a_target_no_spec_shape_matches_gets_the_unknown_workspace_refusal() {
 }
 
 #[test]
+fn a_repository_that_cannot_be_cloned_says_so_in_gits_own_words() {
+    // The line a mistyped repository name ends at. `blooop/other` has no clone in the
+    // cache and its remote is the derived GitHub URL, which `GIT_SSH_COMMAND=false`
+    // makes unreachable — so this is the ordinary "that repo does not exist" failure,
+    // offline. Python's two lines, and the second one carries git's own stderr rather
+    // than a rendering of dl's error type.
+    let world = World::with(&["--warm"]);
+    let run = world.dl(&["blooop/other"]);
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert_eq!(
+        said[0],
+        "Cloning repository git@github.com:blooop/other.git to \
+         {ROOT}/cache/devlaunch/repos/blooop/other/.bare"
+    );
+    // The rest of the line is git's, whose wording is git's version's; what is dl's
+    // is the frame around it, and that is what is pinned.
+    assert!(
+        said[1].starts_with("Repository 'blooop/other': Failed to clone repository: "),
+        "{:?}",
+        said[1]
+    );
+    assert!(
+        said.iter()
+            .any(|line| line.contains("Could not read from remote repository")),
+        "git's own reason did not reach the user: {said:?}"
+    );
+    // Nothing was asked of devpod: the host could not prepare a workspace to open.
+    assert!(world.calls().exact(&world.root).is_empty());
+}
+
+#[test]
 fn a_devpod_up_that_refuses_hands_its_own_status_back_and_adds_nothing() {
     let world = World::with(&["--stopped", "--fail-up"]);
     let run = world.dl(&[MAIN]);
@@ -898,16 +927,14 @@ fn a_session_devpod_could_not_start_ends_with_devpods_own_status() {
     let world = World::with(&["--warm", "--fail-session"]);
     let run = world.dl(&[MAIN]);
     run.exited(3);
-    // devpod's forwarded line and dl's two notices, as a set: the forwarding is
-    // live and the notices arrive when the launch returns (the ordering divergence
-    // the module docs name), so Python prints these three in the other order.
-    let mut said = run.stderr_lines();
-    said.sort_unstable();
+    // dl's two notices and then devpod's forwarded line, which is the order all
+    // three happened in: both channels are live, so a session's own diagnostics land
+    // after the lines that announced the session.
     assert_eq!(
-        said,
+        run.stderr_lines(),
         [
-            "SSH command: devpod ssh devlaunch-main-zovomobo",
             "Workspace devlaunch-main-zovomobo is already running, attaching...",
+            "SSH command: devpod ssh devlaunch-main-zovomobo",
             "devpod: connection refused",
         ]
     );

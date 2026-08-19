@@ -42,7 +42,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::branch_manager::{BranchError, BranchManager, EnsureBranch};
+use super::branch_manager::{
+    BranchEnsured, BranchError, BranchManager, EnsureBranch, LocalBranch, RemotePush,
+};
 use super::repo_manager::{
     CacheNotice, Cleanup, CloneError, CloneIfMissingError, FetchOutcome, RemoveTreeError, RepoLock,
     RepositoryManager, TreeRemoval, WrongRepoLock, clone_dir, remove_tree,
@@ -53,6 +55,7 @@ use crate::domain::locks::LockError;
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
+use crate::notices::Notices;
 use crate::timing;
 
 /// The remote every workspace clone talks to.
@@ -177,7 +180,7 @@ impl GitLfs {
 
 /// Why a branch could not be ensured in the cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EnsureBranchError {
+pub enum EnsureBranchError {
     WrongRepoLock(WrongRepoLock),
     /// The branch could not be created, which is where an empty cache is
     /// discovered: it is the first step that actually consults it.
@@ -186,7 +189,7 @@ pub(crate) enum EnsureBranchError {
 
 /// Why a workspace clone could not be prepared.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PrepareWorkspaceError {
+pub enum PrepareWorkspaceError {
     WrongRepoLock(WrongRepoLock),
     /// The repository directory the clone goes in could not be created.
     ParentNotCreated {
@@ -227,8 +230,11 @@ pub(crate) enum PrepareWorkspaceError {
 }
 
 /// Why a cold launch's host-side preparation could not finish.
-#[derive(Debug)]
-pub(crate) enum PrepareColdError {
+///
+/// `Clone` and comparable because it travels inside the launch's refusal
+/// ([`crate::flows::launch::NotPrepared`]), which is a value the binary renders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareColdError {
     /// The triple is not one a workspace can be named from. Refused before
     /// anything was locked or written on its behalf.
     UnsafeTriple(UnsafeName),
@@ -404,7 +410,7 @@ impl<'r> WorkspaceCloneManager<'r> {
     pub(crate) fn resolve_clone_path(
         &self,
         recorded: &WorktreeInfo,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Option<PathBuf> {
         let path = &recorded.local_path;
         if path.is_absolute() && presence_of(path) != Presence::NotThere {
@@ -422,7 +428,7 @@ impl<'r> WorkspaceCloneManager<'r> {
                 // Named by the triple the derivation refused rather than by the
                 // workspace id: that triple *is* what failed, and it is the field
                 // a hand-edited metadata.json would have to be fixed in.
-                notices.push(CacheNotice::CloneNotNamed {
+                notices.say(CacheNotice::CloneNotNamed {
                     owner: recorded.owner.clone(),
                     repo: recorded.repo.clone(),
                     branch: recorded.branch.clone(),
@@ -468,7 +474,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         repo: &str,
         branch: &str,
         remote_url: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<PreparedWorkspace, PrepareColdError> {
         // Derived here rather than passed in, and derived before the lock: it is
         // the parse boundary for the triple, and an unsafe ref should be refused
@@ -494,7 +500,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         storage: &mut MetadataStorage,
         workspace: &WorkspaceId,
         remote_url: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<PreparedWorkspace, PrepareColdError> {
         let (owner, repo, branch) = (workspace.owner(), workspace.repo(), workspace.git_ref());
         let lock = self
@@ -512,7 +518,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             // The one consequence-stating notice for the whole degraded family:
             // the fetch notices above say what failed, this says what it means
             // for the tree the agent is about to work on.
-            notices.push(CacheNotice::PreparedFromStaleBase {
+            notices.say(CacheNotice::PreparedFromStaleBase {
                 owner: owner.to_owned(),
                 repo: repo.to_owned(),
                 branch: branch.to_owned(),
@@ -564,7 +570,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         owner: &str,
         repo: &str,
         branch: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BranchBase, EnsureBranchError> {
         lock.require(owner, repo)
             .map_err(EnsureBranchError::WrongRepoLock)?;
@@ -603,7 +609,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             // default-branch fetch — nothing was learned about the remote, so
             // nothing licenses treating this branch as new.
             FetchOutcome::Failed { reason } => {
-                notices.push(CacheNotice::RefNotFetched {
+                notices.say(CacheNotice::RefNotFetched {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
                     branch: branch.to_owned(),
@@ -616,9 +622,14 @@ impl<'r> WorkspaceCloneManager<'r> {
             }
         };
 
-        self.branch_manager
-            .ensure_branch_exists(EnsureBranch::in_cache(&bare, branch, default.start_point()))
+        // The request is kept rather than built inline, so the remote the notices
+        // name is the remote the call used.
+        let request = EnsureBranch::in_cache(&bare, branch, default.start_point());
+        let ensured = self
+            .branch_manager
+            .ensure_branch_exists(request)
             .map_err(EnsureBranchError::Branch)?;
+        say_branch(&ensured, request.branch, request.remote, notices);
         Ok(base)
     }
 
@@ -632,7 +643,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         storage: &MetadataStorage,
         owner: &str,
         repo: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> DefaultBranch {
         let name = self
             .repo_manager
@@ -643,7 +654,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             // empty name has to mean "no default branch" here rather than
             // downstream, where it would read as a branch.
             let reason = "no default branch is recorded".to_owned();
-            notices.push(CacheNotice::DefaultBranchUnknown {
+            notices.say(CacheNotice::DefaultBranchUnknown {
                 owner: owner.to_owned(),
                 repo: repo.to_owned(),
                 reason: reason.clone(),
@@ -663,7 +674,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         owner: &str,
         repo: &str,
         default_branch: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> BranchBase {
         // Unlike the requested branch, this name is read back from metadata.json
         // and carries no proof. Its refusal is reported as a stale base rather
@@ -676,7 +687,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             Ok(outcome) => outcome,
             Err(unsafe_name) => {
                 let reason = unsafe_reason(&unsafe_name);
-                notices.push(CacheNotice::RefNotFetched {
+                notices.say(CacheNotice::RefNotFetched {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
                     branch: default_branch.to_owned(),
@@ -702,7 +713,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             // precisely so it can be printed: the new branch is about to be cut
             // from a possibly stale cache.
             FetchOutcome::Failed { reason } => {
-                notices.push(CacheNotice::RefNotFetched {
+                notices.say(CacheNotice::RefNotFetched {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
                     branch: default_branch.to_owned(),
@@ -785,7 +796,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         storage: &mut MetadataStorage,
         workspace: &WorkspaceId,
         remote_url: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<PathBuf, PrepareWorkspaceError> {
         let (owner, repo, branch) = (workspace.owner(), workspace.repo(), workspace.git_ref());
         lock.require(owner, repo)
@@ -800,7 +811,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         // decides which of the two checkout shapes runs.
         let is_new_workspace = !clone_is_there(ws_path);
         if is_new_workspace {
-            notices.push(CacheNotice::CreatingWorkspaceClone {
+            notices.say(CacheNotice::CreatingWorkspaceClone {
                 path: ws_path.to_path_buf(),
             });
             if let Some(parent) = ws_path.parent() {
@@ -908,11 +919,9 @@ impl<'r> WorkspaceCloneManager<'r> {
         recorded.devpod_workspace_id = Some(workspace.value());
         match storage.add_worktree(recorded) {
             Ok(store_notices) => {
-                notices.extend(store_notices.into_iter().map(CacheNotice::Metadata));
+                notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
             }
-            Err(error) => notices.push(CacheNotice::WorkspaceNotRecorded {
-                reason: format!("{error:?}"),
-            }),
+            Err(refusal) => notices.say(CacheNotice::WorkspaceNotRecorded { refusal }),
         }
 
         Ok(ws_path.to_path_buf())
@@ -951,7 +960,7 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// The working-tree scan runs first and can only rule the answer *out*, never
     /// in, so the git-lfs probe still decides which pointer-shaped files are really
     /// LFS — the answer is what it always was, minus a fork nobody needed.
-    fn has_lfs_pointers(&self, ws_path: &Path, notices: &mut Vec<CacheNotice>) -> bool {
+    fn has_lfs_pointers(&self, ws_path: &Path, notices: &mut dyn Notices<CacheNotice>) -> bool {
         if let GitLfs::NotInstalled = self.lfs {
             return false;
         }
@@ -988,14 +997,18 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// Fails open: paths that cannot be enumerated mean "cannot tell", not "no
     /// LFS", so the probe runs. An unborn HEAD lands there too, and pays one probe
     /// to be told that a repository with no commits holds nothing.
-    fn may_hold_lfs_pointers(&self, ws_path: &Path, notices: &mut Vec<CacheNotice>) -> bool {
+    fn may_hold_lfs_pointers(
+        &self,
+        ws_path: &Path,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) -> bool {
         let listed = {
             let _span = timing::span("git ls-files");
             self.git.tracked_files(ws_path)
         };
         match listed {
             git::GitAnswer::Refused(refused) => {
-                notices.push(CacheNotice::TrackedFilesNotListed {
+                notices.say(CacheNotice::TrackedFilesNotListed {
                     reason: refused.reason().to_owned(),
                 });
                 true
@@ -1010,7 +1023,11 @@ impl<'r> WorkspaceCloneManager<'r> {
     ///
     /// An empty list for a refusal, *reported*: degrading silently to "no LFS here"
     /// would ship a tree of pointer files as though it were complete.
-    fn lfs_tracked_files(&self, ws_path: &Path, notices: &mut Vec<CacheNotice>) -> Vec<String> {
+    fn lfs_tracked_files(
+        &self,
+        ws_path: &Path,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) -> Vec<String> {
         let listed = {
             let _span = timing::span("git lfs ls-files");
             self.git.lfs_tracked_files(ws_path)
@@ -1018,7 +1035,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         match listed {
             git::GitAnswer::Said(files) => files,
             git::GitAnswer::Refused(refused) => {
-                notices.push(CacheNotice::LfsFilesNotListed {
+                notices.say(CacheNotice::LfsFilesNotListed {
                     reason: refused.reason().to_owned(),
                 });
                 Vec::new()
@@ -1041,11 +1058,16 @@ impl<'r> WorkspaceCloneManager<'r> {
     ///
     /// Writes into the shared bare repository, so it must not run unserialized;
     /// its one caller runs under the repo lock `prepare_workspace` holds.
-    fn fill_cache_lfs_store(&self, bare: &Path, reference: &str, notices: &mut Vec<CacheNotice>) {
-        notices.push(CacheNotice::FillingLfsCache);
+    fn fill_cache_lfs_store(
+        &self,
+        bare: &Path,
+        reference: &str,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) {
+        notices.say(CacheNotice::FillingLfsCache);
         let _span = timing::span("git lfs fetch (cache)");
         if let Some(refused) = self.git.lfs_fetch_into_cache(bare, reference).refusal() {
-            notices.push(CacheNotice::LfsCacheNotFilled {
+            notices.say(CacheNotice::LfsCacheNotFilled {
                 reason: refused.reason().to_owned(),
             });
         }
@@ -1057,10 +1079,15 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// why each half of that is load-bearing. Best-effort for the same reason as
     /// the cache fill: an object the cache does not hold makes this fail, and the
     /// caller's next question is whether any pointer survived.
-    fn pull_lfs_from_cache(&self, ws_path: &Path, bare: &Path, notices: &mut Vec<CacheNotice>) {
+    fn pull_lfs_from_cache(
+        &self,
+        ws_path: &Path,
+        bare: &Path,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) {
         let _span = timing::span("git lfs pull (cache)");
         if let Some(refused) = self.git.lfs_pull_from_cache(ws_path, bare).refusal() {
-            notices.push(CacheNotice::LfsNotPulledFromCache {
+            notices.say(CacheNotice::LfsNotPulledFromCache {
                 reason: refused.reason().to_owned(),
             });
         }
@@ -1097,7 +1124,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         ws_path: &Path,
         bare: &Path,
         reference: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<(), PrepareWorkspaceError> {
         if !self.has_lfs_pointers(ws_path, notices) {
             return Ok(());
@@ -1107,7 +1134,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         if !self.has_lfs_pointers(ws_path, notices) {
             return Ok(());
         }
-        notices.push(CacheNotice::PullingLfsFromOrigin);
+        notices.say(CacheNotice::PullingLfsFromOrigin);
         let pulled = {
             let _span = timing::span("git lfs pull");
             self.git.lfs_pull_origin(ws_path)
@@ -1129,7 +1156,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         owner: &str,
         repo: &str,
         branch: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<Removed, RemoveWorkspaceError> {
         let ws_path = self
             .workspace_path(owner, repo, branch)
@@ -1156,7 +1183,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         &self,
         storage: &mut MetadataStorage,
         workspace_id: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<Removed, RemoveWorkspaceError> {
         let Some(recorded) = storage.get_worktree_by_workspace_id(workspace_id).cloned() else {
             return Ok(Removed::Nothing);
@@ -1184,16 +1211,16 @@ impl<'r> WorkspaceCloneManager<'r> {
         owner: &str,
         repo: &str,
         branch: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<Removed, RemoveWorkspaceError> {
         match remove_tree(ws_path) {
             Ok(TreeRemoval::WasNotThere) => {
-                notices.push(CacheNotice::NoWorkspaceCloneToRemove {
+                notices.say(CacheNotice::NoWorkspaceCloneToRemove {
                     path: ws_path.to_path_buf(),
                 });
                 return Ok(Removed::Nothing);
             }
-            Ok(TreeRemoval::Removed) => notices.push(CacheNotice::WorkspaceCloneRemoved {
+            Ok(TreeRemoval::Removed) => notices.say(CacheNotice::WorkspaceCloneRemoved {
                 path: ws_path.to_path_buf(),
             }),
             Err(error) => return Err(RemoveWorkspaceError::DirectoryLeft(error)),
@@ -1203,11 +1230,9 @@ impl<'r> WorkspaceCloneManager<'r> {
         // the caller looking for a directory that is not there.
         match storage.remove_worktree(owner, repo, branch) {
             Ok(store_notices) => {
-                notices.extend(store_notices.into_iter().map(CacheNotice::Metadata));
+                notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
             }
-            Err(error) => notices.push(CacheNotice::WorkspaceRecordNotRemoved {
-                reason: format!("{error:?}"),
-            }),
+            Err(refusal) => notices.say(CacheNotice::WorkspaceRecordNotRemoved { refusal }),
         }
         Ok(Removed::Clone)
     }
@@ -1216,6 +1241,41 @@ impl<'r> WorkspaceCloneManager<'r> {
 /// Whether a directory holds a git clone: it is there, and it has a `.git`.
 fn clone_is_there(ws_path: &Path) -> bool {
     ws_path.exists() && ws_path.join(".git").exists()
+}
+
+/// Report what ensuring the branch turned out to be, in Python's order.
+///
+/// The four lines `branch_manager.py` logged (49/56/62/67), reported here because
+/// this is the layer with a channel to report them on — and the two that can happen
+/// in one call happen in this order: the branch was created, then it was pushed.
+fn say_branch(
+    ensured: &BranchEnsured,
+    branch: &str,
+    remote: &str,
+    notices: &mut dyn Notices<CacheNotice>,
+) {
+    match ensured {
+        BranchEnsured::AlreadyBothSides => notices.say(CacheNotice::BranchAlreadyBothSides {
+            branch: branch.to_owned(),
+        }),
+        BranchEnsured::CutFromRemote { .. } => notices.say(CacheNotice::BranchCutFromRemote {
+            branch: branch.to_owned(),
+            remote: remote.to_owned(),
+        }),
+        BranchEnsured::RemoteWithoutIt { local, push, .. } => {
+            if let LocalBranch::Created = local {
+                notices.say(CacheNotice::BranchCreated {
+                    branch: branch.to_owned(),
+                });
+            }
+            if let RemotePush::Pushed = push {
+                notices.say(CacheNotice::BranchPushed {
+                    branch: branch.to_owned(),
+                    remote: remote.to_owned(),
+                });
+            }
+        }
+    }
 }
 
 /// An unsafe name as a reason a caller can carry.
@@ -1893,12 +1953,20 @@ mod tests {
         assert_eq!(base.expect("ensured"), BranchBase::Fresh);
         assert_eq!(
             notices,
-            vec![CacheNotice::FetchingRef {
-                owner: "owner".to_owned(),
-                repo: "repo".to_owned(),
-                branch: "newbranch".to_owned(),
-            }],
-            "the one fetch announces itself, and nothing else is reported"
+            vec![
+                CacheNotice::FetchingRef {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "newbranch".to_owned(),
+                },
+                // And what the branch step decided: the fake answers `show-ref`,
+                // so the branch is there — and in a bare cache whose refspec maps
+                // remote heads onto local heads, that means both sides have it.
+                CacheNotice::BranchAlreadyBothSides {
+                    branch: "newbranch".to_owned(),
+                },
+            ],
+            "the one fetch announces itself, then the branch decision"
         );
         let argvs = fake.argvs();
         assert_eq!(
@@ -2045,6 +2113,9 @@ mod tests {
                     branch: "main".to_owned(),
                     reason: "fatal: no such host".to_owned(),
                 },
+                CacheNotice::BranchAlreadyBothSides {
+                    branch: "newbranch".to_owned(),
+                },
             ],
             "the reason is carried precisely so it can be printed"
         );
@@ -2077,13 +2148,17 @@ mod tests {
             }
             other => panic!("a stale base, got {other:?}"),
         }
-        assert!(matches!(
-            notices.as_slice(),
-            [
-                CacheNotice::FetchingRef { .. },
-                CacheNotice::RefNotFetched { .. }
-            ]
-        ));
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [
+                    CacheNotice::FetchingRef { .. },
+                    CacheNotice::RefNotFetched { .. },
+                    CacheNotice::BranchAlreadyBothSides { .. }
+                ]
+            ),
+            "{notices:?}"
+        );
         let argvs = fake.argvs();
         assert_eq!(
             as_strs(&argvs)
@@ -2128,13 +2203,17 @@ mod tests {
             }
             other => panic!("a stale base, got {other:?}"),
         }
-        assert!(matches!(
-            notices.as_slice(),
-            [
-                CacheNotice::FetchingRef { .. },
-                CacheNotice::RefNotFetched { .. }
-            ]
-        ));
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [
+                    CacheNotice::FetchingRef { .. },
+                    CacheNotice::RefNotFetched { .. },
+                    CacheNotice::BranchAlreadyBothSides { .. }
+                ]
+            ),
+            "{notices:?}"
+        );
         let argvs = fake.argvs();
         assert_eq!(
             as_strs(&argvs)
@@ -2500,6 +2579,9 @@ mod tests {
                 CacheNotice::FetchingRef {
                     owner: "owner".to_owned(),
                     repo: "repo".to_owned(),
+                    branch: "nb4".to_owned(),
+                },
+                CacheNotice::BranchAlreadyBothSides {
                     branch: "nb4".to_owned(),
                 },
                 CacheNotice::FillingLfsCache,

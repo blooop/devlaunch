@@ -740,21 +740,30 @@ fn the_timing_summary_is_asked_for_by_the_environment_and_lands_on_stderr() {
 // ===========================================================================
 
 #[test]
-fn a_command_whose_flow_is_not_ported_refuses_and_names_the_milestone() {
-    // The alternative — succeeding silently — is what would let a mid-port build
-    // look like it had opened a workspace. M6 took `--purge`, `--prune`,
-    // `--reconcile` and the two lifecycle verbs out of this list and M7 took the
-    // eight launch verbs; what is left is the selector every verb-with-no-target
-    // opens, which is M8's.
+fn a_verb_with_no_workspace_opens_the_selector_and_no_terminal_picks_nothing() {
+    // **Divergence rows 1 and 15:** none of these three names a workspace, so each
+    // opens the picker — Python parsed `dl stop` as a spec and silently discarded
+    // the other two. **Row 6:** the picker is skim linked into the binary rather
+    // than a spawned fzf, and a run with no terminal (every run in this suite) can
+    // draw no picker at all, so nothing is picked. Python's ending for a pick that
+    // never came is this one: the help on stdout, exit 1 — and the help is clap's
+    // (row 3).
     let world = World::full();
     for args in [vec!["stop"], vec!["--rm"], vec!["--", "make", "test"]] {
         let run = world.dl(&args);
         run.exited(1);
         assert!(
-            run.err
-                .contains("the interactive workspace selector is not in this build yet"),
-            "dl {args:?} said {:?}",
-            run.err
+            run.out.starts_with("Select workspace (type to filter):\n"),
+            "dl {args:?} did not open the picker: {:?}",
+            run.out
         );
+        assert!(
+            run.out.contains("Usage: dl"),
+            "dl {args:?} printed no help after picking nothing: {:?}",
+            run.out
+        );
+        // And nothing was attempted on any workspace: every verb here reports what
+        // it did on stderr, and there is nothing on it.
+        assert_eq!(run.err, "", "dl {args:?} acted on a workspace");
     }
 }

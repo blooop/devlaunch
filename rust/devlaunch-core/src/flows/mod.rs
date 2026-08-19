@@ -1,4 +1,6 @@
-pub(crate) mod branch_manager;
+// binary surface — not part of the frozen wf API (#250 §7): the branch decision's
+// refusal travels inside a launch refusal, and the words for it are the binary's.
+pub mod branch_manager;
 // binary surface — not part of the frozen wf API (#250 §7)
 pub mod completion;
 // binary surface — not part of the frozen wf API (#250 §7)

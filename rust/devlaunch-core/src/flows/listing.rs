@@ -199,7 +199,9 @@ pub struct SourceDescription {
 }
 
 /// [`SourceDescription`] for one source. Total over the arms.
-pub(crate) fn describe_source(source: &WorkspaceSource) -> SourceDescription {
+///
+/// binary surface — not part of the frozen wf API (#250 §7)
+pub fn describe_source(source: &WorkspaceSource) -> SourceDescription {
     let (kind, detail) = match source {
         WorkspaceSource::LocalFolder(path) => (SourceKind::Local, path.clone()),
         WorkspaceSource::GitRepository(url) => (SourceKind::Git, url.clone()),

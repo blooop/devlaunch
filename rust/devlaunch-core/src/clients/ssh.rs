@@ -37,6 +37,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::runner::{EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec};
+use crate::shell;
 
 /// OpenSSH, dl's other way into a workspace.
 pub(crate) const PROGRAM: &str = "ssh";
@@ -127,16 +128,24 @@ pub(crate) fn command_args(
 }
 
 /// The one remote argument: the command, under a `cd` when there is a directory.
+///
+/// The directory is quoted by [`shell::quote`] — Python's `shlex.quote`, byte for
+/// byte — and not by the `shlex` crate, which spells two things differently: it
+/// quotes a word Python leaves bare (`/srv/a@b`), and it switches to double quotes
+/// for a directory holding an apostrophe (`/home/o'brien/src`) where Python writes
+/// one single-quoted word with `'"'"'`. The payload travels in argv and argv is what
+/// the parity harness compares, so a session that ran the same command in the same
+/// directory would still have differed in bytes.
+///
+/// A NUL is the one thing quoting cannot fix, and it is refused rather than sent —
+/// which is what the crate's `try_quote` was here for.
 fn payload(command: &str, workdir: Option<&str>) -> Result<String, UnsafeRequest> {
     match workdir {
         None | Some("") => Ok(command.to_owned()),
-        Some(workdir) => {
-            let quoted =
-                shlex::try_quote(workdir).map_err(|_| UnsafeRequest::UnquotableWorkdir {
-                    workdir: workdir.to_owned(),
-                })?;
-            Ok(format!("cd {quoted} && {command}"))
-        }
+        Some(workdir) if shell::holds_nul(workdir) => Err(UnsafeRequest::UnquotableWorkdir {
+            workdir: workdir.to_owned(),
+        }),
+        Some(workdir) => Ok(format!("cd {} && {command}", shell::quote(workdir))),
     }
 }
 
@@ -372,6 +381,25 @@ mod tests {
                 .contains("'/a dir/with space'"),
             "{args:?}"
         );
+    }
+
+    #[test]
+    fn a_workdir_is_quoted_the_way_python_quotes_it_and_not_the_way_shlex_does() {
+        // The two words the `shlex` crate spells differently, which is why this
+        // module quotes with `shell::quote`: an apostrophe makes the crate switch to
+        // double quotes, and `@`/`%` make it quote a word CPython leaves bare.
+        for (workdir, expected) in [
+            (
+                "/home/o'brien/src",
+                r#"cd '/home/o'"'"'brien/src' && bash -lc make"#,
+            ),
+            ("/srv/a@b%c", "cd /srv/a@b%c && bash -lc make"),
+        ] {
+            let args = command_args("myws", "bash -lc make", &[], Some(workdir))
+                .expect("a well-formed request");
+
+            assert_eq!(args.last().expect("a payload"), expected);
+        }
     }
 
     #[test]

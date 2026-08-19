@@ -48,6 +48,7 @@ use crate::domain::metadata::{self, MetadataError, MetadataStorage};
 use crate::domain::model::{BaseRepository, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
+use crate::notices::Notices;
 use crate::timing;
 
 /// The bare repository's directory name, inside the repo directory.
@@ -161,6 +162,23 @@ pub enum CacheNotice {
     },
     /// A workspace clone is about to be cut from the bare cache.
     CreatingWorkspaceClone { path: PathBuf },
+
+    // The branch decision, one arm per state
+    // [`crate::flows::branch_manager::BranchEnsured`] can be in. Reported by the
+    // caller that holds this channel, because `branch_manager` answers rather than
+    // logs — see [`crate::flows::workspace_clone::WorkspaceCloneManager::ensure_branch`].
+    /// The branch was already there locally and on the remote, so nothing was cut,
+    /// pushed or pointed.
+    BranchAlreadyBothSides { branch: String },
+    /// The remote had the branch and the local side did not, so a local branch was
+    /// cut from `<remote>/<branch>`.
+    BranchCutFromRemote { branch: String, remote: String },
+    /// A local branch was created — from the start point, since the remote has not
+    /// got this branch.
+    BranchCreated { branch: String },
+    /// The branch was pushed to the remote. Reachable only for a caller that asked
+    /// for it: the launch path never does.
+    BranchPushed { branch: String, remote: String },
     /// The cache's own git-lfs store is about to be filled for one ref. Carries
     /// nothing: Python's line names neither the ref nor the cache.
     FillingLfsCache,
@@ -235,10 +253,12 @@ pub enum CacheNotice {
     /// than read as "no LFS here", which would ship a tree of pointer files as
     /// though it were complete.
     LfsFilesNotListed { reason: String },
-    /// The workspace clone is on disk but its record could not be written.
-    WorkspaceNotRecorded { reason: String },
-    /// The workspace clone is gone but its record could not be removed.
-    WorkspaceRecordNotRemoved { reason: String },
+    /// The workspace clone is on disk but its record could not be written. Carries
+    /// the write's own refusal, for the reason [`CloneError::NotRecorded`] does.
+    WorkspaceNotRecorded { refusal: metadata::MetadataError },
+    /// The workspace clone is gone but its record could not be removed. Carries the
+    /// write's own refusal, for the reason [`CloneError::NotRecorded`] does.
+    WorkspaceRecordNotRemoved { refusal: metadata::MetadataError },
     /// No clone directory can be named for a record: the recorded path is
     /// unusable *and* the record's own triple is not a safe one. Named by the
     /// triple, because that triple is what failed and is the field a hand-edited
@@ -340,11 +360,11 @@ pub(crate) struct RepoLock {
 
 /// A token offered as evidence about a repository it says nothing about.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WrongRepoLock {
+pub struct WrongRepoLock {
     /// The repository the lock is actually held for.
-    pub(crate) held: (String, String),
+    pub held: (String, String),
     /// The repository the caller wanted it to vouch for.
-    pub(crate) wanted: (String, String),
+    pub wanted: (String, String),
 }
 
 impl RepoLock {
@@ -799,7 +819,7 @@ fn writable_directory(directory: &Path) -> bool {
 /// top of the clone's reason, so the run that mattered — why the clone failed —
 /// was the one lost.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Cleanup {
+pub enum Cleanup {
     /// The debris was removed, or there was none.
     Cleared,
     /// The debris is still there, and this is why.
@@ -820,7 +840,7 @@ impl Cleanup {
 
 /// Why the bare cache for a repository could not be made.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CloneError {
+pub enum CloneError {
     /// The directory the clone goes in could not be created.
     ParentNotCreated { path: PathBuf, reason: String },
     /// A dead run's partial clone could not be cleared out of the way.
@@ -835,7 +855,10 @@ pub(crate) enum CloneError {
     },
     /// The clone is on disk and its record could not be written. Not swallowed:
     /// every caller reads a returned record as "the cache is ready".
-    NotRecorded(String),
+    ///
+    /// Carries the write's own refusal rather than a rendering of it: the words are
+    /// the `dl` binary's, and the step that failed is what a reader has to act on.
+    NotRecorded(metadata::MetadataError),
 }
 
 /// Why a repository's whole ref set could not be swept.
@@ -860,8 +883,9 @@ pub enum FetchRepoError {
     },
     /// git refused.
     Refused { reason: String },
-    /// The fetch worked and `last_fetched` could not be written.
-    NotRecorded(String),
+    /// The fetch worked and `last_fetched` could not be written. Typed, for the
+    /// reason [`CloneError::NotRecorded`] is.
+    NotRecorded(metadata::MetadataError),
 }
 
 /// Why a conditional sweep could not run.
@@ -893,8 +917,8 @@ pub(crate) enum CloneIfMissingError {
 }
 
 /// Why a lock scope of its own could not deliver the cache.
-#[derive(Debug)]
-pub(crate) enum EnsureRepoError {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnsureRepoError {
     Lock(LockError),
     /// Unreachable in practice — the scope mints the token it then passes — and
     /// kept as an arm rather than an `unwrap` so nothing in this module has a
@@ -1101,7 +1125,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         remote_url: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneError> {
         let bare = self.bare_dir(owner, repo);
 
@@ -1110,7 +1134,7 @@ impl<'r> RepositoryManager<'r> {
                 return Ok(existing);
             }
             if bare.join("HEAD").exists() {
-                notices.push(CacheNotice::AdoptedBareClone {
+                notices.say(CacheNotice::AdoptedBareClone {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
                     bare: bare.clone(),
@@ -1118,7 +1142,7 @@ impl<'r> RepositoryManager<'r> {
                 return self
                     .register_existing_bare(storage, owner, repo, remote_url, &bare, notices);
             }
-            notices.push(CacheNotice::ClearedPartialClone { bare: bare.clone() });
+            notices.say(CacheNotice::ClearedPartialClone { bare: bare.clone() });
             remove_tree(&bare).map_err(CloneError::PartialCloneNotCleared)?;
         }
 
@@ -1129,7 +1153,7 @@ impl<'r> RepositoryManager<'r> {
             })?;
         }
 
-        notices.push(CacheNotice::CloningRepository {
+        notices.say(CacheNotice::CloningRepository {
             remote_url: remote_url.to_owned(),
             bare: bare.clone(),
         });
@@ -1158,7 +1182,7 @@ impl<'r> RepositoryManager<'r> {
         let recorded = self.record(storage, repository, notices)?;
         // After the record, as Python logs it: what the line reports is a clone
         // that is both on disk and known about.
-        notices.push(CacheNotice::ClonedRepository {
+        notices.say(CacheNotice::ClonedRepository {
             owner: owner.to_owned(),
             repo: repo.to_owned(),
         });
@@ -1173,7 +1197,7 @@ impl<'r> RepositoryManager<'r> {
         repo: &str,
         remote_url: &str,
         bare: &Path,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneError> {
         let repository = BaseRepository {
             owner: owner.to_owned(),
@@ -1197,15 +1221,15 @@ impl<'r> RepositoryManager<'r> {
         &self,
         storage: &mut MetadataStorage,
         repository: BaseRepository,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneError> {
         let written = storage.add_repository(repository.clone());
         match written {
             Ok(store_notices) => {
-                notices.extend(store_notices.into_iter().map(CacheNotice::Metadata));
+                notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
                 Ok(repository)
             }
-            Err(error) => Err(CloneError::NotRecorded(format!("{error:?}"))),
+            Err(error) => Err(CloneError::NotRecorded(error)),
         }
     }
 
@@ -1238,7 +1262,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         remote_url: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneIfMissingError> {
         lock.require(owner, repo)
             .map_err(CloneIfMissingError::WrongRepoLock)?;
@@ -1270,7 +1294,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         remote_url: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, EnsureRepoError> {
         timing::stage_result(timing::Stage::HostPrep, || {
             let lock = self
@@ -1299,7 +1323,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         limit: Option<Duration>,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<(), FetchRepoError> {
         let bare = self.bare_dir(owner, repo);
         if !bare.exists() {
@@ -1310,7 +1334,7 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        notices.push(CacheNotice::FetchingUpdates {
+        notices.say(CacheNotice::FetchingUpdates {
             owner: owner.to_owned(),
             repo: repo.to_owned(),
         });
@@ -1335,14 +1359,14 @@ impl<'r> RepositoryManager<'r> {
             recorded.last_fetched = Some(Timestamp::now());
             match storage.add_repository(recorded) {
                 Ok(store_notices) => {
-                    notices.extend(store_notices.into_iter().map(CacheNotice::Metadata));
+                    notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
                 }
-                Err(error) => return Err(FetchRepoError::NotRecorded(format!("{error:?}"))),
+                Err(error) => return Err(FetchRepoError::NotRecorded(error)),
             }
         }
         // Last, where Python logs it: past the fetch and past the bookkeeping, so
         // the line means both are done.
-        notices.push(CacheNotice::FetchedUpdates {
+        notices.say(CacheNotice::FetchedUpdates {
             owner: owner.to_owned(),
             repo: repo.to_owned(),
         });
@@ -1375,7 +1399,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         branch: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<FetchOutcome, UnsafeName> {
         // The branch is interpolated into a refspec that reaches git as argv, so
         // it is checked here rather than trusted. The caller usually holds a
@@ -1394,7 +1418,7 @@ impl<'r> RepositoryManager<'r> {
 
         // Past both guards, where Python logs it: a ref nothing could be fetched
         // for was never announced as being fetched.
-        notices.push(CacheNotice::FetchingRef {
+        notices.say(CacheNotice::FetchingRef {
             owner: owner.to_owned(),
             repo: repo.to_owned(),
             branch: branch.to_owned(),
@@ -1447,7 +1471,7 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         limit: Option<Duration>,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<Fetched, LazyFetchError> {
         let Some(recorded) = storage.get_repository(owner, repo).cloned() else {
             return Err(LazyFetchError::NotInMetadata {
@@ -1485,11 +1509,11 @@ impl<'r> RepositoryManager<'r> {
         storage: &MetadataStorage,
         owner: &str,
         repo: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Option<BaseRepository> {
         let recorded = storage.get_repository(owner, repo)?.clone();
         if !self.repo_exists(owner, repo) {
-            notices.push(CacheNotice::RecordWithoutClone {
+            notices.say(CacheNotice::RecordWithoutClone {
                 owner: owner.to_owned(),
                 repo: repo.to_owned(),
                 bare: self.bare_dir(owner, repo),
@@ -1549,7 +1573,7 @@ impl<'r> RepositoryManager<'r> {
         storage: &MetadataStorage,
         owner: &str,
         repo: &str,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> String {
         let _stage = timing::stage(timing::Stage::HostPrep);
         if let Some(recorded) = self.get_repo(storage, owner, repo, notices)
@@ -1580,11 +1604,11 @@ impl<'r> RepositoryManager<'r> {
         owner: &str,
         repo: &str,
         scope: RemoveScope,
-        notices: &mut Vec<CacheNotice>,
+        notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<(), RemoveRepositoryError> {
         match storage.remove_repository(owner, repo) {
             Ok(store_notices) => {
-                notices.extend(store_notices.into_iter().map(CacheNotice::Metadata));
+                notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
             }
             Err(error) => return Err(RemoveRepositoryError::NotUnrecorded(error)),
         }

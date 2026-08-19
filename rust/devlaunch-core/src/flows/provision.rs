@@ -62,7 +62,6 @@
 // M8 wiring pass; the scripts and the reading are complete here.
 #![allow(dead_code)] // consumed from M8-wiring on
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
 use std::io::{BufWriter, Read, Write};
@@ -145,45 +144,13 @@ pub(crate) const ZELLIJ_STAGE: &str = "zellij";
 
 /// One shell word, quoted exactly as CPython's `shlex.quote` quotes it.
 ///
-/// Reproduced here rather than delegated to the `shlex` crate, and the reason is
-/// the one this whole module is organised around: the scripts are the shipped
-/// behaviour, so a payload devpod carries into a container has to be the *same
-/// bytes* the Python build sends. The crate's quoting is correct and different —
-/// it quotes a word Python leaves bare (`a@b%c`), and for a word containing a
-/// single quote it switches between double- and single-quoted segments
-/// (`"a'b"'$c'`) where Python writes one single-quoted word with `'"'"'` for each
-/// embedded quote. Every script here contains single quotes (the `grep -qxF '#
-/// devlaunch: …'` guard), so *every* remote payload would differ in bytes while
-/// meaning the same thing, and the zellij stage — a quoted script inside another
-/// script — would change the setup pass's own bytes too. The crate is still what
-/// reads a payload back: the tests split each composed `--command` with
-/// [`shlex::split`] and compare the recovered words, which is the round-trip
-/// property Python's own tests assert.
-///
-/// Total on `&str`, as Python's is on `str`. A NUL cannot survive a shell word,
-/// but it also cannot arrive: the only value interpolated by a caller is a
-/// workspace id, and an argv string is NUL-terminated before it ever reaches
-/// this process.
-pub(crate) fn quote(word: &str) -> Cow<'_, str> {
-    if word.is_empty() {
-        return Cow::Borrowed("''");
-    }
-    if word.chars().all(is_shell_safe) {
-        return Cow::Borrowed(word);
-    }
-    Cow::Owned(format!("'{}'", word.replace('\'', "'\"'\"'")))
-}
-
-/// The characters `shlex.quote` leaves unquoted: `[\w@%+=:,./-]` under
-/// `re.ASCII`, where `\w` is `[A-Za-z0-9_]`. Anything else — including every
-/// non-ASCII character — makes the word need quoting.
-fn is_shell_safe(character: char) -> bool {
-    character.is_ascii_alphanumeric()
-        || matches!(
-            character,
-            '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-        )
-}
+/// [`shell::quote`] itself, re-exported under this module's name because the whole
+/// module is organised around one property: the scripts are the shipped behaviour,
+/// so a payload devpod carries into a container has to be the *same bytes* the
+/// Python build sends. Every script here contains single quotes (the
+/// `grep -qxF '# devlaunch: …'` guard), which is exactly where the `shlex` crate's
+/// (correct, different) spelling would change every remote payload in the file.
+pub(crate) use crate::shell::quote;
 
 // ===========================================================================
 // the tools, and the opt-out
@@ -2008,11 +1975,20 @@ fi
     /// `answers` is consumed one per trip, the last repeating — the three-trip flow
     /// (probe, transfer, install) needs different answers to different trips, and a
     /// single number could only play one of them.
+    ///
+    /// It holds [`timing::exclusive`] for its own lifetime, as
+    /// `clients::devpod`'s `ScriptedRunner` does and for the same reason:
+    /// [`provision_tools`] opens the `tools` stage on the **process-global** timing
+    /// registry, so a test driving it without the guard writes into whatever document
+    /// a concurrent measured test installed. In the fixture rather than per test, so
+    /// no test has to remember.
     #[derive(Debug)]
     struct Trips {
         answers: Vec<Answer>,
         stdout: String,
         seen: Mutex<Vec<Trip>>,
+        /// See [`timing::exclusive`]. Last field, so it is dropped last.
+        _serialized: timing::Exclusive,
     }
 
     impl Trips {
@@ -2021,6 +1997,7 @@ fi
                 answers: exits.iter().copied().map(Answer::Exited).collect(),
                 stdout: String::new(),
                 seen: Mutex::new(Vec::new()),
+                _serialized: timing::exclusive(),
             }
         }
 
@@ -2029,6 +2006,7 @@ fi
                 answers: answers.to_vec(),
                 stdout: String::new(),
                 seen: Mutex::new(Vec::new()),
+                _serialized: timing::exclusive(),
             }
         }
 

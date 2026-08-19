@@ -253,7 +253,11 @@ impl Notice {
 ///
 /// Write failures are deliberately not swallowed: silently losing the workspace
 /// list is worse than an error.
-#[derive(Debug)]
+///
+/// `Clone` and comparable, so a flow that reports a failed write inside a notice
+/// carries the failure itself rather than a mirror of it: every arm's OS side is an
+/// [`OsFailure`], including the lock arm's, and none of them holds an `io::Error`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetadataError {
     /// The directory the file lives in could not be created.
     CreateDir { path: PathBuf, failure: OsFailure },

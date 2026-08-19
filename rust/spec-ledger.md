@@ -42,7 +42,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_concurrent_launches.py` | pending | clone/adoption race + launch-lock exclusion re-pinned (repo_manager.rs, launch.rs); metadata lost-updates in domain/metadata.rs; three cross-process drivers await M9 boundary |
 | `test/test_devpod_spawn_counts.py` | re-pinned in Rust | warm/cold spawn chains, opt-ins, no-metadata-io, exit-127 line and cold ssh trips at the boundary (dl/tests/launch.rs); listing/lifecycle rows in their flows |
 | `test/test_dl.py` | re-pinned in Rust | flow classes in listing/completion_cache/lifecycle/launch; read-side, lifecycle and launch-verb dispatch byte-pinned at the boundary (dl/tests) |
-| `test/test_interactive_command.py` | pending | typed side + devpod-route boundary done (payload parity, exit propagation, no-terminal routing, token forwarding); OpenSSH pty half awaits M9; aid transport awaits M8 |
+| `test/test_interactive_command.py` | pending | typed side + devpod-route boundary + aid transport done; OpenSSH pty half awaits M9 |
 | `test/test_lending_doc.py` | out of port scope | pins scripts/ or docs, not the shipped binary |
 | `test/test_locks.py` | re-pinned in Rust | domain/locks.rs; the literal "dl: waiting" stderr line is rendering (typed event pinned; words are the dl binary's) |
 | `test/test_pty_helpers.py` | out of port scope (harness infrastructure) | pins test/fixtures/pty_helpers.py, which survives as the judge |
@@ -58,7 +58,7 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/test_worktree_repo_manager.py` | re-pinned in Rust | flows/repo_manager.rs: RepoLock minting structural (private fields), FetchOutcome exhaustive, one-lstat symlinked-root refusal |
 | `test/test_worktree_storage.py` | re-pinned in Rust | domain/metadata.rs; seam-patched tests re-expressed as behavior |
 | `test/unit/__init__.py` | out of port scope (harness infrastructure) |  |
-| `test/unit/test_aid.py` | pending |  |
+| `test/unit/test_aid.py` | re-pinned in Rust | rewrite rule in aid/src/rewrite.rs; delegation at the boundary (aid/tests: rewrite, exit passthrough, help/version never reach dl); the AST-walk guards' property is the crate dependency edge itself |
 | `test/unit/test_claude_code_feature_mounts.py` | out of port scope | repo-artifact agreement (.devcontainer/claude-code README vs its feature manifest + pre-create hook); never spawns dl; keeps running in the normal pytest job |
 | `test/unit/test_devcontainer_manifest.py` | out of port scope | pins this repo's own devcontainer.json (ssh mounts, pixi tasks); never spawns dl; keeps running in the normal pytest job |
 | `test/unit/test_devpod_provider.py` | re-pinned in Rust | clients/devpod.rs; the standalone `python -m` CLI tests are out of port scope (defect class absent in Rust) |
@@ -84,5 +84,5 @@ Dispositions and policy: docs/rust-rewrite-plan.md ("The spec ledger").
 | `test/unit/test_tty_session.py` | re-pinned in Rust | clients/ssh.rs; chmod-000 case re-expressed root-proof |
 | `test/unit/test_updater_fetch_sweep.py` | re-pinned in Rust | sweep classes in lifecycle.rs; child-migrates at the boundary (v1 cache migrated by --update-cache); subprocess-boundary class is harness infrastructure |
 | `test/unit/test_workspace_listing.py` | re-pinned in Rust | reads in flows/listing.rs, pinned again at the boundary with Python goldens; purge-will-not-act exit + stderr at the boundary |
-| `test/unit/test_workspace_source.py` | pending | source arms re-pinned in clients/devpod.rs; describe_source + unreadable-repo discovery re-pinned (flows/listing.rs); the fuzzy-picker class awaits M8 |
+| `test/unit/test_workspace_source.py` | re-pinned in Rust | source arms in clients/devpod.rs; describe_source + discovery in flows/listing.rs; fuzzy-picker offer list in dl/src/select.rs (unfiltered, devpod order, describe_source labels) |
 | `test/unit/test_workspace_source_placement.py` | re-pinned in Rust | flows/lifecycle.rs placement: names_a_remote/source_places/site_of/holder/canonical; direction-independence and git-source-with-local-path pinned |

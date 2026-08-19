@@ -1,0 +1,26 @@
+[package]
+name = "aid"
+description = "aid: dl, with a coding agent started for you"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The only devlaunch crate named here, and deliberately: aid is a command-line
+# rewrite that hands the result to dl, so the whole of devlaunch it can reach is
+# dl's entry point and the quoting that composes a command line for it. Python
+# pins the same rule as a test (`test/unit/test_aid.py` walks aid.py's AST and
+# refuses any use of `dl` beyond `main`, `get_version` and `DL_VALUE_OPTIONS`);
+# here it is the dependency graph.
+dl = { path = "../dl" }
+# `signal(2)`, so Ctrl-C exits 130 rather than killing this process by signal —
+# the same disposition `dl` installs, since aid is a dl run under another name.
+libc = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

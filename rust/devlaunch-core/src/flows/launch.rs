@@ -77,9 +77,13 @@ use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
 use crate::flows::listing::CommandContext;
+use crate::flows::provision::DevpodMissing;
 use crate::flows::repo_manager::CacheNotice;
-use crate::flows::workspace_clone::WorkspaceCloneManager;
+use crate::flows::repo_manager::EnsureRepoError;
+use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
+use crate::notices::{Notices, Wrapped};
 use crate::runner::{Exit, Runner};
+use crate::shell;
 use crate::timing;
 
 // ===========================================================================
@@ -318,20 +322,33 @@ pub enum LaunchNotice {
     Lifecycle(LifecycleNotice),
 }
 
-/// Collect the notices a storage flow produced.
-fn extend_with_cache(notices: &mut Vec<LaunchNotice>, cache: Vec<CacheNotice>) {
-    notices.extend(cache.into_iter().map(LaunchNotice::Cache));
+/// The launch's channel, as a storage flow's.
+///
+/// A sink handed down rather than a vector collected and appended: a bare clone of
+/// a large repository takes minutes, and the line explaining the wait is worth
+/// nothing after it.
+fn as_cache<'a>(
+    notices: &'a mut dyn Notices<LaunchNotice>,
+) -> Wrapped<'a, CacheNotice, LaunchNotice> {
+    Wrapped::new(notices, LaunchNotice::Cache)
 }
 
-/// Collect the notices a lifecycle flow produced.
+/// The same, as a lifecycle flow's.
+fn as_lifecycle<'a>(
+    notices: &'a mut dyn Notices<LaunchNotice>,
+) -> Wrapped<'a, LifecycleNotice, LaunchNotice> {
+    Wrapped::new(notices, from_lifecycle)
+}
+
+/// One lifecycle notice in the launch's vocabulary.
 ///
 /// A cache notice that arrived wrapped is unwrapped, so there is one
 /// representation of it here rather than two routes to the same fact.
-fn extend_with_lifecycle(notices: &mut Vec<LaunchNotice>, lifecycle: Vec<LifecycleNotice>) {
-    notices.extend(lifecycle.into_iter().map(|notice| match notice {
+fn from_lifecycle(notice: LifecycleNotice) -> LaunchNotice {
+    match notice {
         LifecycleNotice::Cache(cache) => LaunchNotice::Cache(cache),
         other => LaunchNotice::Lifecycle(other),
-    }));
+    }
 }
 
 // ===========================================================================
@@ -587,7 +604,7 @@ impl HostToken {
         &self,
         runner: &dyn Runner,
         host: &gh::HostEnv,
-        notices: &mut Vec<LaunchNotice>,
+        notices: &mut dyn Notices<LaunchNotice>,
     ) -> &TokenLookup {
         if let Some(remembered) = self.asked.get() {
             return remembered;
@@ -597,7 +614,7 @@ impl HostToken {
         // answered out of the environment.
         let lookup = gh::resolve_token(runner, host);
         if let TokenLookup::Unavailable(event) = &lookup {
-            notices.push(LaunchNotice::NoGitHubToken(*event));
+            notices.say(LaunchNotice::NoGitHubToken(*event));
         }
         // A second caller racing in loses the value it computed, which is fine:
         // both are answers to the same question, and only one notice was pushed.
@@ -610,7 +627,7 @@ impl HostToken {
         &self,
         runner: &dyn Runner,
         host: &gh::HostEnv,
-        notices: &mut Vec<LaunchNotice>,
+        notices: &mut dyn Notices<LaunchNotice>,
     ) -> Option<&Token> {
         self.lookup(runner, host, notices).token()
     }
@@ -845,14 +862,14 @@ impl Serialization {
 pub(crate) fn serialize_launch(
     host: &Host,
     naming: Naming<'_>,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Serialization {
     let Some(identity) = naming.identity() else {
         return Serialization::Unkeyed;
     };
     let lock_path = host.launch_lock_path(identity);
     let held = locks::hold_lock_watching(&lock_path, |_| {
-        notices.push(LaunchNotice::WaitingForSiblingLaunch {
+        notices.say(LaunchNotice::WaitingForSiblingLaunch {
             workspace_id: identity.to_owned(),
         });
     });
@@ -867,7 +884,7 @@ pub(crate) fn serialize_launch(
         },
         Err(error) => {
             let reason = lock_reason(&error);
-            notices.push(LaunchNotice::LaunchLockUnavailable {
+            notices.say(LaunchNotice::LaunchLockUnavailable {
                 workspace_id: identity.to_owned(),
                 reason: reason.clone(),
             });
@@ -878,9 +895,9 @@ pub(crate) fn serialize_launch(
 
 fn lock_reason(error: &LockError) -> String {
     match error {
-        LockError::CreateParent { source, .. }
-        | LockError::Open { source, .. }
-        | LockError::Acquire { source, .. } => source.to_string(),
+        LockError::CreateParent { failure, .. }
+        | LockError::Open { failure, .. }
+        | LockError::Acquire { failure, .. } => failure.message.clone(),
     }
 }
 
@@ -896,11 +913,18 @@ fn lock_reason(error: &LockError) -> String {
 /// without a container to install into, which is exactly what Python's tests
 /// patch.
 ///
-/// It answers nothing. Whether the pass worked is reported by the pass itself
-/// (devlaunch#167/#168), and a launch does not branch on it: the tools are
-/// best-effort, and a workspace with no tools is still a workspace.
+/// It answers *one* thing, and it is not whether the tools landed: whether the pass
+/// worked is reported by the pass itself (devlaunch#167/#168) and a launch does not
+/// branch on it — the tools are best-effort, and a workspace with no tools is still
+/// a workspace. What it answers is [`DevpodMissing`], because that is not a failure
+/// of the thing being attempted: Python gives `DevpodNotInstalled` a class its
+/// `except OSError` cannot catch, so it travels out of the launch and `main()`
+/// renders exit 127 for it. A trait returning `()` could not carry that, and the
+/// binary had to keep a `Cell` beside the launch to reconstruct it — after the
+/// session Python never reached.
 pub trait Provision {
-    fn provision_tools(&self, runner: &dyn Runner, workspace_id: &str);
+    fn provision_tools(&self, runner: &dyn Runner, workspace_id: &str)
+    -> Result<(), DevpodMissing>;
 }
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
@@ -909,7 +933,13 @@ pub trait Provision {
 pub(crate) struct NoProvisioning;
 
 impl Provision for NoProvisioning {
-    fn provision_tools(&self, _runner: &dyn Runner, _workspace_id: &str) {}
+    fn provision_tools(
+        &self,
+        _runner: &dyn Runner,
+        _workspace_id: &str,
+    ) -> Result<(), DevpodMissing> {
+        Ok(())
+    }
 }
 
 // ===========================================================================
@@ -964,7 +994,7 @@ pub(crate) fn workspace_up(
     token: &HostToken,
     provision: &dyn Provision,
     request: &UpRequest<'_>,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<UpOutcome, NotRun> {
     timing::stage_result(timing::Stage::DevpodUp, || {
         up_under_stage(context, host, token, provision, request, notices)
@@ -977,7 +1007,7 @@ fn up_under_stage(
     token: &HostToken,
     provision: &dyn Provision,
     request: &UpRequest<'_>,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<UpOutcome, NotRun> {
     let options = context_options(
         context.runner(),
@@ -986,7 +1016,7 @@ fn up_under_stage(
         SystemTime::now(),
     );
     let pixi = PixiCache::ensure(host.pixi_cache_source());
-    notices.extend(pixi.notice());
+    notices.say_all(pixi.notice());
 
     // Taken here, so the lock covers the state re-check, the `up` and the tools:
     // a launch waiting on a prewarm must not attach before the tools land.
@@ -997,7 +1027,7 @@ fn up_under_stage(
         && !request.wants_more_than_a_running_workspace()
         && is_running(context.runner(), identity)
     {
-        notices.push(LaunchNotice::BroughtUpBySibling {
+        notices.say(LaunchNotice::BroughtUpBySibling {
             workspace_id: identity.to_owned(),
         });
         // Spared the container lifecycle, but only after waiting out the sibling
@@ -1009,7 +1039,9 @@ fn up_under_stage(
         // interrupted between the two, its `up` may have failed after the
         // container started, or it may have run with the tools switched off where
         // this one does not.
-        provision.provision_tools(context.runner(), identity);
+        provision
+            .provision_tools(context.runner(), identity)
+            .map_err(|DevpodMissing| NotRun::NotInstalled)?;
         return Ok(UpOutcome::SkippedSiblingWon);
     }
 
@@ -1038,7 +1070,12 @@ fn up_under_stage(
     // Only after a successful `up`: there is no container to install into
     // otherwise. Inside the lock, for the reason it was taken above.
     if let Some(identity) = request.naming.identity() {
-        provision.provision_tools(context.runner(), identity);
+        // A devpod that went missing between the `up` that just worked and the pass
+        // that follows it takes the launch with it, as Python's exception does: there
+        // is no session to hand over without the binary that opens one.
+        provision
+            .provision_tools(context.runner(), identity)
+            .map_err(|DevpodMissing| NotRun::NotInstalled)?;
     }
     drop(serialization);
     Ok(UpOutcome::Started)
@@ -1060,7 +1097,7 @@ fn stage_token(
     runner: &dyn Runner,
     host: &Host,
     token: &HostToken,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Option<StagedToken> {
     let found = token.token(runner, &host.gh, notices)?;
     match StagedToken::stage(found) {
@@ -1068,7 +1105,7 @@ fn stage_token(
         Err(error) => {
             // Forwarding a credential is a convenience, so a full or read-only
             // temp directory costs the workspace its gh login and not its launch.
-            notices.push(LaunchNotice::TokenNotStaged {
+            notices.say(LaunchNotice::TokenNotStaged {
                 reason: error.to_string(),
             });
             None
@@ -1111,42 +1148,17 @@ pub struct UnquotableCommand {
     pub command: String,
 }
 
-/// `word` as one shell word, spelled the way Python's `shlex.quote` spells it.
+/// `word` as one shell word, or `None` for a word no shell word can be.
 ///
-/// Hand-written rather than `shlex::try_quote`, and the difference is bytes on a
-/// command line rather than taste: the Rust crate switches to double quotes for a
-/// word containing a single quote, where Python always single-quotes and escapes
-/// each `'` as `'"'"'`. Both are the same word to a POSIX shell, but the payload
-/// travels in argv and argv is what the parity harness compares — so a launch
-/// that renders `bash -lc "claude 'x'"` where Python renders
-/// `bash -lc 'claude '"'"'x'"'"''` is a difference nobody asked for.
-///
-/// The safe set is Python's `[\w@%+=:,./-]` under `re.ASCII`, so a word made only
-/// of those characters is returned bare — which is why `bash -lc claude` carries
-/// no quotes at all.
-///
-/// `None` is a word holding a NUL, which no shell word can carry and no argv can
-/// either.
+/// [`shell::quote`] is the spelling — Python's `shlex.quote`, byte for byte — and
+/// the refusal is this layer's: a `-- <cmd>` holding a NUL is refused before
+/// anything spawns (docs/rust-rewrite-plan.md row 19), where Python quoted it and
+/// let the remote shell mangle it.
 fn posix_quote(word: &str) -> Option<String> {
-    if word.contains('\0') {
+    if shell::holds_nul(word) {
         return None;
     }
-    if word.is_empty() {
-        return Some("''".to_owned());
-    }
-    if word.chars().all(is_shell_safe) {
-        return Some(word.to_owned());
-    }
-    Some(format!("'{}'", word.replace('\'', "'\"'\"'")))
-}
-
-/// `\w@%+=:,./-` as Python's `re.ASCII` reads it.
-fn is_shell_safe(character: char) -> bool {
-    character.is_ascii_alphanumeric()
-        || matches!(
-            character,
-            '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-        )
+    Some(shell::quote(word).into_owned())
 }
 
 /// The one remote argument both transports deliver.
@@ -1268,7 +1280,7 @@ pub(crate) fn route(
     command: Option<&RemotePayload>,
     terminal: Terminal,
     workspace_id: &str,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Route {
     let Some(_) = command else {
         return Route::DevpodAttach;
@@ -1276,7 +1288,7 @@ pub(crate) fn route(
     match terminal {
         Terminal::Usable => Route::Terminal,
         Terminal::NoAlias => {
-            notices.push(LaunchNotice::NoTerminalAlias {
+            notices.say(LaunchNotice::NoTerminalAlias {
                 workspace_id: workspace_id.to_owned(),
             });
             Route::DevpodCommand
@@ -1367,7 +1379,7 @@ impl<'a> SessionContext<'a> {
     }
 
     /// The host's token, asked for at most once across the whole launch.
-    fn forwarded_token(&self, notices: &mut Vec<LaunchNotice>) -> Option<&'a Token> {
+    fn forwarded_token(&self, notices: &mut dyn Notices<LaunchNotice>) -> Option<&'a Token> {
         self.token.token(self.runner, &self.host.gh, notices)
     }
 }
@@ -1393,7 +1405,7 @@ pub(crate) fn workspace_ssh(
     command: Option<&str>,
     workdir: Option<&str>,
     forward: &mut dyn FnMut(&str),
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     let payload = match command {
         None => None,
@@ -1430,7 +1442,7 @@ fn devpod_session(
     payload: Option<&RemotePayload>,
     workdir: Option<&str>,
     forward: &mut dyn FnMut(&str),
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     let mut args = vec!["ssh".to_owned(), workspace_id.to_owned()];
     if let Some(workdir) = workdir.filter(|dir| !dir.is_empty()) {
@@ -1445,7 +1457,7 @@ fn devpod_session(
     args.extend(forwarding.args.iter().cloned());
 
     let call = Call::new(args).with_env(forwarding.env);
-    notices.push(LaunchNotice::SshCommand { argv: call.argv() });
+    notices.say(LaunchNotice::SshCommand { argv: call.argv() });
 
     // Only stderr is read, which under a pty carries devpod's own warnings and
     // nothing else, so devpod's report of how the session ended can be
@@ -1459,7 +1471,7 @@ fn devpod_session(
     Ok(match outcome {
         devpod::SshOutcome::RemoteExit { status } => Session::RemoteExit { status },
         devpod::SshOutcome::DevpodFailed { exit } => {
-            notices.push(LaunchNotice::DevpodSessionFailed { exit });
+            notices.say(LaunchNotice::DevpodSessionFailed { exit });
             Session::DevpodFailed { exit }
         }
     })
@@ -1471,12 +1483,12 @@ fn ssh_with_terminal(
     workspace_id: &str,
     payload: &RemotePayload,
     workdir: Option<&str>,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     let forwarding = gh::openssh_forwarding(session.forwarded_token(notices));
     let args = ssh::command_args(workspace_id, payload.as_str(), &forwarding.args, workdir)
         .map_err(SessionRefused::UnsafeRequest)?;
-    notices.push(LaunchNotice::SshCommand { argv: args.clone() });
+    notices.say(LaunchNotice::SshCommand { argv: args.clone() });
     let exit = {
         let _span = timing::span("ssh");
         ssh::run(session.runner, &args, forwarding.env).map_err(SessionRefused::Ssh)?
@@ -1576,7 +1588,7 @@ pub(crate) fn dotfiles_update(
     workspace_id: &str,
     bound: Option<Duration>,
     forward: &mut dyn FnMut(&str),
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     let options = context_options(
         session.runner,
@@ -1624,7 +1636,7 @@ pub(crate) fn attach_workspace(
     workspace_id: &str,
     command: Option<&str>,
     forward: &mut dyn FnMut(&str),
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     timing::stage_result(timing::Stage::Attach, || {
         if command.is_none()
@@ -1913,19 +1925,17 @@ pub fn resolve_triple(
     context: &mut CommandContext<'_>,
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Resolution {
     let derived = workspace.value();
     let triple = (workspace.owner(), workspace.repo(), workspace.git_ref());
-    let mut lifecycle_notices = Vec::new();
     let known = lifecycle::resolve_known_workspace(
         context.runner(),
         triple,
         &derived,
         || recorded_id(cold, triple),
-        &mut lifecycle_notices,
+        &mut as_lifecycle(notices),
     );
-    extend_with_lifecycle(notices, lifecycle_notices);
     match known {
         KnownWorkspace::Known {
             workspace_id,
@@ -1966,30 +1976,25 @@ pub(crate) fn name_default_branch(
     owner: &str,
     repo: &str,
     remote_url: &str,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<String, BranchNotNamed> {
     let opened = cold.open().map_err(BranchNotNamed::Cold)?;
-    let mut cache_notices = Vec::new();
+    let said = &mut as_cache(notices);
     let repos = opened.clones.repo_manager();
-    let ensured = repos.ensure_repo(opened.storage, owner, repo, remote_url, &mut cache_notices);
-    let named = match ensured {
-        Ok(_) => Ok(repos.get_default_branch(opened.storage, owner, repo, &mut cache_notices)),
-        Err(error) => Err(BranchNotNamed::Repository {
-            reason: format!("{error:?}"),
-        }),
-    };
-    extend_with_cache(notices, cache_notices);
-    named
+    match repos.ensure_repo(opened.storage, owner, repo, remote_url, said) {
+        Ok(_) => Ok(repos.get_default_branch(opened.storage, owner, repo, said)),
+        Err(error) => Err(BranchNotNamed::Repository(error)),
+    }
 }
 
 /// Why a bare `owner/repo` could not be turned into a triple.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BranchNotNamed {
     Cold(ColdRefused),
-    /// The bare-clone cache could not be brought up for this repository.
-    Repository {
-        reason: String,
-    },
+    /// The bare-clone cache could not be brought up for this repository. Carries the
+    /// cache's own refusal: this is the line a mistyped repository name ends at, and
+    /// what a reader needs from it is git's own words.
+    Repository(EnsureRepoError),
 }
 
 // ===========================================================================
@@ -2004,9 +2009,10 @@ pub enum NotPrepared {
     /// the workspace being prepared, because one report covers what three used to:
     /// all of them fail out of the one call, and "which repo, which branch" is
     /// what the old per-step messages carried and the user still needs.
-    Preparation {
-        reason: String,
-    },
+    ///
+    /// Carries the preparation's own refusal, whose arms name the step: which of the
+    /// five it was, and what git or the OS said about it.
+    Preparation(PrepareColdError),
 }
 
 /// Everything a cold launch needs on the host, under one repo lock.
@@ -2019,27 +2025,23 @@ pub(crate) fn prepare(
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
     remote_url: &str,
-    notices: &mut Vec<LaunchNotice>,
+    notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Placement, NotPrepared> {
     let opened = cold.open().map_err(NotPrepared::Cold)?;
-    let mut cache_notices = Vec::new();
     let prepared = opened.clones.prepare_cold(
         opened.storage,
         workspace.owner(),
         workspace.repo(),
         workspace.git_ref(),
         remote_url,
-        &mut cache_notices,
+        &mut as_cache(notices),
     );
-    extend_with_cache(notices, cache_notices);
     match prepared {
         Ok(prepared) => Ok(Placement::Creating {
             workspace_id: workspace.value(),
             source: prepared.path.to_string_lossy().into_owned(),
         }),
-        Err(error) => Err(NotPrepared::Preparation {
-            reason: format!("{error:?}"),
-        }),
+        Err(error) => Err(NotPrepared::Preparation(error)),
     }
 }
 
@@ -2104,6 +2106,16 @@ impl LaunchVerb {
             Self::Recreate | Self::Reset | Self::Restart => None,
             Self::Up | Self::Code | Self::Dotfiles => None,
         }
+    }
+
+    /// Whether a `devpod up` this verb *refused* still warms the completion cache.
+    ///
+    /// `dl.py` 4779/4788 asks for the refresh before it reads the return code for
+    /// these two, and returns on the failure first for every other verb. Reproduced
+    /// rather than tidied, because the difference is observable: a background child
+    /// either ran or it did not.
+    fn warms_the_cache_when_up_refuses(&self) -> bool {
+        matches!(self, Self::Up | Self::Code)
     }
 
     /// Whether this verb hands the user a session at the end.
@@ -2180,8 +2192,12 @@ pub enum LaunchAborted {
 /// One launch, and everything it needs.
 ///
 /// A value the binary makes one of per command, for the reason
-/// [`CommandContext`] is one. It owns the notice list, so a caller cannot lose
-/// half of them by forgetting to thread a `Vec` through one of the stages.
+/// [`CommandContext`] is one. It holds the notice *sink*, so no stage can lose half
+/// of them by forgetting to thread a channel through — and so every one of them is
+/// said at the moment it happens rather than when the launch is over. That matters
+/// for exactly the lines whose job is to explain a wait: `Cloning repository …` in
+/// front of a three-minute clone, and `Workspace X is already running, attaching...`
+/// in front of the shell it is about to hand over.
 pub struct Launch<'a, 'r, 'l> {
     context: &'a mut CommandContext<'r>,
     refresh: &'a mut Refresh<'l>,
@@ -2192,7 +2208,9 @@ pub struct Launch<'a, 'r, 'l> {
     /// stderr in production; core writes to nobody's stream.
     forward: &'a mut dyn FnMut(&str),
     token: HostToken,
-    notices: Vec<LaunchNotice>,
+    /// Where this launch's notices go, as they happen. A `Vec` in a test that wants
+    /// the sequence, the binary's printer in production.
+    notices: &'a mut dyn Notices<LaunchNotice>,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -2203,6 +2221,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         provision: &'a dyn Provision,
         host: &'a Host,
         forward: &'a mut dyn FnMut(&str),
+        notices: &'a mut dyn Notices<LaunchNotice>,
     ) -> Self {
         Self {
             context,
@@ -2212,17 +2231,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             host,
             forward,
             token: HostToken::new(),
-            notices: Vec::new(),
+            notices,
         }
-    }
-
-    /// Everything this launch has to report, in the order it happened.
-    pub fn notices(&self) -> &[LaunchNotice] {
-        &self.notices
-    }
-
-    pub fn take_notices(&mut self) -> Vec<LaunchNotice> {
-        std::mem::take(&mut self.notices)
     }
 
     /// Run one launch.
@@ -2300,7 +2310,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let branch = match branch {
             Some(branch) => branch,
             None => {
-                match name_default_branch(self.cold, &owner, &repo, &remote_url, &mut self.notices)
+                match name_default_branch(self.cold, &owner, &repo, &remote_url, &mut *self.notices)
                 {
                     Ok(branch) => branch,
                     Err(error) => {
@@ -2317,10 +2327,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Ok(workspace) => workspace,
             Err(unsafe_name) => return Ok(Err(LaunchRefusal::UnsafeSpec(unsafe_name))),
         };
-        match resolve_triple(self.context, self.cold, &workspace, &mut self.notices) {
+        match resolve_triple(self.context, self.cold, &workspace, &mut *self.notices) {
             Resolution::Warm { placement } => Ok(Ok(placement)),
             Resolution::Cold { workspace } => {
-                match prepare(self.cold, &workspace, &remote_url, &mut self.notices) {
+                match prepare(self.cold, &workspace, &remote_url, &mut *self.notices) {
                     Ok(placement) => Ok(Ok(placement)),
                     Err(error) => Ok(Err(LaunchRefusal::NotPrepared {
                         owner,
@@ -2365,11 +2375,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             // asked: nothing to build and nothing to wait for. If a prewarm was
             // fired for it, this is what a prewarm that paid off looks like.
             timing::observe_attach(timing::AttachShape::Hit);
-            self.notices.push(LaunchNotice::AlreadyRunningAttaching {
+            self.notices.say(LaunchNotice::AlreadyRunningAttaching {
                 workspace_id: placement.workspace_id().to_owned(),
             });
             if devcontainer.is_some() {
-                self.notices.push(LaunchNotice::DevcontainerIgnoredRunning {
+                self.notices.say(LaunchNotice::DevcontainerIgnoredRunning {
                     workspace_id: placement.workspace_id().to_owned(),
                     spec: raw_spec.to_owned(),
                 });
@@ -2437,7 +2447,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
     ) -> Result<Launched, LaunchAborted> {
         if placement.is_running() {
-            self.notices.push(LaunchNotice::AlreadyRunning {
+            self.notices.say(LaunchNotice::AlreadyRunning {
                 workspace_id: placement.workspace_id().to_owned(),
             });
             // Still top up the tools: `up` is one of the two verbs named as how a
@@ -2445,7 +2455,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             // without them would make the documented recovery the one path that
             // cannot recover.
             self.provision
-                .provision_tools(self.context.runner(), placement.workspace_id());
+                .provision_tools(self.context.runner(), placement.workspace_id())
+                .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
             return Ok(Launched::AlreadyRunning);
         }
         if let Some(refused) = self.bring_up(&LaunchVerb::Up, devcontainer, placement)? {
@@ -2468,7 +2479,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .as_ref()
             .is_ok_and(ContainerState::is_running);
         if !running {
-            self.notices.push(LaunchNotice::StartingForDotfiles {
+            self.notices.say(LaunchNotice::StartingForDotfiles {
                 workspace_id: placement.workspace_id().to_owned(),
             });
             let naming = match placement {
@@ -2482,7 +2493,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 &self.token,
                 self.provision,
                 &request,
-                &mut self.notices,
+                &mut *self.notices,
             )
             .map_err(LaunchAborted::DevpodNotRun)?;
             if let UpOutcome::Refused { exit } = outcome {
@@ -2495,7 +2506,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             placement.workspace_id(),
             None,
             self.forward,
-            &mut self.notices,
+            &mut *self.notices,
         );
         Ok(Launched::Session(self.session(refreshed)?))
     }
@@ -2517,13 +2528,23 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             &self.token,
             self.provision,
             &request,
-            &mut self.notices,
+            &mut *self.notices,
         )
         .map_err(LaunchAborted::DevpodNotRun)?;
-        Ok(match outcome {
+        let refused = match outcome {
             UpOutcome::Started | UpOutcome::SkippedSiblingWon => None,
             UpOutcome::Refused { exit } => Some(LaunchRefusal::UpRefused { exit }),
-        })
+        };
+        // Asked here rather than by whoever renders the refusal, because *when* it is
+        // asked is Python's control flow rather than a rendering decision: for `up`
+        // and `code` the refresh happens before the return code is read
+        // ([`LaunchVerb::warms_the_cache_when_up_refuses`]), so a refused `up` still
+        // warms the cache. The once-per-command latch keeps the successful path from
+        // asking twice.
+        if refused.is_some() && verb.warms_the_cache_when_up_refuses() {
+            self.forced_refresh();
+        }
+        Ok(refused)
     }
 
     fn attach(
@@ -2537,7 +2558,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             workspace_id,
             command,
             self.forward,
-            &mut self.notices,
+            &mut *self.notices,
         );
         match session {
             Ok(session) => Ok(Launched::Session(session)),
@@ -2737,6 +2758,9 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingProvision {
         provisioned: Mutex<Vec<String>>,
+        /// A devpod that goes missing when the pass is asked for, which is the one
+        /// thing a pass can answer.
+        lost_devpod: bool,
     }
 
     impl RecordingProvision {
@@ -2749,11 +2773,19 @@ mod tests {
     }
 
     impl Provision for RecordingProvision {
-        fn provision_tools(&self, _runner: &dyn Runner, workspace_id: &str) {
+        fn provision_tools(
+            &self,
+            _runner: &dyn Runner,
+            workspace_id: &str,
+        ) -> Result<(), DevpodMissing> {
             self.provisioned
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(workspace_id.to_owned());
+            if self.lost_devpod {
+                return Err(DevpodMissing);
+            }
+            Ok(())
         }
     }
 
@@ -4494,6 +4526,9 @@ mod tests {
         provision: RecordingProvision,
         /// Where devpod's session chatter goes. See [`nowhere`].
         chatter: fn(&str),
+        /// What the launch said, in the order it said it. A `Vec` because a test
+        /// wants the sequence; the binary's sink prints instead.
+        said: Vec<LaunchNotice>,
     }
 
     fn launching<'a>(
@@ -4506,6 +4541,7 @@ mod tests {
             refresh: Refresh::new(updater, cache_path),
             provision: RecordingProvision::default(),
             chatter: nowhere,
+            said: Vec::new(),
         }
     }
 
@@ -4528,6 +4564,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run(
@@ -4575,6 +4612,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("myws", &LaunchVerb::Attach { command: None }, None);
@@ -4595,13 +4633,10 @@ mod tests {
                 vec!["ssh".to_owned(), "myws".to_owned()],
             ]
         );
-        assert!(
-            launch
-                .notices()
-                .contains(&LaunchNotice::AlreadyRunningAttaching {
-                    workspace_id: "myws".to_owned()
-                })
-        );
+        drop(launch);
+        assert!(parts.said.contains(&LaunchNotice::AlreadyRunningAttaching {
+            workspace_id: "myws".to_owned()
+        }));
     }
 
     #[test]
@@ -4620,6 +4655,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("no-such-ws", &LaunchVerb::Attach { command: None }, None);
@@ -4662,6 +4698,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("broken-ws", &LaunchVerb::Attach { command: None }, None);
@@ -4698,6 +4735,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let _ = launch.run(
@@ -4706,15 +4744,16 @@ mod tests {
             Some(&variant),
         );
 
+        drop(launch);
         assert!(
-            launch
-                .notices()
+            parts
+                .said
                 .contains(&LaunchNotice::DevcontainerIgnoredRunning {
                     workspace_id: "myws".to_owned(),
                     spec: "myws".to_owned(),
                 }),
             "{:?}",
-            launch.notices()
+            parts.said
         );
     }
 
@@ -4736,6 +4775,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             launch.run("myws", &LaunchVerb::Up, None)
         };
@@ -4747,6 +4787,56 @@ mod tests {
             vec![vec!["status".to_owned(), "myws".to_owned()]],
             "and no up at all"
         );
+    }
+
+    #[test]
+    fn a_devpod_that_went_missing_during_provisioning_ends_the_launch() {
+        // Python's `DevpodNotInstalled` is deliberately not an `OSError`, so it
+        // travels out of the launch and `main()` renders exit 127 for it — no
+        // session, no attach. The trait answers it for that reason, and this is the
+        // arm that carries it: the launch aborts, and the binary has no bookkeeping
+        // of its own to reconstruct the number from.
+        for (verb, running) in [
+            (LaunchVerb::Up, true),
+            (LaunchVerb::Attach { command: None }, false),
+        ] {
+            let scene = if running {
+                Scene::new().with_running("myws")
+            } else {
+                Scene::new().with_stopped("myws")
+            };
+            let updater = SelfInvocation::new("dl");
+            let completion = scene.cache_dir().join("completion.json");
+            let mut parts = launching(&scene.runner, &updater, &completion);
+            parts.provision.lost_devpod = true;
+            let mut cold = NeverCold;
+            let launched = {
+                let mut launch = Launch::new(
+                    &mut parts.context,
+                    &mut parts.refresh,
+                    &mut cold,
+                    &parts.provision,
+                    &scene.host,
+                    &mut parts.chatter,
+                    &mut parts.said,
+                );
+                launch.run("myws", &verb, None)
+            };
+
+            assert_eq!(
+                launched,
+                Err(LaunchAborted::DevpodNotRun(NotRun::NotInstalled)),
+                "{verb:?}"
+            );
+            assert!(
+                !scene
+                    .devpod_heads()
+                    .iter()
+                    .any(|argv| argv.first().map(String::as_str) == Some("ssh")),
+                "a launch that lost devpod still attached: {:?}",
+                scene.devpod_heads()
+            );
+        }
     }
 
     #[test]
@@ -4763,6 +4853,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("myws", &LaunchVerb::Code, None);
@@ -4801,6 +4892,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("myws", &LaunchVerb::Restart, None);
@@ -4840,6 +4932,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("myws", &LaunchVerb::Recreate, None);
@@ -4870,6 +4963,7 @@ mod tests {
             &parts.provision,
             &scene.host,
             &mut parts.chatter,
+            &mut parts.said,
         );
 
         let launched = launch.run("myws", &LaunchVerb::Reset, None);
@@ -4884,6 +4978,58 @@ mod tests {
             .find(|argv| argv.first().map(String::as_str) == Some("up"))
             .expect("an up");
         assert!(up.contains(&"--reset".to_owned()), "{up:?}");
+    }
+
+    #[test]
+    fn a_refused_up_warms_the_cache_for_up_and_code_and_for_nothing_else() {
+        // dl.py 4779/4788: those two ask for the refresh *before* they read the
+        // return code, so a `devpod up` that failed still warms the cache; every
+        // other verb returns on the failure first. Where the ask happens is control
+        // flow rather than rendering, so it is pinned here rather than at the
+        // binary — the observable difference is a background child.
+        for (verb, warms) in [
+            (LaunchVerb::Up, true),
+            (LaunchVerb::Code, true),
+            (LaunchVerb::Attach { command: None }, false),
+            (LaunchVerb::Recreate, false),
+            (LaunchVerb::Reset, false),
+        ] {
+            let scene = Scene::new().with_stopped("myws");
+            scene
+                .runner
+                .script(["devpod", "up"], Response::failed(7, "devpod: no\n"));
+            let updater = SelfInvocation::new("dl");
+            let completion = scene.cache_dir().join("completion.json");
+            let mut parts = launching(&scene.runner, &updater, &completion);
+            let mut cold = NeverCold;
+            let launched = {
+                let mut launch = Launch::new(
+                    &mut parts.context,
+                    &mut parts.refresh,
+                    &mut cold,
+                    &parts.provision,
+                    &scene.host,
+                    &mut parts.chatter,
+                    &mut parts.said,
+                );
+                launch.run("myws", &verb, None)
+            };
+
+            assert_eq!(
+                launched,
+                Ok(Launched::Refused(LaunchRefusal::UpRefused {
+                    exit: Exit::Code(7)
+                })),
+                "{verb:?}"
+            );
+            let refreshes = scene
+                .runner
+                .args_to("dl")
+                .into_iter()
+                .filter(|args| args.first().map(String::as_str) == Some("--update-cache"))
+                .count();
+            assert_eq!(refreshes, usize::from(warms), "{verb:?}");
+        }
     }
 
     #[test]
@@ -4912,6 +5058,7 @@ mod tests {
                     &parts.provision,
                     &scene.host,
                     &mut parts.chatter,
+                    &mut parts.said,
                 );
                 let launched = launch.run("myws", &verb, None);
                 assert!(launched.is_ok(), "{verb:?}: {launched:?}");
@@ -4947,6 +5094,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             let _ = launch.run("nonexistent", &LaunchVerb::Attach { command: None }, None);
         }
@@ -5003,6 +5151,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             let launched = launch.run(
                 "owner/repo@feature/x",
@@ -5048,6 +5197,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             let _ = launch.run(
                 "owner/repo",
@@ -5124,6 +5274,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             launch.run("myws", &LaunchVerb::Attach { command: None }, None)
         });
@@ -5184,6 +5335,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             launch.run("myws", &LaunchVerb::Attach { command: None }, None)
         });
@@ -5271,6 +5423,7 @@ mod tests {
                 &parts.provision,
                 &scene.host,
                 &mut parts.chatter,
+                &mut parts.said,
             );
             launch.run("myws", &LaunchVerb::Attach { command: None }, None)
         });

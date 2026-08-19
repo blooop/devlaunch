@@ -10,7 +10,6 @@ use std::io::Write as _;
 use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
-use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
@@ -23,10 +22,11 @@ use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::runner::{Exit, Runner};
 
-use crate::cli::{Command, ListOutput, Verb};
+use crate::cli::{self, Command, ListOutput, Verb};
 use crate::cold::ColdPath;
 use crate::launch::{self, Family};
 use crate::render;
+use crate::select;
 use crate::session::{self, Records, StartupError};
 use crate::target::{self, Unaddressable};
 
@@ -106,7 +106,14 @@ pub(crate) fn dispatch(
         Command::Prune { yes, force } => render_prune(runner, &mut context, yes, force),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
-        Command::Select { verb, .. } => render_select(verb),
+        Command::Select { verb, devcontainer } => render_select(
+            runner,
+            &mut context,
+            cache,
+            refresh,
+            verb,
+            devcontainer.as_ref(),
+        ),
         Command::Workspace {
             target,
             verb,
@@ -509,7 +516,6 @@ fn render_workspace<'r>(
         // Launch: clone, `devpod up`, fast attach, `-- <cmd>` through
         // `devpod ssh --command`.
         Family::Launch(launched) => launch::render_launch(
-            runner,
             context,
             cache,
             refresh,
@@ -834,29 +840,13 @@ fn refuse_prune(refused: &PruneError) -> Ending {
         // Fatal rather than skipped: a scan that silently left out a repository
         // would report a plan that is not the plan.
         PruneError::Lock(error) => {
-            eprintln!("error: {}", lock_refusal(error));
+            eprintln!(
+                "error: {}",
+                render::lock_refusal(error, "the repository lock")
+            );
             Ending::Refused
         }
         PruneError::Listing(refused) => refuse_listing(refused),
-    }
-}
-
-fn lock_refusal(error: &LockError) -> String {
-    match error {
-        LockError::CreateParent { path, source } => format!(
-            "could not create the directory for a repository lock at {} ({source})",
-            path.display()
-        ),
-        LockError::Open { path, source } => {
-            format!(
-                "could not open the repository lock {} ({source})",
-                path.display()
-            )
-        }
-        LockError::Acquire { path, source } => format!(
-            "could not take the repository lock {} ({source})",
-            path.display()
-        ),
     }
 }
 
@@ -962,18 +952,56 @@ fn render_reconcile(
 // the selector
 // ---------------------------------------------------------------------------
 
-/// A verb with no workspace named: the embedded fuzzy picker — M8.
-fn render_select(_verb: Verb) -> Ending {
-    not_yet("the interactive workspace selector", "M8")
+/// A verb with no workspace named: the embedded fuzzy picker chooses one.
+///
+/// **Divergence row 21** decides where the pick goes: through the same path
+/// `dl <ws> <verb>` takes, rather than Python's straight-to-`workspace_up`. One
+/// `devpod status` buys the fast attach every other entry already pays for, and the
+/// verb the selector was opened with is honoured — `dl --stop` picks a workspace and
+/// stops it.
+///
+/// A pick that never came is Python's ending exactly: the help on stdout and exit 1
+/// (`dl.py` 4457-4462). The help is clap's (**row 3**).
+fn render_select<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cache: &Path,
+    refresh: &mut Refresh<'_>,
+    verb: Verb,
+    devcontainer: Option<&DevcontainerPath>,
+) -> Ending {
+    let workspaces = match context.workspaces() {
+        Err(refused) => return refuse_listing(&refused),
+        Ok(workspaces) => workspaces,
+    };
+    // Said before the picker takes the screen, as Python says it: it is the only
+    // thing that explains what the rows are.
+    if !workspaces.is_empty() {
+        println!("Select workspace (type to filter):");
+    }
+    match select::pick(&workspaces) {
+        select::Pick::Chose(workspace_id) => render_workspace(
+            runner,
+            context,
+            cache,
+            refresh,
+            &workspace_id,
+            verb,
+            devcontainer,
+        ),
+        select::Pick::NoWorkspaces => {
+            eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
+            no_pick()
+        }
+        // Nothing to add for either: a user who quit the picker knows they did, and
+        // a run with no terminal is one no message on that terminal would reach.
+        select::Pick::Quit | select::Pick::NoTerminal => no_pick(),
+    }
 }
 
-/// The one sentence a command whose flow is not ported yet prints.
-///
-/// A refusal rather than a silent success, and it names the milestone so a user of
-/// a mid-port build knows this is a build without the command rather than a
-/// command that did nothing.
-fn not_yet(what: &str, milestone: &str) -> Ending {
-    eprintln!("dl: {what} is not in this build yet (the Rust port reaches it at {milestone}).");
+/// Python's ending for a selector that chose nothing: the help, and exit 1.
+fn no_pick() -> Ending {
+    let _ = <cli::Cli as clap::CommandFactory>::command().print_help();
     Ending::Refused
 }
 

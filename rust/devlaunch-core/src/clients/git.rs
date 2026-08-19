@@ -151,7 +151,7 @@ impl<T> GitAnswer<T> {
 ///   failure, and "git is not installed" is a diagnostic of its own; recovering
 ///   either by looking for words in a message would be reading tea leaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct GitRefused {
+pub struct GitRefused {
     /// Never empty: every constructor falls back to naming the command.
     reason: String,
     pub(crate) how: Failure,
@@ -159,7 +159,7 @@ pub(crate) struct GitRefused {
 
 impl GitRefused {
     /// What a caller prints, classifies or carries. Never empty.
-    pub(crate) fn reason(&self) -> &str {
+    pub fn reason(&self) -> &str {
         &self.reason
     }
 

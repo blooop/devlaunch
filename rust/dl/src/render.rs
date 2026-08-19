@@ -13,10 +13,12 @@ use devlaunch_core::clients::devpod::{self, ListingUnreadable, NotAListing, NotR
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
+use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::metadata;
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::flows::branch_manager::BranchError;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::launch::{
     BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
@@ -27,7 +29,14 @@ use devlaunch_core::flows::lifecycle::{
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
-use devlaunch_core::flows::repo_manager::{CacheNotice, Refusal, RefusalReason};
+use devlaunch_core::flows::repo_manager::{
+    CacheNotice, Cleanup, CloneError, EnsureRepoError, Refusal, RefusalReason, RemoveTreeError,
+    WrongRepoLock,
+};
+use devlaunch_core::flows::workspace_clone::{
+    EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
+};
+use devlaunch_core::notices::Notices;
 use devlaunch_runner::Exit;
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
@@ -597,17 +606,72 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
 }
 
 /// Why a metadata write or open failed, in one line.
+///
+/// A reason phrase and not a sentence: every caller has its own opening — `Could not
+/// migrate the workspace cache: …`, `Could not drop the record for X: …` — and this
+/// is what goes after the colon. Python interpolated the `OSError` it caught there,
+/// which is divergence row 4: the OS's own words are Rust's spelling of them, and
+/// the step that failed is named where Python's traceback would have shown it.
 pub(crate) fn metadata_error(error: &metadata::MetadataError) -> String {
-    // The arms carry different payloads and only the ones a read-side command can
-    // reach are spelled out; the rest are named by their debug shape rather than
-    // dropped, so nothing is silent.
     match error {
         metadata::MetadataError::CreateDir { path, failure } => format!(
             "could not create the directory for dl's records at {} ({})",
             path.display(),
             failure.message
         ),
-        other => format!("could not read dl's records: {other:?}"),
+        metadata::MetadataError::Lock(error) => lock_refusal(error, "the lock on dl's records"),
+        metadata::MetadataError::CreateTemp { directory, failure } => format!(
+            "could not create a temporary file in {} ({})",
+            directory.display(),
+            failure.message
+        ),
+        // No path: the document did not get as far as having one.
+        metadata::MetadataError::Encode { reason } => {
+            format!("dl's records could not be encoded ({reason})")
+        }
+        metadata::MetadataError::Write { path, failure } => {
+            format!("could not write {} ({})", path.display(), failure.message)
+        }
+        metadata::MetadataError::SetMode {
+            path,
+            mode,
+            failure,
+        } => format!(
+            "could not set the permissions {mode:o} on {} ({})",
+            path.display(),
+            failure.message
+        ),
+        metadata::MetadataError::Replace { from, to, failure } => format!(
+            "could not move {} into place at {} ({})",
+            from.display(),
+            to.display(),
+            failure.message
+        ),
+    }
+}
+
+/// Why a lock could not be taken, naming the lock it is about.
+///
+/// The three steps stay apart because they are fixed in three different places: a
+/// parent directory that cannot be made, a lock file that cannot be opened, and an
+/// `flock` that failed for a reason other than somebody else holding it.
+pub(crate) fn lock_refusal(error: &LockError, lock: &str) -> String {
+    match error {
+        LockError::CreateParent { path, failure } => format!(
+            "could not create the directory for {lock} at {} ({})",
+            path.display(),
+            failure.message
+        ),
+        LockError::Open { path, failure } => format!(
+            "could not open {lock} {} ({})",
+            path.display(),
+            failure.message
+        ),
+        LockError::Acquire { path, failure } => format!(
+            "could not take {lock} {} ({})",
+            path.display(),
+            failure.message
+        ),
     }
 }
 
@@ -630,26 +694,19 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         LifecycleNotice::CloneRemoved { workspace_id } => {
             format!("Removed local clone for {workspace_id}")
         }
-        // core-polish: mechanical fix, renderer TODO. The notice now carries the
-        // typed refusal instead of `format!("{error:?}")`; each arm wants words of
-        // its own (`RemoveTreeError::RootIsSymlink` has a `points_at` worth
-        // naming), and until then the debug shape keeps the line saying what it
-        // said before.
         LifecycleNotice::CloneNotRemoved { refusal, .. } => {
-            format!("Failed to remove local clone: {refusal:?}")
+            format!("Failed to remove local clone: {}", not_removed(refusal))
         }
         LifecycleNotice::WorkspaceNotDeleted {
             workspace_id,
             stderr,
             ..
         } => format!("Failed to delete workspace {workspace_id}: {stderr}"),
-        // core-polish: mechanical fix, renderer TODO. As above: `RecordRefusal`'s
-        // arms name the step and carry the OS's own words, and a real rendering
-        // would read like `render::metadata_error`'s does.
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
-                "Could not drop the record for {}: {refusal:?}",
-                path.display()
+                "Could not drop the record for {}: {}",
+                path.display(),
+                metadata_error(refusal)
             )
         }
         LifecycleNotice::AddressingRecordedWorkspace {
@@ -673,28 +730,62 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
 /// sends to stderr as the bare message — so there is no logger name, no level and
 /// no prefix in any of them.
 ///
-/// `None` is the progress half of the vocabulary — the `logger.info` lines that say
-/// what the flow is about to do — which the storage flows have only just started
-/// carrying as typed arms. Naming them here rather than wildcarding them is what
-/// makes the next arm the compiler's problem rather than a silent omission.
+/// The progress half of the vocabulary — the `logger.info` lines that say what the
+/// flow is *about to* do — is rendered here with the rest of it, and is said as it
+/// happens (core's channel is a sink, not a list). That is not decoration: the first
+/// launch of a large repository sits for minutes inside `Cloning repository …`, and a
+/// line printed after the wait it explains is a line that explained nothing.
+///
+/// `None` is left for the notices Python logged at `debug`, of which there are none
+/// here: every arm below is a line a default-configured `dl.py` printed.
 fn cache_notice(notice: &CacheNotice) -> Option<String> {
-    // TODO(render): progress events. Rendered by the follow-up wave; a launch that
-    // sits for minutes cloning a large repository says nothing about it until then,
-    // which is what these arms are.
-    match notice {
-        CacheNotice::CloningRepository { .. }
-        | CacheNotice::ClonedRepository { .. }
-        | CacheNotice::FetchingUpdates { .. }
-        | CacheNotice::FetchedUpdates { .. }
-        | CacheNotice::FetchingRef { .. }
-        | CacheNotice::CreatingWorkspaceClone { .. }
-        | CacheNotice::FillingLfsCache
-        | CacheNotice::PullingLfsFromOrigin
-        | CacheNotice::WorkspaceCloneRemoved { .. }
-        | CacheNotice::NoWorkspaceCloneToRemove { .. } => return None,
-        _ => {}
-    }
     Some(match notice {
+        // --- progress (info; repo_manager.py 247/277/321/342/390,
+        //     workspace_clone.py 436/527/792/955/958)
+        CacheNotice::CloningRepository { remote_url, bare } => {
+            format!("Cloning repository {remote_url} to {}", bare.display())
+        }
+        CacheNotice::ClonedRepository { owner, repo } => {
+            format!("Successfully cloned {owner}/{repo}")
+        }
+        CacheNotice::FetchingUpdates { owner, repo } => {
+            format!("Fetching updates for {owner}/{repo}")
+        }
+        CacheNotice::FetchedUpdates { owner, repo } => {
+            format!("Successfully fetched updates for {owner}/{repo}")
+        }
+        CacheNotice::FetchingRef {
+            owner,
+            repo,
+            branch,
+        } => format!("Fetching {branch} for {owner}/{repo}"),
+        CacheNotice::CreatingWorkspaceClone { path } => {
+            format!("Creating workspace clone at {}", path.display())
+        }
+
+        // --- the branch decision (info; branch_manager.py 49/56/62/67)
+        CacheNotice::BranchAlreadyBothSides { branch } => {
+            format!("Branch {branch} already exists locally and remotely")
+        }
+        CacheNotice::BranchCutFromRemote { branch, remote } => {
+            format!("Created local branch {branch} tracking {remote}/{branch}")
+        }
+        CacheNotice::BranchCreated { branch } => format!("Created local branch {branch}"),
+        CacheNotice::BranchPushed { branch, remote } => {
+            format!("Pushed branch {branch} to {remote}")
+        }
+        // Python's two lines name neither the ref nor the cache, and neither do the
+        // arms: there is nothing to interpolate.
+        CacheNotice::FillingLfsCache => "Fetching git-lfs objects into the cache".to_owned(),
+        CacheNotice::PullingLfsFromOrigin => "Fetching git-lfs objects from origin".to_owned(),
+        CacheNotice::WorkspaceCloneRemoved { path } => {
+            format!("Removed workspace clone: {}", path.display())
+        }
+        CacheNotice::NoWorkspaceCloneToRemove { path } => {
+            format!("No workspace clone to remove at {}", path.display())
+        }
+
+        // --- adopted, degraded or refused (warning/error)
         CacheNotice::AdoptedBareClone { owner, repo, bare } => {
             format!(
                 "Repository {owner}/{repo} already exists at {}",
@@ -738,11 +829,17 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
         CacheNotice::LfsFilesNotListed { reason } => {
             format!("Could not list git-lfs files: {reason}")
         }
-        CacheNotice::WorkspaceNotRecorded { reason } => {
-            format!("Failed to save workspace metadata: {reason}")
+        CacheNotice::WorkspaceNotRecorded { refusal } => {
+            format!(
+                "Failed to save workspace metadata: {}",
+                metadata_error(refusal)
+            )
         }
-        CacheNotice::WorkspaceRecordNotRemoved { reason } => {
-            format!("Failed to remove workspace metadata: {reason}")
+        CacheNotice::WorkspaceRecordNotRemoved { refusal } => {
+            format!(
+                "Failed to remove workspace metadata: {}",
+                metadata_error(refusal)
+            )
         }
         CacheNotice::CloneNotNamed {
             owner,
@@ -751,19 +848,42 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             reason,
         } => format!("cannot name the clone directory for {owner}/{repo}@{branch}: {reason}"),
         CacheNotice::Metadata(notice) => metadata_notice(notice),
-        // Matched above; answered here so this stays a total function of the value
-        // it is given rather than a `match` with a hole in it.
-        CacheNotice::CloningRepository { .. }
-        | CacheNotice::ClonedRepository { .. }
-        | CacheNotice::FetchingUpdates { .. }
-        | CacheNotice::FetchedUpdates { .. }
-        | CacheNotice::FetchingRef { .. }
-        | CacheNotice::CreatingWorkspaceClone { .. }
-        | CacheNotice::FillingLfsCache
-        | CacheNotice::PullingLfsFromOrigin
-        | CacheNotice::WorkspaceCloneRemoved { .. }
-        | CacheNotice::NoWorkspaceCloneToRemove { .. } => return None,
     })
+}
+
+/// Why a workspace clone directory is still on disk.
+///
+/// The reason phrase Python interpolated its `Exception` into (`dl.py`:4122). The
+/// symlinked-root arm names what the link points at, because `rm -rf` on the link
+/// removes the link and nothing else — the reader needs the real location to act on,
+/// which is the same reasoning `refusal_reason` gives for the purge's copy of it.
+fn not_removed(refusal: &RemoveWorkspaceError) -> String {
+    match refusal {
+        RemoveWorkspaceError::UnsafeTriple(name) => unsafe_name(name),
+        RemoveWorkspaceError::DirectoryLeft(error) => tree_not_removed(error),
+    }
+}
+
+/// Why a directory tree is still there.
+fn tree_not_removed(error: &RemoveTreeError) -> String {
+    match error {
+        RemoveTreeError::RootIsSymlink { path, points_at } => {
+            let to = match points_at {
+                Some(target) => format!(" to {}", target.display()),
+                None => String::new(),
+            };
+            format!(
+                "{} is a symbolic link{to}, which dl will not follow",
+                path.display()
+            )
+        }
+        RemoveTreeError::CouldNotLook { path, reason } => {
+            format!("could not look at {} ({reason})", path.display())
+        }
+        RemoveTreeError::Refused { path, reason } => {
+            format!("could not remove {} ({reason})", path.display())
+        }
+    }
 }
 
 /// Why an owner, repo or ref is not a name `dl` will build a path out of.
@@ -1324,6 +1444,23 @@ pub(crate) fn launch_notices(notices: &[LaunchNotice]) -> Vec<String> {
     notices.iter().filter_map(launch_notice).collect()
 }
 
+/// The launch's notice sink: one line on stderr, at the moment the notice happens.
+///
+/// This is the other half of core's streaming channel, and the reason it is a sink
+/// rather than a list the binary drains at the end: `Cloning repository …` exists to
+/// explain a wait, and `Workspace X is already running, attaching...` comes before
+/// the shell it announces. Said with `eprintln!` for the reason every diagnostic is:
+/// stdout belongs to the completion machinery and to `wf`.
+pub(crate) struct Saying;
+
+impl Notices<LaunchNotice> for Saying {
+    fn say(&mut self, notice: LaunchNotice) {
+        if let Some(line) = launch_notice(&notice) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 /// Why this workspace opens without a GitHub login.
 ///
 /// The `Refused` arm names the directory gh read its config from, because that is
@@ -1443,15 +1580,135 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
 fn branch_not_named(error: &BranchNotNamed) -> String {
     match error {
         BranchNotNamed::Cold(refused) => refused.reason.clone(),
-        BranchNotNamed::Repository { reason } => reason.clone(),
+        BranchNotNamed::Repository(refused) => ensure_repo_failure(refused),
     }
 }
 
 fn not_prepared(error: &NotPrepared) -> String {
     match error {
         NotPrepared::Cold(refused) => refused.reason.clone(),
-        NotPrepared::Preparation { reason } => reason.clone(),
+        NotPrepared::Preparation(refused) => prepare_cold_failure(refused),
     }
+}
+
+/// Why the bare-clone cache could not be brought up.
+///
+/// The words are `worktree/repo_manager.py`'s own exceptions, which is what Python
+/// interpolated into `Repository '{owner}/{repo}': {e}`. The step is named because
+/// the steps are fixed in different places: a lock, a directory, a `git clone`.
+fn ensure_repo_failure(refused: &EnsureRepoError) -> String {
+    match refused {
+        EnsureRepoError::Lock(error) => lock_refusal(error, "the repository lock"),
+        EnsureRepoError::WrongRepoLock(wrong) => wrong_repo_lock(wrong),
+        EnsureRepoError::Clone(error) => clone_failure(error),
+    }
+}
+
+/// Why the bare clone itself could not be made — `Failed to clone repository: {git}`
+/// and its neighbours.
+fn clone_failure(refused: &CloneError) -> String {
+    match refused {
+        CloneError::ParentNotCreated { path, reason } => {
+            format!("could not create {} ({reason})", path.display())
+        }
+        CloneError::PartialCloneNotCleared(error) => format!(
+            "a partial clone from an earlier run is in the way: {}",
+            tree_not_removed(error)
+        ),
+        // Python's `RuntimeError(f"Failed to clone repository: {reason}")`, where the
+        // reason is git's own stderr. The debris is named only when it is still
+        // there: for every failure reachable in practice git removes the destination
+        // itself, and a line about a directory that is gone is noise.
+        CloneError::GitRefused { refused, cleanup } => {
+            let left = match cleanup {
+                Cleanup::Cleared => String::new(),
+                Cleanup::Left(error) => {
+                    format!(" (and {} was left behind)", tree_not_removed(error))
+                }
+            };
+            format!("Failed to clone repository: {}{left}", refused.reason())
+        }
+        CloneError::NotRecorded(error) => format!(
+            "the clone is on disk and its record could not be written: {}",
+            metadata_error(error)
+        ),
+    }
+}
+
+/// Why the host-side preparation of a cold launch stopped, step by step.
+fn prepare_cold_failure(refused: &PrepareColdError) -> String {
+    match refused {
+        PrepareColdError::UnsafeTriple(name) => unsafe_name(name),
+        PrepareColdError::Lock(error) => lock_refusal(error, "the repository lock"),
+        PrepareColdError::WrongRepoLock(wrong) => wrong_repo_lock(wrong),
+        PrepareColdError::Clone(error) => clone_failure(error),
+        PrepareColdError::Branch(EnsureBranchError::WrongRepoLock(wrong)) => wrong_repo_lock(wrong),
+        PrepareColdError::Branch(EnsureBranchError::Branch(error)) => branch_failure(error),
+        PrepareColdError::Workspace(error) => workspace_failure(error),
+    }
+}
+
+/// Why a branch could not be ensured — `branch_manager.py`'s two exceptions.
+fn branch_failure(refused: &BranchError) -> String {
+    match refused {
+        BranchError::NotCreated { reason, .. } => format!("Failed to create branch: {reason}"),
+        BranchError::NotPushed { reason, .. } => {
+            format!("Failed to push branch to remote: {reason}")
+        }
+    }
+}
+
+/// Why the workspace clone could not be cut — `workspace_clone.py`'s exceptions, in
+/// its own words.
+fn workspace_failure(refused: &PrepareWorkspaceError) -> String {
+    match refused {
+        PrepareWorkspaceError::WrongRepoLock(wrong) => wrong_repo_lock(wrong),
+        PrepareWorkspaceError::ParentNotCreated { path, reason } => {
+            format!("could not create {} ({reason})", path.display())
+        }
+        PrepareWorkspaceError::CloneRefused { reason, cleanup } => {
+            let left = match cleanup {
+                Cleanup::Cleared => String::new(),
+                Cleanup::Left(error) => {
+                    format!(" (and {} was left behind)", tree_not_removed(error))
+                }
+            };
+            format!("Failed to clone workspace: {reason}{left}")
+        }
+        PrepareWorkspaceError::RemoteNotRepointed { reason } => {
+            format!("Failed to set remote URL: {reason}")
+        }
+        PrepareWorkspaceError::NoStartPoint {
+            branch,
+            default_branch,
+        } => format!(
+            "Cannot create branch '{branch}': neither 'origin/{branch}' nor \
+             'origin/{default_branch}' exist on the remote"
+        ),
+        PrepareWorkspaceError::UnsafeRefName(name) => unsafe_name(name),
+        PrepareWorkspaceError::CheckoutRefused { branch, reason } => {
+            format!("Failed to checkout branch '{branch}': {reason}")
+        }
+        PrepareWorkspaceError::LfsNotMaterialized { reason } => format!(
+            "Failed to pull git-lfs objects ({reason}). The workspace still holds pointer \
+             files; re-run to retry."
+        ),
+    }
+}
+
+/// A repo lock offered as evidence about a repository it says nothing about.
+///
+/// Unreachable in practice — every scope mints the token it then passes — and worded
+/// rather than debug-printed because "unreachable" is not "unrenderable": Python
+/// raised a `ValueError` here with this sentence, and its `except` on the launch path
+/// printed it.
+fn wrong_repo_lock(wrong: &WrongRepoLock) -> String {
+    let (held_owner, held_repo) = &wrong.held;
+    let (wanted_owner, wanted_repo) = &wrong.wanted;
+    format!(
+        "repo lock held for {held_owner}/{held_repo} cannot vouch for \
+         {wanted_owner}/{wanted_repo}"
+    )
 }
 
 /// Why no session could be composed.
@@ -1571,6 +1828,8 @@ pub(crate) fn provision_events(events: &[ProvisionEvent]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use devlaunch_core::flows::disk_usage::DiskUsage;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
@@ -1976,6 +2235,193 @@ mod tests {
                 workspace: "ws".to_owned(),
             }),
             None
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // the storage flows' own lines
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_progress_lines_are_the_ones_the_storage_flows_logged() {
+        // `worktree/repo_manager.py` 247/277/321/342/390 and
+        // `worktree/workspace_clone.py` 436/527/792/955/958, byte for byte: these are
+        // the lines that explain a wait, so a launch that sits for minutes cloning a
+        // large repository says which repository and where the disk is going.
+        let said = |notice: CacheNotice| cache_notice(&notice).expect("a line");
+
+        assert_eq!(
+            said(CacheNotice::CloningRepository {
+                remote_url: "git@github.com:blooop/devlaunch.git".to_owned(),
+                bare: PathBuf::from("/c/repos/blooop/devlaunch/.bare"),
+            }),
+            "Cloning repository git@github.com:blooop/devlaunch.git to \
+             /c/repos/blooop/devlaunch/.bare"
+        );
+        assert_eq!(
+            said(CacheNotice::ClonedRepository {
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+            }),
+            "Successfully cloned blooop/devlaunch"
+        );
+        assert_eq!(
+            said(CacheNotice::FetchingUpdates {
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+            }),
+            "Fetching updates for blooop/devlaunch"
+        );
+        assert_eq!(
+            said(CacheNotice::FetchedUpdates {
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+            }),
+            "Successfully fetched updates for blooop/devlaunch"
+        );
+        assert_eq!(
+            said(CacheNotice::FetchingRef {
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+                branch: "fix/42".to_owned(),
+            }),
+            "Fetching fix/42 for blooop/devlaunch"
+        );
+        assert_eq!(
+            said(CacheNotice::CreatingWorkspaceClone {
+                path: PathBuf::from("/c/repos/blooop/devlaunch/devlaunch-main-abc"),
+            }),
+            "Creating workspace clone at /c/repos/blooop/devlaunch/devlaunch-main-abc"
+        );
+        // The two git-lfs lines name neither the ref nor the cache, as Python's do
+        // not: there is nothing in the arms to interpolate.
+        assert_eq!(
+            said(CacheNotice::FillingLfsCache),
+            "Fetching git-lfs objects into the cache"
+        );
+        assert_eq!(
+            said(CacheNotice::PullingLfsFromOrigin),
+            "Fetching git-lfs objects from origin"
+        );
+        assert_eq!(
+            said(CacheNotice::WorkspaceCloneRemoved {
+                path: PathBuf::from("/c/repos/o/r/ws"),
+            }),
+            "Removed workspace clone: /c/repos/o/r/ws"
+        );
+        assert_eq!(
+            said(CacheNotice::NoWorkspaceCloneToRemove {
+                path: PathBuf::from("/c/repos/o/r/ws"),
+            }),
+            "No workspace clone to remove at /c/repos/o/r/ws"
+        );
+    }
+
+    #[test]
+    fn the_branch_decision_reads_as_the_four_lines_python_logged() {
+        // `worktree/branch_manager.py` 49/56/62/67. Which of the four happened is an
+        // answer (`BranchEnsured`) rather than a log line in the decision itself, and
+        // these are the words the answer is said in.
+        let said = |notice: CacheNotice| cache_notice(&notice).expect("a line");
+
+        assert_eq!(
+            said(CacheNotice::BranchAlreadyBothSides {
+                branch: "main".to_owned(),
+            }),
+            "Branch main already exists locally and remotely"
+        );
+        assert_eq!(
+            said(CacheNotice::BranchCutFromRemote {
+                branch: "fix/42".to_owned(),
+                remote: "origin".to_owned(),
+            }),
+            "Created local branch fix/42 tracking origin/fix/42"
+        );
+        assert_eq!(
+            said(CacheNotice::BranchCreated {
+                branch: "fix/42".to_owned(),
+            }),
+            "Created local branch fix/42"
+        );
+        assert_eq!(
+            said(CacheNotice::BranchPushed {
+                branch: "fix/42".to_owned(),
+                remote: "origin".to_owned(),
+            }),
+            "Pushed branch fix/42 to origin"
+        );
+    }
+
+    #[test]
+    fn a_clone_that_would_not_go_names_what_stopped_it() {
+        // `dl.py`:4122's `Failed to remove local clone: {e}`, with the exception
+        // replaced by the typed refusal's own words. The symlink arm names what the
+        // link points at, because `rm -rf` on the link removes the link and nothing
+        // else.
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::CloneNotRemoved {
+                workspace_id: "ws".to_owned(),
+                refusal: RemoveWorkspaceError::DirectoryLeft(RemoveTreeError::RootIsSymlink {
+                    path: PathBuf::from("/c/repos/o/r/ws"),
+                    points_at: Some(PathBuf::from("/mnt/disk/ws")),
+                }),
+            }),
+            Some(
+                "Failed to remove local clone: /c/repos/o/r/ws is a symbolic link to /mnt/disk/ws, \
+                 which dl will not follow"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::CloneNotRemoved {
+                workspace_id: "ws".to_owned(),
+                refusal: RemoveWorkspaceError::DirectoryLeft(RemoveTreeError::Refused {
+                    path: PathBuf::from("/c/repos/o/r/ws/.git"),
+                    reason: "Permission denied (os error 13)".to_owned(),
+                }),
+            }),
+            Some(
+                "Failed to remove local clone: could not remove /c/repos/o/r/ws/.git (Permission \
+                 denied (os error 13))"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_record_that_would_not_go_names_the_step_that_refused() {
+        // `dl.py`:2545's `Could not drop the record for {path}: {e}`. The notice
+        // carries the write's own `MetadataError`, so the line names which step
+        // failed — divergence row 4's phrasing, Python's sentence.
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::RecordNotDropped {
+                path: PathBuf::from("/c/repos/o/r/ws"),
+                refusal: metadata::MetadataError::Lock(LockError::Acquire {
+                    path: PathBuf::from("/c/metadata.json.lock"),
+                    failure: metadata::OsFailure {
+                        kind: std::io::ErrorKind::PermissionDenied,
+                        message: "Permission denied (os error 13)".to_owned(),
+                    },
+                }),
+            }),
+            Some(
+                "Could not drop the record for /c/repos/o/r/ws: could not take the lock on dl's \
+                 records /c/metadata.json.lock (Permission denied (os error 13))"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::RecordNotDropped {
+                path: PathBuf::from("/c/repos/o/r/ws"),
+                refusal: metadata::MetadataError::Encode {
+                    reason: "a NaN cannot be JSON".to_owned(),
+                },
+            }),
+            Some(
+                "Could not drop the record for /c/repos/o/r/ws: dl's records could not be encoded \
+                 (a NaN cannot be JSON)"
+                    .to_owned()
+            )
         );
     }
 }

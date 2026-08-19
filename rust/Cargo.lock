@@ -12,6 +12,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aid"
+version = "0.1.0"
+dependencies = [
+ "dl",
+ "libc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

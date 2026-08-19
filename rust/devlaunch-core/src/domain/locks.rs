@@ -73,6 +73,8 @@ use std::time::{Duration, Instant};
 
 use rustix::fs::{FlockOperation, flock};
 
+use super::metadata::OsFailure;
+
 /// The permission bits a lock file this module creates is born with.
 ///
 /// The shared cache is per-user state under `$XDG_CACHE_HOME`; a lock file
@@ -121,15 +123,21 @@ pub(crate) struct WaitStarted {
 }
 
 /// Which step of taking a lock failed, and what the OS said about it.
-#[derive(Debug)]
+///
+/// The OS's side is an [`OsFailure`] rather than the `io::Error` it came from, and
+/// that is what makes this type `Clone` and comparable — which the types above it
+/// need, because a lock refusal travels inside a notice
+/// ([`crate::flows::lifecycle::LifecycleNotice`]) and a notice is both. The message
+/// is the `io::Error`'s own `to_string()`, so nothing a reader sees changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockError {
     /// The lock file's directory could not be created. A first launch locks a
     /// repo directory that does not exist yet, so this is a real step.
-    CreateParent { path: PathBuf, source: io::Error },
+    CreateParent { path: PathBuf, failure: OsFailure },
     /// The lock file could not be opened or created.
-    Open { path: PathBuf, source: io::Error },
+    Open { path: PathBuf, failure: OsFailure },
     /// `flock` failed for a reason that is not "somebody else holds it".
-    Acquire { path: PathBuf, source: io::Error },
+    Acquire { path: PathBuf, failure: OsFailure },
 }
 
 /// An exclusive inter-process lock, held until this value is dropped.
@@ -187,7 +195,7 @@ pub(crate) fn hold_lock_watching(
             let queued_at = Instant::now();
             flock(&file, FlockOperation::LockExclusive).map_err(|errno| LockError::Acquire {
                 path: lock_path.to_path_buf(),
-                source: io::Error::from(errno),
+                failure: io::Error::from(errno).into(),
             })?;
             Contention::Queued {
                 waited: queued_at.elapsed(),
@@ -196,7 +204,7 @@ pub(crate) fn hold_lock_watching(
         Err(errno) => {
             return Err(LockError::Acquire {
                 path: lock_path.to_path_buf(),
-                source: io::Error::from(errno),
+                failure: io::Error::from(errno).into(),
             });
         }
     };
@@ -241,7 +249,7 @@ pub(crate) fn run_if_lock_free<T>(
         Err(errno) => {
             return Err(LockError::Acquire {
                 path: lock_path.to_path_buf(),
-                source: io::Error::from(errno),
+                failure: io::Error::from(errno).into(),
             });
         }
     }
@@ -259,7 +267,7 @@ fn open_lock_file(lock_path: &Path) -> Result<File, LockError> {
     {
         std::fs::create_dir_all(parent).map_err(|source| LockError::CreateParent {
             path: parent.to_path_buf(),
-            source,
+            failure: source.into(),
         })?;
     }
     OpenOptions::new()
@@ -271,7 +279,7 @@ fn open_lock_file(lock_path: &Path) -> Result<File, LockError> {
         .open(lock_path)
         .map_err(|source| LockError::Open {
             path: lock_path.to_path_buf(),
-            source,
+            failure: source.into(),
         })
 }
 

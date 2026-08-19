@@ -46,6 +46,19 @@ pub mod runner {
 // binary surface — not part of the frozen wf API (#250 §7)
 pub mod timing;
 
+// Also a leaf, and for the same reason: the sink every flow reports its notices
+// through. It depends on none of them, and all of them name it in their
+// signatures.
+//
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod notices;
+
+// A leaf too: `shlex.quote`, which every remote payload in the crate is composed
+// out of — and which the `aid` binary composes a dl command line out of.
+//
+// binary surface — not part of the frozen wf API (#250 §7)
+pub mod shell;
+
 // binary surface — not part of the frozen wf API (#250 §7)
 pub mod clients;
 // binary surface — not part of the frozen wf API (#250 §7)
