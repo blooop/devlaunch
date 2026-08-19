@@ -24,11 +24,13 @@
 //!
 //! # Three seams worth naming
 //!
-//! - **The payload is shared, not copied.** [`DL_COMPLETION_BASH`] is
-//!   `include_str!` of `devlaunch/completions/dl.bash` — the same file the Python
-//!   package ships — so while both binaries exist there is one copy of the bash
-//!   and they cannot drift. At cutover the file moves under `rust/` and only this
-//!   one path changes; nothing else here knows where it came from.
+//! - **The payload lives in this crate, and its twin is guarded.**
+//!   [`DL_COMPLETION_BASH`] is `include_str!` of this package's own
+//!   `completions/dl.bash`. The frozen Python package ships its own copy at
+//!   `devlaunch/completions/dl.bash` (read at runtime via
+//!   `importlib.resources`, so it cannot be pointed here), and a test asserts
+//!   the two are byte-identical — one edited without the other is a red test,
+//!   not a silent drift.
 //! - **What the payload reads is not this module's business.** The script sources
 //!   `${XDG_CACHE_HOME:-$HOME/.cache}/devlaunch/completions.bash` at completion
 //!   time, and *writing* that cache is the listing side's job (Python's
@@ -47,18 +49,18 @@ use crate::domain::xdg::NoHomeDirectory;
 
 /// The shipped bash completion payload, embedded at compile time.
 ///
-/// One source of truth: the file the Python package ships. Python resolved it as
-/// package data at runtime (`importlib.resources`), which could fail; embedding
-/// it removes that failure entirely — a build that compiled has the script.
+/// Python resolved its copy as package data at runtime (`importlib.resources`),
+/// which could fail; embedding removes that failure entirely — a build that
+/// compiled has the script.
 ///
-/// The path escapes this crate's package root — it reaches up into the sibling
-/// `devlaunch/` Python package — so `devlaunch-core` is **not** `cargo publish`-
-/// able and is consumed only as a path or git dependency, which is exactly how
-/// `wf` links it. That is a deliberate constraint of the single-source rule
-/// above, not an oversight: the day the Python package is gone this include
-/// moves in-tree; until then it must point at the file that actually ships.
-pub(crate) const DL_COMPLETION_BASH: &str =
-    include_str!("../../../../devlaunch/completions/dl.bash");
+/// The path stays inside this crate's package root on purpose: an earlier shape
+/// reached up into the sibling `devlaunch/` Python package, which made
+/// `devlaunch-core` un-`cargo publish`-able (a path escaping the root is fatal
+/// there, harmless everywhere else). The frozen Python package still ships its
+/// own copy at `devlaunch/completions/dl.bash`; the two are kept byte-identical
+/// by [`tests::the_embedded_payload_matches_the_python_packages_copy`], so this
+/// is one source of truth with a guarded twin, not a fork.
+pub(crate) const DL_COMPLETION_BASH: &str = include_str!("../../completions/dl.bash");
 
 /// The override for where the completion script is written.
 pub(crate) const COMPLETION_FILE_VAR: &str = "DEVLAUNCH_COMPLETION_FILE";
@@ -564,6 +566,27 @@ mod tests {
         assert!(
             written.contains("_dl_completion()"),
             "the payload defines the function bash will call"
+        );
+    }
+
+    #[test]
+    fn the_embedded_payload_matches_the_python_packages_copy() {
+        // The twin guard. This crate embeds its own `completions/dl.bash` so the
+        // include never escapes the package root (which would make the crate
+        // un-publishable); the frozen Python package ships its copy at
+        // `devlaunch/completions/dl.bash` and reads it via `importlib.resources`,
+        // so it cannot be pointed here. Byte-identical or this test is red —
+        // whichever copy was edited, edit the other the same way. (The Python
+        // copy only exists in this repository, so a missing twin means the
+        // layout changed and this guard needs re-aiming, not deleting.)
+        let twin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../devlaunch/completions/dl.bash");
+        let python_copy = fs::read_to_string(&twin)
+            .unwrap_or_else(|error| panic!("cannot read the twin at {twin:?}: {error}"));
+        assert_eq!(
+            DL_COMPLETION_BASH, python_copy,
+            "rust/devlaunch-core/completions/dl.bash and devlaunch/completions/dl.bash \
+             have drifted; make them byte-identical again"
         );
     }
 
