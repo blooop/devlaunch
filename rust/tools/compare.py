@@ -102,7 +102,9 @@ def _fingerprint(root: pathlib.Path) -> list[str]:
 
 def _scrub(node):
     if isinstance(node, dict):
-        return {k: ("<volatile>" if k in _VOLATILE_JSON_KEYS else _scrub(v)) for k, v in node.items()}
+        return {
+            k: ("<volatile>" if k in _VOLATILE_JSON_KEYS else _scrub(v)) for k, v in node.items()
+        }
     if isinstance(node, list):
         return [_scrub(v) for v in node]
     return node
@@ -241,7 +243,7 @@ def compare_one(argv, release, fingerprint):
 def run_cases(path, release, fingerprint):
     """Drive a checked-in case list; fail on any un-annotated divergence."""
     failures = 0
-    for raw in pathlib.Path(path).read_text().splitlines():
+    for raw in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -259,7 +261,7 @@ def run_cases(path, release, fingerprint):
             # still differ -- a diff-case gone SAME is an allowance to remove.
             if not reason:
                 print("\n".join(lines))
-                print(f"  ^ marked `diff` with no divergence row / reason cited")
+                print("  ^ marked `diff` with no divergence row / reason cited")
                 failures += 1
             elif same:
                 print(f"NOTE  {case.strip()} now SAME; drop the `## diff: {reason}` allowance")

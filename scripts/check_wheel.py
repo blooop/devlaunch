@@ -38,7 +38,8 @@ BINARIES = ("dl", "aid")
 def check(wheel: Path, version: str) -> list[str]:
     """Return the problems with `wheel`, empty when there are none."""
     problems: list[str] = []
-    names = zipfile.ZipFile(wheel).namelist()
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
 
     expected_name = f"devlaunch-{version}-"
     if not wheel.name.startswith(expected_name):

@@ -348,9 +348,7 @@ def _run_tier(name: str, marker: str, dl_cmd: str, aid_cmd: str, floor: int) -> 
     cases = list(ET.parse(junit).getroot().iter("testcase"))
     junit.unlink(missing_ok=True)
     failed = [
-        reconstruct_node_id(
-            case.get("classname", ""), case.get("name", ""), _repo_has_test_file
-        )
+        reconstruct_node_id(case.get("classname", ""), case.get("name", ""), _repo_has_test_file)
         for case in cases
         if case.find("failure") is not None or case.find("error") is not None
     ]

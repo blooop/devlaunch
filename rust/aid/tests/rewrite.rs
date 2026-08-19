@@ -84,7 +84,12 @@ impl World {
             .env("DEVPOD_SHIM_CONFIG", format!("{root}/shim-config.json"))
             .env("GIT_SSH_COMMAND", "false")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null");
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            // These tests are about argv rewriting, not the GitHub token. Opt out
+            // of the gh lookup so the output does not depend on whether the host
+            // has a `gh` on PATH (a GitHub runner ships /usr/bin/gh, which would
+            // otherwise run against the scratch config, exit 1, and warn).
+            .env("DEVLAUNCH_NO_GH_TOKEN", "1");
         for (name, value) in extra {
             command.env(name, value);
         }
