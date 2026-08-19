@@ -61,8 +61,12 @@ pub(crate) mod osext;
 // Leaf like `runner`: the env-gated span registry everything above may use
 // (even `locks` spans a contended wait), depending on nothing itself.
 //
+// `json` is pub only for [`json::JsonKind`], which the typed refusals above
+// carry and the `dl` binary renders; the Python-spelling writers stay
+// `pub(crate)`.
+//
 // binary surface — not part of the frozen wf API (#251 §7)
-pub(crate) mod json;
+pub mod json;
 pub mod timing;
 
 // Also a leaf, and for the same reason: the sink every flow reports its notices

@@ -42,6 +42,7 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::json::JsonKind;
 use crate::runner::interrupt;
 
 use super::locks::{LockError, WaitStarted, hold_lock_watching};
@@ -87,30 +88,6 @@ impl Section {
         match self {
             Section::Repositories => "repositories",
             Section::Worktrees => "worktrees",
-        }
-    }
-}
-
-/// The JSON type something turned out to be, where a report names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JsonKind {
-    Null,
-    Bool,
-    Number,
-    String,
-    Array,
-    Object,
-}
-
-impl JsonKind {
-    fn of(value: &Value) -> Self {
-        match value {
-            Value::Null => JsonKind::Null,
-            Value::Bool(_) => JsonKind::Bool,
-            Value::Number(_) => JsonKind::Number,
-            Value::String(_) => JsonKind::String,
-            Value::Array(_) => JsonKind::Array,
-            Value::Object(_) => JsonKind::Object,
         }
     }
 }

@@ -56,6 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::json::JsonKind;
 use crate::runner::{
     CapturedText, EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec, StdinPlan,
 };
@@ -539,33 +540,6 @@ pub(crate) fn parse_status(output: &str) -> Result<ContainerState, StatusUnreada
 }
 
 // ---------------------------------------------------- the workspace listing
-
-/// What kind of JSON a value turned out to be.
-///
-/// Data for a report, not a sentence: Python's messages name the Python type
-/// (`dict`, `str`, `NoneType`), which is a spelling the `dl` binary chooses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JsonKind {
-    Null,
-    Bool,
-    Number,
-    String,
-    Array,
-    Object,
-}
-
-impl JsonKind {
-    fn of(value: &serde_json::Value) -> Self {
-        match value {
-            serde_json::Value::Null => Self::Null,
-            serde_json::Value::Bool(_) => Self::Bool,
-            serde_json::Value::Number(_) => Self::Number,
-            serde_json::Value::String(_) => Self::String,
-            serde_json::Value::Array(_) => Self::Array,
-            serde_json::Value::Object(_) => Self::Object,
-        }
-    }
-}
 
 /// A devpod workspace, as `devpod list --output json` lists it.
 ///

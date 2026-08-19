@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use devlaunch_core::clients::devpod::{self, ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
@@ -37,6 +37,7 @@ use devlaunch_core::flows::repo_manager::{
 use devlaunch_core::flows::workspace_clone::{
     EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
 };
+use devlaunch_core::json::JsonKind;
 use devlaunch_core::notices::Notices;
 use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
@@ -338,25 +339,14 @@ pub fn python_repr(text: &str) -> String {
 /// `Number` answers `int`, because that is what every number in a document dl
 /// reads is; a float would be reported as `int` here, which is a wording
 /// difference in a message only a malformed devpod can provoke.
-fn json_type_name(kind: devpod::JsonKind) -> &'static str {
+fn json_type_name(kind: JsonKind) -> &'static str {
     match kind {
-        devpod::JsonKind::Null => "NoneType",
-        devpod::JsonKind::Bool => "bool",
-        devpod::JsonKind::Number => "int",
-        devpod::JsonKind::String => "str",
-        devpod::JsonKind::Array => "list",
-        devpod::JsonKind::Object => "dict",
-    }
-}
-
-fn metadata_type_name(kind: metadata::JsonKind) -> &'static str {
-    match kind {
-        metadata::JsonKind::Null => "NoneType",
-        metadata::JsonKind::Bool => "bool",
-        metadata::JsonKind::Number => "int",
-        metadata::JsonKind::String => "str",
-        metadata::JsonKind::Array => "list",
-        metadata::JsonKind::Object => "dict",
+        JsonKind::Null => "NoneType",
+        JsonKind::Bool => "bool",
+        JsonKind::Number => "int",
+        JsonKind::String => "str",
+        JsonKind::Array => "list",
+        JsonKind::Object => "dict",
     }
 }
 
@@ -504,7 +494,7 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
                 metadata::FileProblem::NotAnObject { found } => format!(
                     "metadata file {} is not a JSON object (found {})",
                     path.display(),
-                    metadata_type_name(*found)
+                    json_type_name(*found)
                 ),
             };
             match quarantine {
@@ -543,7 +533,7 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
             "ignoring the \"{}\" section of {}: expected an object, found {}",
             section.key(),
             path.display(),
-            metadata_type_name(*found)
+            json_type_name(*found)
         ),
         metadata::Notice::EntryUnusable {
             path,
@@ -560,7 +550,7 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
             match problem {
                 metadata::EntryProblem::NotAnObject { found } => format!(
                     "{head}: expected an object, found {}",
-                    metadata_type_name(*found)
+                    json_type_name(*found)
                 ),
                 metadata::EntryProblem::NotRebuilt { reason } => {
                     format!("{head}: {}", python_repr(reason))

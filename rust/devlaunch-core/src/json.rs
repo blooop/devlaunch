@@ -17,6 +17,38 @@ use std::io;
 
 use serde::Serialize;
 
+/// The JSON type a value turned out to be, where a typed refusal names it.
+///
+/// Data for a report, not a sentence: Python's messages name the Python type
+/// (`dict`, `str`, `NoneType`), which is a spelling the `dl` binary chooses.
+/// One copy here rather than one per boundary — `devpod`'s listing and
+/// `metadata`'s store both name kinds, and two identical enums forced the
+/// binary to keep two identical renderers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub enum JsonKind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object,
+}
+
+impl JsonKind {
+    /// Which kind `value` is.
+    pub(crate) fn of(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Null => Self::Null,
+            serde_json::Value::Bool(_) => Self::Bool,
+            serde_json::Value::Number(_) => Self::Number,
+            serde_json::Value::String(_) => Self::String,
+            serde_json::Value::Array(_) => Self::Array,
+            serde_json::Value::Object(_) => Self::Object,
+        }
+    }
+}
+
 /// A JSON value spelled the way Python's `json.dumps` spells it.
 ///
 /// Three surfaces need it and all three are compared byte for byte against the
