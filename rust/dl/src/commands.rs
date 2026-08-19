@@ -800,13 +800,12 @@ fn prune_clone_directories(
     };
     report(&records);
     announce_lock_waits(&mut records);
-    let root = lifecycle::clone_root(&records.clones);
     let workspaces = match context.workspaces() {
         Err(refused) => return Cleanup::Raised(refuse_listing(&refused)),
         Ok(workspaces) => workspaces,
     };
-    let locations = lifecycle::workspace_locations(&workspaces, &root);
-    if let Some(unlocatable) = locations.unlocatable() {
+    let placement = lifecycle::ClonePlacement::resolve(&records.clones, &workspaces);
+    if let Some(unlocatable) = placement.unlocatable() {
         print(&render::report_unlocatable(
             &unlocatable,
             "--prune",
@@ -824,8 +823,7 @@ fn prune_clone_directories(
         &records.clones,
         &records.storage,
         &workspaces,
-        &locations,
-        &root,
+        &placement,
         insistence,
         &mut notices,
     ) {
@@ -906,13 +904,12 @@ fn render_reconcile(
     };
     report(&records);
     announce_lock_waits(&mut records);
-    let root = lifecycle::clone_root(&records.clones);
     let workspaces = match context.workspaces() {
         Err(refused) => return refuse_listing(&refused),
         Ok(workspaces) => workspaces,
     };
-    let locations = lifecycle::workspace_locations(&workspaces, &root);
-    if let Some(unlocatable) = locations.unlocatable() {
+    let placement = lifecycle::ClonePlacement::resolve(&records.clones, &workspaces);
+    if let Some(unlocatable) = placement.unlocatable() {
         // `--prune`'s stop, for `--prune`'s reason: a clone that cannot be shown to
         // be free is one no orphan can be given.
         print(&render::report_unlocatable(
@@ -927,14 +924,13 @@ fn render_reconcile(
         &records.clones,
         &records.storage,
         &workspaces,
-        &locations,
-        &root,
+        &placement,
         &mut notices,
     );
     say(&notices);
     notices.clear();
     print(&render::reconcile_plan_lines(&plan));
-    if plan.adopting.is_empty() {
+    if plan.adopting().is_empty() {
         // Nothing to consent to. A report of workspaces dl will not touch is
         // already complete, and asking about it would imply an action it has.
         return Ending::Done;
@@ -957,10 +953,10 @@ fn render_reconcile(
     );
     // Read in the plan's order rather than the report's two lists, because that is
     // the order these lines happened in: one adoption at a time, each either done or
-    // refused. The report partitions `plan.adopting` — every adoption lands in
+    // refused. The report partitions the plan's adoptions — every one lands in
     // exactly one of the lists — so "not refused" is "re-pointed", which is the same
     // question Python's loop asked of each one.
-    for adoptable in &plan.adopting {
+    for adoptable in plan.adopting() {
         let refused = applied
             .refused
             .iter()

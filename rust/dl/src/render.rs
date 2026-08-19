@@ -1116,22 +1116,23 @@ pub(crate) const DOCKER_BOUNDARY: &str = concat!(
 /// of the count: a user who asked for a clean slate and gets survivors should
 /// learn it while saying no is still an option.
 pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
+    let ownership = plan.ownership();
     let mut lines = vec![
         "This will remove all devlaunch data:".to_owned(),
-        format!("  - {} DevPod workspace(s)", plan.ownership.mine.len()),
+        format!("  - {} DevPod workspace(s)", ownership.mine.len()),
         format!(
             "  - {}/ (workspace clones, repo caches, the shared pixi cache, completions)",
-            plan.cache_dir.display()
+            plan.cache_dir().display()
         ),
     ];
-    if !plan.ownership.foreign.is_empty() {
+    if !ownership.foreign.is_empty() {
         lines.push(String::new());
         lines.push(format!(
             "Leaving {} workspace(s) devlaunch did not create:",
-            plan.ownership.foreign.len()
+            ownership.foreign.len()
         ));
         lines.extend(
-            plan.ownership
+            ownership
                 .foreign
                 .iter()
                 .map(|workspace| format!("  - {}", workspace.id)),
@@ -1276,16 +1277,16 @@ fn shell_quoted(path: &Path) -> String {
 /// workspaces, and a clone with no workspace has no row there to appear in.
 pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
     let mut lines = vec![
-        format!("Clone directories under {}:", plan.root.display()),
+        format!("Clone directories under {}:", plan.root().display()),
         String::new(),
     ];
-    if !plan.removing.is_empty() {
+    if !plan.removing().is_empty() {
         lines.push(format!(
             "Removing {} that nothing references -- {}:",
-            plan.removing.len(),
+            plan.removing().len(),
             describe_usage(&plan.freed())
         ));
-        for reclaimable in &plan.removing {
+        for reclaimable in plan.removing() {
             let mut line = format!(
                 "  - {} ({})",
                 reclaimable.path.display(),
@@ -1301,9 +1302,9 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         }
         lines.push(String::new());
     }
-    if !plan.keeping.is_empty() {
-        lines.push(format!("Leaving {}:", plan.keeping.len()));
-        for kept in &plan.keeping {
+    if !plan.keeping().is_empty() {
+        lines.push(format!("Leaving {}:", plan.keeping().len()));
+        for kept in plan.keeping() {
             lines.push(format!(
                 "  - {}: {}",
                 kept.path.display(),
@@ -1312,10 +1313,10 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         }
         lines.push(String::new());
     }
-    if !plan.stale_records.is_empty() {
+    if !plan.stale_records().is_empty() {
         lines.push(format!(
             "Dropping {} record(s) of directories already gone.",
-            plan.stale_records.len()
+            plan.stale_records().len()
         ));
         lines.push(String::new());
     }
@@ -1423,13 +1424,13 @@ pub(crate) fn reconcile_plan_lines(plan: &ReconcilePlan) -> Vec<String> {
     let mut lines = vec![
         format!(
             "devpod workspaces sourced under {} at something that is not a clone:",
-            plan.root.display()
+            plan.root().display()
         ),
         String::new(),
     ];
-    if !plan.adopting.is_empty() {
-        lines.push(format!("Re-pointing {}:", plan.adopting.len()));
-        for adoptable in &plan.adopting {
+    if !plan.adopting().is_empty() {
+        lines.push(format!("Re-pointing {}:", plan.adopting().len()));
+        for adoptable in plan.adopting() {
             lines.push(format!(
                 "  - {}: {} -> {}",
                 adoptable.workspace_id,
@@ -1449,12 +1450,12 @@ pub(crate) fn reconcile_plan_lines(plan: &ReconcilePlan) -> Vec<String> {
         );
         lines.push(String::new());
     }
-    if !plan.reporting.is_empty() {
+    if !plan.reporting().is_empty() {
         lines.push(format!(
             "Leaving {}, which dl will not guess at:",
-            plan.reporting.len()
+            plan.reporting().len()
         ));
-        for unadoptable in &plan.reporting {
+        for unadoptable in plan.reporting() {
             lines.push(format!(
                 "  - {} ({}): {}",
                 unadoptable.workspace_id,

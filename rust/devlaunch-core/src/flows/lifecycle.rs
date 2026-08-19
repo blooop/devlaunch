@@ -947,13 +947,27 @@ fn delete_call(workspace_id: &str, insistence: Insistence) -> Call {
 /// cannot disagree — [`purge_all_data`] deletes exactly `ownership.mine`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PurgePlan {
+    // Private like [`PrunePlan`]'s fields: a plan a caller could assemble is a
+    // count approved for one set and a delete acting on another.
     /// Everything devlaunch stores on this machine. Removed whole.
-    pub cache_dir: PathBuf,
+    cache_dir: PathBuf,
     /// The workspaces devlaunch made, and the ones it did not. The second half is
     /// *named* rather than merely excluded from the count: a user who asked for a
     /// clean slate and gets survivors should learn it while saying no is still an
     /// option, rather than from a later `dl --ls`.
-    pub ownership: WorkspaceOwnership,
+    ownership: WorkspaceOwnership,
+}
+
+impl PurgePlan {
+    /// The cache directory the purge removes whole.
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
+    /// The workspaces devlaunch made, and the ones it did not.
+    pub fn ownership(&self) -> &WorkspaceOwnership {
+        &self.ownership
+    }
 }
 
 /// What a purge would do. One `devpod list`, read before anything is destroyed.
@@ -1359,7 +1373,7 @@ pub fn site_of(source: &Path, root: &Path) -> SourceSite {
 /// candidate and stop the command; a source that lands inside a repository's clone
 /// tree on something with no `.git` in it means the workspace could be opening any
 /// of *that repository's* clones, and disputes only those.
-pub fn workspace_locations(workspaces: &[Workspace], root: &Path) -> WorkspaceLocations {
+pub(crate) fn workspace_locations(workspaces: &[Workspace], root: &Path) -> WorkspaceLocations {
     let mut located = WorkspaceLocations::default();
     for workspace in workspaces {
         let places = match source_places(&workspace.source) {
@@ -1743,14 +1757,17 @@ pub struct Kept {
 /// [`Reclaimable`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrunePlan {
-    pub root: PathBuf,
+    // Private, all of them: a plan is [`prune_plan`]'s answer, and fields a caller
+    // could fill would let one be assembled from a root and a classification that
+    // never met — the mismatch [`ClonePlacement`] exists to make inexpressible.
+    root: PathBuf,
     /// Biggest first: the report's job is to be acted on, and "which of these is
     /// worth reclaiming" is the comparative question. Path breaks ties so two runs
     /// over an unchanged cache read alike.
-    pub removing: Vec<Reclaimable>,
-    pub keeping: Vec<Kept>,
+    removing: Vec<Reclaimable>,
+    keeping: Vec<Kept>,
     /// Worktree records whose directory is definitively not there any more.
-    pub stale_records: Vec<WorktreeInfo>,
+    stale_records: Vec<WorktreeInfo>,
 }
 
 impl PrunePlan {
@@ -1762,6 +1779,26 @@ impl PrunePlan {
     /// What the whole run would free.
     pub fn freed(&self) -> DiskUsage {
         disk_usage::total_usage(self.removing.iter().map(|it| it.usage.clone()))
+    }
+
+    /// The directory the plan's candidates were scanned under.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The directories this run will remove.
+    pub fn removing(&self) -> &[Reclaimable] {
+        &self.removing
+    }
+
+    /// The directories this run will leave standing, and why.
+    pub fn keeping(&self) -> &[Kept] {
+        &self.keeping
+    }
+
+    /// The records this run will drop for directories already gone.
+    pub fn stale_records(&self) -> &[WorktreeInfo] {
+        &self.stale_records
     }
 }
 
@@ -1776,9 +1813,43 @@ impl PrunePlan {
 ///
 /// Absent is not a failure — a fresh install has no repos directory yet, and
 /// resolving one that is not there is what says so.
-pub fn clone_root(clones: &WorkspaceCloneManager<'_>) -> PathBuf {
+pub(crate) fn clone_root(clones: &WorkspaceCloneManager<'_>) -> PathBuf {
     let repos_dir = clones.repos_dir();
     canonical(&repos_dir.to_string_lossy()).unwrap_or_else(|| repos_dir.to_path_buf())
+}
+
+/// The tree a maintenance command scans and where devpod's workspaces sit in it,
+/// resolved together.
+///
+/// [`prune_plan`] and [`reconcile_plan`] classify a directory by joining two
+/// facts: the root the candidates are scanned under, and where every live
+/// workspace's source resolves *against that same root*. Taken as two parameters
+/// the pair could be built from two different roots — and the join would then
+/// mis-classify a clone, reading a healthy one whose workspace was placed against
+/// the other root as sourced by nobody, which is an orphan, which is a deletion.
+/// One constructor derives both halves from one root, so a mismatched pair has no
+/// representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub struct ClonePlacement {
+    root: PathBuf,
+    locations: WorkspaceLocations,
+}
+
+impl ClonePlacement {
+    /// Resolve `workspaces` against the tree `clones` manages (see
+    /// [`clone_root`]). The only way to build one.
+    pub fn resolve(clones: &WorkspaceCloneManager<'_>, workspaces: &[Workspace]) -> Self {
+        let root = clone_root(clones);
+        let locations = workspace_locations(workspaces, &root);
+        Self { root, locations }
+    }
+
+    /// The live workspaces this command cannot place, or nothing when every one
+    /// of them placed itself. See [`WorkspaceLocations::unlocatable`].
+    pub fn unlocatable(&self) -> Option<NonEmpty<Unlocatable>> {
+        self.locations.unlocatable()
+    }
 }
 
 /// Why a prune could not be carried out.
@@ -1808,11 +1879,11 @@ pub fn prune_plan(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     workspaces: &[Workspace],
-    locations: &WorkspaceLocations,
-    root: &Path,
+    placement: &ClonePlacement,
     insistence: Insistence,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PrunePlan, PruneError> {
+    let ClonePlacement { root, locations } = placement;
     let mut removing: Vec<Reclaimable> = Vec::new();
     let mut keeping: Vec<Kept> = Vec::new();
     let mut cache_notices = Vec::new();
@@ -2231,14 +2302,32 @@ pub struct Unadoptable {
 /// What `--reconcile` would change, and what it would only report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcilePlan {
-    pub root: PathBuf,
-    pub adopting: Vec<Adoptable>,
-    pub reporting: Vec<Unadoptable>,
+    // Private for [`PrunePlan`]'s reason: an adoption list a caller could fill
+    // would not be the one [`reconcile_plan`]'s contested-in-both-directions
+    // matching produced.
+    root: PathBuf,
+    adopting: Vec<Adoptable>,
+    reporting: Vec<Unadoptable>,
 }
 
 impl ReconcilePlan {
     pub fn nothing_to_do(&self) -> bool {
         self.adopting.is_empty() && self.reporting.is_empty()
+    }
+
+    /// The directory the orphans were placed under.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The devpod records this run will re-point.
+    pub fn adopting(&self) -> &[Adoptable] {
+        &self.adopting
+    }
+
+    /// The orphans this run will only name, and why.
+    pub fn reporting(&self) -> &[Unadoptable] {
+        &self.reporting
     }
 }
 
@@ -2287,10 +2376,10 @@ pub fn reconcile_plan(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     workspaces: &[Workspace],
-    locations: &WorkspaceLocations,
-    root: &Path,
+    placement: &ClonePlacement,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> ReconcilePlan {
+    let ClonePlacement { root, locations } = placement;
     let orphans = orphaned_workspaces(workspaces, root);
     let mut cache_notices = Vec::new();
 
@@ -3011,24 +3100,21 @@ mod tests {
         )
     }
 
-    /// The plan `--prune` would print, and the locations it was built from.
-    fn plan_for(world: &World, insistence: Insistence) -> (PrunePlan, WorkspaceLocations) {
+    /// The plan `--prune` would print.
+    fn plan_for(world: &World, insistence: Insistence) -> PrunePlan {
         let clones = clones_for(&world.repos_dir, &world.devpod);
-        let root = clone_root(&clones);
         let mut context = CommandContext::new(&world.devpod);
         let workspaces = context.workspaces().expect("a listing");
-        let locations = workspace_locations(&workspaces, &root);
-        let plan = prune_plan(
+        let placement = ClonePlacement::resolve(&clones, &workspaces);
+        prune_plan(
             &clones,
             &world.storage,
             &workspaces,
-            &locations,
-            &root,
+            &placement,
             insistence,
             &mut ignoring(),
         )
-        .expect("a plan");
-        (plan, locations)
+        .expect("a plan")
     }
 
     /// The paths the plan would remove, in the order it would report them.
@@ -5475,7 +5561,7 @@ mod tests {
     #[test]
     fn the_four_arms_are_classified_from_the_disk_and_from_devpods_own_listing() {
         let four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
 
         assert_eq!(
             removing(&plan),
@@ -5503,7 +5589,7 @@ mod tests {
         // Nothing sources it and no record names it, so every rule would call it an
         // orphan — and it is the copy every clone hardlinks its git objects out of.
         let four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
         let bare = canonical(&four.world.bare.to_string_lossy()).expect("the bare directory");
         assert!(!removing(&plan).contains(&bare));
         assert!(
@@ -5519,7 +5605,7 @@ mod tests {
         // saying the directory is still in use or that its own records disagree, and
         // there is nothing for a user to mean by insisting.
         let four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::Insisted);
+        let plan = plan_for(&four.world, Insistence::Insisted);
 
         let mut going = removing(&plan);
         going.sort();
@@ -5542,7 +5628,7 @@ mod tests {
         // uncommitted work as for an empty one, and the confirmation cannot say what
         // it costs.
         let four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::Insisted);
+        let plan = plan_for(&four.world, Insistence::Insisted);
 
         let promotions: Vec<(PathBuf, Promotion)> = plan
             .removing
@@ -5576,14 +5662,14 @@ mod tests {
         std::fs::create_dir_all(&broken).expect("a directory that is not a clone");
         std::fs::write(broken.join("something.txt"), "x\n").expect("a file in it");
 
-        let (kept, _) = plan_for(&world, Insistence::NotInsisted);
+        let kept = plan_for(&world, Insistence::NotInsisted);
         assert!(matches!(
             kept_because(&kept, &broken),
             KeptBecause::Objected(Objection::CouldNotTell(_))
         ));
         assert!(removing(&kept).is_empty());
 
-        let (forced, _) = plan_for(&world, Insistence::Insisted);
+        let forced = plan_for(&world, Insistence::Insisted);
         assert_eq!(removing(&forced), [broken]);
     }
 
@@ -5597,7 +5683,7 @@ mod tests {
         std::fs::create_dir_all(&outside).expect("somebody else's directory");
         std::os::unix::fs::symlink(&outside, world.repo_dir.join("a-link")).expect("a symlink");
 
-        let (plan, _) = plan_for(&world, Insistence::Insisted);
+        let plan = plan_for(&world, Insistence::Insisted);
 
         assert!(removing(&plan).is_empty());
         assert!(plan.keeping.is_empty(), "{:?}", plan.keeping);
@@ -5615,19 +5701,17 @@ mod tests {
             Git::new(&devpod),
             GitLfs::NotInstalled,
         );
-        let root = clone_root(&clones);
         let (storage, _) =
             MetadataStorage::open(dir.path().join("metadata.json")).expect("a store");
         let mut context = CommandContext::new(&devpod);
         let workspaces = context.workspaces().expect("a listing");
-        let locations = workspace_locations(&workspaces, &root);
+        let placement = ClonePlacement::resolve(&clones, &workspaces);
 
         let plan = prune_plan(
             &clones,
             &storage,
             &workspaces,
-            &locations,
-            &root,
+            &placement,
             Insistence::NotInsisted,
             &mut ignoring(),
         )
@@ -5648,7 +5732,7 @@ mod tests {
         std::fs::create_dir_all(&stub).expect("a config-only stub with no .git");
         world.devpod.lists(&[listed("stale", &stub)]);
 
-        let (plan, _) = plan_for(&world, Insistence::Insisted);
+        let plan = plan_for(&world, Insistence::Insisted);
 
         assert!(removing(&plan).is_empty(), "{:?}", removing(&plan));
         assert!(matches!(
@@ -5672,7 +5756,7 @@ mod tests {
         std::fs::create_dir_all(&stub).expect("a stub in the first repository");
         world.devpod.lists(&[listed("stale", &stub)]);
 
-        let (plan, _) = plan_for(&world, Insistence::Insisted);
+        let plan = plan_for(&world, Insistence::Insisted);
 
         assert_eq!(
             removing(&plan),
@@ -5740,7 +5824,7 @@ mod tests {
         .expect("an exclude file");
         std::fs::write(big.join("payload.bin"), vec![0u8; 2 * 1024 * 1024]).expect("a payload");
 
-        let (plan, _) = plan_for(&world, Insistence::NotInsisted);
+        let plan = plan_for(&world, Insistence::NotInsisted);
 
         assert_eq!(removing(&plan), [big, small]);
         assert!(plan.freed().known_bytes() > 2 * 1024 * 1024);
@@ -5752,7 +5836,7 @@ mod tests {
         let gone = world.repo_dir.join("r-gone-aaa");
         world.record("r-gone-aaa", "gone", &gone);
 
-        let (plan, _) = plan_for(&world, Insistence::NotInsisted);
+        let plan = plan_for(&world, Insistence::NotInsisted);
 
         assert_eq!(
             plan.stale_records
@@ -5779,7 +5863,7 @@ mod tests {
             return;
         };
 
-        let (plan, _) = plan_for(&world, Insistence::NotInsisted);
+        let plan = plan_for(&world, Insistence::NotInsisted);
 
         assert!(plan.stale_records.is_empty(), "{:?}", plan.stale_records);
     }
@@ -5787,7 +5871,7 @@ mod tests {
     #[test]
     fn the_acting_pass_removes_the_directories_and_forgets_their_records() {
         let mut four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
         let clones = clones_for(&four.world.repos_dir, &four.world.devpod);
         let mut context = CommandContext::new(&four.world.devpod);
 
@@ -5823,7 +5907,7 @@ mod tests {
     fn work_written_while_the_question_was_open_is_not_destroyed() {
         // The report a user answered was taken before they answered it.
         let mut four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
         assert_eq!(removing(&plan), [four.orphan_clean.clone()]);
         std::fs::write(four.orphan_clean.join("just-typed.md"), "half a plan\n")
             .expect("work written while the question was open");
@@ -5861,7 +5945,7 @@ mod tests {
         // unsaved work" caught the other case and not this one, and the difference was
         // somebody's running workspace.
         let mut four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::Insisted);
+        let plan = plan_for(&four.world, Insistence::Insisted);
         assert!(removing(&plan).contains(&four.orphan_dirty));
         four.world.devpod.lists(&[
             listed("referenced", &four.referenced),
@@ -5897,7 +5981,7 @@ mod tests {
         let mut world = World::empty();
         let stuck = world.clone_at("r-stuck-aa", "stuck");
         let goes = world.clone_at("r-goes-aaa", "goes");
-        let (plan, _) = plan_for(&world, Insistence::NotInsisted);
+        let plan = plan_for(&world, Insistence::NotInsisted);
         assert_eq!(plan.removing.len(), 2);
         let Some(_sealed) = refusing_writes(&stuck) else {
             return;
@@ -5939,7 +6023,7 @@ mod tests {
     #[test]
     fn the_acting_pass_stops_when_a_workspace_appeared_that_it_cannot_place() {
         let mut four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
         four.world.devpod.lists(&[listed_with(
             "unreadable",
             serde_json::json!({ "localFolder": {} }),
@@ -5966,7 +6050,7 @@ mod tests {
     #[test]
     fn a_second_run_finds_nothing_left_to_do() {
         let mut four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
         let clones = clones_for(&four.world.repos_dir, &four.world.devpod);
         {
             let mut context = CommandContext::new(&four.world.devpod);
@@ -5981,7 +6065,7 @@ mod tests {
         }
         drop(clones);
 
-        let (again, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let again = plan_for(&four.world, Insistence::NotInsisted);
 
         assert!(again.nothing_to_do());
     }
@@ -5991,7 +6075,7 @@ mod tests {
         // It is the one question whose answer cannot be re-derived from disk, and it is
         // paid only after a user has said yes to a deletion.
         let mut four = four_clones();
-        let (plan, _) = plan_for(&four.world, Insistence::NotInsisted);
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
         let before = four.world.devpod.devpod_argvs().len();
         let clones = clones_for(&four.world.repos_dir, &four.world.devpod);
         let mut context = CommandContext::new(&four.world.devpod);
@@ -6064,16 +6148,14 @@ mod tests {
     /// The plan `--reconcile` would print.
     fn reconcile_for(world: &World) -> ReconcilePlan {
         let clones = clones_for(&world.repos_dir, &world.devpod);
-        let root = clone_root(&clones);
         let mut context = CommandContext::new(&world.devpod);
         let workspaces = context.workspaces().expect("a listing");
-        let locations = workspace_locations(&workspaces, &root);
+        let placement = ClonePlacement::resolve(&clones, &workspaces);
         reconcile_plan(
             &clones,
             &world.storage,
             &workspaces,
-            &locations,
-            &root,
+            &placement,
             &mut ignoring(),
         )
     }

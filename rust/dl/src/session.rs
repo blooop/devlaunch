@@ -98,8 +98,8 @@ pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
 /// Holds the manager and the store together because the listing reads both and
 /// they have to describe the same cache. There is deliberately no second copy of
 /// the config here: `repos_dir` is what the commands want from it, and the manager
-/// is what answers for that (see [`lifecycle::clone_root`]), so a command cannot
-/// scan one tree while locking against another.
+/// is what answers for that (see [`lifecycle::ClonePlacement`]), so a command
+/// cannot scan one tree while locking against another.
 pub(crate) struct Records<'r> {
     pub(crate) storage: MetadataStorage,
     /// The clone manager, which is the one thing that names a record's clone
