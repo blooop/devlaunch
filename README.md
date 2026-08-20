@@ -688,6 +688,12 @@ directories and no workspaces, `--purge` takes both but only what devlaunch made
 removes nothing — it repairs records that stopped matching the disk. Each one prints its plan and
 asks before acting, and `-y` is what skips the question.
 
+One exception, and it is not a released build: a binary compiled from somebody's
+working tree appends `-dev` (`dl <version>-dev`). That comes from the `dev-build`
+cargo feature, which `./dev.sh` builds with and nothing that ships enables, and it
+is what tells `dl-next` apart from `dl` when both are on PATH — see "Two installs"
+in AGENTS.md.
+
 ### What purge deletes
 
 devpod's workspace list is shared. A workspace you made with `devpod up`, or that

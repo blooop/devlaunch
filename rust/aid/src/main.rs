@@ -62,10 +62,12 @@ fn run(argv: &[String]) -> i32 {
         return if argv.is_empty() { 1 } else { 0 };
     }
     if argv[0] == "--version" {
-        // `aid <version>`, the version dl prints under aid's name. **Divergence row
-        // 16**: Python appended an editable install's provenance, which a compiled
-        // binary has none of.
-        println!("aid {}", dl::VERSION);
+        // `aid <version>`, the version dl prints under aid's name, and the same
+        // build marker: `dl::BUILD_MARKER` is empty in a released build and `-dev`
+        // in a working-tree one, so `aid-next` says which build it is exactly as
+        // `dl-next` does (#268). **Divergence row 16**: what Python appended here
+        // was an editable install's provenance, which a compiled binary has none of.
+        println!("aid {}{}", dl::VERSION, dl::BUILD_MARKER);
         return 0;
     }
 

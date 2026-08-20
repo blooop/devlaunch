@@ -23,25 +23,34 @@ the `blooop` channel (`~/.pixi/bin/dl`). Leave them alone: they are what keeps
 working while this checkout is mid-change, and what actually opens the user's
 workspaces.
 
-`dl-next` and `aid-next` are **this working tree**, installed by `./dev.sh` into
-`~/.local/share/devlaunch-dev` and symlinked from `~/.local/bin`. Both builds are
-on PATH at once under names that cannot collide, so running the wrong one is not
-possible by accident.
+`dl-next` and `aid-next` are **this working tree**, compiled by `./dev.sh` into
+`~/.local/share/devlaunch-dev/bin` and symlinked from `~/.local/bin`. Both builds
+are on PATH at once under names that cannot collide, so running the wrong one is
+not possible by accident.
 
 ```
 ./dev.sh
 ```
 
-Two things to know about it:
+Three things to know about it:
 
-- **The install is editable, so there is no build step and no snapshot.**
-  `dl-next` is whatever the tree looks like at the moment you run it — a
-  half-finished edit is live as soon as it is saved. (`wf-next` in
-  blooop/wayfinder is the same idea with the opposite trade: a compiled copy that
-  only moves when you rebuild it.) `dl-next --version` names the tree it resolves
-  to — `dl <version> (dev, editable from /path/to/checkout)` — where the released
-  `dl --version` prints the bare version, so the two are told apart by output as
-  well as by name.
+- **It is a compile, so there is a build step and there is a snapshot.**
+  `dl-next` is the tree as it was the last time you ran `./dev.sh`, and it moves
+  at no other time — a half-finished edit is invisible until it compiles, and an
+  edit that compiles is invisible until you re-run the script. (This is the same
+  trade `wf-next` in blooop/wayfinder makes, and the opposite of the one the
+  Python build used to make: no build step, but equally no snapshot, so a
+  half-saved edit was live immediately.) The copies live under
+  `~/.local/share/devlaunch-dev/bin` rather than being symlinks into
+  `rust/target/release/`, which is what makes that promise true: an ordinary
+  `cargo build --release` in the tree would otherwise move `dl-next` underneath
+  you, and `cargo clean` would delete it.
+- **`--version` says which build it is.** `dl-next --version` prints
+  `dl <version>-dev`, where the released `dl --version` prints the bare version.
+  The `-dev` comes from the `dev-build` cargo feature that `./dev.sh` builds with
+  (`rust/dl/Cargo.toml`); it is off in every artifact that ships. So the two names
+  are told apart by output as well as by name, which is the whole reason to have
+  two names.
 - **It touches real state.** `dl` mutates `metadata.json`, the bare clone cache
   and live devpod workspaces, which is how a half-finished change costs someone
   their workspace list. Everything it stores resolves through `XDG_CACHE_HOME`,
@@ -80,27 +89,30 @@ Two things to know about it:
 
 ### Inside the devcontainer: one build, and it is `pixi run dl`
 
-Everything above is about the host. This repo's devcontainer already installs the
-checkout editable — `pyproject.toml` declares
-`devlaunch = { path = ".", editable = true }` under `[tool.pixi.pypi-dependencies]`,
-and `postCreateCommand` runs `pixi install` — so the container comes up with
-`./dev.sh`'s job already done. **Inside, run `pixi run dl` and `pixi run aid`.**
-They are the working tree, and `--version` says so:
-`dl <version> (dev, editable from /workspaces/<checkout>)`.
+Everything above is about the host. This repo's devcontainer carries the same Rust
+toolchain the binaries ship from — see "cargo is in the project env too" below —
+so the container can build the tree itself. **Inside, run `pixi run dl` and
+`pixi run aid`.** They are `cargo run` over this working tree, and `--version`
+says so: `dl <version>-dev`.
+
+They are pixi *tasks* now, not commands that happen to be in the environment.
+That is worth knowing because it changes what a bare `dl` means in here: nothing.
+There is no released `dl` in the container and nothing puts one on PATH — which is
+correct, because on the host `dl` is the way in, and inside you are already in.
 
 `pixi run` is not a style preference there, because `dl` shells out to a bare
 `devpod` resolved from `PATH` and *which* devpod that finds depends on how the
 container was opened. Open it with devpod — which is what `dl` does — and devpod
 injects its own agent binary at `/usr/local/bin/devpod`, a working CLI sitting on
 the bare `PATH`. Open the same devcontainer through VS Code or a plain
-`devcontainer up` and nothing puts it there. A devlaunch installed outside the
-project env therefore has a devpod to drive on one route in and none on the
-other, which is worse to diagnose than never working. The project env's devpod is
-there either way, and it is the version the tree is pinned against rather than
-whatever the host happened to inject — a difference that has already hidden a bug
-once, since devpod 0.8 asks for a pty on `ssh --command` and 0.26 never does.
+`devcontainer up` and nothing puts it there. A devlaunch run outside the project
+env therefore has a devpod to drive on one route in and none on the other, which
+is worse to diagnose than never working. The project env's devpod is there either
+way, and it is the version the tree is pinned against rather than whatever the
+host happened to inject — a difference that has already hidden a bug once, since
+devpod 0.8 asks for a pty on `ssh --command` and 0.26 never does.
 
-Note what choosing between them does *not* buy: both binaries read the same
+Note what choosing the project env does *not* buy: both binaries read the same
 `~/.devpod`, so the workspace list and the configured providers are shared. The
 project env is where the code and its devpod agree, not an isolation boundary.
 
@@ -128,17 +140,16 @@ not have to be the directory you stand in. Note that a conda `rust` does not rea
 `pyproject.toml` and moves by hand with the other two.
 
 **Do not run `./dev.sh` in the container.** It exits at its first check, because
-`uv` is not installed there — and that refusal is correct rather than a gap to
-fill. A `-next` build would be a second editable install of the *same* tree,
-printing the *same* provenance string as `pixi run dl` — the same build under a
-second name. On the host the convention is worth its keep because the two names
-stand for genuinely different builds, released and working tree; in here there
-would be nothing to tell apart, and nothing gained by telling it. No released
-`dl` is wanted in there either: the host keeps one because on the host `dl` is
-the way in, and inside you are already in. When the tree is
-half-edited, `git stash` restores a working `pixi run dl` with no reinstall, and
-the host's released `dl` — the build that opened this container — is one level up,
-untouched.
+`cargo` is on PATH only inside the pixi environment — and that refusal is correct
+rather than a gap to fill. Run it under `pixi run` and it would install a second
+compiled copy of the *same* tree, printing the *same* `-dev` version string as
+`pixi run dl` — the same build under a second name. On the host the convention is
+worth its keep because the two names stand for genuinely different builds,
+released and working tree; in here there would be nothing to tell apart, and
+nothing gained by telling it. When the tree is half-edited, `pixi run dl` fails
+to compile and says why, which is the whole of what a compiled build does for you
+there; the host's released `dl` — the build that opened this container — is one
+level up, untouched.
 
 ## The devcontainer is prebuilt
 

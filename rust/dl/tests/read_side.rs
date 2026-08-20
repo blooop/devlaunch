@@ -505,13 +505,18 @@ fn a_refresh_that_cannot_reach_devpod_still_completes_what_it_can_see() {
 
 #[test]
 fn version_prints_the_binarys_own_version_and_asks_devpod_nothing() {
-    // No devpod at all: `--version` must not need one. Python's version line
-    // carries the install's provenance for an editable install; a compiled binary
-    // has none to carry.
+    // No devpod at all: `--version` must not need one.
+    //
+    // `BUILD_MARKER` rather than a literal, so this test judges the binary it was
+    // compiled beside: empty for the released build the gate runs, `-dev` for the
+    // working-tree build `./dev.sh` installs as `dl-next` (#268). What is pinned
+    // here is that the line is exactly the version and the marker with nothing
+    // else — Python put an editable install's provenance in this space, and a
+    // compiled binary has none to put.
     let world = World::with_devpod(None);
     let run = world.dl(&["--version"]);
     run.succeeded();
-    assert_eq!(run.out, format!("dl {}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(run.out, format!("dl {}{}\n", dl::VERSION, dl::BUILD_MARKER));
     assert_eq!(run.err, "");
 }
 

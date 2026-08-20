@@ -183,14 +183,16 @@ fn help_is_asked_for_by_flag_and_printed_by_accident() {
 }
 
 #[test]
-fn the_version_is_dls_under_aids_name() {
-    // **Divergence row 16**: Python appended `(dev, editable from <tree>)` for an
-    // editable install, which a compiled binary has no metadata for. A released
-    // Python build printed exactly this.
+fn the_version_is_dls_under_aids_name_with_dls_build_marker() {
+    // Both halves come from `dl`, so `aid-next` and `dl-next` cannot disagree
+    // about which build they are (#268): the marker is empty in the released build
+    // and `-dev` in a working-tree one. **Divergence row 16**: what Python put
+    // after the version here was `(dev, editable from <tree>)`, which a compiled
+    // binary has no metadata for.
     let world = World::with(&["--warm"]);
     let run = world.aid(&["--version"]);
     run.exited(0);
-    assert_eq!(run.out, format!("aid {VERSION}\n"));
+    assert_eq!(run.out, format!("aid {VERSION}{}\n", dl::BUILD_MARKER));
     assert_eq!(run.err, "");
 }
 

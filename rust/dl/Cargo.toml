@@ -36,6 +36,19 @@ skim = { workspace = true }
 [features]
 wheel = []
 
+# The build marker `--version` appends (#268). Off by default, so every released
+# artifact -- the maturin wheel, the conda package, a plain `cargo build` -- prints
+# the bare version, and the packaging checks in `.github/workflows/ci.yml` keep
+# asserting exactly that. `./dev.sh` turns it on, which is the whole of what makes
+# `dl-next --version` distinguishable from the released `dl --version`.
+#
+# A cargo feature rather than a build-time environment variable, and that is the
+# load-bearing part: `option_env!` is read at compile time but cargo does not know
+# it was, so flipping the variable rebuilds nothing and a stale binary keeps
+# whichever marker it happened to be built with. Cargo tracks features, so
+# switching one rebuilds.
+dev-build = []
+
 [[bin]]
 name = "aid"
 path = "../aid/src/main.rs"

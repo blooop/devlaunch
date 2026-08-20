@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The dev-loop names build the implementation that ships**
+  ([#268](https://github.com/blooop/devlaunch/issues/268)). `./dev.sh` compiles
+  `rust/` and installs the two binaries as `dl-next`/`aid-next`; inside this repo's
+  devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the working
+  tree. Both used to be the Python build, so after the 0.1.0 cutover the `-next`
+  names previewed something that was no longer what shipped. A `dev-build` cargo
+  feature appends `-dev` to the version line, so `dl-next --version` prints
+  `dl <version>-dev` where the released `dl` prints the bare version — divergence
+  row 16 removed Python's `(dev, editable from <tree>)` suffix and left the two
+  builds distinguishable only by the name they were typed under. Nothing that ships
+  enables the feature. The trade `dev.sh` makes is now the opposite one: a compiled
+  snapshot that moves when you re-run it, where the editable install had no build
+  step and no snapshot.
+- **The pixi Rust pin names one toolchain.** `rust = "1.97.*"` allowed a patch the
+  gate never used, while AGENTS.md told a reader the environment was "pinned to the
+  1.97.1 that rust-toolchain.toml names". Tightened to `1.97.1.*`, which is what the
+  lockfile already held, and kept in lockstep by a test.
+
 ## [0.3.0] - 2026-08-20
 
 ### Changed
