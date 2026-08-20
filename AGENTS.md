@@ -139,7 +139,11 @@ Two rules follow from that, and both are about the hash:
   locally.
 
 `pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`.
-See "The prebuilt dev container image" in README.md.
+
+The package must be public or the lookup returns DENIED and every launch silently
+builds locally. GHCR creates it private and no workflow can change that; it is a
+one-time manual setting, and it cannot be done before the first publish creates
+the package. See "The prebuilt dev container image" in README.md.
 
 ## Documentation Maintenance
 

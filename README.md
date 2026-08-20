@@ -1683,10 +1683,27 @@ rebuilt and repushed.
 **The package has to be made public once, by hand.** GHCR creates a package
 private no matter how public its repository is, and a package's visibility is not
 something a workflow can set — there is no REST endpoint for it and no `gh`
-subcommand. After the first successful run:
+subcommand.
+
+**It cannot be done in advance.** There is nothing to configure until the
+workflow's first successful run creates the package, and every URL below 404s
+until then — which is what a 404 there means, rather than a wrong link:
+
+```bash
+gh api users/blooop/packages/container/devlaunch-devcontainer --jq .visibility
+# "Package not found" => not published yet, so there is nothing to make public
+# "private"           => published; do the steps below
+# "public"            => done
+```
+
+Once it is published, the settings page is
 
 <https://github.com/users/blooop/packages/container/devlaunch-devcontainer/settings>
-→ *Danger Zone* → *Change visibility* → **Public**.
+
+→ *Danger Zone* → *Change visibility* → **Public**. If that URL does not resolve,
+navigate instead: <https://github.com/blooop?tab=packages> → *devlaunch-devcontainer*
+→ *Package settings*. (`/users/blooop/...` and not `/orgs/...` because `blooop` is
+a user account; an organisation's packages live under a different path.)
 
 Left private, the lookup comes back `DENIED`, devpod reads that as a miss, and
 every launch quietly builds locally — the behaviour from before any of this
