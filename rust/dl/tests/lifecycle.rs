@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+use devlaunch_test_support::KeepingCoverage;
+
 /// The repository root, from the crate this test is compiled into.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -83,6 +85,7 @@ impl World {
         let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
             .args(args)
             .env_clear()
+            .keeping_coverage()
             // /usr/bin and /bin for git, which these commands really run; the fake
             // devpod is first, under its real name.
             .env("PATH", format!("{root}/bin:/usr/bin:/bin"))
@@ -139,6 +142,24 @@ impl World {
 
     fn exists(&self, relative: &str) -> bool {
         self.path(relative).exists()
+    }
+
+    /// The whole cache, contents included, as a listing two runs can be compared by.
+    ///
+    /// The instrument for a command that must leave the cache **alone** — one
+    /// answered `no`, or refused before it acted. `exists()` on the one path the
+    /// test happens to think of cannot see the record rewritten somewhere else,
+    /// which is the shape most of these defects have. See
+    /// `devlaunch_test_support::cache_fingerprint`.
+    fn cache_fingerprint(&self) -> Vec<String> {
+        devlaunch_test_support::cache_fingerprint(&self.root)
+    }
+
+    /// Every path the cache holds, without contents.
+    ///
+    /// The instrument for a command that must leave a particular shape behind.
+    fn cache_shape(&self) -> Vec<String> {
+        devlaunch_test_support::cache_shape(&self.root)
     }
 
     /// The devpod calls made so far, in order, as `devpod <argv>` lines.
@@ -222,6 +243,30 @@ impl Run {
         self
     }
 }
+
+/// The entries `listing` has and `other` does not, in `listing`'s order.
+///
+/// Two calls describe a cleanup completely: `only_in(before, after)` is what it
+/// removed and `only_in(after, before)` is what it added, and asserting both pins
+/// the whole of `after` — relative to the world the fixture built, which is the
+/// only thing a test here is ever really saying.
+///
+/// Stated as a difference rather than as a whole listing on purpose. The listing
+/// is the stronger assertion of the two and the weaker test: a fixture that grew
+/// one directory would move every line of it, so it would be re-pasted rather than
+/// read, and a re-pasted golden asserts whatever the binary last did. A difference
+/// of one or two lines is the sentence the command printed, checked against the
+/// disk, and it stays readable when the fixture moves.
+fn only_in(listing: &[String], other: &[String]) -> Vec<String> {
+    listing
+        .iter()
+        .filter(|entry| !other.contains(entry))
+        .cloned()
+        .collect()
+}
+
+/// A `Vec<String>` comparison against nothing, spelled so the type is inferable.
+const NOTHING: [&str; 0] = [];
 
 /// Every human-readable size stood down, so a document can be compared without its
 /// filesystem-dependent half.
@@ -637,6 +682,7 @@ const DOCKER_BOUNDARY: &str = "devlaunch does not manage Docker images or volume
 #[test]
 fn a_purge_answered_no_removes_nothing_and_still_names_the_disk_it_does_not_free() {
     let world = World::with(&["--prunable"]);
+    let before = world.cache_fingerprint();
     let run = world.answering("n\n", &["--purge"]);
     run.exited(0);
     assert_eq!(
@@ -644,9 +690,14 @@ fn a_purge_answered_no_removes_nothing_and_still_names_the_disk_it_does_not_free
         format!("{PURGE_PLAN}Are you sure? [y/N] Aborted.\n{DOCKER_BOUNDARY}")
     );
     assert_eq!(run.err, "");
-    assert!(
-        world.exists("cache/devlaunch/metadata.json"),
-        "it purged anyway"
+    // The whole cache, not the one file this test used to name. `--fingerprint`
+    // in the retired `compare.py` is what covered this: an abort has to leave
+    // every path and every byte where it found them, and a stdout comparison
+    // cannot see a record rewritten under a path nobody thought to check.
+    assert_eq!(
+        world.cache_fingerprint(),
+        before,
+        "an abort moved something on disk"
     );
     assert_eq!(
         world.devpod_calls(),
@@ -697,9 +748,17 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
         )
     );
     assert_eq!(run.err, "");
-    assert!(
-        !world.exists("cache/devlaunch"),
-        "the cache directory survived"
+    // Two claims in one line, and the second is the one an `exists()` check on
+    // `cache/devlaunch` cannot make. Everything devlaunch put under
+    // `XDG_CACHE_HOME` is gone -- a lock, a stale record, a clone it could not
+    // walk, anywhere in the tree, would appear here. And `XDG_CACHE_HOME` *itself*
+    // is still standing: this command deletes devlaunch's cache directory, not the
+    // user's cache, and the difference between those two is somebody's whole
+    // `~/.cache`.
+    assert_eq!(
+        world.cache_shape(),
+        ["cache/"],
+        "the purge left something of its own behind, or took the cache root with it"
     );
     assert_eq!(
         world.devpod_calls(),
@@ -874,15 +933,22 @@ fn a_prune_answered_no_removes_nothing_and_the_report_is_the_read_only_view() {
     // staying and why, and the run ends on the boundary sentence whichever way it
     // ends.
     let world = World::with(&["--prunable", "--stale-record"]);
+    let before = world.cache_fingerprint();
     let run = world.answering("no\n", &["--prune"]);
     run.exited(0);
     assert_eq!(
         without_sizes(&run.out),
         format!("{PRUNE_PLAN}Are you sure? [y/N] Aborted.\n{DOCKER_BOUNDARY}")
     );
-    assert!(
-        world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-nobody"),
-        "it pruned anyway"
+    // The read-only claim, made about the whole cache rather than about the one
+    // directory the plan offered to remove. This world also carries a *stale
+    // record* the acting pass would drop, which lives in `metadata.json` and not
+    // in the tree shape — so an abort that rewrote it would have passed the
+    // single-`exists()` check this replaces, and fails here.
+    assert_eq!(
+        world.cache_fingerprint(),
+        before,
+        "an abort moved something on disk"
     );
     assert_eq!(
         world.devpod_calls(),
@@ -894,6 +960,7 @@ fn a_prune_answered_no_removes_nothing_and_the_report_is_the_read_only_view() {
 #[test]
 fn a_prune_removes_what_the_second_pass_also_finds_unreferenced() {
     let world = World::with(&["--prunable", "--stale-record"]);
+    let before = world.cache_shape();
     let run = world.dl(&["--prune", "-y"]);
     run.exited(0);
     assert_eq!(
@@ -914,6 +981,26 @@ fn a_prune_removes_what_the_second_pass_also_finds_unreferenced() {
             .read("cache/devlaunch/metadata.json")
             .contains("devlaunch-ancient-forgotten"),
         "the record for a directory already gone was kept"
+    );
+    // And the whole tree, so a prune that removed the right directory and *also*
+    // something else fails here rather than passing every line above. Stated as
+    // the difference from the shape it started with, because that is the claim --
+    // one directory left, nothing else moved -- and a reader can check it without
+    // holding the fixture in their head.
+    let after = world.cache_shape();
+    assert_eq!(
+        only_in(&before, &after),
+        [
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-nobody/",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-nobody/.git/ (git store, contents omitted)",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-nobody/README.md",
+        ],
+        "a prune removed more, or less, than the one clone it reported"
+    );
+    assert_eq!(
+        only_in(&after, &before),
+        NOTHING,
+        "a prune left something new behind"
     );
     assert_eq!(
         world.devpod_calls(),
@@ -1062,6 +1149,7 @@ fn a_reconcile_answered_no_changes_nothing() {
     let world = World::with(&["--orphan"]);
     let before =
         world.read("devpod/contexts/default/workspaces/other-feature-x-legacy/workspace.json");
+    let cache_before = world.cache_fingerprint();
     let run = world.answering("n\n", &["--reconcile"]);
     run.exited(0);
     assert_eq!(
@@ -1073,6 +1161,14 @@ fn a_reconcile_answered_no_changes_nothing() {
         world.read("devpod/contexts/default/workspaces/other-feature-x-legacy/workspace.json"),
         before,
         "devpod's record was rewritten by a run that was told not to"
+    );
+    // And devlaunch's own side of the join, which the line above does not cover:
+    // `--reconcile` writes a stored id into devpod's record *and* reads
+    // devlaunch's, so an abort has to leave both alone.
+    assert_eq!(
+        world.cache_fingerprint(),
+        cache_before,
+        "an abort moved something in devlaunch's own cache"
     );
 }
 

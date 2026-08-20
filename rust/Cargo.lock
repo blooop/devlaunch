@@ -15,6 +15,7 @@ dependencies = [
 name = "aid"
 version = "0.3.2"
 dependencies = [
+ "devlaunch-test-support",
  "dl",
  "serde_json",
  "tempfile",
@@ -468,6 +469,7 @@ version = "0.3.2"
 dependencies = [
  "devlaunch-runner",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

@@ -24,6 +24,12 @@ dev-build = ["dl/dev-build"]
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# The harness crate, and only ever that: `KeepingCoverage`, so the boundary tests
+# below keep the coverage counters of the `aid` they spawn with `env_clear()`. Not
+# a hole in the `[dependencies]` rule above -- that rule is about what the shipped
+# binary can reach, and this is a dev-dependency of the tests. The test-support
+# crate's own docs already name dl's and core's tests as its callers.
+devlaunch-test-support = { workspace = true }
 
 [lints]
 workspace = true

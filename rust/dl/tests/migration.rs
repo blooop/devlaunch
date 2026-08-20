@@ -18,6 +18,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use devlaunch_test_support::KeepingCoverage;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -70,6 +72,7 @@ impl World {
         let output = Command::new(env!("CARGO_BIN_EXE_dl"))
             .args(args)
             .env_clear()
+            .keeping_coverage()
             .env("PATH", format!("{root}/bin:/usr/bin:/bin"))
             .env("HOME", format!("{root}/home"))
             .env("XDG_CACHE_HOME", format!("{root}/cache"))
@@ -103,6 +106,17 @@ impl World {
     }
 }
 
+/// Every path the cache holds, so a migration can be judged by what it moved
+/// rather than by the one directory this test happens to list.
+///
+/// See `devlaunch_test_support::cache_shape`. This is the case the port's
+/// harness-honesty review named as its untested blind spot -- a v1 cache the first
+/// command migrates in place -- and the `--fingerprint` half of it retired with the
+/// implementation it compared against.
+fn cache_shape(root: &Path) -> Vec<String> {
+    devlaunch_test_support::cache_shape(root)
+}
+
 struct Run {
     out: String,
     err: String,
@@ -134,6 +148,7 @@ dl: 1 devpod container(s) still carry the old workspace ids and are now orphaned
 #[test]
 fn the_migration_notices_are_the_ones_python_printed() {
     let world = World::v1();
+    let before = cache_shape(&world.root);
     let run = world.dl(&["--ls", "--json"]);
 
     assert_eq!(run.code, Some(0), "stderr: {}", run.err);
@@ -154,4 +169,52 @@ fn the_migration_notices_are_the_ones_python_printed() {
         world.read("cache/devlaunch/orphaned-workspaces.txt"),
         "devlaunch-main\n",
     );
+
+    // And the rest of the cache, which the two assertions above do not reach: a
+    // migration that renamed the right directory and left a v1 remnant somewhere
+    // else -- a half-moved clone, a sidecar under the old name -- passes both of
+    // them. Stated as the difference, in both directions, so an addition cannot
+    // hide behind a removal.
+    //
+    // Read the two lists together and they are mirror images below the leaf name,
+    // which is the whole claim: on disk this migration is a *rename* of one clone,
+    // plus the one file the second notice tells the user to feed to
+    // `devpod delete`. Nothing was copied and nothing was rebuilt.
+    //
+    // It says nothing about `metadata.json`, which appears in neither list because
+    // it exists on both sides -- and whose *contents* the migration does rewrite,
+    // since rewriting them is what a schema migration is. This is `cache_shape`
+    // and not `cache_fingerprint` for exactly that reason: the records are pinned
+    // by the notices above and by `flows/migration.rs`, and a hash of them here
+    // would be a golden nobody could read.
+    let after = cache_shape(&world.root);
+    assert_eq!(
+        only_in(&before, &after),
+        [
+            "cache/devlaunch/repos/blooop/devlaunch/main/",
+            "cache/devlaunch/repos/blooop/devlaunch/main/.git/ (git store, contents omitted)",
+            "cache/devlaunch/repos/blooop/devlaunch/main/README.md",
+        ],
+        "the migration moved a directory it did not report, or left the old one"
+    );
+    assert_eq!(
+        only_in(&after, &before),
+        [
+            "cache/devlaunch/orphaned-workspaces.txt",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo/",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo/.git/ (git store, contents omitted)",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo/README.md",
+        ],
+        "the migration wrote something the notices do not mention"
+    );
+}
+
+/// The entries `listing` has and `other` does not, in `listing`'s order. The twin
+/// of `lifecycle.rs`'s, kept here because these two files share no harness.
+fn only_in(listing: &[String], other: &[String]) -> Vec<String> {
+    listing
+        .iter()
+        .filter(|entry| !other.contains(entry))
+        .cloned()
+        .collect()
 }

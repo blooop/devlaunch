@@ -22,6 +22,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use devlaunch_test_support::KeepingCoverage;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -69,6 +71,7 @@ impl World {
         let output = Command::new(env!("CARGO_BIN_EXE_dl"))
             .args(args)
             .env_clear()
+            .keeping_coverage()
             .env("PATH", format!("{root}/bin:/usr/bin:/bin"))
             .env("HOME", format!("{root}/home"))
             .env("XDG_CACHE_HOME", format!("{root}/cache"))
@@ -193,6 +196,7 @@ fn a_non_utf8_argument_is_refused_cleanly_and_never_panics() {
     let output = Command::new(env!("CARGO_BIN_EXE_dl"))
         .arg(OsStr::from_bytes(b"\xffowner/repo"))
         .env_clear()
+        .keeping_coverage()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", "/nonexistent")
         .output()

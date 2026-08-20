@@ -209,12 +209,15 @@ def test_the_pixi_tasks_run_the_working_tree_with_the_marker():
 
 @pytest.mark.unit
 def test_every_toolchain_pin_names_the_channel_rust_toolchain_toml_names():
-    """`rust/rust-toolchain.toml` is the pin of record; three copies follow it.
+    """`rust/rust-toolchain.toml` is the pin of record; every other copy follows it.
 
     The container's pixi dependency (so `pixi run dl` builds with what ships) and
-    CI's two `dtolnay/rust-toolchain` steps. Drift here is invisible and expensive:
-    a container that compiles with a toolchain the gate never used is a class of
-    "works for me" nobody can reproduce.
+    CI's `dtolnay/rust-toolchain` steps -- three of them since #294 added
+    `rust-coverage`, which is why the assertion below is over the *set* of declared
+    versions and not over a count: a job added to the workflow joins this guard by
+    existing, and one that names a different toolchain is what it is here to catch.
+    Drift is invisible and expensive: a container that compiles with a toolchain
+    the gate never used is a class of "works for me" nobody can reproduce.
     """
     pinned = tomllib.loads(CARGO_TOOLCHAIN.read_text("utf-8"))["toolchain"]["channel"]
 

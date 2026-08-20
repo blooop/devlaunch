@@ -73,8 +73,14 @@ jobs:
       - name: CI
         run: |
           pixi run ci
+      # Flagged `python` since #294, so it is reported as what it is — the
+      # harness, the doc guards and `scripts/` — rather than as "the project's
+      # coverage". The shipped crates are the `rust` flag, uploaded by the
+      # `rust-coverage` job.
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
+        with:
+          flags: python
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
@@ -230,6 +236,137 @@ jobs:
       - name: Format
         working-directory: rust
         run: cargo fmt --check
+
+  # What the crates that ship actually cover, measured (#294).
+  #
+  # Until this job existed, nothing measured them. `codecov` has been fed since
+  # long before the port, but what it read was `coverage run -m pytest` over the
+  # Python tree — so when that tree retired (#267) the number it reports became a
+  # number about `scripts/`, and the shipped code's coverage was nobody's. The
+  # `ci` job still uploads that one, under the `python` flag; this one uploads
+  # `rust` beside it, and `codecov.yml` keeps the two from being averaged into a
+  # figure that is about neither.
+  #
+  # A job of its own rather than instrumentation added to `rust` above, for two
+  # reasons. `-C instrument-coverage` changes codegen and roughly triples these
+  # suites' wall time, and `rust` is the job whose green tick means the tests
+  # pass — a measurement should not be able to redden it, or to push it into the
+  # per-binary timeouts that are there to name a wedged suite. And cargo-llvm-cov
+  # builds into a target directory of its own, so there is nothing to share by
+  # merging them anyway: it would be two builds either way, and this way they are
+  # two builds in parallel.
+  #
+  # It is in `gate`'s `needs` all the same. A job outside the gate is a job whose
+  # failure nobody sees, and a coverage run that silently stopped running is
+  # exactly the hole this closes — see the `gate` comment on why "a check nobody
+  # ran reads exactly like a check that passed".
+  rust-coverage:
+    runs-on: ubuntu-latest
+    # The `rust` job's 30 with the instrumented rebuild and the slower suites on
+    # top. Bounded for the same reason everything here is: unbounded, a stalled
+    # download is a job that hangs for six hours and reports a timeout nobody
+    # reads.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Kept in lockstep with rust/rust-toolchain.toml (the pin of record).
+          toolchain: 1.97.1
+          # `llvm-profdata` and `llvm-cov`, which cargo-llvm-cov drives. The pixi
+          # environment gets the same two from conda's `llvm-tools` instead, since
+          # it has no rustup to take a component from; `pyproject.toml` carries
+          # the note on keeping their LLVM major and rustc's together.
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          # A cache of its own: the instrumented artifacts share no fingerprint
+          # with the `rust` job's, so one key for both would be two jobs evicting
+          # each other's build every run.
+          key: coverage
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # One reduced report over every suite, which is what makes the number mean
+      # anything: run per-suite and each one's report is about the lines that suite
+      # reached, and the last one written wins.
+      #
+      # `--no-report` collects; `report` reduces. The suites are named rather than
+      # `--workspace`ed for the same reason the `rust` job names them — but here it
+      # buys something more: the two that spawn and kill real process trees
+      # (`interrupt`, `lock_wait`, one test each) are deliberately **left out**. A
+      # SIGKILLed process writes no counters, so they would contribute nothing to
+      # the report while costing it the most flake risk in the suite. That is a cap
+      # on coverage and it is said out loud here rather than being visible only as
+      # a number: 2 tests of ~1470.
+      - name: Collect
+        working-directory: rust
+        run: |
+          set -eu
+          # The one thing that makes this report about *this* run. `rust-cache`
+          # restores `target/`, `--no-report` runs accumulate on purpose, and a
+          # `.profraw` that survived from a previous run is indistinguishable from
+          # one this run wrote -- it would raise the number using counters for code
+          # as it was on another commit.
+          cargo llvm-cov clean --workspace
+          for suite in \
+            "-p devlaunch-runner" \
+            "-p devlaunch-core" \
+            "-p devlaunch-test-support" \
+            "-p aid --bins --test rewrite" \
+            "-p dl --lib --bins" \
+            "-p dl --test read_side" \
+            "-p dl --test grammar" \
+            "-p dl --test lifecycle" \
+            "-p dl --test launch" \
+            "-p dl --test migration" \
+          ; do
+            echo "::group::cargo llvm-cov $suite"
+            timeout 900 cargo llvm-cov --no-report --locked $suite -- --test-threads=1
+            echo "::endgroup::"
+          done
+      # `SF:` paths come out absolute (`/home/runner/work/devlaunch/devlaunch/rust/
+      # devlaunch-core/src/...`), and repo-relative is what everything downstream
+      # matches on: `codecov.yml`'s flag and component `paths:` are relative, so an
+      # absolute path is a file in no flag and no component -- an upload that
+      # succeeds and reports on nothing. Relativised here rather than trusting the
+      # uploader's own path fixing, because the failure is silent either way and
+      # this is one `sed`.
+      - name: Report
+        working-directory: rust
+        run: |
+          set -eu
+          cargo llvm-cov report --lcov --output-path lcov.info
+          sed -i "s|^SF:${GITHUB_WORKSPACE}/|SF:|" lcov.info
+          cargo llvm-cov report --summary-only
+      # Two things an upload cannot tell you on its own: whether what it carries is
+      # about the code that ships, and whether the paths in it are the ones the
+      # flag filters will match. A report that measures the harness only, or one
+      # whose every path is absolute, uploads cleanly and reads as a coverage drop
+      # caused by nothing.
+      - name: The report is about the crates that ship
+        working-directory: rust
+        run: |
+          set -eu
+          for crate in devlaunch-core dl aid; do
+            grep -q "^SF:rust/${crate}/src/" lcov.info || {
+              echo "::error::lcov.info records no repo-relative file under rust/${crate}/src/"
+              exit 1
+            }
+          done
+          ! grep -q "^SF:/" lcov.info || {
+            echo "::error::lcov.info still carries absolute paths; codecov.yml's flags match none of them"
+            grep -m3 "^SF:/" lcov.info
+            exit 1
+          }
+          echo "lcov.info covers $(grep -c '^SF:' lcov.info) files"
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: rust/lcov.info
+          flags: rust
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # The API-freeze tripwire (#251 §7, #262). devlaunch-core's crate docs promise
   # two tiers of `pub` — the frozen wf API behind `api`, and binary surface that
@@ -397,7 +534,7 @@ jobs:
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
   gate:
-    needs: [ci, e2e, rust, public-api, packaging]
+    needs: [ci, e2e, rust, rust-coverage, public-api, packaging]
     if: always()
     runs-on: ubuntu-latest
     steps:

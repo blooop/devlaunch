@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use devlaunch_test_support::KeepingCoverage;
+
 /// The workspace id this build derives for `blooop/devlaunch@main`, which the
 /// scenario records and devpod knows.
 const MAIN: &str = "devlaunch-main-zovomobo";
@@ -74,6 +76,7 @@ impl World {
         command
             .args(args)
             .env_clear()
+            .keeping_coverage()
             .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))
             .env("HOME", format!("{root}/home"))
             .env("XDG_CACHE_HOME", format!("{root}/cache"))

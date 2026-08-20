@@ -16,6 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use devlaunch_test_support::KeepingCoverage;
+
 /// The repository root, from the crate this test is compiled into.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -93,6 +95,7 @@ impl World {
         command
             .args(args)
             .env_clear()
+            .keeping_coverage()
             // /usr/bin and /bin for git, which the listing really runs; the fake
             // devpod is first, under its real name.
             .env("PATH", format!("{root}/bin:/usr/bin:/bin"))

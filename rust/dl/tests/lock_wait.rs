@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use devlaunch_test_support::KeepingCoverage;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -94,6 +96,7 @@ fn a_prune_blocked_on_the_repo_lock_says_it_is_waiting() {
     let mut prune = Command::new(env!("CARGO_BIN_EXE_dl"))
         .args(["--prune", "-y"])
         .env_clear()
+        .keeping_coverage()
         .env("PATH", format!("{rootstr}/bin:/usr/bin:/bin"))
         .env("HOME", format!("{rootstr}/home"))
         .env("XDG_CACHE_HOME", format!("{rootstr}/cache"))

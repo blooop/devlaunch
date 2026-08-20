@@ -9,6 +9,9 @@ repository.workspace = true
 [dependencies]
 devlaunch-runner = { workspace = true }
 serde_json = { workspace = true }
+# The content half of `cache_fingerprint`, and the same hash the retired
+# `compare.py --fingerprint` took.
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

@@ -1,0 +1,84 @@
+# Two flags, reported apart (#294).
+#
+# There is one repository here and two things in it that are measured by different
+# tools for different reasons:
+#
+#   rust    the crates that ship -- `dl`, `aid`, `devlaunch-core` -- measured by
+#           `cargo llvm-cov` in the `rust-coverage` CI job.
+#   python  the acceptance harness under `test/`, the repo's own doc guards, and
+#           the tooling under `scripts/`. None of it ships; `coverage run -m
+#           pytest` in the `ci` job measures it.
+#
+# Without this file both uploads land in one project total, and that total is a
+# figure about neither: it moves when a doc guard is added, and a Rust suite worth
+# ~1,470 tests drowns out the ~250 Python ones it is averaged with. Flags keep the
+# two answerable separately, which is the only form in which either is useful.
+#
+# `carryforward` because the two are uploaded by different jobs. Without it, a run
+# in which one job is skipped or cancelled reports the other flag against a total
+# that has silently lost half its files, which reads as a large coverage drop
+# caused by nothing.
+
+codecov:
+  require_ci_to_pass: false
+
+flags:
+  rust:
+    paths:
+      - rust/
+    carryforward: true
+  python:
+    paths:
+      - scripts/
+      - test/
+    carryforward: true
+
+component_management:
+  individual_components:
+    - component_id: shipped
+      name: shipped code (rust)
+      paths:
+        - rust/**
+    - component_id: harness
+      name: harness and tooling (python)
+      paths:
+        - scripts/**
+        - test/**
+
+coverage:
+  status:
+    # `auto` against the base commit rather than a fixed target. A number chosen
+    # today is a number nobody chose, and this repository's real coverage floor is
+    # the review that reads the tests -- what a status check adds is a note when a
+    # change takes coverage down, which is exactly what `auto` says.
+    project:
+      default:
+        target: auto
+        # Wide enough that adding a file does not turn the tick red on rounding,
+        # narrow enough that a suite quietly stopping running does.
+        threshold: 1%
+      shipped:
+        target: auto
+        threshold: 1%
+        flags:
+          - rust
+      harness:
+        target: auto
+        threshold: 1%
+        flags:
+          - python
+    # Informational on the patch, deliberately. Both of these suites pin behaviour
+    # at seams rather than line by line -- a `#[derive]`, a `Display` arm or a
+    # match arm that only a future caller reaches is normal here and is not a
+    # missing test -- so a per-diff gate would be red on changes nobody should
+    # have to argue about, and a gate people argue with is a gate people turn off.
+    patch:
+      default:
+        informational: true
+
+comment:
+  layout: "condensed_header, flags, components, condensed_files"
+  # One comment, edited in place. A PR that pushes six times should not carry six
+  # coverage comments.
+  behavior: default
+  require_changes: true

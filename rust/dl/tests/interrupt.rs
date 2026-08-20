@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use devlaunch_test_support::KeepingCoverage;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -142,6 +144,7 @@ fn a_ctrl_c_mid_up_removes_the_token_file_and_kills_the_up() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
         .arg("blooop/devlaunch@cold")
         .env_clear()
+        .keeping_coverage()
         .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))
         .env("HOME", format!("{root}/home"))
         .env("XDG_CACHE_HOME", format!("{root}/cache"))
