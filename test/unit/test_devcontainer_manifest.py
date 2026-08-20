@@ -493,12 +493,15 @@ def test_the_workspace_declares_a_platform_for_every_prebuild_runner():
     pixi refuses outright on a platform a workspace does not list -- `pixi
     install` exits `unsupported-platform` -- so the arm64 leg's `setup-pixi` step
     fails before `devpod build` is reached. The same line is what lets an arm64
-    container run its own `postCreateCommand`, a bare `pixi install`, so dropping
-    it would leave an arm64 prebuild that pulls fast and then cannot come up.
+    container run its own `postCreateCommand`, so dropping it would leave an arm64
+    prebuild that pulls fast and then cannot come up.
 
-    The lockfile is checked alongside the manifest because CI installs with
-    `frozen: true`: a platform declared but not locked is a lockfile pixi refuses
-    to use rather than a platform it solves on the spot.
+    The lockfile is checked alongside the manifest because both installs are
+    frozen -- `frozen: true` in ci.yml, `pixi install --frozen` at container
+    create -- and a platform declared but not locked is a lockfile pixi refuses to
+    use rather than a platform it solves on the spot. That second half is new: the
+    create used to be a bare `pixi install`, which would have solved the missing
+    platform on the spot and hidden the gap.
     """
     platforms = tomllib.loads(PYPROJECT.read_text())["tool"]["pixi"]["workspace"]["platforms"]
     lock = PIXI_LOCK.read_text()
@@ -630,3 +633,48 @@ def test_the_devcontainers_pixi_can_read_the_lockfile_as_committed():
         f"{lock_version} (needs >= {'.'.join(str(n) for n in required)}); the container would "
         "discard the lock and solve its own environment"
     )
+
+
+def test_the_devcontainer_installs_the_committed_lock_rather_than_solving_its_own(devcontainer):
+    """A create that is allowed to solve is a create that can diverge, and can fail.
+
+    The test above stops the container's pixi lagging the lock. It cannot stop
+    the create *ignoring* the lock, because that is not a version question: a
+    bare `pixi install` treats an unreadable lock as a missing one and solves a
+    fresh environment in its place, and it does so having printed a warning and
+    exited 0.
+
+    Both halves of that are costly, and both were measured against this
+    repository's own `pyproject.toml` and `pixi.lock` with the pixi the container
+    pinned at the time (0.63.1, against the committed version 7):
+
+    - bare `pixi install` exits 0 and rewrites the tracked `pixi.lock` down to
+      version 6, so the create silently downgrades a tracked file. Commit that
+      and the break inverts onto the host.
+    - it reaches the network to do it. Solving pypi dependencies alongside conda
+      ones needs the conda-pypi mapping fetched from prefix.dev, and when that
+      fetch failed -- "failed to fetch conda-pypi mapping from remote source" --
+      the create died in `postCreateCommand` and the workspace never opened. The
+      committed resolution needs no mapping and no solve.
+    - `pixi install --frozen` exits 1 instead, naming the version gap and the
+      fix, and leaves `pixi.lock` at version 7.
+
+    So `--frozen` is what makes the environment in the container the environment
+    CI tested -- `frozen: true` is what ci.yml installs with -- and turns a
+    silent, network-dependent divergence into an immediate, self-describing
+    failure. A lock genuinely out of step with the manifest cannot reach a branch
+    that has passed CI, so the only creates this can fail are the ones that
+    should.
+    """
+    post_create = devcontainer["postCreateCommand"]
+    installs = re.findall(r"pixi install\b([^&|;]*)", post_create)
+    assert installs, (
+        f"{DEVCONTAINER_JSON.name}'s postCreateCommand no longer runs `pixi install`; "
+        "this test guards how that install treats the lock and has nothing left to guard"
+    )
+    for flags in installs:
+        assert "--frozen" in flags, (
+            f"postCreateCommand runs `pixi install{flags.rstrip()}` without --frozen, so a "
+            "create is free to discard the committed lock, solve its own environment over the "
+            "network, and rewrite pixi.lock while it does it"
+        )

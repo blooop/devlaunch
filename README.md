@@ -1037,8 +1037,8 @@ answers it is:
 The changed paths are named, not just counted, and that matters more than it
 looks: a devcontainer that runs a package install in its `postCreateCommand` can
 leave a tracked lockfile modified in *every* workspace it builds — this repo's
-own does — and as a bare count that is indistinguishable from an hour of unsaved
-work. A cleanup tool believing the count would then never clean anything. Named,
+own did, until that install became `pixi install --frozen` — and as a bare count
+that is indistinguishable from an hour of unsaved work. A cleanup tool believing the count would then never clean anything. Named,
 it is judgeable. A workspace `dl` did not create reports `devlaunch: false` and
 no `unsaved` — `unsaved` is `null` exactly where `devlaunch` is `false`, and
 nowhere else: there is no clone of `dl`'s to protect, and it has no business
@@ -1868,6 +1868,19 @@ build that host was already doing.
 `postCreateCommand` is not in the image and cannot be: `pixi install` and the
 provider registration run at container create, after the image exists. The
 `<workspace>-pixi` volume is what makes them cheap the second time.
+
+That install is `pixi install --frozen`, which is the same resolution CI uses
+(`frozen: true` in `ci.yml`) and is load-bearing for two reasons beyond matching
+it. A bare `pixi install` treats a lock it cannot read as a missing one: it warns,
+exits 0, solves a fresh environment, and rewrites the tracked `pixi.lock` on its
+way past — so the container that is supposed to reproduce the committed
+environment quietly stops being it, and says nothing. And the solve it does
+instead needs the network: resolving pypi dependencies alongside conda ones
+fetches the conda-pypi mapping from prefix.dev, and a create whose fetch fails
+dies in `postCreateCommand` with the workspace never opening. `--frozen` installs
+the committed resolution, so there is no solve and no mapping to fetch, and a
+lock the container's pixi cannot read fails immediately and says which pixi it
+would need — instead of succeeding into the wrong environment.
 
 #### What the prebuild tag does not promise
 
