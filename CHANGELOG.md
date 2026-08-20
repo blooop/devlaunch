@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-20
+
+### Changed
+
+- **The README is ordered for people first.** The options table, the workspace id derivation
+  and the purge/prune/reconcile and disk-accounting detail used to come before the things
+  someone actually types, and `## Examples` sat 1200 lines down. What a reader needs on the way
+  in — features, install, usage with the examples beside it, workspace and global commands,
+  `aid` — is now the top half; a rule and a note mark where reference begins; and the header
+  carries a two-row index. The `dl --ls` table was split out of `## Global Commands` from the
+  500 lines of cleanup detail beneath it, now `## Cleaning up: purge, prune, reconcile`. One
+  duplicated example block (`## Workspace Sources`) was folded into `### Examples`. No
+  documented behaviour changed, and every existing anchor still resolves.
+
 ## [0.1.2] - 2026-08-20
 
 ### Added
