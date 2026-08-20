@@ -300,6 +300,9 @@ pub enum LaunchNotice {
     // --- the launch's own arms (dl.py `_run_cli`)
     /// The workspace is already running, so this launch attaches straight to it.
     AlreadyRunningAttaching { workspace_id: String },
+    /// devpod holds a record for this workspace and no create result, so an `up`
+    /// started and never finished. Its container may well be running.
+    CreateNeverFinished { workspace_id: String },
     /// `dl <ws> up` found it already running: nothing to build and nothing to
     /// wait for.
     AlreadyRunning { workspace_id: String },
@@ -2408,23 +2411,47 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
         placement: &Placement,
     ) -> Result<Launched, LaunchAborted> {
+        // A running container is not on its own evidence that there is something
+        // to attach to. A create that died in its lifecycle hooks leaves one up
+        // with `devpod status` still answering `Running`, and devpod records no
+        // remote user for it — so an attach lands as root, in a container whose
+        // setup never ran, and fails on whatever the remote user's PATH was
+        // supposed to hold.
+        //
+        // Asked only of a workspace that is running, and only `NeverCompleted`
+        // acted on. Both halves are about not saying anything a caller cannot use:
+        // a launch that was going to `up` anyway is not told the create is
+        // unfinished, since `up` is what it was doing, and a host whose devpod
+        // records will not read attaches exactly as it did before.
         if placement.is_running() {
-            // Whatever brought this workspace up finished before this launch
-            // asked: nothing to build and nothing to wait for. If a prewarm was
-            // fired for it, this is what a prewarm that paid off looks like.
-            timing::observe_attach(timing::AttachShape::Hit);
-            self.notices.say(LaunchNotice::AlreadyRunningAttaching {
-                workspace_id: placement.workspace_id().to_owned(),
-            });
-            if devcontainer.is_some() {
-                self.notices.say(LaunchNotice::DevcontainerIgnoredRunning {
-                    workspace_id: placement.workspace_id().to_owned(),
-                    spec: raw_spec.to_owned(),
-                });
+            match lifecycle::create_record(
+                self.host.devpod_home.as_deref(),
+                placement.workspace_id(),
+            ) {
+                lifecycle::CreateRecord::NeverCompleted => {
+                    self.notices.say(LaunchNotice::CreateNeverFinished {
+                        workspace_id: placement.workspace_id().to_owned(),
+                    });
+                }
+                lifecycle::CreateRecord::Completed | lifecycle::CreateRecord::Unknown => {
+                    // Whatever brought this workspace up finished before this launch
+                    // asked: nothing to build and nothing to wait for. If a prewarm was
+                    // fired for it, this is what a prewarm that paid off looks like.
+                    timing::observe_attach(timing::AttachShape::Hit);
+                    self.notices.say(LaunchNotice::AlreadyRunningAttaching {
+                        workspace_id: placement.workspace_id().to_owned(),
+                    });
+                    if devcontainer.is_some() {
+                        self.notices.say(LaunchNotice::DevcontainerIgnoredRunning {
+                            workspace_id: placement.workspace_id().to_owned(),
+                            spec: raw_spec.to_owned(),
+                        });
+                    }
+                    let session = self.attach(placement.workspace_id(), verb.command());
+                    self.forced_refresh();
+                    return session;
+                }
             }
-            let session = self.attach(placement.workspace_id(), verb.command());
-            self.forced_refresh();
-            return session;
         }
         if let Some(refused) = self.bring_up(verb, devcontainer, placement)? {
             return Ok(Launched::Refused(refused));
@@ -2722,6 +2749,38 @@ mod tests {
             self.runner
                 .add_workspace(workspace_id, WorkspaceState::Stopped);
             self
+        }
+
+        /// devpod's record for a workspace whose create *finished*: the record and
+        /// the result beside it, which is what devpod writes on its way out of a
+        /// successful `up`.
+        fn with_create_completed(self, workspace_id: &str) -> Self {
+            let dir = self.devpod_record_dir(workspace_id);
+            std::fs::create_dir_all(&dir).expect("a devpod record directory");
+            std::fs::write(dir.join("workspace.json"), "{}").expect("a workspace record");
+            std::fs::write(dir.join("workspace_result.json"), "{}").expect("a create result");
+            self
+        }
+
+        /// devpod's record for a workspace whose create *aborted*: the record, and
+        /// no result beside it. A `postCreateCommand` that exits non-zero leaves
+        /// exactly this, with the container still up.
+        fn with_create_aborted(self, workspace_id: &str) -> Self {
+            let dir = self.devpod_record_dir(workspace_id);
+            std::fs::create_dir_all(&dir).expect("a devpod record directory");
+            std::fs::write(dir.join("workspace.json"), "{}").expect("a workspace record");
+            self
+        }
+
+        fn devpod_record_dir(&self, workspace_id: &str) -> PathBuf {
+            self.host
+                .devpod_home
+                .as_ref()
+                .expect("a scratch devpod home")
+                .join("contexts")
+                .join("default")
+                .join("workspaces")
+                .join(workspace_id)
         }
 
         fn cache_dir(&self) -> &Path {
@@ -4639,6 +4698,112 @@ mod tests {
     #[test]
     fn a_warm_bare_name_attach_is_one_status_and_one_ssh() {
         let scene = Scene::new().with_running("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run("myws", &LaunchVerb::Attach { command: None }, None);
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert_eq!(
+            scene.devpod_commands(),
+            vec![
+                vec![
+                    "status".to_owned(),
+                    "myws".to_owned(),
+                    "--output".to_owned(),
+                    "json".to_owned(),
+                ],
+                vec!["ssh".to_owned(), "myws".to_owned()],
+            ]
+        );
+        drop(launch);
+        assert!(parts.said.contains(&LaunchNotice::AlreadyRunningAttaching {
+            workspace_id: "myws".to_owned()
+        }));
+    }
+
+    /// A create that died in its `postCreateCommand` leaves the container up, so
+    /// `devpod status` says `Running` and the fast-attach arm fires — dl attaches
+    /// to a workspace devpod never finished setting up.
+    ///
+    /// What the user sees is not a setup error. devpod records the create's result
+    /// only on the way out of a *successful* `up`, and the remote user lives in
+    /// that result (`.MergedConfig.remoteUser`), so `devpod ssh` for a workspace
+    /// without one falls back to **root**. Everything the image put on the remote
+    /// user's PATH is then missing, and the session dies on `claude: command not
+    /// found` — a message about the wrong thing entirely, from a container that
+    /// will never work no matter how many times it is attached to.
+    ///
+    /// Measured against devpod 0.26.1, with a devcontainer whose
+    /// `postCreateCommand` exits 1: `devpod status` answers `Running`, no
+    /// `workspace_result.json` is written, no `Host <id>.devpod` alias appears, and
+    /// `devpod ssh --command whoami` answers `root` with `HOME=/root`.
+    ///
+    /// So a running container is not on its own evidence that there is anything to
+    /// attach to, and this launch must bring the workspace up instead — which
+    /// re-runs the lifecycle hooks that failed and reports their failure, rather
+    /// than hiding it behind a missing binary.
+    #[test]
+    fn a_running_workspace_whose_create_never_finished_is_brought_up_not_attached() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_aborted("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let _ = launch.run("myws", &LaunchVerb::Attach { command: None }, None);
+
+        drop(launch);
+        assert!(
+            scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("up")),
+            "an unfinished create must be brought up, not attached to: {:?}",
+            scene.devpod_commands()
+        );
+        assert!(
+            !parts.said.contains(&LaunchNotice::AlreadyRunningAttaching {
+                workspace_id: "myws".to_owned()
+            }),
+            "a workspace devpod never finished is not `already running`"
+        );
+    }
+
+    /// The other side of the same check: a create devpod *did* finish still takes
+    /// the fast path. Without this, "is it set up" could be answered by refusing
+    /// every fast attach, which would pass the test above and cost every warm
+    /// launch its whole reason for existing.
+    #[test]
+    fn a_running_workspace_whose_create_finished_still_fast_attaches() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_completed("myws");
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);

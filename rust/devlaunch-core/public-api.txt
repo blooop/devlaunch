@@ -831,6 +831,8 @@ pub devlaunch_core::flows::launch::LaunchNotice::AlreadyRunningAttaching::worksp
 pub devlaunch_core::flows::launch::LaunchNotice::BroughtUpBySibling
 pub devlaunch_core::flows::launch::LaunchNotice::BroughtUpBySibling::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
+pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::spec: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
