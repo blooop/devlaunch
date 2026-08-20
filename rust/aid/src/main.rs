@@ -81,16 +81,32 @@ fn run(argv: &[String]) -> i32 {
     };
     let Some(dl_args) = rewrite::build_dl_args(&parsed) else {
         // Unreachable by a command line: the parse only ever answers with an agent
-        // from the table. Reported rather than panicked on, in the words the refusal
-        // for an invented name would have used.
+        // from the table, and a line that starts no agent cannot fail to build one.
+        // Reported rather than panicked on, in the words the refusal for an invented
+        // name would have used.
         eprintln!(
             "{}",
             refusal(&UsageError::UnknownAgentInEnvironment {
-                name: parsed.agent.clone()
+                name: parsed.agent().unwrap_or_default().to_owned()
             })
         );
         return 1;
     };
+    // A `--rm`/`--stop` appended to a recalled line beat a prompt, and the prompt is
+    // the thing aid would otherwise have handed an agent — so aid, not dl, is the one
+    // that swallowed it and the one that owes the sentence. dl's wording, through
+    // dl, for the same reason `python_repr` is: one sentence, not two spellings of
+    // one. Printed before the `aid -> dl` line so the reason to reach for Ctrl-C
+    // comes before the command that needs interrupting.
+    if let (rewrite::Task::Verb { overridden, .. }, Some(flag)) =
+        (&parsed.task, parsed.task.verb_flag())
+        && !overridden.is_empty()
+    {
+        eprintln!(
+            "{}",
+            dl::overridden_notice(flag, std::slice::from_ref(overridden))
+        );
+    }
     // Python's `logging.info("aid -> dl %s", shlex.join(dl_args))`, which lands on
     // stderr as the bare message. It is how a person sees what aid actually asked
     // for, and the quoting is what makes it a line they can paste.
@@ -156,6 +172,10 @@ Options:
     {agents}
                                      Pick the agent (default: {default})
     --devcontainer <variant|path>    Passed through to dl
+    --rm, --stop                     Do that to the workspace instead of starting
+                                     an agent. Appendable: recall the line and type
+                                     it at the end, prompt and all. Add --force to
+                                     --rm to delete despite unsaved work.
     --help, -h                       Show this help
     --version                        Show version
 
@@ -166,6 +186,9 @@ Examples:
     aid blooop/devlaunch                       # Start {default} in the workspace
     aid blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
     aid --gemini ./my-project explain this     # Pick a different agent
+    aid blooop/devlaunch@fix/42 fix the bug --rm --force
+                                               # The line above, recalled, with the
+                                               # workspace deleted instead
 
 Everything else — listing, stopping, deleting, VS Code — is dl's job:
     dl --help\n\n"

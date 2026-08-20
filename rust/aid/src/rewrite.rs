@@ -83,6 +83,24 @@ const AGENTS: &[(&str, Agent)] = &[
 /// here it is the one thing aid knows about dl's grammar.
 const DL_VALUE_OPTIONS: &[&str] = &["--devcontainer"];
 
+/// The dl workspace verbs a line may end with, and win with.
+///
+/// aid's rule is that everything after the spec is prompt, flags and all, which is
+/// what lets a prompt go unquoted. These two are the one exception, and it is
+/// bounded to earn it — see [`peel_suffix_verb`]. They exist because appending to a
+/// recalled line is the cheap edit a shell offers and rewriting the front of one is
+/// not, so "and now delete it" has to be spellable as a suffix or it is not
+/// spellable at all.
+const SUFFIX_VERBS: &[&str] = &["--rm", "--stop"];
+
+/// The modifier those verbs take, peeled only in their company.
+///
+/// On its own at the end of a line `--force` is prompt text. It is also the one
+/// word that must not reach dl as a *leading* option on its own: dl reads argv
+/// positionally to decide whether `--force` is the force flag or the workspace's
+/// name, and a `--force` in the workspace slot is a workspace called `--force`.
+const SUFFIX_MODIFIERS: &[&str] = &["--force"];
+
 /// The names a `--flag` can pick an agent by, sorted — for the help and for the
 /// refusal that lists them.
 pub(crate) fn agent_names() -> Vec<&'static str> {
@@ -111,12 +129,61 @@ pub(crate) struct AidArgs {
     /// The workspace, in any spelling dl accepts. Always present: the parse refuses
     /// a command line without one, so there is no "maybe a workspace" state here.
     pub(crate) spec: String,
-    pub(crate) agent: String,
     /// dl options seen before the spec (`--devcontainer x`), passed through as-is.
     pub(crate) dl_options: Vec<String>,
-    /// Everything after the spec, joined with single spaces. Empty when there was
-    /// none, which is a session with no prompt rather than a prompt that is empty.
-    pub(crate) prompt: String,
+    pub(crate) task: Task,
+}
+
+/// What the line asks dl to do with the workspace.
+///
+/// A sum rather than a prompt beside a list of flags, because the two are
+/// exclusive and each carries what the other has no use for: a `--rm` line starts
+/// no agent and so has no prompt to give one, and an agent line has no verb flags.
+/// The prompt the verb beat is *kept* on that arm rather than dropped, because a
+/// line that deletes a workspace owes the person the sentence naming the words it
+/// did not act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Task {
+    /// Start an agent, with this prompt. Empty is a session with no prompt rather
+    /// than a prompt that is empty.
+    Agent { agent: String, prompt: String },
+    /// A dl workspace verb, spelled as a flag, which wins over the prompt.
+    Verb {
+        /// The verb and any modifier it came with, handed to dl as they were
+        /// typed. Never empty: no flags is no verb, which is the other arm.
+        flags: Vec<String>,
+        /// The prompt it overrode, or empty when the line carried none.
+        overridden: String,
+    },
+}
+
+impl Task {
+    /// The verb flag this line won with, for the notice that names it.
+    ///
+    /// `Some` for every [`Task::Verb`] by construction — the arm is only built
+    /// from a peel that found one.
+    pub(crate) fn verb_flag(&self) -> Option<&str> {
+        match self {
+            Self::Agent { .. } => None,
+            Self::Verb { flags, .. } => flags
+                .iter()
+                .map(String::as_str)
+                .find(|word| SUFFIX_VERBS.contains(word)),
+        }
+    }
+}
+
+impl AidArgs {
+    /// The agent this line starts, when it starts one.
+    ///
+    /// `None` is a verb line, which starts none — the distinction the caller needs
+    /// when reporting an agent name the environment invented.
+    pub(crate) fn agent(&self) -> Option<&str> {
+        match &self.task {
+            Task::Agent { agent, .. } => Some(agent),
+            Task::Verb { .. } => None,
+        }
+    }
 }
 
 /// The agent to use when no flag picks one.
@@ -133,21 +200,66 @@ pub(crate) fn default_agent(environment: Option<&str>) -> Result<String, UsageEr
     Ok(name.to_owned())
 }
 
-/// Split an aid command line into agent, dl options, workspace spec and prompt.
+/// Split a trailing run of workspace-verb flags off the end of a command line.
+///
+/// The one exception to "everything after the spec is prompt", and bounded three
+/// ways to earn it: only at the very *end* of the line, only the exact words in
+/// [`SUFFIX_VERBS`] and [`SUFFIX_MODIFIERS`], and only when a verb is among them. A
+/// prompt whose last word happens to be `--force` is untouched, and so is one that
+/// merely mentions `--rm` inside it — `aid <ws> fix the --rm flag` ends on `flag`,
+/// and a quoted `aid <ws> 'drop --rm'` is one argument that is not `--rm`.
+///
+/// Answers `None` rather than an empty suffix, so the caller has no "peeled
+/// nothing" case to tell from "peeled something".
+///
+/// **Divergence row 30**, aid's half: Python joined every post-spec word into the
+/// prompt with no exception, so `aid <ws> <prompt> --rm` asked an agent to read
+/// `--rm`.
+fn peel_suffix_verb(argv: &[String]) -> Option<(&[String], Vec<String>)> {
+    let is_suffix = |word: &str| SUFFIX_VERBS.contains(&word) || SUFFIX_MODIFIERS.contains(&word);
+    let mut at = argv.len();
+    while at > 0 && is_suffix(argv[at - 1].as_str()) {
+        at -= 1;
+    }
+    let suffix = &argv[at..];
+    if !suffix
+        .iter()
+        .any(|word| SUFFIX_VERBS.contains(&word.as_str()))
+    {
+        return None;
+    }
+    Some((&argv[..at], suffix.to_vec()))
+}
+
+/// Split an aid command line into agent, dl options, workspace spec, and the task.
 ///
 /// The first argument that is neither an agent flag nor a dl option is the workspace
 /// spec; everything after it is the prompt, flags and all, so a prompt never has to
-/// be quoted to protect it from aid's own parsing.
+/// be quoted to protect it from aid's own parsing — except a trailing verb flag,
+/// which [`peel_suffix_verb`] takes off first and which wins over the prompt.
+///
+/// A verb flag can also arrive *before* the spec (`aid --rm owner/repo`), which is
+/// the same request written the other way round. It is collected as a verb rather
+/// than passed through as an ordinary dl option, because the pass-through would
+/// hand dl a verb and an agent command at once and dl refuses that pair.
 pub(crate) fn parse_aid_args(
     argv: &[String],
     environment: Option<&str>,
 ) -> Result<AidArgs, UsageError> {
+    // Resolved before anything else, and kept even for a line that turns out to
+    // start no agent: a `DEVLAUNCH_AID_AGENT` naming an agent that does not exist
+    // is broken regardless of what this particular line asked for.
     let mut agent = default_agent(environment)?;
+    let (line, trailing) = match peel_suffix_verb(argv) {
+        Some((line, trailing)) => (line, trailing),
+        None => (argv, Vec::new()),
+    };
+    let mut leading: Vec<String> = Vec::new();
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
     let mut at = 0;
-    while at < argv.len() {
-        let word = argv[at].as_str();
+    while at < line.len() {
+        let word = line[at].as_str();
         if let Some(named) = agent_flag(word) {
             agent = named.to_owned();
             at += 1;
@@ -155,8 +267,13 @@ pub(crate) fn parse_aid_args(
         }
         if DL_VALUE_OPTIONS.contains(&word) {
             // Take the value with it; dl reports a missing one.
-            dl_options.extend(argv[at..argv.len().min(at + 2)].iter().cloned());
+            dl_options.extend(line[at..line.len().min(at + 2)].iter().cloned());
             at += 2;
+            continue;
+        }
+        if SUFFIX_VERBS.contains(&word) {
+            leading.push(word.to_owned());
+            at += 1;
             continue;
         }
         if word.starts_with('-') {
@@ -172,11 +289,19 @@ pub(crate) fn parse_aid_args(
     let Some(spec) = spec else {
         return Err(UsageError::NoWorkspace);
     };
+    let prompt = line[at.min(line.len())..].join(" ");
+    let flags: Vec<String> = leading.into_iter().chain(trailing).collect();
     Ok(AidArgs {
         spec,
-        agent,
         dl_options,
-        prompt: argv[at.min(argv.len())..].join(" "),
+        task: if flags.is_empty() {
+            Task::Agent { agent, prompt }
+        } else {
+            Task::Verb {
+                flags,
+                overridden: prompt,
+            }
+        },
     })
 }
 
@@ -223,12 +348,22 @@ pub(crate) fn build_agent_command(agent: &str, prompt: &str) -> Option<String> {
 /// `[<dl options>…, <spec>, "--", <agent command>]` — the shape `dl` reads back by
 /// joining everything after `--` with spaces, which is why the agent command is one
 /// argument and its quoting lives inside it.
+///
+/// A verb line is `[<dl options>…, <spec>, <verb flags>…]` and has **no `--` tail**:
+/// dl refuses a command beside a verb, and rightly, because the point of the suffix
+/// is that no agent is being started. The verb flags go *after* the spec so that a
+/// `--force` among them lands where dl reads it as the modifier rather than as the
+/// workspace's name.
 pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
-    let command = build_agent_command(&parsed.agent, &parsed.prompt)?;
     let mut args = parsed.dl_options.clone();
     args.push(parsed.spec.clone());
-    args.push("--".to_owned());
-    args.push(command);
+    match &parsed.task {
+        Task::Agent { agent, prompt } => {
+            args.push("--".to_owned());
+            args.push(build_agent_command(agent, prompt)?);
+        }
+        Task::Verb { flags, .. } => args.extend(flags.iter().cloned()),
+    }
     Some(args)
 }
 
@@ -248,6 +383,23 @@ mod tests {
         parse_aid_args(&words(argv), None).expect("a usable command line")
     }
 
+    /// The prompt an agent line carries. Panics on a verb line, which has none —
+    /// the tests that mean to look at one use [`overridden`].
+    fn prompt(parsed: &AidArgs) -> &str {
+        match &parsed.task {
+            Task::Agent { prompt, .. } => prompt,
+            Task::Verb { .. } => panic!("a verb line has no prompt"),
+        }
+    }
+
+    /// The verb flags a line ends with, and the prompt they beat.
+    fn overridden(argv: &[&str]) -> (Vec<String>, String) {
+        match parsed(argv).task {
+            Task::Agent { .. } => panic!("an agent line overrides nothing"),
+            Task::Verb { flags, overridden } => (flags, overridden),
+        }
+    }
+
     // ------------------------------------------------------- the split
 
     #[test]
@@ -255,20 +407,23 @@ mod tests {
         let parsed = parsed(&["owner/repo"]);
 
         assert_eq!(parsed.spec, "owner/repo");
-        assert_eq!(parsed.prompt, "");
+        assert_eq!(prompt(&parsed), "");
         assert!(parsed.dl_options.is_empty());
-        assert_eq!(parsed.agent, DEFAULT_AGENT);
+        assert_eq!(parsed.agent(), Some(DEFAULT_AGENT));
     }
 
     #[test]
     fn the_prompt_is_everything_after_the_spec_joined_with_spaces() {
         assert_eq!(
-            parsed(&["owner/repo", "fix", "the", "bug"]).prompt,
+            prompt(&parsed(&["owner/repo", "fix", "the", "bug"])),
             "fix the bug"
         );
         // A prompt the host's shell already unquoted arrives as one word, and stays
         // one word.
-        assert_eq!(parsed(&["owner/repo", "fix the bug"]).prompt, "fix the bug");
+        assert_eq!(
+            prompt(&parsed(&["owner/repo", "fix the bug"])),
+            "fix the bug"
+        );
     }
 
     #[test]
@@ -276,16 +431,16 @@ mod tests {
         let parsed = parsed(&["owner/repo", "explain", "--verbose", "mode"]);
 
         assert!(parsed.dl_options.is_empty());
-        assert_eq!(parsed.prompt, "explain --verbose mode");
+        assert_eq!(prompt(&parsed), "explain --verbose mode");
     }
 
     #[test]
     fn an_agent_flag_picks_the_agent_and_is_not_passed_on() {
         let parsed = parsed(&["--gemini", "owner/repo", "hi"]);
 
-        assert_eq!(parsed.agent, "gemini");
+        assert_eq!(parsed.agent(), Some("gemini"));
         assert_eq!(parsed.spec, "owner/repo");
-        assert_eq!(parsed.prompt, "hi");
+        assert_eq!(prompt(&parsed), "hi");
         assert!(parsed.dl_options.is_empty());
     }
 
@@ -294,7 +449,7 @@ mod tests {
         let chosen = parse_aid_args(&words(&["--codex", "owner/repo"]), Some("gemini"))
             .expect("a usable command line");
 
-        assert_eq!(chosen.agent, "codex");
+        assert_eq!(chosen.agent(), Some("codex"));
     }
 
     #[test]
@@ -302,15 +457,15 @@ mod tests {
         let chosen =
             parse_aid_args(&words(&["owner/repo"]), Some("gemini")).expect("a usable command line");
 
-        assert_eq!(chosen.agent, "gemini");
+        assert_eq!(chosen.agent(), Some("gemini"));
         // And an unset or blank variable is no choice at all rather than an agent
         // called "": Python `.strip()`s it and falls back.
         for blank in [None, Some(""), Some("  ")] {
             assert_eq!(
                 parse_aid_args(&words(&["owner/repo"]), blank)
                     .expect("a usable command line")
-                    .agent,
-                DEFAULT_AGENT
+                    .agent(),
+                Some(DEFAULT_AGENT)
             );
         }
     }
@@ -331,7 +486,7 @@ mod tests {
 
         assert_eq!(parsed.dl_options, ["--devcontainer", "robot"]);
         assert_eq!(parsed.spec, "owner/repo");
-        assert_eq!(parsed.prompt, "hi");
+        assert_eq!(prompt(&parsed), "hi");
     }
 
     #[test]
@@ -353,6 +508,106 @@ mod tests {
                 "{argv:?}"
             );
         }
+    }
+
+    // --------------------------------------------------- the suffix verb
+
+    #[test]
+    fn a_trailing_verb_flag_wins_over_the_prompt_and_keeps_it() {
+        // The line this exists for: a recalled `aid` command with `--rm --force`
+        // typed at the end. The prompt is kept rather than dropped, because the
+        // notice has to be able to name it.
+        let (flags, beaten) = overridden(&[
+            "kinisi-robotics/kinisi_ros@fix/x",
+            "review this pr",
+            "--rm",
+            "--force",
+        ]);
+
+        assert_eq!(flags, ["--rm", "--force"]);
+        assert_eq!(beaten, "review this pr");
+    }
+
+    #[test]
+    fn a_verb_line_asks_dl_for_the_verb_and_starts_no_agent() {
+        // No `--` tail at all: dl refuses a command beside a verb, and there is no
+        // agent to run one. `--force` lands after the spec, where dl reads it as
+        // the modifier rather than as the workspace's name.
+        assert_eq!(
+            build_dl_args(&parsed(&[
+                "owner/repo@fix/x",
+                "review this pr",
+                "--rm",
+                "--force"
+            ]))
+            .expect("a verb line needs no agent"),
+            ["owner/repo@fix/x", "--rm", "--force"]
+        );
+        assert_eq!(
+            build_dl_args(&parsed(&[
+                "--devcontainer",
+                "robot",
+                "owner/repo",
+                "hi",
+                "--stop"
+            ]))
+            .expect("a verb line needs no agent"),
+            ["--devcontainer", "robot", "owner/repo", "--stop"]
+        );
+    }
+
+    #[test]
+    fn a_verb_flag_before_the_spec_is_the_same_request() {
+        // `aid --rm owner/repo` used to hand dl a verb *and* an agent command, a
+        // pair dl refuses. It is collected as the verb instead.
+        assert_eq!(
+            build_dl_args(&parsed(&["--rm", "owner/repo"])).expect("a verb line"),
+            ["owner/repo", "--rm"]
+        );
+        assert_eq!(overridden(&["--rm", "owner/repo"]).1, "");
+    }
+
+    #[test]
+    fn a_prompt_that_merely_mentions_a_verb_flag_is_still_a_prompt() {
+        // The bound the peel is worth having: only the exact word, only at the very
+        // end. Everything else stays what aid has always made it.
+        assert_eq!(
+            prompt(&parsed(&["owner/repo", "fix", "the", "--rm", "flag"])),
+            "fix the --rm flag"
+        );
+        assert_eq!(
+            prompt(&parsed(&["owner/repo", "explain --rm"])),
+            "explain --rm"
+        );
+        // `--force` alone is not a verb, so it is not a suffix — and a `--force`
+        // handed to dl as a leading option would be read as the workspace's name.
+        assert_eq!(
+            prompt(&parsed(&["owner/repo", "do it", "--force"])),
+            "do it --force"
+        );
+    }
+
+    #[test]
+    fn a_verb_flag_with_no_workspace_is_still_no_workspace() {
+        for argv in [vec!["--rm"], vec!["--stop", "--force"]] {
+            assert_eq!(
+                parse_aid_args(&words(&argv), None),
+                Err(UsageError::NoWorkspace),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_notice_names_the_verb_that_won() {
+        let removing = parsed(&["owner/repo", "review this pr", "--rm", "--force"]);
+
+        assert_eq!(removing.task.verb_flag(), Some("--rm"));
+        assert_eq!(
+            parsed(&["owner/repo", "hi"]).task.verb_flag(),
+            None,
+            "an agent line won nothing"
+        );
     }
 
     // --------------------------------------------- the agent's command
@@ -458,7 +713,7 @@ mod tests {
             let chosen = parse_aid_args(&words(&[&format!("--{name}"), "owner/repo"]), None)
                 .expect("a usable command line");
 
-            assert_eq!(chosen.agent, name);
+            assert_eq!(chosen.agent(), Some(name));
             assert!(build_agent_command(name, "hi").is_some(), "{name}");
         }
     }

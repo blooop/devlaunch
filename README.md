@@ -256,7 +256,7 @@ fixed by hand.
 |---------|-------------|
 | `dl <user/repo> up` | Start (or create) the workspace without attaching — for prewarming a container before a session wants it |
 | `dl <user/repo> stop` | Stop the workspace |
-| `dl <user/repo> rm, prune` | Delete the workspace |
+| `dl <user/repo> rm` | Delete the workspace |
 | `dl <user/repo> code` | Open in VS Code |
 | `dl <user/repo> restart` | Stop and start (no rebuild) |
 | `dl <user/repo> recreate` | Recreate container |
@@ -267,6 +267,54 @@ fixed by hand.
 Every verb in that table also takes the workspace second — `dl stop <user/repo>` — and with no
 workspace at all it opens the selector and applies itself to what you pick. `stop` and `rm` answer to
 `--stop` and `--rm` as well, since the flag spellings were documented long before they worked.
+
+### `--stop` and `--rm` can be appended to a line that says something else
+
+The flag spellings do one thing the words cannot: they may be typed at the *end* of a
+line that already asked for something, and they win over it.
+
+```bash
+aid kinisi/repo@fix/x 'review this pr'      # work happens
+aid kinisi/repo@fix/x 'review this pr' --rm --force   # ↑, with `--rm --force` appended
+```
+
+Both `dl` and `aid` accept it, and a leading verb word on the recalled line is not
+mistaken for the workspace, so `dl prune <ws> --force` recalled with `--rm` appended
+still removes `<ws>`. This exists because a shell makes appending to the previous line
+cheap and rewriting the front of it expensive — deleting the workspace you were just
+working in should not cost an edit in the middle of a long prompt.
+
+What the suffix beat is named on stderr before anything is removed:
+
+```
+--rm overrode the rest of the line: 'review this pr' was not acted on.
+```
+
+That notice is the price of the convenience and is not optional: the line is now
+allowed to carry an instruction it will not carry out, so a deliberate `--rm` and a
+slip have to be told apart. Note that a `--` command tail cannot be overridden this
+way — everything after `--` belongs to the workspace's command, so a `--rm` typed
+there is an argument to that command and not a verb.
+
+### `prune` is no longer a spelling of the `rm` verb
+
+`dl <ws> prune` used to delete one workspace and `dl --prune` removes clone
+directories and no workspace at all — one word, two unrelated commands, told apart
+by two dashes. Reach for the wrong one and you either lose a workspace you meant to
+keep or get refused for a reason the message could not explain
+(`--prune takes no workspace: it is not a workspace command.`). So the verb spelling
+is gone, and typing it says what to use instead:
+
+```
+$ dl <ws> prune
+'prune' is no longer a workspace verb. Use 'dl <workspace> rm' to delete a workspace,
+or 'dl --prune' to remove the clone directories no workspace opens any more.
+```
+
+`dl --prune` is unchanged. The word is still *recognised* rather than forgotten, so
+it is never read as a workspace name: a `dl prune <ws> --force` line recalled with
+`--rm` appended still removes `<ws>`, and a workspace that really is called `prune`
+is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
 ## Options
 
