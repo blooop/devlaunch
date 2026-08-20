@@ -2520,7 +2520,16 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         placement: &Placement,
         devcontainer: Option<&DevcontainerPath>,
     ) -> Result<Launched, LaunchAborted> {
-        if placement.is_running() {
+        // The same question the attach arm asks, for the same reason: a create that
+        // died in its hooks leaves the container up, so `Running` is a reading the
+        // finished and the abandoned both produce. `up` is the worst verb to answer
+        // "already running" for the second one -- it is the command a user reaches
+        // for to fix a workspace, and the documented recovery would be the one path
+        // that declines to run.
+        if placement.is_running()
+            && lifecycle::create_record(self.host.devpod_home.as_deref(), placement.workspace_id())
+                != lifecycle::CreateRecord::NeverCompleted
+        {
             self.notices.say(LaunchNotice::AlreadyRunning {
                 workspace_id: placement.workspace_id().to_owned(),
             });
@@ -5068,6 +5077,80 @@ mod tests {
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
         assert_eq!(parts.provision.provisioned(), vec!["myws".to_owned()]);
+        assert_eq!(
+            scene.devpod_heads(),
+            vec![vec!["status".to_owned(), "myws".to_owned()]],
+            "and no up at all"
+        );
+    }
+
+    /// `dl <ws> up` is what a user types to fix a workspace, so it is the worst
+    /// verb to answer "already running" for a create that never finished: the
+    /// container is up, nothing in it is set up, and the one command documented as
+    /// the recovery would be the one that declines to run it.
+    #[test]
+    fn the_up_verb_brings_up_a_running_workspace_whose_create_never_finished() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_aborted("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Up, None)
+        };
+
+        assert_ne!(
+            launched,
+            Ok(Launched::AlreadyRunning),
+            "a workspace devpod never finished is not `already running`"
+        );
+        assert!(
+            scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("up")),
+            "the recovery verb must run the recovery: {:?}",
+            scene.devpod_commands()
+        );
+    }
+
+    /// The other side: a create devpod *did* finish still short-circuits, so the
+    /// check above cannot be satisfied by making `up` always re-walk a lifecycle
+    /// the workspace has already been through.
+    #[test]
+    fn the_up_verb_on_a_finished_running_workspace_still_runs_no_up() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_completed("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Up, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::AlreadyRunning));
         assert_eq!(
             scene.devpod_heads(),
             vec![vec!["status".to_owned(), "myws".to_owned()]],
