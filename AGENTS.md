@@ -125,7 +125,7 @@ rather than building it. `.devcontainer/devcontainer.json` declares it under
 tag — a hash of the build config, the build context and the target architecture —
 before it builds anything. A miss is silent and falls through to a local build.
 
-Three rules follow from that, and all of them are about the hash:
+Four rules follow from that, and all of them are about the hash:
 
 - **The build context is `.devcontainer`, deliberately.** Widening it back to the
   repository root makes the tag move on every commit to any file, which is a
@@ -147,6 +147,15 @@ Three rules follow from that, and all of them are about the hash:
   it is `build.cacheFrom`'s target, devpod arch-qualifies no alias, so a second
   leg passing it would race for a tag whose value decides whether a cache serves
   layers. arm64 publishes `latest-arm64`.
+- **The hash covers the recipe, not what the recipe pulls.** The base image tag,
+  the `docker-in-docker` major and the `claude-shim` the local feature installs
+  all float, so one `.devcontainer/` tree can publish two different images. That
+  is deliberate: **do not pin `claude-shim` here.** It carries no `claude` — the
+  binary is downloaded on first run — a pin freezes it harder than no pin does,
+  and the shipping implementation installs the same package unversioned into
+  every workspace `dl` opens (`rust/devlaunch-core/src/flows/provision.rs`),
+  which a unit test holds this spec against. The whole argument, with the
+  measurements, is under "What the prebuild tag does not promise" in README.md.
 
 `pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`,
 for the architecture of the machine it runs on; the alias is its one argument and

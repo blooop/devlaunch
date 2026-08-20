@@ -1698,7 +1698,9 @@ Two consequences worth knowing:
 - **A commit whose `.devcontainer/` differs from the last prebuild builds
   locally.** That is the correct answer rather than a gap: the alternative is a
   container built from something other than what the branch asks for. The pull
-  comes back once the change is on `main`.
+  comes back once the change is on `main`. What the tag does not promise is the
+  converse — that one `.devcontainer/` tree always yields one image; see "What
+  the prebuild tag does not promise" below.
 
 `.github/workflows/devcontainer-prebuild.yml` publishes it, on pushes to `main`
 that touch `.devcontainer/**` and on manual dispatch. Its path filter is exactly
@@ -1798,6 +1800,54 @@ build that host was already doing.
 `postCreateCommand` is not in the image and cannot be: `pixi install` and the
 provider registration run at container create, after the image exists. The
 `<workspace>-pixi` volume is what makes them cheap the second time.
+
+#### What the prebuild tag does not promise
+
+The tag is a hash of the build *recipe* — the config and the context — and not of
+the image the recipe produces. Three of the recipe's inputs float, so the same
+`.devcontainer/` tree published on two different days is two different images:
+the base `mcr.microsoft.com/devcontainers/base:ubuntu-24.04` is a moving tag,
+`ghcr.io/devcontainers/features/docker-in-docker:2` is a moving major, and the
+local feature's `pixi global install … claude-shim` names no version. (The
+Dockerfile's `ARG PIXI_VERSION` is the one that is pinned.) A prebuild pulled
+today and a local build of the identical tree tomorrow can therefore differ, and
+the direction they differ in is forwards: a republish picks up whatever those
+three point at now.
+
+That is written down rather than fixed, and the shim is the case that shows why.
+**`claude-shim` is deliberately unversioned**, and pinning it was considered and
+rejected on four grounds:
+
+- **The package holds no `claude`.** It is 21 KB of bash — `claude`, `cld`,
+  `cldr` — whose first run downloads the current stable binary from Anthropic's
+  GCS bucket into `~/.claude/cache`, and which re-checks stable hourly after
+  that. The image cannot serve a stale `claude`, because it contains none; a pin
+  would freeze the fetcher and nothing it fetches.
+- **On the launch path this container is opened by, the baked shim never runs.**
+  `dl`'s probe reads a shim-provided `claude` as *lendable* and the lend puts the
+  host's real binary in front of it on the PATH — "What to bake so a launch does
+  no work at all", above. The shim is baked so that `command -v claude` answers
+  at all.
+- **A pin freezes it harder than no pin does.** Unversioned, the shim is
+  refreshed by every republish, which is every commit to `.devcontainer/**`.
+  Pinned, it stops at whatever was current the day the pin was written.
+- **One package would then have two policies.** The shipping provisioner
+  (`rust/devlaunch-core/src/flows/provision.rs`) installs the same package,
+  unversioned, into every workspace `dl` opens — the copy that reaches users
+  rather than us. `test/unit/test_devcontainer_manifest.py` asserts that spec and
+  the feature installer's still match, so pinning one side alone fails rather
+  than drifting, while pinning both deliberately passes.
+
+Measured 2026-08-20: the published prebuild carries `claude-shim 0.7.0`, the
+newest of the channel's 14 releases and unmoved since 2026-04-06, so the drift a
+pin would have prevented is currently zero. A publish is also the gate on a
+broken shim release, not a channel for it: the feature installer checks the
+trampoline exists and returns non-zero if it does not, which fails
+`devpod build` and leaves the previous prebuild as the newest published tag.
+
+If image contents ever do need pinning, the base image tag is the input that
+carries the packages; pinning the shim alone would be precision about the
+smallest of the three.
 
 ### Disk cost of the dev container
 
