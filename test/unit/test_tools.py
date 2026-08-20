@@ -174,6 +174,59 @@ FEATURE_INSTALLER = (
 )
 
 
+def _feature_installer_specs() -> List[str]:
+    """Every `pixi global install` argument list the feature's installer runs.
+
+    All of them, not the first: the installer issues the command twice -- once
+    through `su` when the build runs as root, once directly otherwise -- so a
+    version pinned onto one of the two branches is an image whose contents
+    depend on which branch ran, which is worse than either answer. Comment lines
+    are skipped because the paragraph above those commands is *about* the spec,
+    and a test satisfied by prose is no test.
+    """
+    marker = "pixi global install "
+    specs = [
+        line[line.index(marker) + len(marker) :].strip().strip('"')
+        for line in FEATURE_INSTALLER.read_text(encoding="utf-8").splitlines()
+        if marker in line and not line.lstrip().startswith("#")
+    ]
+    assert specs, f"{FEATURE_INSTALLER} no longer installs anything with pixi global"
+    return specs
+
+
+def test_the_feature_and_devlaunch_state_one_claude_spec_between_them():
+    """One package, one install policy, written down in two places.
+
+    `.devcontainer/claude-code/install.sh` bakes `claude-shim` into this repo's
+    prebuilt image; `REQUIRED_TOOLS` installs the same package into every
+    workspace `dl` opens. Both are deliberately unversioned -- the shim carries
+    no `claude` binary, so a pin would freeze the fetcher and not the thing
+    fetched, and the image is republished (and the shim refreshed) by every
+    commit that touches `.devcontainer/**`. The reasoning is in README, under
+    "What the prebuild tag does not promise".
+
+    What this test is for is the *asymmetry*: the installer sits inside the
+    prebuild's hash and the module does not, so the pin argument reads as
+    stronger there, and pinning that side alone would give one package two
+    policies -- with the unpinned one the copy that reaches users. Neither half
+    of that divergence fails anything on its own, so it has to fail here. A pin
+    added to both sides in one change passes, which is the point: the two specs
+    are required to agree, not required to float.
+    """
+    claude = next(tool for tool in REQUIRED_TOOLS if tool.command == "claude")
+    expected = " ".join(claude.install_args)
+    matching = [spec for spec in _feature_installer_specs() if claude.package in spec]
+    assert matching, (
+        f"{FEATURE_INSTALLER.name} no longer installs {claude.package}, which the prebuilt "
+        "image is documented as baking"
+    )
+    for spec in matching:
+        assert spec == expected, (
+            f"{FEATURE_INSTALLER.name} installs {claude.package} as {spec!r} while "
+            f"REQUIRED_TOOLS installs it as {expected!r}; one package, one policy"
+        )
+
+
 class TestProfileGuards:
     """Every question these scripts ask about the login profile, in every script.
 

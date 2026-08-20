@@ -75,6 +75,38 @@ install_claude_code() {
 
     # Install with pixi global from blooop channel
     # Run as target user so it installs to their home directory
+    #
+    # Deliberately unversioned, which is the opposite of what this file's
+    # position suggests. This script sits inside the prebuild's build context
+    # (.devcontainer, see devcontainer.json), so devpod's prebuild tag is a hash
+    # of these bytes -- and a floating package spec is a published image whose
+    # contents can move while every hashed byte stays identical. The instinct is
+    # to pin, because bumping a pin is a visible diff that republishes.
+    #
+    # What that argument misses is what the package is. claude-shim is 21KB of
+    # bash -- `claude`, `cld`, `cldr` -- and carries no claude at all: the first
+    # run downloads the current stable binary from Anthropic's GCS bucket into
+    # ~/.claude/cache and re-checks stable hourly after that. The image cannot
+    # serve a stale claude because there is no claude in it, so a pin would
+    # freeze the fetcher and nothing that gets fetched.
+    #
+    # It would also freeze it *harder* than not pinning does. Unversioned, the
+    # shim is refreshed by every republish, which is every commit that touches
+    # this directory; pinned, it stops at whatever was current the day the pin
+    # was written, until somebody remembers to bump it. And on the launch path
+    # this container is actually opened by, the baked shim is never executed:
+    # devlaunch's probe reads a shim-provided claude as `lendable` and the
+    # transfer puts the host's real binary at ~/.local/bin/claude with a profile
+    # prepend that wins the PATH (README, "What to bake so a launch does no work
+    # at all"). What it is baked for is that `command -v claude` answers at all.
+    #
+    # Measured 2026-08-20: the published prebuild carries claude-shim 0.7.0 --
+    # the newest of the channel's 14 releases, unmoved since 2026-04-06 -- so
+    # the drift a pin would have prevented is currently zero. The spec here is
+    # also the one devlaunch/tools.py installs into every workspace `dl` opens
+    # (REQUIRED_TOOLS), the copy that reaches users rather than us; a unit test
+    # asserts the two still match, so pinning one side alone fails there. See
+    # "What the prebuild tag does not promise" in README.md.
     if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
         su - "$TARGET_USER" -c "pixi global install --channel https://prefix.dev/blooop claude-shim"
     else

@@ -125,7 +125,7 @@ rather than building it. `.devcontainer/devcontainer.json` declares it under
 tag — a hash of the build config and the build context — before it builds
 anything. A miss is silent and falls through to a local build.
 
-Two rules follow from that, and both are about the hash:
+Three rules follow from that, and all three are about the hash:
 
 - **The build context is `.devcontainer`, deliberately.** Widening it back to the
   repository root makes the tag move on every commit to any file, which is a
@@ -137,6 +137,15 @@ Two rules follow from that, and both are about the hash:
   on pushes to `main` that touch that directory; its path filter is exactly the
   hash's inputs, so keep the two in step. Until it runs, that commit builds
   locally.
+- **The hash covers the recipe, not what the recipe pulls.** The base image tag,
+  the `docker-in-docker` major and the `claude-shim` the local feature installs
+  all float, so one `.devcontainer/` tree can publish two different images. That
+  is deliberate: **do not pin `claude-shim` here.** It carries no `claude` — the
+  binary is downloaded on first run — a pin freezes it harder than no pin does,
+  and `devlaunch/tools.py` installs the same package unversioned into every
+  workspace `dl` opens, which a unit test holds this spec against. The whole
+  argument, with the measurements, is under "What the prebuild tag does not
+  promise" in README.md.
 
 `pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`.
 
