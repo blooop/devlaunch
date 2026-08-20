@@ -22,7 +22,9 @@ the host's own copies through a tar stream over the ssh channel dl already
 holds, which turns the slowest part of a cold launch (minutes of in-container
 downloads) into a local copy. Only when the host has nothing to lend, or the
 lent binaries do not run there (a different arch or libc), does the old
-network path run: bootstrap pixi, `pixi global install` each tool.
+network path run: bootstrap pixi, `pixi global install` each tool -- into a
+pixi home of devlaunch's own rather than the container's `~/.pixi`, for the
+reasons PIXI_HOME_TARGET gives.
 
 What "lacks them" means is the probe's job, and it has three answers rather
 than two, because a `claude` on PATH is not necessarily a `claude` worth
@@ -113,6 +115,49 @@ PROBE_MARK = "devlaunch-probe"
 # lesson devpod_provider learned from grepping devpod's rendered table: a guard
 # that reads someone else's artifact is only correct until they change it.
 PROFILE_MARK = "# devlaunch:"
+
+# The pixi home devlaunch installs its own tools into, and never `~/.pixi`.
+#
+# `pixi global install` is not just an install: it is an edit to
+# `$PIXI_HOME/manifests/pixi-global.toml`, a *declarative* file whose owner then
+# syncs it. `~/.pixi` is somebody else's -- an image's, or a dotfiles repo's --
+# and writing there made devlaunch a second author of a file with one owner,
+# which cost something in both directions:
+#
+#   1. `pixi global sync` removes every env the manifest does not list, so a
+#      dotfiles apply that rewrites the manifest and syncs *uninstalls* the
+#      zellij this module just installed -- on a schedule nothing here can see,
+#      and the next launch reinstalls it, forever.
+#   2. The manifest is not always a file. kinisi_ros's devcontainer symlinks
+#      `~/.pixi/manifests/pixi-global.toml` onto a tracked file inside the
+#      checkout (its `.devcontainer/on_create.sh`), so the append landed in the
+#      user's work tree and every `git status` in the workspace came up dirty.
+#      Nothing about that is one repo's quirk: dl launches arbitrary repos, and
+#      an install that dirties the tree it was pointed at is the launch damaging
+#      the work it exists to serve.
+#
+# A home of devlaunch's own makes both unrepresentable rather than handled.
+# Nothing syncs this manifest, so what is installed here stays installed; and
+# every path under it is one devlaunch created, so no repo state can be beneath
+# it. What it costs is a duplicate prefix in the case where a tool is installed
+# but unreachable from a login shell -- disk only, since PIXI_HOME does not move
+# the package cache (`PIXI_CACHE_TARGET` still shares the downloads) -- and that
+# case is the one where the old behaviour reinstalled on every launch anyway.
+#
+# `$HOME/.devlaunch/pixi` and *not* `$HOME/.local/share/devlaunch/pixi`, which is
+# the conventional answer and the wrong one here. Containers bind-mount the XDG
+# trees -- `~/.cache`, `~/.config`, `~/.local/share` -- straight from the host,
+# so a prefix tree under `.local/share` would be shared by every container on the
+# machine and written into the host's own home. Prefixes are baked with absolute
+# paths and two syncs sharing one prefix tree is prefix-dev/pixi#5476: exactly
+# the hazard PIXI_CACHE_TARGET refuses to let PIXI_HOME near. A dotted directory
+# in `$HOME` is nobody's convention to mount, and `transfer_script` already
+# stages under `$HOME/.devlaunch-lend`.
+#
+# Deliberately *not* exported into the login profile. Only these scripts set it,
+# so a user's own `pixi global install` still goes to their `~/.pixi` -- which is
+# the separation this exists to keep. Only the bin directories go on PATH.
+PIXI_HOME_TARGET = "$HOME/.devlaunch/pixi"
 
 
 @dataclass(frozen=True)
@@ -293,7 +338,7 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
     Idempotent and cheap on the common path: every tool already on PATH is
     skipped, so a workspace that has been provisioned before does nothing but
     answer. It runs under a login shell (see provision_tools), which is what puts
-    an earlier run's ~/.pixi/bin on PATH -- checked from a non-login shell every
+    an earlier run's PIXI_HOME_TARGET/bin on PATH -- checked from a non-login shell every
     tool would look missing and be reinstalled on every launch.
 
     Exits 0 unless an install actually failed, so "nothing to do" and "all
@@ -308,7 +353,7 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
     """
     all_present = _all_present(tools)
     installs = "\n".join(_install_line(tool) for tool in tools)
-    # The trampoline pixi writes into ~/.pixi/bin does not work for packages
+    # The trampoline pixi writes into its bin directory does not work for packages
     # that ship a shell script, which is why the env's own bin directory is
     # added too -- the same workaround .devcontainer/claude-code/install.sh
     # carries, for the same package.
@@ -321,10 +366,10 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
             # (since the check above is `command -v`) reinstalled from scratch
             # on every single launch.
             _profile_resolution(),
-            _profile_prepend('export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"),
+            _profile_prepend(f'export PATH="{PIXI_HOME_TARGET}/bin:$PATH"', on_failure="failed=1"),
             _profile_prepend(
-                '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && '
-                'export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"',
+                f'[ -d "{PIXI_HOME_TARGET}/envs/claude-shim/bin" ] && '
+                f'export PATH="{PIXI_HOME_TARGET}/envs/claude-shim/bin:$PATH"',
                 on_failure="failed=1",
             ),
         ]
@@ -342,6 +387,7 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
             # Everything already there: leave without touching pixi, the
             # profile, or the network. Every launch after the first takes this.
             f"if {all_present}; then exit 0; fi",
+            _pixi_home_export(),
             _pixi_bootstrap(),
             installs,
             profile_lines,
@@ -364,7 +410,7 @@ def zellij_script() -> str:
     exits before pixi, the profile or the network are touched, and that is the
     answer on every launch after the first. The check works because this runs
     under the pass's login shell, which is what puts an earlier run's
-    ~/.pixi/bin on PATH -- from a non-login shell an installed zellij looks
+    PIXI_HOME_TARGET/bin on PATH -- from a non-login shell an installed zellij looks
     missing and would be reinstalled on every single launch.
 
     The PATH prepend is written here rather than relied on from elsewhere,
@@ -395,10 +441,11 @@ def zellij_script() -> str:
             # Already there: nothing else in this script may run. The commonest
             # answer by far, and the reason a stage on every pass is affordable.
             f"if command -v {shlex.quote(ZELLIJ_TOOL.command)} >/dev/null 2>&1; then exit 0; fi",
+            _pixi_home_export(),
             _pixi_bootstrap(),
             _install_line(ZELLIJ_TOOL),
             _profile_resolution(),
-            _profile_prepend('export PATH="$HOME/.pixi/bin:$PATH"', on_failure="failed=1"),
+            _profile_prepend(f'export PATH="{PIXI_HOME_TARGET}/bin:$PATH"', on_failure="failed=1"),
             'exit "$failed"',
         ]
     )
@@ -721,6 +768,24 @@ def _read_outcome(name: str, status: Optional[str]) -> StageOutcome:
     return StageNotReached(name=name)
 
 
+def _pixi_home_export() -> str:
+    """Point pixi at devlaunch's own home (PIXI_HOME_TARGET) for what follows.
+
+    One line at the top of every script here that runs pixi, and it has to cover
+    more than the installs: pixi's own installer honours the variable too
+    (`PIXI_HOME="${PIXI_HOME:-$HOME/.pixi}"` in its install.sh), so exporting it
+    once puts the binary and the environments in the same place instead of
+    bootstrapping pixi into a home its installs do not use.
+
+    Exported rather than passed per command, so nothing pixi does on its own
+    behalf can miss it -- and set flatly rather than defaulted to an existing
+    value, because a PIXI_HOME already in the container's environment is the
+    image's answer to where *its* globals live, which is the answer this is here
+    not to use.
+    """
+    return f'export PIXI_HOME="{PIXI_HOME_TARGET}"'
+
+
 def _pixi_bootstrap() -> str:
     """Install pixi if the image has none, since every tool here comes from it.
 
@@ -734,7 +799,7 @@ def _pixi_bootstrap() -> str:
             "if ! command -v pixi >/dev/null 2>&1; then",
             '  echo "devlaunch: installing pixi"',
             "  curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true",
-            '  export PATH="$HOME/.pixi/bin:$PATH"',
+            f'  export PATH="{PIXI_HOME_TARGET}/bin:$PATH"',
             "fi",
         ]
     )
