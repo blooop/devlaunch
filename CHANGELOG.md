@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-20
+
+The Rust port's review follow-ups ([#265](https://github.com/blooop/devlaunch/pull/265),
+closing #262, #263 and #264). No command grammar or JSON shape changed.
+
+### Fixed
+
+- **Three messages render Python's exact wording again.** An unsafe git ref name reads
+  `Invalid git ref name: '--evil'` instead of a Rust debug rendering, and an unfetchable
+  recorded default branch gets Python's own sentence (`Cannot fetch recorded default
+  branch: ...`). Restorations, not divergences — the parity goldens pin them.
+- **Provisioning notices stream as they happen** instead of arriving in a batch after the
+  install finishes — a cold tool install streams hundreds of megabytes, and the warning is
+  worth something while it is still happening. Line bytes unchanged.
+- **A `--purge` failure is reported once**, at the step where it happened, instead of twice.
+- **`--reconcile` reports each adoption's actual ending** — done or refused, in the order they
+  were attempted — instead of inferring success from absence in a refusal list.
+- **Two overlapping completion-cache refreshes can no longer clobber each other**: each write
+  stages through its own per-target, per-process temp name. Final paths and bytes unchanged.
+- **The background completions refresh survives `pixi global update` swapping the binary
+  mid-run**: when `current_exe()` names a deleted path, the refresh child is spawned by bare
+  name through `PATH` instead of failing silently.
+
+### Changed
+
+- **`devlaunch-core`'s public API is frozen by CI.** A `cargo public-api` snapshot
+  (`rust/devlaunch-core/public-api.txt`) is checked on every PR; 50 declarations the binaries
+  never name were demoted to `pub(crate)`. The `--ls --json` document remains the one external
+  contract.
+- **The strict `metadata.json` reader is divergence row 28**: `NaN`/`Infinity`, numbers beyond
+  f64 range and lone-surrogate escapes — values no build of dl ever writes — read as corruption
+  and quarantine the file (bytes intact) where Python's `json.loads` accepted them.
+
 ## [0.1.0] - 2026-08-19
 
 ### Changed
