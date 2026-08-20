@@ -18,6 +18,13 @@ name: Devcontainer prebuild
 # prebuild already present, and returns without rebuilding or repushing -- so a
 # re-run, or a dispatch against a commit whose `.devcontainer/` is unchanged,
 # costs a registry lookup.
+#
+# The architecture is hashed too, which is why this is a matrix. `arch + config +
+# dockerfile + contextHash` is the string devpod hashes
+# (pkg/devcontainer/config/prebuild.go), so amd64 and arm64 ask for two different
+# tags and each is published on its own. Nothing has to merge them into a
+# manifest list: devpod never looks one up. It asks for exactly one tag and, on
+# finding it, pulls the variant matching the architecture it is running on.
 
 on:
   push:
@@ -46,13 +53,54 @@ permissions:
 # worth avoiding, and a cancelled prebuild leaves the tag it was building absent
 # -- which is a silent return to local builds for everyone on that commit, not a
 # red tick anybody sees.
+#
+# The matrix below does not change that, and the group stays one. Concurrency is
+# scoped to the *run*, so the two architecture legs belong to the same group
+# member and run in parallel inside it, while a second run still queues behind
+# the first -- which is the arrangement wanted, because the race is between runs.
+# It is safe only because the legs write disjoint tags: a different hash each,
+# from the architecture in the hash, and only one of them claims the unqualified
+# `latest`. The day two legs share a tag, the serialisation has to move down to
+# the job.
 concurrency:
   group: devcontainer-prebuild
   cancel-in-progress: false
 
 jobs:
   prebuild:
-    runs-on: ubuntu-latest
+    name: prebuild (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One architecture's failure is no reason to abandon the other's image.
+      # Each leg publishes a tag of its own that nothing else reads, so a
+      # half-succeeded run leaves one architecture pulling and the other
+      # building locally -- strictly better than both building locally, which is
+      # what a cancelled leg would leave behind, and for the same reason
+      # `cancel-in-progress` is false above.
+      fail-fast: false
+      matrix:
+        include:
+          # `ubuntu-24.04-arm` is a GitHub-hosted arm64 runner, generally
+          # available and free without limit on public repositories -- which
+          # blooop/devlaunch is. No self-hosted runner and no QEMU.
+          #
+          # Native is what makes this cheap *and* correct at once: see the build
+          # step below for why the architecture the runner happens to be is the
+          # only thing that decides the tag.
+          #
+          # The arm64 leg was added unexercised, and that is worth writing down
+          # rather than leaving to be discovered: this repository is developed on
+          # x86 hosts, so nothing about the image on arm64 -- the multi-arch base,
+          # the aarch64 pixi and claude-shim builds, docker-in-docker -- was
+          # verified anywhere but in a registry listing before its first run here.
+          # Every piece it needs was checked to exist for linux-aarch64; none of
+          # it was checked to build.
+          - arch: amd64
+            runner: ubuntu-latest
+            alias: latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            alias: latest-arm64
     # The build is the base image, the pixi binary, and two features (the local
     # claude-code one and docker-in-docker); the push is ~600 MB of layers unique
     # to this image. Bounded for the same reason the e2e job is: a registry
@@ -80,13 +128,50 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # `devpod build . --tag latest`, with the destination read out of
+      # `devpod build . --tag <alias>`, with the destination read out of
       # devcontainer.json rather than repeated here -- see the task's comment in
       # pyproject.toml. It depends on `dev-add-docker`, which is not optional on
       # a runner: a fresh ~/.devpod has no provider and devpod seeds none, so
       # `devpod build` would exit 1 with "no default provider found".
+      #
+      # No `--platform`, deliberately. The architecture devpod folds into the
+      # hash comes from the driver, and the docker driver answers with the Go
+      # `runtime.GOARCH` of the devpod binary itself
+      # (pkg/driver/docker/docker.go) -- so on this leg it is whatever pixi
+      # installed, the linux-aarch64 devpod on the arm64 runner, and the tag
+      # comes out arm64 with nothing asked for. That is the same route the
+      # lookup takes: `devpod up` sets no platform at all
+      # (pkg/devcontainer/single.go), so the tag a launch asks for is hashed with
+      # the arch of the machine doing the launching and nothing else.
+      #
+      # `--platform linux/arm64` would hash to the same string here --
+      # `normalizeArchitecture` takes the part after the slash, which agrees with
+      # GOARCH on a native runner -- and that is the argument against it rather
+      # than for it: it is a second source of truth for something the runner
+      # already settles, and the two can disagree without saying so. Cross-built
+      # from an amd64 runner it would name the arm64 tag over an emulated build,
+      # and the lookup side does not read the platform anyway: devpod fetches the
+      # prebuild with `GetImageForArch(<driver arch>)`
+      # (pkg/devcontainer/build.go), so the image it asks for is the one the tag
+      # never promised. If a platform is ever genuinely needed it belongs on this
+      # line and not in the pixi task, being a property of the machine the job
+      # runs on rather than of publishing -- and the task is also what a
+      # developer runs by hand on their own machine.
+      #
+      # The alias is per leg because devpod arch-qualifies nothing: `--tag`
+      # values are pushed next to the hash tag exactly as given
+      # (pkg/devcontainer/prebuild.go), so both legs passing `latest` is a tag
+      # owned by whichever finished last. `latest` is what `build.cacheFrom` in
+      # devcontainer.json points at -- a best-effort layer cache for the builders
+      # that know nothing about prebuilds -- and a cache import from the wrong
+      # architecture serves no layers, so a flapping `latest` is a cache that
+      # works or does not per run, silently. It stays amd64's, the architecture
+      # every reader of that one string runs today; arm64 takes `latest-arm64`,
+      # which is also what stops its publish being an opaque `devpod-<hash>` on
+      # the package page. Neither alias is what a `dl` launch reads: that is the
+      # hash tag, and each leg publishes its own.
       - name: Build and publish the prebuild
-        run: pixi run devcontainer-prebuild
+        run: pixi run devcontainer-prebuild ${{ matrix.alias }}
 
       # What is on this runner, in the log, because the tag is a hash nobody can
       # derive by eye and "did the prebuild move?" is the question every
@@ -96,10 +181,14 @@ jobs:
       # prebuild already exists `devpod build` returns before loading anything
       # into the local daemon. Hence the `|| true` -- grep with no matches exits
       # 1, and this step is a report rather than a check.
+      #
+      # The architecture is named because there are two of these logs per run now
+      # and the tags in them are hashes: without it, telling which listing is
+      # which means going back to the job name.
       - name: Report
         if: always()
         run: |
-          echo "Local tags for ghcr.io/blooop/devlaunch-devcontainer"
+          echo "Local ${{ matrix.arch }} tags for ghcr.io/blooop/devlaunch-devcontainer"
           echo "(empty means the prebuild was already published and nothing was rebuilt):"
           docker images --format '{{.Repository}}:{{.Tag}}' \
             | grep '^ghcr.io/blooop/devlaunch-devcontainer:' | sort || true
