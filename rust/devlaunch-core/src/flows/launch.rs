@@ -1041,10 +1041,19 @@ fn up_under_stage(
     // a launch waiting on a prewarm must not attach before the tools land.
     let serialization = serialize_launch(host, request.naming, notices);
 
+    // The same question the fast-attach arm asks, asked again on the other side of
+    // the wait. The sibling this launch waited out is the most likely author of a
+    // create that died in its hooks, and it leaves the container *running* — so
+    // `is_running` alone would hand the loser exactly the workspace the fast-attach
+    // guard exists to refuse, and the wait is what put it here. Re-read rather than
+    // carried down from that guard, because the sibling may well have finished
+    // successfully while this launch was blocked, and then the skip is right.
     if let Some(identity) = request.naming.identity()
         && serialization.waited()
         && !request.wants_more_than_a_running_workspace()
         && is_running(context.runner(), identity)
+        && lifecycle::create_record(host.devpod_home.as_deref(), identity)
+            != lifecycle::CreateRecord::NeverCompleted
     {
         notices.say(LaunchNotice::BroughtUpBySibling {
             workspace_id: identity.to_owned(),
@@ -3109,6 +3118,80 @@ mod tests {
         // succeed — `devpod up` here would re-walk a whole container lifecycle to
         // arrive where the workspace already is.
         let scene = Scene::new().with_running("myws");
+        let provision = RecordingProvision::default();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let (outcome, notices) = contended_up(&scene, &request, &provision);
+
+        assert_eq!(outcome, Ok(UpOutcome::SkippedSiblingWon));
+        assert!(
+            !scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("up")),
+            "{:?}",
+            scene.devpod_commands()
+        );
+        assert!(notices.contains(&LaunchNotice::BroughtUpBySibling {
+            workspace_id: "myws".to_owned()
+        }));
+    }
+
+    /// The skip above reads `Running` and stops there, which is the one reading a
+    /// died-in-its-hooks create also produces. So the sibling worth skipping for
+    /// and the sibling worth *not* skipping for look identical from `devpod
+    /// status`, and the wait is what makes the second one likely: whatever this
+    /// launch queued behind is the process whose create just failed.
+    ///
+    /// Without this, the guard on the fast-attach arm is reachable around: launch
+    /// A's create dies leaving the container up, launch B waits out A's lock, sees
+    /// `Running`, skips its own `up` and attaches — as root, into the container A
+    /// never finished. Exactly the bug, one lock contention away.
+    #[test]
+    fn a_contended_up_does_not_skip_for_a_sibling_whose_create_died() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_aborted("myws");
+        let provision = RecordingProvision::default();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let (outcome, notices) = contended_up(&scene, &request, &provision);
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("up")),
+            "the loser must run the `up` the winner never finished: {:?}",
+            scene.devpod_commands()
+        );
+        assert!(
+            !notices.contains(&LaunchNotice::BroughtUpBySibling {
+                workspace_id: "myws".to_owned()
+            }),
+            "a sibling that never finished brought nothing up"
+        );
+    }
+
+    /// The other side, so the check above cannot be satisfied by never skipping:
+    /// a sibling that *did* finish is still skipped for, and that skip is the
+    /// whole point of the wait.
+    #[test]
+    fn a_contended_up_still_skips_for_a_sibling_whose_create_finished() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_completed("myws");
         let provision = RecordingProvision::default();
         let request = UpRequest::new(
             "owner/repo",
