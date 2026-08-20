@@ -1237,6 +1237,53 @@ mod tests {
         }
     }
 
+    /// The two sweeps above each move one length at a time, and the cap is a
+    /// function of the pair: the repo slug decides how much room `fit_ref` gets.
+    /// Reachability is asserted too, because a budget nothing reaches would pass
+    /// a bound test while truncating harder than the format intends.
+    #[test]
+    fn no_pair_of_repo_and_ref_lengths_exceeds_the_budget() {
+        let mut longest = 0;
+        for repo_len in 1..48 {
+            for ref_len in 1..48 {
+                for git_ref in ["b".repeat(ref_len), "a/".repeat(ref_len)] {
+                    let parsed = id("owner", &"r".repeat(repo_len), &git_ref);
+                    let value = parsed.value();
+                    assert!(
+                        value.len() <= TARGET_LENGTH,
+                        "repo {repo_len}, ref {ref_len}: {value}"
+                    );
+                    assert!(value.ends_with(&parsed.suffix()), "{value}");
+                    assert!(!value.starts_with('-'), "{value}");
+                    longest = longest.max(value.len());
+                }
+            }
+        }
+        assert_eq!(longest, TARGET_LENGTH, "the budget must be reachable");
+    }
+
+    /// The repo-slug floor cannot win against the total budget: the floor, the
+    /// suffix and the two dashes come to 30, so `fit_ref` is left eight
+    /// characters to land in and the worst case lands *on* the cap, not past it.
+    #[test]
+    fn the_repo_slug_floor_still_leaves_the_ref_room() {
+        // Saturating, so a floor raised past the budget fails this assertion
+        // rather than failing to compile.
+        let room = TARGET_LENGTH.saturating_sub(REPO_SLUG_LENGTH + SUFFIX_LENGTH + 2);
+        assert_eq!(room, 8);
+        let parsed = id("owner", &"r".repeat(47), &"b".repeat(80));
+        assert_eq!(
+            parsed.value(),
+            format!(
+                "{}-{}-{}",
+                "r".repeat(REPO_SLUG_LENGTH),
+                "b".repeat(room),
+                parsed.suffix()
+            )
+        );
+        assert_eq!(parsed.value().len(), TARGET_LENGTH);
+    }
+
     #[test]
     fn a_constructed_id_is_lowercase_alphanumerics_and_dashes() {
         let value = id("Owner", "My_Repo.git", "Feature/MyBranch").value();
@@ -1311,6 +1358,28 @@ mod tests {
     fn a_single_segment_ref_is_truncated_by_characters() {
         let value = id("blooop", "devlaunch", &"a".repeat(60)).value();
         assert!(value.starts_with("devlaunch-aaa"), "{value}");
+    }
+
+    /// The shapes the segment pass cannot shorten: two segments with nothing in
+    /// the middle to drop, a single segment longer than the room, and a ref whose
+    /// segments all slug away to nothing. Each still yields a non-empty id with
+    /// its suffix intact and no dash left dangling where a part was dropped.
+    #[test]
+    fn refs_the_segment_pass_cannot_shorten_still_yield_a_valid_id() {
+        for git_ref in [
+            format!("{}/{}", "a".repeat(30), "z".repeat(30)),
+            "aaaa/bbbb".to_owned(),
+            "a".repeat(60),
+            "_".to_owned(),
+            "___/___".to_owned(),
+        ] {
+            let parsed = id("owner", "devlaunch", &git_ref);
+            let value = parsed.value();
+            assert!(value.starts_with("devlaunch-"), "{git_ref:?}: {value}");
+            assert!(value.ends_with(&parsed.suffix()), "{git_ref:?}: {value}");
+            assert!(!value.contains("--"), "{git_ref:?}: {value}");
+            assert!(value.len() <= TARGET_LENGTH, "{git_ref:?}: {value}");
+        }
     }
 
     #[test]
