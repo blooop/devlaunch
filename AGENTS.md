@@ -104,6 +104,29 @@ Note what choosing between them does *not* buy: both binaries read the same
 `~/.devpod`, so the workspace list and the configured providers are shared. The
 project env is where the code and its devpod agree, not an isolation boundary.
 
+### cargo is in the project env too, with nothing to install first
+
+`cargo`, `rustc`, `clippy` and `rustfmt` come from the same `default` environment
+(`[tool.pixi.feature.rust.dependencies]` in `pyproject.toml`), pinned to the
+1.97.1 that `rust/rust-toolchain.toml` names and `ci.yml` installs.
+`postCreateCommand`'s `pixi install` is what puts them there, so they are present
+the moment the container comes up: **no toolchain step, no `rustup`, nothing to
+fetch.** A change to the crates can be built and tested **in here** rather than by
+pushing it and reading CI, which is all that was available before:
+
+```
+cd rust
+pixi run cargo test --workspace
+pixi run cargo clippy --locked --all-targets -- -D warnings
+pixi run cargo fmt --check
+```
+
+`pixi run` keeps the directory it was called from, so the `cd rust` is what points
+cargo at the workspace — the pixi manifest is found by searching upward and does
+not have to be the directory you stand in. Note that a conda `rust` does not read
+`rust-toolchain.toml` (that file is rustup's), so the version is named again in
+`pyproject.toml` and moves by hand with the other two.
+
 **Do not run `./dev.sh` in the container.** It exits at its first check, because
 `uv` is not installed there — and that refusal is correct rather than a gap to
 fill. A `-next` build would be a second editable install of the *same* tree,
