@@ -171,6 +171,13 @@ jobs:
       - name: Test devlaunch-core
         working-directory: rust
         run: timeout 600 cargo test --locked -p devlaunch-core -- --test-threads=1 --nocapture
+      # The steps here name one crate each, which is what lets each carry its own
+      # timeout -- and what silently left this one uncovered. Its tests are the
+      # fake devpod the integration suites use as their whole devpod, so a
+      # fidelity gap in it is the one way a fake can do real harm.
+      - name: Test devlaunch-test-support
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p devlaunch-test-support -- --test-threads=1 --nocapture
       - name: Test aid (bins + rewrite)
         working-directory: rust
         run: timeout 300 cargo test --locked -p aid --bins --test rewrite -- --test-threads=1 --nocapture

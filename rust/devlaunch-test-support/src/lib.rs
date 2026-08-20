@@ -30,8 +30,25 @@ pub use response::Response;
 
 #[cfg(test)]
 mod tests {
+    /// This crate carries the workspace's version rather than one of its own.
+    ///
+    /// Asserted against `Cargo.toml` rather than against a literal. A literal is
+    /// the same claim written in a way that has to be hand-edited every release
+    /// and fails nothing until someone runs the one command that reaches it:
+    /// `version.workspace = true` is what makes `CARGO_PKG_VERSION` the
+    /// workspace's, so comparing that variable to a hardcoded string only ever
+    /// tests whether the string was updated. It was not, at 0.3.1 --
+    /// `cargo test --workspace` failed on a clean tree, and CI never saw it,
+    /// because its rust job names the crates it tests one at a time and this is
+    /// not among them.
     #[test]
     fn versioned_with_the_workspace() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.3.0");
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line.split_whitespace().collect::<String>() == "version.workspace=true"),
+            "devlaunch-test-support must take the workspace version, not name one of its own:\n{manifest}"
+        );
     }
 }
