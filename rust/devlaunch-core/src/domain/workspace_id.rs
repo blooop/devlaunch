@@ -540,9 +540,9 @@ mod tests {
         (
             "blooop",
             "dl",
-            "aa/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/zz",
-            "rakibasi",
-            "dl-aa-zz-rakibasi",
+            "aa/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/zz",
+            "degosare",
+            "dl-aa-zz-degosare",
         ),
         (
             "blooop",
@@ -1293,9 +1293,12 @@ mod tests {
         );
     }
 
+    /// Both middles are far wider than the budget rather than just over it: at 30
+    /// each this passed by a single character, so one more character of cap would
+    /// have turned it into a test of dropping *one* middle without saying so.
     #[test]
     fn the_first_and_last_segments_survive_heavy_truncation() {
-        let git_ref = format!("aa/{}/{}/zz", "m".repeat(30), "n".repeat(30));
+        let git_ref = format!("aa/{}/{}/zz", "m".repeat(40), "n".repeat(40));
         let value = id("blooop", "dl", &git_ref).value();
         assert!(value.starts_with("dl-aa-zz-"), "{value}");
         assert!(

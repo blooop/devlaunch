@@ -66,7 +66,7 @@ TRIPLES = [
     ("blooop", "test_renv", "nb4"),
     ("blooop", "dl", "a/bbbbbbbb/cccccccc/dddddddd/zzz"),
     ("blooop", "dl", "a/" + "b" * 12 + "/" + "c" * 12 + "/" + "d" * 12 + "/zzz"),
-    ("blooop", "dl", "aa/" + "m" * 30 + "/" + "n" * 30 + "/zz"),
+    ("blooop", "dl", "aa/" + "m" * 40 + "/" + "n" * 40 + "/zz"),
     ("blooop", "devlaunch", "a//b///c/d"),
     ("blooop", "devlaunch", "a" * 60),
     ("owner", "r" * 47, "main"),

@@ -298,8 +298,14 @@ class TestSegmentAwareTruncation:
         assert value.startswith("dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-")
 
     def test_first_and_last_segments_survive_heavy_truncation(self):
-        """However many middles have to go, the ends stay."""
-        ref = "aa/" + "m" * 30 + "/" + "n" * 30 + "/zz"
+        """However many middles have to go, the ends stay.
+
+        Both middles are far wider than the budget rather than just over it: at
+        30 each this passed by a single character, so one more character of cap
+        would have turned it into a test of dropping *one* middle without saying
+        so.
+        """
+        ref = "aa/" + "m" * 40 + "/" + "n" * 40 + "/zz"
         value = WorkspaceId("blooop", "dl", ref).value
         assert value.startswith("dl-aa-zz-")
         assert "mmmm" not in value and "nnnn" not in value
