@@ -20,8 +20,16 @@ class TestBashCompletion:
     def setup_method(self):
         """Set up test environment."""
         self.test_dir = tempfile.mkdtemp()
+        # The script both binaries embed with `include_str!`, and now the only
+        # copy: it lived under `devlaunch/completions/` as well until the Python
+        # implementation was retired (#267), and a Rust test asserted the two were
+        # byte-identical. One copy needs no such test.
         self.completion_script = (
-            pathlib.Path(__file__).parent.parent / "devlaunch" / "completions" / "dl.bash"
+            pathlib.Path(__file__).parent.parent
+            / "rust"
+            / "devlaunch-core"
+            / "completions"
+            / "dl.bash"
         )
 
         # Create a test cache file with sample data

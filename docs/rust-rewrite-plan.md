@@ -1,5 +1,20 @@
 # Rust rewrite: the execution plan
 
+> **Status: done, and partly historical.** The cutover shipped (0.1.0), and the
+> Python tree and the parity apparatus this plan describes were retired
+> afterwards — [#267](https://github.com/blooop/devlaunch/issues/267). So
+> `rust/parity.py`, `rust/parity-manifest.txt`, `rust/spec-ledger.md`,
+> `rust/pending-count.txt`, `rust/golden_vectors.py` and `rust/tools/` no longer
+> exist, the `rust-parity` CI job is now `rust` (cargo only), and the milestones
+> and cutover checklist below are a record of how the port was run rather than
+> instructions to follow.
+>
+> **The divergence table is the exception and is still live.** It is the only
+> written record of every deliberate behavioural difference from the Python build,
+> it is cited by row number from comments and tests throughout `rust/`, and those
+> citations are the reason a reader can still tell a decision from an accident.
+> Keep it.
+
 The committed spec for the Rust port, assembling the decisions of map
 [#248](https://github.com/blooop/devlaunch/issues/248) — tickets
 [#249](https://github.com/blooop/devlaunch/issues/249) (inventory),

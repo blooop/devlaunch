@@ -27,7 +27,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import tomli
+
+# stdlib since 3.11, which is the floor now that nothing ships on an interpreter
+# (#267). It was `tomli`, a runtime dependency of the Python `dl` that the tests
+# borrowed and that went with it.
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVCONTAINER_JSON = REPO_ROOT / ".devcontainer" / "devcontainer.json"
@@ -496,7 +500,7 @@ def test_the_workspace_declares_a_platform_for_every_prebuild_runner():
     `frozen: true`: a platform declared but not locked is a lockfile pixi refuses
     to use rather than a platform it solves on the spot.
     """
-    platforms = tomli.loads(PYPROJECT.read_text())["tool"]["pixi"]["workspace"]["platforms"]
+    platforms = tomllib.loads(PYPROJECT.read_text())["tool"]["pixi"]["workspace"]["platforms"]
     lock = PIXI_LOCK.read_text()
     for runner, platform in PREBUILD_RUNNERS.items():
         assert platform in platforms, (

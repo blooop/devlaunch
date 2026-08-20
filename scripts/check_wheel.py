@@ -50,8 +50,10 @@ def check(wheel: Path, version: str) -> list[str]:
         if member not in names:
             problems.append(f"the wheel has no {member}")
 
-    # A Python module in here would mean the frozen Python build got packaged
-    # alongside the binaries -- the thing that stopped shipping at 0.1.0.
+    # A Python module in here would mean something got packaged alongside the
+    # binaries that should not be. The Python build this used to guard against is
+    # gone entirely (#267), so today this is a guard against a future maturin or
+    # recipe change quietly widening the payload.
     modules = [name for name in names if name.startswith("devlaunch/")]
     if modules:
         problems.append(f"the wheel ships Python modules it should not: {modules}")

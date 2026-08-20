@@ -11,19 +11,15 @@ from typing import Any, Dict, Generator, cast
 
 import pytest
 
-from devlaunch.worktree.config import WorktreeConfig
-from devlaunch.worktree.repo_manager import RepositoryManager
-from devlaunch.worktree.storage import MetadataStorage
-from devlaunch.worktree.workspace_clone import WorkspaceCloneManager
-
 
 @pytest.fixture
 def isolated_devlaunch_env(tmp_path: Path) -> Generator[Dict[str, Path], None, None]:
     """Redirect devlaunch storage to temp directory via XDG_CACHE_HOME.
 
     This fixture isolates all devlaunch storage to a temporary directory by
-    setting XDG_CACHE_HOME. This works because devlaunch/worktree/config.py
-    and devlaunch/worktree/storage.py both honor XDG_CACHE_HOME.
+    setting XDG_CACHE_HOME. This works because everything `dl` stores resolves
+    through it -- `rust/devlaunch-core/src/domain/xdg.rs` is the one place that
+    is decided.
 
     Yields:
         Dictionary containing paths to isolated directories:
@@ -252,67 +248,3 @@ def local_git_repo_with_devcontainer(local_git_repo: Dict[str, Any]) -> Dict[str
         **local_git_repo,
         "has_devcontainer": True,
     }
-
-
-@pytest.fixture
-def real_managers(
-    isolated_devlaunch_env: Dict[str, Path],  # pylint: disable=redefined-outer-name
-) -> Dict[str, Any]:
-    """Create actual manager instances using isolated directories.
-
-    This fixture creates real RepositoryManager instances that operate on
-    isolated temp directories. The managers will perform real git operations,
-    but DevPod calls need to be mocked separately for Tier 2 tests.
-
-    Returns:
-        Dictionary containing:
-        - config: WorktreeConfig instance
-        - storage: MetadataStorage instance
-        - repo_manager: RepositoryManager instance
-        - env: The isolated_devlaunch_env dict
-    """
-    env = isolated_devlaunch_env
-
-    # `fetch_interval=0` is not an abstinence knob, and reads like one:
-    # `_should_fetch` asks whether *more* than the interval has elapsed, so zero
-    # makes every check say yes. It costs these tests nothing, for two separate
-    # reasons -- the only thing that reads the interval is `lazy_fetch`, the
-    # detached updater's sweep, which nothing built on this fixture drives; and
-    # the remotes here are git repositories on local disk, so there is no
-    # network to abstain from either way.
-    config = WorktreeConfig(
-        repos_dir=env["repos_dir"],
-        fetch_interval=0,
-    )
-
-    # Create storage with explicit metadata path
-    storage = MetadataStorage(env["metadata_path"])
-
-    # Create managers
-    repo_manager = RepositoryManager(
-        repos_dir=env["repos_dir"],
-        storage=storage,
-        config=config,
-    )
-
-    return {
-        "config": config,
-        "storage": storage,
-        "repo_manager": repo_manager,
-        "env": env,
-    }
-
-
-@pytest.fixture
-def clone_manager(real_managers: Dict[str, Any]) -> WorkspaceCloneManager:  # pylint: disable=redefined-outer-name
-    """A real WorkspaceCloneManager over the isolated cache and real git.
-
-    Lives here rather than in each integration module because every test that
-    drives the real cold path needs exactly this object, built exactly this way,
-    and three private copies of it were three places for the wiring to drift.
-    """
-    return WorkspaceCloneManager(
-        config=real_managers["config"],
-        repo_manager=real_managers["repo_manager"],
-        storage=real_managers["storage"],
-    )

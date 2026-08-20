@@ -36,36 +36,32 @@ permissions:
   contents: read
 
 jobs:
+  # The Python that remains is the acceptance harness and the repo's own doc
+  # guards, not a shipped artifact -- so there is one interpreter here, not a
+  # matrix of five. The matrix existed because `dl` itself was a Python package
+  # supporting >=3.10 (`workspace_state.read_clone` is the shape of that: 3.13 and
+  # earlier raise where 3.14 returns False), and the interpreter a released `dl`
+  # ran on stopped being a variable when the binaries took over (#267).
+  #
+  # `default` rather than a pinned leg: this is the environment the devcontainer
+  # and every contributor use, so it is the one whose breakage is felt. What that
+  # costs is worth knowing -- its Python is unpinned, so `pixi update` moves it
+  # without anyone choosing to -- and `frozen: true` below keeps each commit
+  # reproducible against its lockfile, making that a thing to notice at lockfile
+  # review rather than a hole in the gate.
+  #
+  # `pixi run ci` compiles `rust/target/release/{dl,aid}` on the way in, because
+  # the harness spawns them (see the `build-release` task). That is a cargo build
+  # this job pays for and the `e2e` job pays for again, and it is deliberately not
+  # cached here: `Swatinem/rust-cache` keys on `rustc -vV`, and these two jobs have
+  # no rustup toolchain -- their cargo comes from the pixi environment. The
+  # alternatives were worse. Adding `dtolnay/rust-toolchain` beside pixi's would
+  # put two toolchains on the box and key the cache off the one that is not
+  # building; building once in a `build` job and downloading the artifact here
+  # would make both of these jobs wait for it, which costs more wall-clock than the
+  # duplicate build does. Revisit if either build starts dominating the run.
   ci:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # `default` is in here as the newest interpreter, and it is the entry
-        # that was missing. The pinned legs stopped at py313 while `default`
-        # resolves the unpinned `python = ">=3.10"` -- 3.14 today -- so the
-        # newest Python this project supports ran only `test-e2e`, and `pixi run
-        # ci`, the command README's Development section tells a developer to
-        # run, was the one selection no CI job ran.
-        #
-        # The interpreter that matters is not hypothetical:
-        # `workspace_state.read_clone` exists because `Path.is_dir()` raises on
-        # 3.13 and earlier and returns `False` on 3.14, and `False` is the
-        # fail-open answer. What this leg is for is the reversion -- somebody
-        # writing `clone.is_dir()` back in -- on the one interpreter where that
-        # call fails open rather than raising. It is not what catches a boundary
-        # written down wrongly: those tests assert the same answer on every
-        # version, so they are green on both sides of it.
-        #
-        # `default` rather than a `py314` feature on purpose: it needs no new
-        # environment in the lockfile, and it keeps tracking whatever the newest
-        # solvable Python is instead of pinning a version somebody has to
-        # remember to bump. The cost of that choice is worth knowing: `default`
-        # is the only leg here whose Python is not pinned, so `pixi update`
-        # moves it without anyone choosing to, and the day 3.15 solves this
-        # matrix stops covering 3.14 rather than adding to it. `frozen: true`
-        # below keeps each commit reproducible against its lockfile, so this is
-        # a thing to notice at lockfile review, not a hole in the gate.
-        environment: [py310, py311, py312, py313, default]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -73,10 +69,10 @@ jobs:
         with:
           cache: true
           frozen: true
-          environments: ${{ matrix.environment }}
+          environments: default
       - name: CI
         run: |
-          pixi run -e ${{ matrix.environment }} ci
+          pixi run ci
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
         env:
@@ -125,41 +121,30 @@ jobs:
       - name: E2E
         run: pixi run test-e2e
 
-  # The Rust port's gate (docs/rust-rewrite-plan.md). Required from day one:
-  # red always means something real. Two halves. The scaffold checks -- cargo
-  # build/test/clippy/fmt, the spec-ledger lint (every test file has a
-  # disposition row; the `pending` count in rust/pending-count.txt is kept in
-  # step with the ledger and reviewed in the PR), and parity.py's own unit tests.
-  # And `parity.py run`, the two-way expected-failure ratchet: it builds the
-  # release `dl` and `aid`, points DEVLAUNCH_DL_CMD and DEVLAUNCH_AID_CMD at
-  # them, runs both pytest tiers, and fails on any failure outside
-  # rust/parity-manifest.txt (a regression) or any manifest entry that passed (a
-  # stale entry to shrink in the same PR).
+  # The Rust suite: cargo build, the ~1400 cargo tests, clippy and fmt.
   #
-  # **Tier 2 is the real e2e suite**, and has been since the manifest stopped
-  # saying ALL: `parity.py run` runs `pytest -m e2e` as well as
-  # `-m "not e2e"`, so this job builds real containers through real devpod
-  # exactly as the `e2e` job above does. It needs no provisioning step for that,
-  # for the same two reasons that job needs none -- `ubuntu-latest` is an
-  # ephemeral VM with Docker preinstalled, and devpod is a pixi dependency
-  # already in the lockfile setup-pixi restores. The one requirement is
-  # ordering: setup-pixi has to come before `parity.py run`, which is why it
-  # sits at the bottom of the step list rather than beside the toolchain. The
-  # lint and self-test are stdlib-only and deliberately run before it.
-  rust-parity:
+  # This was `rust-parity`, the port's two-way expected-failure ratchet -- it built
+  # the release binaries, pointed DEVLAUNCH_DL_CMD at them, ran both pytest tiers
+  # against both implementations and failed on any failure outside
+  # `rust/parity-manifest.txt`. All of that retired with the Python tree it was
+  # comparing against (#267): the manifest had been empty since cutover, so what it
+  # asserted was that two implementations agreed, and there is one now. The tiers it
+  # drove did not retire with it -- the `ci` and `e2e` jobs above run them directly,
+  # against the release binaries `pixi run build-release` produces.
+  #
+  # The tests still shell out to `python3` for their scenario builders
+  # (`rust/dl/tests/*_scenario.py`) and for the fake devpod on PATH
+  # (`test/fixtures/devpod_shim.py`). Both are stdlib-only and implementation-blind,
+  # which is why this job needs no pixi environment: `ubuntu-latest` has a python3.
+  rust:
     runs-on: ubuntu-latest
-    # Larger than the 25 of the `e2e` job because this job is a superset of it.
-    # On top of a full e2e tier it does: a Rust toolchain install, a cold
-    # `--all-targets` debug build, ~1400 cargo tests, clippy over all targets, a
-    # *second* build in the release profile (parity.py's own, since the release
-    # binaries are what the tiers judge), and the 1874-test tier-1 pytest run.
-    # Measured locally, the whole of `parity.py run` -- release build, both
-    # tiers, eight real containers -- is 3m42s against a warm cache, so what this
-    # number is really sized for is the two Rust builds on a *cold* `rust-cache`
-    # plus the same slow-registry image pull the `e2e` job's 25 accounts for.
-    # Bounded at all is the point: unbounded, a stalled pull is a job that hangs
-    # for six hours and reports a timeout nobody reads.
-    timeout-minutes: 60
+    # Sized for a Rust toolchain install and a cold `--all-targets` debug build on
+    # an empty `rust-cache`, plus clippy over all targets. Smaller than it was: the
+    # retired ratchet added a second build in the release profile and both pytest
+    # tiers, real containers included, on top of everything below. Bounded at all is
+    # the point -- unbounded, a stalled download is a job that hangs for six hours
+    # and reports a timeout nobody reads.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -238,32 +223,6 @@ jobs:
       - name: Format
         working-directory: rust
         run: cargo fmt --check
-      - name: Spec-ledger and manifest lint
-        run: python3 rust/parity.py lint
-      - name: parity.py self-test
-        run: python3 rust/parity.py self-test
-      - uses: prefix-dev/setup-pixi@v0.9.6
-        with:
-          cache: true
-          frozen: true
-          environments: default
-      - name: Parity ratchet
-        run: python3 rust/parity.py run
-      # The checked-in compare cases (rust/tools/parity_cases.txt): the frozen
-      # Python dl and the release Rust dl run in identical scratch worlds and are
-      # diffed on exit code, stdout, stderr, the devpod call log AND the on-disk
-      # cache state. This is the tripwire the harness-honesty review asked for --
-      # the compare sweeps were manual and unrecorded before, so a regression on
-      # the clean surface (listing, --purge -y, --prune -y, --reconcile, launch
-      # fast-attach) had nothing watching it. `--release` because that is the
-      # binary the gate judges; the release build is explicit because
-      # `parity.py run` above skips its own release build while the manifest is
-      # still the day-one ALL sentinel.
-      - name: Build the release binaries the compare cases judge
-        working-directory: rust
-        run: cargo build --release --locked -p dl -p aid
-      - name: Parity compare (checked-in cases)
-        run: python3 rust/tools/compare.py --cases rust/tools/parity_cases.txt --release --fingerprint
 
   # The API-freeze tripwire (#251 §7, #262). devlaunch-core's crate docs promise
   # two tiers of `pub` — the frozen wf API behind `api`, and binary surface that
@@ -431,7 +390,7 @@ jobs:
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
   gate:
-    needs: [ci, e2e, rust-parity, public-api, packaging]
+    needs: [ci, e2e, rust, public-api, packaging]
     if: always()
     runs-on: ubuntu-latest
     steps:

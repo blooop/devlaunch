@@ -37,6 +37,7 @@ import re
 import select
 import signal
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 # Long enough for `devpod ssh` to build a tunnel into a cold container on a
@@ -238,3 +239,31 @@ class PtySession:
             except OSError:
                 pass
             self.fd = None
+
+
+# devpod's own spellings for the ssh alias it publishes, as
+# `rust/devlaunch-core/src/clients/ssh.rs` declares them (HOST_SUFFIX and
+# MARKER_PREFIX). Duplicated here rather than imported because the binary owns
+# them now and a test process cannot import a Rust constant; `ssh.rs` has its own
+# tests for the alias it builds, so what this file needs is only the ability to
+# ask the same question of a config file.
+HOST_SUFFIX = ".devpod"
+MARKER_PREFIX = "# DevPod Start "
+
+
+def devpod_host_configured(workspace_id: str, config_path: Path) -> bool:
+    """Whether devpod has published an ssh alias for this workspace.
+
+    Matched on devpod's own start marker as a whole line, not as a substring:
+    workspace ids share prefixes by construction (`devlaunch-main-abcdefgh` and
+    `devlaunch-main-ijklmnop`), so a substring test would answer about a host
+    alias belonging to a different container.
+    """
+    try:
+        text = Path(config_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # No config, no permission, no alias -- all mean "no alias", which is the
+        # answer, not an error.
+        return False
+    marker = f"{MARKER_PREFIX}{workspace_id}{HOST_SUFFIX}"
+    return any(line.strip() == marker for line in text.splitlines())

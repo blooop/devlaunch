@@ -14,7 +14,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -30,58 +29,67 @@ from fixtures.e2e_guard import LEDGER
 _REAL_RUN = subprocess.run
 
 
-def _command_seam(env_var: str, module: str) -> List[str]:
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _release_binary(name: str) -> Path:
+    """Where `cargo build --release` leaves `name`.
+
+    `CARGO_TARGET_DIR` is honoured because cargo honours it: a developer who has
+    redirected their build output is not someone this harness should send looking
+    in a directory cargo stopped writing to.
+    """
+    target = os.environ.get("CARGO_TARGET_DIR") or str(REPO_ROOT / "rust" / "target")
+    return Path(target) / "release" / name
+
+
+def _command_seam(env_var: str, binary: str) -> List[str]:
     """The argv prefix that runs one of devlaunch's entry points.
 
-    This is the acceptance harness's one knob (#252): unset, the suite judges
-    the Python implementation in this environment; set, the same tests judge
-    whatever command the variable names — the Rust `dl` during the port. The
-    value is shell-split, so it may be a bare path or a command with arguments.
+    This is the acceptance harness's one knob (#252): unset, the suite judges the
+    release binary this checkout builds; set, the same tests judge whatever command
+    the variable names. The value is shell-split, so it may be a bare path or a
+    command with arguments — `DEVLAUNCH_DL_CMD='cargo run -q -p dl --bin dl --'` is
+    how you point it at a debug build without building a release one.
 
     An empty or blank value counts as unset: it is what a shell leaves behind
     (`DEVLAUNCH_DL_CMD= pytest ...`), not a request to run the empty command.
+
+    The default is a *path*, and a missing one fails the test that asked rather
+    than being built on the spot. Building here would put a compile inside whichever
+    test got there first -- including the ones that measure time -- and would leave
+    the suite testing a binary it built from whatever the tree said at that moment,
+    which is not a thing the report would mention. `pixi run test` and `test-e2e`
+    build up front for exactly this reason.
     """
     override = os.environ.get(env_var, "").strip()
     if override:
         return shlex.split(override)
-    return [sys.executable, "-m", module]
+
+    path = _release_binary(binary)
+    if not path.exists():
+        pytest.fail(
+            f"there is no {binary} to test at {path}. Build it first --\n"
+            f"    cd rust && cargo build --release -p dl -p aid\n"
+            f"(`pixi run test-e2e` does this for you), or point the harness at "
+            f"another build with {env_var}."
+        )
+    return [str(path)]
 
 
 def dl_command() -> List[str]:
     """The command under test for `dl`, as an argv prefix."""
-    return _command_seam("DEVLAUNCH_DL_CMD", "devlaunch.dl")
+    return _command_seam("DEVLAUNCH_DL_CMD", "dl")
 
 
 def aid_command() -> List[str]:
     """The command under test for `aid`, as an argv prefix.
 
     A seam of its own rather than a suffix rule on DEVLAUNCH_DL_CMD: the two
-    entry points are separate binaries on the Rust side, and pointing the
-    harness at one must not silently redirect the other.
+    entry points are separate binaries, and pointing the harness at one must not
+    silently redirect the other.
     """
-    return _command_seam("DEVLAUNCH_AID_CMD", "devlaunch.aid")
-
-
-def dl_is_python() -> bool:
-    """True when the command under test is this checkout's Python `dl`.
-
-    The one place a test is allowed to ask which implementation it is judging,
-    and it exists for exactly one purpose: the divergence table in
-    docs/rust-rewrite-plan.md licenses a numbered list of deliberate behavioural
-    differences, and a test that pins one of them has to pin *both* sides. Every
-    caller cites its row number, and the Python branch keeps asserting exactly
-    what it asserted before the branch existed.
-
-    Derived from the seam rather than from a separate variable, so there is one
-    switch and not two that can disagree: unset means the default argv prefix,
-    which is `python -m devlaunch.dl`.
-    """
-    return not os.environ.get("DEVLAUNCH_DL_CMD", "").strip()
-
-
-def aid_is_python() -> bool:
-    """True when the command under test for `aid` is this checkout's Python one."""
-    return not os.environ.get("DEVLAUNCH_AID_CMD", "").strip()
+    return _command_seam("DEVLAUNCH_AID_CMD", "aid")
 
 
 def require_devpod() -> None:

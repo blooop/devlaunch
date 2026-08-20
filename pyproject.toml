@@ -1,43 +1,26 @@
-# This manifest is the *development* one, and since 0.1.0 it is no longer
-# the one that is published.
+# This manifest is the pixi workspace and the tool configuration, and nothing else.
+# It is not a Python package: it declares no `[project]`, no dependencies and no
+# build backend, because since #267 there is no Python to build. What used to be
+# here -- hatchling, an editable self-install of `devlaunch`, and a `[project]`
+# table whose version was read out of `rust/Cargo.toml` -- served a Python `dl`
+# that no longer exists.
 #
 # What ships is a linux-64 wheel of the two compiled binaries, built by maturin
-# from `packaging/wheel/pyproject.toml` (and a conda package of the same two
-# binaries from `conda.recipe/recipe.yaml`). What is here is the pixi workspace
-# and the frozen Python build the parity harness still runs as the reference
-# implementation: `test/fixtures/e2e_helpers.py` defaults `DEVLAUNCH_DL_CMD` to
-# `python -m devlaunch.dl`, most of `test/` imports `devlaunch.*` directly, and
-# `.devcontainer/devcontainer.json`'s `postCreateCommand` is a bare `pixi install`.
-# So hatchling and the editable self-install below stay exactly as they were; they
-# serve the suite, not the release. The `rust` feature further down does put a
-# toolchain in that environment, but nothing here is built with it: it is for
-# building the crates under `rust/` from inside a container, and what ships is
-# still built by maturin and cargo from the manifests named above.
-[project]
-name = "devlaunch"
-# Read, not written -- from `rust/Cargo.toml`'s `[workspace.package] version`, the
-# one place the version lives (docs/rust-rewrite-plan.md M10). The published
-# wheel's metadata and the conda recipe read the same file; a release is one edit.
-dynamic = ["version"]
-authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
-description = "DevLaunch - A streamlined CLI for devpod workspaces"
-readme = "README.md"
-license = "MIT"
-
-# The frozen Python build's imports. Neither is a dependency of the shipped
-# artifact any more: the selector is embedded skim (docs/rust-rewrite-plan.md
-# divergence row 6) and TOML is parsed in-process, so `packaging/wheel` and the
-# conda recipe declare neither.
-dependencies = [
-  "iterfzf>=1.0.0",
-  "tomli>=2.0.0",
-]
-
-[project.urls]
-Source = "https://github.com/blooop/devlaunch"
-Home = "https://github.com/blooop/devlaunch"
+# from `packaging/wheel/pyproject.toml`, and a conda package of the same two
+# binaries from `conda.recipe/recipe.yaml`. Both read their version from
+# `rust/Cargo.toml`, which is the one place it lives; a release is one edit.
+# Neither is built from here, and the `rust` feature below is not what builds them
+# either: it is for building the crates under `rust/` from inside a container.
+#
+# The Python in this environment is the acceptance harness (`test/`, which judges
+# the binaries from outside through the `DEVLAUNCH_DL_CMD` seam), the repo's own
+# doc guards, and the tooling under `scripts/`. None of it is imported by anything
+# that ships, and none of it is installed -- the suite runs from the checkout.
 
 [tool.pixi.workspace]
+# `name` here rather than in a `[project]` table: pixi takes it from either, and a
+# `[project]` would be a claim that this directory builds a Python distribution.
+name = "devlaunch"
 channels = ["conda-forge", "https://prefix.dev/blooop"]
 # linux-aarch64 is here for the *development* environment, and claims nothing
 # about the release: what ships is still a linux-64 wheel and a linux-64 conda
@@ -63,13 +46,16 @@ channels = ["conda-forge", "https://prefix.dev/blooop"]
 platforms = ["linux-64", "linux-aarch64"]
 
 [tool.pixi.dependencies]
-python = ">=3.10"
+# `>=3.11` for stdlib `tomllib`, and 3.11 rather than 3.10 because the floor is
+# now the harness's and not a released package's: a Python `dl` supporting >=3.10
+# is what put the old one there, and `tomli` is what it cost.
+python = ">=3.11"
 shellcheck = ">=0.10.0,<0.11"
 # Match the devpod `dl` is actually installed alongside (pixi global ships
 # 0.26.x). The pin used to be <0.9, which quietly meant the suite exercised a
 # devpod five years of releases behind the one users run -- and it hid this
 # module's bug outright: 0.8 requests a pty for `devpod ssh --command` whenever
-# stdout is a terminal, and 0.26 never does. See devlaunch/tty_session.py.
+# stdout is a terminal, and 0.26 never does. See rust/devlaunch-core/src/clients/ssh.rs.
 devpod = ">=0.26.1,<0.27"
 gh = ">=2.83.0,<3.0"
 
@@ -109,57 +95,28 @@ git-lfs = ">=3.4,<4"
 # `test_agents_doc.py`.
 rust = "1.97.1.*"
 
-[tool.pixi.feature.py310.dependencies]
-python = "3.10.*"
-[tool.pixi.feature.py311.dependencies]
-python = "3.11.*"
-[tool.pixi.feature.py312.dependencies]
-python = "3.12.*"
-[tool.pixi.feature.py313.dependencies]
-python = "3.13.*"
+# The suite's own PyPI half. A pixi feature rather than
+# `[project.optional-dependencies]`, which needed a `[project]` table to hang off;
+# nothing here is a dependency *of* anything, it is the toolbox the checkout is
+# worked in.
+[tool.pixi.feature.test.pypi-dependencies]
+pylint = ">=3.2.5,<=4.0.5"
+pytest-cov = ">=4.1,<=7.1.0"
+pytest = ">=7.4,<=9.0.3"
+ruff = ">=0.5.0,<=0.15.15"
+coverage = ">=7.5.4,<=7.14.1"
+prek = ">=0.2.28,<0.5.0"
+ty = ">=0.0.12,<=0.0.19"
 
-[tool.pixi.pypi-dependencies]
-devlaunch = { path = ".", editable = true }
-
-[project.optional-dependencies]
-test = [
-  "pylint>=3.2.5,<=4.0.5",
-  "pytest-cov>=4.1,<=7.1.0",
-  "pytest>=7.4,<=9.0.3",
-  "hypothesis>=6.104.2,<=6.155.1",
-  "ruff>=0.5.0,<=0.15.15",
-  "coverage>=7.5.4,<=7.14.1",
-  "prek>=0.2.28,<0.5.0",
-  "ty>=0.0.12,<=0.0.19",
-]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-# `dynamic = ["version"]` above, resolved here: hatchling's regex source, pointed
-# at the cargo manifest. The first `version = "..."` line in `rust/Cargo.toml` is
-# `[workspace.package]`'s, which every crate inherits with `version.workspace =
-# true` -- so the frozen Python build in this environment reports the same version
-# the binaries do, without a second number to keep in step.
-[tool.hatch.version]
-path = "rust/Cargo.toml"
-pattern = '(?m)^version = "(?P<version>[^"]+)"'
-
-[tool.hatch.build]
-include = ["devlaunch"]
-
-[project.scripts]
-dl = "devlaunch.dl:main"
-aid = "devlaunch.aid:main"
-
-# Environments
+# One environment. There used to be five -- py310 through py313 beside `default`
+# -- because a released `dl` was a Python package that had to work on each of
+# them. It is a binary now (#267), so the interpreter is the harness's and not the
+# product's, and a matrix over it tests nothing anybody ships. That also settles
+# what the `rust` feature above costs: with one environment there is no longer a
+# set of solves it has to be kept out of, and `default` is the only place it could
+# go.
 [tool.pixi.environments]
 default = { features = ["test", "rust"], solve-group = "default" }
-py310 = ["py310", "test"]
-py311 = ["py311", "test"]
-py312 = ["py312", "test"]
-py313 = ["py313", "test"]
 
 [tool.pixi.tasks]
 # `pixi run dl` and `pixi run aid`: this working tree, compiled and run (#268).
@@ -180,7 +137,7 @@ py313 = ["py313", "test"]
 # does on the host: a build of somebody's tree says so wherever it runs.
 dl = "cargo run -q --locked --manifest-path rust/Cargo.toml -p dl --bin dl --features dl/dev-build --"
 aid = "cargo run -q --locked --manifest-path rust/Cargo.toml -p aid --bin aid --features aid/dev-build --"
-dev-add-docker = "python -m devlaunch.devpod_provider docker"
+dev-add-docker = "python scripts/devpod_provider.py docker"
 dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
 dev-restart = { cmd = "devpod up . --recreate --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
@@ -218,7 +175,18 @@ ty = "ty check --respect-ignore-files ."
 lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
-test = "pytest"
+# The binaries the acceptance harness judges. A task rather than a step in CI,
+# so `pixi run test` and `pixi run test-e2e` do the right thing from a fresh
+# checkout too: the `DEVLAUNCH_DL_CMD` seam defaults to `rust/target/release/dl`
+# and fails the test that asked when it is not there, which is the honest answer
+# but a poor greeting.
+#
+# The release profile because that is what ships, and because a suite that judged
+# a debug build would be judging something nobody runs. Point the seam at a debug
+# build by hand when the compile time matters more than the fidelity:
+#   DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
+build-release = "cargo build --release --locked --manifest-path rust/Cargo.toml -p dl -p aid"
+test = { cmd = "pytest", depends-on = ["build-release"] }
 # Median wall time of a command over N runs; see "Measuring launch time" in README.md.
 bench = "python scripts/bench_launch.py"
 # The step between a bench record and the published trend: see "The trend on
@@ -240,8 +208,8 @@ bench-points = "python scripts/bench_points.py"
 # test/e2e/conftest.py installs it into the run's own home instead. An edge here
 # would buy the suite nothing and write to the developer's real devpod home as a
 # side effect of running tests.
-test-e2e = "pytest -m e2e -ra test/e2e/"
-coverage = "coverage run -m pytest && coverage xml -o coverage.xml"
+test-e2e = { cmd = "pytest -m e2e -ra test/e2e/", depends-on = ["build-release"] }
+coverage = { cmd = "coverage run -m pytest && coverage xml -o coverage.xml", depends-on = ["build-release"] }
 coverage-report = "coverage report -m"
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
 push = "git push"
@@ -273,7 +241,7 @@ enable = "no-else-return,consider-using-in"
 [tool.pytest.ini_options]
 markers = [
     "unit: Pure logic tests with no external commands. Fast, runs everywhere.",
-    "integration: Real git commands, mocked DevPod. Catches git errors and path issues.",
+    "integration: Runs a real command of this repo's own tooling -- `./dev.sh`, a\n    documented bench reset -- against scratch state. No devpod and no container.",
     "e2e: Real DevPod creating real containers. Needs a Docker daemon.",
     "creates_workspace: This e2e test builds a real workspace. The session floor in test/e2e/conftest.py holds a run that attempted one of these and built nothing to be a failure, so the promise is declared by the test rather than inferred afterwards.",
 ]
@@ -293,14 +261,6 @@ exclude_also = [
   "if 0:",
   "raise AssertionError",
   "raise NotImplementedError",
-  # The exhaustiveness sentinel. `ty` runs in CI and rejects any call to it that
-  # is reachable, so in a build that type-checks these lines cannot be executed
-  # -- the same reason `raise AssertionError` is already on this list.
-  "_unhandled_default_branch\\(",
-  "_unhandled_removal\\(",
-  "_unhandled_source\\(",
-  "_unhandled_status\\(",
-  "_unhandled_usage\\(",
   "if __name__ == .__main__.:",
   "pass",
   "(_):",

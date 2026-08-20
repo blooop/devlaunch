@@ -24,13 +24,10 @@
 //!
 //! # Three seams worth naming
 //!
-//! - **The payload lives in this crate, and its twin is guarded.**
-//!   [`DL_COMPLETION_BASH`] is `include_str!` of this package's own
-//!   `completions/dl.bash`. The frozen Python package ships its own copy at
-//!   `devlaunch/completions/dl.bash` (read at runtime via
-//!   `importlib.resources`, so it cannot be pointed here), and a test asserts
-//!   the two are byte-identical — one edited without the other is a red test,
-//!   not a silent drift.
+//! - **The payload lives in this crate.** [`DL_COMPLETION_BASH`] is
+//!   `include_str!` of this package's own `completions/dl.bash`, which is the only
+//!   copy: the retired Python package shipped a second one, kept byte-identical by
+//!   a test, and that test went with it (#267).
 //! - **What the payload reads is not this module's business.** The script sources
 //!   `${XDG_CACHE_HOME:-$HOME/.cache}/devlaunch/completions.bash` at completion
 //!   time, and *writing* that cache is the listing side's job (Python's
@@ -56,10 +53,9 @@ use crate::domain::xdg::NoHomeDirectory;
 /// The path stays inside this crate's package root on purpose: an earlier shape
 /// reached up into the sibling `devlaunch/` Python package, which made
 /// `devlaunch-core` un-`cargo publish`-able (a path escaping the root is fatal
-/// there, harmless everywhere else). The frozen Python package still ships its
-/// own copy at `devlaunch/completions/dl.bash`; the two are kept byte-identical
-/// by [`tests::the_embedded_payload_matches_the_python_packages_copy`], so this
-/// is one source of truth with a guarded twin, not a fork.
+/// there, harmless everywhere else). That package had a second copy of this
+/// script, kept byte-identical by a test; retiring it (#267) left this the only
+/// copy, so there is one source of truth and nothing to keep in step.
 pub(crate) const DL_COMPLETION_BASH: &str = include_str!("../../completions/dl.bash");
 
 /// The override for where the completion script is written.
@@ -566,27 +562,6 @@ mod tests {
         assert!(
             written.contains("_dl_completion()"),
             "the payload defines the function bash will call"
-        );
-    }
-
-    #[test]
-    fn the_embedded_payload_matches_the_python_packages_copy() {
-        // The twin guard. This crate embeds its own `completions/dl.bash` so the
-        // include never escapes the package root (which would make the crate
-        // un-publishable); the frozen Python package ships its copy at
-        // `devlaunch/completions/dl.bash` and reads it via `importlib.resources`,
-        // so it cannot be pointed here. Byte-identical or this test is red —
-        // whichever copy was edited, edit the other the same way. (The Python
-        // copy only exists in this repository, so a missing twin means the
-        // layout changed and this guard needs re-aiming, not deleting.)
-        let twin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../devlaunch/completions/dl.bash");
-        let python_copy = fs::read_to_string(&twin)
-            .unwrap_or_else(|error| panic!("cannot read the twin at {twin:?}: {error}"));
-        assert_eq!(
-            DL_COMPLETION_BASH, python_copy,
-            "rust/devlaunch-core/completions/dl.bash and devlaunch/completions/dl.bash \
-             have drifted; make them byte-identical again"
         );
     }
 

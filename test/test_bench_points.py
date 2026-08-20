@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
+from fixtures import rust_source
+
 POINTS = Path(__file__).parent.parent / "scripts" / "bench_points.py"
 
 
@@ -397,12 +399,18 @@ class TestTheVocabularyItAssertsIsTheOneDlEmits:
     def test_every_stage_but_the_handoff_is_required_by_default(self):
         """Written out in the script rather than imported, like its sibling,
         so it stays runnable from a checkout that was never installed — which
-        makes this the test that catches the two drifting apart."""
-        from devlaunch import timing  # pylint: disable=import-outside-toplevel
+        makes this the test that catches the two drifting apart.
 
+        The vocabulary comes from `rust/devlaunch-core/src/timing.rs`, which owns
+        it now: the script's copy is checked against the source that decides what
+        a timing document actually says, so renaming a stage in Rust without
+        renaming it here fails. See `fixtures/rust_source.py` for why that is read
+        rather than duplicated.
+        """
         module = points_module()
+        handoff = rust_source.handoff_stage()
         assert module.REQUIRED_STAGES == tuple(
-            stage for stage in timing.STAGES if stage != timing.HANDOFF_STAGE
+            stage for stage in rust_source.timing_stages() if stage != handoff
         )
 
 

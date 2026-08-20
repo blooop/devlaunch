@@ -1614,11 +1614,8 @@ you back.
 
 ## Development
 
-`dl` and `aid` are Rust, and the tree has two halves. `rust/` is what ships: one cargo workspace,
-built and tested with cargo. The Python package under `devlaunch/` is the frozen reference
-implementation the parity harness still runs — feature-frozen at 0.0.29, kept importable in the pixi
-environment because the test suite runs both sides against the same fixtures and compares them. See
-[docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md).
+`dl` and `aid` are Rust. `rust/` is what ships: one cargo workspace, built and tested with cargo,
+and it is where the tests of `dl`'s own behaviour live.
 
 ```bash
 cd rust
@@ -1626,8 +1623,6 @@ cargo build --release                          # target/release/{dl,aid}
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-cd .. && python3 rust/parity.py lint           # the spec-ledger and manifest gate
-python3 rust/parity.py run                     # both pytest tiers against the release binaries
 ```
 
 Those cargo commands need no toolchain of your own inside this repository's devcontainer: `rust`
@@ -1636,9 +1631,33 @@ container comes up. `pixi run` keeps the directory it was called from, so `cd ru
 above. `rust/rust-toolchain.toml` remains the pin of record — a conda `rust` does not read it, so the
 version is named again in `pyproject.toml` and moves by hand with `ci.yml`'s two toolchain steps.
 
-`pixi run dl` and `pixi run aid` in this repository's environment are still the **Python** build (that
-is what the harness needs installed); the binaries are `rust/target/release/dl` and `…/aid`, and
-`DEVLAUNCH_DL_CMD` / `DEVLAUNCH_AID_CMD` are the seams that point the suite at them.
+The Python that remains is the **acceptance harness** and the repo's own documentation guards. It
+judges the shipped binaries from outside — spawning them against a real devpod, or against the fake
+one in `test/fixtures/devpod_shim.py` — and imports nothing that ships:
+
+```bash
+pixi run ci                                    # ruff, pylint, ty, and the harness under coverage
+pixi run test-e2e                              # the real-devpod tier: builds real containers
+```
+
+Both build `rust/target/release/{dl,aid}` first, because that is what the harness runs.
+`DEVLAUNCH_DL_CMD` / `DEVLAUNCH_AID_CMD` are the seams that point it somewhere else — a debug build,
+an installed release, the wheel's binary:
+
+```bash
+# a bare pytest, so the release build the `test` task depends on is skipped too
+DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
+```
+
+Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
+working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
+print a `-dev` version so a working-tree build is never mistaken for a released one. See
+[AGENTS.md](AGENTS.md).
+
+Until 0.1.0 this repository held a second, Python implementation of `dl`, and a parity harness that
+ran both against the same fixtures and compared them. Both retired once the binaries shipped; the
+history is in [docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md), whose divergence table still
+records every deliberate behavioural difference from that build.
 
 The two published artifacts are built from the same cargo package, both taking their version from
 `rust/Cargo.toml` — the only place it is written down:

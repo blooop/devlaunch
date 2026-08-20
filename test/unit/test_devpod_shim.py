@@ -148,6 +148,25 @@ class TestStateMachine:
             assert result.returncode == 1, argv
             assert "ghost" in result.stderr, argv
 
+    def test_ignore_not_found_makes_a_delete_mean_ensure_absent(self, shim):
+        """The one exception to the rule above, and devpod v0.26.1's behaviour.
+
+        `dl <ws> rm --force` passes this flag on every forced remove, so a shim
+        that refused here failed runs that succeed against the real thing -- which
+        is the one way a fake devpod can do real harm. Nothing is printed because
+        there was nothing to delete.
+        """
+        result = shim.run("delete", "ghost", "--ignore-not-found")
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_without_the_flag_a_missing_workspace_is_still_refused(self, shim):
+        """The flag is what changes the answer, not the shim being lenient."""
+        result = shim.run("delete", "ghost")
+        assert result.returncode == 1
+        assert "ghost" in result.stderr
+
     def test_state_survives_across_processes(self, shim):
         shim.run("up", "https://example.com/a/b.git", "--id", "w")
         # A brand-new process, same state file: the machine remembers.

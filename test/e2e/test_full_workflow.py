@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from fixtures.e2e_guard import opt_out
-from fixtures.e2e_helpers import create_e2e_workspace, dl_command, dl_is_python
+from fixtures.e2e_helpers import create_e2e_workspace, dl_command
 
 
 def real_devpod_workspace_ids() -> set:
@@ -238,14 +238,11 @@ class TestDLCommandsE2E:
         )
 
         assert result.returncode == 0
-        if dl_is_python():
-            assert "dl - DevLaunch CLI" in result.stdout
-        else:
-            # rust: divergence row 3 -- `--help` layout is clap's generated text,
-            # not the hand-rolled banner. The claim under test is that --help
-            # answers at all on a real host, so the branch keeps a line only that
-            # build's help can produce.
-            assert "Usage: dl " in result.stdout
+        # The claim under test is that `--help` answers at all on a real host, so
+        # this asserts a line only a real help output can produce rather than the
+        # layout. It used to branch per implementation (divergence row 3: clap's
+        # generated text against the hand-rolled banner); there is one build now.
+        assert "Usage: dl " in result.stdout
 
     def test_dl_version_command(self, isolated_devlaunch_env):
         """Test dl --version command works."""

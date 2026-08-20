@@ -1,5 +1,13 @@
 # Worktree Backend Specification
 
+> **The behaviour here is current; the module names are not.** This spec was
+> written against the Python implementation, so its diagrams name files like
+> `dl.py` and `worktree_manager.py` that were retired with it (#267). What
+> replaced them, layer for layer, is `rust/devlaunch-core/src/` --
+> `flows/repo_manager.rs`, `flows/workspace_clone.rs`, `flows/branch_manager.rs`
+> and `domain/metadata.rs` -- and the directory layout, sharing scheme and
+> workspace-id rules below are what it implements.
+
 ## Overview
 
 The worktree backend for devlaunch (`dl`) provides an efficient way to work with multiple branches of the same repository simultaneously. Instead of cloning the entire repository for each branch/workspace, it clones once and uses git worktrees for each branch.

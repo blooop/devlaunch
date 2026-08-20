@@ -1770,6 +1770,12 @@ fn transfer(
 // ownership for this port, and the goldens below are the whole reason — the
 // scripts and the strings they are pinned against belong within one screenful of
 // each other.
+/// The README and CHANGELOG claims this module's constants and generators keep
+/// true (#267). Its own file because it is about the documents rather than about
+/// the code, and because `mod tests` below is already long.
+#[cfg(test)]
+mod lending_contract;
+
 #[cfg(test)]
 mod tests {
     //! # What this pins, and how
@@ -1802,8 +1808,20 @@ mod tests {
     use crate::runner::{CapturedText, DetachOutcome, Invocation, Outcome, SpawnSpec, StdinPlan};
 
     // =======================================================================
-    // the goldens: what devlaunch/tools.py renders, byte for byte
+    // the goldens: the provisioning scripts, byte for byte
     // =======================================================================
+    //
+    // The `PYTHON_` prefix is *provenance*, not a live comparison: these strings
+    // were transcribed from what `devlaunch/tools.py` rendered, and that module was
+    // retired with the rest of the Python implementation (#267). They are kept, and
+    // kept under their names, because what they pin did not change when their
+    // author left -- the exact bytes a container is asked to run -- and renaming
+    // them would cost the one thing they still say about themselves, which is that
+    // nobody read them off this implementation.
+    //
+    // So: edit one of these only to record a script this module *should* now
+    // render, never to make a failing assertion pass. There is nothing left to
+    // re-derive them from.
 
     const PYTHON_PROVISION_SCRIPT: &str = r#"set -u
 exec >&2
