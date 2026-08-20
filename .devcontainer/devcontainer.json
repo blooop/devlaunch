@@ -46,12 +46,13 @@
         // such flag and does not need to.
         //
         // `.github/workflows/devcontainer-prebuild.yml` is what fills it, on
-        // every push to `main` that touches `.devcontainer/**`. The package has
-        // to be public for this to work for anyone who is not logged into
-        // ghcr.io -- GHCR creates it private, and its visibility is a one-time
-        // setting on the package, not something a workflow can set. Private, the
-        // lookup above comes back DENIED, which reads as a miss: every launch
-        // silently builds locally, exactly as it did before this existed.
+        // every push to `main` that touches `.devcontainer/**`. The package is
+        // public -- GHCR gave it the visibility of the public repository that
+        // published it -- so pulling needs no `docker login ghcr.io`. That is
+        // worth re-checking if launches ever get slow again rather than trusting
+        // forever: private, the lookup above comes back DENIED, which reads as a
+        // miss, and every launch silently builds locally exactly as it did
+        // before this existed.
         "devpod": {
             "prebuildRepository": "ghcr.io/blooop/devlaunch-devcontainer"
         },
