@@ -132,8 +132,7 @@ fn bullets(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     let mut in_bullet = false;
     for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("- ") {
-            let _ = rest;
+        if line.starts_with("- ") {
             found.push(line.to_owned());
             in_bullet = true;
         } else if in_bullet && line.starts_with("  ") {
@@ -504,7 +503,8 @@ fn the_section_keeps_stating_the_non_goals_it_committed_to() {
     // reason this test exists.
     let non_goals = section(&readme(), NON_GOALS_HEADING);
     for non_goal in DOCUMENTED_NON_GOALS {
-        // `bullet_naming` asserts there is exactly one such bullet.
+        // `bullet_naming` asserts there is exactly one such bullet, so the call is
+        // the assertion: it panics naming the bullet it could not find.
         let _ = bullet_naming(&non_goals, non_goal);
     }
 }

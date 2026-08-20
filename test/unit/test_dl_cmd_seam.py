@@ -55,9 +55,9 @@ class TestTheDefaultIsTheReleaseBinary:
         """Not skipped, and not built on the spot.
 
         Skipping would report nothing and pass. Building would put a compile inside
-        whichever test asked first -- including the ones that measure time, and
-        including several at once under `-n auto` -- and would leave the suite
-        judging a binary it built from whatever the tree said at that moment.
+        whichever test asked first -- including the ones that measure time -- and
+        would leave the suite judging a binary it built from whatever the tree said
+        at that moment.
         """
         monkeypatch.delenv("DEVLAUNCH_DL_CMD", raising=False)
         monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "never-built"))

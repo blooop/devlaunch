@@ -56,11 +56,11 @@ def _command_seam(env_var: str, binary: str) -> List[str]:
     (`DEVLAUNCH_DL_CMD= pytest ...`), not a request to run the empty command.
 
     The default is a *path*, and a missing one fails the test that asked rather
-    than being built on the spot. Building here would mean a compile inside a test
-    that timed something, or four of them racing under `-n auto`; and it would mean
-    the suite silently testing a binary it built from whatever the tree said at the
-    moment the first test ran. `pixi run test-e2e` builds first for exactly this
-    reason.
+    than being built on the spot. Building here would put a compile inside whichever
+    test got there first -- including the ones that measure time -- and would leave
+    the suite testing a binary it built from whatever the tree said at that moment,
+    which is not a thing the report would mention. `pixi run test` and `test-e2e`
+    build up front for exactly this reason.
     """
     override = os.environ.get(env_var, "").strip()
     if override:

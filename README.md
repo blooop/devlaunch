@@ -1645,7 +1645,8 @@ Both build `rust/target/release/{dl,aid}` first, because that is what the harnes
 an installed release, the wheel's binary:
 
 ```bash
-DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run test
+# a bare pytest, so the release build the `test` task depends on is skipped too
+DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
 ```
 
 Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the

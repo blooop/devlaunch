@@ -33,6 +33,24 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _impl_block(type_name: str) -> str:
+    """The body of `impl <type_name> { ... }` in timing.rs.
+
+    Scoping matters more than it looks: `AttachShape` also has a
+    `fn name(self) -> &'static str`, so a search over the whole file returns
+    whichever impl happens to come first. Anchoring on the impl keeps a reordering
+    of two unrelated types from changing what this reads.
+    """
+    source = _read(TIMING_RS)
+    start = source.find(f"impl {type_name} {{")
+    assert start != -1, f"{TIMING_RS.name} no longer has an `impl {type_name}` block"
+    # To the next top-level item: the first line after `start` that begins in
+    # column zero with a closing brace.
+    end = source.find("\n}\n", start)
+    assert end != -1, f"`impl {type_name}` in {TIMING_RS.name} is not closed at column zero"
+    return source[start:end]
+
+
 def _str_const(source: str, name: str, path: Path) -> str:
     """The value of a `const NAME: &str = "...";` declaration."""
     match = re.search(rf'const {re.escape(name)}: &str = "([^"]*)";', source)
@@ -43,13 +61,15 @@ def _str_const(source: str, name: str, path: Path) -> str:
 def timing_stages() -> Tuple[str, ...]:
     """The stage vocabulary, in the order a launch meets it.
 
-    Parsed from `Stage::name()`'s match arms rather than from `Stage::ALL`,
-    because the arms are what decide the strings that reach the timing document,
-    and the document is what everything downstream reads. The two are written in
-    the same order and `stage_order_matches_all` below checks they still are.
+    Parsed from `Stage::name()`'s match arms rather than from `Stage::ALL`, because
+    the arms are what decide the strings that reach the timing document, and the
+    document is what everything downstream reads. `Stage::ALL` is read separately
+    by `timing_stage_variants`, and `test/unit/test_rust_source.py` holds the two to
+    the same order -- so this returning the vocabulary in a different order from the
+    one the enum declares is a failure rather than a silent difference.
     """
-    source = _read(TIMING_RS)
-    body = re.search(r"fn name\(self\) -> &'static str \{(.+?)\n    \}", source, re.S)
+    impl_block = _impl_block("Stage")
+    body = re.search(r"fn name\(self\) -> &'static str \{(.+?)\n    \}", impl_block, re.S)
     assert body, "timing.rs no longer has a `Stage::name()` whose arms this can read"
     stages = tuple(re.findall(r'Stage::\w+ => "([^"]+)",', body.group(1)))
     assert stages, "timing.rs's `Stage::name()` yielded no stage names"
