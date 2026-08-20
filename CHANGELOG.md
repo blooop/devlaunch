@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--stop` and `--rm` can be appended to a line that already says something
+  else.** Deleting the workspace you were just working in used to cost an edit in
+  the middle of a long line: `aid owner/repo@fix/x 'review this pr'` recalled from
+  history had to have its prompt removed before a verb would fit, and `dl <ws>
+  'review this pr' --rm` was `Unknown command 'review this pr'`. The two
+  flag-spelled verbs are now a suffix: recall the previous line, type `--rm
+  --force` at the end of it, and the workspace goes. `dl prune <ws> --force` with
+  `--rm` appended works too — a leading verb word is no longer mistaken for the
+  workspace name — and `aid` peels the same flags off the end of its own argv, so
+  the prompt never reaches an agent. Whatever the suffix displaced is named on
+  stderr before anything is removed (`--rm overrode the rest of the line: 'review
+  this pr' was not acted on.`), because a line that deletes a workspace must not
+  silently carry an instruction it will not carry out. The peel is bounded to the
+  exact words at the very end of the line, so a prompt mentioning `--rm`, or one
+  ending in a bare `--force`, is untouched; a `--` command tail cannot be
+  overridden at all. Unsaved work still refuses the delete without `--force`.
+  Divergence row 30.
+
+### Removed
+
+- **`prune` is no longer a spelling of the `rm` verb.** `dl <ws> prune` deleted one
+  workspace; `dl --prune` removes clone directories and no workspace at all. One
+  word, two unrelated commands, told apart by two dashes — so reaching for the wrong
+  one either lost a workspace that was meant to be kept, or was refused with
+  `--prune takes no workspace: it is not a workspace command.`, a sentence that
+  cannot explain what happened. The verb spelling now says what to use instead and
+  names both commands. `dl --prune` is unchanged, and `dl <ws> rm` is what deletes a
+  workspace. The word is still recognised rather than forgotten, so it is never read
+  as a workspace name: a `dl prune <ws> --force` line recalled with `--rm` appended
+  still removes `<ws>`, and `dl stop prune` still stops a workspace that really is
+  called `prune`. Divergence row 31.
+
 ## [0.1.2] - 2026-08-20
 
 ### Added
