@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-20
+
+### Fixed
+
+- **The tools devlaunch installs no longer edit the container's own pixi
+  manifest.** `gh`, `claude` and `zellij` go into `~/.devlaunch/pixi` rather than
+  `~/.pixi`, because `pixi global install` is not only an install: it is an edit
+  to `$PIXI_HOME/manifests/pixi-global.toml`, a *declarative* file that in a
+  container already has an owner. Writing there cost something in both
+  directions. `pixi global sync` removes every environment the manifest does not
+  list, so a dotfiles apply that rewrote the manifest and synced **uninstalled**
+  the zellij devlaunch had just installed — invisibly, and the next launch
+  reinstalled it, forever. And the manifest is not always a file: a devcontainer
+  is free to symlink it onto a tracked file inside the checkout, and
+  `kinisi_ros`'s does, so the append landed in the work tree and every
+  `git status` in the workspace came up dirty. An install that dirties the tree
+  it was pointed at is the launch damaging the work it exists to serve, and
+  `dl` launches arbitrary repos. A home devlaunch created makes both
+  unrepresentable rather than handled: nothing syncs that manifest, and no repo
+  state can sit beneath that path.
+
+  Not `~/.local/share/devlaunch/pixi`, which is the conventional path and the
+  wrong one here — containers bind-mount `~/.cache`, `~/.config` and
+  `~/.local/share` straight from the host, so a prefix tree under one would be
+  shared by every container on the machine and written into your own home;
+  prefixes are baked with absolute paths, which is prefix-dev/pixi#5476, the
+  hazard the shared package cache already keeps `PIXI_HOME` away from.
+  `PIXI_HOME` is set only for devlaunch's own install scripts and never exported
+  into the login profile, so **your own `pixi global install` in a workspace
+  still goes to your own `~/.pixi`**; only the bin directories go on `PATH`.
+
+  Existing containers are untouched: their tools are already on the login `PATH`,
+  so the presence check passes and nothing is reinstalled. The devcontainer
+  feature's installer still writes `~/.pixi` deliberately — it runs at image
+  build time, where that path is the image's own and there is no checkout to
+  dirty.
+
 ## [0.2.0] - 2026-08-20
 
 ### Added
