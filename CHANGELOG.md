@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A clone refused as not-found names the owner dl knows.** `dl kinisi/kinisi_ros`
+  where the repository is `kinisi-robotics/kinisi_ros` used to end at git's own six
+  lines — "Repository not found" plus ssh advice — which read identically to a
+  permissions problem and named nothing to try instead. dl now checks the same
+  completion cache the shell offers and adds one line: `Did you mean 'dl
+  kinisi-robotics/kinisi_ros'?`, with the branch carried back when the spec had one.
+  Only a host's own not-found wording earns it, so a refused key or a dead network is
+  not second-guessed; git's text above it is unchanged either way. Divergence row 29.
+
 ## [0.1.1] - 2026-08-20
 
 The Rust port's review follow-ups ([#265](https://github.com/blooop/devlaunch/pull/265),

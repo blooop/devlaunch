@@ -19,6 +19,7 @@ use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::branch_manager::BranchError;
+use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::launch::{
     BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
@@ -1768,6 +1769,133 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
     }
 }
 
+/// The second line a wrong-owner spec deserves, or nothing to add.
+///
+/// The case it answers is a mistyped or half-remembered *owner* —
+/// `kinisi/kinisi_ros` where the repository is `kinisi-robotics/kinisi_ros`. git's
+/// own words are accurate and useless for it: "Repository not found" plus six
+/// lines of ssh advice describe a machine that cannot see a repository, when what
+/// happened is that the reader named the wrong one. The right name is already on
+/// disk, in the same list the shell completes from, so this looks it up there and
+/// says it.
+///
+/// Only a not-found refusal gets the line, and only from a clone step. A clone
+/// that failed on the network, on credentials or on the disk names a repository
+/// that may well exist under the owner given, and a "did you mean" would send the
+/// reader after a problem they do not have.
+///
+/// **Divergence row 29**: Python printed git's stderr and stopped. Additive —
+/// nothing above this line changes, and a machine whose cache holds no candidate
+/// sees exactly what it saw before.
+///
+/// Pure like everything else here: the cache is read by the caller and passed in.
+pub(crate) fn wrong_owner_hint(refused: &LaunchRefusal, known: &CompletionData) -> Option<String> {
+    let (owner, repo, branch, clone) = match refused {
+        LaunchRefusal::BranchNotNamed {
+            owner,
+            repo,
+            error: BranchNotNamed::Repository(EnsureRepoError::Clone(clone)),
+        } => (owner, repo, None, clone),
+        LaunchRefusal::NotPrepared {
+            owner,
+            repo,
+            branch,
+            error: NotPrepared::Preparation(PrepareColdError::Clone(clone)),
+        } => (owner, repo, Some(branch.as_str()), clone),
+        _ => return None,
+    };
+    let CloneError::GitRefused { refused: git, .. } = clone else {
+        return None;
+    };
+    if !reads_as_repository_not_found(git.reason()) {
+        return None;
+    }
+    let candidates = same_repo_other_owners(known, owner, repo);
+    if candidates.is_empty() {
+        return None;
+    }
+    // The suggestion is the whole command again, branch included: a spec typed with
+    // a `@branch` is retyped with the same one, so the line can be run as it reads.
+    let suffix = branch.map_or_else(String::new, |branch| format!("@{branch}"));
+    let specs: Vec<String> = candidates
+        .iter()
+        .map(|spec| format!("'dl {spec}{suffix}'"))
+        .collect();
+    let owners = if specs.len() == 1 {
+        "another owner"
+    } else {
+        "other owners"
+    };
+    Some(format!(
+        "Did you mean {}? git could not find '{owner}/{repo}', and dl knows that repository \
+         name under {owners}.",
+        or_list(&specs)
+    ))
+}
+
+/// Every repository the cache knows by the name *repo* under an owner that is not
+/// *owner*, as full `owner/repo` specs.
+///
+/// Reads the cache's `repos` list rather than asking the network: the answer is
+/// wanted on a path that has already failed, and a machine that has launched the
+/// repository once has it. An owner never launched from here cannot be suggested,
+/// which is the honest limit of an offline guess.
+///
+/// Here rather than in `devlaunch-core` beside the cache it reads, because
+/// `CompletionData`'s fields are already the crate's public surface and that
+/// surface is frozen by CI: a `pub fn` on it is an API change, and this is a
+/// sentence-building detail of one diagnostic rather than a flow anything else
+/// needs.
+fn same_repo_other_owners(known: &CompletionData, owner: &str, repo: &str) -> Vec<String> {
+    known
+        .repos
+        .iter()
+        .filter(|known| {
+            known
+                .split_once('/')
+                .is_some_and(|(known_owner, known_repo)| known_repo == repo && known_owner != owner)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Whether git's stderr is the host saying the repository is not there.
+///
+/// Matched on the text because that is the only place the distinction exists: git
+/// exits 128 for this, for a refused key and for a DNS failure alike, so the exit
+/// status cannot tell them apart. The three phrases are the three hosts' own
+/// wordings — GitHub's `Repository not found` (ssh and https both), GitLab's `The
+/// project you were looking for could not be found`, and Bitbucket's `conq:
+/// repository does not exist`.
+///
+/// Each is matched whole for a reason. `not exist` on its own would also catch
+/// git's *local* complaint, `repository '/some/path' does not exist`, which is a
+/// missing directory rather than a host's answer — and `and the repository exists`
+/// rides along with every ssh failure git reports, refused keys included, one word
+/// from the wording that earns a hint.
+///
+/// A host that words it some fourth way loses the hint and keeps git's own
+/// message, which is the safe direction for this to be wrong in.
+fn reads_as_repository_not_found(reason: &str) -> bool {
+    let reason = reason.to_lowercase();
+    [
+        "repository not found",
+        "could not be found",
+        "repository does not exist",
+    ]
+    .iter()
+    .any(|phrase| reason.contains(phrase))
+}
+
+/// `a`, `a or b`, `a, b or c` — the list joined the way a sentence wants it.
+fn or_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 fn branch_not_named(error: &BranchNotNamed) -> String {
     match error {
         BranchNotNamed::Cold(refused) => refused.reason.clone(),
@@ -2031,6 +2159,95 @@ mod tests {
             size,
             last_used: when,
         }
+    }
+
+    // ------------------------------------------------- the wrong-owner hint
+    //
+    // The whole refusal cannot be built here — `GitRefused` has no public
+    // constructor, by design — so the two halves are judged separately: the
+    // candidate lookup and the not-found classification here, and the sentence
+    // they produce end to end in `tests/launch.rs` against a real `git clone`.
+
+    fn known(repos: &[&str]) -> CompletionData {
+        CompletionData {
+            repos: repos.iter().map(|repo| (*repo).to_owned()).collect(),
+            ..CompletionData::default()
+        }
+    }
+
+    #[test]
+    fn the_same_repo_name_under_a_different_owner_is_what_a_wrong_owner_is_found_by() {
+        // The wrong-owner case: `kinisi/kinisi_ros` is nobody's repository and
+        // `kinisi-robotics/kinisi_ros` is in the list the shell completes from.
+        let known = known(&[
+            "blooop/bencher",
+            "kinisi-robotics/kinisi_ros",
+            "other/kinisi_ros",
+        ]);
+
+        assert_eq!(
+            same_repo_other_owners(&known, "kinisi", "kinisi_ros"),
+            ["kinisi-robotics/kinisi_ros", "other/kinisi_ros"]
+        );
+    }
+
+    #[test]
+    fn the_owner_asked_about_is_not_one_of_its_own_candidates() {
+        // A repository that *is* in the cache under the owner given failed to clone
+        // for some other reason, and suggesting the spec just typed would be noise.
+        let known = known(&["a/b", "c/d"]);
+
+        assert!(same_repo_other_owners(&known, "a", "b").is_empty());
+        assert!(same_repo_other_owners(&known, "a", "unknown").is_empty());
+    }
+
+    #[test]
+    fn the_hosts_not_found_wordings_are_told_from_its_other_refusals() {
+        // The three hosts' own wordings.
+        assert!(reads_as_repository_not_found(
+            "ERROR: Repository not found."
+        ));
+        assert!(reads_as_repository_not_found(
+            "remote: Repository not found.\nfatal: repository 'https://x/y.git' not found"
+        ));
+        assert!(reads_as_repository_not_found(
+            "GitLab: The project you were looking for could not be found or you don't have \
+             permission to view it."
+        ));
+        assert!(reads_as_repository_not_found(
+            "conq: repository does not exist."
+        ));
+
+        // And the near misses. The last line of git's stock ssh advice — "and the
+        // repository exists" — rides along with *every* ssh failure, refused keys
+        // included, and is one word from the wording above; git's own complaint
+        // about a missing local directory is not a host's answer at all.
+        assert!(!reads_as_repository_not_found(
+            "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote \
+             repository.\n\nPlease make sure you have the correct access rights\nand the \
+             repository exists."
+        ));
+        assert!(!reads_as_repository_not_found(
+            "ssh: Could not resolve hostname github.com: Temporary failure in name resolution"
+        ));
+        assert!(!reads_as_repository_not_found(
+            "fatal: repository '/home/someone/not-there' does not exist"
+        ));
+    }
+
+    #[test]
+    fn a_list_of_candidates_reads_as_a_sentence() {
+        let one = ["'dl a/r'".to_owned()];
+        let two = ["'dl a/r'".to_owned(), "'dl b/r'".to_owned()];
+        let three = [
+            "'dl a/r'".to_owned(),
+            "'dl b/r'".to_owned(),
+            "'dl c/r'".to_owned(),
+        ];
+
+        assert_eq!(or_list(&one), "'dl a/r'");
+        assert_eq!(or_list(&two), "'dl a/r' or 'dl b/r'");
+        assert_eq!(or_list(&three), "'dl a/r', 'dl b/r' or 'dl c/r'");
     }
 
     fn table(rows: Vec<TableRow>) -> WorkspaceTable {
