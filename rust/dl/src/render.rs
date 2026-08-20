@@ -1810,28 +1810,55 @@ pub(crate) fn wrong_owner_hint(refused: &LaunchRefusal, known: &CompletionData) 
     if !reads_as_repository_not_found(git.reason()) {
         return None;
     }
+    let typed = format!("{owner}/{repo}");
+    // The cache holding the spec that was typed is the strongest evidence available
+    // that the owner is *not* misremembered: this machine has launched it. Whatever
+    // the host is refusing today — access revoked, the repository made private, a
+    // clone pruned out from under a record that survived it — the name is one the
+    // reader has used before, and pointing them at a different owner would be wrong.
+    if known
+        .repos
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(&typed))
+    {
+        return None;
+    }
     let candidates = same_repo_other_owners(known, owner, repo);
     if candidates.is_empty() {
         return None;
     }
-    // The suggestion is the whole command again, branch included: a spec typed with
-    // a `@branch` is retyped with the same one, so the line can be run as it reads.
+    // Each suggestion is a whole spec, branch included: a spec typed with a
+    // `@branch` is offered back with the same one, so it can be retyped as it reads.
+    // A spec rather than a command line, because `aid` reaches this same rendering
+    // through `dl::run` and its own invocation carries an agent prompt after the
+    // spec — naming the spec is right for both binaries, where naming `dl …` would
+    // be right for one and misleading for the other.
     let suffix = branch.map_or_else(String::new, |branch| format!("@{branch}"));
     let specs: Vec<String> = candidates
         .iter()
-        .map(|spec| format!("'dl {spec}{suffix}'"))
+        .take(MOST_CANDIDATES_LISTED)
+        .map(|spec| python_repr(&format!("{spec}{suffix}")))
         .collect();
-    let owners = if specs.len() == 1 {
-        "another owner"
-    } else {
-        "other owners"
+    // What is left out is counted, not dropped: a repository name common across a
+    // dozen cached owners would otherwise make one unreadable line out of the one
+    // line whose whole job is to be read.
+    let owners = match candidates.len() - specs.len() {
+        0 if specs.len() == 1 => "another owner.".to_owned(),
+        0 => "other owners.".to_owned(),
+        _ => format!(
+            "{} other owners — 'dl --repos' lists them all.",
+            candidates.len()
+        ),
     };
     Some(format!(
-        "Did you mean {}? git could not find '{owner}/{repo}', and dl knows that repository \
-         name under {owners}.",
-        or_list(&specs)
+        "Did you mean {}? git could not find {}, and dl knows that repository name under {owners}",
+        or_list(&specs),
+        python_repr(&typed)
     ))
 }
+
+/// How many candidates the hint spells out before it starts counting them instead.
+const MOST_CANDIDATES_LISTED: usize = 3;
 
 /// Every repository the cache knows by the name *repo* under an owner that is not
 /// *owner*, as full `owner/repo` specs.
@@ -1840,6 +1867,12 @@ pub(crate) fn wrong_owner_hint(refused: &LaunchRefusal, known: &CompletionData) 
 /// wanted on a path that has already failed, and a machine that has launched the
 /// repository once has it. An owner never launched from here cannot be suggested,
 /// which is the honest limit of an offline guess.
+///
+/// Matched case-insensitively, both halves, because GitHub and GitLab are: a clone
+/// of `kinisi/Kinisi_ROS` is refused by the same host that would have served
+/// `kinisi-robotics/kinisi_ros`, so a reader who shifted the capitals as well as
+/// the owner should still be told. Each candidate keeps the cache's spelling rather
+/// than the typed one — that is the name the host actually has.
 ///
 /// Here rather than in `devlaunch-core` beside the cache it reads, because
 /// `CompletionData`'s fields are already the crate's public surface and that
@@ -1853,7 +1886,10 @@ fn same_repo_other_owners(known: &CompletionData, owner: &str, repo: &str) -> Ve
         .filter(|known| {
             known
                 .split_once('/')
-                .is_some_and(|(known_owner, known_repo)| known_repo == repo && known_owner != owner)
+                .is_some_and(|(known_owner, known_repo)| {
+                    known_repo.eq_ignore_ascii_case(repo)
+                        && !known_owner.eq_ignore_ascii_case(owner)
+                })
         })
         .cloned()
         .collect()
@@ -1868,11 +1904,23 @@ fn same_repo_other_owners(known: &CompletionData, owner: &str, repo: &str) -> Ve
 /// project you were looking for could not be found`, and Bitbucket's `conq:
 /// repository does not exist`.
 ///
-/// Each is matched whole for a reason. `not exist` on its own would also catch
-/// git's *local* complaint, `repository '/some/path' does not exist`, which is a
-/// missing directory rather than a host's answer — and `and the repository exists`
-/// rides along with every ssh failure git reports, refused keys included, one word
-/// from the wording that earns a hint.
+/// Each is matched whole, and each shorter form was tried and rejected. `not
+/// exist` alone also catches git's *local* complaint, `repository '/some/path'
+/// does not exist`, which is a missing directory rather than a host's answer.
+/// `could not be found` alone is generic English rather than anything GitLab
+/// specifically said. And `and the repository exists` rides along with every ssh
+/// failure git reports, refused keys included, one word from the wording above.
+///
+/// # Why no `LC_ALL=C`, when the other substring-classified verbs pin it
+///
+/// `Git::fetch_ref` and `ensure_branch` force `LC_ALL=C`/`LANGUAGE=C` precisely
+/// because their callers match on `couldn't find remote ref` and `already exists`,
+/// which git *translates*. `clone_bare` inherits the environment instead, and may:
+/// all three phrases here are the **remote's** bytes, relayed over the wire by the
+/// host's own git-upload-pack and never passed through git's gettext catalogue, so
+/// a French locale does not move them. What a non-English locale can lose is the
+/// hint from git's own translatable `repository '%s' not found` wording — a
+/// candidate not offered, never a wrong one offered.
 ///
 /// A host that words it some fourth way loses the hint and keeps git's own
 /// message, which is the safe direction for this to be wrong in.
@@ -1880,7 +1928,7 @@ fn reads_as_repository_not_found(reason: &str) -> bool {
     let reason = reason.to_lowercase();
     [
         "repository not found",
-        "could not be found",
+        "project you were looking for could not be found",
         "repository does not exist",
     ]
     .iter()
@@ -2202,6 +2250,26 @@ mod tests {
     }
 
     #[test]
+    fn the_capitals_a_host_ignores_are_ignored_here_too() {
+        // GitHub and GitLab match both halves case-insensitively, so the host that
+        // refused `kinisi/Kinisi_ROS` is the one that would have served
+        // `kinisi-robotics/kinisi_ros`. The candidate keeps the cache's spelling,
+        // which is the name the host actually has.
+        let known = known(&["kinisi-robotics/kinisi_ros"]);
+
+        assert_eq!(
+            same_repo_other_owners(&known, "kinisi", "Kinisi_ROS"),
+            ["kinisi-robotics/kinisi_ros"]
+        );
+        // And the same-owner exclusion is case-insensitive in the other direction:
+        // `KINISI-ROBOTICS` is not another owner.
+        assert!(
+            same_repo_other_owners(&known, "KINISI-ROBOTICS", "kinisi_ros").is_empty(),
+            "the owner given was offered back to itself under different capitals"
+        );
+    }
+
+    #[test]
     fn the_hosts_not_found_wordings_are_told_from_its_other_refusals() {
         // The three hosts' own wordings.
         assert!(reads_as_repository_not_found(
@@ -2213,6 +2281,11 @@ mod tests {
         assert!(reads_as_repository_not_found(
             "GitLab: The project you were looking for could not be found or you don't have \
              permission to view it."
+        ));
+        // The whole phrase, not the tail of it: `could not be found` on its own is
+        // generic English rather than anything a host said.
+        assert!(!reads_as_repository_not_found(
+            "error: object file .git/objects/ab/cdef could not be found"
         ));
         assert!(reads_as_repository_not_found(
             "conq: repository does not exist."
@@ -2237,17 +2310,13 @@ mod tests {
 
     #[test]
     fn a_list_of_candidates_reads_as_a_sentence() {
-        let one = ["'dl a/r'".to_owned()];
-        let two = ["'dl a/r'".to_owned(), "'dl b/r'".to_owned()];
-        let three = [
-            "'dl a/r'".to_owned(),
-            "'dl b/r'".to_owned(),
-            "'dl c/r'".to_owned(),
-        ];
+        let one = ["'a/r'".to_owned()];
+        let two = ["'a/r'".to_owned(), "'b/r'".to_owned()];
+        let three = ["'a/r'".to_owned(), "'b/r'".to_owned(), "'c/r'".to_owned()];
 
-        assert_eq!(or_list(&one), "'dl a/r'");
-        assert_eq!(or_list(&two), "'dl a/r' or 'dl b/r'");
-        assert_eq!(or_list(&three), "'dl a/r', 'dl b/r' or 'dl c/r'");
+        assert_eq!(or_list(&one), "'a/r'");
+        assert_eq!(or_list(&two), "'a/r' or 'b/r'");
+        assert_eq!(or_list(&three), "'a/r', 'b/r' or 'c/r'");
     }
 
     fn table(rows: Vec<TableRow>) -> WorkspaceTable {
