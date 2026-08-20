@@ -1808,8 +1808,20 @@ mod tests {
     use crate::runner::{CapturedText, DetachOutcome, Invocation, Outcome, SpawnSpec, StdinPlan};
 
     // =======================================================================
-    // the goldens: what devlaunch/tools.py renders, byte for byte
+    // the goldens: the provisioning scripts, byte for byte
     // =======================================================================
+    //
+    // The `PYTHON_` prefix is *provenance*, not a live comparison: these strings
+    // were transcribed from what `devlaunch/tools.py` rendered, and that module was
+    // retired with the rest of the Python implementation (#267). They are kept, and
+    // kept under their names, because what they pin did not change when their
+    // author left -- the exact bytes a container is asked to run -- and renaming
+    // them would cost the one thing they still say about themselves, which is that
+    // nobody read them off this implementation.
+    //
+    // So: edit one of these only to record a script this module *should* now
+    // render, never to make a failing assertion pass. There is nothing left to
+    // re-derive them from.
 
     const PYTHON_PROVISION_SCRIPT: &str = r#"set -u
 exec >&2
