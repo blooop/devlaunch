@@ -142,5 +142,5 @@
     // fails on the first dl command anyone runs in it, which is the failure
     // this step exists to remove; failing at create is louder, immediate, and
     // attributable. It is idempotent, so a rebuild after a fix is the remedy.
-    "postCreateCommand": "sudo chown vscode .pixi && pixi install && pixi run dev-add-docker"
+    "postCreateCommand": "sudo chown vscode .pixi && pixi install --frozen && pixi run dev-add-docker"
 }
