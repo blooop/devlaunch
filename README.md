@@ -1290,6 +1290,40 @@ every launch after it. `1777` is what `/var/tmp` carries at the other end of the
 same mount, and it makes the same trade: every uid can write, and the sticky bit
 means none of them can unlink another's entries.
 
+### Where the tools themselves land
+
+The cache above is shared; the *environments* devlaunch installs into are not,
+and they are not the container's `~/.pixi` either. `gh`, `claude` and `zellij` go
+into **`~/.devlaunch/pixi`**, a pixi home of devlaunch's own, because
+`pixi global install` is not only an install — it is an edit to
+`$PIXI_HOME/manifests/pixi-global.toml`, a declarative file that in a container
+already has an owner. Writing there made devlaunch a second author, and cost
+something in both directions:
+
+- `pixi global sync` removes every environment the manifest does not list, so a
+  dotfiles apply that rewrites the manifest and syncs **uninstalls** the zellij
+  devlaunch just installed — and the next launch reinstalls it, forever.
+- The manifest is not always a file. A devcontainer is free to symlink
+  `~/.pixi/manifests/pixi-global.toml` onto a tracked file inside the checkout,
+  and one does; the append then landed in the work tree and every `git status`
+  in the workspace came up dirty.
+
+Neither is expressible against a home devlaunch created: nothing syncs that
+manifest, and no repo state can sit under that path. It costs a duplicate
+extracted prefix in the one case where a tool is installed but unreachable from
+a login shell — disk only, since `PIXI_HOME` does not move the download cache —
+and that is the case where the old behaviour reinstalled on every launch anyway.
+
+Not `~/.local/share/devlaunch/pixi`, which is the conventional path and the wrong
+one here: containers bind-mount `~/.cache`, `~/.config` and `~/.local/share`
+straight from the host, so a prefix tree under one of them would be shared by
+every container on the machine and written into your own home — pixi#5476 again,
+the hazard the cache mount is careful to keep `PIXI_HOME` away from.
+
+`PIXI_HOME` is set only for devlaunch's own install scripts, never exported into
+the login profile, so **your own `pixi global install` in a workspace still goes
+to your own `~/.pixi`**. Only the bin directory goes on `PATH`.
+
 ### Existing containers, and what a recreate is for
 
 **A mount lands only when a container is created.** devpod re-applies

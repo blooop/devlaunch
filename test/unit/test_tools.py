@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -119,7 +120,7 @@ class TestProvisionScript:
     def test_it_puts_the_pixi_bin_directory_on_the_login_path(self):
         """Without this the next launch reinstalls everything, forever."""
         script = provision_script()
-        assert ".pixi/bin" in script
+        assert f"{tools.PIXI_HOME_TARGET}/bin" in script
         assert ".profile" in script
 
     def test_it_writes_to_the_profile_bash_actually_reads(self):
@@ -190,10 +191,13 @@ class TestProfileGuards:
     # script, because a test that derives what to expect from the thing under
     # test agrees with it however wrong it is.
     PREPENDED = {
-        "provision": ".pixi/bin",
+        "provision": ".devlaunch/pixi/bin",
         "transfer": ".local/bin",
+        # The feature installer is baked into an image at build time, where
+        # ~/.pixi is the image's own and there is no checkout to dirty, so it
+        # is the one writer that still names it.
         "feature": ".pixi/bin",
-        "zellij": ".pixi/bin",
+        "zellij": ".devlaunch/pixi/bin",
     }
 
     # Every shape a container's home can have when a writer arrives. bash
@@ -1606,9 +1610,16 @@ class TestZellijProvisioning:
         log = tmp_path / "calls.log"
         quoted_log = shlex.quote(str(log))
 
-        def fake(name, exit_code, noise=""):
+        env_log = tmp_path / "env.log"
+
+        def fake(name, exit_code, noise="", record_env=False):
             path = sysbin / name
             body = f'echo "{name} $*" >> {quoted_log}\n'
+            if record_env:
+                # A log of its own rather than the call log, so the existing
+                # "pixi was never run" assertions keep asking about calls and
+                # not about a variable whose value contains the word.
+                body += f'echo "PIXI_HOME=${{PIXI_HOME-unset}}" >> {shlex.quote(str(env_log))}\n'
             if noise:
                 body += f"echo {shlex.quote(noise)}\n"
             path.write_text(f"#!/bin/sh\n{body}exit {exit_code}\n", encoding="utf-8")
@@ -1619,7 +1630,7 @@ class TestZellijProvisioning:
         if pixi_exit is not None:
             # Noise on *stdout*, because that is the stream the pass's protocol
             # shares and the one a stage may never speak on.
-            fake("pixi", pixi_exit, noise="PIXI-NOISE")
+            fake("pixi", pixi_exit, noise="PIXI-NOISE", record_env=True)
         # A curl that cannot reach anything, which is what an offline image is.
         fake("curl", 1)
         if has_pixi_install:
@@ -1697,7 +1708,7 @@ class TestZellijProvisioning:
         home, result, calls = self._run(tmp_path, pixi_exit=0)
         assert self._zellij_outcome(result.stdout) == tools.StageOk(name=tools.ZELLIJ_STAGE)
         assert "pixi global install zellij" in calls
-        assert 'export PATH="$HOME/.pixi/bin:$PATH"' in (home / ".profile").read_text(
+        assert f'export PATH="{tools.PIXI_HOME_TARGET}/bin:$PATH"' in (home / ".profile").read_text(
             encoding="utf-8"
         )
 
@@ -1752,3 +1763,179 @@ class TestZellijProvisioning:
         assert tools.HOSTNAME_STAGE in names
         _, _, calls = self._run(tmp_path, pixi_exit=0)
         assert "pixi" not in calls
+
+    def test_the_install_never_touches_the_containers_own_pixi_home(self, tmp_path):
+        """The property, run rather than read off the script text.
+
+        `pixi global install` edits `$PIXI_HOME/manifests/pixi-global.toml`, a
+        declarative file, and in a container `~/.pixi` is somebody else's: an
+        image's, or a dotfiles repo's. Two owners cost this both ways -- a
+        `pixi global sync` against a manifest that does not declare zellij
+        *uninstalls* it, and kinisi_ros's devcontainer symlinks that very
+        manifest onto a tracked file in the checkout, so the append dirtied the
+        user's work tree. A home of devlaunch's own is what makes neither
+        expressible.
+        """
+        home, _, _ = self._run(tmp_path, pixi_exit=0)
+        recorded = (tmp_path / "env.log").read_text(encoding="utf-8")
+        assert f"PIXI_HOME={home}/.devlaunch/pixi" in recorded
+        assert not (home / ".pixi").exists()
+
+    def test_the_home_is_set_before_anything_pixi_runs(self):
+        """Ordering, because the bootstrap is a consumer and not just a prelude.
+
+        pixi's own installer honours PIXI_HOME (`${PIXI_HOME:-$HOME/.pixi}`), so
+        exporting it after the bootstrap would leave the binary in one home and
+        every environment it installs in another -- which is the one shape of
+        this change that fails silently, since both halves work alone.
+        """
+        script = tools.zellij_script()
+        assert script.index("PIXI_HOME=") < script.index("command -v pixi")
+        assert script.index("PIXI_HOME=") < script.index("pixi global install")
+
+
+class TestPixiHome:
+    """Where devlaunch's own tools live, asked of every script that installs one."""
+
+    def test_no_script_devlaunch_runs_in_a_container_names_the_shared_home(self):
+        """`~/.pixi` may appear in this module's reasoning, never in its output.
+
+        Asked of the rendered scripts rather than the source, so the docstrings
+        that explain *why* the path is avoided cannot fail the test that it is.
+        """
+        for name, script in (
+            ("provision", provision_script()),
+            ("zellij", tools.zellij_script()),
+        ):
+            assert "$HOME/.pixi" not in script, name
+
+    def test_the_home_is_not_under_a_bind_mounted_xdg_tree(self):
+        """The reason it is not `~/.local/share/devlaunch/pixi`.
+
+        Containers mount `~/.cache`, `~/.config` and `~/.local/share` straight
+        from the host, so a prefix tree under one of them is shared by every
+        container on the machine and written into the host's own home -- and
+        prefixes are baked with absolute paths, which is prefix-dev/pixi#5476,
+        the hazard dl.PIXI_CACHE_TARGET already refuses to let PIXI_HOME near.
+        """
+        target = tools.PIXI_HOME_TARGET
+        assert target.startswith("$HOME/")
+        for mounted in (".local/share", ".config", ".cache"):
+            assert mounted not in target
+
+    def test_the_package_cache_is_still_shared(self):
+        """PIXI_HOME moves the manifest and the prefixes, not the downloads.
+
+        Verified against pixi 0.77: `PIXI_HOME=x pixi info` reports the global
+        bin and manifest under `x` and leaves the cache dir alone. If that ever
+        stopped being true, every container would go back to downloading its own
+        packages -- the whole point of the shared mount -- so the two variables
+        being independent is pinned here rather than assumed.
+        """
+        from devlaunch import dl
+
+        assert dl.PIXI_CACHE_TARGET not in tools.PIXI_HOME_TARGET
+        assert tools.PIXI_HOME_TARGET not in dl.PIXI_CACHE_TARGET
+
+
+# The Rust port's golden strings, whose own header calls them "what
+# devlaunch/tools.py renders, byte for byte". Until this class existed, that was
+# a claim in a comment: the goldens are hardcoded, so they were compared against
+# the Rust renderer and never against the Python one they are named for.
+RUST_PROVISION = (
+    pathlib.Path(__file__).resolve().parents[2] / "rust/devlaunch-core/src/flows/provision.rs"
+)
+
+
+class TestRustGoldensAreWhatPythonRenders:
+    """The two implementations of these scripts, held to one text.
+
+    `dl` ships as the Rust build; this tree is the reference implementation
+    beside it. Both render the same shell into someone else's container, and
+    until this class the only thing keeping them in step was that a person
+    editing one remembered the other. That is the arrangement this module
+    refuses everywhere else -- `PROFILE_MARK` exists because "a guard that reads
+    someone else's artifact is only correct until they change it", and
+    `_profile_prepend` derives its marks so a collision is unrepresentable
+    rather than asserted.
+
+    The hole was not hypothetical. Moving the tools into their own pixi home had
+    to be carried into both trees by hand, and the Rust side's *internal* tests
+    caught a divergence the Python side's did not (the feature installer's PATH
+    line, which deliberately did not move). Had the edit gone the other way --
+    Python only -- nothing at all would have failed: these goldens would have
+    kept agreeing with the Rust renderer while both drifted from the module they
+    are named after. `rust/tools/parity_cases.txt` does not cover this; it
+    compares `dl`'s observable behaviour, and these scripts are payload strings
+    inside a `devpod ssh --command`.
+
+    So the comparison is made here, in the tree that owns the definition, and
+    the second test is what stops a new golden from being added outside it.
+    """
+
+    # Each golden, and the call in this module that must produce it. Written out
+    # rather than discovered, because a mapping derived from the thing under test
+    # agrees with it however wrong it is.
+    @staticmethod
+    def _renderings(tmp_path):
+        # pylint: disable=protected-access
+        claude = next(tool for tool in REQUIRED_TOOLS if tool.command == "claude")
+        stages = {stage.name: stage for stage in tools.setup_stages("myws")}
+        pixi_bin = f'export PATH="{tools.PIXI_HOME_TARGET}/bin:$PATH"'
+        shim_bin = (
+            f'[ -d "{tools.PIXI_HOME_TARGET}/envs/claude-shim/bin" ] && '
+            f'export PATH="{tools.PIXI_HOME_TARGET}/envs/claude-shim/bin:$PATH"'
+        )
+        return {
+            "PYTHON_PROVISION_SCRIPT": provision_script(),
+            "PYTHON_PROVISION_SCRIPT_JQ": provision_script([Tool(command="jq", package="jq")]),
+            "PYTHON_ZELLIJ_SCRIPT": tools.zellij_script(),
+            "PYTHON_PROBE_SCRIPT": tools.probe_script(),
+            "PYTHON_TRANSFER_SCRIPT": tools.transfer_script(fake_payload(tmp_path)),
+            "PYTHON_HOSTNAME_STAGE": tools._stage_snippet(stages[tools.HOSTNAME_STAGE]),
+            "PYTHON_ZELLIJ_STAGE": tools._stage_snippet(stages[tools.ZELLIJ_STAGE]),
+            "PYTHON_PROFILE_RESOLUTION_HOME": tools._profile_resolution("$HOME"),
+            "PYTHON_PROFILE_RESOLUTION_TARGET": tools._profile_resolution("$TARGET_HOME"),
+            "PYTHON_PREPEND_PIXI_BIN": tools._profile_prepend(pixi_bin),
+            "PYTHON_PREPEND_SHIM_BIN": tools._profile_prepend(shim_bin),
+            "PYTHON_PREPEND_LOCAL_BIN": tools._profile_prepend(
+                'export PATH="$HOME/.local/bin:$PATH"'
+            ),
+            "PYTHON_PIXI_BOOTSTRAP": tools._pixi_bootstrap(),
+            "PYTHON_INSTALL_CLAUDE": tools._install_line(claude),
+        }
+
+    @staticmethod
+    def _goldens():
+        """Every `PYTHON_*` golden in the Rust test module, by name.
+
+        Cut out of the source text rather than run, so this needs no cargo and
+        no Rust toolchain -- it is a `pytest` that fails in the tree where the
+        definition lives, which is where the edit that would break it is made.
+        """
+        text = RUST_PROVISION.read_text(encoding="utf-8")
+        found = dict(re.findall(r'const (PYTHON_[A-Z_]+): &str = r#"(.*?)"#;', text, re.S))
+        assert found, f"no goldens found in {RUST_PROVISION} -- did the raw-string form change?"
+        return found
+
+    def test_every_golden_is_byte_for_byte_what_this_module_renders(self, tmp_path):
+        """The claim in the goldens' own header, checked instead of trusted."""
+        renderings = self._renderings(tmp_path)
+        for name, golden in sorted(self._goldens().items()):
+            assert name in renderings, f"{name} has no rendering to compare against"
+            assert golden == renderings[name], (
+                f"{name} in {RUST_PROVISION.name} is no longer what this module renders; "
+                "regenerate it from the Python call rather than editing it by hand -- "
+                "the marks in it are content hashes, and a retyped digit is a duplicate "
+                "PATH entry in every workspace forever"
+            )
+
+    def test_no_golden_escapes_the_comparison(self, tmp_path):
+        """A golden added without a rendering here would be checked by nothing.
+
+        The test above only compares the goldens it has a mapping for, so this is
+        the half that makes the coverage total: a new `PYTHON_*` const fails here
+        until someone says which call in this module is supposed to produce it.
+        """
+        unmapped = sorted(set(self._goldens()) - set(self._renderings(tmp_path)))
+        assert not unmapped, f"goldens with no Python rendering to check them: {unmapped}"
