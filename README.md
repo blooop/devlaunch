@@ -2,7 +2,9 @@
 
 A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete and a built-in fuzzy selector.
 
-## Continuous Integration Status
+`dl owner/repo@branch` is the whole interface: it clones the repo if it has to, builds or starts the
+devcontainer, and drops you into a shell inside it. Every branch gets its own container, and
+launching one again attaches to what is already there.
 
 [![Ci](https://github.com/blooop/devlaunch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/blooop/devlaunch/actions/workflows/ci.yml?query=branch%3Amain)
 [![Codecov](https://codecov.io/gh/blooop/devlaunch/branch/main/graph/badge.svg?token=Y212GW1PG6)](https://codecov.io/gh/blooop/devlaunch)
@@ -14,6 +16,19 @@ A streamlined CLI for [devpod](https://devpod.sh) with intuitive autocomplete an
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
+
+**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+
+**Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
+
+## Features
+
+- **Fuzzy Selection**: When called without arguments — or with a verb and no workspace — opens a built-in fuzzy selector; nothing to install, and no `fzf` on `PATH` to find
+- **Smart Completion**: Tab completion for workspaces, GitHub repos (owner/repo format), and paths
+- **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
+- **Branch Support**: Specify branches with `owner/repo@branch` syntax
+- **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
+- **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and everything a container needs on the way in (naming it, then the tools probe) rides one setup pass, so an interactive `dl <ws>` and a one-shot `dl <ws> -- <cmd>` cost the same trips
 
 ## Installation
 
@@ -55,22 +70,6 @@ dl --install
 source ~/.bashrc  # or restart your terminal
 ```
 
-### Going back to the Python build
-
-`0.1.0` is the Rust rewrite: same commands, same cache, same `metadata.json`, different
-implementation (the whole of it is in [docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md), whose
-divergence table is the complete list of what changed on purpose). The last Python release is
-`0.0.29`, and nothing in the cache stops you going back to it:
-
-```bash
-pixi global install --channel conda-forge --channel https://prefix.dev/blooop "devlaunch<0.1"
-pip install "devlaunch<0.1"
-```
-
-Both builds read and write the same `metadata.json` at schema 2 under the same locks, so a downgrade
-keeps every workspace you already have and needs no cleanup. Please open an issue for whatever sent
-you back.
-
 ## Usage
 
 ```bash
@@ -87,6 +86,21 @@ install for it and why `dl` with its input redirected away from a terminal simpl
 one. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
 stop something, it does not look for a workspace called `stop`.
 
+### Examples
+
+```bash
+dl                               # Select a workspace interactively
+dl myproject                     # Open an existing workspace by name
+dl loft-sh/devpod                # Create from a GitHub repo
+dl blooop/devlaunch@main         # Create from a specific branch
+dl ./my-project                  # Create from a local path
+dl blooop/devlaunch code         # Open in VS Code
+dl blooop/devlaunch -- make test # Run a command in the workspace
+dl blooop/devlaunch stop         # Stop the workspace
+```
+
+A name that is not `owner/repo`, a URL or a path is looked up among the workspaces you already have.
+
 ### Commands that need a terminal
 
 `dl <ws> -- <command>` gives the command a terminal whenever `dl` itself has one,
@@ -98,157 +112,6 @@ This needs the ssh host alias `devpod up` writes to `~/.ssh/config`. If a
 workspace has none, `dl` says so and falls back to the plain `devpod ssh`
 transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
 `DEVLAUNCH_NO_TTY=1` to force the fallback everywhere.
-
-## aid: start a coding agent in a workspace
-
-`aid` is `dl` with a coding agent started for you:
-
-```bash
-aid <user/repo>[@branch] [prompt...]   # Open the workspace, start the agent
-```
-
-It is a shortcut, not a second launcher. `aid` rewrites its command line into a
-`dl` one and hands it to `dl` itself, so
-
-```bash
-aid blooop/devlaunch@fix/42 fix the flaky test
-```
-
-is exactly
-
-```bash
-dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the flaky test'
-```
-
-That means an `aid` workspace *is* the `dl` workspace: same clone, same workspace
-id, same container — started if stopped, attached to if already running, and never
-rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
-
-`claude` is started with `--dangerously-skip-permissions`. The agent is already
-inside a disposable container holding only this repo, so the per-tool prompts it
-would ask on the host protect nothing here and would stall an unattended run.
-`IS_SANDBOX=1` rides along because `claude` otherwise refuses that flag outright
-under `uid 0`, and devcontainers that run as root are ordinary. The variable is
-scoped to the agent process, not exported into your shell.
-
-The trade is worth stating plainly: an agent started this way edits, runs and
-deletes inside the container without asking. It cannot reach your host, but it can
-rewrite the checkout it is in, so review an `aid` workspace before pushing rather
-than treating it as a sandbox that will stop it for you. `--codex` and `--gemini`
-are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
-
-| Option | Description |
-|--------|-------------|
-| `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
-| `--devcontainer <variant\|path>` | Passed through to `dl` |
-| `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
-
-Everything after the workspace is the prompt, flags and all, so it never needs
-quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
-deleting, VS Code — stays with `dl`.
-
-The agent's CLI has to be installed in the container; `aid` runs it there, it does
-not install it.
-
-## Workspace Sources
-
-```bash
-dl myproject                     # Existing workspace by name
-dl user/repo                     # Create from GitHub repo
-dl user/repo@branch              # Create from specific branch
-dl ./path                        # Create from local path
-```
-
-## Workspace IDs
-
-`dl user/repo@branch` derives one id that names both the devpod workspace (what you
-see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
-
-```
-<repo-slug>-<branch-slug>-<syllables>      at most 38 characters
-
-blooop/devlaunch@main                             -> devlaunch-main-zovomobo
-blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-poliseno
-blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-nesatabe
-blooop/test_renv@nb4                              -> test-renv-nb4-polenita
-kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
-                                                  -> kinisi-ros-ags-devcontainer-t-lenevere
-blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
-                                                  -> devlaunch-dependabot-codecov-sifivasa
-```
-
-The eight-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
-It is what makes the id unique: the readable part is shortened to fit the length limit,
-and shortening it does not affect whether two branches share an id. Long branch names
-drop whole `/`-separated middle segments before losing characters, so the part that
-identifies the branch survives. Note the third and fourth lines above: `feature/auth` and
-`feature-auth` read the same once slugged but are different branches, and they get
-different ids.
-
-Owner and repo are matched case-insensitively, the way GitHub treats them, so
-`dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main` are the same workspace.
-Branch names are case-sensitive, because git refs are.
-
-URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
-hashed over the URL.
-
-The id is also the container hostname, so it stays well inside the 38-character budget
-to leave room for tools that add their own prefixes.
-
-Branch names must be safe as both git refs and directory names — a name with a space or
-a leading dash is rejected rather than quietly rewritten.
-
-### Upgrading from an older devlaunch
-
-This id format is new, and the directories and containers on your machine were named by
-the previous scheme. The first `dl user/repo…` command after upgrading migrates the cache
-once, and leaves what it did behind in the cache directory (the two listings named below).
-`dl --help`, `dl --version`, `dl --ls` and opening an existing workspace by name do not trigger it.
-
-**Your clone directories are renamed.** What was
-`~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
-`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo`. A workspace is a git
-clone whose `origin` points at the `.bare` cache next to it, and `.bare` does not move, so
-this is a plain rename: branches, history and **uncommitted changes all survive** — only
-the folder name changes. `metadata.json` is updated in the same pass, so nothing is left
-pointing at the old name.
-
-**Your existing devpod containers keep their old ids and are orphaned — and they can
-often be repaired rather than replaced.** An orphaned container is sourced at the path this
-migration just renamed, with the real clone sitting next to it under the new name, which is
-precisely what [`dl --reconcile`](#reconciling-records-that-disagree) is for: it re-points
-devpod's record at the renamed clone, and `dl <workspace> recreate` finishes the repair.
-That gives you back the clone association and the workspace's identity — not state that
-lived only inside the old container, which nothing can bring back. The repair is
-order-dependent: relaunching the branch claims the renamed clone for a fresh container,
-and reconcile never re-points a clone a live container holds — so reconcile first, then
-relaunch. Left alone, the next `dl user/repo@branch` simply builds a fresh container
-under the new id, and deleting the old one is all that remains for it.
-
-dl does not delete containers for you — deleting by id is how a running sidecar got
-destroyed the last time something tried ([kinisi_ros#9766](https://github.com/kinisi-robotics/kinisi_ros/pull/9766)) —
-so it writes the old ids to
-`~/.cache/devlaunch/orphaned-workspaces.txt`. For the workspaces you are finished with,
-the disposal command reads from that listing:
-
-```bash
-xargs -r -n1 devpod delete < ~/.cache/devlaunch/orphaned-workspaces.txt
-```
-
-**A clone directory with no metadata record is left alone.** Nothing records which branch
-it was cloned for, and the old directory name cannot be turned back into one — `feature/auth`
-and `feature-auth` both became `feature-auth` — so a guessed name would be worse than no
-rename. Those directories stay exactly where they are and are listed in
-`~/.cache/devlaunch/unmigrated-clones.txt`.
-
-Running dl again changes nothing: the migration is keyed on the `version` field in
-`metadata.json`, not on directory names, so a branch that happens to look like a new-scheme
-id is never mistaken for one. If a migration is interrupted, the next run finishes it — the
-version is written last, in the same atomic save as the new paths, so it never claims more
-than the filesystem has actually done. A rename the filesystem refuses (a read-only mount,
-tightened permissions) is treated the same way: the version stays put and every later run
-retries the refused directories and repeats the notice until the underlying refusal is
-fixed by hand.
 
 ## Workspace Commands
 
@@ -316,48 +179,175 @@ it is never read as a workspace name: a `dl prune <ws> --force` line recalled wi
 `--rm` appended still removes `<ws>`, and a workspace that really is called `prune`
 is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
-## Options
+## Global Commands
+
+| Command | Description |
+|---------|-------------|
+| `dl --ls` | List all workspaces |
+| `dl --ls --json` | The same list as JSON, with each workspace's repo, branch, state and [unsaved work](#cleaning-up-workspaces) — for tools that decide what to clean up |
+| `dl --ls --size` | Add [what deleting each workspace would free](#how-much-disk-a-workspace-costs). Opt-in: it walks every file in the clone |
+| `dl --install` | Install shell completions |
+| `dl --prune [-y] [--force]` | Remove [the clone directories no workspace opens any more](#pruning-the-clones-nothing-opens) — and nothing else |
+| `dl --reconcile [-y]` | Re-point [devpod workspaces whose recorded source folder no longer holds a checkout](#reconciling-records-that-disagree) at the clone that does |
+| `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
+| `dl --refresh` | Refresh completion cache |
+| `dl --help, -h` | Show this help |
+| `dl --version` | Show version |
+
+```bash
+$ dl --version
+dl 0.1.0
+```
+
+The version and nothing else. `aid --version` reports the same version under its
+own name — the two binaries are built from one cargo package and cannot disagree
+about it. (Through 0.0.29 an editable install appended `(dev, editable from
+<tree>)`, read out of the installed package's PEP 610 metadata. A compiled binary
+has no such metadata and no editable installs, so there is nothing left to say.)
+
+## aid: start a coding agent in a workspace
+
+`aid` is `dl` with a coding agent started for you:
+
+```bash
+aid <user/repo>[@branch] [prompt...]   # Open the workspace, start the agent
+```
+
+It is a shortcut, not a second launcher. `aid` rewrites its command line into a
+`dl` one and hands it to `dl` itself, so
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test
+```
+
+is exactly
+
+```bash
+dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the flaky test'
+```
+
+That means an `aid` workspace *is* the `dl` workspace: same clone, same workspace
+id, same container — started if stopped, attached to if already running, and never
+rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
+
+`claude` is started with `--dangerously-skip-permissions`. The agent is already
+inside a disposable container holding only this repo, so the per-tool prompts it
+would ask on the host protect nothing here and would stall an unattended run.
+`IS_SANDBOX=1` rides along because `claude` otherwise refuses that flag outright
+under `uid 0`, and devcontainers that run as root are ordinary. The variable is
+scoped to the agent process, not exported into your shell.
+
+The trade is worth stating plainly: an agent started this way edits, runs and
+deletes inside the container without asking. It cannot reach your host, but it can
+rewrite the checkout it is in, so review an `aid` workspace before pushing rather
+than treating it as a sandbox that will stop it for you. `--codex` and `--gemini`
+are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 
 | Option | Description |
 |--------|-------------|
-| `--devcontainer <variant\|path>` | Use a non-default `devcontainer.json`. A bare name means `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so pass it once. |
-| `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal; always use the plain `devpod ssh` transport. |
-| `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before handing over an interactive shell. Off by default; see below. |
+| `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
+| `--devcontainer <variant\|path>` | Passed through to `dl` |
+| `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
 
-Projects with demanding devcontainers — several variants, compose sidecars, or a
-host-side `initializeCommand` that has to tell branch workspaces apart — are
-covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
+Everything after the workspace is the prompt, flags and all, so it never needs
+quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
+deleting, VS Code — stays with `dl`.
 
-### Refreshing dotfiles on attach
+The agent's CLI has to be installed in the container; `aid` runs it there, it does
+not install it.
 
-devpod applies dotfiles when it *provisions* a workspace, so a workspace that has
-been up for a fortnight still has the dotfiles it was born with. `dl <ws>
-dotfiles` fixes that when you think of it; `DEVLAUNCH_DOTFILES_ON_ATTACH=1` makes
-`dl` think of it for you, running the same refresh just before it hands you the
-shell.
+## A terminal beside the agent
+
+Every workspace `dl` opens also has [zellij](https://zellij.dev) on `PATH`, which
+buys one thing the other tools do not: an agent running in a container can open a
+**second terminal next to itself**, in the same container, and you can attach to it
+from anywhere to watch or to type.
+
+Nothing has to cooperate for this. It does not come from your dotfiles, it does not
+need an edit to any repo's `devcontainer.json`, and it works in images `dl` has never
+seen — the same argument the rest of "Tools in every workspace" makes, for the same
+reason: `dl` launches arbitrary repos.
+
+### Opening a pane from inside a session
+
+From anywhere inside the container — including from a completely non-interactive
+command, with no terminal attached to anything:
 
 ```bash
-DEVLAUNCH_DOTFILES_ON_ATTACH=1 dl someone/repo
+zellij -s devlaunch action new-pane -- htop
 ```
 
-It is off unless you set it, and that is the point rather than caution. The
-refresh is a `devpod ssh` round-trip — measured at ~1.7s, almost all of it
-connection setup — with a `git pull` behind it, and it would otherwise be charged
-to every attach on every machine to close a gap most people do not have.
+`-s <name>` is the form to use and the only one worth depending on. Bare
+`zellij action new-pane` happens to work by falling back to the single running
+session, which stops being a single session the moment there are two of them.
 
-Two things it deliberately does not do:
+`devlaunch` is the session name `dl` creates and the one to name here.
 
-- **It never runs for `dl <ws> -- <command>`.** A one-shot command renders no
-  prompt and sources no interactive shell, so refreshing in front of it would
-  buy that command nothing and cost it the round-trip. That path is the one
-  agent launchers use, and it stays exactly as fast as it was.
-- **It never holds the shell hostage.** The refresh gets 60 seconds; an
-  unreachable dotfiles remote, or one that wants a password nobody is there to
-  type, means a pause and then your shell, not a hang. Failure is a warning —
-  you get the workspace either way.
+### Switching the wrap on
 
-Refreshes run every time you attach, with no cooldown, because you asked for
-them. If that is too often, unset the variable and use `dl <ws> dotfiles`.
+The session an agent opens panes into has to exist first, and creating it is
+**off by default**:
+
+```bash
+DEVLAUNCH_ZELLIJ=1 dl someone/repo -- claude -p "do the thing"
+```
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_ZELLIJ=1` | Before running `dl <spec> -- <command>`, make sure a zellij session named `devlaunch` exists in the container, so the command can open panes into it |
+
+With it off, no invocation changes meaning at all — that is what off means here, and
+it is why the switch exists rather than the behaviour simply being on.
+
+**The command runs beside the session, not inside a pane of it.** That is deliberate.
+Putting the command in a pane would hand its stdin, stdout and exit status to zellij,
+and all three are things `dl` promises to leave alone: `dl <ws> -- cmd > file` has to
+put the command's own output in the file, and a failing command has to come back with
+its own status. Since `zellij -s <name> action new-pane` works perfectly well from a
+command that is in no session at all, running beside the session costs nothing and
+delivers the same pane.
+
+**The interactive session of a bare `dl <workspace>` is untouched, switched on or
+off.** An interactive attach sends no command for the wrap to attach to — that is
+exactly what gets it a terminal from devpod — and giving it one would cost either the
+terminal or a round trip in front of every shell. You land in an ordinary login shell
+with `zellij` on `PATH`, so `zellij attach -c devlaunch` gets you the session, and any
+panes an agent has opened in it, whenever you want them.
+
+There is one exception, and it is a pleasant one: if you also run with
+`DEVLAUNCH_DOTFILES_ON_ATTACH=1`, that refresh is a command, so it gets wrapped like
+any other and the session is already there when the shell arrives.
+
+### Existing workspaces
+
+zellij arrives on the setup pass, which runs on every `devpod up`. So a workspace
+that predates this picks it up on its next **`dl <workspace> restart`** — a full
+`dl <workspace> recreate` also works but is not needed, because nothing here is a
+bind mount and mounts are the thing that only lands at container creation.
+
+Attaching to a workspace that is *already running* skips `devpod up` and so skips
+this too, which is what makes the restart necessary rather than automatic.
+
+### What it costs
+
+Almost nothing, and that was measured rather than assumed. zellij is a conda-forge
+package installed by pixi into the container, so it lands in the shared package cache
+above and every container after the first extracts rather than downloads:
+
+| | |
+|---|---|
+| **Warm install** (shared cache populated) | 0.56s / 0.23s / 0.23s over three fresh containers |
+| **Cold install** (empty cache) | 3.0s, filling 167MB of shared cache |
+| **Every launch after the first** | one `command -v`; the whole setup pass measured at 50ms |
+
+**It can never fail a launch.** Provisioning zellij is a stage of the setup pass, so a
+container with no network, no pixi and no way to get either reports the stage as
+failed, by name, and then opens exactly as it would have. A container that ends up
+without zellij still works; with the wrap on, the command still runs, because the
+session setup is allowed to fail and the command runs regardless.
+
+`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning —
+installing zellij is tool provisioning, where naming a container is not.
 
 ## GitHub Authentication
 
@@ -527,266 +517,173 @@ Attaching to a workspace that is *already running* skips `devpod up`, and so ski
 this too. A workspace started by something other than `dl` — or created before this
 existed — picks the tools up on its next `dl <workspace> restart`.
 
-## A terminal beside the agent
+## Shell Completion
 
-Every workspace `dl` opens also has [zellij](https://zellij.dev) on `PATH`, which
-buys one thing the other tools do not: an agent running in a container can open a
-**second terminal next to itself**, in the same container, and you can attach to it
-from anywhere to watch or to type.
+After running `dl --install`, you get intelligent tab completion:
 
-Nothing has to cooperate for this. It does not come from your dotfiles, it does not
-need an edit to any repo's `devcontainer.json`, and it works in images `dl` has never
-seen — the same argument the rest of "Tools in every workspace" makes, for the same
-reason: `dl` launches arbitrary repos.
+- Workspace names from your devpod list
+- Known GitHub owners and repositories from your workspaces
+- File/directory paths when starting with `./`, `/`, or `~`
+- All global flags (`--ls`, `--install`, etc.) and workspace commands
 
-### Opening a pane from inside a session
+### How the completion cache stays current
 
-From anywhere inside the container — including from a completely non-interactive
-command, with no terminal attached to anything:
+The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
+building it means a `git ls-remote` per known repo — seconds of work. So it is
+rebuilt in the background at most once an hour (the same interval the worktree
+backend's background fetch sweep uses), and at most once per `dl` invocation. Commands
+that change your workspaces (starting, stopping or deleting one) rebuild it as
+soon as they finish, regardless of when it was last built. Commands with no use
+for it — `dl --help`, `dl --version` — do not touch it at all.
 
-```bash
-zellij -s devlaunch action new-pane -- htop
-```
+A branch created on a remote in the last hour may therefore not be offered yet.
+`dl --refresh` rebuilds the cache immediately and ignores the interval.
 
-`-s <name>` is the form to use and the only one worth depending on. Bare
-`zellij action new-pane` happens to work by falling back to the single running
-session, which stops being a single session the moment there are two of them.
+---
 
-`devlaunch` is the session name `dl` creates and the one to name here.
+*Everything above is what it takes to use `dl`. What follows is reference — flags, ids, disk
+accounting, and the internals worth knowing when something surprises you.*
 
-### Switching the wrap on
+## Options
 
-The session an agent opens panes into has to exist first, and creating it is
-**off by default**:
+| Option | Description |
+|--------|-------------|
+| `--devcontainer <variant\|path>` | Use a non-default `devcontainer.json`. A bare name means `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so pass it once. |
+| `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal; always use the plain `devpod ssh` transport. |
+| `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before handing over an interactive shell. Off by default; see below. |
 
-```bash
-DEVLAUNCH_ZELLIJ=1 dl someone/repo -- claude -p "do the thing"
-```
+Projects with demanding devcontainers — several variants, compose sidecars, or a
+host-side `initializeCommand` that has to tell branch workspaces apart — are
+covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
 
-| Variable | Description |
-|----------|-------------|
-| `DEVLAUNCH_ZELLIJ=1` | Before running `dl <spec> -- <command>`, make sure a zellij session named `devlaunch` exists in the container, so the command can open panes into it |
+### Refreshing dotfiles on attach
 
-With it off, no invocation changes meaning at all — that is what off means here, and
-it is why the switch exists rather than the behaviour simply being on.
-
-**The command runs beside the session, not inside a pane of it.** That is deliberate.
-Putting the command in a pane would hand its stdin, stdout and exit status to zellij,
-and all three are things `dl` promises to leave alone: `dl <ws> -- cmd > file` has to
-put the command's own output in the file, and a failing command has to come back with
-its own status. Since `zellij -s <name> action new-pane` works perfectly well from a
-command that is in no session at all, running beside the session costs nothing and
-delivers the same pane.
-
-**The interactive session of a bare `dl <workspace>` is untouched, switched on or
-off.** An interactive attach sends no command for the wrap to attach to — that is
-exactly what gets it a terminal from devpod — and giving it one would cost either the
-terminal or a round trip in front of every shell. You land in an ordinary login shell
-with `zellij` on `PATH`, so `zellij attach -c devlaunch` gets you the session, and any
-panes an agent has opened in it, whenever you want them.
-
-There is one exception, and it is a pleasant one: if you also run with
-`DEVLAUNCH_DOTFILES_ON_ATTACH=1`, that refresh is a command, so it gets wrapped like
-any other and the session is already there when the shell arrives.
-
-### Existing workspaces
-
-zellij arrives on the setup pass, which runs on every `devpod up`. So a workspace
-that predates this picks it up on its next **`dl <workspace> restart`** — a full
-`dl <workspace> recreate` also works but is not needed, because nothing here is a
-bind mount and mounts are the thing that only lands at container creation.
-
-Attaching to a workspace that is *already running* skips `devpod up` and so skips
-this too, which is what makes the restart necessary rather than automatic.
-
-### What it costs
-
-Almost nothing, and that was measured rather than assumed. zellij is a conda-forge
-package installed by pixi into the container, so it lands in the shared package cache
-above and every container after the first extracts rather than downloads:
-
-| | |
-|---|---|
-| **Warm install** (shared cache populated) | 0.56s / 0.23s / 0.23s over three fresh containers |
-| **Cold install** (empty cache) | 3.0s, filling 167MB of shared cache |
-| **Every launch after the first** | one `command -v`; the whole setup pass measured at 50ms |
-
-**It can never fail a launch.** Provisioning zellij is a stage of the setup pass, so a
-container with no network, no pixi and no way to get either reports the stage as
-failed, by name, and then opens exactly as it would have. A container that ends up
-without zellij still works; with the wrap on, the command still runs, because the
-session setup is allowed to fail and the command runs regardless.
-
-`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning —
-installing zellij is tool provisioning, where naming a container is not.
-
-## The shared pixi package cache
-
-Every container `dl` creates gets one host directory bound into it, and
-`PIXI_CACHE_DIR` pointed at it, so that dotfiles which provision their tools with
-`pixi global sync` download each package once per machine instead of once per
-container:
-
-| | |
-|---|---|
-| **On the host** | `$XDG_CACHE_HOME`, or `~/.cache`, then `devlaunch/pixi` |
-| **In the container** | `/var/tmp/devlaunch-pixi` |
-
-Measured on the profile this was built for — 23 pixi-global environments — a
-container with a cold cache spends 62–113 s and downloads 1.2 GB; one that finds
-the packages already there finishes in 18–28 s and fetches nothing. Two containers
-syncing against it at the same time is fine: the downloads are content-addressed
-and rattler takes a lock per package.
-
-**Deleting it is always safe, at any moment, including while containers are
-running.** It holds nothing but downloaded package archives — every one of them
-re-fetchable from the network, and none of them referenced by a path anything
-inside a container has stored. The worst a deletion costs is the next container's
-download.
+devpod applies dotfiles when it *provisions* a workspace, so a workspace that has
+been up for a fortnight still has the dotfiles it was born with. `dl <ws>
+dotfiles` fixes that when you think of it; `DEVLAUNCH_DOTFILES_ON_ATTACH=1` makes
+`dl` think of it for you, running the same refresh just before it hands you the
+shell.
 
 ```bash
-rm -rf ~/.cache/devlaunch/pixi
+DEVLAUNCH_DOTFILES_ON_ATTACH=1 dl someone/repo
 ```
 
-`dl --purge` takes it away with the rest of `~/.cache/devlaunch/`, for the same
-reason.
+It is off unless you set it, and that is the point rather than caution. The
+refresh is a `devpod ssh` round-trip — measured at ~1.7s, almost all of it
+connection setup — with a `git pull` behind it, and it would otherwise be charged
+to every attach on every machine to close a gap most people do not have.
 
-Two things it deliberately is not. It is **not the host's own**
-`~/.cache/rattler/cache`: containers write into it as their own remote user,
-whose uid only happens to match yours, and a `pixi clean cache` you run for your
-own reasons must not be able to pull packages out from under a running container.
-And it is **not a shared `PIXI_HOME`** — the installed environments and their
-trampolines are baked with absolute paths, and two containers sharing one
-environment tree is [pixi#5476](https://github.com/prefix-dev/pixi/issues/5476).
-Only the download cache is shared, which is the part that is safe to share.
+Two things it deliberately does not do:
 
-If the directory cannot be created, or is not there when the launch reaches it —
-a full disk, a read-only cache home, a cache swept between the two — the launch
-goes ahead without the mount and the container downloads its own packages,
-exactly as it did before this existed.
+- **It never runs for `dl <ws> -- <command>`.** A one-shot command renders no
+  prompt and sources no interactive shell, so refreshing in front of it would
+  buy that command nothing and cost it the round-trip. That path is the one
+  agent launchers use, and it stays exactly as fast as it was.
+- **It never holds the shell hostage.** The refresh gets 60 seconds; an
+  unreachable dotfiles remote, or one that wants a password nobody is there to
+  type, means a pause and then your shell, not a hang. Failure is a warning —
+  you get the workspace either way.
 
-**Sharing requires the container's user to be able to write the directory**,
-which in practice means its uid matches yours or it is root. The mount carries
-host ownership through unchanged, and pixi does not degrade to reading a cache
-it cannot write: pointing `PIXI_CACHE_DIR` at a directory owned by another uid
-fails the install outright (`Permission denied` on the repodata, exit 1) even
-when every package it wants is already in there. So an image whose remote user
-is neither root nor your uid does not merely lose the sharing — its `pixi global
-sync` fails, and its tools do not get provisioned.
+Refreshes run every time you attach, with no cooldown, because you asked for
+them. If that is too often, unset the variable and use `dl <ws> dotfiles`.
 
-`dl` cannot see the container's uid before it launches, so it cannot decide this
-for you. In practice the common case is safe: every mainstream base declares a
-remote user at uid 1000, which is the first human user on a Linux host. If you
-hit the failure, the fixes available to you are to run that image as your own
-uid, or to take the cache out of play for it (`rm -rf ~/.cache/devlaunch/pixi`
-recovers a directory an earlier container left owned by someone else).
+## Workspace IDs
 
-The case that is not a developer's machine is CI. What makes the common case
-safe is that uid 1000 is *both* the base image's remote user and the first human
-user on a Linux host — and on a hosted runner it is only the first of those. A
-GitHub runner's own user is somebody else, so a launch there hits this on its
-first container and every container after it. This repo's own launch benchmark
-did exactly that for twenty consecutive merges to `main`: `failed to create
-directory /var/tmp/devlaunch-pixi/pkgs: Permission denied`, from the benched
-repo's `pixi install`, before anything was timed.
+`dl user/repo@branch` derives one id that names both the devpod workspace (what you
+see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
 
-Where you know the uid you are handing the directory to, there is a third fix
-the list above does not offer, and it is what `.github/workflows/bench.yml` now
-does — create the directory yourself and widen it, before the first launch:
+```
+<repo-slug>-<branch-slug>-<syllables>      at most 38 characters
+
+blooop/devlaunch@main                             -> devlaunch-main-zovomobo
+blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-poliseno
+blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-nesatabe
+blooop/test_renv@nb4                              -> test-renv-nb4-polenita
+kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
+                                                  -> kinisi-ros-ags-devcontainer-t-lenevere
+blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
+                                                  -> devlaunch-dependabot-codecov-sifivasa
+```
+
+The eight-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
+It is what makes the id unique: the readable part is shortened to fit the length limit,
+and shortening it does not affect whether two branches share an id. Long branch names
+drop whole `/`-separated middle segments before losing characters, so the part that
+identifies the branch survives. Note the third and fourth lines above: `feature/auth` and
+`feature-auth` read the same once slugged but are different branches, and they get
+different ids.
+
+Owner and repo are matched case-insensitively, the way GitHub treats them, so
+`dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main` are the same workspace.
+Branch names are case-sensitive, because git refs are.
+
+URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
+hashed over the URL.
+
+The id is also the container hostname, so it stays well inside the 38-character budget
+to leave room for tools that add their own prefixes.
+
+Branch names must be safe as both git refs and directory names — a name with a space or
+a leading dash is rejected rather than quietly rewritten.
+
+### Upgrading from an older devlaunch
+
+This id format is new, and the directories and containers on your machine were named by
+the previous scheme. The first `dl user/repo…` command after upgrading migrates the cache
+once, and leaves what it did behind in the cache directory (the two listings named below).
+`dl --help`, `dl --version`, `dl --ls` and opening an existing workspace by name do not trigger it.
+
+**Your clone directories are renamed.** What was
+`~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
+`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo`. A workspace is a git
+clone whose `origin` points at the `.bare` cache next to it, and `.bare` does not move, so
+this is a plain rename: branches, history and **uncommitted changes all survive** — only
+the folder name changes. `metadata.json` is updated in the same pass, so nothing is left
+pointing at the old name.
+
+**Your existing devpod containers keep their old ids and are orphaned — and they can
+often be repaired rather than replaced.** An orphaned container is sourced at the path this
+migration just renamed, with the real clone sitting next to it under the new name, which is
+precisely what [`dl --reconcile`](#reconciling-records-that-disagree) is for: it re-points
+devpod's record at the renamed clone, and `dl <workspace> recreate` finishes the repair.
+That gives you back the clone association and the workspace's identity — not state that
+lived only inside the old container, which nothing can bring back. The repair is
+order-dependent: relaunching the branch claims the renamed clone for a fresh container,
+and reconcile never re-points a clone a live container holds — so reconcile first, then
+relaunch. Left alone, the next `dl user/repo@branch` simply builds a fresh container
+under the new id, and deleting the old one is all that remains for it.
+
+dl does not delete containers for you — deleting by id is how a running sidecar got
+destroyed the last time something tried ([kinisi_ros#9766](https://github.com/kinisi-robotics/kinisi_ros/pull/9766)) —
+so it writes the old ids to
+`~/.cache/devlaunch/orphaned-workspaces.txt`. For the workspaces you are finished with,
+the disposal command reads from that listing:
 
 ```bash
-mkdir -p ~/.cache/devlaunch/pixi && chmod 1777 ~/.cache/devlaunch/pixi
+xargs -r -n1 devpod delete < ~/.cache/devlaunch/orphaned-workspaces.txt
 ```
 
-`dl`'s own `mkdir` does not re-mode a directory it finds, so the mode survives
-every launch after it. `1777` is what `/var/tmp` carries at the other end of the
-same mount, and it makes the same trade: every uid can write, and the sticky bit
-means none of them can unlink another's entries.
+**A clone directory with no metadata record is left alone.** Nothing records which branch
+it was cloned for, and the old directory name cannot be turned back into one — `feature/auth`
+and `feature-auth` both became `feature-auth` — so a guessed name would be worse than no
+rename. Those directories stay exactly where they are and are listed in
+`~/.cache/devlaunch/unmigrated-clones.txt`.
 
-### Where the tools themselves land
+Running dl again changes nothing: the migration is keyed on the `version` field in
+`metadata.json`, not on directory names, so a branch that happens to look like a new-scheme
+id is never mistaken for one. If a migration is interrupted, the next run finishes it — the
+version is written last, in the same atomic save as the new paths, so it never claims more
+than the filesystem has actually done. A rename the filesystem refuses (a read-only mount,
+tightened permissions) is treated the same way: the version stays put and every later run
+retries the refused directories and repeats the notice until the underlying refusal is
+fixed by hand.
 
-The cache above is shared; the *environments* devlaunch installs into are not,
-and they are not the container's `~/.pixi` either. `gh`, `claude` and `zellij` go
-into **`~/.devlaunch/pixi`**, a pixi home of devlaunch's own, because
-`pixi global install` is not only an install — it is an edit to
-`$PIXI_HOME/manifests/pixi-global.toml`, a declarative file that in a container
-already has an owner. Writing there made devlaunch a second author, and cost
-something in both directions:
+## Cleaning up: purge, prune, reconcile
 
-- `pixi global sync` removes every environment the manifest does not list, so a
-  dotfiles apply that rewrites the manifest and syncs **uninstalls** the zellij
-  devlaunch just installed — and the next launch reinstalls it, forever.
-- The manifest is not always a file. A devcontainer is free to symlink
-  `~/.pixi/manifests/pixi-global.toml` onto a tracked file inside the checkout,
-  and one does; the append then landed in the work tree and every `git status`
-  in the workspace came up dirty.
-
-Neither is expressible against a home devlaunch created: nothing syncs that
-manifest, and no repo state can sit under that path. It costs a duplicate
-extracted prefix in the one case where a tool is installed but unreachable from
-a login shell — disk only, since `PIXI_HOME` does not move the download cache —
-and that is the case where the old behaviour reinstalled on every launch anyway.
-
-Not `~/.local/share/devlaunch/pixi`, which is the conventional path and the wrong
-one here: containers bind-mount `~/.cache`, `~/.config` and `~/.local/share`
-straight from the host, so a prefix tree under one of them would be shared by
-every container on the machine and written into your own home — pixi#5476 again,
-the hazard the cache mount is careful to keep `PIXI_HOME` away from.
-
-`PIXI_HOME` is set only for devlaunch's own install scripts, never exported into
-the login profile, so **your own `pixi global install` in a workspace still goes
-to your own `~/.pixi`**. Only the bin directory goes on `PATH`.
-
-### Existing containers, and what a recreate is for
-
-**A mount lands only when a container is created.** devpod re-applies
-`--workspace-env` on every `up`, but it will not add a bind mount to a container
-that already exists — passing `--mount` there is a silent no-op. So a container
-built before this feature, or before a change to where the mount lands, keeps
-whatever it was created with until `dl <workspace> recreate`, and only then
-picks the current arrangement up.
-
-In between, `PIXI_CACHE_DIR` points at `/var/tmp/devlaunch-pixi` with nothing
-mounted on it. That is a working private cache, not a failure — `/var/tmp` is
-world-writable in every image, so pixi creates the directory and fills it. The
-container re-warms itself and simply never shares, abandoning whatever pixi had
-already warmed in its default location. **This is the reason the container-side
-path is under `/var/tmp` rather than somewhere tidier like `/var/cache`:** a
-target whose parent is root-owned is a hard `pixi global sync` failure on every
-container that predates it, not a lost optimisation.
-
-One older breakage needs the recreate rather than a restart. Devlaunch briefly
-mounted this cache inside `~/.cache`, which left that directory root-owned in
-any image that ships no `~/.cache` of its own. `$HOME` lives on the container's
-own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
-directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
-user's own again.
-
-## Global Commands
-
-| Command | Description |
-|---------|-------------|
-| `dl --ls` | List all workspaces |
-| `dl --ls --json` | The same list as JSON, with each workspace's repo, branch, state and [unsaved work](#cleaning-up-workspaces) — for tools that decide what to clean up |
-| `dl --ls --size` | Add [what deleting each workspace would free](#how-much-disk-a-workspace-costs). Opt-in: it walks every file in the clone |
-| `dl --install` | Install shell completions |
-| `dl --prune [-y] [--force]` | Remove [the clone directories no workspace opens any more](#pruning-the-clones-nothing-opens) — and nothing else |
-| `dl --reconcile [-y]` | Re-point [devpod workspaces whose recorded source folder no longer holds a checkout](#reconciling-records-that-disagree) at the clone that does |
-| `dl --purge [-y]` | Remove all devlaunch data — [the workspaces devlaunch created](#what-purge-deletes), and its caches |
-| `dl --refresh` | Refresh completion cache |
-| `dl --help, -h` | Show this help |
-| `dl --version` | Show version |
-
-```bash
-$ dl --version
-dl 0.1.0
-```
-
-The version and nothing else. `aid --version` reports the same version under its
-own name — the two binaries are built from one cargo package and cannot disagree
-about it. (Through 0.0.29 an editable install appended `(dev, editable from
-<tree>)`, read out of the installed package's PEP 610 metadata. A compiled binary
-has no such metadata and no editable installs, so there is nothing left to say.)
+The three global commands that touch what is already on disk, in full. `--prune` takes clone
+directories and no workspaces, `--purge` takes both but only what devlaunch made, and `--reconcile`
+removes nothing — it repairs records that stopped matching the disk. Each one prints its plan and
+asks before acting, and `-y` is what skips the question.
 
 ### What purge deletes
 
@@ -1310,27 +1207,187 @@ store and does not manage volumes. `docker system df` is the tool that knows —
 the same boundary [`--prune` and `--purge` name](#the-disk-neither-command-frees)
 when they finish.
 
-## Examples
+## The shared pixi package cache
+
+Every container `dl` creates gets one host directory bound into it, and
+`PIXI_CACHE_DIR` pointed at it, so that dotfiles which provision their tools with
+`pixi global sync` download each package once per machine instead of once per
+container:
+
+| | |
+|---|---|
+| **On the host** | `$XDG_CACHE_HOME`, or `~/.cache`, then `devlaunch/pixi` |
+| **In the container** | `/var/tmp/devlaunch-pixi` |
+
+Measured on the profile this was built for — 23 pixi-global environments — a
+container with a cold cache spends 62–113 s and downloads 1.2 GB; one that finds
+the packages already there finishes in 18–28 s and fetches nothing. Two containers
+syncing against it at the same time is fine: the downloads are content-addressed
+and rattler takes a lock per package.
+
+**Deleting it is always safe, at any moment, including while containers are
+running.** It holds nothing but downloaded package archives — every one of them
+re-fetchable from the network, and none of them referenced by a path anything
+inside a container has stored. The worst a deletion costs is the next container's
+download.
 
 ```bash
-dl                               # Select a workspace interactively
-dl devpod                        # Open existing workspace
-dl loft-sh/devpod                # Create from GitHub
-dl blooop/devlaunch@main         # Create from specific branch
-dl ./my-project                  # Create from local folder
-dl blooop/devlaunch code         # Open in VS Code
-dl blooop/devlaunch -- make test # Run command in workspace
-dl blooop/devlaunch stop         # Stop workspace
+rm -rf ~/.cache/devlaunch/pixi
 ```
 
-## Features
+`dl --purge` takes it away with the rest of `~/.cache/devlaunch/`, for the same
+reason.
 
-- **Fuzzy Selection**: When called without arguments — or with a verb and no workspace — opens a built-in fuzzy selector; nothing to install, and no `fzf` on `PATH` to find
-- **Smart Completion**: Tab completion for workspaces, GitHub repos (owner/repo format), and paths
-- **GitHub Shorthand**: Use `owner/repo` instead of full URLs - automatically expands to `github.com/owner/repo`
-- **Branch Support**: Specify branches with `owner/repo@branch` syntax
-- **Fast Autocomplete**: Completion cache for ~3ms response time (vs ~700ms without cache)
-- **One Round-Trip Per Question**: every `devpod` call costs ~0.45s, far more than `dl` itself, so a command reads the workspace list at most once — and everything a container needs on the way in (naming it, then the tools probe) rides one setup pass, so an interactive `dl <ws>` and a one-shot `dl <ws> -- <cmd>` cost the same trips
+Two things it deliberately is not. It is **not the host's own**
+`~/.cache/rattler/cache`: containers write into it as their own remote user,
+whose uid only happens to match yours, and a `pixi clean cache` you run for your
+own reasons must not be able to pull packages out from under a running container.
+And it is **not a shared `PIXI_HOME`** — the installed environments and their
+trampolines are baked with absolute paths, and two containers sharing one
+environment tree is [pixi#5476](https://github.com/prefix-dev/pixi/issues/5476).
+Only the download cache is shared, which is the part that is safe to share.
+
+If the directory cannot be created, or is not there when the launch reaches it —
+a full disk, a read-only cache home, a cache swept between the two — the launch
+goes ahead without the mount and the container downloads its own packages,
+exactly as it did before this existed.
+
+**Sharing requires the container's user to be able to write the directory**,
+which in practice means its uid matches yours or it is root. The mount carries
+host ownership through unchanged, and pixi does not degrade to reading a cache
+it cannot write: pointing `PIXI_CACHE_DIR` at a directory owned by another uid
+fails the install outright (`Permission denied` on the repodata, exit 1) even
+when every package it wants is already in there. So an image whose remote user
+is neither root nor your uid does not merely lose the sharing — its `pixi global
+sync` fails, and its tools do not get provisioned.
+
+`dl` cannot see the container's uid before it launches, so it cannot decide this
+for you. In practice the common case is safe: every mainstream base declares a
+remote user at uid 1000, which is the first human user on a Linux host. If you
+hit the failure, the fixes available to you are to run that image as your own
+uid, or to take the cache out of play for it (`rm -rf ~/.cache/devlaunch/pixi`
+recovers a directory an earlier container left owned by someone else).
+
+The case that is not a developer's machine is CI. What makes the common case
+safe is that uid 1000 is *both* the base image's remote user and the first human
+user on a Linux host — and on a hosted runner it is only the first of those. A
+GitHub runner's own user is somebody else, so a launch there hits this on its
+first container and every container after it. This repo's own launch benchmark
+did exactly that for twenty consecutive merges to `main`: `failed to create
+directory /var/tmp/devlaunch-pixi/pkgs: Permission denied`, from the benched
+repo's `pixi install`, before anything was timed.
+
+Where you know the uid you are handing the directory to, there is a third fix
+the list above does not offer, and it is what `.github/workflows/bench.yml` now
+does — create the directory yourself and widen it, before the first launch:
+
+```bash
+mkdir -p ~/.cache/devlaunch/pixi && chmod 1777 ~/.cache/devlaunch/pixi
+```
+
+`dl`'s own `mkdir` does not re-mode a directory it finds, so the mode survives
+every launch after it. `1777` is what `/var/tmp` carries at the other end of the
+same mount, and it makes the same trade: every uid can write, and the sticky bit
+means none of them can unlink another's entries.
+
+### Where the tools themselves land
+
+The cache above is shared; the *environments* devlaunch installs into are not,
+and they are not the container's `~/.pixi` either. `gh`, `claude` and `zellij` go
+into **`~/.devlaunch/pixi`**, a pixi home of devlaunch's own, because
+`pixi global install` is not only an install — it is an edit to
+`$PIXI_HOME/manifests/pixi-global.toml`, a declarative file that in a container
+already has an owner. Writing there made devlaunch a second author, and cost
+something in both directions:
+
+- `pixi global sync` removes every environment the manifest does not list, so a
+  dotfiles apply that rewrites the manifest and syncs **uninstalls** the zellij
+  devlaunch just installed — and the next launch reinstalls it, forever.
+- The manifest is not always a file. A devcontainer is free to symlink
+  `~/.pixi/manifests/pixi-global.toml` onto a tracked file inside the checkout,
+  and one does; the append then landed in the work tree and every `git status`
+  in the workspace came up dirty.
+
+Neither is expressible against a home devlaunch created: nothing syncs that
+manifest, and no repo state can sit under that path. It costs a duplicate
+extracted prefix in the one case where a tool is installed but unreachable from
+a login shell — disk only, since `PIXI_HOME` does not move the download cache —
+and that is the case where the old behaviour reinstalled on every launch anyway.
+
+Not `~/.local/share/devlaunch/pixi`, which is the conventional path and the wrong
+one here: containers bind-mount `~/.cache`, `~/.config` and `~/.local/share`
+straight from the host, so a prefix tree under one of them would be shared by
+every container on the machine and written into your own home — pixi#5476 again,
+the hazard the cache mount is careful to keep `PIXI_HOME` away from.
+
+`PIXI_HOME` is set only for devlaunch's own install scripts, never exported into
+the login profile, so **your own `pixi global install` in a workspace still goes
+to your own `~/.pixi`**. Only the bin directory goes on `PATH`.
+
+### Existing containers, and what a recreate is for
+
+**A mount lands only when a container is created.** devpod re-applies
+`--workspace-env` on every `up`, but it will not add a bind mount to a container
+that already exists — passing `--mount` there is a silent no-op. So a container
+built before this feature, or before a change to where the mount lands, keeps
+whatever it was created with until `dl <workspace> recreate`, and only then
+picks the current arrangement up.
+
+In between, `PIXI_CACHE_DIR` points at `/var/tmp/devlaunch-pixi` with nothing
+mounted on it. That is a working private cache, not a failure — `/var/tmp` is
+world-writable in every image, so pixi creates the directory and fills it. The
+container re-warms itself and simply never shares, abandoning whatever pixi had
+already warmed in its default location. **This is the reason the container-side
+path is under `/var/tmp` rather than somewhere tidier like `/var/cache`:** a
+target whose parent is root-owned is a hard `pixi global sync` failure on every
+container that predates it, not a lost optimisation.
+
+One older breakage needs the recreate rather than a restart. Devlaunch briefly
+mounted this cache inside `~/.cache`, which left that directory root-owned in
+any image that ships no `~/.cache` of its own. `$HOME` lives on the container's
+own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
+directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
+user's own again.
+
+## Worktree Backend
+
+For git repositories, devlaunch uses an efficient worktree backend by default:
+
+- **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
+- **Shared Git Objects**: All branches share git objects, saving disk space
+- **Targeted Fetch**: A launch fetches only the one branch it is launching, so no launch waits on a repo-wide refresh
+
+### What you get when you push and immediately launch
+
+- **Attaching to a workspace devpod already knows**: no git at all. The workspace
+  is exactly as you left it; freshness inside it is your own `git pull`.
+- **A cold launch** (first time this branch is launched on this machine, or a
+  clone devpod has forgotten): one targeted fetch of that branch, every time.
+  Push upstream and immediately `dl` the branch and you get the pushed tip.
+- **A branch that does not exist yet**: created from the default branch's freshly
+  fetched tip.
+- **Offline**: a warning, and the launch proceeds from whatever the cache holds.
+  It only fails when there is nothing cached to launch from.
+- **Everything else** (other branches, tags, prunes) is refreshed by the
+  background updater within the configured interval (default: 1 hour), which
+  never blocks a launch.
+
+### Container Sharing Mode
+
+Use `--shared` to share a single container across multiple branches of the same repo:
+
+```bash
+dl --shared owner/repo@branch1  # Creates container "owner-repo"
+dl --shared owner/repo@branch2  # Reuses "owner-repo" container
+```
+
+### Pre-warming
+
+Use `--warm` to prepare a workspace without attaching a shell:
+
+```bash
+dl --warm owner/repo@branch  # Creates container in background
+```
 
 ## Measuring launch time
 
@@ -1530,67 +1587,21 @@ load-bearing:
   above the threshold leaves a commit comment and a red mark on the chart, and
   the build stays green.
 
-## Worktree Backend
+## Going back to the Python build
 
-For git repositories, devlaunch uses an efficient worktree backend by default:
-
-- **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
-- **Shared Git Objects**: All branches share git objects, saving disk space
-- **Targeted Fetch**: A launch fetches only the one branch it is launching, so no launch waits on a repo-wide refresh
-
-### What you get when you push and immediately launch
-
-- **Attaching to a workspace devpod already knows**: no git at all. The workspace
-  is exactly as you left it; freshness inside it is your own `git pull`.
-- **A cold launch** (first time this branch is launched on this machine, or a
-  clone devpod has forgotten): one targeted fetch of that branch, every time.
-  Push upstream and immediately `dl` the branch and you get the pushed tip.
-- **A branch that does not exist yet**: created from the default branch's freshly
-  fetched tip.
-- **Offline**: a warning, and the launch proceeds from whatever the cache holds.
-  It only fails when there is nothing cached to launch from.
-- **Everything else** (other branches, tags, prunes) is refreshed by the
-  background updater within the configured interval (default: 1 hour), which
-  never blocks a launch.
-
-### Container Sharing Mode
-
-Use `--shared` to share a single container across multiple branches of the same repo:
+`0.1.0` is the Rust rewrite: same commands, same cache, same `metadata.json`, different
+implementation (the whole of it is in [docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md), whose
+divergence table is the complete list of what changed on purpose). The last Python release is
+`0.0.29`, and nothing in the cache stops you going back to it:
 
 ```bash
-dl --shared owner/repo@branch1  # Creates container "owner-repo"
-dl --shared owner/repo@branch2  # Reuses "owner-repo" container
+pixi global install --channel conda-forge --channel https://prefix.dev/blooop "devlaunch<0.1"
+pip install "devlaunch<0.1"
 ```
 
-### Pre-warming
-
-Use `--warm` to prepare a workspace without attaching a shell:
-
-```bash
-dl --warm owner/repo@branch  # Creates container in background
-```
-
-## Shell Completion
-
-After running `dl --install`, you get intelligent tab completion:
-
-- Workspace names from your devpod list
-- Known GitHub owners and repositories from your workspaces
-- File/directory paths when starting with `./`, `/`, or `~`
-- All global flags (`--ls`, `--install`, etc.) and workspace commands
-
-### How the completion cache stays current
-
-The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
-building it means a `git ls-remote` per known repo — seconds of work. So it is
-rebuilt in the background at most once an hour (the same interval the worktree
-backend's background fetch sweep uses), and at most once per `dl` invocation. Commands
-that change your workspaces (starting, stopping or deleting one) rebuild it as
-soon as they finish, regardless of when it was last built. Commands with no use
-for it — `dl --help`, `dl --version` — do not touch it at all.
-
-A branch created on a remote in the last hour may therefore not be offered yet.
-`dl --refresh` rebuilds the cache immediately and ignores the interval.
+Both builds read and write the same `metadata.json` at schema 2 under the same locks, so a downgrade
+keeps every workspace you already have and needs no cleanup. Please open an issue for whatever sent
+you back.
 
 ## Development
 

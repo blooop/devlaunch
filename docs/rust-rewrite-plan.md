@@ -148,7 +148,7 @@ Nothing diverges silently.
 |---|---|---|
 | 1 | Reserved verb words (`stop`, `prune`, …) win over bare workspace specs; verb-first with no target opens the fuzzy selector. Python parses `dl stop` as a spec. | Owner requirement folded into #251 §6. |
 | 2 | clap strictness: unknown flags are rejected; no argparse-style prefix abbreviation. | Correctness aim winning over accidental laxity. |
-| 3 | `--help` layout is clap's, not the hand-rolled text. | Generated help feeds the README rule. |
+| 3 | `--help` layout is clap's, not the hand-rolled text — reordered so the verbs and examples land above the options table. | Generated help feeds the README rule. |
 | 4 | Failure output: no Python tracebacks, ever; typed errors rendered as one-line diagnostics with the same exit codes. OS-level reasons inside diagnostics use Rust's phrasing (`Permission denied (os error 13)`) rather than Python's `[Errno 13] …`, and JSON type names in refusals may differ (`int` where Python said `float`). | #251 §5. |
 | 5 | Startup/perf deltas asserted nowhere; `bench.yml` stays outside the gate. | Perf is not a parity dimension. |
 | 6 | The fuzzy selector is embedded skim, not spawned fzf; `iterfzf`/fzf are no longer runtime dependencies. With no terminal (`dl < /dev/null`, workspaces present) the picker declines silently where fzf wrote `inappropriate ioctl for device` to stderr; stdout and exit 1 are identical. | Removes a launch-failure class (#251 §6). |
