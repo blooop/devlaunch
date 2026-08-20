@@ -226,12 +226,28 @@ pub(crate) enum GrammarError {
     // `--version` is dispatched like every other command, so the summary that
     // prints it lives with the rest of the rendering rather than in clap.
     disable_version_flag = true,
-    // One epilogue for both `-h` and `--help`: the verbs are a grammar clap
-    // cannot describe from its own arguments — they are positional words — so a
-    // help text without this block would not document half the CLI, and
-    // README's "regenerate against `dl --help`" rule would carry the hole
-    // forward.
-    after_help = EPILOGUE,
+    // Two hand-written blocks for both `-h` and `--help`: the verbs are a grammar
+    // clap cannot describe from its own arguments — they are positional words — so
+    // a help text without them would not document half the CLI, and README's
+    // "regenerate against `dl --help`" rule would carry the hole forward.
+    //
+    // `GRAMMAR` is `before_help` rather than `after_help` so that it lands above
+    // the options table, which is what the template below moves it there for: the
+    // flags are the part of this CLI a person reaches for least, and clap's default
+    // layout puts all of them between the usage line and the verbs and examples
+    // somebody opened `--help` to find. The same reordering the README got, for the
+    // same reason.
+    before_help = GRAMMAR,
+    after_help = ENVIRONMENT,
+    // clap's own default template with `{before-help}` moved from the top to just
+    // above `{all-args}`. Every marker here is one the default already uses — the
+    // order is the only change — because an unknown marker is not a compile error,
+    // it renders literally.
+    help_template = "\
+{about-with-newline}
+{usage-heading} {usage}
+
+{before-help}{all-args}{after-help}",
 )]
 pub(crate) struct Cli {
     /// The workspace to open, and optionally the verb to apply: `dl owner/repo`,
@@ -310,7 +326,21 @@ pub(crate) struct Cli {
 
 /// The half of the grammar clap's own argument list cannot show: the verbs are
 /// positional words, so nothing in the options table names them.
-const EPILOGUE: &str = "Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
+///
+/// Rendered above that options table (`before_help` plus the reordered
+/// `help_template` on [`Cli`]), examples first, because this is the half somebody
+/// opened `--help` to read.
+const GRAMMAR: &str = "Examples:
+  dl                                 Pick a workspace interactively
+  dl blooop/devlaunch                Open it on its default branch
+  dl blooop/devlaunch@fix/123        Open it on that branch, creating it if needed
+  dl ./my-project                    Open a local folder
+  dl blooop/devlaunch -- make test   Run one command inside the workspace
+  dl blooop/devlaunch stop           Stop it
+  dl stop blooop-devlaunch-main-1a2b Stop it by workspace id
+  dl --ls --json                     Every workspace, machine-readable
+
+Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   up                                 Start it without attaching
   stop                               Stop it
   rm, prune                          Delete it. Refuses if its clone holds
@@ -326,19 +356,13 @@ const EPILOGUE: &str = "Workspace commands (dl <workspace> <verb>, or dl <verb> 
   dotfiles                           Refresh dotfiles (chezmoi update)
   -- <command>                       Run one command inside it
 
-A verb with no workspace named picks one interactively.
+A verb with no workspace named picks one interactively.";
 
-Examples:
-  dl                                 Pick a workspace interactively
-  dl blooop/devlaunch                Open it on its default branch
-  dl blooop/devlaunch@fix/123        Open it on that branch, creating it if needed
-  dl ./my-project                    Open a local folder
-  dl blooop/devlaunch -- make test   Run one command inside the workspace
-  dl blooop/devlaunch stop           Stop it
-  dl stop blooop-devlaunch-main-1a2b Stop it by workspace id
-  dl --ls --json                     Every workspace, machine-readable
-
-Environment:
+/// What no flag and no verb names: the variables that change a launch.
+///
+/// Last, below the options table, because reading it is what somebody does once
+/// and then puts in a shell profile.
+const ENVIRONMENT: &str = "Environment:
   DEVLAUNCH_TIMING=1|json            Write a timing summary to stderr
   DEVLAUNCH_NO_GH_TOKEN=1            Do not forward the host's gh login
   DEVLAUNCH_DOTFILES_ON_ATTACH=1     Refresh dotfiles before every attach";
@@ -1083,5 +1107,30 @@ mod tests {
             let owned: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
             assert_eq!(argv_without_devcontainer(&owned), expected, "{argv:?}");
         }
+    }
+
+    /// Divergence row 3 licenses clap's layout; *which* clap layout is still a
+    /// decision, and this is it — the verbs and examples somebody opened `--help`
+    /// to find come above the options table, not below it.
+    ///
+    /// `help_template` is a string clap resolves at render time, so a marker that
+    /// stops resolving is not a compile error — it renders as its own literal text
+    /// and the section it stood for goes missing, which is what every `find` below
+    /// is also checking for.
+    #[test]
+    fn help_puts_the_grammar_above_the_options_table() {
+        use clap::CommandFactory;
+
+        let help = Cli::command().render_long_help().to_string();
+        let examples = help.find("Examples:").expect("no examples");
+        let verbs = help.find("Workspace commands").expect("no verb list");
+        let options = help.find("Options:").expect("no options table");
+        let environment = help.find("Environment:").expect("no environment");
+
+        assert!(examples < verbs, "{help}");
+        assert!(verbs < options, "{help}");
+        assert!(options < environment, "{help}");
+        assert!(help.starts_with("Open a devcontainer"), "{help}");
+        assert!(help.contains("Usage: dl "), "{help}");
     }
 }
