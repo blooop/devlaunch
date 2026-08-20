@@ -1263,7 +1263,7 @@ mod tests {
     }
 
     /// The repo-slug floor cannot win against the total budget: the floor, the
-    /// suffix and the two dashes come to 30, so `fit_ref` is left eight
+    /// suffix and the two dashes come to 30, so `fit_ref` is left seventeen
     /// characters to land in and the worst case lands *on* the cap, not past it.
     #[test]
     fn the_repo_slug_floor_still_leaves_the_ref_room() {
