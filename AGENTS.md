@@ -122,10 +122,10 @@ untouched.
 Opening this repo's devcontainer pulls `ghcr.io/blooop/devlaunch-devcontainer`
 rather than building it. `.devcontainer/devcontainer.json` declares it under
 `customizations.devpod.prebuildRepository`, and `devpod up` looks for one exact
-tag — a hash of the build config and the build context — before it builds
-anything. A miss is silent and falls through to a local build.
+tag — a hash of the build config, the build context and the target architecture —
+before it builds anything. A miss is silent and falls through to a local build.
 
-Three rules follow from that, and all three are about the hash:
+Four rules follow from that, and all of them are about the hash:
 
 - **The build context is `.devcontainer`, deliberately.** Widening it back to the
   repository root makes the tag move on every commit to any file, which is a
@@ -137,17 +137,29 @@ Three rules follow from that, and all three are about the hash:
   on pushes to `main` that touch that directory; its path filter is exactly the
   hash's inputs, so keep the two in step. Until it runs, that commit builds
   locally.
+- **Each architecture is a tag of its own**, so the workflow is a matrix over
+  `ubuntu-latest` and `ubuntu-24.04-arm` and nothing merges a multi-arch
+  manifest. Neither leg passes `--platform`: the arch in the hash is the one the
+  driver reports, which is the runner's, and on the lookup side `devpod up`
+  passes no platform either. Two things hang off that. The pixi workspace has to
+  declare `linux-aarch64` or the arm64 leg dies at `pixi install` — and so does
+  an arm64 container's `postCreateCommand`. And `latest` belongs to amd64 alone:
+  it is `build.cacheFrom`'s target, devpod arch-qualifies no alias, so a second
+  leg passing it would race for a tag whose value decides whether a cache serves
+  layers. arm64 publishes `latest-arm64`.
 - **The hash covers the recipe, not what the recipe pulls.** The base image tag,
   the `docker-in-docker` major and the `claude-shim` the local feature installs
   all float, so one `.devcontainer/` tree can publish two different images. That
   is deliberate: **do not pin `claude-shim` here.** It carries no `claude` — the
   binary is downloaded on first run — a pin freezes it harder than no pin does,
-  and `devlaunch/tools.py` installs the same package unversioned into every
-  workspace `dl` opens, which a unit test holds this spec against. The whole
-  argument, with the measurements, is under "What the prebuild tag does not
-  promise" in README.md.
+  and the shipping implementation installs the same package unversioned into
+  every workspace `dl` opens (`rust/devlaunch-core/src/flows/provision.rs`),
+  which a unit test holds this spec against. The whole argument, with the
+  measurements, is under "What the prebuild tag does not promise" in README.md.
 
-`pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`.
+`pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`,
+for the architecture of the machine it runs on; the alias is its one argument and
+defaults to `latest`.
 
 The package must be public or the lookup returns DENIED and every launch silently
 builds locally. It came up public on its own — GHCR gave it the visibility of the

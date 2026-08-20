@@ -105,6 +105,63 @@ jobs:
         # on the runner.
         run: pixi run dev-add-docker
 
+      - name: Let the container's user write the shared pixi cache
+        # THE BENCH'S SECOND uid MISMATCH, and it is the same one
+        # scripts/bench_cold_reset.sh recovers from at the other end of a
+        # launch. dl creates the shared pixi cache's host directory as the
+        # invoking user with the default umask -- runner:runner, 0755 -- and
+        # binds it into the container, which runs as the image's remoteUser:
+        # `vscode`, uid 1000 in every mainstream devcontainer base. A
+        # GitHub-hosted runner's own user is not that uid, so the container
+        # cannot create a single entry in the directory it was handed.
+        #
+        # That is a hard launch failure and not a lost optimisation, because
+        # `--workspace-env PIXI_CACHE_DIR` points every pixi in the workspace at
+        # the mount and pixi does not degrade to a cache it cannot write. The
+        # benched repo's own postCreate is `pixi install`, so the PRIMING STEP
+        # BELOW DIES -- `failed to create directory /var/tmp/devlaunch-pixi/pkgs:
+        # Permission denied (os error 13)`, then `run agent command failed` --
+        # and the job has never got as far as timing anything since #232 merged.
+        # Every run from 31886967581 (2026-08-15) to 32397739366 failed here.
+        #
+        # It is the SOURCE's ownership and not the target path: #240 moved the
+        # container-side target from `~/.cache/devlaunch-pixi` to
+        # `/var/tmp/devlaunch-pixi` for an unrelated root-owned-parent bug, and
+        # the failure came through the move character for character with only
+        # the path in it changed.
+        #
+        # README's "shared pixi package cache" section documents this as dl's
+        # own limitation -- it cannot see the container's uid before it launches,
+        # so it cannot decide the mode for you -- and names running the image as
+        # your own uid, or widening the directory, as the fixes available to the
+        # person who knows. Here we know: one image, one remoteUser, an
+        # ephemeral runner, and a cache under /tmp that the job created. So the
+        # recovery belongs to the environment that creates the mismatch, exactly
+        # as the cold reset's chown does.
+        #
+        # `1777` and not `0777`: it is what /var/tmp itself carries, and the
+        # sticky bit is free here -- everything under the leaf is created by the
+        # one container user, so nothing needs to unlink an entry it does not
+        # own. The mode goes on the LEAF only: the parents keep whatever the
+        # umask gives them, and every umask a runner has already grants the
+        # world the traverse (`o+x`) that reaching the leaf needs. dl's own
+        # mkdir is `exist_ok` and does not re-mode a directory it finds, so
+        # pre-creating is what settles this, and it has to happen before the
+        # first launch.
+        #
+        # Once, rather than per-run like the cold reset: nothing in this job
+        # removes this directory. `dl <ws> rm` takes the clone and never the
+        # shared cache, and `--purge` -- the one command that would -- is not
+        # run here.
+        run: |
+          cache="$XDG_CACHE_HOME/devlaunch/pixi"
+          mkdir -p "$cache"
+          chmod 1777 "$cache"
+          # Recorded rather than assumed: the two uids are the whole of this
+          # step, and a log that names the runner's is what makes the next
+          # `Permission denied` under this mount readable in one look.
+          echo "runner uid $(id -u), shared pixi cache now $(stat -c '%U %a' "$cache")"
+
       - name: Prime the image and the clone cache
         # THE FIRST-EVER-COLD EXCLUSION, and it is deliberate rather than
         # redundant with the benched runs below. Charter decision 4 keeps the
