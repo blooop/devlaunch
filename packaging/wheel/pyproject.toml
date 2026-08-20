@@ -1,16 +1,12 @@
 # The PyPI artifact: a wheel whose payload is the two compiled binaries.
 #
 # Why this is a second pyproject.toml rather than the repository's own. The root
-# `pyproject.toml` is the *development* manifest: it is the pixi workspace, and it
-# installs the frozen Python build into that workspace editable (`[tool.pixi
-# .pypi-dependencies]`) because the parity harness still runs `python -m
-# devlaunch.dl` as the reference implementation, and the devcontainer's
-# `postCreateCommand` is a bare `pixi install` with no Rust toolchain behind it.
-# A maturin backend at the root would make every `pixi install` -- five CI matrix
-# legs and every container create -- a cargo build, and would stop delivering the
-# importable `devlaunch` package the suite imports. So the root manifest keeps
-# hatchling and stays unpublished, and the artifact that goes to PyPI is built
-# from here.
+# `pyproject.toml` is the pixi workspace and the tool configuration; since #267 it
+# declares no `[project]` and no build backend at all, because there is no Python
+# to build. A maturin backend there would make every `pixi install` -- every CI job
+# and every container create -- a cargo build, for an artifact only the release
+# path wants. So the root manifest builds nothing, and the artifact that goes to
+# PyPI is built from here.
 #
 # Build it with:
 #

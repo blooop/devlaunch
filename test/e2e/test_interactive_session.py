@@ -39,7 +39,6 @@ from typing import Dict, Iterator
 
 import pytest
 
-from devlaunch import tty_session
 from fixtures.e2e_guard import opt_out
 from fixtures.e2e_helpers import (
     ScopedSsh,
@@ -51,7 +50,7 @@ from fixtures.e2e_helpers import (
     scoped_ssh_config,
 )
 from fixtures.git_fixtures import build_repo_with_devcontainer
-from fixtures.pty_helpers import PtySession
+from fixtures.pty_helpers import PtySession, devpod_host_configured
 
 # One id for the module, private to the run: `DEVPOD_HOME` is a fresh directory
 # every session, so two concurrent runs cannot collide on it. No other e2e
@@ -204,9 +203,7 @@ class TestCommandGetsATerminal:
         `.ssh/config` is that file. Asking about the developer's real config
         instead would be a question about their machine.
         """
-        assert tty_session.devpod_host_configured(
-            workspace.workspace_id, config_path=workspace.ssh_config
-        ), (
+        assert devpod_host_configured(workspace.workspace_id, config_path=workspace.ssh_config), (
             "devpod wrote no ssh host alias for this workspace, so dl will fall "
             "back to the transport that has no terminal"
         )

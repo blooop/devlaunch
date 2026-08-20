@@ -71,12 +71,12 @@ instrument on both sides of a change. The record carries both, as
 
 
 # How the launch is asked for its stages, and how its answer is found again in
-# a stderr that also carries devpod's chatter. These three are devlaunch's, not
-# this script's -- see `devlaunch/timing.py` -- but the script stays stdlib-only
-# and importable from a checkout that was never installed, so it names them
-# rather than importing them. `test_timing.py` drives this script against a
-# stand-in launch built from timing.py's own constants, so a rename there fails
-# here rather than quietly recording nothing.
+# a stderr that also carries devpod's chatter. These three are dl's, not this
+# script's -- see `rust/devlaunch-core/src/timing.rs` -- but a script cannot
+# import a Rust constant, so it names them. `test/fixtures/bench_harness.py`
+# drives this script against a stand-in launch built from timing.rs's own
+# values, read out of that source, so a rename there fails in the suite rather
+# than quietly recording nothing.
 TIMING_VAR = "DEVLAUNCH_TIMING"
 TIMING_DOCUMENT = "json"
 DOCUMENT_PREFIX = "dl-timing-json:"

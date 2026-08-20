@@ -1,12 +1,11 @@
 """The record `bench_launch.py` writes is the record `bench_points.py` reads (#221).
 
 Two scripts, one JSON shape, and until now nothing that failed when they drifted.
-`test_timing.py` drives the real writer and asserts the fields it just wrote;
 `test_bench_points.py` drives the real reader against records written as
-literals — deliberately, because what it has under test is the mapping. Each
-side is therefore pinned against its own copy of the shape, and a field renamed
-in the writer *and in the writer's own assertions* leaves both suites green
-while the trend job silently stops publishing.
+literals — deliberately, because what it has under test is the mapping. So the
+reader is pinned against its own copy of the shape, and a field renamed in the
+writer *and in the writer's own assertions* would leave that suite green while
+the trend job silently stopped publishing.
 
 This file is the seam itself: one record produced by the real writer, handed to
 the real reader, with no hand-built dict anywhere between them. Nothing here
@@ -22,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Sequence, Tuple
 
-from test_timing import a_launch, run_bench
+from fixtures.bench_harness import a_launch, run_bench
 
 POINTS = Path(__file__).parent.parent / "scripts" / "bench_points.py"
 

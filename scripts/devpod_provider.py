@@ -1,4 +1,15 @@
+#!/usr/bin/env python3
 """Answer "is this devpod provider already registered?" from devpod itself.
+
+Repo tooling, not part of the shipped tool: `dl` needs no help registering a
+provider, but the things that set up a machine *before* any `dl` runs do -- this
+repo's devcontainer at create time, the bench workflow, and any fresh
+`DEVPOD_HOME`. It moved here from `devlaunch/` when the Python implementation was
+retired (#267), which is why it is stdlib-only and imports nothing local: the
+Rust port has `ensure_provider` in `devlaunch-core`, but deliberately exposes no
+CLI for it (the defect class that made this module necessary is absent there), so
+there was nothing to point `dev-add-docker` at.
+
 
 The question used to be asked by grepping devpod's human-facing table:
 
@@ -125,7 +136,7 @@ def main(
     argv: Optional[Sequence[str]] = None,
     run: Optional[Callable[..., subprocess.CompletedProcess]] = None,
 ) -> int:
-    """CLI entry point: `python -m devlaunch.devpod_provider <name>`.
+    """CLI entry point: `python scripts/devpod_provider.py <name>`.
 
     This is what the `dev-add-docker` pixi task runs, so a devpod that cannot be
     read has to stop the task rather than let it carry on as if the provider
@@ -137,7 +148,7 @@ def main(
     import argparse  # pylint: disable=import-outside-toplevel
 
     parser = argparse.ArgumentParser(
-        prog="python -m devlaunch.devpod_provider",
+        prog="python scripts/devpod_provider.py",
         description="Register a devpod provider unless it is already registered.",
     )
     parser.add_argument("name", help="provider name, e.g. docker")

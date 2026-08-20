@@ -60,11 +60,12 @@ TOTAL = "total"
 
 # What a shape under `--require-stages-on` must have reported, from every run.
 #
-# This is `devlaunch.timing.STAGES` minus `handoff`, written out rather than
-# imported for the same reason its sibling writes out the timing variables:
-# the script stays stdlib-only and runnable from a checkout that was never
-# installed. `test_bench_points.py` pins the two together, so a rename in the
-# vocabulary fails there rather than quietly asserting a stage nothing emits.
+# This is `Stage::name()` in `rust/devlaunch-core/src/timing.rs` minus `handoff`,
+# written out rather than imported for the same reason its sibling writes out the
+# timing variables: a script cannot import a Rust constant, and this one stays
+# stdlib-only and runnable from a bare checkout. `test_bench_points.py` pins the
+# two together -- reading the vocabulary out of that source -- so a rename there
+# fails in the suite rather than quietly asserting a stage nothing emits.
 #
 # `handoff` is excluded because nothing hands off to dl on a runner: it is the
 # gap before dl started, stamped by whoever launched it, and requiring it would

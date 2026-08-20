@@ -216,12 +216,22 @@ def cmd_stop(args):
 
 
 def cmd_delete(args):
-    positionals, _ = _positional_and_flags(args, set())
+    positionals, flags = _positional_and_flags(args, set())
     if not positionals:
         print("devpod-shim: delete: no workspace given", file=sys.stderr)
         return 1
     state = _state()
     if positionals[0] not in state.workspaces:
+        # `--ignore-not-found` makes a delete mean "ensure absent", the way
+        # `rm -f` does, and real devpod v0.26.1 exits 0 for it with nothing to
+        # say. Without this the shim refused, which is the one thing a fake
+        # devpod must not do: `dl <ws> rm --force` passes the flag on every
+        # forced remove, so a run against a workspace that was already gone
+        # failed here and succeeded against the real thing. Nothing is printed
+        # because there was nothing to delete and inventing a line the real
+        # tool does not print is the same class of infidelity.
+        if "--ignore-not-found" in flags:
+            return 0
         return _refuse("delete", positionals[0])
     del state.workspaces[positionals[0]]
     state.save()

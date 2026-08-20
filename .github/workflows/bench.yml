@@ -99,6 +99,26 @@ jobs:
             url."https://x-access-token:${{ github.token }}@github.com/".insteadOf \
             "git@github.com:"
 
+      - name: Build the release binaries, and put `dl` on PATH
+        # THE THING BEING BENCHED, named explicitly. Until #267 these steps ran
+        # `pixi run dl`, which resolved to a console script the editable Python
+        # install put in the environment -- so after the 0.1.0 cutover this trend
+        # was measuring the Python build while the released `dl` was Rust, and
+        # nothing said so. There is no `dl` in the environment now, which is what
+        # turned a wrong number into a missing one.
+        #
+        # The *release* profile, because that is what ships and because a debug
+        # build's startup would swamp the milliseconds this trend is about.
+        # `pixi run dl` is deliberately not used below for the same reason: it is
+        # the edit-run loop's debug build (see the task's comment in
+        # pyproject.toml).
+        run: |
+          set -eu
+          pixi run build-release
+          mkdir -p /tmp/dl-bench/bin
+          ln -sf "$PWD/rust/target/release/dl" /tmp/dl-bench/bin/dl
+          echo /tmp/dl-bench/bin >> "$GITHUB_PATH"
+
       - name: Register the docker provider in this job's devpod home
         # A fresh DEVPOD_HOME has no provider at all, so this is not optional
         # setup -- it is what makes the home usable. Docker itself is already
@@ -174,7 +194,7 @@ jobs:
         #
         # It also leaves the workspace up, which is what makes the next step
         # warm.
-        run: pixi run dl "$TARGET" -- true
+        run: dl "$TARGET" -- true
 
       # Five runs per shape, both shapes. The bench script's own recipe says
       # five, and the point published is their MEDIAN -- the trend's baseline is

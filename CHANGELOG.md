@@ -27,6 +27,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.97.1 that rust-toolchain.toml names". Tightened to `1.97.1.*`, which is what the
   lockfile already held, and kept in lockstep by a test.
 
+- **A fake devpod honours `--ignore-not-found`.** The test shim refused a delete of
+  a workspace that was already gone, where real devpod v0.26.1 exits 0 — and
+  `dl <ws> rm --force` passes that flag on every forced remove, so a run against an
+  absent workspace failed under the shim and succeeded against the real thing. The
+  shim is what the Rust integration tests use as their whole devpod, so a fidelity
+  gap there is the one way a fake can do real harm.
+
+### Removed
+
+- **The Python implementation and the parity harness are retired**
+  ([#267](https://github.com/blooop/devlaunch/issues/267)). `dl` and `aid` have been
+  compiled binaries since 0.1.0; the `devlaunch/` Python package was kept afterwards
+  as the frozen reference implementation a two-way parity ratchet compared the Rust
+  build against. With the manifest empty since cutover, what that ratchet asserted
+  was that two implementations agreed — and there is one now. Gone with it:
+  `rust/parity.py`, `rust/parity-manifest.txt`, `rust/spec-ledger.md`,
+  `rust/pending-count.txt`, `rust/golden_vectors.py`, `rust/tools/`, and the ~1,200
+  mock-based tests that judged Python internals. The goldens under `rust/` stay —
+  they pin today's contract, whoever wrote it — and so does the divergence table in
+  `docs/rust-rewrite-plan.md`, which is still cited by row number throughout the
+  Rust sources.
+
+  No user-facing behaviour changes: nothing published contained the Python package
+  after 0.1.0. What a contributor sees is that CI no longer runs a py310–py313
+  matrix (the interpreter was the product's and is now only the harness's), the root
+  `pyproject.toml` builds nothing, and `pixi run test` builds
+  `rust/target/release/{dl,aid}` first because the acceptance suite judges the
+  binaries from outside. That suite did **not** retire: `test/` still spawns the real
+  binaries against a real devpod and against the fake one, through the
+  `DEVLAUNCH_DL_CMD` seam, which now defaults to the release build.
+
+  The lending contract's README guards moved into
+  `rust/devlaunch-core/src/flows/provision/`, where the constants and script
+  generators they assert against actually live.
+
 ## [0.3.0] - 2026-08-20
 
 ### Changed
@@ -147,7 +182,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as a workspace name: a `dl prune <ws> --force` line recalled with `--rm` appended
   still removes `<ws>`, and `dl stop prune` still stops a workspace that really is
   called `prune`. Divergence row 31.
-
 ## [0.1.2] - 2026-08-20
 
 ### Added

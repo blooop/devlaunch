@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from test_lending_doc import _section
+from fixtures.markdown_sections import section as _section
 from unit.test_devcontainer_manifest import (
     parse_mount,
     run_initialize_command,

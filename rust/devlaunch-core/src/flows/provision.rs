@@ -1770,6 +1770,12 @@ fn transfer(
 // ownership for this port, and the goldens below are the whole reason — the
 // scripts and the strings they are pinned against belong within one screenful of
 // each other.
+/// The README and CHANGELOG claims this module's constants and generators keep
+/// true (#267). Its own file because it is about the documents rather than about
+/// the code, and because `mod tests` below is already long.
+#[cfg(test)]
+mod lending_contract;
+
 #[cfg(test)]
 mod tests {
     //! # What this pins, and how

@@ -20,7 +20,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import tomli
+
+# stdlib since 3.11, which is the floor now that nothing ships on an
+# interpreter (#267). It was `tomli` here, a *runtime* dependency of the
+# Python `dl` -- which parsed config.toml with it -- that the tests borrowed.
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
@@ -71,7 +75,7 @@ def _container_section() -> str:
 
 
 def _pyproject() -> dict:
-    return tomli.loads(PYPROJECT.read_text(encoding="utf-8"))
+    return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
 
 
 @pytest.mark.unit
@@ -135,7 +139,7 @@ def test_the_feature_exists_and_aid_takes_it_from_dl():
     features could be enabled separately, and then the two binaries could disagree
     about which build they are.
     """
-    dl_manifest = tomli.loads((REPO_ROOT / "rust" / "dl" / "Cargo.toml").read_text("utf-8"))
+    dl_manifest = tomllib.loads((REPO_ROOT / "rust" / "dl" / "Cargo.toml").read_text("utf-8"))
     assert DEV_FEATURE in dl_manifest["features"], (
         f"rust/dl/Cargo.toml no longer declares the {DEV_FEATURE} feature"
     )
@@ -143,7 +147,7 @@ def test_the_feature_exists_and_aid_takes_it_from_dl():
         f"dl's {DEV_FEATURE} should enable nothing else; it only flips the marker"
     )
 
-    aid_manifest = tomli.loads((REPO_ROOT / "rust" / "aid" / "Cargo.toml").read_text("utf-8"))
+    aid_manifest = tomllib.loads((REPO_ROOT / "rust" / "aid" / "Cargo.toml").read_text("utf-8"))
     assert aid_manifest["features"][DEV_FEATURE] == [f"dl/{DEV_FEATURE}"], (
         f"aid's {DEV_FEATURE} must forward to dl's, so the two cannot disagree"
     )
@@ -161,7 +165,7 @@ def test_the_marker_is_off_by_default_so_released_builds_print_the_bare_version(
         REPO_ROOT / "rust" / "dl" / "Cargo.toml",
         REPO_ROOT / "rust" / "aid" / "Cargo.toml",
     ):
-        features = tomli.loads(manifest.read_text("utf-8")).get("features", {})
+        features = tomllib.loads(manifest.read_text("utf-8")).get("features", {})
         assert DEV_FEATURE not in features.get("default", []), (
             f"{manifest.name} enables {DEV_FEATURE} by default, so the released build "
             "would print a -dev version"
@@ -212,7 +216,7 @@ def test_every_toolchain_pin_names_the_channel_rust_toolchain_toml_names():
     a container that compiles with a toolchain the gate never used is a class of
     "works for me" nobody can reproduce.
     """
-    pinned = tomli.loads(CARGO_TOOLCHAIN.read_text("utf-8"))["toolchain"]["channel"]
+    pinned = tomllib.loads(CARGO_TOOLCHAIN.read_text("utf-8"))["toolchain"]["channel"]
 
     # A pixi *feature*, not a plain dependency (#284): only the `default`
     # environment takes it, so the py31x solves and their CI caches do not each

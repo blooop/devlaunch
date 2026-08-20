@@ -35,17 +35,21 @@ import shlex
 from pathlib import Path
 
 import pytest
-import tomli
+
+# stdlib since 3.11, which is the floor now that nothing ships on an
+# interpreter (#267). It was `tomli` here, a *runtime* dependency of the
+# Python `dl` -- which parsed config.toml with it -- that the tests borrowed.
+import tomllib
 
 # The same level-aware section splitter the lending-contract guard reads its
 # section with. Imported rather than copied: a second implementation of "the
 # text under this heading" is a second thing that can drift from the document.
-from test_lending_doc import _section
+from fixtures.markdown_sections import section as _section
 
-# The harness the epilog's reset already goes through: dl's own main() against a
-# devpod that has nothing to delete. Shared rather than rebuilt, so the two
-# documents' resets are judged against the same starting state.
-from test_timing import a_reset_from_the_absent_state
+# The harness the epilog's reset already goes through: the binary under test
+# against a fake devpod that has nothing to delete. Shared rather than rebuilt, so
+# the two documents' resets are judged against the same starting state.
+from fixtures.bench_harness import a_reset_from_the_absent_state
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
@@ -142,7 +146,7 @@ def script_module(name: str):
 
 def pixi_tasks() -> dict:
     """The tasks `pixi run` can name in this project."""
-    return tomli.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["pixi"]["tasks"]
+    return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["pixi"]["tasks"]
 
 
 def a_command(command: str) -> str:
@@ -293,7 +297,9 @@ def test_no_documented_flag_would_be_accepted_one_letter_short(command, flag):
 
 
 @pytest.mark.unit
-def test_the_cold_recipes_reset_is_either_run_from_the_absent_state_or_left_to_the_script():
+def test_the_cold_recipes_reset_is_either_run_from_the_absent_state_or_left_to_the_script(
+    devpod_shim,
+):
     """The defect that shipped twice, guarded on this document too -- and, while
     this document shows no reset, guarded on the pointer that stands in for one.
 
@@ -314,7 +320,37 @@ def test_the_cold_recipes_reset_is_either_run_from_the_absent_state_or_left_to_t
         )
         return
     for reset in resets:
-        assert a_reset_from_the_absent_state(reset) == 0, (
+        assert a_reset_from_the_absent_state(devpod_shim, reset) == 0, (
             f"README documents the reset {reset!r}, which dl refuses from the state every "
             "cold bench's first reset meets"
         )
+
+
+# ---------------------------------------------------------------------------
+# the other document that publishes a reset: the bench script's own --help
+# ---------------------------------------------------------------------------
+
+
+def test_the_epilogs_cold_reset_is_a_command_dl_actually_accepts(devpod_shim):
+    """The cold recipe in `bench_launch.py --help` names a reset dl accepts.
+
+    This exact defect shipped twice: a README recipe whose reset was a subcommand
+    dl does not have, then the same recipe moved into `--help` unfixed. So the
+    documented reset is exercised rather than read -- extracted from the epilog and
+    run against a devpod that has nothing to delete, the state every cold bench's
+    first reset meets.
+
+    Lived in `test_timing.py` until the Python implementation was retired (#267),
+    and moved here rather than being dropped: this file already guards the README's
+    copies of the same commands, and while the README currently points at this
+    epilog instead of publishing a reset of its own, the epilog's is the only one
+    of the two being run.
+    """
+    epilog = (SCRIPTS / "bench_launch.py").read_text(encoding="utf-8")
+    recipe = re.search(r"--before '([^']+)'", epilog)
+    assert recipe, "the cold recipe documents no --before reset"
+    reset = recipe.group(1)
+    assert a_reset_from_the_absent_state(devpod_shim, reset) == 0, (
+        f"bench_launch.py's --help documents the reset {reset!r}, which dl refuses "
+        "from the state every cold bench's first reset meets"
+    )

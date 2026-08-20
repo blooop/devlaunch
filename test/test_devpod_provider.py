@@ -9,6 +9,7 @@ hand-written approximation of ANSI output is exactly how a bug like that
 survives being fixed.
 """
 
+import importlib.util
 import json
 import subprocess
 from pathlib import Path
@@ -16,9 +17,29 @@ from unittest.mock import patch
 
 import pytest
 
-from devlaunch import devpod_provider
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROVIDER_SCRIPT = REPO_ROOT / "scripts" / "devpod_provider.py"
 
-RECORDINGS = Path(__file__).parent.parent / "fixtures" / "devpod"
+
+def _load_provider_module():
+    """The guard, imported by path -- it is a script under `scripts/`, not a package.
+
+    It moved out of `devlaunch/` with the rest of the Python implementation (#267)
+    and stayed, because the machine setup that runs *before* any `dl` still needs
+    it: this repo's devcontainer at create time, the bench workflow, a fresh
+    `DEVPOD_HOME`. Loaded the way `test_bench_points.py` loads its script, so this
+    file keeps judging the code `dev-add-docker` actually runs.
+    """
+    spec = importlib.util.spec_from_file_location("devpod_provider", PROVIDER_SCRIPT)
+    assert spec is not None and spec.loader is not None, PROVIDER_SCRIPT
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+devpod_provider = _load_provider_module()
+
+RECORDINGS = Path(__file__).parent / "fixtures" / "devpod"
 
 # `devpod provider list --output json` on a host where `docker` is registered.
 REGISTERED = (RECORDINGS / "provider_list.json").read_text(encoding="utf-8")
@@ -148,7 +169,7 @@ def test_the_guard_that_names_no_runner_goes_through_a_patched_subprocess():
 def test_the_cli_that_names_no_runner_goes_through_a_patched_subprocess(capsys):
     """And the entry point the pixi task actually invokes.
 
-    `python -m devlaunch.devpod_provider docker` passes no runner, so this is
+    `python scripts/devpod_provider.py docker` passes no runner, so this is
     the one call shape in the tree that reached the import-time binding in
     production rather than only under test.
     """
