@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787251822367,
+  "lastUpdate": 1787253536194,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -2950,6 +2950,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.529505",
             "unit": "s",
             "extra": "runs=5/5 wall=9.3824s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1566c86189fd7ccdb3cc2408463e9ac4d3b77817",
+          "message": "Merge pull request #286 from blooop/feat/dev-loop-rust-build\n\nDev loop: point dl-next and pixi run dl at the Rust build",
+          "timestamp": "2026-08-20T20:16:27+01:00",
+          "tree_id": "f700b2f5100c3e5fccbaeb8774667ba6e93dc1b7",
+          "url": "https://github.com/blooop/devlaunch/commit/1566c86189fd7ccdb3cc2408463e9ac4d3b77817"
+        },
+        "date": 1787253535742,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.124697,
+            "range": "± 0.167427",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.241049,
+            "range": "± 0.009378",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.00068,
+            "range": "± 0.000137",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.367167,
+            "range": "± 0.163424",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.472697s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.022576,
+            "range": "± 0.092618",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 2.467301,
+            "range": "± 0.396958",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.323941,
+            "range": "± 0.112384",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 4.574547,
+            "range": "± 0.142835",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.345077,
+            "range": "± 0.43275",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.451071s v0.26.1, Linux-X64"
           }
         ]
       }
