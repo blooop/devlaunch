@@ -59,7 +59,7 @@ use crate::render;
 pub(crate) enum Family {
     /// `dl <ws> stop`.
     Stop,
-    /// `dl <ws> rm` / `prune`, and whether `--force` was typed.
+    /// `dl <ws> rm`, and whether `--force` was typed.
     Remove { force: bool },
     /// Everything that opens a workspace.
     Launch(LaunchVerb),

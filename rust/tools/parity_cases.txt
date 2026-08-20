@@ -37,7 +37,13 @@
 --lifecycle --stale-record --orphan -- --reconcile -y
 
 # --- aid ---
---aid -- --help
+# Byte-identical to Python's until 0.2.0. It diverges now because Rust's aid has a
+# feature Python's has not got — an appendable `--rm`/`--stop` — and an
+# undocumented flag is not the cheaper option. Note what the allowance costs: the
+# *rest* of this text is no longer guarded by the compare, so a change to any other
+# line of aid's help is now caught by `the_help_names_every_agent_and_the_default`
+# in aid/src/main.rs and by review, not here.
+--aid -- --help  ## diff: divergence row 30 -- aid's help documents the appendable --rm/--stop
 
 # --- v1 cache migration ---
 # The case the harness-honesty review flagged as an untested blind spot: a
