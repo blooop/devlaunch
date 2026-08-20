@@ -37,6 +37,9 @@ LOCAL_HOME = "${localEnv:HOME}"
 SSH_SOURCE_PREFIX = f"{LOCAL_HOME}/.ssh/"
 PREBUILD_REPOSITORY = "ghcr.io/blooop/devlaunch-devcontainer"
 PREBUILD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "devcontainer-prebuild.yml"
+FEATURE_INSTALLER = REPO_ROOT / ".devcontainer" / "claude-code" / "install.sh"
+SHIPPING_PROVISIONER = REPO_ROOT / "rust" / "devlaunch-core" / "src" / "flows" / "provision.rs"
+PIXI_GLOBAL_INSTALL = "pixi global install "
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 PIXI_LOCK = REPO_ROOT / "pixi.lock"
 
@@ -487,4 +490,74 @@ def test_the_workspace_declares_a_platform_for_every_prebuild_runner():
         )
         assert platform in lock, (
             f"{platform} is declared but absent from pixi.lock, which `frozen: true` needs"
+        )
+
+
+def pixi_global_specs(path) -> list:
+    """Every `pixi global install` argument list a file issues, comments excluded.
+
+    All of them rather than the first, because the feature's installer issues the
+    command twice -- once through `su` when the build runs as root, once directly
+    otherwise -- so a version pinned onto one of those two branches is an image
+    whose contents depend on which branch ran, which is worse than either answer
+    on its own. Comment lines are dropped because the paragraph above those
+    commands is *about* the spec, and a test a comment can satisfy is no test.
+
+    Read as text on purpose. One side of the comparison below is Rust and the
+    other is shell, so there is no import that could answer this; the two files
+    that have to agree are the two files this reads.
+    """
+    specs = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.lstrip()
+        if PIXI_GLOBAL_INSTALL not in line or stripped.startswith(("#", "//", "///")):
+            continue
+        spec = line[line.index(PIXI_GLOBAL_INSTALL) + len(PIXI_GLOBAL_INSTALL) :]
+        # Trailing shell and Rust noise around the argument list: `|| failed=1`
+        # from the rendered script, the closing quote of the `su -c "..."` form,
+        # and Rust's raw-string delimiters.
+        for terminator in ("||", '"#', "&&"):
+            if terminator in spec:
+                spec = spec[: spec.index(terminator)]
+        specs.append(spec.strip().strip('"'))
+    assert specs, f"{path} no longer installs anything with pixi global"
+    return specs
+
+
+def test_the_feature_and_the_shipping_provisioner_state_one_claude_spec():
+    """One package, one install policy, written down in two places.
+
+    `.devcontainer/claude-code/install.sh` bakes `claude-shim` into the prebuilt
+    image; the shipping provisioner installs the same package into every
+    workspace `dl` opens. Both are deliberately unversioned -- the shim carries
+    no `claude` binary, the binary is downloaded on first run, so a pin would
+    freeze the fetcher and not the thing fetched, and leaving it unpinned is what
+    lets every republish refresh it. The argument, with the measurements, is under
+    "What the prebuild tag does not promise" in README.md.
+
+    What this guards is the *asymmetry*, which is why it lives in this file rather
+    than beside either half. The installer sits inside the prebuild's hash and the
+    provisioner does not, so the case for pinning reads as stronger on the
+    installer's side -- and pinning that side alone would give one package two
+    policies, with the unpinned one the copy that reaches users. Neither half of
+    that divergence fails anything on its own, so it has to fail here. A pin added
+    to both sides in one change still passes: the two specs are required to agree,
+    not required to float.
+    """
+    installer = pixi_global_specs(FEATURE_INSTALLER)
+    shipping = pixi_global_specs(SHIPPING_PROVISIONER)
+    claude = [spec for spec in shipping if "claude-shim" in spec]
+    assert claude, (
+        f"{SHIPPING_PROVISIONER.name} no longer installs claude-shim; this test compares it "
+        "against the feature installer and has nothing left to compare"
+    )
+    baked = [spec for spec in installer if "claude-shim" in spec]
+    assert baked, (
+        f"{FEATURE_INSTALLER.name} no longer installs claude-shim, which the prebuilt image "
+        "is documented as baking"
+    )
+    for spec in baked + claude:
+        assert spec == claude[0], (
+            f"claude-shim is installed as {spec!r} in one place and {claude[0]!r} in another; "
+            "one package, one policy -- pin both sides or neither"
         )

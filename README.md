@@ -1820,11 +1820,12 @@ rejected on four grounds:
 - **A pin freezes it harder than no pin does.** Unversioned, the shim is
   refreshed by every republish, which is every commit to `.devcontainer/**`.
   Pinned, it stops at whatever was current the day the pin was written.
-- **One package would then have two policies.** `devlaunch/tools.py` installs
-  the same package, unversioned, into every workspace `dl` opens
-  (`REQUIRED_TOOLS`) — the copy that reaches users rather than us. A unit test
-  asserts the feature installer's spec and that one still match, so pinning one
-  side alone fails rather than drifting.
+- **One package would then have two policies.** The shipping provisioner
+  (`rust/devlaunch-core/src/flows/provision.rs`) installs the same package,
+  unversioned, into every workspace `dl` opens — the copy that reaches users
+  rather than us. `test/unit/test_devcontainer_manifest.py` asserts that spec and
+  the feature installer's still match, so pinning one side alone fails rather
+  than drifting, while pinning both deliberately passes.
 
 Measured 2026-08-20: the published prebuild carries `claude-shim 0.7.0`, the
 newest of the channel's 14 releases and unmoved since 2026-04-06, so the drift a
