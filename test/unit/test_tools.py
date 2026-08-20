@@ -119,7 +119,7 @@ class TestProvisionScript:
     def test_it_puts_the_pixi_bin_directory_on_the_login_path(self):
         """Without this the next launch reinstalls everything, forever."""
         script = provision_script()
-        assert ".pixi/bin" in script
+        assert f"{tools.PIXI_HOME_TARGET}/bin" in script
         assert ".profile" in script
 
     def test_it_writes_to_the_profile_bash_actually_reads(self):
@@ -190,10 +190,13 @@ class TestProfileGuards:
     # script, because a test that derives what to expect from the thing under
     # test agrees with it however wrong it is.
     PREPENDED = {
-        "provision": ".pixi/bin",
+        "provision": ".devlaunch/pixi/bin",
         "transfer": ".local/bin",
+        # The feature installer is baked into an image at build time, where
+        # ~/.pixi is the image's own and there is no checkout to dirty, so it
+        # is the one writer that still names it.
         "feature": ".pixi/bin",
-        "zellij": ".pixi/bin",
+        "zellij": ".devlaunch/pixi/bin",
     }
 
     # Every shape a container's home can have when a writer arrives. bash
@@ -1606,9 +1609,16 @@ class TestZellijProvisioning:
         log = tmp_path / "calls.log"
         quoted_log = shlex.quote(str(log))
 
-        def fake(name, exit_code, noise=""):
+        env_log = tmp_path / "env.log"
+
+        def fake(name, exit_code, noise="", record_env=False):
             path = sysbin / name
             body = f'echo "{name} $*" >> {quoted_log}\n'
+            if record_env:
+                # A log of its own rather than the call log, so the existing
+                # "pixi was never run" assertions keep asking about calls and
+                # not about a variable whose value contains the word.
+                body += f'echo "PIXI_HOME=${{PIXI_HOME-unset}}" >> {shlex.quote(str(env_log))}\n'
             if noise:
                 body += f"echo {shlex.quote(noise)}\n"
             path.write_text(f"#!/bin/sh\n{body}exit {exit_code}\n", encoding="utf-8")
@@ -1619,7 +1629,7 @@ class TestZellijProvisioning:
         if pixi_exit is not None:
             # Noise on *stdout*, because that is the stream the pass's protocol
             # shares and the one a stage may never speak on.
-            fake("pixi", pixi_exit, noise="PIXI-NOISE")
+            fake("pixi", pixi_exit, noise="PIXI-NOISE", record_env=True)
         # A curl that cannot reach anything, which is what an offline image is.
         fake("curl", 1)
         if has_pixi_install:
@@ -1697,9 +1707,9 @@ class TestZellijProvisioning:
         home, result, calls = self._run(tmp_path, pixi_exit=0)
         assert self._zellij_outcome(result.stdout) == tools.StageOk(name=tools.ZELLIJ_STAGE)
         assert "pixi global install zellij" in calls
-        assert 'export PATH="$HOME/.pixi/bin:$PATH"' in (home / ".profile").read_text(
-            encoding="utf-8"
-        )
+        assert f'export PATH="{tools.PIXI_HOME_TARGET}/bin:$PATH"' in (
+            home / ".profile"
+        ).read_text(encoding="utf-8")
 
     def test_an_install_that_fails_is_named_and_costs_the_launch_nothing(self, tmp_path):
         """The ticket's second requirement, run rather than argued.
@@ -1752,3 +1762,76 @@ class TestZellijProvisioning:
         assert tools.HOSTNAME_STAGE in names
         _, _, calls = self._run(tmp_path, pixi_exit=0)
         assert "pixi" not in calls
+
+    def test_the_install_never_touches_the_containers_own_pixi_home(self, tmp_path):
+        """The property, run rather than read off the script text.
+
+        `pixi global install` edits `$PIXI_HOME/manifests/pixi-global.toml`, a
+        declarative file, and in a container `~/.pixi` is somebody else's: an
+        image's, or a dotfiles repo's. Two owners cost this both ways -- a
+        `pixi global sync` against a manifest that does not declare zellij
+        *uninstalls* it, and kinisi_ros's devcontainer symlinks that very
+        manifest onto a tracked file in the checkout, so the append dirtied the
+        user's work tree. A home of devlaunch's own is what makes neither
+        expressible.
+        """
+        home, _, _ = self._run(tmp_path, pixi_exit=0)
+        recorded = (tmp_path / "env.log").read_text(encoding="utf-8")
+        assert f"PIXI_HOME={home}/.devlaunch/pixi" in recorded
+        assert not (home / ".pixi").exists()
+
+    def test_the_home_is_set_before_anything_pixi_runs(self, tmp_path):
+        """Ordering, because the bootstrap is a consumer and not just a prelude.
+
+        pixi's own installer honours PIXI_HOME (`${PIXI_HOME:-$HOME/.pixi}`), so
+        exporting it after the bootstrap would leave the binary in one home and
+        every environment it installs in another -- which is the one shape of
+        this change that fails silently, since both halves work alone.
+        """
+        script = tools.zellij_script()
+        assert script.index("PIXI_HOME=") < script.index("command -v pixi")
+        assert script.index("PIXI_HOME=") < script.index("pixi global install")
+
+
+class TestPixiHome:
+    """Where devlaunch's own tools live, asked of every script that installs one."""
+
+    def test_no_script_devlaunch_runs_in_a_container_names_the_shared_home(self):
+        """`~/.pixi` may appear in this module's reasoning, never in its output.
+
+        Asked of the rendered scripts rather than the source, so the docstrings
+        that explain *why* the path is avoided cannot fail the test that it is.
+        """
+        for name, script in (
+            ("provision", provision_script()),
+            ("zellij", tools.zellij_script()),
+        ):
+            assert "$HOME/.pixi" not in script, name
+
+    def test_the_home_is_not_under_a_bind_mounted_xdg_tree(self):
+        """The reason it is not `~/.local/share/devlaunch/pixi`.
+
+        Containers mount `~/.cache`, `~/.config` and `~/.local/share` straight
+        from the host, so a prefix tree under one of them is shared by every
+        container on the machine and written into the host's own home -- and
+        prefixes are baked with absolute paths, which is prefix-dev/pixi#5476,
+        the hazard dl.PIXI_CACHE_TARGET already refuses to let PIXI_HOME near.
+        """
+        target = tools.PIXI_HOME_TARGET
+        assert target.startswith("$HOME/")
+        for mounted in (".local/share", ".config", ".cache"):
+            assert mounted not in target
+
+    def test_the_package_cache_is_still_shared(self):
+        """PIXI_HOME moves the manifest and the prefixes, not the downloads.
+
+        Verified against pixi 0.77: `PIXI_HOME=x pixi info` reports the global
+        bin and manifest under `x` and leaves the cache dir alone. If that ever
+        stopped being true, every container would go back to downloading its own
+        packages -- the whole point of the shared mount -- so the two variables
+        being independent is pinned here rather than assumed.
+        """
+        from devlaunch import dl
+
+        assert dl.PIXI_CACHE_TARGET not in tools.PIXI_HOME_TARGET
+        assert tools.PIXI_HOME_TARGET not in dl.PIXI_CACHE_TARGET
