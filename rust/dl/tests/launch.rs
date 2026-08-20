@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+use devlaunch_test_support::KeepingCoverage;
+
 /// The workspace id this build derives for `blooop/devlaunch@main`, and the one
 /// `launch_scenario.py` records and devpod knows.
 const MAIN: &str = "devlaunch-main-zovomobo";
@@ -93,6 +95,7 @@ impl World {
         command
             .args(&expanded)
             .env_clear()
+            .keeping_coverage()
             // /usr/bin and /bin for git, which a cold launch really runs; the fake
             // devpod is first, under its real name, and the fake `gh` is in a
             // directory of its own that only the `--gh` fixture fills.
@@ -127,6 +130,12 @@ impl World {
 
     fn path(&self, relative: &str) -> PathBuf {
         self.root.join(relative)
+    }
+
+    /// The whole cache, contents included, as a listing two runs can be compared
+    /// by — `devlaunch_test_support::cache_fingerprint`.
+    fn cache_fingerprint(&self) -> Vec<String> {
+        devlaunch_test_support::cache_fingerprint(&self.root)
     }
 
     /// An `ssh` that fails the way a host refusing a clone fails, saying *reason*.
@@ -449,6 +458,7 @@ fn a_warm_triple_launch_does_no_metadata_io_at_all() {
     let world = World::with(&["--warm"]);
     std::fs::write(world.path("cache/devlaunch/metadata.json"), "not json")
         .expect("a corrupt document");
+    let before = world.cache_fingerprint();
 
     let run = world.dl(&["blooop/devlaunch@main", "--", "echo", "hi"]);
     run.exited(0);
@@ -459,6 +469,17 @@ fn a_warm_triple_launch_does_no_metadata_io_at_all() {
     );
     assert!(!world.path("cache/devlaunch/metadata.json.corrupt").exists());
     assert!(!world.path("cache/devlaunch/metadata.json.lock").exists());
+    // The general form of the three lines above, and of the parity case this test
+    // stands in for (`--warm -- blooop/devlaunch -- echo hi`, which the retired
+    // compare ran with `--fingerprint`): the warm path writes *nothing* anywhere
+    // under the cache, not merely nothing beside `metadata.json`. The two siblings
+    // are still named individually because they are the specific pair #145 was
+    // about, and a failure that names them reads better than a listing diff.
+    assert_eq!(
+        world.cache_fingerprint(),
+        before,
+        "the warm path wrote somewhere in the cache"
+    );
     // And the shape wayfinder hands dl for every agent launch is still two trips.
     assert_eq!(
         world.calls().exact(&world.root),

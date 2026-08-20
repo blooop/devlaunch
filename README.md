@@ -1629,7 +1629,8 @@ Those cargo commands need no toolchain of your own inside this repository's devc
 1.97.1 is in the `default` pixi environment, so `pixi run cargo test --workspace` works the moment a
 container comes up. `pixi run` keeps the directory it was called from, so `cd rust` first, exactly as
 above. `rust/rust-toolchain.toml` remains the pin of record — a conda `rust` does not read it, so the
-version is named again in `pyproject.toml` and moves by hand with `ci.yml`'s two toolchain steps.
+version is named again in `pyproject.toml` and moves by hand with `ci.yml`'s three toolchain
+steps.
 
 The Python that remains is the **acceptance harness** and the repo's own documentation guards. It
 judges the shipped binaries from outside — spawning them against a real devpod, or against the fake
@@ -1648,6 +1649,41 @@ an installed release, the wheel's binary:
 # a bare pytest, so the release build the `test` task depends on is skipped too
 DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
 ```
+
+### Coverage: two numbers, and neither is the other
+
+The crates that ship and the harness that judges them are measured separately, because they are
+different things and a single figure is about neither:
+
+```bash
+pixi run coverage-rust                         # cargo llvm-cov over the whole workspace
+cd rust && pixi run cargo llvm-cov --workspace --html -- --test-threads=1   # ...as a tree to open
+```
+
+The task carries its own `cwd`, so it runs from anywhere in the checkout; a bare `cargo llvm-cov`
+needs the `cd` like any other cargo command.
+
+```bash
+pixi run coverage && pixi run coverage-report  # the Python harness, `scripts/` and the doc guards
+```
+
+CI runs both — `rust-coverage` and `ci` — and uploads them to Codecov under the `rust` and `python`
+flags, which `codecov.yml` keeps from being averaged. Before #294 only the second one existed, and
+after #267 retired the Python `dl` what it measured was `scripts/`: the shipped code's coverage was
+nobody's for two releases.
+
+**One thing to know if you write a boundary test.** The suites in `rust/dl/tests` and
+`rust/aid/tests` spawn the real binary with `env_clear()`, so the child gets exactly the world the
+test built and nothing from your shell. An instrumented binary needs `LLVM_PROFILE_FILE` to write
+its counters anywhere `cargo llvm-cov` will read them, so every one of those spawns calls
+`.keeping_coverage()` straight after `.env_clear()` — the one variable that is allowed back in.
+Leave it out of a new spawn and the test still passes; it just stops counting, silently, and takes
+whatever it was the only cover for down with it. Measured before that seam existed, one five-test
+suite that runs `dl` end to end reported `render.rs`, `commands.rs` and `cli.rs` at 0.00%.
+
+Two cargo tests are outside the CI measurement on purpose: `dl --test interrupt` and
+`--test lock_wait` kill real process trees, and a SIGKILLed process writes no counters. They run in
+the `rust` job like everything else, and `pixi run coverage-rust` includes them locally.
 
 Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
 working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
@@ -1946,6 +1982,11 @@ That volume was ~520 MB until the `rust` feature went into the `default`
 environment — measured either side of that change, the pixi environment is 521 MB
 without it and 2044 MB with it, and only about a quarter of the difference is the
 compiler itself: conda's `rust` links with a gcc toolchain, a sysroot and binutils.
+Adding `cargo-llvm-cov` and `llvm-tools` to that feature (#294) took it to
+**2348 MB**, measured either side on the same machine — 301 MB, nearly all of it
+`libllvm22`, for `pixi run coverage-rust` working in here rather than only on a
+runner. The same argument as below applies to it and the numbers are an order of
+magnitude smaller.
 
 **That 1.5 GB per branch is bought deliberately, and what it buys is isolation.**
 The toolchain that builds the crates is pinned in the project environment beside

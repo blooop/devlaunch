@@ -94,6 +94,17 @@ git-lfs = ">=3.4,<4"
 # the worst place for a toolchain difference to appear. Kept in lockstep by
 # `test_agents_doc.py`.
 rust = "1.97.1.*"
+# The coverage instrumentation for the crates above (#294). `cargo llvm-cov` drives
+# rustc's `-C instrument-coverage` and then reduces the `.profraw` files it leaves
+# with `llvm-profdata`/`llvm-cov`, which is why `llvm-tools` is here beside it: a
+# rustup toolchain gets those from the `llvm-tools-preview` component, and this
+# environment has no rustup. Their LLVM has to be the one rustc emitted for --
+# `rustc -vV` reports 22.1.6 against `llvm-tools` 22.1.8, the same major, which is
+# where the profile format is stable. If a `rust` bump ever crosses an LLVM major,
+# this pin moves with it and `cargo llvm-cov` says so loudly ("unsupported
+# instrumentation profile version") rather than miscounting.
+cargo-llvm-cov = ">=0.9.0,<0.10"
+llvm-tools = ">=22.1,<23"
 
 # The suite's own PyPI half. A pixi feature rather than
 # `[project.optional-dependencies]`, which needed a `[project]` table to hang off;
@@ -211,6 +222,25 @@ bench-points = "python scripts/bench_points.py"
 test-e2e = { cmd = "pytest -m e2e -ra test/e2e/", depends-on = ["build-release"] }
 coverage = { cmd = "coverage run -m pytest && coverage xml -o coverage.xml", depends-on = ["build-release"] }
 coverage-report = "coverage report -m"
+# The same measurement CI's `rust-coverage` job takes, in the container (#294).
+#
+# Deliberately runnable here rather than only on a runner: this environment carries
+# the toolchain that builds what ships precisely so a change can be verified in the
+# container instead of by pushing it and reading CI, and "which lines does my new
+# test actually reach" is a question with a one-command answer or no answer at all.
+#
+# `--workspace` where CI names the suites one at a time. CI splits them to give
+# each a timeout that names the wedged one; by hand, the whole thing in one command
+# is the point -- including `interrupt` and `lock_wait`, which CI leaves out. They
+# kill real process trees, so they contribute no counters either way; here they
+# cost a minute and are one less difference between the two runs.
+#
+# `--summary-only` prints the per-file table and no annotated source. Drop it for
+# the full listing, or `--html` for a tree to open:
+#   pixi run cargo llvm-cov --workspace --html -- --test-threads=1
+coverage-rust = { cmd = "cargo llvm-cov --workspace --locked --summary-only -- --test-threads=1", cwd = "rust" }
+# The lcov file CI uploads, for anything that reads one locally.
+coverage-rust-lcov = { cmd = "cargo llvm-cov --workspace --locked --lcov --output-path lcov.info -- --test-threads=1", cwd = "rust" }
 update-lock = "pixi update && git commit -a -m'update pixi.lock' || true"
 push = "git push"
 update-lock-push = { depends-on = ["update-lock", "push"] }

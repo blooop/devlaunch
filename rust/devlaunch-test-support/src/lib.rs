@@ -20,10 +20,14 @@
 //! assert_eq!(fake.state_of("owner-repo-main"), Some(WorkspaceState::Running));
 //! ```
 
+mod cache_tree;
+mod coverage;
 mod devpod;
 mod fake_runner;
 mod response;
 
+pub use cache_tree::{VOLATILE, cache_fingerprint, cache_shape};
+pub use coverage::KeepingCoverage;
 pub use devpod::{DEFAULT_STAMP, DevpodMachine, FakeWorkspace, Source, WorkspaceState};
 pub use fake_runner::{Call, FakeRunner, Scripted, Unscripted};
 pub use response::Response;
