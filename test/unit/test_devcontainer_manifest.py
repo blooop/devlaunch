@@ -40,6 +40,16 @@ PREBUILD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "devcontainer-prebuild
 FEATURE_INSTALLER = REPO_ROOT / ".devcontainer" / "claude-code" / "install.sh"
 SHIPPING_PROVISIONER = REPO_ROOT / "rust" / "devlaunch-core" / "src" / "flows" / "provision.rs"
 PIXI_GLOBAL_INSTALL = "pixi global install "
+
+DOCKERFILE = REPO_ROOT / ".devcontainer" / "Dockerfile"
+LOCKFILE = REPO_ROOT / "pixi.lock"
+#: Lock-file format version -> the lowest pixi release that can read it.
+#:
+#: Measured, one release at a time, against this repository's own `pixi.lock`:
+#: 0.67.0 refuses version 7 and 0.68.0 accepts it. Extend this table when the
+#: format moves; the test below fails on an unknown version rather than guessing,
+#: because a guess here is indistinguishable from the bug it exists to catch.
+MIN_PIXI_FOR_LOCK_VERSION = {6: (0, 40, 0), 7: (0, 68, 0)}
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 PIXI_LOCK = REPO_ROOT / "pixi.lock"
 
@@ -561,3 +571,53 @@ def test_the_feature_and_the_shipping_provisioner_state_one_claude_spec():
             f"claude-shim is installed as {spec!r} in one place and {claude[0]!r} in another; "
             "one package, one policy -- pin both sides or neither"
         )
+
+
+def parse_version(text: str) -> tuple:
+    """`v0.77.0` or `0.77.0` as a comparable tuple."""
+    return tuple(int(part) for part in text.lstrip("v").split("."))
+
+
+def test_the_devcontainers_pixi_can_read_the_lockfile_as_committed():
+    """A container whose pixi cannot read `pixi.lock` silently ignores it.
+
+    pixi does not fail on a lock-file newer than it understands. It warns and
+    then treats it as missing -- "The lock-file will be treated as missing and
+    regenerated" -- so the container solves its own environment instead of the
+    committed one. Three costs, none of which is a red tick anywhere: the
+    environment in the container is not the locked one, so the reproducibility
+    `frozen: true` buys CI is absent exactly where the work happens; every create
+    pays a full solve; and `pixi.lock` is tracked, so the regenerated file leaves
+    the work tree dirty and, if it is ever committed, inverts the break onto the
+    host.
+
+    This is a real occurrence, not a hypothesis: the lock went to version 7 in
+    4dd28c8 while the Dockerfile pinned v0.63.1, which reads at most version 6,
+    and every container create in between was quietly unlocked.
+
+    The pin is compared against a measured table rather than a rule of thumb, and
+    an unrecognised lock version fails rather than passing -- being unable to
+    answer the question is not the same as the answer being yes.
+    """
+    lock_version = int(
+        next(
+            line.split(":", 1)[1]
+            for line in LOCKFILE.read_text(encoding="utf-8").splitlines()
+            if line.startswith("version:")
+        ).strip()
+    )
+    assert lock_version in MIN_PIXI_FOR_LOCK_VERSION, (
+        f"pixi.lock is version {lock_version}, which MIN_PIXI_FOR_LOCK_VERSION does not know. "
+        "Find the lowest pixi that reads it and record it there -- do not delete this test"
+    )
+    pinned = next(
+        line.split("=", 1)[1].strip()
+        for line in DOCKERFILE.read_text(encoding="utf-8").splitlines()
+        if line.startswith("ARG PIXI_VERSION=")
+    )
+    required = MIN_PIXI_FOR_LOCK_VERSION[lock_version]
+    assert parse_version(pinned) >= required, (
+        f"{DOCKERFILE.name} pins pixi {pinned}, which cannot read pixi.lock version "
+        f"{lock_version} (needs >= {'.'.join(str(n) for n in required)}); the container would "
+        "discard the lock and solve its own environment"
+    )
