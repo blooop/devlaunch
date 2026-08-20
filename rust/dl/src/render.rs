@@ -1626,6 +1626,11 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         LaunchNotice::AlreadyRunningAttaching { workspace_id } => {
             format!("Workspace {workspace_id} is already running, attaching...")
         }
+        LaunchNotice::CreateNeverFinished { workspace_id } => format!(
+            "Workspace {workspace_id} was never finished setting up — devpod recorded no result \
+             for its create, so attaching to it would land as root in a container whose setup \
+             did not run. Bringing it up instead."
+        ),
         LaunchNotice::AlreadyRunning { workspace_id } => {
             format!("Workspace {workspace_id} is already running.")
         }

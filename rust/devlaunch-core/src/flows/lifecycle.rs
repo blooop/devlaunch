@@ -2528,6 +2528,81 @@ pub(crate) fn devpod_workspace_record(
         .join("workspace.json")
 }
 
+/// devpod's record of a *completed* create for one workspace.
+///
+/// devpod writes this beside [`devpod_workspace_record`] on its way out of a
+/// successful `up`, and it is where the container's remote user lives
+/// (`.MergedConfig.remoteUser`). A create that died in its lifecycle hooks leaves
+/// the record and no result — which is also why `devpod ssh` into one lands as
+/// root: there is no recorded user for it to become.
+pub(crate) fn devpod_workspace_result(
+    devpod_home: &Path,
+    context: &str,
+    workspace_id: &str,
+) -> PathBuf {
+    devpod_home
+        .join("contexts")
+        .join(context)
+        .join("workspaces")
+        .join(workspace_id)
+        .join("workspace_result.json")
+}
+
+/// Whether devpod finished creating a workspace, as far as its own records say.
+///
+/// Three arms rather than a bool, for the reason [`crate::domain::workspace_state`]
+/// needed three: "no evidence it finished" and "no evidence either way" are
+/// different facts, and only the first is a reason to act. A caller that acted on
+/// the second would rebuild every workspace on a host whose devpod home it cannot
+/// read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CreateRecord {
+    /// devpod wrote its create result, so the workspace was set up.
+    Completed,
+    /// devpod holds a record for this workspace and no result beside it: an `up`
+    /// started and did not finish.
+    NeverCompleted,
+    /// Nothing here can answer — no devpod home, no record under any context, a
+    /// directory that would not read, or one id in two contexts.
+    Unknown,
+}
+
+/// What devpod's own records say about whether this workspace's create finished.
+///
+/// Every context is searched rather than `default` being assumed: ids are unique
+/// per context, [`crate::flows::launch::Placement`] carries no context, and asking
+/// devpod for one would put a second round trip on the warm attach path this
+/// exists to guard. Two contexts holding the same id answer [`CreateRecord::Unknown`]
+/// rather than picking one — the ambiguity is the answer.
+pub(crate) fn create_record(devpod_home: Option<&Path>, workspace_id: &str) -> CreateRecord {
+    let Some(home) = devpod_home else {
+        return CreateRecord::Unknown;
+    };
+    let Ok(contexts) = std::fs::read_dir(home.join("contexts")) else {
+        return CreateRecord::Unknown;
+    };
+    let mut finished: Option<bool> = None;
+    for context in contexts.flatten() {
+        // The two paths are built by the same pair of helpers `--reconcile` uses,
+        // so devpod's on-disk layout is spelled out in one place and not three.
+        let Some(name) = context.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !devpod_workspace_record(home, &name, workspace_id).is_file() {
+            continue;
+        }
+        if finished.is_some() {
+            return CreateRecord::Unknown;
+        }
+        finished = Some(devpod_workspace_result(home, &name, workspace_id).is_file());
+    }
+    match finished {
+        Some(true) => CreateRecord::Completed,
+        Some(false) => CreateRecord::NeverCompleted,
+        None => CreateRecord::Unknown,
+    }
+}
+
 /// Why one devpod record could not be re-pointed.
 ///
 /// Unreadable and not-JSON are two arms where Python's one `except` clause caught
@@ -2770,6 +2845,78 @@ mod tests {
     use crate::flows::repo_manager::tests::{refusing_reads, refusing_writes, run_git};
     use crate::flows::repo_manager::{RefusalReason, RemoveTreeError, bare_dir};
     use crate::flows::workspace_clone::GitLfs;
+
+    /// One devpod home holding whatever these workspaces were left holding.
+    /// `Some(())` writes the create result beside the record; `None` leaves the
+    /// record alone, which is what an aborted `up` leaves behind.
+    fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("a scratch devpod home");
+        for (context, workspace_id, result) in entries {
+            let dir = home
+                .path()
+                .join("contexts")
+                .join(context)
+                .join("workspaces")
+                .join(workspace_id);
+            std::fs::create_dir_all(&dir).expect("a record directory");
+            std::fs::write(dir.join("workspace.json"), "{}").expect("a record");
+            if result.is_some() {
+                std::fs::write(dir.join("workspace_result.json"), "{}").expect("a result");
+            }
+        }
+        home
+    }
+
+    #[test]
+    fn a_create_result_beside_the_record_reads_as_completed() {
+        let home = devpod_home_with(&[("default", "myws", Some(()))]);
+        assert_eq!(
+            create_record(Some(home.path()), "myws"),
+            CreateRecord::Completed
+        );
+    }
+
+    /// The shape a `postCreateCommand` that exited non-zero leaves behind: devpod
+    /// wrote the workspace record on the way in and never wrote the result on the
+    /// way out. Measured against devpod 0.26.1.
+    #[test]
+    fn a_record_with_no_result_reads_as_never_completed() {
+        let home = devpod_home_with(&[("default", "myws", None)]);
+        assert_eq!(
+            create_record(Some(home.path()), "myws"),
+            CreateRecord::NeverCompleted
+        );
+    }
+
+    /// Three ways to have no answer, and none of them may read as
+    /// `NeverCompleted` -- each would rebuild a workspace that is perfectly fine.
+    #[test]
+    fn nothing_to_read_reads_as_unknown() {
+        let home = devpod_home_with(&[("default", "other", None)]);
+        assert_eq!(create_record(None, "myws"), CreateRecord::Unknown);
+        assert_eq!(
+            create_record(Some(home.path()), "myws"),
+            CreateRecord::Unknown
+        );
+        let empty = tempfile::tempdir().expect("an empty home");
+        assert_eq!(
+            create_record(Some(empty.path()), "myws"),
+            CreateRecord::Unknown
+        );
+    }
+
+    /// Ids are unique per context, not globally, so one id in two contexts is an
+    /// ambiguity rather than a finding. Answering from whichever context the
+    /// directory iteration reached first would rebuild a healthy workspace on the
+    /// strength of a different context's abandoned one.
+    #[test]
+    fn one_id_in_two_contexts_reads_as_unknown() {
+        let home = devpod_home_with(&[("default", "myws", Some(())), ("work", "myws", None)]);
+        assert_eq!(
+            create_record(Some(home.path()), "myws"),
+            CreateRecord::Unknown
+        );
+    }
 
     #[test]
     fn a_devpod_that_cannot_be_run_fails_the_stage_but_one_that_refuses_does_not() {
