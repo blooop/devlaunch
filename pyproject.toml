@@ -7,9 +7,12 @@
 # and the frozen Python build the parity harness still runs as the reference
 # implementation: `test/fixtures/e2e_helpers.py` defaults `DEVLAUNCH_DL_CMD` to
 # `python -m devlaunch.dl`, most of `test/` imports `devlaunch.*` directly, and
-# `.devcontainer/devcontainer.json`'s `postCreateCommand` is a bare `pixi install`
-# with no Rust toolchain behind it. So hatchling and the editable self-install
-# below stay exactly as they were; they serve the suite, not the release.
+# `.devcontainer/devcontainer.json`'s `postCreateCommand` is a bare `pixi install`.
+# So hatchling and the editable self-install below stay exactly as they were; they
+# serve the suite, not the release. The `rust` feature further down does put a
+# toolchain in that environment, but nothing here is built with it: it is for
+# building the crates under `rust/` from inside a container, and what ships is
+# still built by maturin and cargo from the manifests named above.
 [project]
 name = "devlaunch"
 # Read, not written -- from `rust/Cargo.toml`'s `[workspace.package] version`, the
@@ -78,6 +81,28 @@ gh = ">=2.83.0,<3.0"
 [tool.pixi.feature.test.dependencies]
 git-lfs = ">=3.4,<4"
 
+# The toolchain that builds what ships, in the environment the devcontainer
+# installs -- so `pixi run cargo test` works the moment a container comes up and
+# an agent working in one can compile the thing it is editing. Before this, the
+# container had no cargo at all: a Rust change could be written in here and not
+# built, and the only verification available was pushing it and reading CI.
+#
+# `rust/rust-toolchain.toml` stays the pin of record; this and `ci.yml`'s two
+# `dtolnay/rust-toolchain` steps are kept in lockstep with it by hand, the same
+# arrangement those two steps already had. A conda `rust` does not read
+# `rust-toolchain.toml` -- that file is rustup's -- so the version has to be said
+# again here rather than derived from it.
+#
+# A feature on `default` alone, not a plain dependency: `py310`-`py313` exist to
+# run the frozen Python reference against four interpreters and have no use for
+# cargo, and a plain dependency would put the toolchain in each of their solves
+# and CI caches. It is not free where it does go -- the environment goes from
+# 521MB to 2044MB, since conda's `rust` links with a gcc toolchain, a sysroot and
+# binutils -- and README's "Disk cost of the dev container" carries the numbers
+# and the reason that trade is the right one.
+[tool.pixi.feature.rust.dependencies]
+rust = "1.97.*"
+
 [tool.pixi.feature.py310.dependencies]
 python = "3.10.*"
 [tool.pixi.feature.py311.dependencies]
@@ -124,7 +149,7 @@ aid = "devlaunch.aid:main"
 
 # Environments
 [tool.pixi.environments]
-default = { features = ["test"], solve-group = "default" }
+default = { features = ["test", "rust"], solve-group = "default" }
 py310 = ["py310", "test"]
 py311 = ["py311", "test"]
 py312 = ["py312", "test"]

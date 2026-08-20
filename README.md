@@ -1621,6 +1621,12 @@ cd .. && python3 rust/parity.py lint           # the spec-ledger and manifest ga
 python3 rust/parity.py run                     # both pytest tiers against the release binaries
 ```
 
+Those cargo commands need no toolchain of your own inside this repository's devcontainer: `rust`
+1.97.1 is in the `default` pixi environment, so `pixi run cargo test --workspace` works the moment a
+container comes up. `pixi run` keeps the directory it was called from, so `cd rust` first, exactly as
+above. `rust/rust-toolchain.toml` remains the pin of record — a conda `rust` does not read it, so the
+version is named again in `pyproject.toml` and moves by hand with `ci.yml`'s two toolchain steps.
+
 `pixi run dl` and `pixi run aid` in this repository's environment are still the **Python** build (that
 is what the harness needs installed); the binaries are `rust/target/release/dl` and `…/aid`, and
 `DEVLAUNCH_DL_CMD` / `DEVLAUNCH_AID_CMD` are the seams that point the suite at them.
@@ -1885,9 +1891,22 @@ smallest of the three.
 
 ### Disk cost of the dev container
 
-Opening a devcontainer for a branch costs about **2 GB on the host before you do
+Opening a devcontainer for a branch costs about **3.3 GB on the host before you do
 anything in it**: ~600 MB of image layers unique to this image, a ~680 MB container
-writable layer, and a ~520 MB `<workspace>-pixi` volume.
+writable layer, and a ~2.0 GB `<workspace>-pixi` volume.
+
+That volume was ~520 MB until the `rust` feature went into the `default`
+environment — measured either side of that change, the pixi environment is 521 MB
+without it and 2044 MB with it, and only about a quarter of the difference is the
+compiler itself: conda's `rust` links with a gcc toolchain, a sysroot and binutils.
+
+**That 1.5 GB per branch is bought deliberately, and what it buys is isolation.**
+The toolchain that builds the crates is pinned in the project environment beside
+the pinned `devpod`, so a workspace compiles what it is editing with no host
+toolchain, no `rustup`, and no global install anywhere in the picture — and it is
+the same version on every machine and in CI. Paying for that once per branch
+workspace is the trade; a leaner environment that sent whoever is working in the
+container back to a host `cargo` would be the wrong end of it.
 
 The container carries its own Docker daemon, and that daemon's `/var/lib/docker`
 lives on a second named volume. One `pixi run test-e2e` plus a couple of nested
@@ -1895,7 +1914,7 @@ workspaces puts **~2.3 GB** in there, and nothing garbage-collects it — the in
 daemon reports ~45% of its images reclaimable with no reclaimer. Nested daemons
 share no layers with the host or with each other, so this is paid once per branch.
 
-**Budget ~4 GB per branch you are actively developing and e2e-testing — about 12 GB
+**Budget ~5.5 GB per branch you are actively developing and e2e-testing — about 17 GB
 for three concurrent branches.**
 
 The time cost is cold pulls in a fresh nested daemon: the first `devpod up` inside a
