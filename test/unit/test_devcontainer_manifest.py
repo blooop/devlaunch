@@ -9,6 +9,14 @@ host's network namespace, and it does not hand the container the developer's
 `pixi run test-e2e` is asserted through the task runner rather than by reading
 the manifest back, because "there is a task called test-e2e" is the claim the
 README makes to a reader, and only the runner can answer it.
+
+The prebuild tests at the bottom are here for a different reason from the rest.
+The others guard claims whose violation *fails*: no daemon, no provider, a
+clobbered ssh file. A broken prebuild fails at nothing -- devpod treats every
+unanswerable lookup as a cache miss and builds locally, exactly as it did before
+prebuilds existed -- so the only symptom is that opening a container is slow
+again, months later, with no commit to blame. These are the tests for a
+regression that cannot announce itself.
 """
 
 import json
@@ -25,6 +33,8 @@ DIND_FEATURE = "ghcr.io/devcontainers/features/docker-in-docker:2"
 CONTAINER_SSH_DIR = "/home/vscode/.ssh"
 LOCAL_HOME = "${localEnv:HOME}"
 SSH_SOURCE_PREFIX = f"{LOCAL_HOME}/.ssh/"
+PREBUILD_REPOSITORY = "ghcr.io/blooop/devlaunch-devcontainer"
+PREBUILD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "devcontainer-prebuild.yml"
 
 
 def parse_mount(spec: str) -> dict:
@@ -288,3 +298,87 @@ def test_pixi_resolves_a_test_e2e_task():
     )
     tasks = result.stdout.split()
     assert "test-e2e" in tasks
+
+
+def test_devcontainer_build_context_stays_inside_the_devcontainer_directory(devcontainer):
+    """The build context must not climb out of `.devcontainer`.
+
+    devpod's prebuild tag is a hash of the build context as well as of the
+    config, so a context of `..` -- which is what this was -- makes the tag move
+    on every commit to any file in the repository, and no published prebuild can
+    ever match one again. Nothing in the Dockerfile copies from the context, so
+    widening it buys nothing to weigh against that.
+
+    The failure mode is why this is a test rather than a note: a context that
+    escapes does not break a launch, it silently returns every launch to building
+    locally.
+    """
+    context = devcontainer["build"]["context"]
+    resolved = (DEVCONTAINER_JSON.parent / context).resolve()
+    devcontainer_dir = DEVCONTAINER_JSON.parent.resolve()
+    assert resolved == devcontainer_dir or devcontainer_dir in resolved.parents, (
+        f"build.context {context!r} resolves to {resolved}, outside {devcontainer_dir}; "
+        "the prebuild tag would move on every commit"
+    )
+
+
+def test_devcontainer_declares_the_prebuild_repository_devpod_looks_in(devcontainer):
+    """Declared in the manifest, so no flag or env var has to be remembered.
+
+    devpod reads `customizations.devpod.prebuildRepository` on every `up`, which
+    is every `dl` launch. Passing `--prebuild-repository` instead would work for
+    whoever remembered it and for nobody else, and `dl` passes no such flag.
+    """
+    assert devcontainer["customizations"]["devpod"]["prebuildRepository"] == PREBUILD_REPOSITORY
+
+
+def test_the_cache_fallback_points_at_the_same_repository_as_the_prebuild(devcontainer):
+    """One registry, written down twice, kept in step.
+
+    `build.cacheFrom` serves the builders that know nothing about devpod
+    prebuilds -- VS Code's "Reopen in Container", a plain `devcontainer up` --
+    and devpod publishes the `:latest` it names from the same task that publishes
+    the prebuild. Pointed at some other repository it would import cache from an
+    image nothing pushes, which is a miss on every build and looks like nothing.
+    """
+    cache_from = devcontainer["build"]["cacheFrom"]
+    assert cache_from.startswith(f"{PREBUILD_REPOSITORY}:"), (
+        f"build.cacheFrom {cache_from!r} is not a tag of {PREBUILD_REPOSITORY}"
+    )
+
+
+def test_the_prebuild_workflow_watches_the_directory_the_hash_is_computed_from():
+    """The workflow's path filter has to cover every input to the tag.
+
+    The filter is what decides whether a commit republishes the image, and the
+    hash reads the build config and the build context -- both of which live under
+    `.devcontainer/`. A filter narrower than that leaves commits that moved the
+    tag with no image at the new tag, which is a silent return to local builds.
+
+    Asserted as text rather than parsed YAML on purpose: pyyaml is not in this
+    project's environment, and the claim is about one literal line.
+    """
+    assert PREBUILD_WORKFLOW.is_file(), f"{PREBUILD_WORKFLOW} is what publishes the prebuild"
+    workflow = PREBUILD_WORKFLOW.read_text()
+    assert "'.devcontainer/**'" in workflow, (
+        "the prebuild workflow does not watch .devcontainer/**, which is where "
+        "every input to the prebuild hash lives"
+    )
+
+
+def test_pixi_resolves_a_devcontainer_prebuild_task():
+    """`pixi run devcontainer-prebuild` exists, per the task runner itself.
+
+    The workflow invokes it by that name, so a rename that misses one leaves a
+    job whose only failure is a task-not-found -- late, and after the runner has
+    already paid for a checkout and an environment.
+    """
+    pixi = shutil.which("pixi")
+    assert pixi is not None, "pixi is the project's task runner and must be on PATH"
+    result = subprocess.run(
+        [pixi, "task", "list", "--manifest-path", str(REPO_ROOT / "pyproject.toml")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "devcontainer-prebuild" in result.stdout.split()

@@ -117,6 +117,34 @@ half-edited, `git stash` restores a working `pixi run dl` with no reinstall, and
 the host's released `dl` — the build that opened this container — is one level up,
 untouched.
 
+## The devcontainer is prebuilt
+
+Opening this repo's devcontainer pulls `ghcr.io/blooop/devlaunch-devcontainer`
+rather than building it. `.devcontainer/devcontainer.json` declares it under
+`customizations.devpod.prebuildRepository`, and `devpod up` looks for one exact
+tag — a hash of the build config and the build context — before it builds
+anything. A miss is silent and falls through to a local build.
+
+Two rules follow from that, and both are about the hash:
+
+- **The build context is `.devcontainer`, deliberately.** Widening it back to the
+  repository root makes the tag move on every commit to any file, which is a
+  prebuild that never matches again. Nothing in the Dockerfile copies from the
+  context, so there is no reason to widen it.
+- **Changing anything under `.devcontainer/` invalidates the prebuild** — the
+  Dockerfile and the `claude-code` feature's scripts included, since they live
+  inside the context. `.github/workflows/devcontainer-prebuild.yml` republishes
+  on pushes to `main` that touch that directory; its path filter is exactly the
+  hash's inputs, so keep the two in step. Until it runs, that commit builds
+  locally.
+
+`pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`.
+
+The package must be public or the lookup returns DENIED and every launch silently
+builds locally. GHCR creates it private and no workflow can change that; it is a
+one-time manual setting, and it cannot be done before the first publish creates
+the package. See "The prebuilt dev container image" in README.md.
+
 ## Documentation Maintenance
 
 - **Keep README up to date**: When modifying CLI commands, flags, or usage patterns, update the README.md to reflect the current tool behavior. Run `pixi run dl --help` to see the current help output and ensure the README matches.

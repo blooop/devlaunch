@@ -1635,6 +1635,107 @@ namespace: a nested daemon needs a namespace of its own, or it co-manages the
 host's `docker0` bridge and writes its NAT rules into the host's netfilter
 tables.
 
+### The prebuilt dev container image
+
+Opening this repository's devcontainer used to build it: base image, pixi, the
+local `claude-code` feature and `docker-in-docker`, several minutes of it, once
+per branch. CI publishes that image now, so opening a workspace pulls it instead.
+
+```
+ghcr.io/blooop/devlaunch-devcontainer
+```
+
+Nothing has to be configured to use it. `.devcontainer/devcontainer.json` names
+the repository under `customizations.devpod.prebuildRepository`, and `devpod up`
+— which is every `dl` launch — checks it before building anything. The check is
+for one exact tag: devpod hashes the build config together with the build
+context and asks for `<repository>:devpod-<hash>`. A hit is used directly,
+features included; a miss falls through to a local build, silently and without
+failing. So the prebuild is a speed-up that cannot break a launch, and the
+question to ask when a container open is slow is whether the tag matched.
+
+Two consequences worth knowing:
+
+- **The build context is `.devcontainer`, not the repository root**, and that is
+  what makes the tag usable. The Dockerfile copies nothing out of the context,
+  so the root was never needed — but it was hashed, which meant a different tag
+  on every commit to any file and a prebuilt image that never matched one.
+  Scoped to `.devcontainer`, the tag moves when `.devcontainer/**` moves, the
+  Dockerfile and the local feature's scripts included.
+- **A commit whose `.devcontainer/` differs from the last prebuild builds
+  locally.** That is the correct answer rather than a gap: the alternative is a
+  container built from something other than what the branch asks for. The pull
+  comes back once the change is on `main`.
+
+`.github/workflows/devcontainer-prebuild.yml` publishes it, on pushes to `main`
+that touch `.devcontainer/**` and on manual dispatch. Its path filter is exactly
+the set of inputs to the hash, so a commit it skips is one that could not have
+moved the tag. To publish from a branch by hand:
+
+```bash
+docker login ghcr.io                  # a PAT with write:packages, or `gh auth token`
+pixi run devcontainer-prebuild        # devpod build . --tag latest
+```
+
+Both are idempotent: an existing prebuild is found and returned rather than
+rebuilt and repushed.
+
+**The package has to be made public once, by hand.** GHCR creates a package
+private no matter how public its repository is, and a package's visibility is not
+something a workflow can set — there is no REST endpoint for it and no `gh`
+subcommand.
+
+**It cannot be done in advance.** There is nothing to configure until the
+workflow's first successful run creates the package, and every URL below 404s
+until then — which is what a 404 there means, rather than a wrong link:
+
+```bash
+gh api users/blooop/packages/container/devlaunch-devcontainer --jq .visibility
+# "Package not found" => not published yet, so there is nothing to make public
+# "private"           => published; do the steps below
+# "public"            => done
+```
+
+Once it is published, the settings page is
+
+<https://github.com/users/blooop/packages/container/devlaunch-devcontainer/settings>
+
+→ *Danger Zone* → *Change visibility* → **Public**. If that URL does not resolve,
+navigate instead: <https://github.com/blooop?tab=packages> → *devlaunch-devcontainer*
+→ *Package settings*. (`/users/blooop/...` and not `/orgs/...` because `blooop` is
+a user account; an organisation's packages live under a different path.)
+
+Left private, the lookup comes back `DENIED`, devpod reads that as a miss, and
+every launch quietly builds locally — the behaviour from before any of this
+existed, which is to say the failure is invisible. Check it with a logged-out
+pull:
+
+```bash
+docker logout ghcr.io
+docker manifest inspect ghcr.io/blooop/devlaunch-devcontainer:latest >/dev/null && echo public
+```
+
+The `org.opencontainers.image.source` label in the Dockerfile is a separate
+thing: it links the package to this repository, which is what puts a source link
+on the package page and lets this repository's Actions push to it. It does not
+affect visibility.
+
+The `:latest` tag that command also pushes is not what devpod looks for. It is
+the moving alias `build.cacheFrom` points at, a best-effort layer cache for
+builders that know nothing about devpod prebuilds — VS Code's "Reopen in
+Container", a plain `devcontainer up`. Those still run a build; what they save is
+whatever layers the cache can serve them.
+
+The image is amd64. The target architecture is part of the hash, so an arm64 host
+computes a tag the workflow never publishes and builds locally — correct, just
+not fast. Publishing for arm64 too is a matrix over `ubuntu-latest` and
+`ubuntu-24.04-arm` in that workflow, and needs no manifest merging, since each
+architecture's prebuild is a tag of its own.
+
+`postCreateCommand` is not in the image and cannot be: `pixi install` and the
+provider registration run at container create, after the image exists. The
+`<workspace>-pixi` volume is what makes them cheap the second time.
+
 ### Disk cost of the dev container
 
 Opening a devcontainer for a branch costs about **2 GB on the host before you do

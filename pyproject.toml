@@ -115,6 +115,21 @@ dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on 
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
 dev-restart = { cmd = "devpod up . --recreate --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-restart-vs = { cmd = "devpod up . --recreate --ide vscode", depends-on = ["dev-add-docker"] }
+# Build this repo's devcontainer and publish it to the prebuild repository named
+# in .devcontainer/devcontainer.json (customizations.devpod.prebuildRepository),
+# so that the next `dl blooop/devlaunch` pulls an image instead of building one.
+#
+# No `--repository`: devpod reads the destination out of devcontainer.json, which
+# keeps the registry written down in exactly one place. The tag is devpod's own
+# prebuild hash, and `--tag latest` adds the moving alias that `build.cacheFrom`
+# points at for builders that do not understand prebuilds (VS Code, plain
+# `devcontainer up`).
+#
+# `.github/workflows/devcontainer-prebuild.yml` runs this on pushes to `main`
+# that touch `.devcontainer/**`; it is a task so the same command can be run by
+# hand -- after `docker login ghcr.io` -- to publish from a branch. Idempotent
+# either way: an existing prebuild is found and returned, not rebuilt.
+devcontainer-prebuild = { cmd = "devpod build . --tag latest", depends-on = ["dev-add-docker"] }
 prek = "prek run -a"
 prek-update = "prek autoupdate"
 format = "ruff format ."
