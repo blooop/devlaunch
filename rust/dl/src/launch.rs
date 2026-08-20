@@ -33,6 +33,7 @@
 use std::path::Path;
 
 use devlaunch_core::domain::spec::DevcontainerPath;
+use devlaunch_core::flows::completion_cache;
 use devlaunch_core::flows::launch::{
     self, Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Plan, Provision,
     Session,
@@ -197,12 +198,18 @@ pub(crate) fn render_launch<'r>(
         );
         launch.run(target, verb, devcontainer)
     };
-    ending_of(outcome)
+    ending_of(outcome, cache)
 }
 
 /// The exit code this launch ends with, and the one line it may still have to
 /// print.
-fn ending_of(outcome: Result<Launched, LaunchAborted>) -> Ending {
+///
+/// `cache` is here for one line only: a clone the host answered "no such
+/// repository" to is checked against the completion cache, so a mistyped owner is
+/// told the name it probably meant instead of being left with git's ssh advice.
+/// Read on this path and no other — the file is opened only once a launch has
+/// already failed.
+fn ending_of(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ending {
     match outcome {
         Err(aborted) => {
             eprintln!("{}", render::launch_abort(&aborted));
@@ -219,6 +226,12 @@ fn ending_of(outcome: Result<Launched, LaunchAborted>) -> Ending {
         Ok(Launched::Refused(refused)) => {
             if let Some(line) = render::launch_refusal(&refused) {
                 eprintln!("{line}");
+            }
+            if let Some(known) =
+                completion_cache::read_completion_cache(&completion_cache::cache_path(cache))
+                && let Some(hint) = render::wrong_owner_hint(&refused, &known)
+            {
+                eprintln!("{hint}");
             }
             match refused {
                 // devpod's own status back, and nothing printed: its diagnostics

@@ -129,6 +129,56 @@ impl World {
         self.root.join(relative)
     }
 
+    /// An `ssh` that fails the way a host refusing a clone fails, saying *reason*.
+    ///
+    /// The world's stock `GIT_SSH_COMMAND` is `false`, which is silent — enough to
+    /// keep a test offline, and useless for anything that reads what the host said.
+    /// Returned as a path for the caller to pass back in, so the wording is the
+    /// test's own.
+    ///
+    /// The wording goes in a file beside the script rather than into the script, so
+    /// that no reason has to be shell-safe: interpolated into `echo '…'` an
+    /// apostrophe would close the quote and turn the script into a syntax error —
+    /// which is a test failing for a reason unrelated to the code, and GitLab's real
+    /// message ("you don't have permission to view it") carries one.
+    fn fake_ssh(&self, reason: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let said = self.path("bin/ssh-refusing.reason");
+        std::fs::write(&said, format!("{reason}\n")).expect("the refusal wording is written");
+        let path = self.path("bin/ssh-refusing");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ncat {} >&2\nexit 128\n", said.display()),
+        )
+        .expect("the fake ssh is written");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake ssh is executable");
+        path
+    }
+
+    /// A completion cache holding *repos* and nothing else.
+    ///
+    /// Only the `repos` list is filled: it is the one list the wrong-owner hint
+    /// reads, and a cache dl wrote itself would carry branches and workspaces this
+    /// has no use for.
+    fn write_completion_cache(&self, repos: &[&str]) {
+        let dir = self.path("cache/devlaunch");
+        std::fs::create_dir_all(&dir).expect("the cache directory");
+        let repos = repos
+            .iter()
+            .map(|repo| format!("\"{repo}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            dir.join("completions.json"),
+            format!(
+                "{{\"workspaces\": [], \"repos\": [{repos}], \"owners\": [], \"branches\": []}}"
+            ),
+        )
+        .expect("the completion cache is written");
+    }
+
     /// The devpod calls made so far, in order.
     ///
     /// **`devpod list --output json` is left out**, and that is the known race
@@ -912,6 +962,171 @@ fn a_repository_that_cannot_be_cloned_says_so_in_gits_own_words() {
     );
     // Nothing was asked of devpod: the host could not prepare a workspace to open.
     assert!(world.calls().exact(&world.root).is_empty());
+}
+
+#[test]
+fn a_repository_not_found_under_one_owner_is_offered_the_owner_dl_knows() {
+    // The wrong-owner case, which git cannot diagnose: `kinisi/kinisi_ros` is a
+    // repository the host says it has not got, and `kinisi-robotics/kinisi_ros` is
+    // in the same completion cache the shell offers. git's own words stay — they
+    // are what a reader with no cache entry has — and the second line names the
+    // spec to run instead.
+    let world = World::with(&["--warm"]);
+    let ssh = world.fake_ssh("ERROR: Repository not found.");
+    world.write_completion_cache(&["blooop/devlaunch", "kinisi-robotics/kinisi_ros"]);
+
+    let run = world.dl_with(
+        &["kinisi/kinisi_ros"],
+        &[("GIT_SSH_COMMAND", ssh.to_str().expect("a utf-8 path"))],
+    );
+
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert!(
+        said.iter()
+            .any(|line| line.contains("Failed to clone repository: ")),
+        "git's own refusal did not reach the user: {said:?}"
+    );
+    assert!(
+        said.contains(
+            &"Did you mean 'kinisi-robotics/kinisi_ros'? git could not find \
+              'kinisi/kinisi_ros', and dl knows that repository name under another owner."
+        ),
+        "the wrong-owner hint is missing: {said:?}"
+    );
+}
+
+#[test]
+fn a_spec_with_a_branch_is_offered_the_same_branch_under_the_owner_dl_knows() {
+    // A spec that names a branch fails one step further along — the preparation
+    // rather than the default-branch lookup — and the suggestion has to be retypable
+    // as it reads, so it carries the branch back.
+    let world = World::with(&["--warm"]);
+    let ssh = world.fake_ssh("ERROR: Repository not found.");
+    world.write_completion_cache(&["kinisi-robotics/kinisi_ros"]);
+
+    let run = world.dl_with(
+        &["kinisi/kinisi_ros@fix/support-polygon"],
+        &[("GIT_SSH_COMMAND", ssh.to_str().expect("a utf-8 path"))],
+    );
+
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert!(
+        said.iter().any(|line| line
+            .starts_with("Did you mean 'kinisi-robotics/kinisi_ros@fix/support-polygon'?")),
+        "the branch did not travel with the suggestion: {said:?}"
+    );
+}
+
+#[test]
+fn a_repository_the_cache_holds_under_the_owner_given_is_not_second_guessed() {
+    // The cache holding the spec that was typed is the strongest evidence available
+    // that the owner is right: this machine has launched it. A host refusing it
+    // today — access revoked, made private, a clone pruned from under its record —
+    // is not a reader who misremembered the owner, so pointing at a different one
+    // would be actively misleading.
+    let world = World::with(&["--warm"]);
+    let ssh = world.fake_ssh("ERROR: Repository not found.");
+    world.write_completion_cache(&["kinisi/kinisi_ros", "kinisi-robotics/kinisi_ros"]);
+
+    let run = world.dl_with(
+        &["kinisi/kinisi_ros"],
+        &[("GIT_SSH_COMMAND", ssh.to_str().expect("a utf-8 path"))],
+    );
+
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert!(
+        !said.iter().any(|line| line.starts_with("Did you mean")),
+        "a repository the cache knows under the owner given was second-guessed: {said:?}"
+    );
+}
+
+#[test]
+fn more_candidates_than_the_line_can_carry_are_counted_not_listed() {
+    // A repository name common across many cached owners would otherwise make one
+    // unreadable line out of the one line whose whole job is to be read. Three are
+    // named and the rest are counted — the count is what keeps the cap honest.
+    let world = World::with(&["--warm"]);
+    let ssh = world.fake_ssh("ERROR: Repository not found.");
+    world.write_completion_cache(&[
+        "a/dotfiles",
+        "b/dotfiles",
+        "c/dotfiles",
+        "d/dotfiles",
+        "e/dotfiles",
+    ]);
+
+    let run = world.dl_with(
+        &["mine/dotfiles"],
+        &[("GIT_SSH_COMMAND", ssh.to_str().expect("a utf-8 path"))],
+    );
+
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert!(
+        said.contains(
+            &"Did you mean 'a/dotfiles', 'b/dotfiles' or 'c/dotfiles'? git could not find \
+              'mine/dotfiles', and dl knows that repository name under 5 other owners — \
+              'dl --repos' lists them all."
+        ),
+        "the capped list did not account for what it left out: {said:?}"
+    );
+}
+
+#[test]
+fn a_repository_no_owner_in_the_cache_has_is_left_with_gits_words() {
+    // The other half: a name the cache cannot second-guess gets no "did you mean",
+    // because there is nothing to mean. A guess here would be noise on every
+    // first-ever clone of a repository.
+    let world = World::with(&["--warm"]);
+    let ssh = world.fake_ssh("ERROR: Repository not found.");
+    world.write_completion_cache(&["blooop/devlaunch"]);
+
+    let run = world.dl_with(
+        &["blooop/never-heard-of-it"],
+        &[("GIT_SSH_COMMAND", ssh.to_str().expect("a utf-8 path"))],
+    );
+
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert!(
+        !said.iter().any(|line| line.starts_with("Did you mean")),
+        "a repository with no candidate was guessed at anyway: {said:?}"
+    );
+}
+
+#[test]
+fn a_clone_that_failed_on_something_other_than_a_missing_repository_is_not_second_guessed() {
+    // A refused key or a dead network names a repository that may well exist under
+    // the owner given, and "did you mean" would send the reader after a problem
+    // they have not got. Only the host's own not-found wording earns the line.
+    //
+    // GitHub's refused-key message in full, because its last line is the trap the
+    // classification has to survive: git's stock ssh advice ends "and the
+    // repository exists", one word away from the wording that *does* earn a hint.
+    let world = World::with(&["--warm"]);
+    let ssh = world.fake_ssh(
+        "git@github.com: Permission denied (publickey).\n\
+         fatal: Could not read from remote repository.\n\
+         \n\
+         Please make sure you have the correct access rights\n\
+         and the repository exists.",
+    );
+    world.write_completion_cache(&["kinisi-robotics/kinisi_ros"]);
+
+    let run = world.dl_with(
+        &["kinisi/kinisi_ros"],
+        &[("GIT_SSH_COMMAND", ssh.to_str().expect("a utf-8 path"))],
+    );
+
+    run.exited(1);
+    let said = run.stderr_lines();
+    assert!(
+        !said.iter().any(|line| line.starts_with("Did you mean")),
+        "a credential failure was read as a wrong owner: {said:?}"
+    );
 }
 
 #[test]
