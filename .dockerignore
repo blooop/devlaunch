@@ -1,3 +1,14 @@
+# Nothing in this repository builds with the root as its context any more, so
+# this file is a safety net rather than a live constraint: .devcontainer's build
+# was the only such build, and its `context` is now `.devcontainer` (see the
+# comment on it -- devpod's prebuild tag is a hash of the context, so a
+# root-sized context meant a tag that moved on every commit and a prebuilt image
+# that never matched). The patterns are kept because the failures below are real,
+# they cost real time to diagnose, and the day something points a build at the
+# root again is not the day to rediscover them.
+#
+# What follows is written as it was when the devcontainer did build from here.
+#
 # The devcontainer image is built with the repository root as its context and a
 # Dockerfile that copies nothing out of it, so everything here is pure overhead
 # -- and .pixi is worse than overhead. It holds the solved environment, half a

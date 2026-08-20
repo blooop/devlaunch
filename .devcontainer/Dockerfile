@@ -1,5 +1,11 @@
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
+# Links the published image to this repository on GHCR. It is what puts a source
+# link on the package page and lets this repository's Actions push to the
+# package; see .github/workflows/devcontainer-prebuild.yml. It does not make the
+# package public -- that is a one-time setting on the package itself.
+LABEL org.opencontainers.image.source="https://github.com/blooop/devlaunch"
+
 ARG PIXI_VERSION=v0.63.1
 
 RUN curl -L -o /usr/local/bin/pixi -fsSL --compressed "https://github.com/prefix-dev/pixi/releases/download/${PIXI_VERSION}/pixi-$(uname -m)-unknown-linux-musl" \

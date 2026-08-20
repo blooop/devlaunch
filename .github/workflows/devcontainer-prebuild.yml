@@ -1,0 +1,105 @@
+name: Devcontainer prebuild
+
+# Builds this repository's devcontainer and publishes it to GHCR, so that opening
+# a workspace pulls an image instead of building one.
+#
+# The mechanism is devpod's, not a convention of ours. `devpod up` -- which is
+# what every `dl` launch runs -- hashes the devcontainer build config together
+# with the build context and looks for `<repository>:devpod-<hash>` in the
+# repositories named by `customizations.devpod.prebuildRepository`
+# (.devcontainer/devcontainer.json). If that exact tag is there it uses the image
+# directly, features included, and builds nothing. So the thing this workflow has
+# to get right is the *tag*, which is why the build runs through `devpod build`
+# rather than `docker buildx` or `devcontainers/ci`: those would push a
+# well-formed image under a tag devpod never asks for, which looks like success
+# and changes nothing.
+#
+# `devpod build` is also idempotent about it. It computes the hash, finds the
+# prebuild already present, and returns without rebuilding or repushing -- so a
+# re-run, or a dispatch against a commit whose `.devcontainer/` is unchanged,
+# costs a registry lookup.
+
+on:
+  push:
+    branches: [ "main" ]
+    # Exactly the inputs to the hash. `build.context` is `.devcontainer`, so the
+    # hashed context is this directory and nothing else -- which is what makes a
+    # path filter honest here rather than an optimisation that silently ships a
+    # stale image. A commit that changes `devlaunch/`, `rust/` or `pyproject.toml`
+    # cannot change the tag, so there is nothing for this workflow to do.
+    #
+    # The workflow file itself is in the list because a change to how the image
+    # is built or tagged should produce one.
+    paths:
+      - '.devcontainer/**'
+      - '.github/workflows/devcontainer-prebuild.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The one addition over the rest of this repository's workflows: pushing to
+  # ghcr.io/blooop/devlaunch-devcontainer with the default GITHUB_TOKEN. No new
+  # secret is involved.
+  packages: write
+
+# Serialised rather than cancelled. Two runs pushing to one package is the race
+# worth avoiding, and a cancelled prebuild leaves the tag it was building absent
+# -- which is a silent return to local builds for everyone on that commit, not a
+# red tick anybody sees.
+concurrency:
+  group: devcontainer-prebuild
+  cancel-in-progress: false
+
+jobs:
+  prebuild:
+    runs-on: ubuntu-latest
+    # The build is the base image, the pixi binary, and two features (the local
+    # claude-code one and docker-in-docker); the push is ~600 MB of layers unique
+    # to this image. Bounded for the same reason the e2e job is: a registry
+    # serving or accepting layers at a crawl is a job that otherwise hangs for
+    # six hours and reports a timeout nobody reads.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # devpod is a pixi dependency, pinned in the lockfile to the version this
+      # repository is written against -- so the tag this job publishes is
+      # computed by the same devpod that will later look for it. That agreement
+      # is the whole point of not installing devpod some other way here.
+      - uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          cache: true
+          frozen: true
+          environments: default
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `devpod build . --tag latest`, with the destination read out of
+      # devcontainer.json rather than repeated here -- see the task's comment in
+      # pyproject.toml. It depends on `dev-add-docker`, which is not optional on
+      # a runner: a fresh ~/.devpod has no provider and devpod seeds none, so
+      # `devpod build` would exit 1 with "no default provider found".
+      - name: Build and publish the prebuild
+        run: pixi run devcontainer-prebuild
+
+      # What is on this runner, in the log, because the tag is a hash nobody can
+      # derive by eye and "did the prebuild move?" is the question every
+      # investigation of a slow container open starts with.
+      #
+      # An empty listing is a legitimate outcome, not a failure: when the
+      # prebuild already exists `devpod build` returns before loading anything
+      # into the local daemon. Hence the `|| true` -- grep with no matches exits
+      # 1, and this step is a report rather than a check.
+      - name: Report
+        if: always()
+        run: |
+          echo "Local tags for ghcr.io/blooop/devlaunch-devcontainer"
+          echo "(empty means the prebuild was already published and nothing was rebuilt):"
+          docker images --format '{{.Repository}}:{{.Tag}}' \
+            | grep '^ghcr.io/blooop/devlaunch-devcontainer:' | sort || true
