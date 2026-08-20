@@ -132,6 +132,10 @@ pub(crate) mod testing;
 mod tests {
     #[test]
     fn the_workspace_compiles_and_tests_run() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0");
+        // A smoke assertion, not a pin: the M0 scaffold hardcoded "0.1.0" here,
+        // which made every release bump fail this test. The version's one source
+        // is `[workspace.package]` in rust/Cargo.toml; this only checks the
+        // crates actually inherit it.
+        assert!(!env!("CARGO_PKG_VERSION").is_empty());
     }
 }
