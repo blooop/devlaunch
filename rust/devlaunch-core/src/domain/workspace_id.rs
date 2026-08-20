@@ -1268,9 +1268,13 @@ mod tests {
     #[test]
     fn the_repo_slug_floor_still_leaves_the_ref_room() {
         // Saturating, so a floor raised past the budget fails this assertion
-        // rather than failing to compile.
+        // rather than failing to compile. The literal is deliberately not derived
+        // from the constants -- deriving it from the same expression asserts
+        // nothing -- so it moves by hand when the budget does, and widening the
+        // budget has to say so here instead of being absorbed in silence. 47 - 20
+        // - 8 - 2; it read 8 when the budget was 38.
         let room = TARGET_LENGTH.saturating_sub(REPO_SLUG_LENGTH + SUFFIX_LENGTH + 2);
-        assert_eq!(room, 8);
+        assert_eq!(room, 17);
         let parsed = id("owner", &"r".repeat(47), &"b".repeat(80));
         assert_eq!(
             parsed.value(),
