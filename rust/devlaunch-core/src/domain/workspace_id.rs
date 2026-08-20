@@ -154,8 +154,7 @@ fn is_word(c: char) -> bool {
 }
 
 /// [`is_safe_name`] as a refusal that names the part it rejected.
-// binary surface — not part of the frozen wf API (#251 §7)
-pub fn validate_ref_name(name: &str, part: NamePart) -> Result<(), UnsafeName> {
+pub(crate) fn validate_ref_name(name: &str, part: NamePart) -> Result<(), UnsafeName> {
     if is_safe_name(name) {
         Ok(())
     } else {

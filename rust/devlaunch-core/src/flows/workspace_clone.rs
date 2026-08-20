@@ -43,8 +43,9 @@ use super::branch_manager::{
     BranchEnsured, BranchError, BranchManager, EnsureBranch, LocalBranch, RemotePush,
 };
 use super::repo_manager::{
-    CacheNotice, Cleanup, CloneError, CloneIfMissingError, FetchOutcome, RemoveTreeError, RepoLock,
-    RepositoryManager, TreeRemoval, WrongRepoLock, clone_dir, remove_tree,
+    CacheNotice, Cleanup, CloneError, CloneIfMissingError, FetchOutcome, NotRefreshed,
+    RemoveTreeError, RepoLock, RepositoryManager, TreeRemoval, WrongRepoLock, clone_dir,
+    remove_tree,
 };
 use crate::clients::git::{self, Git};
 use crate::domain::config::WorktreeConfig;
@@ -87,7 +88,7 @@ pub(crate) enum BranchBase {
     /// cache's own `HEAD` when no default branch could even be named, or the
     /// requested branch itself when its fetch failed. `reason` is why nothing
     /// refreshed it, carried rather than reconstructed at the print site.
-    Stale { base: String, reason: String },
+    Stale { base: String, reason: NotRefreshed },
 }
 
 /// The name-or-why of a repository's default branch.
@@ -107,7 +108,7 @@ enum DefaultBranch {
     /// nothing to fetch, and a new branch cut from the bare cache's own `HEAD`.
     /// The reason is what tells the two apart afterwards, and it is carried rather
     /// than rebuilt at the print site.
-    Unknown { reason: String },
+    Unknown { reason: NotRefreshed },
 }
 
 impl DefaultBranch {
@@ -458,10 +459,7 @@ impl<'r> WorkspaceCloneManager<'r> {
                     owner: recorded.owner.clone(),
                     repo: recorded.repo.clone(),
                     branch: recorded.branch.clone(),
-                    reason: format!(
-                        "{:?} is not a safe {:?} name",
-                        unsafe_name.name, unsafe_name.part
-                    ),
+                    refused: unsafe_name,
                 });
                 None
             }
@@ -605,21 +603,12 @@ impl<'r> WorkspaceCloneManager<'r> {
             .map_err(EnsureBranchError::WrongRepoLock)?;
         let bare = self.repo_manager.bare_dir(owner, repo);
 
-        // The requested branch reaches here proven by a WorkspaceId on the cold
-        // path, so a refusal is only reachable for the recorded default branch
-        // below; an unsafe requested ref answers as a failed fetch rather than
-        // changing what this method returns.
-        let outcome = self
-            .repo_manager
-            .fetch_ref(owner, repo, branch, notices)
-            .unwrap_or_else(|unsafe_name| FetchOutcome::Failed {
-                reason: unsafe_reason(&unsafe_name),
-            });
+        let outcome = self.repo_manager.fetch_ref(owner, repo, branch, notices);
         let default = self.resolve_default_branch(storage, owner, repo, notices);
 
         let base = match outcome {
-            FetchOutcome::Updated => BranchBase::Fresh,
-            FetchOutcome::RefMissingOnRemote => match &default {
+            Ok(FetchOutcome::Updated) => BranchBase::Fresh,
+            Ok(FetchOutcome::RefMissingOnRemote) => match &default {
                 // The remote answered, so the branch really is new: base it on the
                 // default branch, and fetch *that* so it is based on something
                 // current. Whatever this second fetch answers, the branch creation
@@ -637,16 +626,35 @@ impl<'r> WorkspaceCloneManager<'r> {
             // Not an error here: a cached branch still launches. Deliberately no
             // default-branch fetch — nothing was learned about the remote, so
             // nothing licenses treating this branch as new.
-            FetchOutcome::Failed { reason } => {
+            Ok(FetchOutcome::Failed { reason }) => {
                 notices.say(CacheNotice::RefNotFetched {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
                     branch: branch.to_owned(),
-                    reason: reason.clone(),
+                    reason: NotRefreshed::FetchFailed {
+                        reason: reason.clone(),
+                    },
                 });
                 BranchBase::Stale {
                     base: branch.to_owned(),
-                    reason,
+                    reason: NotRefreshed::FetchFailed { reason },
+                }
+            }
+            // The requested branch reaches here proven by a WorkspaceId on the
+            // cold path, so this arm is not reachable from it; kept total because
+            // the proof is the caller's, not this method's to assume. An unsafe
+            // requested ref answers as a failed fetch rather than changing what
+            // this method returns.
+            Err(unsafe_name) => {
+                notices.say(CacheNotice::RefNotFetched {
+                    owner: owner.to_owned(),
+                    repo: repo.to_owned(),
+                    branch: branch.to_owned(),
+                    reason: NotRefreshed::UnsafeName(unsafe_name.clone()),
+                });
+                BranchBase::Stale {
+                    base: branch.to_owned(),
+                    reason: NotRefreshed::UnsafeName(unsafe_name),
                 }
             }
         };
@@ -682,13 +690,14 @@ impl<'r> WorkspaceCloneManager<'r> {
             // because the resolver's fallback is not this method's to assume: an
             // empty name has to mean "no default branch" here rather than
             // downstream, where it would read as a branch.
-            let reason = "no default branch is recorded".to_owned();
             notices.say(CacheNotice::DefaultBranchUnknown {
                 owner: owner.to_owned(),
                 repo: repo.to_owned(),
-                reason: reason.clone(),
+                reason: NotRefreshed::NoDefaultBranchRecorded,
             });
-            return DefaultBranch::Unknown { reason };
+            return DefaultBranch::Unknown {
+                reason: NotRefreshed::NoDefaultBranchRecorded,
+            };
         }
         DefaultBranch::Named(name)
     }
@@ -715,16 +724,12 @@ impl<'r> WorkspaceCloneManager<'r> {
         {
             Ok(outcome) => outcome,
             Err(unsafe_name) => {
-                let reason = unsafe_reason(&unsafe_name);
-                notices.say(CacheNotice::RefNotFetched {
-                    owner: owner.to_owned(),
-                    repo: repo.to_owned(),
-                    branch: default_branch.to_owned(),
-                    reason: reason.clone(),
+                notices.say(CacheNotice::RecordedDefaultBranchUnsafe {
+                    refused: unsafe_name.clone(),
                 });
                 return BranchBase::Stale {
                     base: default_branch.to_owned(),
-                    reason,
+                    reason: NotRefreshed::UnsafeName(unsafe_name),
                 };
             }
         };
@@ -736,7 +741,9 @@ impl<'r> WorkspaceCloneManager<'r> {
             // stale here: nothing fetched backs it.
             FetchOutcome::RefMissingOnRemote => BranchBase::Stale {
                 base: default_branch.to_owned(),
-                reason: format!("the remote has no branch '{default_branch}' to refresh from"),
+                reason: NotRefreshed::NoBranchOnRemote {
+                    branch: default_branch.to_owned(),
+                },
             },
             // Noticed here as well as reported, because the reason is carried
             // precisely so it can be printed: the new branch is about to be cut
@@ -746,11 +753,13 @@ impl<'r> WorkspaceCloneManager<'r> {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
                     branch: default_branch.to_owned(),
-                    reason: reason.clone(),
+                    reason: NotRefreshed::FetchFailed {
+                        reason: reason.clone(),
+                    },
                 });
                 BranchBase::Stale {
                     base: default_branch.to_owned(),
-                    reason,
+                    reason: NotRefreshed::FetchFailed { reason },
                 }
             }
         }
@@ -897,7 +906,10 @@ impl<'r> WorkspaceCloneManager<'r> {
                 let default_branch = self
                     .repo_manager
                     .get_repo(storage, owner, repo, notices)
-                    .map(|recorded| recorded.default_branch)
+                    // The stored spelling, as Python reads the field here — an
+                    // unrecorded branch stays the wire's `""` rather than
+                    // borrowing the absent-record fallback below.
+                    .map(|recorded| recorded.default_branch.stored_spelling().to_owned())
                     .unwrap_or_else(|| FALLBACK_DEFAULT_BRANCH.to_owned());
                 if !self.remote_ref_exists(ws_path, &default_branch, ORIGIN)? {
                     return Err(PrepareWorkspaceError::NoStartPoint {
@@ -1313,15 +1325,6 @@ fn say_branch(
     }
 }
 
-/// An unsafe name as a reason a caller can carry.
-///
-/// The refusal's own data — which part, and what the name was — rendered as one
-/// string because it lands in a [`BranchBase::Stale`] beside git's own words,
-/// where the *shape* has to be uniform even though the sources are not.
-fn unsafe_reason(refused: &UnsafeName) -> String {
-    format!("{:?} is not a safe {:?} name", refused.name, refused.part)
-}
-
 #[cfg(test)]
 mod tests {
     //! `test/test_workspace_clone.py`, `test/test_cold_launch_fetches.py`, the
@@ -1347,7 +1350,7 @@ mod tests {
 
     use super::*;
     use crate::domain::locks;
-    use crate::domain::model::Timestamp;
+    use crate::domain::model::{RecordedDefaultBranch, Timestamp};
     use crate::flows::repo_manager::{
         Cleanup, RemoveTreeError, bare_dir, clone_dir, repo_dir, repo_lock_path,
         tests::{
@@ -1646,7 +1649,10 @@ mod tests {
                 &mut cache.storage,
                 "owner",
                 "repo",
-                &named.default_branch,
+                named
+                    .default_branch
+                    .named()
+                    .expect("a named default branch"),
                 REMOTE_URL,
                 &mut ignoring(),
             )
@@ -2135,7 +2141,9 @@ mod tests {
             base.expect("ensured"),
             BranchBase::Stale {
                 base: "main".to_owned(),
-                reason: "the remote has no branch 'main' to refresh from".to_owned(),
+                reason: NotRefreshed::NoBranchOnRemote {
+                    branch: "main".to_owned()
+                },
             }
         );
     }
@@ -2196,7 +2204,9 @@ mod tests {
             base.expect("ensured"),
             BranchBase::Stale {
                 base: "main".to_owned(),
-                reason: "fatal: no such host".to_owned(),
+                reason: NotRefreshed::FetchFailed {
+                    reason: "fatal: no such host".to_owned()
+                },
             }
         );
         assert_eq!(
@@ -2216,7 +2226,9 @@ mod tests {
                     owner: "owner".to_owned(),
                     repo: "repo".to_owned(),
                     branch: "main".to_owned(),
-                    reason: "fatal: no such host".to_owned(),
+                    reason: NotRefreshed::FetchFailed {
+                        reason: "fatal: no such host".to_owned()
+                    },
                 },
                 CacheNotice::BranchAlreadyBothSides {
                     branch: "newbranch".to_owned(),
@@ -2249,7 +2261,11 @@ mod tests {
         match base.expect("ensured") {
             BranchBase::Stale { base, reason } => {
                 assert_eq!(base, "newbranch");
-                assert!(reason.contains("Could not read from remote repository"));
+                assert!(matches!(
+                    reason,
+                    NotRefreshed::FetchFailed { ref reason }
+                        if reason.contains("Could not read from remote repository")
+                ));
             }
             other => panic!("a stale base, got {other:?}"),
         }
@@ -2288,7 +2304,7 @@ mod tests {
             .get_repository("owner", "repo")
             .expect("a record")
             .clone();
-        recorded.default_branch = "--upload-pack=evil".to_owned();
+        recorded.default_branch = RecordedDefaultBranch::Named("--upload-pack=evil".to_owned());
         cache.storage.add_repository(recorded).expect("recorded");
         let fake = FakeGit::new().with_script(
             ["git", "fetch"],
@@ -2304,7 +2320,16 @@ mod tests {
         match base.expect("ensured, not raised") {
             BranchBase::Stale { base, reason } => {
                 assert_eq!(base, "--upload-pack=evil");
-                assert!(reason.contains("not a safe"), "{reason}");
+                assert!(
+                    matches!(
+                        reason,
+                        NotRefreshed::UnsafeName(UnsafeName {
+                            part: NamePart::Ref,
+                            ref name,
+                        }) if name == "--upload-pack=evil"
+                    ),
+                    "{reason:?}"
+                );
             }
             other => panic!("a stale base, got {other:?}"),
         }
@@ -2313,7 +2338,7 @@ mod tests {
                 notices.as_slice(),
                 [
                     CacheNotice::FetchingRef { .. },
-                    CacheNotice::RefNotFetched { .. },
+                    CacheNotice::RecordedDefaultBranchUnsafe { .. },
                     CacheNotice::BranchAlreadyBothSides { .. }
                 ]
             ),
@@ -2378,7 +2403,7 @@ mod tests {
         );
         assert_eq!(
             DefaultBranch::Unknown {
-                reason: "no default branch is recorded".to_owned()
+                reason: NotRefreshed::NoDefaultBranchRecorded
             }
             .start_point(),
             "HEAD",
@@ -2433,7 +2458,9 @@ mod tests {
                 repo: "repo".to_owned(),
                 branch: "nb4".to_owned(),
                 base: "main".to_owned(),
-                reason: "fatal: no such host".to_owned(),
+                reason: NotRefreshed::FetchFailed {
+                    reason: "fatal: no such host".to_owned()
+                },
             }],
             "one line for the whole degraded family, not one per failed fetch"
         );
@@ -3171,7 +3198,10 @@ mod tests {
                 owner: "owner".to_owned(),
                 repo: "repo".to_owned(),
                 branch: "--evil".to_owned(),
-                reason: "\"--evil\" is not a safe Ref name".to_owned(),
+                refused: UnsafeName {
+                    part: NamePart::Ref,
+                    name: "--evil".to_owned(),
+                },
             }],
             "named by the triple the derivation refused, which is the field to fix"
         );
@@ -3716,7 +3746,13 @@ mod tests {
         match &prepared.base {
             BranchBase::Stale { base, reason } => {
                 assert_eq!(base, "main");
-                assert!(!reason.is_empty(), "git said something about why");
+                assert!(
+                    matches!(
+                        reason,
+                        NotRefreshed::FetchFailed { reason } if !reason.is_empty()
+                    ),
+                    "git said something about why: {reason:?}"
+                );
             }
             other => panic!("a stale base, got {other:?}"),
         }

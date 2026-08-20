@@ -703,49 +703,31 @@ fn purge_devlaunch_data(context: &mut CommandContext<'_>, cache: &Path, yes: boo
         println!("Aborted.");
         return Cleanup::Ended(Ending::Done);
     }
-    let mut notices: Vec<LifecycleNotice> = Vec::new();
-    let purged = lifecycle::purge_all_data(
-        context,
-        &plan,
-        &mut |step| match render::purge_step(&step) {
+    let purged = lifecycle::purge_all_data(context, &plan, &mut |step| {
+        match render::purge_step(&step) {
             // Said before the round trip that may take a while, which is why this
             // is a callback and not a report: "Deleting workspace X" assembled
             // afterwards cannot be said in time.
             render::Line::Out(line) => println!("{line}"),
             render::Line::Err(line) => eprintln!("{line}"),
-        },
-        &mut notices,
-    );
-    let ending = match purged {
+        }
+    });
+    match purged {
         // Raised out of the command in Python, and it takes the report with it:
         // nothing after this point would work either.
-        Err(not_run) => return Cleanup::Raised(refuse_devpod("delete", &not_run)),
+        Err(not_run) => Cleanup::Raised(refuse_devpod("delete", &not_run)),
         Ok(outcome) => {
             print(&render::purge_outcome(&outcome));
             if outcome.finished() {
-                Ending::Done
+                Cleanup::Ended(Ending::Done)
             } else {
                 // Not 0: a clone the user was told would go is still on disk. Which
                 // of the two failures happened is in the report above, where
                 // somebody can act on it.
-                Ending::Refused
+                Cleanup::Ended(Ending::Refused)
             }
         }
-    };
-    // Every workspace a purge could not delete has already been said by the step
-    // callback above; saying the notice for it too would print it twice.
-    say_except_purge_failures(&notices);
-    Cleanup::Ended(ending)
-}
-
-/// The notices a purge collected, minus the ones its steps already said.
-fn say_except_purge_failures(notices: &[LifecycleNotice]) {
-    let rest: Vec<LifecycleNotice> = notices
-        .iter()
-        .filter(|notice| !matches!(notice, LifecycleNotice::WorkspaceNotDeleted { .. }))
-        .cloned()
-        .collect();
-    say(&rest);
+    }
 }
 
 /// Print the contended-lock wait notices Python prints, so a maintenance command
@@ -800,13 +782,12 @@ fn prune_clone_directories(
     };
     report(&records);
     announce_lock_waits(&mut records);
-    let root = lifecycle::clone_root(&records.clones);
     let workspaces = match context.workspaces() {
         Err(refused) => return Cleanup::Raised(refuse_listing(&refused)),
         Ok(workspaces) => workspaces,
     };
-    let locations = lifecycle::workspace_locations(&workspaces, &root);
-    if let Some(unlocatable) = locations.unlocatable() {
+    let placement = lifecycle::ClonePlacement::resolve(&records.clones, &workspaces);
+    if let Some(unlocatable) = placement.unlocatable() {
         print(&render::report_unlocatable(
             &unlocatable,
             "--prune",
@@ -824,8 +805,7 @@ fn prune_clone_directories(
         &records.clones,
         &records.storage,
         &workspaces,
-        &locations,
-        &root,
+        &placement,
         insistence,
         &mut notices,
     ) {
@@ -906,13 +886,12 @@ fn render_reconcile(
     };
     report(&records);
     announce_lock_waits(&mut records);
-    let root = lifecycle::clone_root(&records.clones);
     let workspaces = match context.workspaces() {
         Err(refused) => return refuse_listing(&refused),
         Ok(workspaces) => workspaces,
     };
-    let locations = lifecycle::workspace_locations(&workspaces, &root);
-    if let Some(unlocatable) = locations.unlocatable() {
+    let placement = lifecycle::ClonePlacement::resolve(&records.clones, &workspaces);
+    if let Some(unlocatable) = placement.unlocatable() {
         // `--prune`'s stop, for `--prune`'s reason: a clone that cannot be shown to
         // be free is one no orphan can be given.
         print(&render::report_unlocatable(
@@ -927,14 +906,13 @@ fn render_reconcile(
         &records.clones,
         &records.storage,
         &workspaces,
-        &locations,
-        &root,
+        &placement,
         &mut notices,
     );
     say(&notices);
     notices.clear();
     print(&render::reconcile_plan_lines(&plan));
-    if plan.adopting.is_empty() {
+    if plan.adopting().is_empty() {
         // Nothing to consent to. A report of workspaces dl will not touch is
         // already complete, and asking about it would imply an action it has.
         return Ending::Done;
@@ -955,26 +933,22 @@ fn render_reconcile(
         &plan,
         &mut notices,
     );
-    // Read in the plan's order rather than the report's two lists, because that is
-    // the order these lines happened in: one adoption at a time, each either done or
-    // refused. The report partitions `plan.adopting` — every adoption lands in
-    // exactly one of the lists — so "not refused" is "re-pointed", which is the same
-    // question Python's loop asked of each one.
-    for adoptable in &plan.adopting {
-        let refused = applied
-            .refused
-            .iter()
-            .find(|refusal| refusal.workspace_id == adoptable.workspace_id);
-        match refused {
-            Some(refusal) => eprintln!(
-                "Could not re-point {}: {}",
-                refusal.workspace_id,
-                render::repoint_failure(&refusal.failure)
-            ),
-            None => println!(
+    // The report carries one ending per adoption, in the order they were
+    // attempted — the plan's order, which is the order these lines happened in:
+    // one adoption at a time, each either done or refused.
+    for adoption in applied.adoptions() {
+        match adoption {
+            lifecycle::Adoption::Repointed(adoptable) => println!(
                 "Re-pointed {} at {}",
                 adoptable.workspace_id,
                 adoptable.clone.display()
+            ),
+            lifecycle::Adoption::Refused {
+                workspace_id,
+                failure,
+            } => eprintln!(
+                "Could not re-point {workspace_id}: {}",
+                render::repoint_failure(failure)
             ),
         }
     }

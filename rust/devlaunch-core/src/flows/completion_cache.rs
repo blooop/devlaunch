@@ -155,21 +155,33 @@ pub(crate) fn write_bash_completion_cache(path: &Path, data: &CompletionData) ->
 
 /// *text* into *path*, via a temp file in the same directory.
 ///
-/// **The temp file's name is Python's, and Python's is a hazard.** Python builds it
-/// with `Path.with_suffix(".tmp")`, which *replaces* the extension — so
-/// `completions.json` and `completions.bash` both stage through
-/// `completions.tmp`. Two refreshes running at once can therefore have one's bash
-/// text renamed over the other's JSON cache. It is reproduced rather than fixed
-/// because a fix is a behavioural divergence and those are numbered in
-/// docs/rust-rewrite-plan.md; this comment is the note asking for a row. Nothing
-/// is corrupted beyond one cache file, and the next refresh rewrites it.
+/// The temp name is [`staging_path`]'s — per target file, per process — where
+/// Python's `Path.with_suffix(".tmp")` *replaces* the extension, so
+/// `completions.json` and `completions.bash` both staged through one shared
+/// `completions.tmp`. Two overlapping `--update-cache` children are routine, and
+/// under the shared name a losing writer could have the other's bash text renamed
+/// over its JSON cache. Not a divergence row: the temp file is transient and
+/// never read by anything, and the final paths and bytes are Python's exactly.
 fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let staged = path.with_extension("tmp");
+    let staged = staging_path(path);
     std::fs::write(&staged, text)?;
     std::fs::rename(&staged, path)
+}
+
+/// The sibling a write stages its bytes through before the rename.
+///
+/// The full file name is kept and the writer's pid appended, so no two target
+/// files and no two processes share a staging file (the pid is the discriminator
+/// tempfile-style schemes use, and unlike a random name it is deterministic
+/// within one process). Same directory as the target, so the rename cannot cross
+/// a filesystem.
+fn staging_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map(ToOwned::to_owned).unwrap_or_default();
+    name.push(format!(".{}.tmp", std::process::id()));
+    path.with_file_name(name)
 }
 
 /// How long ago the cache was written, or nothing when there is no cache.
@@ -185,7 +197,7 @@ pub(crate) fn completion_cache_age(path: &Path, now: SystemTime) -> Option<Durat
 }
 
 /// Whether the cache is new enough to leave alone.
-pub fn completion_cache_is_fresh(path: &Path) -> bool {
+pub(crate) fn completion_cache_is_fresh(path: &Path) -> bool {
     is_fresh_at(path, SystemTime::now())
 }
 
@@ -223,7 +235,7 @@ pub fn wants_startup_cache_refresh<S: AsRef<str>>(args: &[S]) -> bool {
 /// could not be written is not a reason to fail the command that was warming it.
 /// They are carried out rather than dropped so a caller *may* say so.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CacheNotWritten {
+pub(crate) struct CacheNotWritten {
     pub path: PathBuf,
     pub reason: String,
 }
@@ -247,7 +259,10 @@ pub struct Refreshed {
     pub listing_refused: Option<ListingUnreadable>,
     /// Workspaces whose source devlaunch could not read, so a caller can say which.
     pub unreadable_sources: Vec<UnreadableSource>,
-    pub not_written: Vec<CacheNotWritten>,
+    /// Cache writes that failed. Deliberately unrendered — Python's
+    /// `except OSError: pass` — so only this module's tests read it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) not_written: Vec<CacheNotWritten>,
 }
 
 /// Rebuild the completion cache and write both files.
@@ -521,23 +536,29 @@ mod tests {
     }
 
     #[test]
-    fn both_caches_stage_through_the_same_temp_file() {
+    fn each_cache_stages_through_its_own_temp_name() {
         // Python builds the temp name with `Path.with_suffix(".tmp")`, which
         // *replaces* the extension, so `completions.json` and `completions.bash`
-        // both stage through `completions.tmp`. Reproduced rather than fixed —
-        // fixing it is a behavioural divergence and those are numbered in
-        // docs/rust-rewrite-plan.md — and pinned here so the row has something to
-        // point at. Two refreshes at once can have one's bash text renamed over the
-        // other's JSON cache.
+        // both staged through one shared `completions.tmp` — and two overlapping
+        // `--update-cache` children are routine, so a losing writer could have the
+        // other's bash text renamed over its JSON cache. The staging name keeps the
+        // target's full name and appends the writer's pid: distinct per file,
+        // distinct per process, deterministic within one, and in the target's own
+        // directory so the rename stays atomic. The temp file is transient and
+        // never read by anything, so this diverges from nothing a user can see.
         let root = temp_dir();
+        let json = staging_path(&cache_path(root.path()));
+        let bash = staging_path(&bash_cache_path(root.path()));
 
+        assert_ne!(json, bash);
+        let pid = std::process::id();
         assert_eq!(
-            cache_path(root.path()).with_extension("tmp"),
-            bash_cache_path(root.path()).with_extension("tmp")
+            json,
+            root.path().join(format!("completions.json.{pid}.tmp"))
         );
         assert_eq!(
-            cache_path(root.path()).with_extension("tmp"),
-            root.path().join("completions.tmp")
+            bash,
+            root.path().join(format!("completions.bash.{pid}.tmp"))
         );
     }
 
@@ -548,7 +569,18 @@ mod tests {
         write_completion_cache(&cache_path(root.path()), &data()).expect("written");
         write_bash_completion_cache(&bash_cache_path(root.path()), &data()).expect("written");
 
-        assert!(!root.path().join("completions.tmp").exists());
+        let mut names: Vec<String> = std::fs::read_dir(root.path())
+            .expect("the directory")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names, ["completions.bash", "completions.json"]);
     }
 
     #[test]

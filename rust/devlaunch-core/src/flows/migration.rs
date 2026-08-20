@@ -1211,9 +1211,7 @@ mod tests {
     fn a_workspace_the_migration_orphans_is_one_reconcile_adopts() {
         use crate::clients::devpod::{Workspace, WorkspaceSource};
         use crate::clients::git::Git;
-        use crate::flows::lifecycle::{
-            LifecycleNotice, canonical, clone_root, reconcile_plan, workspace_locations,
-        };
+        use crate::flows::lifecycle::{ClonePlacement, LifecycleNotice, canonical, reconcile_plan};
         use crate::flows::workspace_clone::{GitLfs, WorkspaceCloneManager};
         use devlaunch_runner::ProcessRunner;
         use std::time::Duration;
@@ -1268,23 +1266,21 @@ mod tests {
             context: "default".to_owned(),
         }];
 
-        let root = clone_root(&clones);
-        let locations = workspace_locations(&workspaces, &root);
+        let placement = ClonePlacement::resolve(&clones, &workspaces);
         let plan = reconcile_plan(
             &clones,
             &storage,
             &workspaces,
-            &locations,
-            &root,
+            &placement,
             &mut Vec::<LifecycleNotice>::new(),
         );
 
         assert_eq!(
-            plan.adopting.len(),
+            plan.adopting().len(),
             1,
             "the migration's orphan is adopted: {plan:?}"
         );
-        let adopted = &plan.adopting[0];
+        let adopted = &plan.adopting()[0];
         assert_eq!(adopted.workspace_id, orphaned_id);
         assert_eq!(
             adopted.clone,
@@ -1296,7 +1292,7 @@ mod tests {
             "carrying the migrated record, whose id join reconcile writes"
         );
         assert!(
-            plan.reporting.is_empty(),
+            plan.reporting().is_empty(),
             "nothing was left unadopted: {plan:?}"
         );
 

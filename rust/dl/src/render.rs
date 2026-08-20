@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use devlaunch_core::clients::devpod::{self, ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
@@ -31,12 +31,13 @@ use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, Worksp
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::repo_manager::{
-    CacheNotice, Cleanup, CloneError, EnsureRepoError, Refusal, RefusalReason, RemoveTreeError,
-    WrongRepoLock,
+    CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
+    RemoveTreeError, WrongRepoLock,
 };
 use devlaunch_core::flows::workspace_clone::{
     EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
 };
+use devlaunch_core::json::JsonKind;
 use devlaunch_core::notices::Notices;
 use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
@@ -338,25 +339,14 @@ pub fn python_repr(text: &str) -> String {
 /// `Number` answers `int`, because that is what every number in a document dl
 /// reads is; a float would be reported as `int` here, which is a wording
 /// difference in a message only a malformed devpod can provoke.
-fn json_type_name(kind: devpod::JsonKind) -> &'static str {
+fn json_type_name(kind: JsonKind) -> &'static str {
     match kind {
-        devpod::JsonKind::Null => "NoneType",
-        devpod::JsonKind::Bool => "bool",
-        devpod::JsonKind::Number => "int",
-        devpod::JsonKind::String => "str",
-        devpod::JsonKind::Array => "list",
-        devpod::JsonKind::Object => "dict",
-    }
-}
-
-fn metadata_type_name(kind: metadata::JsonKind) -> &'static str {
-    match kind {
-        metadata::JsonKind::Null => "NoneType",
-        metadata::JsonKind::Bool => "bool",
-        metadata::JsonKind::Number => "int",
-        metadata::JsonKind::String => "str",
-        metadata::JsonKind::Array => "list",
-        metadata::JsonKind::Object => "dict",
+        JsonKind::Null => "NoneType",
+        JsonKind::Bool => "bool",
+        JsonKind::Number => "int",
+        JsonKind::String => "str",
+        JsonKind::Array => "list",
+        JsonKind::Object => "dict",
     }
 }
 
@@ -504,7 +494,7 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
                 metadata::FileProblem::NotAnObject { found } => format!(
                     "metadata file {} is not a JSON object (found {})",
                     path.display(),
-                    metadata_type_name(*found)
+                    json_type_name(*found)
                 ),
             };
             match quarantine {
@@ -543,7 +533,7 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
             "ignoring the \"{}\" section of {}: expected an object, found {}",
             section.key(),
             path.display(),
-            metadata_type_name(*found)
+            json_type_name(*found)
         ),
         metadata::Notice::EntryUnusable {
             path,
@@ -560,7 +550,7 @@ fn metadata_notice(notice: &metadata::Notice) -> String {
             match problem {
                 metadata::EntryProblem::NotAnObject { found } => format!(
                     "{head}: expected an object, found {}",
-                    metadata_type_name(*found)
+                    json_type_name(*found)
                 ),
                 metadata::EntryProblem::NotRebuilt { reason } => {
                     format!("{head}: {}", python_repr(reason))
@@ -750,7 +740,10 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
         config::ConfigError::Unreadable { path, source } => {
             format!("could not read {} ({source})", path.display())
         }
-        config::ConfigError::Malformed { path, reason } => {
+        // One sentence for both parse arms: the reason already says whether the
+        // parser or the typed read refused, and the arms exist for callers.
+        config::ConfigError::NotToml { path, reason }
+        | config::ConfigError::WrongType { path, reason } => {
             format!("{} is not usable: {reason}", path.display())
         }
     }
@@ -848,11 +841,6 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         LifecycleNotice::CloneNotRemoved { refusal, .. } => {
             format!("Failed to remove local clone: {}", not_removed(refusal))
         }
-        LifecycleNotice::WorkspaceNotDeleted {
-            workspace_id,
-            stderr,
-            ..
-        } => format!("Failed to delete workspace {workspace_id}: {stderr}"),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -954,9 +942,24 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             repo,
             branch,
             reason,
-        } => format!("Could not fetch {branch} for {owner}/{repo}: {reason}"),
+        } => format!(
+            "Could not fetch {branch} for {owner}/{repo}: {}",
+            not_refreshed(reason)
+        ),
+        // Python's own sentence for this site (`workspace_clone.py`'s "Cannot
+        // fetch recorded default branch: {e}"): the name came out of
+        // `metadata.json` with no proof, and the line says so.
+        CacheNotice::RecordedDefaultBranchUnsafe { refused } => {
+            format!(
+                "Cannot fetch recorded default branch: {}",
+                unsafe_name(refused)
+            )
+        }
         CacheNotice::DefaultBranchUnknown { reason, .. } => {
-            format!("Failed to resolve default branch: {reason}")
+            format!(
+                "Failed to resolve default branch: {}",
+                not_refreshed(reason)
+            )
         }
         CacheNotice::PreparedFromStaleBase {
             owner,
@@ -966,7 +969,8 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             reason,
         } => format!(
             "Prepared '{owner}/{repo}@{branch}' from the cache's '{base}', which could not be \
-             refreshed ({reason}); it may be behind the remote."
+             refreshed ({}); it may be behind the remote.",
+            not_refreshed(reason)
         ),
         CacheNotice::LfsCacheNotFilled { reason } => {
             format!("Could not fill the cache's git-lfs store: {reason}")
@@ -996,10 +1000,31 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
             owner,
             repo,
             branch,
-            reason,
-        } => format!("cannot name the clone directory for {owner}/{repo}@{branch}: {reason}"),
+            refused,
+        } => format!(
+            "cannot name the clone directory for {owner}/{repo}@{branch}: {}",
+            unsafe_name(refused)
+        ),
         CacheNotice::Metadata(notice) => metadata_notice(notice),
     })
+}
+
+/// Why nothing refreshed a ref, as the clause inside the fetch warnings and the
+/// stale-base report.
+///
+/// Every arm renders the words Python put there: git's own for a failed fetch,
+/// and `str(ValueError)` — [`unsafe_name`]'s sentence — for a name git was never
+/// asked about (`workspace_clone.py`'s `_fetch_base_branch` interpolates exactly
+/// that into its `StaleBase.reason`).
+fn not_refreshed(reason: &NotRefreshed) -> String {
+    match reason {
+        NotRefreshed::FetchFailed { reason } => reason.clone(),
+        NotRefreshed::NoBranchOnRemote { branch } => {
+            format!("the remote has no branch '{branch}' to refresh from")
+        }
+        NotRefreshed::UnsafeName(refused) => unsafe_name(refused),
+        NotRefreshed::NoDefaultBranchRecorded => "no default branch is recorded".to_owned(),
+    }
 }
 
 /// Why a workspace clone directory is still on disk.
@@ -1067,10 +1092,11 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
         ),
         RemovalRefused::CouldNotTell {
             workspace_id,
-            reason,
+            cause,
         } => format!(
-            "{workspace_id}: {reason}. devlaunch will not delete a clone it cannot check. Look at \
-             it, or run: dl {spec} rm --force"
+            "{workspace_id}: {}. devlaunch will not delete a clone it cannot check. Look at it, \
+             or run: dl {spec} rm --force",
+            cause.describe()
         ),
     }
 }
@@ -1116,22 +1142,23 @@ pub(crate) const DOCKER_BOUNDARY: &str = concat!(
 /// of the count: a user who asked for a clean slate and gets survivors should
 /// learn it while saying no is still an option.
 pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
+    let ownership = plan.ownership();
     let mut lines = vec![
         "This will remove all devlaunch data:".to_owned(),
-        format!("  - {} DevPod workspace(s)", plan.ownership.mine.len()),
+        format!("  - {} DevPod workspace(s)", ownership.mine.len()),
         format!(
             "  - {}/ (workspace clones, repo caches, the shared pixi cache, completions)",
-            plan.cache_dir.display()
+            plan.cache_dir().display()
         ),
     ];
-    if !plan.ownership.foreign.is_empty() {
+    if !ownership.foreign.is_empty() {
         lines.push(String::new());
         lines.push(format!(
             "Leaving {} workspace(s) devlaunch did not create:",
-            plan.ownership.foreign.len()
+            ownership.foreign.len()
         ));
         lines.extend(
-            plan.ownership
+            ownership
                 .foreign
                 .iter()
                 .map(|workspace| format!("  - {}", workspace.id)),
@@ -1156,8 +1183,8 @@ pub(crate) enum Line {
 ///
 /// Handed over as it happens rather than collected, which is why this renders one
 /// step rather than a report: "Deleting workspace X" said afterwards is not said in
-/// time. A failure is the same event as [`LifecycleNotice::WorkspaceNotDeleted`] and
-/// is said here, where it happens, rather than twice.
+/// time. A failed delete is said here too — the step is its one report, so nothing
+/// upstream can print it a second time.
 pub(crate) fn purge_step(step: &PurgeStep) -> Line {
     match step {
         PurgeStep::Deleting { workspace_id } => {
@@ -1276,16 +1303,16 @@ fn shell_quoted(path: &Path) -> String {
 /// workspaces, and a clone with no workspace has no row there to appear in.
 pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
     let mut lines = vec![
-        format!("Clone directories under {}:", plan.root.display()),
+        format!("Clone directories under {}:", plan.root().display()),
         String::new(),
     ];
-    if !plan.removing.is_empty() {
+    if !plan.removing().is_empty() {
         lines.push(format!(
             "Removing {} that nothing references -- {}:",
-            plan.removing.len(),
+            plan.removing().len(),
             describe_usage(&plan.freed())
         ));
-        for reclaimable in &plan.removing {
+        for reclaimable in plan.removing() {
             let mut line = format!(
                 "  - {} ({})",
                 reclaimable.path.display(),
@@ -1301,9 +1328,9 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         }
         lines.push(String::new());
     }
-    if !plan.keeping.is_empty() {
-        lines.push(format!("Leaving {}:", plan.keeping.len()));
-        for kept in &plan.keeping {
+    if !plan.keeping().is_empty() {
+        lines.push(format!("Leaving {}:", plan.keeping().len()));
+        for kept in plan.keeping() {
             lines.push(format!(
                 "  - {}: {}",
                 kept.path.display(),
@@ -1312,10 +1339,10 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         }
         lines.push(String::new());
     }
-    if !plan.stale_records.is_empty() {
+    if !plan.stale_records().is_empty() {
         lines.push(format!(
             "Dropping {} record(s) of directories already gone.",
-            plan.stale_records.len()
+            plan.stale_records().len()
         ));
         lines.push(String::new());
     }
@@ -1351,8 +1378,8 @@ fn kept_because(because: &KeptBecause) -> String {
 fn objection(objected: &Objection) -> String {
     match objected {
         Objection::WouldLose(losses) => losses.describe(),
-        Objection::CouldNotTell(reason) => {
-            format!("work git could not be asked about ({reason})")
+        Objection::CouldNotTell(cause) => {
+            format!("work git could not be asked about ({})", cause.describe())
         }
     }
 }
@@ -1423,13 +1450,13 @@ pub(crate) fn reconcile_plan_lines(plan: &ReconcilePlan) -> Vec<String> {
     let mut lines = vec![
         format!(
             "devpod workspaces sourced under {} at something that is not a clone:",
-            plan.root.display()
+            plan.root().display()
         ),
         String::new(),
     ];
-    if !plan.adopting.is_empty() {
-        lines.push(format!("Re-pointing {}:", plan.adopting.len()));
-        for adoptable in &plan.adopting {
+    if !plan.adopting().is_empty() {
+        lines.push(format!("Re-pointing {}:", plan.adopting().len()));
+        for adoptable in plan.adopting() {
             lines.push(format!(
                 "  - {}: {} -> {}",
                 adoptable.workspace_id,
@@ -1449,12 +1476,12 @@ pub(crate) fn reconcile_plan_lines(plan: &ReconcilePlan) -> Vec<String> {
         );
         lines.push(String::new());
     }
-    if !plan.reporting.is_empty() {
+    if !plan.reporting().is_empty() {
         lines.push(format!(
             "Leaving {}, which dl will not guess at:",
-            plan.reporting.len()
+            plan.reporting().len()
         ));
-        for unadoptable in &plan.reporting {
+        for unadoptable in plan.reporting() {
             lines.push(format!(
                 "  - {} ({}): {}",
                 unadoptable.workspace_id,
@@ -1500,7 +1527,9 @@ fn not_adopted(because: &NotAdopted) -> String {
 /// Why one devpod record could not be re-pointed.
 pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
     match failure {
-        RepointFailure::Unreadable { path, reason } => {
+        // One sentence for both, as Python's one `except (OSError,
+        // json.JSONDecodeError)` wrote it; the arms differ so a caller can.
+        RepointFailure::Unreadable { path, reason } | RepointFailure::NotJson { path, reason } => {
             format!("could not read {}: {reason}", path.display())
         }
         RepointFailure::NotADevpodRecord { path } => format!(
@@ -1607,6 +1636,14 @@ pub(crate) struct Saying;
 impl Notices<LaunchNotice> for Saying {
     fn say(&mut self, notice: LaunchNotice) {
         if let Some(line) = launch_notice(&notice) {
+            eprintln!("{line}");
+        }
+    }
+}
+
+impl Notices<ProvisionEvent> for Saying {
+    fn say(&mut self, event: ProvisionEvent) {
+        if let Some(line) = provision_event(&event) {
             eprintln!("{line}");
         }
     }
@@ -1973,11 +2010,6 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
             )
         }
     })
-}
-
-/// The lines a provisioning pass's events read as, with the debug ones dropped.
-pub(crate) fn provision_events(events: &[ProvisionEvent]) -> Vec<String> {
-    events.iter().filter_map(provision_event).collect()
 }
 
 #[cfg(test)]

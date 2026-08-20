@@ -26,7 +26,7 @@ use std::borrow::Cow;
 /// `word` as one shell word, as Python's `shlex.quote` writes it.
 ///
 /// Total, as Python's is: a NUL is quoted like any other character here. The
-/// callers that must *refuse* a NUL ask [`holds_nul`] first, because refusing is
+/// callers that must *refuse* a NUL ask `holds_nul` first, because refusing is
 /// their contract (docs/rust-rewrite-plan.md row 19) rather than the quoting's — and
 /// a caller whose input cannot hold one (a workspace id read out of argv) needs no
 /// refusal at all and would otherwise be handed an error it cannot explain.
@@ -55,7 +55,7 @@ pub fn join<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
 /// [`quote`], because who has to care differs: a `-- <cmd>` from a command line is
 /// refused with it (row 19), and a generated script's interpolated workspace id
 /// cannot contain one to begin with.
-pub fn holds_nul(word: &str) -> bool {
+pub(crate) fn holds_nul(word: &str) -> bool {
     word.contains('\0')
 }
 

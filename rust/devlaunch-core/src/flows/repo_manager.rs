@@ -41,7 +41,7 @@ use std::time::Duration;
 use crate::clients::git::{self, Failure, Git, GitRefused};
 use crate::domain::locks::{self, Contention, LockError, LockGuard};
 use crate::domain::metadata::{self, MetadataError, MetadataStorage};
-use crate::domain::model::{BaseRepository, Timestamp};
+use crate::domain::model::{BaseRepository, RecordedDefaultBranch, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
 use crate::notices::Notices;
@@ -219,14 +219,20 @@ pub enum CacheNotice {
         owner: String,
         repo: String,
         branch: String,
-        reason: String,
+        reason: NotRefreshed,
     },
+    /// The *recorded* default branch is not a safe git name, so git was never
+    /// asked to fetch it. Its own arm rather than a [`CacheNotice::RefNotFetched`]
+    /// because Python warns a different sentence here: the name was read back
+    /// from `metadata.json` with no proof, and the line says so rather than
+    /// echoing a name that cannot safely be interpolated anywhere.
+    RecordedDefaultBranchUnsafe { refused: UnsafeName },
     /// The repository's default branch could not be named, so nothing was
     /// fetched to cut a new branch from.
     DefaultBranchUnknown {
         owner: String,
         repo: String,
-        reason: String,
+        reason: NotRefreshed,
     },
     /// The workspace was prepared from a base nothing refreshed this call. The
     /// one consequence-stating notice of the whole degraded family: the fetch
@@ -237,7 +243,7 @@ pub enum CacheNotice {
         repo: String,
         branch: String,
         base: String,
-        reason: String,
+        reason: NotRefreshed,
     },
     /// The cache's git-lfs store could not be filled. Best-effort: the workspace
     /// falls through to the network phase.
@@ -261,12 +267,13 @@ pub enum CacheNotice {
     /// No clone directory can be named for a record: the recorded path is
     /// unusable *and* the record's own triple is not a safe one. Named by the
     /// triple, because that triple is what failed and is the field a hand-edited
-    /// `metadata.json` would have to be fixed in.
+    /// `metadata.json` would have to be fixed in; `refused` says which part the
+    /// derivation judged.
     CloneNotNamed {
         owner: String,
         repo: String,
         branch: String,
-        reason: String,
+        refused: UnsafeName,
     },
     /// Something the metadata store reported while loading under a mutation.
     Metadata(metadata::Notice),
@@ -324,6 +331,31 @@ pub(crate) enum FetchOutcome {
     /// host, a refused connection, an expired credential and a bare cache that is
     /// not there all arrive here and read differently to whoever has to fix it.
     Failed { reason: String },
+}
+
+/// Why a ref went unrefreshed — the reason inside
+/// [`crate::flows::workspace_clone::BranchBase::Stale`] and the fetch notices.
+///
+/// A `reason: String` before, and two of its producers *composed* it in core — one
+/// interpolating a `{:?}` debug rendering of [`crate::domain::workspace_id::NamePart`]
+/// into text a person reads. Typed arms carry the data instead, and the `dl` binary
+/// owns the words (#251 §5); only [`NotRefreshed::FetchFailed`] carries text, and
+/// that text is git's or the OS's, never this crate's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub enum NotRefreshed {
+    /// The fetch ran and failed, or could not be run; `reason` is what git or the
+    /// OS said, carried verbatim from [`FetchOutcome::Failed`].
+    FetchFailed { reason: String },
+    /// The remote answered: it has no branch by this name to refresh from.
+    NoBranchOnRemote { branch: String },
+    /// The name is not one git can safely be asked about, so nothing was fetched.
+    /// In practice this is the *recorded* default branch — the one ref on this
+    /// path that does not arrive inside a validated
+    /// [`crate::domain::workspace_id::WorkspaceId`].
+    UnsafeName(UnsafeName),
+    /// No default branch is recorded, so there was nothing to name a fetch of.
+    NoDefaultBranchRecorded,
 }
 
 // -------------------------------------------------------------- the token
@@ -873,8 +905,7 @@ pub enum CloneError {
 
 /// Why a repository's whole ref set could not be swept.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#251 §7)
-pub enum FetchRepoError {
+pub(crate) enum FetchRepoError {
     /// There is no clone to fetch into.
     NoLocalClone {
         owner: String,
@@ -900,8 +931,7 @@ pub enum FetchRepoError {
 
 /// Why a conditional sweep could not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// binary surface — not part of the frozen wf API (#251 §7)
-pub enum LazyFetchError {
+pub(crate) enum LazyFetchError {
     /// The repository is not in `metadata.json`, so there is no clock to compare
     /// against.
     NotInMetadata {
@@ -1216,7 +1246,7 @@ impl<'r> RepositoryManager<'r> {
             repo: repo.to_owned(),
             remote_url: remote_url.to_owned(),
             local_path: bare.clone(),
-            default_branch: self.default_branch_of(&bare),
+            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(&bare)),
             last_fetched: Some(Timestamp::now()),
             worktrees: Vec::new(),
         };
@@ -1248,7 +1278,7 @@ impl<'r> RepositoryManager<'r> {
             // Read off the adopted clone, not defaulted: a repository whose
             // default branch is `master` and one this could read nothing at all
             // from would otherwise get the same answer.
-            default_branch: self.default_branch_of(bare),
+            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(bare)),
             last_fetched: Some(Timestamp::now()),
             worktrees: Vec::new(),
         };
@@ -1618,9 +1648,9 @@ impl<'r> RepositoryManager<'r> {
     ) -> String {
         let _stage = timing::stage(timing::Stage::HostPrep);
         if let Some(recorded) = self.get_repo(storage, owner, repo, notices)
-            && !recorded.default_branch.is_empty()
+            && let Some(named) = recorded.default_branch.named()
         {
-            return recorded.default_branch;
+            return named.to_owned();
         }
         let remote_url = format!("git@github.com:{owner}/{repo}.git");
         if let Some(answered) = self.git.ls_remote_symref_head(&remote_url).said()
@@ -2198,7 +2228,7 @@ pub(crate) mod tests {
         assert_eq!(cloned.repo, "repo");
         assert_eq!(cloned.remote_url, "https://github.com/owner/repo.git");
         assert_eq!(cloned.local_path, bare);
-        assert_eq!(cloned.default_branch, "main");
+        assert_eq!(cloned.default_branch.named(), Some("main"));
         assert!(
             cloned.last_fetched.is_some(),
             "the sweep's clock starts here"
@@ -2333,7 +2363,8 @@ pub(crate) mod tests {
             "cloning over it is refused by git and would delete a live cache"
         );
         assert_eq!(
-            adopted.default_branch, "release/1.0",
+            adopted.default_branch.named(),
+            Some("release/1.0"),
             "read off the adopted clone, prefix stripped rather than split"
         );
         assert_eq!(
@@ -3117,7 +3148,7 @@ pub(crate) mod tests {
         let mut cache = a_cache();
         cache.given_bare_clone("owner", "repo");
         let mut recorded = cache.given_record("owner", "repo");
-        recorded.default_branch = "develop".to_owned();
+        recorded.default_branch = RecordedDefaultBranch::Named("develop".to_owned());
         cache.storage.add_repository(recorded).expect("recorded");
         let fake = FakeGit::new();
         let manager = a_manager(&cache, Git::new(&fake));
@@ -3273,7 +3304,7 @@ pub(crate) mod tests {
             refs.contains(&"refs/heads/feature/test".to_owned()),
             "{refs:?}"
         );
-        assert_eq!(cloned.default_branch, "main");
+        assert_eq!(cloned.default_branch.named(), Some("main"));
     }
 
     #[test]
@@ -3342,7 +3373,7 @@ pub(crate) mod tests {
         let recovered = manager
             .ensure_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
             .expect("cloned");
-        assert_eq!(recovered.default_branch, "main");
+        assert_eq!(recovered.default_branch.named(), Some("main"));
         assert!(manager.repo_exists("test", "repo"));
     }
 
@@ -3390,7 +3421,8 @@ pub(crate) mod tests {
         assert_eq!(adopted.local_path, bare);
         assert_eq!(adopted.remote_url, remote.url);
         assert_eq!(
-            adopted.default_branch, "master",
+            adopted.default_branch.named(),
+            Some("master"),
             "the rebuilt record fell back to `main` instead of reading the clone"
         );
         assert!(storage.get_repository("test", "repo").is_some());
@@ -3413,7 +3445,7 @@ pub(crate) mod tests {
 
         assert!(!bare.join("half-written").exists());
         assert!(bare.join("HEAD").exists());
-        assert_eq!(cloned.default_branch, "main");
+        assert_eq!(cloned.default_branch.named(), Some("main"));
         assert!(refs_of(&bare).contains(&"refs/heads/main".to_owned()));
     }
 
@@ -3434,7 +3466,7 @@ pub(crate) mod tests {
                 .ensure_repo(&mut storage, "test", "headed", &remote.url, &mut ignoring())
                 .expect("cloned");
 
-            assert_eq!(cloned.default_branch, branch);
+            assert_eq!(cloned.default_branch.named(), Some(branch));
             // And it names a ref that is really there, which is the property the
             // equality above is a proxy for.
             assert!(
@@ -3501,7 +3533,7 @@ pub(crate) mod tests {
             .ensure_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
             .expect("cloned back");
         assert!(manager.repo_exists("test", "repo"));
-        assert_eq!(recovered.default_branch, "main");
+        assert_eq!(recovered.default_branch.named(), Some("main"));
     }
 
     #[test]

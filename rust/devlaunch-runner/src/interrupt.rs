@@ -128,13 +128,13 @@ fn register_in(slots: &'static [AtomicPtr<libc::c_char>], path: &Path) -> Option
 /// Record the process group of the foreground child now being waited on, so the
 /// interrupt handler can tear it down. Paired with [`clear_foreground_child`]
 /// once the child is reaped.
-pub fn note_foreground_child(pgid: i32) {
+pub(crate) fn note_foreground_child(pgid: i32) {
     FOREGROUND_PGID.store(pgid, Ordering::SeqCst);
 }
 
 /// Forget the foreground child: it has been reaped, so the handler must not
 /// signal its (possibly recycled) process group id.
-pub fn clear_foreground_child() {
+pub(crate) fn clear_foreground_child() {
     FOREGROUND_PGID.store(0, Ordering::SeqCst);
 }
 

@@ -31,6 +31,59 @@ use serde::{Deserialize, Serialize, Serializer};
 /// What `default_branch` is when a stored entry does not say.
 const DEFAULT_BRANCH: &str = "main";
 
+/// The stored `default_branch`: a name, or the record not saying.
+///
+/// `models.py` holds a plain string read with a falsy test, so `""` was the
+/// sentinel for "no default branch recorded" — a second meaning riding in the
+/// value domain, representable anywhere the string travelled. The two meanings
+/// are two arms here; the wire keeps the sentinel spelling (an unrecorded branch
+/// serializes back as `""`, byte for byte what Python writes), and
+/// [`RecordedDefaultBranch::from_stored`] is the one place that reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecordedDefaultBranch {
+    /// The recorded name. Non-empty: [`RecordedDefaultBranch::from_stored`] is
+    /// the constructor every producer goes through.
+    Named(String),
+    /// The record does not say. Python's falsy read of `""`.
+    Unrecorded,
+}
+
+impl RecordedDefaultBranch {
+    /// Parse the stored spelling: empty is the sentinel and means unrecorded.
+    pub(crate) fn from_stored(name: String) -> Self {
+        if name.is_empty() {
+            Self::Unrecorded
+        } else {
+            Self::Named(name)
+        }
+    }
+
+    /// The recorded name, or nothing when the record does not say.
+    pub(crate) fn named(&self) -> Option<&str> {
+        match self {
+            Self::Named(name) => Some(name),
+            Self::Unrecorded => None,
+        }
+    }
+
+    /// The stored spelling — the name, or the `""` the wire keeps for
+    /// unrecorded. What a save writes, and what the one consumer whose Python
+    /// interpolates the field verbatim reads
+    /// (`workspace_clone.py`'s start-point fallback).
+    pub(crate) fn stored_spelling(&self) -> &str {
+        match self {
+            Self::Named(name) => name,
+            Self::Unrecorded => "",
+        }
+    }
+}
+
+impl Serialize for RecordedDefaultBranch {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.stored_spelling())
+    }
+}
+
 /// A naive local timestamp, in Python's `datetime.isoformat()` spelling.
 ///
 /// Two values in one because the two jobs differ: `at` is what comparisons and
@@ -149,7 +202,7 @@ pub(crate) struct BaseRepository {
     pub(crate) remote_url: String,
     #[serde(serialize_with = "as_string")]
     pub(crate) local_path: PathBuf,
-    pub(crate) default_branch: String,
+    pub(crate) default_branch: RecordedDefaultBranch,
     pub(crate) last_fetched: Option<Timestamp>,
     /// The branch names this repository has workspace clones for.
     pub(crate) worktrees: Vec<String>,
@@ -201,7 +254,7 @@ impl BaseRepository {
             repo: repo.to_owned(),
             remote_url: remote_url.to_owned(),
             local_path,
-            default_branch: DEFAULT_BRANCH.to_owned(),
+            default_branch: RecordedDefaultBranch::Named(DEFAULT_BRANCH.to_owned()),
             last_fetched: None,
             worktrees: Vec::new(),
         }
@@ -216,7 +269,7 @@ impl BaseRepository {
                 repo: stored.repo,
                 remote_url: stored.remote_url,
                 local_path: PathBuf::from(stored.local_path),
-                default_branch: stored.default_branch,
+                default_branch: RecordedDefaultBranch::from_stored(stored.default_branch),
                 last_fetched: read_optional_timestamp(stored.last_fetched)?,
                 worktrees: stored.worktrees,
             },
@@ -400,7 +453,7 @@ mod tests {
             repo: "test-repo".to_owned(),
             remote_url: "https://github.com/test-owner/test-repo.git".to_owned(),
             local_path: PathBuf::from("/tmp/repos/test-owner/test-repo"),
-            default_branch: "main".to_owned(),
+            default_branch: RecordedDefaultBranch::Named("main".to_owned()),
             last_fetched: Some(Timestamp::from_civil(civil::datetime(
                 2024, 1, 1, 12, 0, 0, 0,
             ))),
@@ -526,7 +579,7 @@ mod tests {
     fn the_defaults_match_the_dataclass_defaults() {
         let repo = BaseRepository::new("o", "r", "u", PathBuf::from("/p"));
 
-        assert_eq!(repo.default_branch, "main");
+        assert_eq!(repo.default_branch.named(), Some("main"));
         assert_eq!(repo.last_fetched, None);
         assert!(repo.worktrees.is_empty());
         assert_eq!(

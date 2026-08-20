@@ -16,7 +16,7 @@
 //!   what a command that prints its notices under a report still wants.
 //! - anything the caller writes — the `dl` binary's printer — says it now.
 //!
-//! [`Wrapped`] is the third piece, and it is what keeps one vocabulary per layer:
+//! `Wrapped` is the third piece, and it is what keeps one vocabulary per layer:
 //! a storage flow reports [`CacheNotice`](crate::flows::repo_manager::CacheNotice)
 //! whether it was called by a launch (whose vocabulary is `LaunchNotice`) or by a
 //! lifecycle command, and the wrapping happens in one place per boundary rather
@@ -39,7 +39,7 @@ pub trait Notices<T> {
 /// so could not be called through the `&mut dyn` the flows are handed. There is
 /// nothing for a sink to get wrong here: saying several is saying each.
 impl<T> dyn Notices<T> + '_ {
-    pub fn say_all(&mut self, notices: impl IntoIterator<Item = T>) {
+    pub(crate) fn say_all(&mut self, notices: impl IntoIterator<Item = T>) {
         for notice in notices {
             self.say(notice);
         }
@@ -63,7 +63,7 @@ impl<T> Notices<T> for Vec<T> {
 /// pointer and not a closure because every use of it *is* a plain function — an
 /// enum variant's constructor, or a `match` over the arms — and a function pointer
 /// keeps the type free of the lifetime a closure would carry.
-pub struct Wrapped<'a, T, U> {
+pub(crate) struct Wrapped<'a, T, U> {
     inner: &'a mut dyn Notices<U>,
     wrap: fn(T) -> U,
 }

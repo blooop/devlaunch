@@ -45,7 +45,7 @@
 //! one value.
 //!
 //! Same for the `up` request. Python takes `workspace_id`, `workspace_identity`,
-//! `recreate: bool` and `reset: bool`; [`Naming`] is the three shapes the first
+//! `recreate: bool` and `reset: bool`; `Naming` is the three shapes the first
 //! two are ever in (and makes "an `--id` with no identity" unrepresentable), and
 //! [`Rebuild`] is a sum so `--recreate --reset` cannot be asked for at once.
 //!
@@ -279,7 +279,7 @@ pub enum LaunchNotice {
 
     // --- the token (gh_auth.py, memoized here)
     /// The host has no GitHub token to forward, and this is why. One per launch
-    /// however often the token is asked for — see [`HostToken`].
+    /// however often the token is asked for — see `HostToken`.
     NoGitHubToken(GhEvent),
     /// The token could not be written to the private file `devpod up` reads it
     /// from, so this workspace opens without a GitHub login. Python distinguishes
@@ -580,7 +580,7 @@ impl PixiCache {
 /// ask and by no later one, so a launch that forwards the token twice reports one
 /// notice rather than two.
 #[derive(Debug, Default)]
-pub struct HostToken {
+pub(crate) struct HostToken {
     asked: OnceCell<TokenLookup>,
 }
 
@@ -684,7 +684,7 @@ impl Rebuild {
 /// four combinations three are meaningful and one — an `--id` with no identity —
 /// is unreachable only by the callers' good behaviour. These are the three.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Naming<'a> {
+pub(crate) enum Naming<'a> {
     /// A create: `--id <id>` goes to devpod, and that id is also the identity.
     Create { workspace_id: &'a str },
     /// devpod already knows the workspace: no `--id`, and the identity is the id
@@ -1389,7 +1389,7 @@ pub enum SessionRefused {
 /// one token lookup the launch shares — so they are one parameter rather than
 /// three repeated at each of five signatures.
 #[derive(Clone, Copy)]
-pub struct SessionContext<'a> {
+pub(crate) struct SessionContext<'a> {
     pub(crate) runner: &'a dyn Runner,
     pub(crate) host: &'a Host,
     pub(crate) token: &'a HostToken,
@@ -1909,7 +1909,7 @@ impl Placement {
     }
 
     /// How devpod is told which workspace this is.
-    pub fn naming(&self) -> Naming<'_> {
+    pub(crate) fn naming(&self) -> Naming<'_> {
         match self {
             Self::Known { workspace_id, .. } | Self::Listed { workspace_id } => {
                 Naming::Known { workspace_id }
@@ -1920,7 +1920,7 @@ impl Placement {
 
     /// Whether a launch may attach straight away — Python's
     /// `custom_id is None and known_state == "Running"`.
-    pub fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         match self {
             Self::Known { state, .. } => state.is_running(),
             // Nothing said it was running, which is not the same as saying it is
@@ -1950,7 +1950,7 @@ pub enum Resolution {
 /// all.
 ///
 /// Charged to the `devpod-up` stage with a `devpod status` span, for the reason
-/// [`is_running`] gives: the span belongs inside the stage the lifecycle helper
+/// `is_running` gives: the span belongs inside the stage the lifecycle helper
 /// opens, and a guard around the call would drop after that stage had closed.
 /// A devpod that could not be run at all travels out as [`NotRun`] rather than
 /// becoming a cold launch: see [`lifecycle::resolve_known_workspace`] for what a

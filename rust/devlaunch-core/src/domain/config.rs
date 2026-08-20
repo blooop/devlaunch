@@ -50,15 +50,23 @@ pub struct WorktreeConfig {
 }
 
 /// Why the configuration could not be read.
+///
+/// Not-TOML and wrong-typed are two arms rather than one `Malformed`, matching
+/// the granularity divergence row 8 claims for the refusal: a file that is not
+/// TOML at all and a TOML file whose one value has the wrong type are different
+/// things to fix, and a caller holding one string could not tell which it had.
 #[derive(Debug)]
 pub enum ConfigError {
     /// This machine names no home directory, so no config path can be built.
     NoHomeDirectory,
     /// The file exists but could not be read.
     Unreadable { path: PathBuf, source: io::Error },
-    /// The file is not TOML, or a value is not of the type its key must be.
-    /// `reason` is the parser's own words, quoted as data.
-    Malformed { path: PathBuf, reason: String },
+    /// The file is not TOML at all. `reason` is the parser's own words, quoted
+    /// as data.
+    NotToml { path: PathBuf, reason: String },
+    /// TOML, but a value is not of the type its key must be. `reason` is the
+    /// deserializer's own words, quoted as data.
+    WrongType { path: PathBuf, reason: String },
 }
 
 impl From<NoHomeDirectory> for ConfigError {
@@ -116,20 +124,47 @@ pub(crate) fn worktree_config_at(
             });
         }
     };
-    parse_worktree_config(&text, defaults).map_err(|reason| ConfigError::Malformed {
-        path: path.to_path_buf(),
-        reason,
+    parse_worktree_config(&text, defaults).map_err(|refused| match refused {
+        Malformed::NotToml { reason } => ConfigError::NotToml {
+            path: path.to_path_buf(),
+            reason,
+        },
+        Malformed::WrongType { reason } => ConfigError::WrongType {
+            path: path.to_path_buf(),
+            reason,
+        },
     })
+}
+
+/// Why `text` is not a readable configuration — [`ConfigError`]'s two parse arms
+/// before a path is known.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Malformed {
+    /// Not TOML at all.
+    NotToml { reason: String },
+    /// TOML with a value of the wrong type.
+    WrongType { reason: String },
 }
 
 /// Read the `[worktree]` tables out of `text`, filling in from `defaults`.
 ///
-/// The error is the parser's message; the caller adds the path.
+/// The error is the parser's message; the caller adds the path. Which arm it is
+/// comes from a syntax-only pass first: a text no [`toml::Table`] can be read
+/// from is not TOML, and anything the typed read then refuses about a valid
+/// table is a wrong-typed value — the two reads are of the same text, so the
+/// message is the same one the single-pass read produced.
 pub(crate) fn parse_worktree_config(
     text: &str,
     defaults: &WorktreeConfig,
-) -> Result<WorktreeConfig, String> {
-    let document: StoredConfig = toml::from_str(text).map_err(|error| error.to_string())?;
+) -> Result<WorktreeConfig, Malformed> {
+    if let Err(error) = text.parse::<toml::Table>() {
+        return Err(Malformed::NotToml {
+            reason: error.to_string(),
+        });
+    }
+    let document: StoredConfig = toml::from_str(text).map_err(|error| Malformed::WrongType {
+        reason: error.to_string(),
+    })?;
     let worktree = document.worktree.unwrap_or_default();
     let cleanup = worktree.cleanup.unwrap_or_default();
     Ok(WorktreeConfig {
@@ -348,22 +383,27 @@ mod tests {
 
     #[test]
     fn text_that_is_not_toml_is_refused_with_the_parsers_reason() {
-        let reason =
+        let refused =
             parse_worktree_config("[worktree\nenabled = true", &defaults()).expect_err("not TOML");
 
-        assert!(!reason.is_empty());
+        match refused {
+            Malformed::NotToml { reason } => assert!(!reason.is_empty()),
+            other => panic!("not TOML at all, got {other:?}"),
+        }
     }
 
     #[test]
     fn a_value_of_the_wrong_type_is_refused_rather_than_carried() {
         // Python accepted this and failed later, in arithmetic; a parse step
-        // exists so the refusal happens where the value is read.
+        // exists so the refusal happens where the value is read — and the arm
+        // says the file is TOML, so the reader knows which half to fix.
         for text in [
             "[worktree]\nfetch_interval = \"soon\"\n",
             "[worktree]\nenabled = \"yes\"\n",
             "[worktree.cleanup]\nprune_after_days = -1\n",
         ] {
-            parse_worktree_config(text, &defaults()).expect_err(text);
+            let refused = parse_worktree_config(text, &defaults()).expect_err(text);
+            assert!(matches!(refused, Malformed::WrongType { .. }), "{text}");
         }
     }
 
@@ -399,7 +439,7 @@ mod tests {
         let failed = worktree_config_at(&path, &defaults()).expect_err("not TOML");
 
         match failed {
-            ConfigError::Malformed {
+            ConfigError::NotToml {
                 path: named,
                 reason,
             } => {

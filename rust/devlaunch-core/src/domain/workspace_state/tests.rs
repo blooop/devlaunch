@@ -203,10 +203,10 @@ fn would_lose(unsaved: &Unsaved) -> String {
     }
 }
 
-/// The reason of a `CouldNotTell`, or a failure naming the arm that came back.
+/// The description of a `CouldNotTell`, or a failure naming the arm that came back.
 fn could_not_tell(unsaved: &Unsaved) -> String {
     match unsaved {
-        Unsaved::CouldNotTell(reason) => reason.as_str().to_owned(),
+        Unsaved::CouldNotTell(cause) => cause.describe(),
         other => panic!("expected a CouldNotTell: {other:?}"),
     }
 }
@@ -783,10 +783,13 @@ fn each_arm_renders_as_one_key_that_names_it() {
         r#"{"wouldLose":"1 unpushed commit(s)"}"#
     );
     assert_eq!(
-        Unsaved::CouldNotTell(Reason::new("git said no"))
-            .as_json()
-            .to_string(),
-        r#"{"couldNotTell":"git said no"}"#
+        Unsaved::CouldNotTell(CouldNotTell::GitCouldNotRead {
+            clone: PathBuf::from("/c"),
+            reason: "git said no".to_owned(),
+        })
+        .as_json()
+        .to_string(),
+        r#"{"couldNotTell":"git could not read /c: git said no"}"#
     );
 }
 
@@ -819,7 +822,7 @@ fn every_description_says_something() {
     for unsaved in [held(&clone), Unsaved::NothingToLose] {
         match unsaved {
             Unsaved::WouldLose(losses) => assert!(!losses.describe().is_empty()),
-            Unsaved::CouldNotTell(reason) => assert!(!reason.as_str().is_empty()),
+            Unsaved::CouldNotTell(cause) => assert!(!cause.describe().is_empty()),
             Unsaved::NothingToLose => {}
         }
     }
@@ -830,14 +833,20 @@ fn two_of_the_three_answers_refuse_a_delete() {
     // devlaunch#171 in one assertion: "could not tell" refuses exactly as "would
     // lose" does, and only the first arm is permission. Written as the match a
     // guard writes rather than against a `may_delete()` helper, which this module
-    // deliberately does not offer — see the note beside `Reason`.
+    // deliberately does not offer — see the note above `Unsaved`'s impl.
     for (unsaved, may_delete) in [
         (Unsaved::NothingToLose, true),
         (
             Unsaved::WouldLose(Losses::one(Loss::Unpushed(NonEmpty::one("abc".to_owned())))),
             false,
         ),
-        (Unsaved::CouldNotTell(Reason::new("git said no")), false),
+        (
+            Unsaved::CouldNotTell(CouldNotTell::GitCouldNotRead {
+                clone: PathBuf::from("/c"),
+                reason: "git said no".to_owned(),
+            }),
+            false,
+        ),
     ] {
         let permitted = match &unsaved {
             Unsaved::NothingToLose => true,

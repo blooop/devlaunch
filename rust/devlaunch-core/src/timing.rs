@@ -277,7 +277,7 @@ fn now_epoch() -> f64 {
 
 /// One timed round trip: what it was, and how long it took.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpanRecord {
+pub(crate) struct SpanRecord {
     pub(crate) label: String,
     pub seconds: Duration,
 }
@@ -578,10 +578,14 @@ impl Report {
 }
 
 /// The human summary: one line per round trip, then the total.
+///
+/// `pub` only because [`Report::Prose`] carries it and `Report` is binary
+/// surface; the binary renders [`Report::lines`] and never names this type.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prose {
-    pub spans: Vec<SpanRecord>,
-    pub total: Duration,
+    pub(crate) spans: Vec<SpanRecord>,
+    pub(crate) total: Duration,
 }
 
 impl Prose {
@@ -611,6 +615,9 @@ impl Prose {
 /// and parses what follows, which no amount of surrounding output can break.
 /// Field order is the order Python's dict was built in, so the two binaries'
 /// documents are byte-comparable.
+/// `pub` only because [`Report::Document`] carries it and `Report` is binary
+/// surface; the binary renders [`Report::lines`] and never names this type.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Document {
     pub(crate) total: f64,

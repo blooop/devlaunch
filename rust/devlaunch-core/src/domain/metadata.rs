@@ -42,6 +42,7 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::json::JsonKind;
 use crate::runner::interrupt;
 
 use super::locks::{LockError, WaitStarted, hold_lock_watching};
@@ -87,30 +88,6 @@ impl Section {
         match self {
             Section::Repositories => "repositories",
             Section::Worktrees => "worktrees",
-        }
-    }
-}
-
-/// The JSON type something turned out to be, where a report names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JsonKind {
-    Null,
-    Bool,
-    Number,
-    String,
-    Array,
-    Object,
-}
-
-impl JsonKind {
-    fn of(value: &Value) -> Self {
-        match value {
-            Value::Null => JsonKind::Null,
-            Value::Bool(_) => JsonKind::Bool,
-            Value::Number(_) => JsonKind::Number,
-            Value::String(_) => JsonKind::String,
-            Value::Array(_) => JsonKind::Array,
-            Value::Object(_) => JsonKind::Object,
         }
     }
 }
@@ -1672,6 +1649,43 @@ mod tests {
                     ..
                 }]
             ));
+        }
+    }
+
+    #[test]
+    fn pythons_json_extensions_read_as_corruption_here() {
+        // Divergence row 28 (docs/rust-rewrite-plan.md): Python's `json.loads`
+        // accepts all four of these — `NaN` and `Infinity` as literals, `1e400`
+        // as `inf`, a lone surrogate escape as an unpaired code unit — where
+        // serde_json refuses them, so a file carrying one is quarantined (bytes
+        // intact, at `.corrupt`) and the run starts empty where Python kept the
+        // records. No released dl writes any of them; only a hand-edited or
+        // third-party-written file can.
+        for content in [
+            r#"{"x": NaN}"#,
+            r#"{"x": Infinity}"#,
+            r#"{"x": 1e400}"#,
+            r#"{"x": "\ud800"}"#,
+        ] {
+            let dir = temp_dir();
+            let path = dir.path().join("metadata.json");
+            write(&path, content);
+
+            let (storage, notices) = open_at(&path);
+
+            assert!(storage.repositories().is_empty(), "{content:?}");
+            let corrupt = dir.path().join("metadata.json.corrupt");
+            assert_eq!(read(&corrupt), content, "the bytes stay inspectable");
+            assert!(
+                matches!(
+                    notices.as_slice(),
+                    [Notice::FileUnusable {
+                        problem: FileProblem::NotJson { .. },
+                        ..
+                    }]
+                ),
+                "{content:?}: {notices:?}"
+            );
         }
     }
 

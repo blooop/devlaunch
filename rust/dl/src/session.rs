@@ -76,16 +76,32 @@ pub(crate) fn cache_dir() -> Result<PathBuf, NoHomeDirectory> {
 /// drives it, so the one process that knows which program it is hands the answer
 /// down. No leading arguments — Python's re-invocation needs `-m devlaunch.dl` and
 /// a compiled binary needs nothing.
-///
-/// A build whose own path cannot be read falls back to the name a shell would
-/// resolve, which is the only other honest guess; a spawn that then finds nothing
-/// is [`lifecycle::SpawnRefused::ProgramNotFound`], and a refresh that could not be
-/// spawned costs completions their freshness and nothing else.
 pub(crate) fn self_invocation() -> SelfInvocation {
-    let program = std::env::current_exe()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "dl".to_owned());
-    SelfInvocation::new(program)
+    SelfInvocation::new(refresh_program(std::env::current_exe().ok()))
+}
+
+/// The program the refresh child is spawned as, from what `current_exe()` said.
+///
+/// The answer has to still be spawnable, which the running binary's path is not
+/// guaranteed to be: after `pixi global update` swaps the binary mid-run, Linux
+/// reports the unlinked inode as `/path/dl (deleted)` — a path that exists for no
+/// one — so spawning it fails with `ProgramNotFound` and completions silently
+/// lose their freshness. Python's `sys.executable` survives the same swap, so
+/// this is where the gap is closed: a path that no longer exists, or that carries
+/// the kernel's ` (deleted)` mark (checked on its own too, against a file that
+/// happens to sit at the marked name), falls back to the bare program name and
+/// lets the spawn's PATH search find the replacement. That name is the only
+/// other honest guess; a spawn that then finds nothing is
+/// [`lifecycle::SpawnRefused::ProgramNotFound`](devlaunch_core::flows::lifecycle::SpawnRefused::ProgramNotFound),
+/// and a refresh that could not be spawned costs completions their freshness and
+/// nothing else.
+fn refresh_program(current_exe: Option<PathBuf>) -> String {
+    match current_exe {
+        Some(path) if path.exists() && !path.to_string_lossy().ends_with(" (deleted)") => {
+            path.to_string_lossy().into_owned()
+        }
+        _ => "dl".to_owned(),
+    }
 }
 
 /// The worktree config, for the commands that need only `repos_dir`.
@@ -98,8 +114,8 @@ pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
 /// Holds the manager and the store together because the listing reads both and
 /// they have to describe the same cache. There is deliberately no second copy of
 /// the config here: `repos_dir` is what the commands want from it, and the manager
-/// is what answers for that (see [`lifecycle::clone_root`]), so a command cannot
-/// scan one tree while locking against another.
+/// is what answers for that (see [`lifecycle::ClonePlacement`]), so a command
+/// cannot scan one tree while locking against another.
 pub(crate) struct Records<'r> {
     pub(crate) storage: MetadataStorage,
     /// The clone manager, which is the one thing that names a record's clone
@@ -153,4 +169,50 @@ pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, St
         migration,
         migration_refused,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_binary_that_still_exists_is_respawned_by_its_own_path() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let binary = dir.path().join("dl");
+        std::fs::write(&binary, "").expect("a file standing in for the binary");
+
+        assert_eq!(
+            refresh_program(Some(binary.clone())),
+            binary.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn a_binary_swapped_out_from_under_the_run_falls_back_to_the_bare_name() {
+        // What `current_exe()` answers after `pixi global update` replaces the
+        // binary mid-run: the unlinked inode's path, which exists for no one. The
+        // swap is simulated by the path-exists check — the path simply is not
+        // there — which is exactly the fact the decision turns on.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+
+        assert_eq!(refresh_program(Some(dir.path().join("dl (deleted)"))), "dl");
+        assert_eq!(refresh_program(Some(dir.path().join("dl"))), "dl");
+    }
+
+    #[test]
+    fn the_kernels_deleted_mark_is_refused_even_where_a_file_wears_it() {
+        // ` (deleted)` is the kernel's annotation, not part of any name dl was
+        // started by — so a file that happens to sit at the marked path must not
+        // launder the mark into an answer.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let marked = dir.path().join("dl (deleted)");
+        std::fs::write(&marked, "").expect("a file at the marked name");
+
+        assert_eq!(refresh_program(Some(marked)), "dl");
+    }
+
+    #[test]
+    fn a_path_that_could_not_be_read_at_all_falls_back_to_the_bare_name() {
+        assert_eq!(refresh_program(None), "dl");
+    }
 }

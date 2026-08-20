@@ -63,7 +63,7 @@ use crate::clients::devpod::{self, ContainerState, ListingUnreadable, Workspace,
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
-use crate::domain::workspace_state::{self, CloneState, NonEmpty, Reason, Unsaved};
+use crate::domain::workspace_state::{self, CloneState, CouldNotTell, NonEmpty, Unsaved};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
 use crate::timing;
@@ -799,9 +799,9 @@ pub(crate) fn unsaved_work_in(git: &Git<'_>, view: &DlView<'_>, workspace_id: &s
     };
     match view.clones.clone_path(record) {
         Some(clone) => workspace_state::holds_unsaved_work(git, &clone),
-        None => Unsaved::CouldNotTell(Reason::new(format!(
-            "could not work out which directory {workspace_id}'s clone is in"
-        ))),
+        None => Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown {
+            workspace_id: workspace_id.to_owned(),
+        }),
     }
 }
 
@@ -2565,8 +2565,8 @@ mod tests {
         let git = Git::new(&scene.runner);
 
         match unsaved_work_in(&git, &view, scene.id("clean")) {
-            Unsaved::CouldNotTell(reason) => {
-                assert!(reason.as_str().contains(scene.id("clean")), "{reason}");
+            Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown { workspace_id }) => {
+                assert_eq!(workspace_id, scene.id("clean"));
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
