@@ -67,12 +67,23 @@
 
 use std::fmt;
 
-/// Total id budget. devpod's own ceiling is 48, but the setup pass's hostname
+/// Total id budget, one character inside devpod's own ceiling of 48.
+///
+/// 48 is hard and fatal: `devpod up --id` with a 49-character id is rejected
+/// outright (`workspace name cannot be longer than 48 characters`, verified
+/// against the pinned v0.26.1), so an id derived here that overshoots is a
+/// launch that does not happen. 47 keeps one character of margin from that wall.
+///
+/// This was 38, for the reason it is still not 48: the setup pass's hostname
 /// stage names the container after the workspace id, and downstream tooling
-/// stacks prefixes and suffixes on it against a 64-byte limit
-/// (kinisi-robotics/kinisi_ros#9766 already sat at 62/64). 48 is a ceiling
-/// others eat into, not a budget to fill, so aim at 38.
-pub(crate) const TARGET_LENGTH: usize = 38;
+/// stacks its own prefixes and suffixes onto that against a 64-byte limit
+/// (kinisi-robotics/kinisi_ros#9766 already sat at 62/64 with a 38-char id).
+/// Widening to 47 spends nine characters of that reserve on legibility — branch
+/// names that used to lose their tail now keep it — and leaves ~17 characters
+/// for whatever a downstream caller bolts on, so a caller that wants more is the
+/// one that has to shorten. Nothing here breaks at any value up to 48, and the
+/// id alone is a legal hostname at 47, well inside 64.
+pub(crate) const TARGET_LENGTH: usize = 47;
 
 /// The repo slug is cut to this length when the id would otherwise overflow, and
 /// is never cut below it. It carries no identity — only legibility — so trimming
@@ -87,8 +98,8 @@ pub(crate) const REPO_SLUG_LENGTH: usize = 20;
 // This was 3 syllables / 18 bits when the scheme was first decided. 18 bits put
 // a birthday collision inside a single repo's plausible branch count — 500
 // branches already produced one in test — so it was widened by one syllable. The
-// extra two characters come out of the readable budget; the 38-char cap did not
-// move.
+// extra two characters come out of the readable budget; the cap did not move
+// to pay for them.
 const CONSONANTS: &[u8; 16] = b"bdfghjklmnprstvz";
 const VOWELS: &[u8; 4] = b"aeio";
 const SYLLABLES: usize = 4;
@@ -274,7 +285,7 @@ impl WorkspaceId {
         let suffix = self.suffix();
         let mut repo_part = slug(&self.repo);
         // Cut the repo slug only when the id would otherwise overflow. Capping it
-        // at REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 8 = 8
+        // at REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 8 = 17
         // characters for the ref, so the ref budget can never go non-positive —
         // the hole that let a 47-char repo name skip truncation altogether.
         let untruncated = join(&[&repo_part, &fit_ref(&self.git_ref, TARGET_LENGTH), &suffix]);
@@ -468,42 +479,42 @@ mod tests {
             "devlaunch",
             "dependabot/github_actions/codecov/codecov-action-6",
             "sifivasa",
-            "devlaunch-dependabot-codecov-sifivasa",
+            "devlaunch-dependabot-codecov-action-6-sifivasa",
         ),
         (
             "blooop",
             "devlaunch",
             "dependabot/github_actions/blooop/prek-action-2",
             "zakogozo",
-            "devlaunch-dependabot-prek-act-zakogozo",
+            "devlaunch-dependabot-prek-action-2-zakogozo",
         ),
         (
             "blooop",
             "python_template",
             "dependabot/pip/lib/dependencies-1",
             "hinarami",
-            "python-template-dependabot-de-hinarami",
+            "python-template-dependabot-dependencie-hinarami",
         ),
         (
             "blooop",
             "lifetime_foc_rig",
             "dependabot/github_actions/codecov/codecov-action-6",
             "matagere",
-            "lifetime-foc-rig-dependabot-c-matagere",
+            "lifetime-foc-rig-dependabot-codecov-ac-matagere",
         ),
         (
             "kinisi-robotics",
             "kinisi_ros",
             "ags-devcontainer-tooling-support",
             "lenevere",
-            "kinisi-ros-ags-devcontainer-t-lenevere",
+            "kinisi-ros-ags-devcontainer-tooling-su-lenevere",
         ),
         (
             "blooop",
             "devlaunch",
             "fix/gh-auth-in-devcontainer",
             "pedoveho",
-            "devlaunch-fix-gh-auth-in-devc-pedoveho",
+            "devlaunch-fix-gh-auth-in-devcontainer-pedoveho",
         ),
         (
             "blooop",
@@ -517,14 +528,21 @@ mod tests {
             "dl",
             "a/bbbbbbbb/cccccccc/dddddddd/zzz",
             "jobiriti",
-            "dl-a-cccccccc-dddddddd-zzz-jobiriti",
+            "dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-jobiriti",
         ),
         (
             "blooop",
             "dl",
-            "aa/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/zz",
-            "rakibasi",
-            "dl-aa-zz-rakibasi",
+            "a/bbbbbbbbbbbb/cccccccccccc/dddddddddddd/zzz",
+            "gigisini",
+            "dl-a-cccccccccccc-dddddddddddd-zzz-gigisini",
+        ),
+        (
+            "blooop",
+            "dl",
+            "aa/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/zz",
+            "degosare",
+            "dl-aa-zz-degosare",
         ),
         (
             "blooop",
@@ -538,7 +556,7 @@ mod tests {
             "devlaunch",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "zedabezi",
-            "devlaunch-aaaaaaaaaaaaaaaaaaa-zedabezi",
+            "devlaunch-aaaaaaaaaaaaaaaaaaaaaaaaaaaa-zedabezi",
         ),
         (
             "owner",
@@ -552,28 +570,28 @@ mod tests {
             "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
             "a/very/long/branch/name/that/eats/the/budget",
             "bijizoli",
-            "rrrrrrrrrrrrrrrrrrrr-a-budget-bijizoli",
+            "rrrrrrrrrrrrrrrrrrrr-a-eats-the-budget-bijizoli",
         ),
         (
             "owner",
             "rrrrrrrrrrrrrrrrrrrr",
             "a/very/long/branch/name/that/eats/the/budget",
             "tafifipo",
-            "rrrrrrrrrrrrrrrrrrrr-a-budget-tafifipo",
+            "rrrrrrrrrrrrrrrrrrrr-a-eats-the-budget-tafifipo",
         ),
         (
             "owner",
             "repo",
             "release/9999999999999999999999999176",
             "sehirani",
-            "repo-release-9999999999999999-sehirani",
+            "repo-release-9999999999999999999999999-sehirani",
         ),
         (
             "owner",
             "repo",
             "release/9999999999999999999999999234",
             "zivalero",
-            "repo-release-9999999999999999-zivalero",
+            "repo-release-9999999999999999999999999-zivalero",
         ),
         ("a", "bc", "main", "bajovafa", "bc-main-bajovafa"),
         ("ab", "c", "main", "mofijihe", "c-main-mofijihe"),
@@ -589,14 +607,14 @@ mod tests {
             "a-repo-name-that-is-long",
             "feature/shared-prefix-1",
             "lapajiha",
-            "a-repo-name-that-is-feature-s-lapajiha",
+            "a-repo-name-that-is-feature-shared-pre-lapajiha",
         ),
         (
             "blooop",
             "a-repo-name-that-is-long",
             "feature/shared-prefix-2",
             "sopalopi",
-            "a-repo-name-that-is-feature-s-sopalopi",
+            "a-repo-name-that-is-feature-shared-pre-sopalopi",
         ),
         (
             "owner",
@@ -617,14 +635,14 @@ mod tests {
             "r",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "sigivapa",
-            "r-bbbbbbbbbbbbbbbbbbbbbbbbbbb-sigivapa",
+            "r-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-sigivapa",
         ),
         (
             "owner",
             "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "bagakino",
-            "rrrrrrrrrrrrrrrrrrrr-bbbbbbbb-bagakino",
+            "rrrrrrrrrrrrrrrrrrrr-bbbbbbbbbbbbbbbbb-bagakino",
         ),
         (
             "owner",
@@ -695,11 +713,11 @@ mod tests {
         ),
         (
             "github.com/oooooooooooooooooooooooooooooooooooooooo/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
-            "github-com-oooooooooooooooooo-rasijome",
+            "github-com-ooooooooooooooooooooooooooo-rasijome",
         ),
         (
             "github.com/oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
-            "github-com-oooooooooooooooooo-bepolero",
+            "github-com-ooooooooooooooooooooooooooo-bepolero",
         ),
         ("github.com/o/r", "github-com-o-r-deparori"),
         ("o", "o-rotebife"),
@@ -1247,16 +1265,40 @@ mod tests {
         assert!(!value.contains("github-actions"), "{value}");
     }
 
+    /// The segment widths are sized to the budget: this ref is over it by less
+    /// than one segment, so exactly one middle has to go. A ref that fits whole
+    /// would pin nothing, which is what the 8-wide version of it became when the
+    /// cap moved from 38 to 47.
     #[test]
     fn only_as_many_middle_segments_drop_as_needed() {
-        let value = id("blooop", "dl", "a/bbbbbbbb/cccccccc/dddddddd/zzz").value();
-        assert!(value.starts_with("dl-a-cccccccc-dddddddd-zzz-"), "{value}");
-        assert!(!value.contains("bbbbbbbb"), "{value}");
+        let git_ref = format!(
+            "a/{}/{}/{}/zzz",
+            "b".repeat(12),
+            "c".repeat(12),
+            "d".repeat(12)
+        );
+        let value = id("blooop", "dl", &git_ref).value();
+        let kept = format!("dl-a-{}-{}-zzz-", "c".repeat(12), "d".repeat(12));
+        assert!(value.starts_with(&kept), "{value}");
+        assert!(!value.contains(&"b".repeat(12)), "{value}");
     }
 
+    /// The other side of the same rule: nothing drops until it has to.
+    #[test]
+    fn a_ref_that_fits_whole_keeps_every_segment() {
+        let value = id("blooop", "dl", "a/bbbbbbbb/cccccccc/dddddddd/zzz").value();
+        assert!(
+            value.starts_with("dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-"),
+            "{value}"
+        );
+    }
+
+    /// Both middles are far wider than the budget rather than just over it: at 30
+    /// each this passed by a single character, so one more character of cap would
+    /// have turned it into a test of dropping *one* middle without saying so.
     #[test]
     fn the_first_and_last_segments_survive_heavy_truncation() {
-        let git_ref = format!("aa/{}/{}/zz", "m".repeat(30), "n".repeat(30));
+        let git_ref = format!("aa/{}/{}/zz", "m".repeat(40), "n".repeat(40));
         let value = id("blooop", "dl", &git_ref).value();
         assert!(value.starts_with("dl-aa-zz-"), "{value}");
         assert!(

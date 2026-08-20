@@ -37,12 +37,23 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-# Total id budget. devpod's own ceiling is 48, but the setup pass's hostname stage
+# Total id budget, one character inside devpod's own ceiling of 48.
+#
+# 48 is hard and fatal: ``devpod up --id`` with a 49-character id is rejected outright
+# (``workspace name cannot be longer than 48 characters``, verified against the pinned
+# v0.26.1), so an id derived here that overshoots is a launch that does not happen. 47
+# keeps one character of margin from that wall.
+#
+# This was 38, for the reason it is still not 48: the setup pass's hostname stage
 # (``tools.setup_stages``) names the container after the workspace id, and downstream
-# tooling stacks prefixes and
-# suffixes on it against a 64-byte limit (kinisi-robotics/kinisi_ros#9766 already sat
-# at 62/64). 48 is a ceiling others eat into, not a budget to fill, so aim at 38.
-TARGET_LENGTH = 38
+# tooling stacks its own prefixes and suffixes onto that against a 64-byte limit
+# (kinisi-robotics/kinisi_ros#9766 already sat at 62/64 with a 38-char id). Widening to
+# 47 spends nine characters of that reserve on legibility — branch names that used to
+# lose their tail now keep it — and leaves ~17 characters for whatever a downstream
+# caller bolts on, so a caller that wants more is the one that has to shorten. Nothing
+# here breaks at any value up to 48, and the id alone is a legal hostname at 47, well
+# inside 64.
+TARGET_LENGTH = 47
 
 # The repo slug is cut to this length when the id would otherwise overflow, and is
 # never cut below it. It carries no identity — only legibility — so trimming it is
@@ -56,7 +67,7 @@ REPO_SLUG_LENGTH = 20
 # This was 3 syllables / 18 bits when the scheme was first decided. 18 bits put a
 # birthday collision inside a single repo's plausible branch count — 500 branches
 # already produced one in test — so it was widened by one syllable. The extra two
-# characters come out of the readable budget; the 38-char cap did not move.
+# characters come out of the readable budget; the cap did not move to pay for them.
 _CONSONANTS = "bdfghjklmnprstvz"
 _VOWELS = "aeio"
 _SYLLABLES = 4
@@ -210,7 +221,7 @@ class WorkspaceId:
         suffix = self.suffix
         repo_part = slug(self.repo)
         # Cut the repo slug only when the id would otherwise overflow. Capping it at
-        # REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 8 = 8
+        # REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 8 = 17
         # characters for the ref, so the ref budget can never go non-positive — the
         # hole that let a 47-char repo name skip truncation altogether.
         if len(_join(repo_part, _fit_ref(self.ref, TARGET_LENGTH), suffix)) > TARGET_LENGTH:

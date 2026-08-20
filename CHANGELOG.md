@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Workspace ids may now be 47 characters instead of 38, so long branch names
+  keep their tail.** The budget was never a limit anything enforced: devpod's own
+  ceiling is 48 and fatal (`workspace name cannot be longer than 48 characters` —
+  a 49-character id is refused, not truncated), and 38 was devlaunch reserving 10
+  characters for downstream tooling that stacks prefixes onto the container name
+  against a 64-byte limit. 47 spends nine of those characters on legibility and
+  keeps one against devpod's wall, leaving ~17 for whatever bolts itself on.
+  `kinisi_ros@ags-devcontainer-tooling-support` reads
+  `kinisi-ros-ags-devcontainer-tooling-su-lenevere` rather than
+  `kinisi-ros-ags-devcontainer-t-lenevere`, and a dependabot ref keeps the whole
+  action name (`devlaunch-dependabot-codecov-action-6-sifivasa`). Truncation
+  policy has no effect on collisions — the eight-character suffix is hashed over
+  the full `(owner, repo, ref)` triple before anything is cut — so nothing about
+  uniqueness moves with this. Existing containers are unaffected: `dl` addresses
+  a workspace by the devpod id recorded in `metadata.json` (#88), so an id that
+  was derived under the old budget keeps opening the same container. A clone
+  directory whose leaf does change is re-cloned under the new name on the next
+  launch, leaving the old directory for `dl --prune` to report.
+
 ## [0.2.2] - 2026-08-20
 
 ### Fixed
