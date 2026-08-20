@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-20
+
+### Fixed
+
+- **This repo's devcontainer installs the committed lock instead of solving its
+  own** ([#288](https://github.com/blooop/devlaunch/pull/288)). `postCreateCommand`
+  ran a bare `pixi install`, and a bare install treats a lock it cannot read as a
+  missing one: it warns, exits 0, solves a fresh environment, and rewrites the
+  tracked `pixi.lock` on the way past. Measured against this repo's own manifest
+  and lock with the pixi the container pinned before #281 (0.63.1, committed lock
+  version 7), that install exits 0 having rewritten `pixi.lock` from version 7 down
+  to 6, where `pixi install --frozen` exits 1 and names the version gap. The solve
+  also reaches the network — resolving pypi dependencies alongside conda ones needs
+  a conda-pypi name mapping fetched remotely — and a create whose fetch failed died
+  in `postCreateCommand` with the workspace never opening, which is how this
+  surfaced. #281 pinned the container's pixi so it *can* read the lock; `--frozen`
+  is the other half, because a create ignoring the lock is not a version question.
+  With the mapping cache deleted, `pixi install --frozen --offline` installs the
+  default environment and never recreates it, where a solving install does. No
+  change to what ships: `dl` and `aid` are untouched.
+
 ### Changed
 
 - **The dev-loop names build the implementation that ships**
