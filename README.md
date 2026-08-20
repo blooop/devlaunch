@@ -593,16 +593,16 @@ them. If that is too often, unset the variable and use `dl <ws> dotfiles`.
 see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
 
 ```
-<repo-slug>-<branch-slug>-<syllables>      at most 38 characters
+<repo-slug>-<branch-slug>-<syllables>      at most 47 characters
 
 blooop/devlaunch@main                             -> devlaunch-main-zovomobo
 blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-poliseno
 blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-nesatabe
 blooop/test_renv@nb4                              -> test-renv-nb4-polenita
 kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
-                                                  -> kinisi-ros-ags-devcontainer-t-lenevere
+                                                  -> kinisi-ros-ags-devcontainer-tooling-su-lenevere
 blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
-                                                  -> devlaunch-dependabot-codecov-sifivasa
+                                                  -> devlaunch-dependabot-codecov-action-6-sifivasa
 ```
 
 The eight-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
@@ -620,8 +620,11 @@ Branch names are case-sensitive, because git refs are.
 URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
 hashed over the URL.
 
-The id is also the container hostname, so it stays well inside the 38-character budget
-to leave room for tools that add their own prefixes.
+The id is also the container hostname. 47 characters is one inside devpod's own hard
+ceiling of 48 — a 49-character id is refused outright, not truncated — and well inside
+the 64-byte hostname limit on its own, but tools that stack their own prefixes onto the
+container name have about 17 characters to work with, so a tool that wants more is the
+one that has to shorten.
 
 Branch names must be safe as both git refs and directory names — a name with a space or
 a leading dash is rejected rather than quietly rewritten.

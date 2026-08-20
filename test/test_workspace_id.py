@@ -280,10 +280,22 @@ class TestSegmentAwareTruncation:
         assert "github-actions" not in value
 
     def test_only_as_many_middle_segments_drop_as_needed(self):
-        """Segments go leftmost-middle first, and only until the ref fits."""
+        """Segments go leftmost-middle first, and only until the ref fits.
+
+        The segment widths are sized to the budget: this ref is over it by less
+        than one segment, so exactly one middle has to go. A ref that fits whole
+        would pin nothing, which is what the 8-wide version of it became when
+        the cap moved from 38 to 47.
+        """
+        ref = "a/" + "b" * 12 + "/" + "c" * 12 + "/" + "d" * 12 + "/zzz"
+        value = WorkspaceId("blooop", "dl", ref).value
+        assert value.startswith("dl-a-" + "c" * 12 + "-" + "d" * 12 + "-zzz-")
+        assert "b" * 12 not in value
+
+    def test_a_ref_that_fits_whole_keeps_every_segment(self):
+        """The other side of the same rule: nothing drops until it has to."""
         value = WorkspaceId("blooop", "dl", "a/bbbbbbbb/cccccccc/dddddddd/zzz").value
-        assert value.startswith("dl-a-cccccccc-dddddddd-zzz-")
-        assert "bbbbbbbb" not in value
+        assert value.startswith("dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-")
 
     def test_first_and_last_segments_survive_heavy_truncation(self):
         """However many middles have to go, the ends stay."""
