@@ -323,7 +323,12 @@ def test_pixi_resolves_a_test_e2e_task():
         text=True,
         check=True,
     )
-    tasks = result.stdout.split()
+    # Both streams: pixi prints the task table itself on stderr and only the
+    # column header on stdout (0.63), and where a *human-facing listing* goes is
+    # not a thing this test has an opinion about. Reading one stream made this
+    # assert on pixi's output routing rather than on the task existing, which is
+    # how it came to fail against a task list that plainly contained `test-e2e`.
+    tasks = (result.stdout + " " + result.stderr).replace(",", " ").split()
     assert "test-e2e" in tasks
 
 

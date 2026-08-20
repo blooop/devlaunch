@@ -58,6 +58,25 @@ pub use render::overridden_notice;
 /// The version both binaries print, single-sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// What both binaries append to [`VERSION`] to say which build this is.
+///
+/// Empty for everything that ships. `-dev` for a build of somebody's working
+/// tree, which is what `./dev.sh` installs as `dl-next`/`aid-next` beside the
+/// released pair (#268): two names on one PATH are only worth having if the
+/// builds behind them are told apart by their output too, and a compiled binary
+/// has no editable-install metadata to describe the way Python's did
+/// (**divergence row 16**).
+///
+/// Gated on a cargo feature, so cargo rebuilds when it moves. It is deliberately
+/// not read from the environment: `option_env!` is resolved at compile time
+/// without cargo knowing, so a marker flipped that way leaves the previous
+/// binary standing and mislabelled.
+pub const BUILD_MARKER: &str = if cfg!(feature = "dev-build") {
+    "-dev"
+} else {
+    ""
+};
+
 /// The code a `dl` killed by Ctrl-C exits with.
 ///
 /// 128 + SIGINT, which is what a shell reports for a process the terminal
@@ -255,5 +274,47 @@ fn report_timing() {
         for line in report.lines() {
             eprintln!("{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod build_marker {
+    //! What [`BUILD_MARKER`] is, asserted once per build rather than once.
+    //!
+    //! The two cases cannot both be compiled at once — the marker is a `cfg`, so a
+    //! single build has exactly one value — and that is the point: the ordinary
+    //! `cargo test` the gate runs proves the released half, and `./dev.sh`'s
+    //! feature-on build proves the other. Neither half is asserted by a test that
+    //! could not have failed.
+
+    use super::{BUILD_MARKER, VERSION};
+
+    #[test]
+    #[cfg(not(feature = "dev-build"))]
+    fn a_released_build_appends_nothing() {
+        assert_eq!(
+            BUILD_MARKER, "",
+            "a build without `dev-build` is what ships, and it must print the bare version"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "dev-build")]
+    fn a_working_tree_build_says_which_build_it_is() {
+        assert_eq!(
+            BUILD_MARKER, "-dev",
+            "`./dev.sh` builds with `dev-build` so that `dl-next --version` differs from `dl`'s"
+        );
+    }
+
+    #[test]
+    fn the_version_itself_never_carries_a_marker() {
+        // Otherwise the two could be conflated: a `-dev` written into
+        // `rust/Cargo.toml` would mark every released artifact, and the assertion
+        // above it would still pass.
+        assert!(
+            !VERSION.contains("-dev"),
+            "the marker is the build's, not the version's; `rust/Cargo.toml` says {VERSION:?}"
+        );
     }
 }

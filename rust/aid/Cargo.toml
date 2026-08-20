@@ -15,6 +15,12 @@ repository.workspace = true
 # here it is the dependency graph.
 dl = { path = "../dl" }
 
+# Forwarded rather than declared, so the two binaries cannot report different
+# provenance: there is one marker, `dl` owns it, and enabling it here is enabling
+# it there. See the `dev-build` comment in `dl/Cargo.toml`.
+[features]
+dev-build = ["dl/dev-build"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }

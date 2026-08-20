@@ -146,15 +146,15 @@ pub(crate) fn without_a_cache_directory(command: Command) -> Ending {
 // --version
 // ---------------------------------------------------------------------------
 
-/// `dl <version>`, as Python prints it.
+/// `dl <version>`, plus [`crate::BUILD_MARKER`] when this is not a released build.
 ///
-/// Python appended the install's provenance when it was notable — an editable pip
-/// install names the tree it resolves to, which is how `dl` and `dl-next` are told
-/// apart by output. A compiled binary has no PEP 610 metadata and no editable
-/// install to describe, so there is nothing to append and the bare version is the
-/// whole answer.
+/// The marker is empty in everything that ships, so a released `dl` prints the
+/// bare version and nothing else — which is what the packaging job asserts. A
+/// working-tree build made by `./dev.sh` prints `-dev` after it, so `dl-next` and
+/// `dl` are distinguishable by output and not only by the name they were typed
+/// under (#268).
 fn render_version() -> Ending {
-    println!("dl {}", env!("CARGO_PKG_VERSION"));
+    println!("dl {}{}", crate::VERSION, crate::BUILD_MARKER);
     Ending::Done
 }
 

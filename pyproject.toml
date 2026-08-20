@@ -101,7 +101,13 @@ git-lfs = ">=3.4,<4"
 # binutils -- and README's "Disk cost of the dev container" carries the numbers
 # and the reason that trade is the right one.
 [tool.pixi.feature.rust.dependencies]
-rust = "1.97.*"
+# `1.97.1.*`, not `1.97.*`: `rust/rust-toolchain.toml` names 1.97.1 and `ci.yml`
+# installs 1.97.1, and AGENTS.md already tells a reader this environment is "pinned
+# to the 1.97.1 that rust-toolchain.toml names". At `1.97.*` that stops being true
+# the day 1.97.2 is published -- silently, and only inside the container, which is
+# the worst place for a toolchain difference to appear. Kept in lockstep by
+# `test_agents_doc.py`.
+rust = "1.97.1.*"
 
 [tool.pixi.feature.py310.dependencies]
 python = "3.10.*"
@@ -156,6 +162,24 @@ py312 = ["py312", "test"]
 py313 = ["py313", "test"]
 
 [tool.pixi.tasks]
+# `pixi run dl` and `pixi run aid`: this working tree, compiled and run (#268).
+#
+# Tasks now, where they used to be console scripts the editable Python install put
+# in the environment. Nothing resolves `dl` in here by accident any more, which is
+# the point -- the shipped implementation is Rust, and these are the only two names
+# in the container that name it.
+#
+# `cargo run` rather than a build task and a path, so there is still no build step
+# to remember: it compiles what changed and runs the result. The debug profile,
+# because this is the edit-run loop and a release build pays two-figure seconds for
+# a startup difference nothing in here measures (`pixi run bench` and `./dev.sh`
+# are where the release profile matters). `-q` so cargo's progress lines stay out
+# of stdout, which callers of `--ls --json` parse.
+#
+# `--features .../dev-build` marks the version line `-dev`, exactly as `./dev.sh`
+# does on the host: a build of somebody's tree says so wherever it runs.
+dl = "cargo run -q --locked --manifest-path rust/Cargo.toml -p dl --bin dl --features dl/dev-build --"
+aid = "cargo run -q --locked --manifest-path rust/Cargo.toml -p aid --bin aid --features aid/dev-build --"
 dev-add-docker = "python -m devlaunch.devpod_provider docker"
 dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
