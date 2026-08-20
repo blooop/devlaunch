@@ -412,17 +412,63 @@ fn install_line(tool: &Tool) -> String {
 const PIXI_BOOTSTRAP: &str = r#"if ! command -v pixi >/dev/null 2>&1; then
   echo "devlaunch: installing pixi"
   curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true
-  export PATH="$HOME/.pixi/bin:$PATH"
+  export PATH="$HOME/.devlaunch/pixi/bin:$PATH"
 fi"#;
 
-/// The `~/.pixi/bin` prepend, which two scripts and the feature installer write.
-const PIXI_BIN_LINE: &str = r#"export PATH="$HOME/.pixi/bin:$PATH""#;
+/// Point pixi at a home of devlaunch's own (`$HOME/.devlaunch/pixi`), never `~/.pixi`.
+///
+/// `pixi global install` is not only an install: it is an edit to
+/// `$PIXI_HOME/manifests/pixi-global.toml`, a *declarative* file that in a
+/// container already has an owner — an image's, or a dotfiles repo's. Writing
+/// there made devlaunch a second author of a file with one owner, and it cost
+/// something in both directions:
+///
+/// 1. `pixi global sync` removes every env the manifest does not list, so a
+///    dotfiles apply that rewrites the manifest and syncs *uninstalls* the zellij
+///    the setup pass just installed — on a schedule nothing here can see, and the
+///    next launch reinstalls it, forever.
+/// 2. The manifest is not always a file. kinisi_ros's devcontainer symlinks
+///    `~/.pixi/manifests/pixi-global.toml` onto a tracked file inside the checkout,
+///    so the append landed in the user's work tree and every `git status` in the
+///    workspace came up dirty. That is not one repo's quirk: dl launches arbitrary
+///    repos, and an install that dirties the tree it was pointed at is the launch
+///    damaging the work it exists to serve.
+///
+/// A home of devlaunch's own makes both unrepresentable rather than handled:
+/// nothing syncs this manifest, and every path under it is one devlaunch created.
+///
+/// `$HOME/.devlaunch/pixi` and *not* `$HOME/.local/share/devlaunch/pixi`, which is
+/// the conventional answer and the wrong one here — containers bind-mount
+/// `~/.cache`, `~/.config` and `~/.local/share` straight from the host, so a prefix
+/// tree under one would be shared by every container on the machine and written
+/// into the host's own home. Prefixes are baked with absolute paths and two syncs
+/// sharing one tree is prefix-dev/pixi#5476: the hazard the shared package cache
+/// refuses to let PIXI_HOME near.
+///
+/// Set on every script here that runs pixi, ahead of everything else it does.
+///
+/// It has to come before the bootstrap and not merely before the installs: pixi's
+/// own installer honours the variable too (`${PIXI_HOME:-$HOME/.pixi}` in its
+/// install.sh), so the other order would leave the binary in one home and every
+/// env it installs in another — the one shape of this that fails silently, since
+/// both halves work alone.
+///
+/// Set flatly rather than defaulted to an existing value: a PIXI_HOME already in
+/// the container's environment is the image's answer to where *its* globals live,
+/// which is the answer this is here not to use. Never written to the login
+/// profile, so a user's own `pixi global install` still goes to their `~/.pixi`.
+const PIXI_HOME_EXPORT: &str = r#"export PIXI_HOME="$HOME/.devlaunch/pixi""#;
 
-/// The trampoline pixi writes into `~/.pixi/bin` does not work for packages that
-/// ship a shell script, which is why the env's own bin directory is added too —
-/// the same workaround `.devcontainer/claude-code/install.sh` carries, for the
+/// The bin prepend, which both scripts write. The feature installer still names
+/// `~/.pixi/bin`: it is baked into an image at build time, where that path is the
+/// image's own and there is no checkout to dirty.
+const PIXI_BIN_LINE: &str = r#"export PATH="$HOME/.devlaunch/pixi/bin:$PATH""#;
+
+/// The trampoline pixi writes into its bin directory does not work for packages
+/// that ship a shell script, which is why the env's own bin directory is added too
+/// — the same workaround `.devcontainer/claude-code/install.sh` carries, for the
 /// same package.
-const CLAUDE_SHIM_BIN_LINE: &str = r#"[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH""#;
+const CLAUDE_SHIM_BIN_LINE: &str = r#"[ -d "$HOME/.devlaunch/pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.devlaunch/pixi/envs/claude-shim/bin:$PATH""#;
 
 /// The `~/.local/bin` prepend a lend writes, and it goes in *last* on purpose:
 /// the container this lend exists for already has a shim earlier on PATH, so the
@@ -475,6 +521,7 @@ pub(crate) fn provision_script(tools: &[Tool]) -> String {
         // Everything already there: leave without touching pixi, the profile, or
         // the network. Every launch after the first takes this.
         format!("if {}; then exit 0; fi", all_present(tools)),
+        PIXI_HOME_EXPORT.to_owned(),
         PIXI_BOOTSTRAP.to_owned(),
         installs,
         profile_lines,
@@ -515,6 +562,7 @@ pub(crate) fn zellij_script() -> String {
             "if command -v {} >/dev/null 2>&1; then exit 0; fi",
             quote(ZELLIJ_TOOL.command)
         ),
+        PIXI_HOME_EXPORT.to_owned(),
         PIXI_BOOTSTRAP.to_owned(),
         install_line(&ZELLIJ_TOOL),
         profile_resolution("$HOME"),
@@ -1761,10 +1809,11 @@ mod tests {
 exec >&2
 failed=0
 if command -v gh >/dev/null 2>&1 && command -v claude >/dev/null 2>&1; then exit 0; fi
+export PIXI_HOME="$HOME/.devlaunch/pixi"
 if ! command -v pixi >/dev/null 2>&1; then
   echo "devlaunch: installing pixi"
   curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true
-  export PATH="$HOME/.pixi/bin:$PATH"
+  export PATH="$HOME/.devlaunch/pixi/bin:$PATH"
 fi
 if ! command -v gh >/dev/null 2>&1; then
   echo "devlaunch: installing gh"
@@ -1778,18 +1827,19 @@ if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
 elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
 else PROFILE="$HOME/.profile"
 fi
-grep -qxF '# devlaunch: 6b593c3a6327' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 6b593c3a6327' 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$PROFILE" || failed=1
-grep -qxF '# devlaunch: 12897b113bea' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 12897b113bea' '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE" || failed=1
+grep -qxF '# devlaunch: 87ccd356540b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 87ccd356540b' 'export PATH="$HOME/.devlaunch/pixi/bin:$PATH"' >> "$PROFILE" || failed=1
+grep -qxF '# devlaunch: 190e825e206b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 190e825e206b' '[ -d "$HOME/.devlaunch/pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.devlaunch/pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE" || failed=1
 exit "$failed""#;
 
     const PYTHON_PROVISION_SCRIPT_JQ: &str = r#"set -u
 exec >&2
 failed=0
 if command -v jq >/dev/null 2>&1; then exit 0; fi
+export PIXI_HOME="$HOME/.devlaunch/pixi"
 if ! command -v pixi >/dev/null 2>&1; then
   echo "devlaunch: installing pixi"
   curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true
-  export PATH="$HOME/.pixi/bin:$PATH"
+  export PATH="$HOME/.devlaunch/pixi/bin:$PATH"
 fi
 if ! command -v jq >/dev/null 2>&1; then
   echo "devlaunch: installing jq"
@@ -1799,17 +1849,18 @@ if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
 elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
 else PROFILE="$HOME/.profile"
 fi
-grep -qxF '# devlaunch: 6b593c3a6327' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 6b593c3a6327' 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$PROFILE" || failed=1
-grep -qxF '# devlaunch: 12897b113bea' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 12897b113bea' '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE" || failed=1
+grep -qxF '# devlaunch: 87ccd356540b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 87ccd356540b' 'export PATH="$HOME/.devlaunch/pixi/bin:$PATH"' >> "$PROFILE" || failed=1
+grep -qxF '# devlaunch: 190e825e206b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 190e825e206b' '[ -d "$HOME/.devlaunch/pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.devlaunch/pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE" || failed=1
 exit "$failed""#;
 
     const PYTHON_ZELLIJ_SCRIPT: &str = r#"set -u
 failed=0
 if command -v zellij >/dev/null 2>&1; then exit 0; fi
+export PIXI_HOME="$HOME/.devlaunch/pixi"
 if ! command -v pixi >/dev/null 2>&1; then
   echo "devlaunch: installing pixi"
   curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true
-  export PATH="$HOME/.pixi/bin:$PATH"
+  export PATH="$HOME/.devlaunch/pixi/bin:$PATH"
 fi
 if ! command -v zellij >/dev/null 2>&1; then
   echo "devlaunch: installing zellij"
@@ -1819,7 +1870,7 @@ if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
 elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
 else PROFILE="$HOME/.profile"
 fi
-grep -qxF '# devlaunch: 6b593c3a6327' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 6b593c3a6327' 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$PROFILE" || failed=1
+grep -qxF '# devlaunch: 87ccd356540b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 87ccd356540b' 'export PATH="$HOME/.devlaunch/pixi/bin:$PATH"' >> "$PROFILE" || failed=1
 exit "$failed""#;
 
     const PYTHON_PROBE_SCRIPT: &str = r#"set -u
@@ -1863,10 +1914,11 @@ fi"#;
     const PYTHON_ZELLIJ_STAGE: &str = r#"if bash -c 'set -u
 failed=0
 if command -v zellij >/dev/null 2>&1; then exit 0; fi
+export PIXI_HOME="$HOME/.devlaunch/pixi"
 if ! command -v pixi >/dev/null 2>&1; then
   echo "devlaunch: installing pixi"
   curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true
-  export PATH="$HOME/.pixi/bin:$PATH"
+  export PATH="$HOME/.devlaunch/pixi/bin:$PATH"
 fi
 if ! command -v zellij >/dev/null 2>&1; then
   echo "devlaunch: installing zellij"
@@ -1876,7 +1928,7 @@ if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
 elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
 else PROFILE="$HOME/.profile"
 fi
-grep -qxF '"'"'# devlaunch: 6b593c3a6327'"'"' "$PROFILE" 2>/dev/null || printf '"'"'%s\n'"'"' '"'"'# devlaunch: 6b593c3a6327'"'"' '"'"'export PATH="$HOME/.pixi/bin:$PATH"'"'"' >> "$PROFILE" || failed=1
+grep -qxF '"'"'# devlaunch: 87ccd356540b'"'"' "$PROFILE" 2>/dev/null || printf '"'"'%s\n'"'"' '"'"'# devlaunch: 87ccd356540b'"'"' '"'"'export PATH="$HOME/.devlaunch/pixi/bin:$PATH"'"'"' >> "$PROFILE" || failed=1
 exit "$failed"' >&2; then
   echo "devlaunch-probe stage zellij ok"
 else
@@ -1893,16 +1945,16 @@ elif [ -f "$TARGET_HOME/.bash_login" ]; then PROFILE="$TARGET_HOME/.bash_login"
 else PROFILE="$TARGET_HOME/.profile"
 fi"#;
 
-    const PYTHON_PREPEND_PIXI_BIN: &str = r#"grep -qxF '# devlaunch: 6b593c3a6327' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 6b593c3a6327' 'export PATH="$HOME/.pixi/bin:$PATH"' >> "$PROFILE""#;
+    const PYTHON_PREPEND_PIXI_BIN: &str = r#"grep -qxF '# devlaunch: 87ccd356540b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 87ccd356540b' 'export PATH="$HOME/.devlaunch/pixi/bin:$PATH"' >> "$PROFILE""#;
 
-    const PYTHON_PREPEND_SHIM_BIN: &str = r#"grep -qxF '# devlaunch: 12897b113bea' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 12897b113bea' '[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE""#;
+    const PYTHON_PREPEND_SHIM_BIN: &str = r#"grep -qxF '# devlaunch: 190e825e206b' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 190e825e206b' '[ -d "$HOME/.devlaunch/pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.devlaunch/pixi/envs/claude-shim/bin:$PATH"' >> "$PROFILE""#;
 
     const PYTHON_PREPEND_LOCAL_BIN: &str = r#"grep -qxF '# devlaunch: 63c662ba0560' "$PROFILE" 2>/dev/null || printf '%s\n' '# devlaunch: 63c662ba0560' 'export PATH="$HOME/.local/bin:$PATH"' >> "$PROFILE""#;
 
     const PYTHON_PIXI_BOOTSTRAP: &str = r#"if ! command -v pixi >/dev/null 2>&1; then
   echo "devlaunch: installing pixi"
   curl -fsSL https://pixi.sh/install.sh | bash >/dev/null 2>&1 || true
-  export PATH="$HOME/.pixi/bin:$PATH"
+  export PATH="$HOME/.devlaunch/pixi/bin:$PATH"
 fi"#;
 
     const PYTHON_INSTALL_CLAUDE: &str = r#"if ! command -v claude >/dev/null 2>&1; then
@@ -2462,9 +2514,15 @@ fi
         /// script, because a test that derives what to expect from the thing under
         /// test agrees with it however wrong it is.
         fn prepended(self) -> &'static str {
+            // No catch-all: the two runtime writers and the build-time feature
+            // installer no longer agree, and a `_` arm is what would let a third
+            // writer inherit whichever answer happened to be the default.
             match self {
+                Writer::Provision | Writer::Zellij => ".devlaunch/pixi/bin",
                 Writer::Transfer => ".local/bin",
-                _ => ".pixi/bin",
+                // The feature is baked into an image at build time, where ~/.pixi
+                // is the image's own and there is no checkout to dirty.
+                Writer::Feature => ".pixi/bin",
             }
         }
     }
@@ -2670,9 +2728,16 @@ fi
         // The marks are content hashes a shell script cannot derive for itself, so
         // the devcontainer feature pastes them; a different derivation here would
         // silently cost every workspace one duplicate PATH entry per line.
-        assert_eq!(mark_digest(PIXI_BIN_LINE), "6b593c3a6327");
-        assert_eq!(mark_digest(CLAUDE_SHIM_BIN_LINE), "12897b113bea");
+        assert_eq!(mark_digest(PIXI_BIN_LINE), "87ccd356540b");
+        assert_eq!(mark_digest(CLAUDE_SHIM_BIN_LINE), "190e825e206b");
         assert_eq!(mark_digest(LOCAL_BIN_LINE), "63c662ba0560");
+        // The feature installer's own two, which are the marks actually pasted
+        // into `.devcontainer/claude-code/install.sh`. Different lines from the
+        // runtime writers' since those moved to `~/.devlaunch/pixi`, and so
+        // different marks -- which is the dedupe working rather than failing: two
+        // pixi homes are two directories a login shell genuinely needs.
+        assert_eq!(mark_digest(FEATURE_PIXI_BIN_LINE), "6b593c3a6327");
+        assert_eq!(mark_digest(FEATURE_CLAUDE_SHIM_BIN_LINE), "12897b113bea");
     }
 
     // =======================================================================
@@ -2753,7 +2818,7 @@ fi
     fn it_puts_the_pixi_bin_directory_on_the_login_path() {
         // Without this the next launch reinstalls everything, forever.
         let script = provision_script(&REQUIRED_TOOLS);
-        assert!(script.contains(".pixi/bin"));
+        assert!(script.contains(".devlaunch/pixi/bin"));
         assert!(script.contains(".profile"));
     }
 
@@ -2947,6 +3012,18 @@ fi
         }
     }
 
+    /// The two PATH lines `.devcontainer/claude-code/install.sh` writes, which are
+    /// deliberately *not* [`PIXI_BIN_LINE`] and [`CLAUDE_SHIM_BIN_LINE`] any more.
+    ///
+    /// The feature runs at image build time and installs into the image's own
+    /// `~/.pixi`, where there is no checkout to dirty and no other owner to race --
+    /// so it has no reason to move, and moving it would invalidate the devcontainer
+    /// prebuild for nothing. The runtime writers moved; this did not, and the two
+    /// therefore append two different lines under two different marks. Both land,
+    /// which is correct: they name two real directories.
+    const FEATURE_PIXI_BIN_LINE: &str = r#"export PATH="$HOME/.pixi/bin:$PATH""#;
+    const FEATURE_CLAUDE_SHIM_BIN_LINE: &str = r#"[ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH""#;
+
     #[test]
     fn the_feature_installer_writes_the_very_fragments_devlaunch_renders() {
         // The installer's two profile edits are `profile_prepend`'s own output,
@@ -2956,7 +3033,7 @@ fi
         // line changes, and a drifted mark quietly costs a workspace one duplicate
         // PATH entry per line.
         let installer = feature_installer();
-        for line in [PIXI_BIN_LINE, CLAUDE_SHIM_BIN_LINE] {
+        for line in [FEATURE_PIXI_BIN_LINE, FEATURE_CLAUDE_SHIM_BIN_LINE] {
             let fragment = profile_prepend(line, None);
             assert!(
                 installer.contains(&fragment),
