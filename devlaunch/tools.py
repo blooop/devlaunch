@@ -338,8 +338,9 @@ def provision_script(tools: Sequence[Tool] = REQUIRED_TOOLS) -> str:
     Idempotent and cheap on the common path: every tool already on PATH is
     skipped, so a workspace that has been provisioned before does nothing but
     answer. It runs under a login shell (see provision_tools), which is what puts
-    an earlier run's PIXI_HOME_TARGET/bin on PATH -- checked from a non-login shell every
-    tool would look missing and be reinstalled on every launch.
+    an earlier run's bin directory (PIXI_HOME_TARGET) on PATH -- checked from a
+    non-login shell every tool would look missing and be reinstalled on every
+    launch.
 
     Exits 0 unless an install actually failed, so "nothing to do" and "all
     installs worked" are the same answer to the caller.
@@ -409,9 +410,9 @@ def zellij_script() -> str:
     Idempotent and nearly free on the common path: a `zellij` already on PATH
     exits before pixi, the profile or the network are touched, and that is the
     answer on every launch after the first. The check works because this runs
-    under the pass's login shell, which is what puts an earlier run's
-    PIXI_HOME_TARGET/bin on PATH -- from a non-login shell an installed zellij looks
-    missing and would be reinstalled on every single launch.
+    under the pass's login shell, which is what puts an earlier run's bin
+    directory (PIXI_HOME_TARGET) on PATH -- from a non-login shell an installed
+    zellij looks missing and would be reinstalled on every single launch.
 
     The PATH prepend is written here rather than relied on from elsewhere,
     because the container this most often lands in has not had it written. A

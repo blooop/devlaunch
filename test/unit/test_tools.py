@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -1835,3 +1836,106 @@ class TestPixiHome:
 
         assert dl.PIXI_CACHE_TARGET not in tools.PIXI_HOME_TARGET
         assert tools.PIXI_HOME_TARGET not in dl.PIXI_CACHE_TARGET
+
+
+# The Rust port's golden strings, whose own header calls them "what
+# devlaunch/tools.py renders, byte for byte". Until this class existed, that was
+# a claim in a comment: the goldens are hardcoded, so they were compared against
+# the Rust renderer and never against the Python one they are named for.
+RUST_PROVISION = (
+    pathlib.Path(__file__).resolve().parents[2] / "rust/devlaunch-core/src/flows/provision.rs"
+)
+
+
+class TestRustGoldensAreWhatPythonRenders:
+    """The two implementations of these scripts, held to one text.
+
+    `dl` ships as the Rust build; this tree is the reference implementation
+    beside it. Both render the same shell into someone else's container, and
+    until this class the only thing keeping them in step was that a person
+    editing one remembered the other. That is the arrangement this module
+    refuses everywhere else -- `PROFILE_MARK` exists because "a guard that reads
+    someone else's artifact is only correct until they change it", and
+    `_profile_prepend` derives its marks so a collision is unrepresentable
+    rather than asserted.
+
+    The hole was not hypothetical. Moving the tools into their own pixi home had
+    to be carried into both trees by hand, and the Rust side's *internal* tests
+    caught a divergence the Python side's did not (the feature installer's PATH
+    line, which deliberately did not move). Had the edit gone the other way --
+    Python only -- nothing at all would have failed: these goldens would have
+    kept agreeing with the Rust renderer while both drifted from the module they
+    are named after. `rust/tools/parity_cases.txt` does not cover this; it
+    compares `dl`'s observable behaviour, and these scripts are payload strings
+    inside a `devpod ssh --command`.
+
+    So the comparison is made here, in the tree that owns the definition, and
+    the second test is what stops a new golden from being added outside it.
+    """
+
+    # Each golden, and the call in this module that must produce it. Written out
+    # rather than discovered, because a mapping derived from the thing under test
+    # agrees with it however wrong it is.
+    @staticmethod
+    def _renderings(tmp_path):
+        # pylint: disable=protected-access
+        claude = next(tool for tool in REQUIRED_TOOLS if tool.command == "claude")
+        stages = {stage.name: stage for stage in tools.setup_stages("myws")}
+        pixi_bin = f'export PATH="{tools.PIXI_HOME_TARGET}/bin:$PATH"'
+        shim_bin = (
+            f'[ -d "{tools.PIXI_HOME_TARGET}/envs/claude-shim/bin" ] && '
+            f'export PATH="{tools.PIXI_HOME_TARGET}/envs/claude-shim/bin:$PATH"'
+        )
+        return {
+            "PYTHON_PROVISION_SCRIPT": provision_script(),
+            "PYTHON_PROVISION_SCRIPT_JQ": provision_script([Tool(command="jq", package="jq")]),
+            "PYTHON_ZELLIJ_SCRIPT": tools.zellij_script(),
+            "PYTHON_PROBE_SCRIPT": tools.probe_script(),
+            "PYTHON_TRANSFER_SCRIPT": tools.transfer_script(fake_payload(tmp_path)),
+            "PYTHON_HOSTNAME_STAGE": tools._stage_snippet(stages[tools.HOSTNAME_STAGE]),
+            "PYTHON_ZELLIJ_STAGE": tools._stage_snippet(stages[tools.ZELLIJ_STAGE]),
+            "PYTHON_PROFILE_RESOLUTION_HOME": tools._profile_resolution("$HOME"),
+            "PYTHON_PROFILE_RESOLUTION_TARGET": tools._profile_resolution("$TARGET_HOME"),
+            "PYTHON_PREPEND_PIXI_BIN": tools._profile_prepend(pixi_bin),
+            "PYTHON_PREPEND_SHIM_BIN": tools._profile_prepend(shim_bin),
+            "PYTHON_PREPEND_LOCAL_BIN": tools._profile_prepend(
+                'export PATH="$HOME/.local/bin:$PATH"'
+            ),
+            "PYTHON_PIXI_BOOTSTRAP": tools._pixi_bootstrap(),
+            "PYTHON_INSTALL_CLAUDE": tools._install_line(claude),
+        }
+
+    @staticmethod
+    def _goldens():
+        """Every `PYTHON_*` golden in the Rust test module, by name.
+
+        Cut out of the source text rather than run, so this needs no cargo and
+        no Rust toolchain -- it is a `pytest` that fails in the tree where the
+        definition lives, which is where the edit that would break it is made.
+        """
+        text = RUST_PROVISION.read_text(encoding="utf-8")
+        found = dict(re.findall(r'const (PYTHON_[A-Z_]+): &str = r#"(.*?)"#;', text, re.S))
+        assert found, f"no goldens found in {RUST_PROVISION} -- did the raw-string form change?"
+        return found
+
+    def test_every_golden_is_byte_for_byte_what_this_module_renders(self, tmp_path):
+        """The claim in the goldens' own header, checked instead of trusted."""
+        renderings = self._renderings(tmp_path)
+        for name, golden in sorted(self._goldens().items()):
+            assert name in renderings, f"{name} has no rendering to compare against"
+            assert golden == renderings[name], (
+                f"{name} in {RUST_PROVISION.name} is no longer what this module renders; "
+                "regenerate it from the Python call rather than editing it by hand -- "
+                "the marks in it are content hashes, and a retyped digit is a duplicate "
+                "PATH entry in every workspace forever"
+            )
+
+    def test_no_golden_escapes_the_comparison(self, tmp_path):
+        """A golden added without a rendering here would be checked by nothing.
+
+        The test above only compares the goldens it has a mapping for, so this is
+        the half that makes the coverage total: a new `PYTHON_*` const fails here
+        until someone says which call in this module is supposed to produce it.
+        """
+        unmapped = sorted(set(self._goldens()) - set(self._renderings(tmp_path)))
+        assert not unmapped, f"goldens with no Python rendering to check them: {unmapped}"
