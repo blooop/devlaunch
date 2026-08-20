@@ -1875,12 +1875,18 @@ it. A bare `pixi install` treats a lock it cannot read as a missing one: it warn
 exits 0, solves a fresh environment, and rewrites the tracked `pixi.lock` on its
 way past — so the container that is supposed to reproduce the committed
 environment quietly stops being it, and says nothing. And the solve it does
-instead needs the network: resolving pypi dependencies alongside conda ones
-fetches the conda-pypi mapping from prefix.dev, and a create whose fetch fails
-dies in `postCreateCommand` with the workspace never opening. `--frozen` installs
-the committed resolution, so there is no solve and no mapping to fetch, and a
-lock the container's pixi cannot read fails immediately and says which pixi it
-would need — instead of succeeding into the wrong environment.
+instead reaches the network: resolving pypi dependencies alongside conda ones
+needs a conda-pypi name mapping that pixi fetches remotely (the compressed
+mapping is served out of `prefix-dev/parselmouth` on raw.githubusercontent.com),
+and a create whose fetch fails dies in `postCreateCommand` with the workspace
+never opening.
+
+`--frozen` installs the committed resolution, so there is no solve and no mapping
+to fetch. That is measured rather than reasoned: with the mapping cache deleted,
+`pixi install --frozen --offline` installs the default environment and never
+recreates the cache, while a solving install recreates it on the spot. And a lock
+the container's pixi cannot read now fails immediately and says which pixi it
+would need, instead of succeeding into the wrong environment.
 
 #### What the prebuild tag does not promise
 

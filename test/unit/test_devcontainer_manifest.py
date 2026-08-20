@@ -652,10 +652,13 @@ def test_the_devcontainer_installs_the_committed_lock_rather_than_solving_its_ow
       version 6, so the create silently downgrades a tracked file. Commit that
       and the break inverts onto the host.
     - it reaches the network to do it. Solving pypi dependencies alongside conda
-      ones needs the conda-pypi mapping fetched from prefix.dev, and when that
+      ones needs a conda-pypi name mapping pixi fetches remotely, and when that
       fetch failed -- "failed to fetch conda-pypi mapping from remote source" --
       the create died in `postCreateCommand` and the workspace never opened. The
-      committed resolution needs no mapping and no solve.
+      committed resolution needs neither the mapping nor the solve, and that was
+      checked rather than assumed: with the mapping cache deleted, `pixi install
+      --frozen --offline` installs the default environment and leaves the cache
+      absent, where a solving install recreates it.
     - `pixi install --frozen` exits 1 instead, naming the version gap and the
       fix, and leaves `pixi.lock` at version 7.
 
