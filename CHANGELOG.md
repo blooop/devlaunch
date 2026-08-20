@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-20
+
+### Fixed
+
+- **A workspace whose create never finished is no longer attached to**
+  ([#291](https://github.com/blooop/devlaunch/pull/291)). A `devpod up` that dies in
+  its lifecycle hooks leaves the container **running**, so `devpod status` answered
+  `Running`, the fast-attach arm fired, and `dl` attached to a workspace devpod never
+  finished setting up — on that launch and every later one, because a running
+  container was the whole test. What the user saw was not a setup error: devpod
+  records a create's result only on its way out of a *successful* `up`, and the
+  remote user lives in that result (`.MergedConfig.remoteUser`), so `devpod ssh`
+  without one falls back to **root**. Everything the image put on the remote user's
+  PATH is then missing and the session dies naming whichever binary it reached for
+  first, which has nothing to do with the cause.
+
+  Measured against devpod 0.26.1 in an isolated `DEVPOD_HOME`, with a devcontainer
+  whose `postCreateCommand` exits 1: `devpod status` answers `Running`, no
+  `workspace_result.json` is written, no `Host <id>.devpod` alias is published, and
+  `devpod ssh --command whoami` answers `root` with `HOME=/root`. The result file
+  survives `devpod stop`, a later `up`, and a `docker restart`, so reading its
+  absence does not misfire on a workspace that was merely restarted.
+
+  `dl` now reads devpod's own records and brings such a workspace up instead of
+  attaching to it, which re-runs the hooks that failed and surfaces their failure —
+  the diagnosis that was unavailable before. Three states, not two: a host whose
+  devpod records cannot be read, or that holds one id under two contexts, is
+  `Unknown` and attaches exactly as it did before, so the check only ever acts on
+  positive evidence that a create did not finish. All three places that read
+  "running" are covered — the fast attach, `dl <ws> up` (the verb documented as the
+  recovery, which previously answered `already running` and declined to perform it),
+  and the sibling-skip on the far side of the launch lock, where a launch that
+  waited out a failing sibling would otherwise inherit its container.
+
+  The one accepted cost: a workspace created by a devpod too old to write
+  `workspace_result.json` is rebuilt **once**, and the rebuild writes the file.
+
+### Changed
+
+- **The workspace-id length budget is pinned where the two sweeps meet**
+  ([#282](https://github.com/blooop/devlaunch/pull/282)). Tests only, no behaviour
+  change. `every_repo_length_fits` and `every_ref_length_fits` each move one length
+  at a time, but the cap is a function of the *pair* — the repo slug decides how much
+  room `fit_ref` gets — so reintroducing the pre-[#64](https://github.com/blooop/devlaunch/issues/64)
+  hole (guarding at a literal instead of at the budget) left a 30-character repo with
+  a one-character ref deriving an over-long id while the other 63 tests in the module
+  still passed. The cross product now covers it, and asserts the budget is *reached*
+  as well as respected, because a budget nothing reaches would pass a bound test
+  while truncating harder than the format intends. Two boundary tests join it: the
+  repo-slug floor against the total budget, and the ref shapes the segment pass
+  cannot shorten.
+
 ## [0.3.1] - 2026-08-20
 
 ### Fixed
