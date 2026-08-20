@@ -36,7 +36,28 @@ Home = "https://github.com/blooop/devlaunch"
 
 [tool.pixi.workspace]
 channels = ["conda-forge", "https://prefix.dev/blooop"]
-platforms = ["linux-64"]
+# linux-aarch64 is here for the *development* environment, and claims nothing
+# about the release: what ships is still a linux-64 wheel and a linux-64 conda
+# package, as the header above says.
+#
+# It is required rather than nice to have, because a pixi workspace refuses
+# outright on a platform it does not declare. Measured on a throwaway workspace
+# declaring one platform this machine cannot run: `pixi install` exits
+# `unsupported-platform`, "The workspace does not support '<platform>' on this
+# machine", and installs nothing. That is two arm64 paths that cannot work
+# without the line below: the arm64 leg of
+# `.github/workflows/devcontainer-prebuild.yml`, which fails at `setup-pixi`
+# before it can build an image, and this repository's own devcontainer on an
+# Apple Silicon host, whose `postCreateCommand` is a bare `pixi install` and so
+# fails at container create -- which would make an arm64 prebuild an image that
+# pulls fast and then cannot come up.
+#
+# What it costs is +825 lines of pixi.lock and no linux-64 pin: the two solves
+# are independent, and every dependency resolves to a real aarch64 build --
+# devpod 0.26.1 is in the blooop channel for linux-aarch64, which is the one
+# that matters here, since the prebuild tag is only usable if the devpod that
+# publishes it is the devpod that later looks for it.
+platforms = ["linux-64", "linux-aarch64"]
 
 [tool.pixi.dependencies]
 python = ">=3.10"
@@ -115,6 +136,29 @@ dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on 
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
 dev-restart = { cmd = "devpod up . --recreate --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-restart-vs = { cmd = "devpod up . --recreate --ide vscode", depends-on = ["dev-add-docker"] }
+# Build this repo's devcontainer and publish it to the prebuild repository named
+# in .devcontainer/devcontainer.json (customizations.devpod.prebuildRepository),
+# so that the next `dl blooop/devlaunch` pulls an image instead of building one.
+#
+# No `--repository`: devpod reads the destination out of devcontainer.json, which
+# keeps the registry written down in exactly one place. The tag devpod publishes
+# on its own is the prebuild hash -- which is per architecture, since the
+# architecture is hashed with the config and the context -- and `--tag` adds a
+# moving alias next to it, the one `build.cacheFrom` points at for builders that
+# do not understand prebuilds (VS Code, plain `devcontainer up`).
+#
+# The alias is an argument, defaulting to `latest`, because two architectures now
+# publish into one repository and devpod arch-qualifies nothing: an alias passed
+# by both legs is a tag whose owner is whichever leg finished last. So `latest`
+# is amd64's and `latest-arm64` is arm64's; see the comment on the build step in
+# the workflow for why that asymmetry is the right one. Publishing by hand needs
+# no argument and behaves exactly as it did.
+#
+# `.github/workflows/devcontainer-prebuild.yml` runs this on pushes to `main`
+# that touch `.devcontainer/**`; it is a task so the same command can be run by
+# hand -- after `docker login ghcr.io` -- to publish from a branch. Idempotent
+# either way: an existing prebuild is found and returned, not rebuilt.
+devcontainer-prebuild = { cmd = "devpod build . --tag {{ alias }}", args = [{ arg = "alias", default = "latest" }], depends-on = ["dev-add-docker"] }
 prek = "prek run -a"
 prek-update = "prek autoupdate"
 format = "ruff format ."

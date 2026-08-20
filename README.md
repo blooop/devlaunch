@@ -119,7 +119,7 @@ transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
 |---------|-------------|
 | `dl <user/repo> up` | Start (or create) the workspace without attaching — for prewarming a container before a session wants it |
 | `dl <user/repo> stop` | Stop the workspace |
-| `dl <user/repo> rm, prune` | Delete the workspace |
+| `dl <user/repo> rm` | Delete the workspace |
 | `dl <user/repo> code` | Open in VS Code |
 | `dl <user/repo> restart` | Stop and start (no rebuild) |
 | `dl <user/repo> recreate` | Recreate container |
@@ -130,6 +130,54 @@ transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
 Every verb in that table also takes the workspace second — `dl stop <user/repo>` — and with no
 workspace at all it opens the selector and applies itself to what you pick. `stop` and `rm` answer to
 `--stop` and `--rm` as well, since the flag spellings were documented long before they worked.
+
+### `--stop` and `--rm` can be appended to a line that says something else
+
+The flag spellings do one thing the words cannot: they may be typed at the *end* of a
+line that already asked for something, and they win over it.
+
+```bash
+aid kinisi/repo@fix/x 'review this pr'      # work happens
+aid kinisi/repo@fix/x 'review this pr' --rm --force   # ↑, with `--rm --force` appended
+```
+
+Both `dl` and `aid` accept it, and a leading verb word on the recalled line is not
+mistaken for the workspace, so `dl prune <ws> --force` recalled with `--rm` appended
+still removes `<ws>`. This exists because a shell makes appending to the previous line
+cheap and rewriting the front of it expensive — deleting the workspace you were just
+working in should not cost an edit in the middle of a long prompt.
+
+What the suffix beat is named on stderr before anything is removed:
+
+```
+--rm overrode the rest of the line: 'review this pr' was not acted on.
+```
+
+That notice is the price of the convenience and is not optional: the line is now
+allowed to carry an instruction it will not carry out, so a deliberate `--rm` and a
+slip have to be told apart. Note that a `--` command tail cannot be overridden this
+way — everything after `--` belongs to the workspace's command, so a `--rm` typed
+there is an argument to that command and not a verb.
+
+### `prune` is no longer a spelling of the `rm` verb
+
+`dl <ws> prune` used to delete one workspace and `dl --prune` removes clone
+directories and no workspace at all — one word, two unrelated commands, told apart
+by two dashes. Reach for the wrong one and you either lose a workspace you meant to
+keep or get refused for a reason the message could not explain
+(`--prune takes no workspace: it is not a workspace command.`). So the verb spelling
+is gone, and typing it says what to use instead:
+
+```
+$ dl <ws> prune
+'prune' is no longer a workspace verb. Use 'dl <workspace> rm' to delete a workspace,
+or 'dl --prune' to remove the clone directories no workspace opens any more.
+```
+
+`dl --prune` is unchanged. The word is still *recognised* rather than forgotten, so
+it is never read as a workspace name: a `dl prune <ws> --force` line recalled with
+`--rm` appended still removes `<ws>`, and a workspace that really is called `prune`
+is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
 ## Global Commands
 
@@ -1220,6 +1268,28 @@ hit the failure, the fixes available to you are to run that image as your own
 uid, or to take the cache out of play for it (`rm -rf ~/.cache/devlaunch/pixi`
 recovers a directory an earlier container left owned by someone else).
 
+The case that is not a developer's machine is CI. What makes the common case
+safe is that uid 1000 is *both* the base image's remote user and the first human
+user on a Linux host — and on a hosted runner it is only the first of those. A
+GitHub runner's own user is somebody else, so a launch there hits this on its
+first container and every container after it. This repo's own launch benchmark
+did exactly that for twenty consecutive merges to `main`: `failed to create
+directory /var/tmp/devlaunch-pixi/pkgs: Permission denied`, from the benched
+repo's `pixi install`, before anything was timed.
+
+Where you know the uid you are handing the directory to, there is a third fix
+the list above does not offer, and it is what `.github/workflows/bench.yml` now
+does — create the directory yourself and widen it, before the first launch:
+
+```bash
+mkdir -p ~/.cache/devlaunch/pixi && chmod 1777 ~/.cache/devlaunch/pixi
+```
+
+`dl`'s own `mkdir` does not re-mode a directory it finds, so the mode survives
+every launch after it. `1777` is what `/var/tmp` carries at the other end of the
+same mount, and it makes the same trade: every uid can write, and the sticky bit
+means none of them can unlink another's entries.
+
 ### Existing containers, and what a recreate is for
 
 **A mount lands only when a container is created.** devpod re-applies
@@ -1597,6 +1667,137 @@ The nested daemon is also why the devcontainer does not join the host's network
 namespace: a nested daemon needs a namespace of its own, or it co-manages the
 host's `docker0` bridge and writes its NAT rules into the host's netfilter
 tables.
+
+### The prebuilt dev container image
+
+Opening this repository's devcontainer used to build it: base image, pixi, the
+local `claude-code` feature and `docker-in-docker`, several minutes of it, once
+per branch. CI publishes that image now, so opening a workspace pulls it instead.
+
+```
+ghcr.io/blooop/devlaunch-devcontainer
+```
+
+Nothing has to be configured to use it. `.devcontainer/devcontainer.json` names
+the repository under `customizations.devpod.prebuildRepository`, and `devpod up`
+— which is every `dl` launch — checks it before building anything. The check is
+for one exact tag: devpod hashes the build config together with the build
+context and asks for `<repository>:devpod-<hash>`. A hit is used directly,
+features included; a miss falls through to a local build, silently and without
+failing. So the prebuild is a speed-up that cannot break a launch, and the
+question to ask when a container open is slow is whether the tag matched.
+
+Two consequences worth knowing:
+
+- **The build context is `.devcontainer`, not the repository root**, and that is
+  what makes the tag usable. The Dockerfile copies nothing out of the context,
+  so the root was never needed — but it was hashed, which meant a different tag
+  on every commit to any file and a prebuilt image that never matched one.
+  Scoped to `.devcontainer`, the tag moves when `.devcontainer/**` moves, the
+  Dockerfile and the local feature's scripts included.
+- **A commit whose `.devcontainer/` differs from the last prebuild builds
+  locally.** That is the correct answer rather than a gap: the alternative is a
+  container built from something other than what the branch asks for. The pull
+  comes back once the change is on `main`.
+
+`.github/workflows/devcontainer-prebuild.yml` publishes it, on pushes to `main`
+that touch `.devcontainer/**` and on manual dispatch. Its path filter is exactly
+the set of inputs to the hash, so a commit it skips is one that could not have
+moved the tag. To publish from a branch by hand:
+
+```bash
+docker login ghcr.io                  # a PAT with write:packages, or `gh auth token`
+pixi run devcontainer-prebuild        # devpod build . --tag latest
+```
+
+Both are idempotent: an existing prebuild is found and returned rather than
+rebuilt and repushed. By hand publishes for the architecture of the machine you
+run it on and no other — see "Two architectures, two tags" below — and takes the
+moving alias as an argument (`pixi run devcontainer-prebuild latest-arm64`) if
+that machine is not amd64.
+
+**The package came up public on its own, and needed no manual step.** Measured on
+the first run (`d05e4ce`): an anonymous pull of both tags returns `200`, with
+nobody having touched a visibility setting. GHCR gave the package the visibility
+of the public repository whose workflow published it — the
+`org.opencontainers.image.source` label in the Dockerfile is what links the two.
+
+This is worth checking rather than trusting, because the failure is silent: a
+private package makes the lookup return `DENIED`, devpod reads that as a cache
+miss, and every launch quietly builds locally — the behaviour from before any of
+this existed.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $(curl -s \
+    'https://ghcr.io/token?scope=repository:blooop/devlaunch-devcontainer:pull&service=ghcr.io' \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
+  https://ghcr.io/v2/blooop/devlaunch-devcontainer/manifests/latest
+# 200 => public, anonymous pulls work
+# 401/403 => private; make it public as below
+```
+
+If it ever *is* private — a package created some other way, or a visibility that
+gets changed — the fix is a one-time setting, and one no workflow can make: there
+is no REST endpoint for container visibility and no `gh` subcommand.
+<https://github.com/blooop?tab=packages> → *devlaunch-devcontainer* → *Package
+settings* → *Danger Zone* → *Change visibility* → **Public**. Nothing to
+configure before the first publish creates the package, so those pages 404 until
+then.
+
+The `:latest` tag that command also pushes is not what devpod looks for. It is
+the moving alias `build.cacheFrom` points at, a best-effort layer cache for
+builders that know nothing about devpod prebuilds — VS Code's "Reopen in
+Container", a plain `devcontainer up`. Those still run a build; what they save is
+whatever layers the cache can serve them.
+
+**Two architectures, two tags.** The target architecture is hashed along with the
+build config and the context, so amd64 and arm64 ask for different tags, and the
+workflow publishes both — a matrix over `ubuntu-latest` and `ubuntu-24.04-arm`,
+GitHub's hosted arm64 runner, which is free without limit on a public repository.
+Nothing merges the two into a multi-arch manifest, because devpod never looks one
+up: it asks for one exact tag and pulls the variant for the architecture it is
+running on. An architecture whose tag is missing is not a failure, only the same
+silent local build as any other miss.
+
+Neither leg passes `--platform`, and that is the point of using a native runner
+rather than emulation. The architecture in the hash is the one the driver reports,
+which for docker is the `runtime.GOARCH` of the devpod binary doing the build — so
+the runner decides it, exactly as the launching machine decides it on the lookup
+side, where `devpod up` passes no platform at all. `--platform linux/arm64` would
+hash to the same string on an arm64 runner, which is the argument against it: a
+second source of truth for something already settled, and one that can disagree
+without saying so.
+
+The legs are `fail-fast: false`. Each publishes a tag nothing else reads, so a run
+where one architecture fails leaves the other pulling, which is better than the
+two local builds that cancelling the survivor would leave behind.
+
+`latest` is amd64's, and arm64 publishes `latest-arm64`. devpod arch-qualifies
+nothing, so two legs passing the same alias would race for it and the winner would
+be whichever finished last; and the one thing that reads `latest` is
+`build.cacheFrom`, a layer cache which serves nothing at all across architectures.
+So `latest` keeps meaning what it has always meant, instead of becoming a cache
+that works or does not per run for reasons nobody could see. What `dl` reads is
+neither alias: it is the `devpod-<hash>` tag for its own architecture.
+
+Making the arm64 leg possible at all needed `linux-aarch64` in the pixi workspace
+(`platforms` in `pyproject.toml`). A pixi workspace refuses outright on a platform
+it does not declare, so without it the leg fails at `pixi install` before it can
+build anything — and so does an arm64 container's own `postCreateCommand`, which
+would have made an arm64 prebuild an image that pulls fast and then cannot come
+up. It says nothing about the release: the wheel and the conda package are still
+linux-64.
+
+The arm64 leg went in unexercised, since this repository is developed on x86: every
+piece the image needs was checked to exist for linux-aarch64 — the multi-arch base,
+the aarch64 pixi and `claude-shim` builds, devpod itself — and none of it was
+checked to build. If it turns out not to, the symptom on an arm64 host is the local
+build that host was already doing.
+
+`postCreateCommand` is not in the image and cannot be: `pixi install` and the
+provider registration run at container create, after the image exists. The
+`<workspace>-pixi` volume is what makes them cheap the second time.
 
 ### Disk cost of the dev container
 

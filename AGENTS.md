@@ -117,6 +117,47 @@ half-edited, `git stash` restores a working `pixi run dl` with no reinstall, and
 the host's released `dl` — the build that opened this container — is one level up,
 untouched.
 
+## The devcontainer is prebuilt
+
+Opening this repo's devcontainer pulls `ghcr.io/blooop/devlaunch-devcontainer`
+rather than building it. `.devcontainer/devcontainer.json` declares it under
+`customizations.devpod.prebuildRepository`, and `devpod up` looks for one exact
+tag — a hash of the build config, the build context and the target architecture —
+before it builds anything. A miss is silent and falls through to a local build.
+
+Three rules follow from that, and all of them are about the hash:
+
+- **The build context is `.devcontainer`, deliberately.** Widening it back to the
+  repository root makes the tag move on every commit to any file, which is a
+  prebuild that never matches again. Nothing in the Dockerfile copies from the
+  context, so there is no reason to widen it.
+- **Changing anything under `.devcontainer/` invalidates the prebuild** — the
+  Dockerfile and the `claude-code` feature's scripts included, since they live
+  inside the context. `.github/workflows/devcontainer-prebuild.yml` republishes
+  on pushes to `main` that touch that directory; its path filter is exactly the
+  hash's inputs, so keep the two in step. Until it runs, that commit builds
+  locally.
+- **Each architecture is a tag of its own**, so the workflow is a matrix over
+  `ubuntu-latest` and `ubuntu-24.04-arm` and nothing merges a multi-arch
+  manifest. Neither leg passes `--platform`: the arch in the hash is the one the
+  driver reports, which is the runner's, and on the lookup side `devpod up`
+  passes no platform either. Two things hang off that. The pixi workspace has to
+  declare `linux-aarch64` or the arm64 leg dies at `pixi install` — and so does
+  an arm64 container's `postCreateCommand`. And `latest` belongs to amd64 alone:
+  it is `build.cacheFrom`'s target, devpod arch-qualifies no alias, so a second
+  leg passing it would race for a tag whose value decides whether a cache serves
+  layers. arm64 publishes `latest-arm64`.
+
+`pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`,
+for the architecture of the machine it runs on; the alias is its one argument and
+defaults to `latest`.
+
+The package must be public or the lookup returns DENIED and every launch silently
+builds locally. It came up public on its own — GHCR gave it the visibility of the
+public repository that published it — so there is nothing to do, but it is worth
+checking rather than trusting, because a private package fails at nothing. See
+"The prebuilt dev container image" in README.md for the check.
+
 ## Documentation Maintenance
 
 - **Keep README up to date**: When modifying CLI commands, flags, or usage patterns, update the README.md to reflect the current tool behavior. Run `pixi run dl --help` to see the current help output and ensure the README matches.

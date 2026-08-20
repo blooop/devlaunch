@@ -49,6 +49,12 @@ pub use devlaunch_core::shell;
 /// `dl` quotes what a tool or an environment said.
 pub use render::python_repr;
 
+/// The sentence a `--rm`/`--stop` appended to a line prints about what it
+/// overrode: `aid` swallows the *prompt* when the suffix wins, so it owes the same
+/// notice `dl` owes for a swallowed positional word, in the same words. See
+/// [`render::overridden_notice`].
+pub use render::overridden_notice;
+
 /// The version both binaries print, single-sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -172,13 +178,21 @@ fn command_line(argv: &[String]) -> Result<cli::Command, i32> {
             return Err(usage.exit_code());
         }
     };
-    cli::resolve(parsed, argv).map_err(|grammar| {
+    let resolved = cli::resolve(parsed, argv).map_err(|grammar| {
         eprintln!("{}", grammar_refusal(&grammar));
         // Python's `logging.error(...); return 1` for every shape it refused after
         // parsing. Deliberately not clap's 2: these are the refusals Python also
         // made, and they keep its code.
         commands::Ending::Refused.code()
-    })
+    })?;
+    // Printed before the command runs, not after: what it names is the reason a
+    // person may want to hit Ctrl-C, and a notice that arrives once the container
+    // is already gone is a receipt rather than a warning.
+    if let Some(overridden) = &resolved.overridden {
+        let words: Vec<String> = overridden.words.iter().cloned().collect();
+        eprintln!("{}", overridden_notice(overridden.flag, &words));
+    }
+    Ok(resolved.command)
 }
 
 /// What a command line clap accepted but `dl` could not make a command of.
@@ -192,6 +206,16 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
         cli::GrammarError::UnknownVerb { target, word } => {
             format!("Unknown command '{word}'. Use 'dl {target} -- {word}' to run a shell command.")
         }
+        // Both halves of the collision that retired the word, because a person who
+        // typed one of them was reaching for one of the two and the sentence cannot
+        // tell which. Divergence row 31.
+        cli::GrammarError::RetiredVerb(retired) => format!(
+            "'{}' is no longer a workspace verb. Use 'dl <workspace> {}' to delete a \
+             workspace, or 'dl --prune' to remove the clone directories no workspace \
+             opens any more.",
+            retired.word(),
+            retired.instead()
+        ),
         cli::GrammarError::TargetNotAllowed { command } => {
             format!("{command} takes no workspace: it is not a workspace command.")
         }

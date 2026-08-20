@@ -9,15 +9,25 @@ host's network namespace, and it does not hand the container the developer's
 `pixi run test-e2e` is asserted through the task runner rather than by reading
 the manifest back, because "there is a task called test-e2e" is the claim the
 README makes to a reader, and only the runner can answer it.
+
+The prebuild tests at the bottom are here for a different reason from the rest.
+The others guard claims whose violation *fails*: no daemon, no provider, a
+clobbered ssh file. A broken prebuild fails at nothing -- devpod treats every
+unanswerable lookup as a cache miss and builds locally, exactly as it did before
+prebuilds existed -- so the only symptom is that opening a container is slow
+again, months later, with no commit to blame. These are the tests for a
+regression that cannot announce itself.
 """
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+import tomli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVCONTAINER_JSON = REPO_ROOT / ".devcontainer" / "devcontainer.json"
@@ -25,6 +35,20 @@ DIND_FEATURE = "ghcr.io/devcontainers/features/docker-in-docker:2"
 CONTAINER_SSH_DIR = "/home/vscode/.ssh"
 LOCAL_HOME = "${localEnv:HOME}"
 SSH_SOURCE_PREFIX = f"{LOCAL_HOME}/.ssh/"
+PREBUILD_REPOSITORY = "ghcr.io/blooop/devlaunch-devcontainer"
+PREBUILD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "devcontainer-prebuild.yml"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+PIXI_LOCK = REPO_ROOT / "pixi.lock"
+
+# The runner each architecture's prebuild is built on, and the pixi platform that
+# runner's `pixi install` resolves. Both halves are load-bearing: the target
+# architecture is hashed into the prebuild tag, so a missing leg is an
+# architecture with no image, and a runner whose platform the workspace does not
+# declare is a leg that cannot install its own tools.
+PREBUILD_RUNNERS = {
+    "ubuntu-latest": "linux-64",
+    "ubuntu-24.04-arm": "linux-aarch64",
+}
 
 
 def parse_mount(spec: str) -> dict:
@@ -288,3 +312,179 @@ def test_pixi_resolves_a_test_e2e_task():
     )
     tasks = result.stdout.split()
     assert "test-e2e" in tasks
+
+
+def test_devcontainer_build_context_stays_inside_the_devcontainer_directory(devcontainer):
+    """The build context must not climb out of `.devcontainer`.
+
+    devpod's prebuild tag is a hash of the build context as well as of the
+    config, so a context of `..` -- which is what this was -- makes the tag move
+    on every commit to any file in the repository, and no published prebuild can
+    ever match one again. Nothing in the Dockerfile copies from the context, so
+    widening it buys nothing to weigh against that.
+
+    The failure mode is why this is a test rather than a note: a context that
+    escapes does not break a launch, it silently returns every launch to building
+    locally.
+    """
+    context = devcontainer["build"]["context"]
+    resolved = (DEVCONTAINER_JSON.parent / context).resolve()
+    devcontainer_dir = DEVCONTAINER_JSON.parent.resolve()
+    assert resolved == devcontainer_dir or devcontainer_dir in resolved.parents, (
+        f"build.context {context!r} resolves to {resolved}, outside {devcontainer_dir}; "
+        "the prebuild tag would move on every commit"
+    )
+
+
+def test_devcontainer_declares_the_prebuild_repository_devpod_looks_in(devcontainer):
+    """Declared in the manifest, so no flag or env var has to be remembered.
+
+    devpod reads `customizations.devpod.prebuildRepository` on every `up`, which
+    is every `dl` launch. Passing `--prebuild-repository` instead would work for
+    whoever remembered it and for nobody else, and `dl` passes no such flag.
+    """
+    assert devcontainer["customizations"]["devpod"]["prebuildRepository"] == PREBUILD_REPOSITORY
+
+
+def test_the_cache_fallback_points_at_the_same_repository_as_the_prebuild(devcontainer):
+    """One registry, written down twice, kept in step.
+
+    `build.cacheFrom` serves the builders that know nothing about devpod
+    prebuilds -- VS Code's "Reopen in Container", a plain `devcontainer up` --
+    and devpod publishes the `:latest` it names from the same task that publishes
+    the prebuild. Pointed at some other repository it would import cache from an
+    image nothing pushes, which is a miss on every build and looks like nothing.
+    """
+    cache_from = devcontainer["build"]["cacheFrom"]
+    assert cache_from.startswith(f"{PREBUILD_REPOSITORY}:"), (
+        f"build.cacheFrom {cache_from!r} is not a tag of {PREBUILD_REPOSITORY}"
+    )
+
+
+def test_the_prebuild_workflow_watches_the_directory_the_hash_is_computed_from():
+    """The workflow's path filter has to cover every input to the tag.
+
+    The filter is what decides whether a commit republishes the image, and the
+    hash reads the build config and the build context -- both of which live under
+    `.devcontainer/`. A filter narrower than that leaves commits that moved the
+    tag with no image at the new tag, which is a silent return to local builds.
+
+    Asserted as text rather than parsed YAML on purpose: pyyaml is not in this
+    project's environment, and the claim is about one literal line.
+    """
+    assert PREBUILD_WORKFLOW.is_file(), f"{PREBUILD_WORKFLOW} is what publishes the prebuild"
+    workflow = PREBUILD_WORKFLOW.read_text()
+    assert "'.devcontainer/**'" in workflow, (
+        "the prebuild workflow does not watch .devcontainer/**, which is where "
+        "every input to the prebuild hash lives"
+    )
+
+
+def test_pixi_resolves_a_devcontainer_prebuild_task():
+    """`pixi run devcontainer-prebuild` exists, per the task runner itself.
+
+    The workflow invokes it by that name, so a rename that misses one leaves a
+    job whose only failure is a task-not-found -- late, and after the runner has
+    already paid for a checkout and an environment.
+    """
+    pixi = shutil.which("pixi")
+    assert pixi is not None, "pixi is the project's task runner and must be on PATH"
+    result = subprocess.run(
+        [pixi, "task", "list", "--manifest-path", str(REPO_ROOT / "pyproject.toml")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "devcontainer-prebuild" in result.stdout.split()
+
+
+def test_the_prebuild_workflow_builds_on_every_architecture_dl_is_launched_from():
+    """One leg per architecture, because the tag is per architecture.
+
+    devpod hashes the target architecture together with the config and the
+    context, so amd64 and arm64 ask the registry for two different tags and
+    neither can answer for the other -- there is no multi-arch manifest here and
+    devpod would not look one up if there were. A dropped leg is therefore not a
+    slower build on that architecture, it is every launch on that architecture
+    back to building locally, silently, which is the whole failure mode this
+    file's prebuild tests exist for.
+
+    Asserted as text rather than parsed YAML on purpose: pyyaml is not in this
+    project's environment. It is matched as a `runner:` line rather than as a
+    substring anywhere in the file, because this workflow's comments name both
+    runners: a substring search passes on a leg that has been deleted and only
+    discussed, which was the first version of this test.
+    """
+    declared = re.findall(r"^\s*runner:\s*(\S+)\s*$", PREBUILD_WORKFLOW.read_text(), re.MULTILINE)
+    assert set(declared) == set(PREBUILD_RUNNERS), (
+        f"the prebuild workflow builds on {sorted(set(declared))}, not "
+        f"{sorted(PREBUILD_RUNNERS)}; an architecture missing from that list gets "
+        "no published prebuild, and one added to it needs a pixi platform too"
+    )
+
+
+def test_no_two_prebuild_legs_publish_the_same_moving_alias():
+    """Two legs sharing an alias is a tag whose owner is a race.
+
+    devpod arch-qualifies nothing: `--tag` values are pushed alongside the hash
+    tag exactly as given, so if both legs passed `latest` the winner would be
+    whichever finished last. `latest` is what `build.cacheFrom` points at, and a
+    layer cache imported from the wrong architecture serves no layers -- so the
+    symptom is a cache that works or does not from run to run, for reasons
+    nothing in a build log would explain.
+
+    `latest` is amd64's, once. The count is checked rather than only the
+    uniqueness so that renaming amd64's alias to something arch-suffixed does not
+    quietly leave `build.cacheFrom` pointing at a tag nobody pushes any more.
+    """
+    aliases = re.findall(r"^\s*alias:\s*(\S+)\s*$", PREBUILD_WORKFLOW.read_text(), re.MULTILINE)
+    assert len(aliases) == len(PREBUILD_RUNNERS), (
+        f"{len(aliases)} legs declare an alias but {len(PREBUILD_RUNNERS)} "
+        "architectures are built; every leg needs its own"
+    )
+    assert len(set(aliases)) == len(aliases), f"two prebuild legs publish the same alias: {aliases}"
+    assert aliases.count("latest") == 1, (
+        f"exactly one leg may publish the unqualified `latest` that build.cacheFrom reads: {aliases}"
+    )
+
+
+def test_one_architectures_prebuild_failing_does_not_cancel_the_others():
+    """`fail-fast: false`, because the legs publish independent tags.
+
+    A cancelled leg leaves the tag it was building absent, which is the same
+    silent return to local builds as never having run -- so fail-fast would turn
+    one architecture's failure into two architectures with no image, for no gain.
+
+    Matched as a key line, not a substring, for the reason the runner test above
+    gives: prose about a setting is not the setting.
+    """
+    workflow = PREBUILD_WORKFLOW.read_text()
+    assert re.search(r"^\s*fail-fast:\s*false\s*$", workflow, re.MULTILINE), (
+        "the prebuild matrix is fail-fast, so one architecture failing cancels "
+        "the other and leaves both building locally"
+    )
+
+
+def test_the_workspace_declares_a_platform_for_every_prebuild_runner():
+    """A leg whose platform is undeclared dies before it builds anything.
+
+    pixi refuses outright on a platform a workspace does not list -- `pixi
+    install` exits `unsupported-platform` -- so the arm64 leg's `setup-pixi` step
+    fails before `devpod build` is reached. The same line is what lets an arm64
+    container run its own `postCreateCommand`, a bare `pixi install`, so dropping
+    it would leave an arm64 prebuild that pulls fast and then cannot come up.
+
+    The lockfile is checked alongside the manifest because CI installs with
+    `frozen: true`: a platform declared but not locked is a lockfile pixi refuses
+    to use rather than a platform it solves on the spot.
+    """
+    platforms = tomli.loads(PYPROJECT.read_text())["tool"]["pixi"]["workspace"]["platforms"]
+    lock = PIXI_LOCK.read_text()
+    for runner, platform in PREBUILD_RUNNERS.items():
+        assert platform in platforms, (
+            f"the prebuild builds on {runner} but the workspace does not declare "
+            f"{platform}; `pixi install` there exits unsupported-platform"
+        )
+        assert platform in lock, (
+            f"{platform} is declared but absent from pixi.lock, which `frozen: true` needs"
+        )

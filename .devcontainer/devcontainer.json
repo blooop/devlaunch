@@ -2,10 +2,60 @@
     "name": "devlaunch",
     "build": {
         "dockerfile": "Dockerfile",
-        "context": ".."
+
+        // `.devcontainer/`, not the repository root, and the change is
+        // load-bearing twice over. This Dockerfile COPYs nothing, so everything
+        // outside this directory was only ever cost -- and devpod's prebuild tag
+        // is a hash *of the build context* as well as of the config
+        // (pkg/devcontainer/config/prebuild.go). With the root as context that
+        // hash moved on every commit to any file in the repository, so a
+        // prebuilt image could never match one. Scoped here it moves when
+        // `.devcontainer/**` moves, which is exactly when the image has to be
+        // rebuilt -- this Dockerfile and the local `claude-code` feature's
+        // scripts included, since they sit inside the context and are hashed
+        // with it.
+        //
+        // The root `.dockerignore` is no longer read for this build (docker
+        // looks for one inside the context); its patterns existed to keep
+        // `.pixi/` and `rust/target/` out of a root-sized context, and nothing
+        // of that shape is in here.
+        "context": ".",
+
+        // Best-effort layer cache for builders that know nothing about devpod
+        // prebuilds -- VS Code's "Reopen in Container", a plain
+        // `devcontainer up`. The prebuild declared under `customizations.devpod`
+        // is what actually skips the build for `dl`; this is the fallback for
+        // everything else, and a cache miss -- including a `:latest` that does
+        // not exist yet, as on the very first prebuild run -- is a warning
+        // rather than a failure.
+        "cacheFrom": "ghcr.io/blooop/devlaunch-devcontainer:latest"
     },
     "initializeCommand": ".devcontainer/claude-code/init-host.sh",
     "customizations": {
+        // Where devpod looks for a prebuilt image before it builds anything.
+        // `devpod up` -- which is every `dl` launch -- computes the prebuild
+        // hash from the build config and context above, asks this repository for
+        // `<repo>:devpod-<hash>`, and uses that image directly if it is there,
+        // features and all. A matching prebuild turns a multi-minute build into
+        // a pull; a miss is logged at debug level and falls through to building
+        // locally, which is why nothing here has to be conditional or guarded.
+        //
+        // Declared here rather than passed as `--prebuild-repository` so that it
+        // applies to everyone who opens this repo with devpod without anyone
+        // having to remember a flag or an environment variable. `dl` passes no
+        // such flag and does not need to.
+        //
+        // `.github/workflows/devcontainer-prebuild.yml` is what fills it, on
+        // every push to `main` that touches `.devcontainer/**`. The package is
+        // public -- GHCR gave it the visibility of the public repository that
+        // published it -- so pulling needs no `docker login ghcr.io`. That is
+        // worth re-checking if launches ever get slow again rather than trusting
+        // forever: private, the lookup above comes back DENIED, which reads as a
+        // miss, and every launch silently builds locally exactly as it did
+        // before this existed.
+        "devpod": {
+            "prebuildRepository": "ghcr.io/blooop/devlaunch-devcontainer"
+        },
         "vscode": {
             "settings": {},
             "extensions": [
