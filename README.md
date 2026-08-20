@@ -1680,45 +1680,34 @@ pixi run devcontainer-prebuild        # devpod build . --tag latest
 Both are idempotent: an existing prebuild is found and returned rather than
 rebuilt and repushed.
 
-**The package has to be made public once, by hand.** GHCR creates a package
-private no matter how public its repository is, and a package's visibility is not
-something a workflow can set — there is no REST endpoint for it and no `gh`
-subcommand.
+**The package came up public on its own, and needed no manual step.** Measured on
+the first run (`d05e4ce`): an anonymous pull of both tags returns `200`, with
+nobody having touched a visibility setting. GHCR gave the package the visibility
+of the public repository whose workflow published it — the
+`org.opencontainers.image.source` label in the Dockerfile is what links the two.
 
-**It cannot be done in advance.** There is nothing to configure until the
-workflow's first successful run creates the package, and every URL below 404s
-until then — which is what a 404 there means, rather than a wrong link:
-
-```bash
-gh api users/blooop/packages/container/devlaunch-devcontainer --jq .visibility
-# "Package not found" => not published yet, so there is nothing to make public
-# "private"           => published; do the steps below
-# "public"            => done
-```
-
-Once it is published, the settings page is
-
-<https://github.com/users/blooop/packages/container/devlaunch-devcontainer/settings>
-
-→ *Danger Zone* → *Change visibility* → **Public**. If that URL does not resolve,
-navigate instead: <https://github.com/blooop?tab=packages> → *devlaunch-devcontainer*
-→ *Package settings*. (`/users/blooop/...` and not `/orgs/...` because `blooop` is
-a user account; an organisation's packages live under a different path.)
-
-Left private, the lookup comes back `DENIED`, devpod reads that as a miss, and
-every launch quietly builds locally — the behaviour from before any of this
-existed, which is to say the failure is invisible. Check it with a logged-out
-pull:
+This is worth checking rather than trusting, because the failure is silent: a
+private package makes the lookup return `DENIED`, devpod reads that as a cache
+miss, and every launch quietly builds locally — the behaviour from before any of
+this existed.
 
 ```bash
-docker logout ghcr.io
-docker manifest inspect ghcr.io/blooop/devlaunch-devcontainer:latest >/dev/null && echo public
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $(curl -s \
+    'https://ghcr.io/token?scope=repository:blooop/devlaunch-devcontainer:pull&service=ghcr.io' \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
+  https://ghcr.io/v2/blooop/devlaunch-devcontainer/manifests/latest
+# 200 => public, anonymous pulls work
+# 401/403 => private; make it public as below
 ```
 
-The `org.opencontainers.image.source` label in the Dockerfile is a separate
-thing: it links the package to this repository, which is what puts a source link
-on the package page and lets this repository's Actions push to it. It does not
-affect visibility.
+If it ever *is* private — a package created some other way, or a visibility that
+gets changed — the fix is a one-time setting, and one no workflow can make: there
+is no REST endpoint for container visibility and no `gh` subcommand.
+<https://github.com/blooop?tab=packages> → *devlaunch-devcontainer* → *Package
+settings* → *Danger Zone* → *Change visibility* → **Public**. Nothing to
+configure before the first publish creates the package, so those pages 404 until
+then.
 
 The `:latest` tag that command also pushes is not what devpod looks for. It is
 the moving alias `build.cacheFrom` points at, a best-effort layer cache for
