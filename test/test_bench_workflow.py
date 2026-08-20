@@ -22,6 +22,13 @@ BENCH = WORKFLOWS / "bench.yml"
 CI = WORKFLOWS / "ci.yml"
 BENCH_JOB = "bench"
 RESET = Path(__file__).parent.parent / "scripts" / "bench_cold_reset.sh"
+# How a step of the bench job begins, at the one indentation the file uses for
+# them. What `bench_step` splits on.
+STEP_MARKER = "      - name: "
+# The host half of the shared pixi package cache, relative to the job's own
+# XDG_CACHE_HOME. dl's constant, spelled here because the workflow has to name
+# the same directory dl will mount and neither can import the other.
+PIXI_CACHE_LEAF = "devlaunch/pixi"
 
 
 def bench_workflow() -> str:
@@ -51,6 +58,20 @@ def cold_reset() -> str:
     lines = [line for line in bench_settings().splitlines() if "--before" in line]
     assert len(lines) == 1, "the cold-recreate shape is the only one that resets between runs"
     return lines[0]
+
+
+def bench_step(name_fragment: str) -> str:
+    """One step of the bench job, its commentary included, as it stands.
+
+    Split on the step marker rather than parsed, for the reason the module
+    docstring gives -- and the comments are kept because half of what a step of
+    this workflow says is why it is there, and two of the checks below are about
+    exactly that.
+    """
+    blocks = bench_workflow().split(STEP_MARKER)
+    matching = [block for block in blocks[1:] if name_fragment in block.splitlines()[0]]
+    assert len(matching) == 1, f"{name_fragment!r} names {len(matching)} steps, not one"
+    return STEP_MARKER + matching[0]
 
 
 def reset_script() -> str:
@@ -189,6 +210,71 @@ class TestTheColdResetSurvivesAContainerWrittenClone:
             "a second mention is a one-time step doing per-run work"
         )
         assert RESET.name in cold_reset()
+
+
+class TestTheSharedPixiCacheIsWritableByTheContainer:
+    """The other end of the same uid mismatch, and the one that stopped the
+    trend dead.
+
+    `dl` creates the shared pixi cache's host directory as the invoking user
+    with the default umask and binds it into the container, which runs as the
+    image's remoteUser -- uid 1000 in every mainstream devcontainer base, and
+    not a GitHub runner's uid. `--workspace-env PIXI_CACHE_DIR` then points
+    every pixi in the workspace at a directory it cannot write, and pixi does
+    not degrade to a cache it can only read: the benched repo's `pixi install`
+    postCreate fails, `devpod up` fails, and the priming step fails. Twenty
+    consecutive runs, 31886967581 through 32397739366 -- every merge to main
+    from the day #232 landed -- died there with `failed to create directory
+    /var/tmp/devlaunch-pixi/pkgs: Permission denied`, having timed nothing.
+
+    README's "shared pixi package cache" section documents the requirement as
+    dl's own limitation: it cannot see the container's uid before it launches,
+    so it cannot pick the mode for you. This job can, for the same reason the
+    cold reset can chown -- one image, one remoteUser, an ephemeral runner, and
+    a cache the job made under /tmp. So the recovery lives here, and these
+    checks are what stop it being deleted as three lines of setup nobody needs.
+    """
+
+    def test_the_cache_is_widened_before_anything_launches(self):
+        """dl's own mkdir is `exist_ok` and does not re-mode a directory it
+        finds, so pre-creating is the whole mechanism -- and a step that did it
+        after the priming launch would be recovering a job that had already
+        failed."""
+        text = bench_workflow()
+        prepare = text.index(bench_step("write the shared pixi cache"))
+        prime = text.index(bench_step("Prime the image"))
+        assert prepare < prime, "the first launch is what needs the directory writable"
+
+    def test_it_widens_the_directory_and_does_not_merely_create_it(self):
+        """Creating it is what dl already does, as the runner, at 0755. The
+        `chmod` is the whole of the difference between that and a container
+        that can write. `1777` because it is what /var/tmp itself carries, and
+        the sticky bit costs nothing where one container user creates
+        everything under the leaf."""
+        step = bench_step("write the shared pixi cache")
+        assert "mkdir -p" in step
+        assert "chmod 1777" in step
+
+    def test_it_only_widens_the_jobs_own_cache_home(self):
+        """Scoped to the cache the job already scoped to /tmp, like the cold
+        reset's chown. A world-writable directory in a developer's real cache
+        home is not something a CI workaround gets to decide."""
+        assert "XDG_CACHE_HOME" in bench_step("write the shared pixi cache")
+
+    def test_it_says_which_uid_mismatch_it_is_for(self):
+        """Two lines of mkdir and chmod read like leftover scaffolding unless
+        the mismatch that forces them is written down beside them -- and this
+        one is invisible on any developer machine, where the host user *is* uid
+        1000 and the cache works untouched."""
+        assert "uid" in bench_step("write the shared pixi cache")
+
+    def test_it_prepares_the_cache_once_rather_than_before_every_run(self):
+        """The opposite cardinality to the cold reset, and for the opposite
+        reason: nothing in this job removes this directory. `dl <ws> rm` takes
+        the clone and never the shared cache, and `--purge` -- the one command
+        that would -- is not run here. A second mention is per-run work that
+        has no per-run damage to repair."""
+        assert bench_settings().count(PIXI_CACHE_LEAF) == 1
 
 
 class TestTheExclusionsSayWhyInTheFile:

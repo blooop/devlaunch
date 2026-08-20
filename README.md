@@ -681,6 +681,28 @@ hit the failure, the fixes available to you are to run that image as your own
 uid, or to take the cache out of play for it (`rm -rf ~/.cache/devlaunch/pixi`
 recovers a directory an earlier container left owned by someone else).
 
+The case that is not a developer's machine is CI. What makes the common case
+safe is that uid 1000 is *both* the base image's remote user and the first human
+user on a Linux host — and on a hosted runner it is only the first of those. A
+GitHub runner's own user is somebody else, so a launch there hits this on its
+first container and every container after it. This repo's own launch benchmark
+did exactly that for twenty consecutive merges to `main`: `failed to create
+directory /var/tmp/devlaunch-pixi/pkgs: Permission denied`, from the benched
+repo's `pixi install`, before anything was timed.
+
+Where you know the uid you are handing the directory to, there is a third fix
+the list above does not offer, and it is what `.github/workflows/bench.yml` now
+does — create the directory yourself and widen it, before the first launch:
+
+```bash
+mkdir -p ~/.cache/devlaunch/pixi && chmod 1777 ~/.cache/devlaunch/pixi
+```
+
+`dl`'s own `mkdir` does not re-mode a directory it finds, so the mode survives
+every launch after it. `1777` is what `/var/tmp` carries at the other end of the
+same mount, and it makes the same trade: every uid can write, and the sticky bit
+means none of them can unlink another's entries.
+
 ### Existing containers, and what a recreate is for
 
 **A mount lands only when a container is created.** devpod re-applies
