@@ -11,15 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The README is ordered for people first.** The options table, the workspace id derivation
-  and the purge/prune/reconcile and disk-accounting detail used to come before the things
-  someone actually types, and `## Examples` sat 1200 lines down. What a reader needs on the way
-  in — features, install, usage with the examples beside it, workspace and global commands,
-  `aid` — is now the top half; a rule and a note mark where reference begins; and the header
-  carries a two-row index. The `dl --ls` table was split out of `## Global Commands` from the
-  500 lines of cleanup detail beneath it, now `## Cleaning up: purge, prune, reconcile`. One
-  duplicated example block (`## Workspace Sources`) was folded into `### Examples`. No
-  documented behaviour changed, and every existing anchor still resolves.
+- **`dl --help` puts the verbs and the examples above the options table.** clap's default
+  layout renders every flag between the usage line and the `after_help` block, so the half of
+  this CLI clap cannot describe from its own arguments — the workspace verbs, the examples, the
+  environment variables — sat below fourteen options nobody opened `--help` to read. The
+  examples and the verb list now come straight after the usage line (`before_help`, plus a
+  `help_template` that is clap's own default with `{before-help}` moved above `{all-args}`),
+  `Environment:` stays last, and a unit test pins the order and the markers. Same flags, same
+  verbs, same text — a different order on screen, for `-h` and `--help` alike.
+- **The README is ordered the same way, for the same reason.** The options table, the workspace
+  id derivation and the purge/prune/reconcile and disk-accounting detail used to come before
+  the things someone actually types, and `## Examples` sat 1200 lines down. What a reader needs
+  on the way in — features, install, usage with the examples beside it, workspace and global
+  commands, `aid` — is now the top half; a rule and a note mark where reference begins; and the
+  header carries a two-row index. The `dl --ls` table was split out of `## Global Commands`
+  from the 500 lines of cleanup detail beneath it, now `## Cleaning up: purge, prune,
+  reconcile`. One duplicated example block (`## Workspace Sources`) was folded into
+  `### Examples`. Every existing anchor still resolves.
+
+### Fixed
+
+- **`devlaunch-test-support`'s version tripwire moves with this release**, so
+  `cargo test --workspace` is green. It asserts the inherited version against a literal and
+  cannot read it any other way; no CI job runs that crate, which is how the 0.1.1 bump left it
+  behind. Noted here because the next release has to do the same.
 
 ## [0.1.2] - 2026-08-20
 
