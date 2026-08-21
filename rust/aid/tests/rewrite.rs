@@ -279,6 +279,31 @@ fn no_prompt_starts_the_agents_plain_session() {
              --dangerously-skip-permissions'"
         )
     );
+    // `Command::output()` gives aid no terminal, and off a terminal the promptless
+    // line must stay the one-shot launch it always was: no editor, no question. The
+    // interactive default is pinned by `tests/interactive.rs`, on a pty.
+    assert!(
+        !run.err.contains("press Enter"),
+        "the editor appeared without a terminal: {}",
+        run.err
+    );
+}
+
+#[test]
+fn the_detached_cache_refresh_reaches_dl_through_aids_own_name() {
+    // dl re-spawns its completion refresh through `current_exe`, which under aid
+    // *is* aid — so `aid --update-cache` must be dl's `--update-cache`, not a
+    // command line that lost its workspace. Before this arm existed, every refresh
+    // an aid launch fired died as "aid needs a workspace" and completions silently
+    // never refreshed.
+    let world = World::with(&["--warm"]);
+    let run = world.aid(&["--update-cache"]);
+    run.exited(0);
+    assert!(
+        !run.err.contains("aid needs a workspace"),
+        "the refresh was refused as an aid line: {}",
+        run.err
+    );
 }
 
 #[test]

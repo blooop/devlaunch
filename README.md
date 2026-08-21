@@ -314,6 +314,16 @@ That means an `aid` workspace *is* the `dl` workspace: same clone, same workspac
 id, same container — started if stopped, attached to if already running, and never
 rebuilt just because `aid` asked for it. Anything `dl` learns, `aid` gets.
 
+With no prompt on the command line, `aid` on a terminal does not just drop you
+into the agent: it starts the workspace booting in the background and asks for
+the prompt while it does. Type it free of shell quoting — no escaping, no
+history expansion eating a `!` — and press Enter to launch; the minute the
+container takes to come up and the minute the prompt takes to write are the same
+minute. An empty Enter (or Ctrl-D) starts the agent's plain session, exactly
+what a bare `aid <workspace>` always did. Piping stdin or setting
+`DEVLAUNCH_NO_TTY=1` skips the question entirely, so scripts see the old
+one-shot behaviour without changing a line.
+
 `claude` is started with `--dangerously-skip-permissions`. The agent is already
 inside a disposable container holding only this repo, so the per-tool prompts it
 would ask on the host protect nothing here and would stall an unattended run.
@@ -331,7 +341,10 @@ are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 |--------|-------------|
 | `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
+| `--rm`, `--stop` | Do that to the workspace instead of starting an agent; appendable to a recalled line, `--force` with `--rm` deletes despite unsaved work |
+| `--autorm` | Run the agent, then delete the workspace when the session ends |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
+| `DEVLAUNCH_NO_TTY=1` | No prompt question, no pty: the old one-shot behaviour |
 
 Everything after the workspace is the prompt, flags and all, so it never needs
 quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,

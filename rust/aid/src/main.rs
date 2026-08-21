@@ -25,6 +25,7 @@
 //! together but nothing guarantees `dl` is on PATH of a run that reached `aid`
 //! through an absolute path.
 
+mod interactive;
 mod rewrite;
 
 use std::io::Write as _;
@@ -51,6 +52,21 @@ fn main() {
 /// One `aid` command line: the three answers aid gives on its own, and dl for the
 /// rest.
 fn run(argv: &[String]) -> i32 {
+    // The internal re-entries, before anything user-facing. `--boot-up` is the
+    // background boot the interactive flow spawns — aid's argv, because the one
+    // binary aid can find without guessing at PATH is itself. `--update-cache` is
+    // the detached completion refresh dl re-spawns through `current_exe`, which
+    // under aid *is* aid: without this arm every refresh an aid launch fired died
+    // as "aid needs a workspace", and completions silently never refreshed.
+    if argv
+        .first()
+        .is_some_and(|word| word == interactive::BOOT_WORD)
+    {
+        return dl::run(&argv[1..]);
+    }
+    if argv.first().is_some_and(|word| word == "--update-cache") {
+        return dl::run(argv);
+    }
     // No arguments is the help *and* a failure, which is Python's pair of endings for
     // one body: somebody who typed `aid` asked for a workspace and named none, and
     // somebody who typed `aid --help` got what they asked for.
@@ -81,6 +97,11 @@ fn run(argv: &[String]) -> i32 {
             return 1;
         }
     };
+    // The interactive default: an agent line with no prompt, on a terminal, boots
+    // the workspace in the background while the prompt is typed here instead of in
+    // a shell. Anything else — an inline prompt, a verb line, a pipe — comes back
+    // unchanged with no boot, and takes the path it always took.
+    let (parsed, boot) = interactive::collect_prompt(parsed);
     let Some(dl_args) = rewrite::build_dl_args(&parsed) else {
         // Unreachable by a command line: the parse only ever answers with an agent
         // from the table, and a line that starts no agent cannot fail to build one.
@@ -116,6 +137,12 @@ fn run(argv: &[String]) -> i32 {
         "aid -> dl {}",
         dl::shell::join(dl_args.iter().map(String::as_str))
     );
+    // The boot the interactive flow started is waited out *after* the echo names
+    // what will run, with its parked output replayed as it lands — so by the time
+    // dl runs, the workspace is up and the launch is the fast attach.
+    if let Some(boot) = boot {
+        boot.finish();
+    }
     dl::run(&dl_args)
 }
 
@@ -170,6 +197,12 @@ Usage:
     aid <user/repo>[@branch] [prompt...]   Open the workspace and start the agent
     aid <workspace> [prompt...]            Same, for an existing workspace or ./path
 
+With no prompt on a terminal, aid boots the workspace in the background and
+asks for the prompt while it does: type it free of shell quoting and press
+Enter to launch. An empty Enter (or Ctrl-D) starts the agent's plain session.
+Piping stdin or setting DEVLAUNCH_NO_TTY=1 skips the question and launches
+one-shot, as a prompt on the command line always has.
+
 Options:
     {agents}
                                      Pick the agent (default: {default})
@@ -219,6 +252,18 @@ mod tests {
         assert!(help.contains("(default: claude)"));
         // Python's `print(f"""…\n""")`: the text ends with a blank line.
         assert!(help.ends_with("dl --help\n\n"), "{help:?}");
+    }
+
+    #[test]
+    fn the_help_names_the_interactive_default_and_both_ways_out() {
+        let help = help();
+
+        assert!(
+            help.contains("boots the workspace in the background"),
+            "{help}"
+        );
+        assert!(help.contains("empty Enter"), "{help}");
+        assert!(help.contains("DEVLAUNCH_NO_TTY=1"), "{help}");
     }
 
     #[test]
