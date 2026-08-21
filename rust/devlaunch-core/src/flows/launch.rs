@@ -1082,9 +1082,17 @@ fn up_under_stage(
         // container started, or it may have run with the tools switched off where
         // this one does not.
         //
-        // A top-up: nothing on this path restarted the container — the sibling's
-        // `up` is what brought it here and it is still running — so its hostname is
-        // standing and a remembered verdict about it may be trusted.
+        // A top-up all the same, and what licenses that is not the paragraph above
+        // being false but the anchor a verdict is checked against: a sibling whose
+        // `up` *completed* rewrote `workspace_result.json` on its way out, which
+        // leaves no marker to trust and sends this pass on the wire. So the case a
+        // remembered verdict survives is the one where the sibling both completed
+        // its `up` and ran its own pass — the prewarm, and the saving this is for.
+        //
+        // The residual is the sibling that started the container and then died
+        // before devpod wrote that file: the stale result still matches, and the
+        // hostname nobody set stays unset. Nothing the host can read tells that
+        // apart from a container that never stopped.
         provision
             .provision_tools(context.runner(), identity, PassOccasion::TopUp)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
