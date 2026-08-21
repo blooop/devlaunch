@@ -27,6 +27,7 @@ use devlaunch_core::flows::launch::{
 use devlaunch_core::flows::lifecycle::{
     KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
     PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
+    VolumeRefusal,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
@@ -866,6 +867,10 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         LifecycleNotice::CloneNotRemoved { refusal, .. } => {
             format!("Failed to remove local clone: {}", not_removed(refusal))
         }
+        LifecycleNotice::VolumesNotRemoved {
+            workspace_id,
+            refusal,
+        } => volumes_not_removed(workspace_id, refusal),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -1065,6 +1070,36 @@ fn not_removed(refusal: &RemoveWorkspaceError) -> String {
     }
 }
 
+/// A refused volume removal, in the one sentence it gets.
+///
+/// One function rather than the same `format!` in both printers: `rm` reports it as
+/// a notice and `--purge` as a step, the vocabularies differ but the sentence does
+/// not, and two copies each pinned by its own test is how they come to differ by a
+/// word.
+fn volumes_not_removed(workspace_id: &str, refusal: &VolumeRefusal) -> String {
+    format!(
+        "Failed to remove the Docker volumes for {workspace_id}: {}",
+        volumes_refused(refusal)
+    )
+}
+
+/// Why a deleted workspace's Docker volumes are still on this machine.
+///
+/// docker's own stderr where docker spoke, trimmed of the newline it ends on
+/// because this is interpolated mid-sentence. A machine with no docker never
+/// reaches here: it is a silent arm of the sweep, not a refusal.
+fn volumes_refused(refusal: &VolumeRefusal) -> String {
+    match refusal {
+        VolumeRefusal::Docker { exit, stderr } => match stderr.trim() {
+            "" => format!("docker exited {}", exit_status(*exit)),
+            said => said.to_owned(),
+        },
+        VolumeRefusal::NotRun { failure } => {
+            format!("could not run docker ({})", os_error_phrase(failure))
+        }
+    }
+}
+
 /// Why a directory tree is still there.
 fn tree_not_removed(error: &RemoveTreeError) -> String {
     match error {
@@ -1160,12 +1195,19 @@ pub(crate) fn unknown_workspace(target: &str) -> String {
 /// Named by `--purge` on every ending, and by `--prune` on every ending that got
 /// as far as looking at a directory.
 ///
-/// A sentence and not a measurement: nothing here runs `docker`, so there is
-/// nothing to fail on a machine where Docker is absent, and nothing that takes a
-/// moment on a command whose work is already done.
+/// **Images, and no longer volumes** (devlaunch#325). The named volumes a
+/// workspace's devcontainer created now go with the workspace, so a sentence that
+/// still disclaimed them would be describing a leak that was fixed. Images stay
+/// out deliberately rather than for want of a fix: they are shared between
+/// workspaces, expensive to rebuild, and which workspace owns one is genuinely
+/// ambiguous — which is exactly why it is still worth saying.
+///
+/// Still a sentence and not a measurement: printing it runs no `docker`, so it
+/// costs nothing on a machine where Docker is absent and nothing on a command
+/// whose work is already done.
 pub(crate) const DOCKER_BOUNDARY: &str = concat!(
-    "devlaunch does not manage Docker images or volumes: the containers these workspaces used ",
-    "may still hold disk, and `docker system df` shows what Docker is holding."
+    "devlaunch does not manage Docker images: the images these workspaces built may still hold ",
+    "disk, and `docker system df` shows what Docker is holding."
 );
 
 // ---------------------------------------------------------------------------
@@ -1210,6 +1252,7 @@ pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
 /// knows which. A purge step does not: the step that says what is about to happen
 /// is output, and the step that says it did not happen is a `logging.warning`, and
 /// they arrive through the same callback.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Line {
     Out(String),
     Err(String),
@@ -1233,6 +1276,10 @@ pub(crate) fn purge_step(step: &PurgeStep) -> Line {
         } => Line::Err(format!(
             "Failed to delete workspace {workspace_id}: {stderr}"
         )),
+        PurgeStep::VolumesNotRemoved {
+            workspace_id,
+            refusal,
+        } => Line::Err(volumes_not_removed(workspace_id, refusal)),
     }
 }
 
@@ -2897,6 +2944,75 @@ mod tests {
                  denied (os error 13))"
                     .to_owned()
             )
+        );
+    }
+
+    /// devlaunch#325's notice. docker's own words where docker spoke, because a
+    /// volume some other container still holds is the case that matters and only
+    /// docker knows which container that is. A machine with no docker never reaches
+    /// here — that is a silent arm of the sweep, not a refusal — so there is no
+    /// sentence for it to have.
+    #[test]
+    fn volumes_that_would_not_go_carry_dockers_own_words() {
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::VolumesNotRemoved {
+                workspace_id: "ws".to_owned(),
+                refusal: VolumeRefusal::Docker {
+                    exit: Exit::Code(1),
+                    stderr: "Error response from daemon: remove ws-pixi: volume is in use\n"
+                        .to_owned(),
+                },
+            }),
+            Some(
+                "Failed to remove the Docker volumes for ws: Error response from daemon: remove \
+                 ws-pixi: volume is in use"
+                    .to_owned()
+            )
+        );
+        // A docker that failed silently still gets a line: the status is all there
+        // is to report, and reporting nothing would be reporting a removal.
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::VolumesNotRemoved {
+                workspace_id: "ws".to_owned(),
+                refusal: VolumeRefusal::Docker {
+                    exit: Exit::Signal(9),
+                    stderr: String::new(),
+                },
+            }),
+            Some("Failed to remove the Docker volumes for ws: docker exited -9".to_owned())
+        );
+        assert_eq!(
+            lifecycle_notice(&LifecycleNotice::VolumesNotRemoved {
+                workspace_id: "ws".to_owned(),
+                refusal: VolumeRefusal::NotRun {
+                    failure: OsFailure {
+                        kind: std::io::ErrorKind::PermissionDenied,
+                        errno: Some(13),
+                    },
+                },
+            }),
+            Some(
+                "Failed to remove the Docker volumes for ws: could not run docker (Permission \
+                 denied (os error 13))"
+                    .to_owned()
+            )
+        );
+    }
+
+    /// The purge says the same thing in its own channel: it reports as it goes, so
+    /// a refusal is a step rather than a notice — and it goes to stderr, as every
+    /// other thing that did not work does.
+    #[test]
+    fn a_purge_says_which_workspaces_volumes_stayed() {
+        assert_eq!(
+            purge_step(&PurgeStep::VolumesNotRemoved {
+                workspace_id: "ws".to_owned(),
+                refusal: VolumeRefusal::Docker {
+                    exit: Exit::Code(1),
+                    stderr: "volume is in use\n".to_owned(),
+                },
+            }),
+            Line::Err("Failed to remove the Docker volumes for ws: volume is in use".to_owned())
         );
     }
 

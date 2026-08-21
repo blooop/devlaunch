@@ -16,15 +16,21 @@
 //!
 //! # Three commands remove things, and none of them decides what is finished
 //!
-//! - **`dl <ws> rm`** deletes one workspace and its clone, and refuses when the
+//! - **`dl <ws> rm`** deletes one workspace, its clone and the named docker
+//!   volumes its devcontainer created ([`VolumeSweep`]), and refuses when the
 //!   clone holds work that exists nowhere else. That refusal is the one judgement
 //!   dl makes on its own account (see [`crate::domain::workspace_state`]).
 //! - **`dl --prune`** removes the clone *directories* no live workspace opens. It
 //!   never touches a devpod workspace, a container, an image or a volume, and it
-//!   leaves every bare cache alone.
-//! - **`dl --purge`** deletes the workspaces devlaunch created and its whole cache
-//!   directory. Ownership-scoped ([`crate::flows::listing::workspace_ownership`]),
-//!   and it names what it leaves standing.
+//!   leaves every bare cache alone. **Still true of volumes** after devlaunch#325,
+//!   and not an oversight: it deletes no workspace, so there is no workspace whose
+//!   volumes it could be taking.
+//! - **`dl --purge`** deletes the workspaces devlaunch created — volumes and all —
+//!   and its whole cache directory. Ownership-scoped
+//!   ([`crate::flows::listing::workspace_ownership`]), and it names what it leaves
+//!   standing. It does *not* share `rm`'s delete: it issues its own captured
+//!   `devpod delete --force` per workspace, which is why the volume sweep is wired
+//!   into it explicitly rather than inherited.
 //!
 //! `dl --reconcile` is the fourth of the family and removes nothing at all: it
 //! re-points devpod records the id-scheme change orphaned (devlaunch#88), and an
@@ -63,6 +69,7 @@ use crate::clients::devpod::{
     self, Call, ContainerState, ListingUnreadable, NotRun, StatusUnreadable, Workspace,
     WorkspaceSource,
 };
+use crate::clients::docker;
 use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
 use crate::domain::metadata::{self, MetadataStorage, WorktreeFilter};
@@ -79,7 +86,7 @@ use crate::flows::repo_manager::{
 };
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
-use crate::runner::{DetachOutcome, Exit, Invocation, Runner};
+use crate::runner::{DetachOutcome, Exit, Invocation, OsFailure, Runner};
 use crate::timing;
 
 // ===========================================================================
@@ -104,6 +111,18 @@ pub enum LifecycleNotice {
     CloneNotRemoved {
         workspace_id: String,
         refusal: RemoveWorkspaceError,
+    },
+    /// devpod let go of the workspace and the named docker volumes its
+    /// devcontainer created are still on this machine.
+    ///
+    /// A notice for the reason [`LifecycleNotice::CloneNotRemoved`] is one: the
+    /// workspace is gone either way, and the disk left behind is a thing to say
+    /// rather than a delete to fail. Carries the refusal itself and not a
+    /// rendering of it — and can only be built from a refusal, because
+    /// [`VolumeRefusal`] holds no arm for a sweep that went fine.
+    VolumesNotRemoved {
+        workspace_id: String,
+        refusal: VolumeRefusal,
     },
     /// A clone directory went and its `metadata.json` record could not be
     /// dropped. Named by the path, which is what the record described.
@@ -869,6 +888,52 @@ pub fn unsaved_work_in(
 // delete
 // ===========================================================================
 
+/// What became of the docker volumes a deleted workspace's devcontainer created.
+///
+/// Every arm is an outcome of a delete that **succeeded** — the workspace is gone
+/// in all four — which is why this rides inside [`DeleteOutcome::Deleted`] rather
+/// than being able to fail it. Reporting a failure here would send the caller
+/// looking for a workspace that is not there, which is the same reasoning the
+/// clone arm beside it uses.
+///
+/// Three of the four are silent, and the line is whether there is anything a user
+/// could act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeSweep {
+    /// docker removed the volumes named, or found them already gone — which
+    /// `docker volume rm --force` counts as removed, so a repository whose
+    /// devcontainer never declared one of these names lands here rather than in a
+    /// refusal on every delete.
+    Removed,
+    /// Nothing was named, so docker was not run at all: devpod's record of what it
+    /// substituted into this workspace's devcontainer is not there to read, which
+    /// is what an `up` that never finished leaves behind.
+    NothingNamed,
+    /// No docker on this machine. Silent on purpose, and the reason it is its own
+    /// arm: a host with no docker never made these volumes, so there is nothing
+    /// here to have failed.
+    NoDocker,
+    /// The volumes are still on this machine, and this is why.
+    Refused(VolumeRefusal),
+}
+
+/// Why a deleted workspace's docker volumes are still on this machine.
+///
+/// Apart from [`VolumeSweep`]'s three silent arms rather than among them, so that
+/// [`LifecycleNotice::VolumesNotRemoved`] cannot be built from an outcome that
+/// went fine. Neither arm is a sentence: the words are the `dl` binary's, as they
+/// are for every other refusal core hands over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeRefusal {
+    /// docker ran and would not remove them — a volume some other container still
+    /// holds is the case this exists for. `stderr` is docker's own words.
+    Docker { exit: Exit, stderr: String },
+    /// docker never answered: the OS would not start it, or it was killed. The
+    /// errno and nothing else, for the same reason [`NotRun::Blocked`] carries
+    /// one.
+    NotRun { failure: OsFailure },
+}
+
 /// How a delete ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteOutcome {
@@ -878,8 +943,12 @@ pub enum DeleteOutcome {
     /// is why this is still `Deleted` and the refusal rides in the field rather
     /// than failing the delete). The `Err` was a fourth meaning crammed into the
     /// old `Removed::Nothing`; it is its own channel now.
+    ///
+    /// `volumes` is the same bargain for the named docker volumes the workspace's
+    /// devcontainer created — see [`VolumeSweep`].
     Deleted {
         clone: Result<Removed, RemoveWorkspaceError>,
+        volumes: VolumeSweep,
     },
     /// devpod refused, and the local clone was **kept** so the delete stays
     /// retryable. devpod re-parses the workspace's `devcontainer.json` to tear the
@@ -899,15 +968,23 @@ pub enum DeleteOutcome {
 /// absent" the way `rm -f` is. The clone cleanup still runs on that path: a stale
 /// clone with no workspace is exactly what a half-finished delete leaves, and what
 /// a cold-bench reset (devlaunch#140) must clear.
+#[allow(clippy::too_many_arguments)]
 pub fn workspace_delete(
     context: &mut CommandContext<'_>,
     refresh: &mut Refresh<'_>,
     clones: &WorkspaceCloneManager<'_>,
     storage: &mut MetadataStorage,
+    devpod_home: Option<&Path>,
     workspace_id: &str,
     insistence: Insistence,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<DeleteOutcome, NotRun> {
+    // Named *before* the delete, and that ordering is the whole of why this is two
+    // steps: `devpod delete` takes devpod's own record of the workspace away with
+    // the workspace, and that record is the only place the substituted volume
+    // names live. Named afterwards, this would find nothing every time and look
+    // like a working cleanup.
+    let named = devcontainer_volumes(devpod_home, workspace_id);
     let exit = devpod::run(context.runner(), &delete_call(workspace_id, insistence))?;
     // Unconditionally: a delete that reports failure may still have got far enough
     // to change what devpod lists.
@@ -949,8 +1026,142 @@ pub fn workspace_delete(
             Err(error)
         }
     };
+    let volumes = sweep_volumes(context.runner(), named);
+    if let VolumeSweep::Refused(refusal) = &volumes {
+        notices.say(LifecycleNotice::VolumesNotRemoved {
+            workspace_id: workspace_id.to_owned(),
+            refusal: refusal.clone(),
+        });
+    }
     refresh.ask(context.runner(), RefreshReason::Forced);
-    Ok(DeleteOutcome::Deleted { clone })
+    Ok(DeleteOutcome::Deleted { clone, volumes })
+}
+
+/// Remove the volumes `named`, and say what became of them.
+///
+/// The one place a [`docker::Answer`] becomes a [`VolumeSweep`], so every removal
+/// path draws the same line in the same place: nothing to name and no docker to
+/// name it with are silent, and a docker that was asked and did not deliver is
+/// not. It reports nothing itself — `rm` says its piece as a
+/// [`LifecycleNotice`] and `--purge` as a [`PurgeStep`], and neither vocabulary
+/// belongs to the removal.
+fn sweep_volumes(runner: &dyn Runner, named: Option<NonEmpty<String>>) -> VolumeSweep {
+    let Some(names) = named else {
+        return VolumeSweep::NothingNamed;
+    };
+    match docker::remove_volumes(runner, &names) {
+        docker::Answer::Ran { exit, .. } if exit.is_success() => VolumeSweep::Removed,
+        docker::Answer::Ran { exit, stderr } => {
+            VolumeSweep::Refused(VolumeRefusal::Docker { exit, stderr })
+        }
+        docker::Answer::NotInstalled => VolumeSweep::NoDocker,
+        docker::Answer::NotStarted(failure) => {
+            VolumeSweep::Refused(VolumeRefusal::NotRun { failure })
+        }
+    }
+}
+
+/// The named docker volumes one workspace's devcontainer created, or nothing where
+/// devpod's own record cannot say.
+///
+/// **One source for both names, and it is devpod's create result** — the file
+/// devpod writes on its way out of a successful `up`, recording what it
+/// substituted into the devcontainer. Both volumes are named from variables devpod
+/// expanded, so the record is by definition the answer:
+///
+/// - `${localWorkspaceFolderBasename}-pixi`, from this repository's own
+///   `.devcontainer/devcontainer.json` mount for the `.pixi` cache;
+/// - `dind-var-lib-docker-${devcontainerId}`, from the `docker-in-docker` feature.
+///
+/// Deriving the basename from the clone directory devlaunch chose instead would be
+/// a second answer to a question devpod has already answered, and the two can
+/// disagree — a workspace opened before a rename, say. Neither *value* is guessed:
+/// a substitution that is not in the record names no volume. The two name
+/// **templates** are still this repository's own devcontainer and the
+/// `docker-in-docker` feature's, so a `mounts` entry naming some third volume is
+/// not swept — devlaunch#325's scope, and the follow-up that would end it is
+/// reading the mount sources out of the recorded merged config instead.
+///
+/// [`sole_workspace_result`] is what finds the file, rather than a contexts walk of
+/// its own: an id under two contexts must answer nothing, and `devpod delete`
+/// resolves that id against the *current* context, so a walk that picked one would
+/// remove a living workspace's volumes. Sharing the walk makes the rule identical
+/// by construction instead of by comment.
+///
+/// `None` rather than an empty list, so a caller cannot read "nothing to remove"
+/// as "removed nothing" — an `up` that died in its lifecycle hooks leaves the
+/// workspace record with no result beside it, which is exactly this case.
+fn devcontainer_volumes(
+    devpod_home: Option<&Path>,
+    workspace_id: &str,
+) -> Option<NonEmpty<String>> {
+    let result = sole_workspace_result(devpod_home, workspace_id)?;
+    let recorded = parse_substitutions(&std::fs::read(result).ok()?);
+    NonEmpty::of(recorded.volume_names())
+}
+
+/// What devpod recorded substituting into one workspace's devcontainer.
+///
+/// Only the two fields the volume names are built from. Both optional because
+/// devpod omits an empty one, and a record written by a devpod that never learned
+/// about `${devcontainerId}` has neither.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Substitutions {
+    /// `SubstitutionContext.LocalWorkspaceFolder` — the host directory devpod
+    /// opened, whose basename is what `${localWorkspaceFolderBasename}` expanded
+    /// to.
+    local_workspace_folder: Option<String>,
+    /// `SubstitutionContext.DevContainerID` — what `${devcontainerId}` expanded
+    /// to.
+    devcontainer_id: Option<String>,
+}
+
+impl Substitutions {
+    /// The volume names these substitutions imply, in the order they were
+    /// declared. Empty where neither field was recorded.
+    fn volume_names(&self) -> Vec<String> {
+        let basename = self
+            .local_workspace_folder
+            .as_deref()
+            .map(Path::new)
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned());
+        [
+            basename.map(|basename| format!("{basename}-pixi")),
+            self.devcontainer_id
+                .as_deref()
+                .map(|id| format!("dind-var-lib-docker-{id}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+/// Read the two substituted values off devpod's create result.
+///
+/// Total over anything the file could hold: bytes that are not JSON, or JSON of
+/// another shape, answer the empty set rather than an error. Nothing here is worth
+/// a diagnostic — a result devlaunch cannot read is a result it removes no volumes
+/// from, which is exactly what it did before this existed.
+fn parse_substitutions(bytes: &[u8]) -> Substitutions {
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return Substitutions::default();
+    };
+    let context = &document["SubstitutionContext"];
+    Substitutions {
+        local_workspace_folder: non_empty_string(&context["LocalWorkspaceFolder"]),
+        devcontainer_id: non_empty_string(&context["DevContainerID"]),
+    }
+}
+
+/// The string this value holds, where it holds a non-empty one. Empty is dropped
+/// so a blank field cannot build the volume name `-pixi`.
+fn non_empty_string(value: &serde_json::Value) -> Option<String> {
+    match value.as_str() {
+        Some(text) if !text.is_empty() => Some(text.to_owned()),
+        _ => None,
+    }
 }
 
 /// `devpod delete <id> [--ignore-not-found]` — argv-exact.
@@ -1029,6 +1240,15 @@ pub enum PurgeStep {
         exit: Exit,
         stderr: String,
     },
+    /// The workspace went and the named docker volumes its devcontainer created
+    /// are still there. Said for the reason
+    /// [`LifecycleNotice::VolumesNotRemoved`] is said on the `rm` path — a purge
+    /// promises a clean slate, and disk it could not reclaim is the one thing
+    /// worth naming about it. The three sweeps that went fine say nothing.
+    VolumesNotRemoved {
+        workspace_id: String,
+        refusal: VolumeRefusal,
+    },
 }
 
 /// How a purge ended.
@@ -1095,18 +1315,32 @@ impl PurgeOutcome {
 pub fn purge_all_data(
     context: &mut CommandContext<'_>,
     plan: &PurgePlan,
+    devpod_home: Option<&Path>,
     on_step: &mut dyn FnMut(PurgeStep),
 ) -> Result<PurgeOutcome, NotRun> {
     for workspace in &plan.ownership.mine {
         on_step(PurgeStep::Deleting {
             workspace_id: workspace.id.clone(),
         });
+        // Named before the delete for the reason [`workspace_delete`] names them
+        // before its own: devpod's record goes with the workspace.
+        let named = devcontainer_volumes(devpod_home, &workspace.id);
         let answer = devpod::capture(context.runner(), &purge_delete_call(&workspace.id))?;
         if !answer.succeeded() {
             on_step(PurgeStep::NotDeleted {
                 workspace_id: workspace.id.clone(),
                 exit: answer.exit,
                 stderr: answer.stderr().to_owned(),
+            });
+            // No sweep: the container is still there holding the volumes, so the
+            // removal would refuse anyway, and a second report of one failure is
+            // exactly what the `NotDeleted` arm exists to avoid.
+            continue;
+        }
+        if let VolumeSweep::Refused(refusal) = sweep_volumes(context.runner(), named) {
+            on_step(PurgeStep::VolumesNotRemoved {
+                workspace_id: workspace.id.clone(),
+                refusal,
             });
         }
     }
@@ -2900,7 +3134,7 @@ pub(crate) mod tests {
     use devlaunch_test_support::{FakeRunner, Response};
 
     use super::*;
-    use crate::clients::devpod;
+    use crate::clients::{devpod, docker};
     use crate::domain::metadata::MetadataStorage;
     use crate::domain::model::{BaseRepository, Timestamp, WorktreeInfo};
     use crate::domain::workspace_id::WorkspaceId;
@@ -2932,6 +3166,38 @@ pub(crate) mod tests {
                 std::fs::write(dir.join("workspace_result.json"), "{}").expect("a result");
             }
         }
+        home
+    }
+
+    /// A devpod home whose create result for `workspace_id` records what devpod
+    /// substituted into that workspace's devcontainer.
+    ///
+    /// The shape is devpod's own: `SubstitutionContext` beside `ContainerDetails`
+    /// and `MergedConfig` in `workspace_result.json`, with the field spellings
+    /// devpod's `config.SubstitutionContext` serialises. Read off the pinned
+    /// devpod binary's struct tags rather than assumed, because every volume name
+    /// below is built from these two strings.
+    fn devpod_home_recording(
+        workspace_id: &str,
+        local_workspace_folder: &str,
+        devcontainer_id: &str,
+    ) -> tempfile::TempDir {
+        let home = devpod_home_with(&[("default", workspace_id, Some(()))]);
+        let result = devpod_workspace_result(home.path(), "default", workspace_id);
+        std::fs::write(
+            &result,
+            serde_json::json!({
+                "ContainerDetails": { "Id": "container-id" },
+                "MergedConfig": {},
+                "SubstitutionContext": {
+                    "LocalWorkspaceFolder": local_workspace_folder,
+                    "ContainerWorkspaceFolder": "/workspaces/whatever",
+                    "DevContainerID": devcontainer_id,
+                },
+            })
+            .to_string(),
+        )
+        .expect("a create result");
         home
     }
 
@@ -2970,6 +3236,26 @@ pub(crate) mod tests {
         assert_eq!(
             create_record(Some(empty.path()), "myws"),
             CreateRecord::Unknown
+        );
+    }
+
+    /// A context directory whose name is not text devlaunch can spell holds no
+    /// record it could have read anyway, so the walk steps over it and the context
+    /// that *does* hold one still answers. Losing the answer to it would rebuild a
+    /// healthy workspace — and, since [`devcontainer_volumes`] shares this walk,
+    /// leave that workspace's volumes on disk for a name nothing was going to read.
+    #[test]
+    fn a_context_directory_nobody_can_spell_does_not_cost_the_others_their_answer() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let home = devpod_home_with(&[("default", "myws", Some(()))]);
+        let unspellable = std::ffi::OsStr::from_bytes(b"\xff\xfe-not-utf8").to_os_string();
+        std::fs::create_dir_all(home.path().join("contexts").join(unspellable))
+            .expect("a context directory");
+
+        assert_eq!(
+            create_record(Some(home.path()), "myws"),
+            CreateRecord::Completed
         );
     }
 
@@ -3101,6 +3387,11 @@ pub(crate) mod tests {
                 .collect()
         }
 
+        /// Every docker call's argv tail, in order.
+        fn docker_argvs(&self) -> Vec<Vec<String>> {
+            self.fake.args_to(docker::PROGRAM)
+        }
+
         fn detached(&self) -> Vec<Vec<String>> {
             self.fake
                 .calls()
@@ -3113,9 +3404,19 @@ pub(crate) mod tests {
         }
     }
 
+    /// Which programs this fixture answers for itself. Everything else — git,
+    /// above all — is really run, which is what the repo_manager fixtures need.
+    ///
+    /// `docker` is on the list for the reason `devpod` is: a delete spawns it now,
+    /// and a unit test that reached the developer's own docker daemon would be
+    /// removing real volumes named after a fixture.
+    fn faked(program: &str) -> bool {
+        program == devpod::PROGRAM || program == docker::PROGRAM
+    }
+
     impl Runner for Devpod {
         fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-            if spec.invocation.program == devpod::PROGRAM {
+            if faked(&spec.invocation.program) {
                 self.fake.capture(spec)
             } else {
                 self.processes.capture(spec)
@@ -3123,7 +3424,7 @@ pub(crate) mod tests {
         }
 
         fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-            if spec.invocation.program == devpod::PROGRAM {
+            if faked(&spec.invocation.program) {
                 self.fake.passthrough(spec)
             } else {
                 self.processes.passthrough(spec)
@@ -3131,7 +3432,7 @@ pub(crate) mod tests {
         }
 
         fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-            if spec.invocation.program == devpod::PROGRAM {
+            if faked(&spec.invocation.program) {
                 self.fake.session(spec, on_stderr_line)
             } else {
                 self.processes.session(spec, on_stderr_line)
@@ -4020,7 +4321,133 @@ pub(crate) mod tests {
     fn purge(devpod: &Devpod, cache_dir: &Path) -> PurgeOutcome {
         let mut context = CommandContext::new(devpod);
         let plan = purge_plan(&mut context, cache_dir).expect("a plan");
-        purge_all_data(&mut context, &plan, &mut |_| {}).expect("devpod ran")
+        purge_all_data(&mut context, &plan, None, &mut |_| {}).expect("devpod ran")
+    }
+
+    /// `--purge` does not share `workspace_delete` — it issues its own captured
+    /// `devpod delete --force` per workspace — so the volumes have to be wired here
+    /// too rather than inherited. This is the test that says so.
+    #[test]
+    fn a_purge_removes_the_volumes_of_every_workspace_it_deleted() {
+        let dir = temp_dir();
+        let cache = a_cache_directory(dir.path());
+        let clone = cache.join("repos").join("o").join("r").join("r-main-aa");
+        let devpod = Devpod::new();
+        devpod.lists(&[listed("r-main-aa", &clone)]);
+        devpod.knows("r-main-aa");
+        let home = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc9a8b7c");
+        let mut context = CommandContext::new(&devpod);
+        let plan = purge_plan(&mut context, &cache).expect("a plan");
+
+        purge_all_data(&mut context, &plan, Some(home.path()), &mut |_| {}).expect("devpod ran");
+
+        assert_eq!(
+            devpod.docker_argvs(),
+            [[
+                "volume",
+                "rm",
+                "--force",
+                "opened-as-pixi",
+                "dind-var-lib-docker-dc9a8b7c",
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_purge_leaves_the_volumes_of_a_workspace_devpod_would_not_delete() {
+        // The container is still there holding them, so removing its volumes would
+        // fail anyway — and a purge that reported a removal it never made would be
+        // worse than one that says the delete failed and stops there.
+        let dir = temp_dir();
+        let cache = a_cache_directory(dir.path());
+        let clone = cache.join("repos").join("o").join("r").join("r-main-aa");
+        let devpod = Devpod::new();
+        devpod.lists(&[listed("r-main-aa", &clone)]);
+        devpod.fake.script(
+            ["devpod", "delete"],
+            Response::failed(1, "container is busy\n"),
+        );
+        // devpod *has* the workspace, so the scripted refusal is the only reason the
+        // delete fails: a workspace the fake never heard of would refuse anyway and
+        // the test would pass without saying anything.
+        devpod.knows("r-main-aa");
+        let home = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc9a8b7c");
+        let mut context = CommandContext::new(&devpod);
+        let plan = purge_plan(&mut context, &cache).expect("a plan");
+
+        purge_all_data(&mut context, &plan, Some(home.path()), &mut |_| {}).expect("devpod ran");
+
+        assert_eq!(devpod.docker_argvs(), Vec::<Vec<String>>::new());
+    }
+
+    #[test]
+    fn a_purge_says_which_workspaces_volumes_it_could_not_remove() {
+        let dir = temp_dir();
+        let cache = a_cache_directory(dir.path());
+        let clone = cache.join("repos").join("o").join("r").join("r-main-aa");
+        let devpod = Devpod::new();
+        devpod.lists(&[listed("r-main-aa", &clone)]);
+        devpod.fake.script(
+            ["docker", "volume", "rm"],
+            Response::failed(1, "volume is in use\n"),
+        );
+        devpod.knows("r-main-aa");
+        let home = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc9a8b7c");
+        let mut steps = Vec::new();
+        let mut context = CommandContext::new(&devpod);
+        let plan = purge_plan(&mut context, &cache).expect("a plan");
+
+        purge_all_data(&mut context, &plan, Some(home.path()), &mut |step| {
+            steps.push(step)
+        })
+        .expect("devpod ran");
+
+        assert_eq!(
+            steps,
+            vec![
+                PurgeStep::Deleting {
+                    workspace_id: "r-main-aa".to_owned(),
+                },
+                PurgeStep::VolumesNotRemoved {
+                    workspace_id: "r-main-aa".to_owned(),
+                    refusal: VolumeRefusal::Docker {
+                        exit: Exit::Code(1),
+                        stderr: "volume is in use\n".to_owned(),
+                    },
+                },
+            ]
+        );
+    }
+
+    /// A purge on a machine with no docker is a purge that behaves exactly as it did
+    /// before this existed: nothing added here may fail on a host that never had a
+    /// volume to leak.
+    #[test]
+    fn a_purge_on_a_machine_with_no_docker_says_nothing_about_it() {
+        let dir = temp_dir();
+        let cache = a_cache_directory(dir.path());
+        let clone = cache.join("repos").join("o").join("r").join("r-main-aa");
+        let devpod = Devpod::new();
+        devpod.lists(&[listed("r-main-aa", &clone)]);
+        devpod.fake.script_missing("docker");
+        devpod.knows("r-main-aa");
+        let home = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc9a8b7c");
+        let mut steps = Vec::new();
+        let mut context = CommandContext::new(&devpod);
+        let plan = purge_plan(&mut context, &cache).expect("a plan");
+
+        let outcome = purge_all_data(&mut context, &plan, Some(home.path()), &mut |step| {
+            steps.push(step)
+        })
+        .expect("devpod ran");
+
+        assert_eq!(outcome, PurgeOutcome::Removed { cache_dir: cache });
+        assert_eq!(
+            steps,
+            vec![PurgeStep::Deleting {
+                workspace_id: "r-main-aa".to_owned(),
+            }]
+        );
     }
 
     #[test]
@@ -4189,7 +4616,7 @@ pub(crate) mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        purge_all_data(&mut context, &plan, &mut |_| {}).expect("devpod ran");
+        purge_all_data(&mut context, &plan, None, &mut |_| {}).expect("devpod ran");
         devpod.lists(&[]);
         assert_eq!(
             context.workspaces().expect("a listing"),
@@ -4219,8 +4646,8 @@ pub(crate) mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        let outcome =
-            purge_all_data(&mut context, &plan, &mut |step| steps.push(step)).expect("devpod ran");
+        let outcome = purge_all_data(&mut context, &plan, None, &mut |step| steps.push(step))
+            .expect("devpod ran");
 
         assert_eq!(outcome, PurgeOutcome::Removed { cache_dir: cache });
         // The step is the failure's one report — no notice doubles it.
@@ -4403,6 +4830,7 @@ pub(crate) mod tests {
             &mut refresh,
             &clones,
             &mut world_cache.storage,
+            None,
             "myws",
             Insistence::NotInsisted,
             &mut ignoring(),
@@ -4412,7 +4840,8 @@ pub(crate) mod tests {
         assert_eq!(
             outcome,
             DeleteOutcome::Deleted {
-                clone: Ok(Removed::NothingRecorded)
+                clone: Ok(Removed::NothingRecorded),
+                volumes: VolumeSweep::NothingNamed,
             }
         );
         assert_eq!(world.devpod.devpod_argvs(), [vec!["delete", "myws"]]);
@@ -4434,6 +4863,7 @@ pub(crate) mod tests {
             &mut refresh,
             &clones,
             &mut world_cache.storage,
+            None,
             "myws",
             Insistence::Insisted,
             &mut ignoring(),
@@ -4468,6 +4898,7 @@ pub(crate) mod tests {
             &mut refresh,
             &clones,
             &mut world.storage,
+            None,
             "r-main-aa",
             Insistence::NotInsisted,
             &mut ignoring(),
@@ -4505,6 +4936,7 @@ pub(crate) mod tests {
             &mut refresh,
             &clones,
             &mut world.storage,
+            None,
             "r-main-aa",
             Insistence::NotInsisted,
             &mut notices,
@@ -4514,7 +4946,8 @@ pub(crate) mod tests {
         assert_eq!(
             outcome,
             DeleteOutcome::Deleted {
-                clone: Ok(Removed::Clone)
+                clone: Ok(Removed::Clone),
+                volumes: VolumeSweep::NothingNamed,
             }
         );
         assert!(!clone.exists());
@@ -4549,6 +4982,7 @@ pub(crate) mod tests {
             &mut refresh,
             &clones,
             &mut world.storage,
+            None,
             "r-main-aa",
             Insistence::NotInsisted,
             &mut notices,
@@ -4564,7 +4998,8 @@ pub(crate) mod tests {
                 DeleteOutcome::Deleted {
                     clone: Err(RemoveWorkspaceError::DirectoryLeft(
                         RemoveTreeError::RootIsSymlink { .. }
-                    ))
+                    )),
+                    ..
                 }
             ),
             "{outcome:?}"
@@ -4610,6 +5045,313 @@ pub(crate) mod tests {
             ),
             "{notices:?}"
         );
+    }
+
+    // =======================================================================
+    // delete: the volumes the workspace's devcontainer created
+    // =======================================================================
+
+    /// A world with a recorded clone for `r-main-aa`, ready to be deleted, plus a
+    /// devpod home recording what devpod substituted into its devcontainer.
+    ///
+    /// The clone directory and the recorded `LocalWorkspaceFolder` are deliberately
+    /// *different* leaves: the pixi volume is named after what devpod recorded, and
+    /// a test that made them the same could not tell the two sources apart.
+    struct Deleting {
+        world: World,
+        home: tempfile::TempDir,
+        updater: SelfInvocation,
+        cache_path: PathBuf,
+    }
+
+    fn a_world_ready_to_delete() -> Deleting {
+        let mut world = World::empty();
+        let clone = world.clone_at("r-main-aa", "main");
+        world.record("r-main-aa", "main", &clone);
+        world.devpod.knows("r-main-aa");
+        let home = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc9a8b7c");
+        let cache_path = fresh_cache(world.tmp());
+        Deleting {
+            world,
+            home,
+            updater: SelfInvocation::new("dl"),
+            cache_path,
+        }
+    }
+
+    impl Deleting {
+        /// Delete `r-main-aa`, collecting the notices it produced.
+        fn delete(&mut self) -> (DeleteOutcome, Vec<LifecycleNotice>) {
+            let clones = clones_for(&self.world.repos_dir, &self.world.devpod);
+            let mut context = CommandContext::new(&self.world.devpod);
+            let mut refresh = Refresh::new(&self.updater, &self.cache_path);
+            let mut notices = Vec::new();
+            let outcome = workspace_delete(
+                &mut context,
+                &mut refresh,
+                &clones,
+                &mut self.world.storage,
+                Some(self.home.path()),
+                "r-main-aa",
+                Insistence::NotInsisted,
+                &mut notices,
+            )
+            .expect("devpod ran");
+            (outcome, notices)
+        }
+    }
+
+    /// **The test that would have caught devlaunch#324.** Nothing in devlaunch ever
+    /// ran a volume command, so every removal path left both of these behind — 39
+    /// orphans and 37 GB on the machine the leak was measured on.
+    #[test]
+    fn a_delete_removes_both_volumes_the_workspaces_devcontainer_created() {
+        let mut deleting = a_world_ready_to_delete();
+
+        let (outcome, notices) = deleting.delete();
+
+        assert_eq!(
+            deleting.world.devpod.docker_argvs(),
+            [[
+                "volume",
+                "rm",
+                "--force",
+                // `${localWorkspaceFolderBasename}-pixi`, from the basename devpod
+                // recorded opening — not from the clone directory, which is
+                // `r-main-aa`.
+                "opened-as-pixi",
+                // `dind-var-lib-docker-${devcontainerId}`, from the id devpod
+                // recorded deriving.
+                "dind-var-lib-docker-dc9a8b7c",
+            ]]
+        );
+        assert_eq!(
+            outcome,
+            DeleteOutcome::Deleted {
+                clone: Ok(Removed::Clone),
+                volumes: VolumeSweep::Removed,
+            }
+        );
+        // Silent: a removal that worked has nothing to tell anybody.
+        assert!(
+            !notices
+                .iter()
+                .any(|notice| matches!(notice, LifecycleNotice::VolumesNotRemoved { .. })),
+            "{notices:?}"
+        );
+    }
+
+    /// The order is the fix, not a detail: `devpod delete` takes devpod's record of
+    /// the workspace away with the workspace, so the names have to be read first.
+    #[test]
+    fn the_volumes_are_removed_after_devpod_has_let_go_of_the_workspace() {
+        let mut deleting = a_world_ready_to_delete();
+
+        deleting.delete();
+
+        let argvs: Vec<Vec<String>> = deleting
+            .world
+            .devpod
+            .fake
+            .calls()
+            .into_iter()
+            .filter(|call| !matches!(call, devlaunch_test_support::Call::Detach(_)))
+            .map(|call| call.argv())
+            .collect();
+        assert_eq!(
+            argvs,
+            [
+                vec!["devpod", "delete", "r-main-aa"],
+                vec![
+                    "docker",
+                    "volume",
+                    "rm",
+                    "--force",
+                    "opened-as-pixi",
+                    "dind-var-lib-docker-dc9a8b7c",
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_docker_still_deletes_the_workspace_and_its_clone_cleanly() {
+        // The whole reason the sweep is best-effort: nothing added here may fail on
+        // a host that never had a volume to leak.
+        let mut deleting = a_world_ready_to_delete();
+        deleting.world.devpod.fake.script_missing("docker");
+        let clone = deleting.world.repo_dir.join("r-main-aa");
+
+        let (outcome, notices) = deleting.delete();
+
+        assert_eq!(
+            outcome,
+            DeleteOutcome::Deleted {
+                clone: Ok(Removed::Clone),
+                volumes: VolumeSweep::NoDocker,
+            }
+        );
+        assert!(!clone.exists(), "the clone went with the workspace");
+        assert_eq!(deleting.world.branches_on_record(), Vec::<String>::new());
+        // Not a word about docker: this machine never made these volumes. The two
+        // lines it *does* say are the clone's, in the order they happened.
+        assert_eq!(
+            notices,
+            vec![
+                LifecycleNotice::Cache(CacheNotice::WorkspaceCloneRemoved { path: clone }),
+                LifecycleNotice::CloneRemoved {
+                    workspace_id: "r-main-aa".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_docker_that_would_not_remove_them_is_a_notice_and_not_a_failed_delete() {
+        // A volume another container still holds is the case this exists for. The
+        // workspace is gone regardless, so reporting failure would send the caller
+        // looking for a workspace that is not there.
+        let mut deleting = a_world_ready_to_delete();
+        deleting.world.devpod.fake.script(
+            ["docker", "volume", "rm"],
+            Response::failed(1, "volume is in use\n"),
+        );
+        let refusal = VolumeRefusal::Docker {
+            exit: Exit::Code(1),
+            stderr: "volume is in use\n".to_owned(),
+        };
+
+        let (outcome, notices) = deleting.delete();
+
+        assert_eq!(
+            outcome,
+            DeleteOutcome::Deleted {
+                clone: Ok(Removed::Clone),
+                volumes: VolumeSweep::Refused(refusal.clone()),
+            }
+        );
+        // The refusal itself, not a rendering of it: docker's words are docker's and
+        // the sentence around them is the binary's.
+        assert!(
+            notices.contains(&LifecycleNotice::VolumesNotRemoved {
+                workspace_id: "r-main-aa".to_owned(),
+                refusal,
+            }),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn a_workspace_whose_up_never_finished_names_nothing_and_runs_no_docker() {
+        // devpod writes its create result on the way *out* of a successful `up`, so
+        // an `up` that died in its lifecycle hooks leaves the record with no result
+        // beside it. Nothing to name is not the same as removing nothing, and it is
+        // certainly not a docker call with a made-up name in it.
+        let mut deleting = a_world_ready_to_delete();
+        deleting.home = devpod_home_with(&[("default", "r-main-aa", None)]);
+
+        let (outcome, notices) = deleting.delete();
+
+        assert_eq!(
+            outcome,
+            DeleteOutcome::Deleted {
+                clone: Ok(Removed::Clone),
+                volumes: VolumeSweep::NothingNamed,
+            }
+        );
+        assert_eq!(
+            deleting.world.devpod.docker_argvs(),
+            Vec::<Vec<String>>::new()
+        );
+        assert!(
+            !notices
+                .iter()
+                .any(|notice| matches!(notice, LifecycleNotice::VolumesNotRemoved { .. })),
+            "{notices:?}"
+        );
+    }
+
+    /// One id under two contexts: devpod's ids are unique per context, so a record
+    /// found twice cannot say which workspace's volumes these are — and guessing
+    /// would remove the other one's. The ambiguity is the answer, as it is for
+    /// [`create_record`].
+    ///
+    /// Both shapes, because the ambiguity is read off the record devpod writes on
+    /// the way *in* and not off whose `up` finished. Keying it on the create result
+    /// instead answers with the one context that completed — while `devpod delete`
+    /// resolves the id against the *current* context, so the volumes named would be
+    /// the other, living workspace's.
+    #[test]
+    fn one_id_in_two_contexts_names_nothing() {
+        for second_up_finished in [false, true] {
+            let home = devpod_home_recording("myws", "/host/clones/opened-as", "dc9a8b7c");
+            let record = devpod_workspace_record(home.path(), "work", "myws");
+            std::fs::create_dir_all(record.parent().expect("a parent"))
+                .expect("a record directory");
+            std::fs::write(&record, "{}").expect("a record");
+            if second_up_finished {
+                std::fs::write(devpod_workspace_result(home.path(), "work", "myws"), "{}")
+                    .expect("a create result");
+            }
+
+            assert!(
+                devcontainer_volumes(Some(home.path()), "myws").is_none(),
+                "second context finished its up: {second_up_finished}"
+            );
+        }
+    }
+
+    /// Each name is built from its own recorded field, so a devpod that recorded
+    /// one and not the other still gets the volume it can name. Both spellings are
+    /// devpod's own, which is why they are written out here rather than assembled.
+    #[test]
+    fn each_recorded_substitution_names_its_own_volume() {
+        let both = Substitutions {
+            local_workspace_folder: Some("/host/clones/repo-branch-abcd".to_owned()),
+            devcontainer_id: Some("f00d".to_owned()),
+        };
+        assert_eq!(
+            both.volume_names(),
+            ["repo-branch-abcd-pixi", "dind-var-lib-docker-f00d"]
+        );
+
+        let no_id = Substitutions {
+            devcontainer_id: None,
+            ..both
+        };
+        assert_eq!(no_id.volume_names(), ["repo-branch-abcd-pixi"]);
+
+        // A blank field names nothing: `-pixi` and `dind-var-lib-docker-` are not
+        // volumes anybody meant, and asking docker about them is asking about
+        // somebody else's disk.
+        let blank = parse_substitutions(
+            serde_json::json!({
+                "SubstitutionContext": { "LocalWorkspaceFolder": "", "DevContainerID": "" },
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        assert_eq!(blank.volume_names(), Vec::<String>::new());
+    }
+
+    /// A create result devlaunch cannot read removes no volumes, and says nothing
+    /// about it: that is exactly the behaviour of every build before this existed,
+    /// and it is not worth a diagnostic on a delete that otherwise worked.
+    #[test]
+    fn a_create_result_that_is_not_the_expected_shape_names_nothing() {
+        for bytes in [
+            &b"not json at all"[..],
+            b"[]",
+            br#"{"SubstitutionContext": "a string"}"#,
+            b"{}",
+        ] {
+            assert_eq!(
+                parse_substitutions(bytes),
+                Substitutions::default(),
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
     }
 
     // =======================================================================

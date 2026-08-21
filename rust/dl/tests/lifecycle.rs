@@ -162,6 +162,15 @@ impl World {
         devlaunch_test_support::cache_shape(&self.root)
     }
 
+    /// The docker calls made so far, in order, as the argv tail of each.
+    ///
+    /// Empty where nothing ran docker at all, which is what the fake writes no log
+    /// for — and what every world but `--devcontainer-volumes` produces, because
+    /// devpod recorded no create result for their workspaces to name volumes from.
+    fn docker_calls(&self) -> Vec<String> {
+        self.read("docker-log").lines().map(str::to_owned).collect()
+    }
+
     /// The devpod calls made so far, in order, as `devpod <argv>` lines.
     fn devpod_calls(&self) -> Vec<String> {
         self.read("shim-log.jsonl")
@@ -453,6 +462,52 @@ fn a_clean_clone_is_deleted_with_its_workspace() {
     );
 }
 
+/// devlaunch#325 at the binary boundary: the two volumes go with the workspace,
+/// and it is the *binary* that has to hand core the devpod home they are named
+/// from — a `None` there would leave every core test passing and every volume on
+/// disk.
+#[test]
+fn a_removed_workspaces_devcontainer_volumes_go_with_it() {
+    let world = World::with(&["--devcontainer-volumes"]);
+
+    world.dl(&["devlaunch-main-legacy", "rm"]).exited(0);
+
+    assert_eq!(
+        world.docker_calls(),
+        ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
+    );
+}
+
+/// The purge is a second wiring site — it issues its own `devpod delete --force`
+/// and never calls the delete flow — so it is asserted separately rather than
+/// assumed to inherit.
+#[test]
+fn a_purge_takes_the_devcontainer_volumes_of_the_workspaces_it_deleted() {
+    let world = World::with(&["--devcontainer-volumes"]);
+
+    world.dl(&["--purge", "-y"]).exited(0);
+
+    // One call, for the one workspace devpod had recorded a create result for. The
+    // other workspace devlaunch made named nothing, and the foreign workspace was
+    // never deleted.
+    assert_eq!(
+        world.docker_calls(),
+        ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
+    );
+}
+
+/// A workspace devpod never finished creating has no create result, so there is
+/// nothing to name and docker is not run at all — not run with a guessed name in
+/// it, which would be somebody else's disk.
+#[test]
+fn a_delete_with_nothing_recorded_to_name_runs_no_docker() {
+    let world = World::base();
+
+    world.dl(&["devlaunch-main-legacy", "rm"]).exited(0);
+
+    assert_eq!(world.docker_calls(), Vec::<String>::new());
+}
+
 #[test]
 fn a_clone_holding_work_that_is_nowhere_else_is_refused() {
     let world = World::base();
@@ -675,8 +730,16 @@ Leaving 1 workspace(s) devlaunch did not create:
 ";
 
 /// The sentence both cleanups end on.
-const DOCKER_BOUNDARY: &str = "devlaunch does not manage Docker images or volumes: the containers \
-                               these workspaces used may still hold disk, and `docker system df` \
+///
+/// **A deliberate divergence from Python, and the one line in this file that is
+/// not a golden** (devlaunch#325). Python's sentence disclaimed volumes as well as
+/// images, and it was true of every build up to this one: nothing devlaunch ran
+/// removed a volume. Now the named volumes a workspace's devcontainer created go
+/// with the workspace, so the disclaimer is narrowed to what is still true. Images
+/// remain outside on purpose — shared, expensive to rebuild, ownership genuinely
+/// ambiguous — which is why the sentence still exists at all.
+const DOCKER_BOUNDARY: &str = "devlaunch does not manage Docker images: the images these \
+                               workspaces built may still hold disk, and `docker system df` \
                                shows what Docker is holding.\n";
 
 #[test]

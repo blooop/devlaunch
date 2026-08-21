@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace removal no longer leaks the devcontainer's Docker volumes.** Deleting
+  a workspace now removes the two named volumes that workspace's devcontainer
+  created — `<workspace-folder-basename>-pixi` from a devcontainer `mounts` entry,
+  and `dind-var-lib-docker-<devcontainerId>` from the `docker-in-docker` feature —
+  on every path that removes one: `dl <ws> rm`, the appended `--rm`, `--autorm` and
+  `--purge`. Nothing in devlaunch had ever run a volume command, `devpod delete`
+  removes the container and never a volume, and Docker never garbage-collects a
+  *named* volume, so both outlived every workspace that made them. Measured on one
+  development machine: **39 orphaned volumes holding 37.28 GB**, not one with a
+  surviving workspace in `devpod list` (#324, #325).
+
+  **The names are read from devpod's own record and never guessed from a pattern.**
+  devpod writes down what it substituted into the devcontainer, and both names are
+  built from that one read — so a workspace devpod never finished creating names
+  nothing and runs no `docker` at all, rather than one carrying a made-up name that
+  would be somebody else's disk. It is also why the names are read *before* the
+  delete: `devpod delete` takes that record away with the workspace, so a removal
+  that read afterwards would find nothing every time and look like it worked.
+
+  **Best-effort by construction, and it cannot fail a delete.** The workspace is
+  gone either way, and reporting failure would send the caller looking for a
+  workspace that is not there — the same bargain the clone-removal arm beside it
+  makes. A volume Docker will not release is a line on stderr; a machine with no
+  `docker` says nothing at all, because a machine with no Docker never made these
+  volumes.
+
+### Changed
+
+- **The sentence both cleanups end on now disclaims images rather than "images or
+  volumes".** With the volumes of a deleted workspace actually removed, the old
+  wording described a leak that had been fixed. Images stay outside deliberately
+  rather than for want of a fix — they are shared between workspaces, expensive to
+  rebuild, and which workspace owns one is genuinely ambiguous — which is why the
+  sentence still exists (#325).
+- **`devlaunch_core::api::workspace_delete` takes one more argument**, and so does
+  `flows::lifecycle::purge_all_data`: an `Option<&Path>` for devpod's home
+  directory, which is where the volume names are read from. Resolved by the caller
+  rather than in core, for the reason every other environment answer is — the
+  process that knows what its environment says hands the answer down, and a second
+  answer inside core could disagree with the first. This is a breaking change to
+  the frozen `api::` surface: an out-of-tree caller passes
+  `devlaunch_core::flows::lifecycle::devpod_home().as_deref()` there, or `None` to
+  keep the old behaviour of removing no volumes (#325).
+
 ## [0.4.1] - 2026-08-21
 
 ### Fixed

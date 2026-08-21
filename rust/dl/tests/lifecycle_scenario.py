@@ -16,10 +16,15 @@ fixture:
                                                   [--orphan] [--unplaceable]
                                                   [--unwritable] [--no-cache]
                                                   [--no-workspaces]
+                                                  [--devcontainer-volumes]
 
 The base world, under the root it is given:
 
 - `bin/devpod` — the fake devpod, a two-line shell wrapper around the shim.
+- `bin/docker` — a fake docker that logs its argv to `docker-log` and exits 0.
+  In every world, not just the one that asserts about it: `bin` is first on the
+  test's PATH, and without it a delete would reach the real docker on whatever
+  machine is running the suite.
 - `cache/devlaunch/` — the devlaunch cache (`XDG_CACHE_HOME=<root>/cache`), with
   `metadata.json` at schema 2 and the clones under `repos/`.
 - a **clean** clone at `repos/blooop/devlaunch/<CLEAN_LEAF>`, recorded for
@@ -168,6 +173,18 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     devpod = root / "bin" / "devpod"
     devpod.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8")
     devpod.chmod(0o755)
+
+    # A fake docker, in *every* world and not only the one that asserts about it:
+    # `bin` comes first on the test's PATH, so without this a delete would reach
+    # whatever docker the machine running the suite has and remove volumes on it.
+    # It logs one line per call and exits 0, which is what a removal that worked
+    # looks like.
+    docker = root / "bin" / "docker"
+    docker.write_text(
+        f'#!/bin/sh\necho "$@" >> "{root / "docker-log"}"\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
 
     # A bare repository standing in for GitHub, with one commit on `main`.
     seed = root / "seed"
@@ -387,6 +404,49 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         ),
         encoding="utf-8",
     )
+    if "devcontainer-volumes" in wanted:
+        # devpod's own record of a *finished* create, which is where the names of
+        # the volumes the devcontainer made are readable from: the folder it opened
+        # (whose basename the `-pixi` mount is named after) and the devcontainer id
+        # the `docker-in-docker` feature's volume is named after. Written only for
+        # the clean workspace, so `rm` reaches it without `--force`.
+        #
+        # Both files, because devpod writes both: `workspace.json` on the way *in*
+        # to an `up` and `workspace_result.json` on the way out of a finished one.
+        # A result with no record beside it is a shape devpod never leaves, and dl
+        # reads the record to settle which context a workspace is in before it
+        # trusts the result.
+        workspace_dir = root / "devpod" / "contexts" / "default" / "workspaces" / CLEAN_WS
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "workspace.json").write_text(
+            json.dumps(
+                {
+                    "id": CLEAN_WS,
+                    "uid": f"uid-{CLEAN_WS}",
+                    "source": {"localFolder": str(clean)},
+                    "provider": {"name": "docker"},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        result = workspace_dir / "workspace_result.json"
+        result.write_text(
+            json.dumps(
+                {
+                    "ContainerDetails": {"Id": "abc123def456"},
+                    "MergedConfig": {},
+                    "SubstitutionContext": {
+                        "LocalWorkspaceFolder": str(clean),
+                        "ContainerWorkspaceFolder": "/workspaces/devlaunch",
+                        "DevContainerID": "0f4b2c1d",
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
     if "sealed-cache" in wanted:
         # No write bit on the cache root, so nothing under it can be unlinked: the
         # purge arm where not one path came away.
@@ -411,7 +471,8 @@ if __name__ == "__main__":
             "usage: lifecycle_scenario.py <root> <devpod_shim.py> [--prunable] "
             "[--stale-record] [--orphan] [--unplaceable] [--unwritable] "
             "[--no-cache] [--no-workspaces] [--not-a-clone] [--unpushed] "
-            "[--sealed-cache] [--symlinked-cache] [--v1-cache]"
+            "[--sealed-cache] [--symlinked-cache] [--v1-cache] "
+            "[--devcontainer-volumes]"
         )
     flags = {argument.lstrip("-") for argument in sys.argv[3:]}
     unknown = flags - {
@@ -427,6 +488,7 @@ if __name__ == "__main__":
         "sealed-cache",
         "symlinked-cache",
         "v1-cache",
+        "devcontainer-volumes",
     }
     if unknown:
         raise SystemExit(f"lifecycle_scenario.py: unknown fixture(s): {sorted(unknown)}")
