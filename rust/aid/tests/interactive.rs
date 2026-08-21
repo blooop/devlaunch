@@ -66,18 +66,23 @@ impl World {
 
     /// The devpod calls made so far, in order, with `devpod list` left out — the
     /// detached completion refresh makes one of its own on its own schedule.
+    ///
+    /// Unlike `tests/rewrite.rs`'s copy, this one is polled *while* the shim is
+    /// appending (the overlap test watches for the `up` mid-edit), so a line read
+    /// half-written is skipped rather than panicked on: it is whole on the next
+    /// poll, and by the time the post-exit assertions read the log nothing is
+    /// still writing.
     fn devpod_calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.root.join("shim-log.jsonl"))
             .unwrap_or_default()
             .lines()
-            .map(|line| {
-                let call: serde_json::Value = serde_json::from_str(line).expect("a log line");
+            .filter_map(|line| {
+                let call: serde_json::Value = serde_json::from_str(line).ok()?;
                 call["argv"]
-                    .as_array()
-                    .expect("an argv")
+                    .as_array()?
                     .iter()
-                    .map(|word| word.as_str().expect("a word").to_owned())
-                    .collect::<Vec<String>>()
+                    .map(|word| word.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<String>>>()
             })
             .filter(|argv| argv.first().map(String::as_str) != Some("list"))
             .map(|argv| format!("devpod {}", argv.join(" ")))
