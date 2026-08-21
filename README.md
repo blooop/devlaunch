@@ -396,6 +396,13 @@ DEVLAUNCH_ZELLIJ=1 dl someone/repo -- claude -p "do the thing"
 With it off, no invocation changes meaning at all — that is what off means here, and
 it is why the switch exists rather than the behaviour simply being on.
 
+**This is not the switch that decides whether zellij gets installed.** That one is
+`DEVLAUNCH_NO_ZELLIJ`, under [What it costs](#what-it-costs) below, and the two are
+orthogonal on purpose: this one starts a session, that one puts the binary there.
+With `DEVLAUNCH_NO_ZELLIJ=1` set and no zellij in the container, `DEVLAUNCH_ZELLIJ=1`
+is simply a session setup that fails and a command that runs anyway — which is what
+it already does in any container that ended up without zellij for its own reasons.
+
 **The command runs beside the session, not inside a pane of it.** That is deliberate.
 Putting the command in a pane would hand its stdin, stdout and exit status to zellij,
 and all three are things `dl` promises to leave alone: `dl <ws> -- cmd > file` has to
@@ -445,6 +452,23 @@ session setup is allowed to fail and the command runs regardless.
 
 `DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning —
 installing zellij is tool provisioning, where naming a container is not.
+
+`DEVLAUNCH_NO_ZELLIJ=1` turns off **only** this:
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_ZELLIJ=1` | Do not install `zellij` into workspaces. The setup pass still runs and still names the container, and `gh` and `claude` are still provisioned exactly as they were |
+
+It exists because the two questions are different ones. A host whose containers get
+zellij another way — their own dotfiles, a base image, a devcontainer feature — or
+which wants none in there at all, is asking for one stage to stop running.
+`DEVLAUNCH_NO_TOOLS=1` would do that and also surrender the `gh` and `claude`
+guarantee that the rest of this README is about, which is a large price for one
+`command -v`.
+
+Both variables read the same values: anything but empty, `0`, `false` or `no` means
+yes, turn it off. And neither touches the hostname stage — a host that wants no
+zellij has not thereby asked for unnamed containers.
 
 ## GitHub Authentication
 
@@ -550,6 +574,38 @@ those that exists, so an image shipping a `~/.bash_profile` never reads
 An install that fails costs the workspace its tools, not its launch: `dl` logs a
 warning and hands you the session anyway.
 
+### The trip a launch can skip
+
+Trip 1 is cheap but it is not free: about 1.7 seconds, almost all of it connection
+and process setup rather than the script it carries. A workspace that has had both
+tools in it for a week pays that on every `dl <workspace> up` to be told the same
+thing it was told last time — so when the answer was *provisioned*, `dl` writes it
+down and reuses it.
+
+The marker is one small JSON file per workspace under
+`${XDG_CACHE_HOME:-~/.cache}/devlaunch/tool-verdicts/`, holding the verdict and the
+modification time of devpod's own `workspace_result.json` for that workspace. devpod
+rewrites that file on the way out of every **completed** `up`, whoever ran it —
+`dl`, VS Code, a hand-typed `devpod up`, a `--recreate` — so a container that has
+been rebuilt has a result file whose mtime no longer matches, and the marker stops
+being believed. Anything else unexpected (no marker, an unreadable one, a workspace
+`dl` cannot find one result file for) also stops it being believed. Every one of
+those falls back to making the trip, which is exactly what happened before the
+marker existed.
+
+**Only a launch that finds the workspace already running can skip it**, and that is
+a smaller claim than it sounds. The container's hostname lives in a namespace docker
+rebuilds from the container's config on every start, so a `devpod up` — creating a
+container or starting a stopped one — loses the name and the pass has to run again
+to set it. The two paths that skip are `dl <workspace> up` against a container that
+is already up (the pre-warm, and where the 1.7s is paid most often), and a launch
+that waited on a sibling which had already brought the workspace up. Nothing is ever
+skipped after this launch's own `devpod up`.
+
+Nothing has to be cleaned up, and there is nothing to invalidate by hand: the
+markers are compared, never trusted on age, and deleting the whole directory costs
+one round trip on each workspace's next launch.
+
 ### What to bake so a launch does no work at all
 
 To make every `dl` launch of an image stop at trip 1. The probe asks a **login**
@@ -609,6 +665,10 @@ DEVLAUNCH_NO_TOOLS=1 dl someone/repo
 | Variable | Description |
 |----------|-------------|
 | `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude` into workspaces. The setup pass still runs — one trip per `up`, which still names the container; only the installing is skipped |
+
+`DEVLAUNCH_NO_ZELLIJ=1` is the narrower one: it drops the zellij stage and leaves
+`gh` and `claude` provisioning alone. See
+[What it costs](#what-it-costs).
 
 Attaching to a workspace that is *already running* skips `devpod up`, and so skips
 this too. A workspace started by something other than `dl` — or created before this
@@ -1494,6 +1554,15 @@ Use `--warm` to prepare a workspace without attaching a shell:
 ```bash
 dl --warm owner/repo@branch  # Creates container in background
 ```
+
+`dl <workspace> up` is the other way to prepare one, and running it repeatedly is
+cheap on purpose: against a container that is already up, a second `up` costs one
+`devpod status` and nothing else. It used to also pay the tools setup pass —
+~1.7s of `devpod ssh` to be told the tools it was told about last time — and now
+reuses the recorded answer instead. See
+[The trip a launch can skip](#the-trip-a-launch-can-skip) for what makes a recorded
+answer stop being believed; the short version is that any completed `devpod up`,
+by anything, does.
 
 ## Measuring launch time
 
