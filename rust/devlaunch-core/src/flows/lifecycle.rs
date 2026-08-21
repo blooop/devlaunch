@@ -1075,8 +1075,18 @@ fn sweep_volumes(runner: &dyn Runner, named: Option<NonEmpty<String>>) -> Volume
 ///
 /// Deriving the basename from the clone directory devlaunch chose instead would be
 /// a second answer to a question devpod has already answered, and the two can
-/// disagree — a workspace opened before a rename, say. Neither name is guessed
-/// from a pattern: a name that is not in the record is not removed.
+/// disagree — a workspace opened before a rename, say. Neither *value* is guessed:
+/// a substitution that is not in the record names no volume. The two name
+/// **templates** are still this repository's own devcontainer and the
+/// `docker-in-docker` feature's, so a `mounts` entry naming some third volume is
+/// not swept — devlaunch#325's scope, and the follow-up that would end it is
+/// reading the mount sources out of the recorded merged config instead.
+///
+/// [`sole_workspace_result`] is what finds the file, rather than a contexts walk of
+/// its own: an id under two contexts must answer nothing, and `devpod delete`
+/// resolves that id against the *current* context, so a walk that picked one would
+/// remove a living workspace's volumes. Sharing the walk makes the rule identical
+/// by construction instead of by comment.
 ///
 /// `None` rather than an empty list, so a caller cannot read "nothing to remove"
 /// as "removed nothing" — an `up` that died in its lifecycle hooks leaves the
@@ -1085,7 +1095,8 @@ fn devcontainer_volumes(
     devpod_home: Option<&Path>,
     workspace_id: &str,
 ) -> Option<NonEmpty<String>> {
-    let recorded = substitutions_of(devpod_home?, workspace_id)?;
+    let result = sole_workspace_result(devpod_home, workspace_id)?;
+    let recorded = parse_substitutions(&std::fs::read(result).ok()?);
     NonEmpty::of(recorded.volume_names())
 }
 
@@ -1125,36 +1136,6 @@ impl Substitutions {
         .flatten()
         .collect()
     }
-}
-
-/// What devpod recorded substituting for `workspace_id`, under whichever context
-/// holds it.
-///
-/// Every context is searched, and one id in two contexts answers `None` rather
-/// than picking one — the same rule [`create_record`] follows, and for the same
-/// reason: the ambiguity is the answer, and here guessing wrong would remove
-/// another workspace's volumes.
-fn substitutions_of(devpod_home: &Path, workspace_id: &str) -> Option<Substitutions> {
-    let contexts = std::fs::read_dir(devpod_home.join("contexts")).ok()?;
-    let mut found = None;
-    for context in contexts.flatten() {
-        // Skipped rather than answered on, as [`create_record`]'s identical loop
-        // does: one sibling directory devlaunch cannot spell must not cost every
-        // other context its answer, which here would mean a workspace's volumes
-        // staying on disk because of a name nothing was going to read anyway.
-        let Some(name) = context.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let path = devpod_workspace_result(devpod_home, &name, workspace_id);
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        if found.is_some() {
-            return None;
-        }
-        found = Some(parse_substitutions(&bytes));
-    }
-    found
 }
 
 /// Read the two substituted values off devpod's create result.
@@ -3258,6 +3239,26 @@ pub(crate) mod tests {
         );
     }
 
+    /// A context directory whose name is not text devlaunch can spell holds no
+    /// record it could have read anyway, so the walk steps over it and the context
+    /// that *does* hold one still answers. Losing the answer to it would rebuild a
+    /// healthy workspace — and, since [`devcontainer_volumes`] shares this walk,
+    /// leave that workspace's volumes on disk for a name nothing was going to read.
+    #[test]
+    fn a_context_directory_nobody_can_spell_does_not_cost_the_others_their_answer() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let home = devpod_home_with(&[("default", "myws", Some(()))]);
+        let unspellable = std::ffi::OsStr::from_bytes(b"\xff\xfe-not-utf8").to_os_string();
+        std::fs::create_dir_all(home.path().join("contexts").join(unspellable))
+            .expect("a context directory");
+
+        assert_eq!(
+            create_record(Some(home.path()), "myws"),
+            CreateRecord::Completed
+        );
+    }
+
     /// Ids are unique per context, not globally, so one id in two contexts is an
     /// ambiguity rather than a finding. Answering from whichever context the
     /// directory iteration reached first would rebuild a healthy workspace on the
@@ -5270,51 +5271,34 @@ pub(crate) mod tests {
         );
     }
 
-    /// A context whose directory name is not text devlaunch can spell holds no
-    /// result it could have read anyway, so it is stepped over — the one that *does*
-    /// hold the record still answers. Losing the answer to it would leave a
-    /// workspace's volumes on disk for a name nothing was going to read.
-    #[test]
-    fn a_context_directory_nobody_can_spell_does_not_cost_the_others_their_answer() {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        let home = devpod_home_recording("myws", "/host/clones/opened-as", "dc9a8b7c");
-        let unspellable = std::ffi::OsStr::from_bytes(b"\xff\xfe-not-utf8").to_os_string();
-        std::fs::create_dir_all(home.path().join("contexts").join(unspellable))
-            .expect("a context directory");
-
-        let named = devcontainer_volumes(Some(home.path()), "myws").expect("both names");
-
-        assert_eq!(
-            named.iter().cloned().collect::<Vec<_>>(),
-            ["opened-as-pixi", "dind-var-lib-docker-dc9a8b7c"]
-        );
-    }
-
     /// One id under two contexts: devpod's ids are unique per context, so a record
     /// found twice cannot say which workspace's volumes these are — and guessing
     /// would remove the other one's. The ambiguity is the answer, as it is for
     /// [`create_record`].
+    ///
+    /// Both shapes, because the ambiguity is read off the record devpod writes on
+    /// the way *in* and not off whose `up` finished. Keying it on the create result
+    /// instead answers with the one context that completed — while `devpod delete`
+    /// resolves the id against the *current* context, so the volumes named would be
+    /// the other, living workspace's.
     #[test]
     fn one_id_in_two_contexts_names_nothing() {
-        let home = tempfile::tempdir().expect("a scratch devpod home");
-        for context in ["default", "work"] {
-            let path = devpod_workspace_result(home.path(), context, "myws");
-            std::fs::create_dir_all(path.parent().expect("a parent")).expect("a record directory");
-            std::fs::write(
-                &path,
-                serde_json::json!({
-                    "SubstitutionContext": {
-                        "LocalWorkspaceFolder": format!("/clones/{context}"),
-                        "DevContainerID": context,
-                    },
-                })
-                .to_string(),
-            )
-            .expect("a create result");
-        }
+        for second_up_finished in [false, true] {
+            let home = devpod_home_recording("myws", "/host/clones/opened-as", "dc9a8b7c");
+            let record = devpod_workspace_record(home.path(), "work", "myws");
+            std::fs::create_dir_all(record.parent().expect("a parent"))
+                .expect("a record directory");
+            std::fs::write(&record, "{}").expect("a record");
+            if second_up_finished {
+                std::fs::write(devpod_workspace_result(home.path(), "work", "myws"), "{}")
+                    .expect("a create result");
+            }
 
-        assert!(devcontainer_volumes(Some(home.path()), "myws").is_none());
+            assert!(
+                devcontainer_volumes(Some(home.path()), "myws").is_none(),
+                "second context finished its up: {second_up_finished}"
+            );
+        }
     }
 
     /// Each name is built from its own recorded field, so a devpod that recorded

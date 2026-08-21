@@ -410,16 +410,27 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         # (whose basename the `-pixi` mount is named after) and the devcontainer id
         # the `docker-in-docker` feature's volume is named after. Written only for
         # the clean workspace, so `rm` reaches it without `--force`.
-        result = (
-            root
-            / "devpod"
-            / "contexts"
-            / "default"
-            / "workspaces"
-            / CLEAN_WS
-            / "workspace_result.json"
+        #
+        # Both files, because devpod writes both: `workspace.json` on the way *in*
+        # to an `up` and `workspace_result.json` on the way out of a finished one.
+        # A result with no record beside it is a shape devpod never leaves, and dl
+        # reads the record to settle which context a workspace is in before it
+        # trusts the result.
+        workspace_dir = root / "devpod" / "contexts" / "default" / "workspaces" / CLEAN_WS
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "workspace.json").write_text(
+            json.dumps(
+                {
+                    "id": CLEAN_WS,
+                    "uid": f"uid-{CLEAN_WS}",
+                    "source": {"localFolder": str(clean)},
+                    "provider": {"name": "docker"},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
-        result.parent.mkdir(parents=True, exist_ok=True)
+        result = workspace_dir / "workspace_result.json"
         result.write_text(
             json.dumps(
                 {
