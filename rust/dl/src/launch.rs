@@ -14,9 +14,9 @@
 //!   writes to nobody's stream, so the sink is here.
 //! - **Whether the tools get lent in.** [`Provision`] is a trait for the reason
 //!   its docstring gives, and [`ToolProvisioning`] is the implementation that
-//!   really provisions: it reads the two host facts once
-//!   ([`ToolsSwitch::from_env`], [`HostLayout::from_env`]) and renders each pass's
-//!   events at the moment the pass makes them.
+//!   really provisions: it reads the host's facts once ([`Switches::from_env`],
+//!   [`HostLayout::from_env`], and the cache directory the verdict cache lives
+//!   under) and renders each pass's events at the moment the pass makes them.
 //!
 //! # When the notices are said
 //!
@@ -38,10 +38,11 @@ use devlaunch_core::flows::launch::{
     self, Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Plan, Provision,
     Session,
 };
-use devlaunch_core::flows::lifecycle::Refresh;
+use devlaunch_core::flows::lifecycle::{self, Refresh};
 use devlaunch_core::flows::listing::CommandContext;
+use devlaunch_core::flows::provision::verdict_cache::VerdictCache;
 use devlaunch_core::flows::provision::{
-    self, DevpodMissing, HostLayout, Provisioning, ToolsSwitch,
+    self, DevpodMissing, HostLayout, PassOccasion, Provisioning, Switches,
 };
 use devlaunch_core::runner::Runner;
 
@@ -113,24 +114,36 @@ pub(crate) fn family(verb: &Verb) -> Family {
 
 /// Lending the host's tools into every workspace dl opens.
 ///
-/// The two host facts are read once, when the value is built, rather than per pass:
+/// The host facts are read once, when the value is built, rather than per pass:
 /// a launch can provision twice (a sibling's `up` won the race, then this one's
 /// `up` ran) and a switch that changed between them would make one launch two
-/// different launches.
+/// different launches. The verdict cache is built here for the same reason and one
+/// more — it is two paths, and resolving either of them a second time is how the
+/// pass that *writes* a marker and the pass that *reads* one come to disagree about
+/// where markers live.
 pub(crate) struct ToolProvisioning {
-    tools: ToolsSwitch,
+    switches: Switches,
     host: Option<HostLayout>,
+    verdicts: VerdictCache,
 }
 
 impl ToolProvisioning {
-    /// What this host will lend, and whether it may.
-    pub(crate) fn from_env() -> Self {
+    /// What this host will lend, whether it may, and what it remembers.
+    ///
+    /// `cache` is the caller's for the reason [`Host::from_process`] takes it: the
+    /// binary has already resolved devlaunch's cache directory for everything else,
+    /// and a second answer here could disagree with the first.
+    pub(crate) fn from_env(cache: &Path) -> Self {
         Self {
-            tools: ToolsSwitch::from_env(),
+            switches: Switches::from_env(),
             // `None` is a machine with no home directory to look in: nothing to
             // lend, rather than nothing to do — the setup pass still runs, because
             // the stages it carries are not tools work.
             host: HostLayout::from_env(),
+            // A `None` devpod home here means something else again: no file to
+            // check a remembered verdict against, so nothing is ever trusted and
+            // every pass travels, exactly as it did before the cache existed.
+            verdicts: VerdictCache::under(cache, lifecycle::devpod_home()),
         }
     }
 }
@@ -140,6 +153,7 @@ impl Provision for ToolProvisioning {
         &self,
         runner: &dyn Runner,
         workspace_id: &str,
+        occasion: PassOccasion,
     ) -> Result<(), DevpodMissing> {
         // The events stream through the same sink as the launch's own notices —
         // one line on stderr at the moment core says it, which is Python's order:
@@ -148,8 +162,10 @@ impl Provision for ToolProvisioning {
         let provisioned = provision::provision_tools(
             runner,
             workspace_id,
-            self.tools,
+            occasion,
+            self.switches,
             self.host.as_ref(),
+            Some(&self.verdicts),
             &mut render::Saying,
         );
         // Every way of coming up empty is an arm of `Provisioning`, and none of them
@@ -157,6 +173,12 @@ impl Provision for ToolProvisioning {
         // asked for a session, not for an install. A devpod that has gone missing is
         // the one answer that travels — the launch cannot go on without it, and core
         // ends the launch with it.
+        //
+        // `CachedProvisioned` is silent for the same reason, and deliberately so: it
+        // is the arm where a launch did *less* than it used to, and a line about it
+        // would put a sentence on the terminal of every prewarm to announce that
+        // nothing happened. `DEVLAUNCH_TIMING=1` is where a missing round trip is
+        // worth reading, and it shows there as the trip that is not in the list.
         provisioned.map(|outcome| {
             let _: Provisioning = outcome;
         })
@@ -200,7 +222,7 @@ pub(crate) fn render_launch<'r>(
         };
     }
     let host = Host::from_process(cache);
-    let provision = ToolProvisioning::from_env();
+    let provision = ToolProvisioning::from_env(cache);
     // Verbatim and as it happens: this is devpod's own stderr, minus the line it
     // buries a remote exit status in, and a session's warnings belong on the
     // terminal while the session is running.
