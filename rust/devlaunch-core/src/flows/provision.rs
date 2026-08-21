@@ -1719,6 +1719,9 @@ fn provision(
         return Ok(Provisioning::CachedProvisioned);
     }
 
+    // Before the pass, not after it: see [`VerdictCache::observe`].
+    let observed = verdicts.and_then(|verdicts| verdicts.observe(workspace));
+
     let found = match setup_pass(runner, workspace, switches, events) {
         Ok(found) => found,
         Err(refusal) => return refused(workspace, refusal, events),
@@ -1734,8 +1737,8 @@ fn provision(
     if let ProbeResult::Provisioned = found {
         // The one outcome worth remembering, and the reasons the others are not are
         // in [`verdict_cache`]'s own note.
-        if let Some(verdicts) = verdicts {
-            verdicts.record(workspace);
+        if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
+            verdicts.record(workspace, observed);
         }
         return Ok(Provisioning::AlreadyProvisioned);
     }
@@ -4477,6 +4480,73 @@ fi
 
         assert_eq!(outcome, Ok(Provisioning::AlreadyProvisioned));
         assert_eq!(after.count(), 1, "the pass travelled again");
+    }
+
+    /// Somebody else's completed `devpod up`, landing while the pass is in flight.
+    ///
+    /// Not hypothetical and not excluded by any lock devlaunch holds: VS Code, a
+    /// hand-typed `devpod up`, a sibling `dl <ws> recreate` — none of them take the
+    /// launch lock, and the `dl <ws> up` top-up that reads this cache does not hold
+    /// it either.
+    struct Rebuilding<'a> {
+        trips: Trips,
+        rebuild: &'a Remembering,
+    }
+
+    impl Runner for Rebuilding<'_> {
+        fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
+            self.rebuild.brought_up_again();
+            self.trips.capture(spec)
+        }
+
+        fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
+            self.trips.passthrough(spec)
+        }
+
+        fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
+            panic!("provisioning never opens a session")
+        }
+
+        fn detach(&self, _what: &Invocation) -> DetachOutcome {
+            panic!("provisioning never detaches")
+        }
+    }
+
+    #[test]
+    fn a_rebuild_during_the_pass_leaves_no_verdict_to_trust() {
+        // The container the probe spoke to and the container standing when the
+        // marker is written are not always the same one. Read the anchor *after*
+        // the pass and the marker records the new container's mtime against the old
+        // container's verdict -- a marker that matches for as long as nothing else
+        // rebuilds, which is the one misreading this whole module exists to refuse.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let runner = Rebuilding {
+            trips: Trips::new(&[0]).reporting(REPORT_PROVISIONED),
+            rebuild: &remembering,
+        };
+
+        let outcome = provision_tools(
+            &runner,
+            "myws",
+            PassOccasion::TopUp,
+            Switches::INSTALLING,
+            Some(&nothing_to_lend()),
+            Some(&verdicts),
+            &mut Vec::new(),
+        );
+        assert_eq!(outcome, Ok(Provisioning::AlreadyProvisioned));
+
+        let next = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        assert_eq!(
+            pass_of(&next, PassOccasion::TopUp, &verdicts),
+            Ok(Provisioning::AlreadyProvisioned)
+        );
+        assert_eq!(
+            next.count(),
+            1,
+            "the verdict was about a container that is no longer standing"
+        );
     }
 
     #[test]

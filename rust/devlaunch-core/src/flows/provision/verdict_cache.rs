@@ -122,27 +122,30 @@ impl VerdictCache {
         Stamp::of(&result) == Some(marker.result_mtime)
     }
 
-    /// Remember that this workspace probed provisioned.
+    /// Which container a pass is about to be about, read **before** it runs.
     ///
-    /// The mtime is read **now**, after the pass rather than before it, so the
-    /// timestamp recorded belongs to the container the probe just spoke to. A
-    /// rebuild that lands between the two moves the file again and the marker this
-    /// wrote reads invalid on the next launch, which is the direction that costs a
-    /// round trip rather than a container's tools.
+    /// The whole of why this is a separate call. A pass is a `devpod ssh` that takes
+    /// seconds, and nothing devlaunch holds keeps somebody else's `devpod up` — VS
+    /// Code, a hand-typed one, a sibling `--recreate` — from completing inside that
+    /// window. Read the anchor afterwards and the marker pairs the *new* container's
+    /// mtime with the *old* container's verdict, which is a marker that matches
+    /// until something else rebuilds: the silent misreading the module note says
+    /// must never happen. Read it first and the same race writes a stamp that no
+    /// longer matches, so the next launch travels — one redundant round trip, which
+    /// is the direction that is allowed to be wrong.
+    pub(crate) fn observe(&self, workspace_id: &str) -> Option<Observed> {
+        let result = lifecycle::sole_workspace_result(self.devpod_home.as_deref(), workspace_id)?;
+        Stamp::of(&result).map(Observed)
+    }
+
+    /// Remember that this workspace probed provisioned, as the container
+    /// [`Self::observe`] identified before the pass.
     ///
-    /// Silent about every way of not working — no result file to key on, an
-    /// unreadable mtime, a cache directory that will not be created, a write that
-    /// fails. A verdict cache that could not write is a launch that pays what it
-    /// pays today, and a launch is not worth failing over that.
-    pub(crate) fn record(&self, workspace_id: &str) {
-        let Some(result) =
-            lifecycle::sole_workspace_result(self.devpod_home.as_deref(), workspace_id)
-        else {
-            return;
-        };
-        let Some(result_mtime) = Stamp::of(&result) else {
-            return;
-        };
+    /// Silent about every way of not working — a cache directory that will not be
+    /// created, a write that fails. A verdict cache that could not write is a launch
+    /// that pays what it pays today, and a launch is not worth failing over that.
+    pub(crate) fn record(&self, workspace_id: &str, observed: Observed) {
+        let Observed(result_mtime) = observed;
         let marker = Marker {
             verdict: Verdict::Provisioned,
             result_mtime,
@@ -153,6 +156,13 @@ impl VerdictCache {
         write_atomically(&self.marker(workspace_id), &text);
     }
 }
+
+/// The container a pass is about, as [`VerdictCache::observe`] read it.
+///
+/// A type rather than a bare [`Stamp`] so that [`VerdictCache::record`] cannot be
+/// handed a timestamp read at the wrong moment: the only way to make one is to ask
+/// before the pass, which is the ordering the whole trust rule rests on.
+pub(crate) struct Observed(Stamp);
 
 /// What one marker file says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -272,6 +282,15 @@ mod tests {
             .join("workspace_result.json")
     }
 
+    /// The pair the flow always calls together: observe the container, then record
+    /// the verdict about it. Nothing to observe is nothing to record, which is the
+    /// same silence the flow's own `if let` makes.
+    fn recorded(verdicts: &VerdictCache, workspace_id: &str) {
+        if let Some(observed) = verdicts.observe(workspace_id) {
+            verdicts.record(workspace_id, observed);
+        }
+    }
+
     /// Move `path`'s mtime forward, the way a completed `devpod up` moves the
     /// result file's — by hand, because two writes inside one test can land in the
     /// same filesystem timestamp tick.
@@ -295,7 +314,7 @@ mod tests {
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
 
         assert!(!verdicts.trusted("myws"), "nothing is recorded yet");
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
 
         assert!(verdicts.trusted("myws"));
         // And it survives being read by a second value over the same directories,
@@ -313,7 +332,7 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
 
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
 
         let text = std::fs::read_to_string(cache.path().join(MARKERS_DIR).join("myws.json"))
             .expect("a marker");
@@ -331,7 +350,7 @@ mod tests {
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
         assert!(verdicts.trusted("myws"));
 
         rewritten(&result_in(home.path(), "myws"), Duration::from_secs(30));
@@ -347,7 +366,7 @@ mod tests {
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
 
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -374,7 +393,7 @@ mod tests {
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
         let marker = cache.path().join(MARKERS_DIR).join("myws.json");
         let good = std::fs::read_to_string(&marker).expect("a marker");
 
@@ -412,7 +431,7 @@ mod tests {
             None,
         ] {
             let verdicts = VerdictCache::under(cache.path(), home.clone());
-            verdicts.record("myws");
+            recorded(&verdicts, "myws");
             assert!(!verdicts.trusted("myws"), "{home:?}");
         }
     }
@@ -426,7 +445,7 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
 
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
 
         assert!(!cache.path().join(MARKERS_DIR).join("myws.json").exists());
     }
@@ -440,7 +459,7 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
 
-        verdicts.record("myws");
+        recorded(&verdicts, "myws");
 
         assert!(verdicts.trusted("myws"));
         assert!(!verdicts.trusted("other"));
