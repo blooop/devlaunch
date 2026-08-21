@@ -76,7 +76,7 @@ pub fn devlaunch_core::api::identity(&str) -> core::result::Result<devlaunch_cor
 pub fn devlaunch_core::api::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
 pub fn devlaunch_core::api::parse(&str) -> devlaunch_core::domain::spec::WorkspaceSpec<'_>
 pub fn devlaunch_core::api::resolve_devcontainer_ref(&str) -> core::result::Result<devlaunch_core::domain::spec::DevcontainerPath, devlaunch_core::domain::spec::DevcontainerRefError>
-pub fn devlaunch_core::api::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::api::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&std::path::Path>, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::api::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::clients
 pub mod devlaunch_core::clients::devpod
@@ -1091,6 +1091,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Chi
 pub enum devlaunch_core::flows::lifecycle::DeleteOutcome
 pub devlaunch_core::flows::lifecycle::DeleteOutcome::Deleted
 pub devlaunch_core::flows::lifecycle::DeleteOutcome::Deleted::clone: core::result::Result<devlaunch_core::flows::workspace_clone::Removed, devlaunch_core::flows::workspace_clone::RemoveWorkspaceError>
+pub devlaunch_core::flows::lifecycle::DeleteOutcome::Deleted::volumes: devlaunch_core::flows::lifecycle::VolumeSweep
 pub devlaunch_core::flows::lifecycle::DeleteOutcome::DevpodRefused
 pub devlaunch_core::flows::lifecycle::DeleteOutcome::DevpodRefused::exit: devlaunch_runner::Exit
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::DeleteOutcome
@@ -1155,6 +1156,9 @@ pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneRemoved::workspace_i
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped::path: std::path::PathBuf
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped::refusal: devlaunch_core::domain::metadata::MetadataError
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::LifecycleNotice
 pub fn devlaunch_core::flows::lifecycle::LifecycleNotice::clone(&self) -> devlaunch_core::flows::lifecycle::LifecycleNotice
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::LifecycleNotice
@@ -1244,6 +1248,9 @@ pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted
 pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted::exit: devlaunch_runner::Exit
 pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted::stderr: alloc::string::String
 pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved
+pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
+pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::PurgeStep
 pub fn devlaunch_core::flows::lifecycle::PurgeStep::clone(&self) -> devlaunch_core::flows::lifecycle::PurgeStep
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::PurgeStep
@@ -1339,6 +1346,33 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::StopOutcome
 pub fn devlaunch_core::flows::lifecycle::StopOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::StopOutcome
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::StopOutcome
+pub enum devlaunch_core::flows::lifecycle::VolumeRefusal
+pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker
+pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker::exit: devlaunch_runner::Exit
+pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker::stderr: alloc::string::String
+pub devlaunch_core::flows::lifecycle::VolumeRefusal::NotRun
+pub devlaunch_core::flows::lifecycle::VolumeRefusal::NotRun::failure: devlaunch_runner::OsFailure
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::VolumeRefusal
+pub fn devlaunch_core::flows::lifecycle::VolumeRefusal::clone(&self) -> devlaunch_core::flows::lifecycle::VolumeRefusal
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::VolumeRefusal
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::VolumeRefusal
+pub fn devlaunch_core::flows::lifecycle::VolumeRefusal::eq(&self, &devlaunch_core::flows::lifecycle::VolumeRefusal) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::VolumeRefusal
+pub fn devlaunch_core::flows::lifecycle::VolumeRefusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::VolumeRefusal
+pub enum devlaunch_core::flows::lifecycle::VolumeSweep
+pub devlaunch_core::flows::lifecycle::VolumeSweep::NoDocker
+pub devlaunch_core::flows::lifecycle::VolumeSweep::NothingNamed
+pub devlaunch_core::flows::lifecycle::VolumeSweep::Refused(devlaunch_core::flows::lifecycle::VolumeRefusal)
+pub devlaunch_core::flows::lifecycle::VolumeSweep::Removed
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::VolumeSweep
+pub fn devlaunch_core::flows::lifecycle::VolumeSweep::clone(&self) -> devlaunch_core::flows::lifecycle::VolumeSweep
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::VolumeSweep
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::VolumeSweep
+pub fn devlaunch_core::flows::lifecycle::VolumeSweep::eq(&self, &devlaunch_core::flows::lifecycle::VolumeSweep) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::VolumeSweep
+pub fn devlaunch_core::flows::lifecycle::VolumeSweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::VolumeSweep
 pub struct devlaunch_core::flows::lifecycle::Adoptable
 pub devlaunch_core::flows::lifecycle::Adoptable::clone: std::path::PathBuf
 pub devlaunch_core::flows::lifecycle::Adoptable::context: alloc::string::String
@@ -1529,12 +1563,12 @@ pub fn devlaunch_core::flows::lifecycle::guard_removal(&str, devlaunch_core::dom
 pub fn devlaunch_core::flows::lifecycle::objection(&devlaunch_core::domain::workspace_state::Unsaved) -> core::option::Option<devlaunch_core::flows::lifecycle::Objection>
 pub fn devlaunch_core::flows::lifecycle::prune_clones(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::flows::lifecycle::PrunePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PruneOutcome, devlaunch_core::flows::lifecycle::PruneError>
 pub fn devlaunch_core::flows::lifecycle::prune_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PrunePlan, devlaunch_core::flows::lifecycle::PruneError>
-pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::lifecycle::PurgePlan, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::PurgeStep)) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgeOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::lifecycle::PurgePlan, core::option::Option<&std::path::Path>, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::PurgeStep)) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgeOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::flows::lifecycle::purge_plan(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgePlan, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::lifecycle::reconcile_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcilePlan
 pub fn devlaunch_core::flows::lifecycle::sweep_repo_fetches(&devlaunch_core::flows::repo_manager::RepositoryManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage) -> devlaunch_core::flows::lifecycle::SweepReport
 pub fn devlaunch_core::flows::lifecycle::unsaved_work_in(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::clients::git::Git<'_>, &std::path::Path, &str, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::domain::workspace_state::Unsaved
-pub fn devlaunch_core::flows::lifecycle::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::flows::lifecycle::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&std::path::Path>, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::flows::lifecycle::workspace_state(&dyn devlaunch_runner::Runner, &str) -> core::result::Result<devlaunch_core::clients::devpod::ContainerState, devlaunch_core::clients::devpod::StatusUnreadable>
 pub fn devlaunch_core::flows::lifecycle::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::listing

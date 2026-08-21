@@ -721,6 +721,11 @@ fn render_remove<'r>(
         refresh,
         clones,
         storage,
+        // Resolved here rather than in core, for the reason every other environment
+        // answer is: the process that knows what its environment says hands the
+        // answer down. `None` is a machine with no home directory, where devpod has
+        // no records to read and so no volume names to derive.
+        lifecycle::devpod_home().as_deref(),
         &workspace_id,
         insistence,
         &mut notices,
@@ -793,7 +798,10 @@ fn purge_devlaunch_data(context: &mut CommandContext<'_>, cache: &Path, yes: boo
         println!("Aborted.");
         return Cleanup::Ended(Ending::Done);
     }
-    let purged = lifecycle::purge_all_data(context, &plan, &mut |step| {
+    // Read after the question, because a purge that was declined asks devpod
+    // nothing and reads nothing.
+    let devpod_home = lifecycle::devpod_home();
+    let purged = lifecycle::purge_all_data(context, &plan, devpod_home.as_deref(), &mut |step| {
         match render::purge_step(&step) {
             // Said before the round trip that may take a while, which is why this
             // is a callback and not a report: "Deleting workspace X" assembled

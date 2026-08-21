@@ -778,6 +778,45 @@ cargo feature, which `./dev.sh` builds with and nothing that ships enables, and 
 is what tells `dl-next` apart from `dl` when both are on PATH — see "Two installs"
 in AGENTS.md.
 
+### What a delete takes with it
+
+Removing a workspace removes three things: the devpod workspace, the local clone
+(unless it holds work that exists nowhere else — see [cleaning up
+workspaces](#cleaning-up-workspaces)), and **the named Docker volumes that
+workspace's devcontainer created**. Every path that removes a workspace does all three:
+`dl <ws> rm`, the appended `--rm`, `--autorm`, and `--purge`.
+
+Two volumes per workspace, both named from what devpod recorded substituting into
+the devcontainer:
+
+| volume | declared by |
+| --- | --- |
+| `<workspace-folder-basename>-pixi` | a `mounts` entry in the devcontainer, for the `.pixi` cache — this repo's own devcontainer has one |
+| `dind-var-lib-docker-<devcontainerId>` | the [`docker-in-docker`](https://github.com/devcontainers/features/tree/main/src/docker-in-docker) feature, for the nested daemon's `/var/lib/docker` |
+
+They used to be left behind, and that was measured rather than assumed: on one
+development machine, **39 orphaned volumes holding 37.28 GB**, not one of them
+with a surviving workspace in `devpod list` (devlaunch#324). `devpod delete`
+removes the container and never a volume, and Docker never garbage-collects a
+*named* volume, so nothing in the picture was ever going to reclaim them.
+
+Three things about how the removal behaves, all of them so that a delete cannot
+be made worse by it:
+
+- **The names are read from devpod's own record, never guessed from a pattern.**
+  devpod writes down what it substituted, and that is the only thing consulted. A
+  workspace devpod never finished creating has no such record, so nothing is named
+  and no `docker` command runs at all — rather than one carrying a made-up name,
+  which would be somebody else's disk.
+- **It is best-effort, and cannot fail a delete.** The workspace is gone either
+  way; reporting failure would send you looking for a workspace that is not there.
+  A volume Docker will not release (one another container still holds, say) is a
+  line on stderr and nothing more. A machine with no `docker` at all says nothing,
+  because a machine with no Docker never made these volumes.
+- **Images are still yours.** See [the disk neither command
+  frees](#the-disk-neither-command-frees) — that boundary is about images now, and
+  deliberately stays there.
+
 ### What purge deletes
 
 devpod's workspace list is shared. A workspace you made with `devpod up`, or that
@@ -830,7 +869,7 @@ Removed what was permitted under /home/you/.cache/devlaunch. These refused:
 Usually this means a container wrote them as a different user, and:
   sudo rm -rf '/home/you/.cache/devlaunch'
 clears them. Check the reasons above first -- it does not fix all of them.
-devlaunch does not manage Docker images or volumes: the containers these workspaces used may still hold disk, and `docker system df` shows what Docker is holding.
+devlaunch does not manage Docker images: the images these workspaces built may still hold disk, and `docker system df` shows what Docker is holding.
 ```
 
 That last line ends every purge, including one that found nothing to purge and
@@ -976,7 +1015,7 @@ Both commands end on the same line, in the same words:
 $ dl --prune -y
 ...
 Removed 2 clone director(ies) -- 1.4 GiB.
-devlaunch does not manage Docker images or volumes: the containers these workspaces used may still hold disk, and `docker system df` shows what Docker is holding.
+devlaunch does not manage Docker images: the images these workspaces built may still hold disk, and `docker system df` shows what Docker is holding.
 ```
 
 The gigabytes a cleanup reports are usually not the ones you are looking for. On
@@ -988,6 +1027,15 @@ freed figure read as *all* of it, so both commands say this instead, whether the
 removed 40 clones, found nothing to remove, or were answered `n` at the
 confirmation. The report you get for saying `n` is a reason to print it, not an
 exception: that is where somebody is deciding what is worth deleting.
+
+**The sentence used to say "images or volumes", and volumes came off it**
+(devlaunch#325). Deleting a workspace now removes the named volumes its
+devcontainer created — see [what a delete takes with
+it](#what-a-delete-takes-with-it) — so a disclaimer that still covered them would
+be describing a leak that has been fixed. The `--prune` half of the pair still
+frees no volume at all, and that is not an oversight either: it removes clone
+*directories* and never deletes a workspace, so there is no workspace whose
+volumes it could be taking.
 
 **It is a sentence, not a measurement.** `dl` runs no `docker` command to print
 it, so there is nothing to be slow and nothing to fail where Docker is absent,
@@ -1296,9 +1344,12 @@ repo's own does) is most of that count. That is not a bill a listing should
 present unasked.
 
 Docker images and named volumes are not counted: `dl` did not create the layer
-store and does not manage volumes. `docker system df` is the tool that knows —
-the same boundary [`--prune` and `--purge` name](#the-disk-neither-command-frees)
-when they finish.
+store, and a volume is not a directory it can walk. `docker system df` is the
+tool that knows — the same boundary [`--prune` and `--purge`
+name](#the-disk-neither-command-frees) when they finish. Not counting a volume is
+a different thing from not removing it: a workspace's volumes go when the
+workspace does ([what a delete takes with
+it](#what-a-delete-takes-with-it)); what is missing here is only the *figure*.
 
 ## The shared pixi package cache
 
@@ -2093,11 +2144,15 @@ The time cost is cold pulls in a fresh nested daemon: the first `devpod up` insi
 new container takes ~25s, ~16s of which is pulling a base image the host already has.
 Workspaces after that reuse it and take ~8s.
 
-**These volumes are not reclaimed automatically.** `devpod delete` removes the
-container with `docker rm` and never touches volumes, and Docker never
-garbage-collects a *named* volume — so `<workspace>-pixi` and
-`dind-var-lib-docker-*` outlive the workspace that created them. To see what has
-piled up:
+**Both volumes now go when the workspace does** — see [what a delete takes with
+it](#what-a-delete-takes-with-it). They did not always: `devpod delete` removes
+the container with `docker rm` and never touches a volume, and Docker never
+garbage-collects a *named* volume, so `<workspace>-pixi` and
+`dind-var-lib-docker-*` used to outlive every workspace that made them (39 of
+them, 37.28 GB, on the machine devlaunch#324 was measured on).
+
+Volumes left by workspaces deleted before that fix are still there, and so are
+any whose removal Docker refused. To see what has piled up:
 
 ```bash
 docker system df -v      # under Local Volumes, LINKS 0 means no container uses it
