@@ -22,9 +22,9 @@ use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::runner::{Exit, Runner};
 
-use crate::cli::{self, Command, ListOutput, Verb};
+use crate::cli::{self, Autorm, Command, ListOutput, Verb};
 use crate::cold::ColdPath;
-use crate::launch::{self, Family};
+use crate::launch::{self, Family, Reached};
 use crate::render;
 use crate::select;
 use crate::session::{self, Records, StartupError};
@@ -531,16 +531,106 @@ fn render_workspace<'r>(
         }
         // Launch: clone, `devpod up`, fast attach, `-- <cmd>` through
         // `devpod ssh --command`.
-        Family::Launch(launched) => launch::render_launch(
-            context,
-            cache,
-            refresh,
-            &mut cold,
-            target,
-            &launched,
-            devcontainer,
-        ),
+        Family::Launch {
+            verb: launched,
+            autorm,
+        } => {
+            let ran = launch::render_launch(
+                context,
+                cache,
+                refresh,
+                &mut cold,
+                target,
+                &launched,
+                devcontainer,
+            );
+            after_the_session(
+                runner, context, cache, refresh, &mut cold, target, autorm, ran,
+            )
+        }
     }
+}
+
+/// `--autorm`: the workspace, once the session it was opened for has ended.
+///
+/// Three decisions live here, and each one is the answer to a question the flag
+/// cannot dodge.
+///
+/// **When.** Whenever the launch got as far as asking devpod for the workspace —
+/// [`Reached::TheWorkspace`] — and not before. That is deliberately *not* "when a
+/// session ran": the flag's job is that no workspace this line brought into being
+/// outlives it, and the ways a launch ends badly after devpod has been asked are
+/// exactly the ways it leaves one behind.
+///
+/// A `devpod up` that dies in `postCreateCommand` is the case that matters, and the
+/// one an earlier draft of this got wrong by keying on the exit code. It leaves the
+/// container **running**, devpod's record written and the clone cut — which is why
+/// [`lifecycle::create_record`] exists at all — so an unattended
+/// `dl owner/repo --autorm -- make test` against a broken devcontainer would leak
+/// precisely the workspace the flag was reached for. A session devpod refused
+/// outright, and an OpenSSH that is not installed, leave the same thing behind and
+/// are collected for the same reason.
+///
+/// The other side of the line is [`Reached::Nothing`]: an unsafe spec, a workspace
+/// nothing answers to, a default branch that could not be named, a host-side clone
+/// that was never cut, a devpod that could not be run. Those created nothing, and a
+/// removal attempted anyway would answer one refusal with a second unrelated one.
+///
+/// **Which workspace.** [`target::resolve`], the same resolution `dl <ws> rm` uses,
+/// rather than anything carried out of the launch. That is a round trip this path
+/// could have saved — the launch already named the workspace — and it buys the one
+/// thing worth more than a round trip on a path that deletes: there is exactly one
+/// answer to "which workspace is `<target>`", so `--autorm` and `rm` cannot disagree
+/// about what they are removing. It is also cheap where it matters: by now the
+/// workspace exists and its record is written, so a bare `owner/repo` reads its
+/// default branch off the record rather than the network.
+///
+/// **Whose exit code.** The launch's, always. `dl owner/repo --autorm -- make test`
+/// is read by a script that wants the test's answer, and a cleanup that refused is
+/// not the test failing. The refusal is loud on stderr and the workspace is still
+/// there, which is the recoverable state — `dl <target> rm --force` is one line away,
+/// and [`render::removal_refusal`] is already the sentence that says so.
+#[allow(clippy::too_many_arguments)]
+fn after_the_session<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cache: &Path,
+    refresh: &mut Refresh<'_>,
+    cold: &mut ColdPath<'r>,
+    target: &str,
+    autorm: Autorm,
+    ran: launch::Ran,
+) -> Ending {
+    let launch::Ran { ending, reached } = ran;
+    let Autorm::OnExit = autorm else {
+        return ending;
+    };
+    let Reached::TheWorkspace = reached else {
+        return ending;
+    };
+    // Said before the removal rather than after it: what it names is the reason
+    // somebody may want to hit Ctrl-C, and a notice that arrives once the container
+    // is already gone is a receipt rather than a warning. Same rule as the
+    // `--rm`/`--stop` override notice in `command_line`.
+    eprintln!("{}", render::autorm_removing(target));
+    // The launch has already spent this command's one refresh — `run_attach` forces
+    // one the moment the session returns — and that child is describing a world this
+    // removal is about to change. Without re-arming, the cache a user's next
+    // keystroke reads goes on offering the workspace that has just been deleted,
+    // which is the one name that should have stopped being offered. Re-armed *here*
+    // rather than inside the removal, because it is this command having two state
+    // changes that earns the second child, not deleting as such.
+    refresh.rearm();
+    let _: Ending = render_remove(
+        runner,
+        context,
+        cache,
+        refresh,
+        cold,
+        target,
+        Insistence::NotInsisted,
+    );
+    ending
 }
 
 /// A config choice a verb that opens no workspace cannot honour, said rather than

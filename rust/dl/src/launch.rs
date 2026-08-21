@@ -45,7 +45,7 @@ use devlaunch_core::flows::provision::{
 };
 use devlaunch_core::runner::Runner;
 
-use crate::cli::Verb;
+use crate::cli::{Autorm, Verb};
 use crate::cold::ColdPath;
 use crate::commands::Ending;
 use crate::render;
@@ -61,36 +61,54 @@ pub(crate) enum Family {
     Stop,
     /// `dl <ws> rm`, and whether `--force` was typed.
     Remove { force: bool },
-    /// Everything that opens a workspace.
-    Launch(LaunchVerb),
+    /// Everything that opens a workspace, and whether the workspace is to go once
+    /// the session does.
+    ///
+    /// [`Autorm`] rides *with* the launch verb rather than beside it in the
+    /// dispatcher, because the two are read together exactly once and only ever
+    /// together: the removal is what happens after this launch, not a second thing
+    /// the command was asked for.
+    Launch { verb: LaunchVerb, autorm: Autorm },
 }
 
 /// What each verb asks for, from the word the grammar resolved.
+///
+/// The `Autorm::No` on the six word verbs is not a default this function chose: the
+/// grammar refuses `--autorm` on all of them ([`cli::GrammarError::AutormNotAllowed`]),
+/// so no other answer can reach here — the arms say it because [`Verb`] gives them
+/// nothing to say it with.
 pub(crate) fn family(verb: &Verb) -> Family {
-    Family::Launch(match verb {
+    let (launched, autorm) = match verb {
         Verb::Stop => return Family::Stop,
         Verb::Remove { force } => return Family::Remove { force: *force },
-        Verb::Attach => LaunchVerb::Attach { command: None },
+        Verb::Attach { autorm } => (LaunchVerb::Attach { command: None }, *autorm),
         // Python's `" ".join(args[2:])`: the words are rejoined with single spaces
         // and the result is one shell command, quoted whole into the remote
         // payload. A word that needed quoting to survive the *host's* shell has
         // already been unquoted by it, so the join is what the user typed.
-        Verb::Run(words) => LaunchVerb::Attach {
-            command: Some(
-                words
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<&str>>()
-                    .join(" "),
-            ),
-        },
-        Verb::Up => LaunchVerb::Up,
-        Verb::Code => LaunchVerb::Code,
-        Verb::Recreate => LaunchVerb::Recreate,
-        Verb::Restart => LaunchVerb::Restart,
-        Verb::Reset => LaunchVerb::Reset,
-        Verb::Dotfiles => LaunchVerb::Dotfiles,
-    })
+        Verb::Run(words, autorm) => (
+            LaunchVerb::Attach {
+                command: Some(
+                    words
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<&str>>()
+                        .join(" "),
+                ),
+            },
+            *autorm,
+        ),
+        Verb::Up => (LaunchVerb::Up, Autorm::No),
+        Verb::Code => (LaunchVerb::Code, Autorm::No),
+        Verb::Recreate => (LaunchVerb::Recreate, Autorm::No),
+        Verb::Restart => (LaunchVerb::Restart, Autorm::No),
+        Verb::Reset => (LaunchVerb::Reset, Autorm::No),
+        Verb::Dotfiles => (LaunchVerb::Dotfiles, Autorm::No),
+    };
+    Family::Launch {
+        verb: launched,
+        autorm,
+    }
 }
 
 /// Lending the host's tools into every workspace dl opens.
@@ -159,7 +177,7 @@ pub(crate) fn render_launch<'r>(
     target: &str,
     verb: &LaunchVerb,
     devcontainer: Option<&DevcontainerPath>,
-) -> Ending {
+) -> Ran {
     // A path or git source whose derived id is empty — `dl /`, `//`, `/.`, `/..`,
     // all of which normalise to a leaf with no final component — would otherwise
     // hand devpod `--id ""` and run a nameless workspace to a reported success
@@ -175,7 +193,11 @@ pub(crate) fn render_launch<'r>(
             "{} does not name a workspace: its path has no final component to name one after.",
             render::python_repr(target)
         );
-        return Ending::Refused;
+        // Nothing was opened, so there is nothing for `--autorm` to close.
+        return Ran {
+            ending: Ending::Refused,
+            reached: Reached::Nothing,
+        };
     }
     let host = Host::from_process(cache);
     let provision = ToolProvisioning::from_env();
@@ -198,31 +220,80 @@ pub(crate) fn render_launch<'r>(
         );
         launch.run(target, verb, devcontainer)
     };
-    ending_of(outcome, cache)
+    ran(outcome, cache)
 }
 
-/// The exit code this launch ends with, and the one line it may still have to
-/// print.
+/// How far a launch got, for the one caller that has to clean up after it.
+///
+/// **Not derivable from [`Ending`], which is why it is carried.** `Ending::Refused`
+/// is both "no such workspace" and "the container came up and the session would not
+/// open", and those are opposite answers to "is there something to remove": the
+/// first created nothing, the second left a running container and the clone behind.
+/// Reading the exit code to guess between them is how `--autorm` came to leak the
+/// workspaces it exists to collect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reached {
+    /// devpod was asked to bring this workspace up — or it was already up and
+    /// attached to. A devpod workspace, a container, and a clone may all exist,
+    /// **including when the `up` failed**: a create that dies in its lifecycle hooks
+    /// leaves the container running and devpod's record written, which is the whole
+    /// reason [`lifecycle::create_record`](devlaunch_core::flows::lifecycle::create_record)
+    /// exists.
+    TheWorkspace,
+    /// The launch stopped before devpod was asked for anything: an unsafe spec, a
+    /// workspace nothing answers to, a default branch that could not be named, a
+    /// host-side clone that was never cut, a devpod that could not be run.
+    ///
+    /// Nothing to remove, and a removal attempted anyway would answer one refusal
+    /// with a second unrelated one — `devpod delete` on an id devpod never had fails,
+    /// and the sentence it fails with tells the user to restore a `devcontainer.json`
+    /// that was never the problem.
+    Nothing,
+}
+
+/// One launch: how it ended, and how far it got.
+pub(crate) struct Ran {
+    pub(crate) ending: Ending,
+    pub(crate) reached: Reached,
+}
+
+/// The exit code this launch ends with, how far it got, and the one line it may
+/// still have to print.
 ///
 /// `cache` is here for one line only: a clone the host answered "no such
 /// repository" to is checked against the completion cache, so a mistyped owner is
 /// told the name it probably meant instead of being left with git's ssh advice.
 /// Read on this path and no other — the file is opened only once a launch has
 /// already failed.
-fn ending_of(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ending {
+fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
     match outcome {
         Err(aborted) => {
             eprintln!("{}", render::launch_abort(&aborted));
-            if render::is_binary_missing(&aborted) {
+            // `SshNotRun` is the odd one: devpod worked, so the workspace is up and
+            // only OpenSSH is missing. The other two never got as far as devpod.
+            let reached = match aborted {
+                LaunchAborted::SshNotRun(_) => Reached::TheWorkspace,
+                LaunchAborted::DevpodNotRun(_) | LaunchAborted::ListingUnreadable(_) => {
+                    Reached::Nothing
+                }
+            };
+            let ending = if render::is_binary_missing(&aborted) {
                 Ending::DevpodMissing
             } else {
                 Ending::Refused
-            }
+            };
+            Ran { ending, reached }
         }
         // The session's own ending, whichever process the number came from:
         // Python's `return ret` from `attach_workspace`, negative status included.
-        Ok(Launched::Session(session)) => Ending::Session(Session::exit_status(session)),
-        Ok(Launched::Ready | Launched::AlreadyRunning) => Ending::Done,
+        Ok(Launched::Session(session)) => Ran {
+            ending: Ending::Session(Session::exit_status(session)),
+            reached: Reached::TheWorkspace,
+        },
+        Ok(Launched::Ready | Launched::AlreadyRunning) => Ran {
+            ending: Ending::Done,
+            reached: Reached::TheWorkspace,
+        },
         Ok(Launched::Refused(refused)) => {
             if let Some(line) = render::launch_refusal(&refused) {
                 eprintln!("{line}");
@@ -239,15 +310,38 @@ fn ending_of(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ending {
                 // the streams.
                 // Whether a refused `up` still warmed the completion cache is
                 // core's: it is a step of the launch, taken where Python takes it.
-                LaunchRefusal::UpRefused { exit } => Ending::Child(exit),
-                LaunchRefusal::StopRefused { exit } => Ending::Child(exit),
-                // Every refusal dl made on its own account: Python's
-                // `logging.error(...); return 1`, and the line is already printed.
+                //
+                // `Reached::TheWorkspace` for both, and for `UpRefused` that is the
+                // point: a build that failed in `postCreateCommand` leaves the
+                // container running and the clone cut, so this is exactly the
+                // workspace an unattended `--autorm` line is there to collect.
+                LaunchRefusal::UpRefused { exit } => Ran {
+                    ending: Ending::Child(exit),
+                    reached: Reached::TheWorkspace,
+                },
+                LaunchRefusal::StopRefused { exit } => Ran {
+                    ending: Ending::Child(exit),
+                    reached: Reached::TheWorkspace,
+                },
+                // The container came up and no session could be opened. The
+                // workspace is there; only the shell is not.
+                LaunchRefusal::NoSession(_) => Ran {
+                    ending: Ending::Refused,
+                    reached: Reached::TheWorkspace,
+                },
+                // Every refusal dl made before devpod was asked for anything:
+                // Python's `logging.error(...); return 1`, and the line is already
+                // printed. `NotPrepared` is here rather than above because the
+                // failure *is* the clone — there is no devpod workspace to delete,
+                // and a directory a half-finished prepare left behind is what
+                // `dl --prune` lists.
                 LaunchRefusal::UnsafeSpec(_)
                 | LaunchRefusal::UnknownWorkspace { .. }
                 | LaunchRefusal::BranchNotNamed { .. }
-                | LaunchRefusal::NotPrepared { .. }
-                | LaunchRefusal::NoSession(_) => Ending::Refused,
+                | LaunchRefusal::NotPrepared { .. } => Ran {
+                    ending: Ending::Refused,
+                    reached: Reached::Nothing,
+                },
             }
         }
     }

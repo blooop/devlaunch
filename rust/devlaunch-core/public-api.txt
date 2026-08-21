@@ -1469,6 +1469,7 @@ pub struct devlaunch_core::flows::lifecycle::Refresh<'a>
 impl<'a> devlaunch_core::flows::lifecycle::Refresh<'a>
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::ask(&mut self, &dyn devlaunch_runner::Runner, devlaunch_core::flows::lifecycle::RefreshReason) -> devlaunch_core::flows::lifecycle::RefreshSpawn
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::new(&'a devlaunch_core::flows::lifecycle::SelfInvocation, &'a std::path::Path) -> Self
+pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::rearm(&mut self)
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::spawned(&self) -> bool
 pub struct devlaunch_core::flows::lifecycle::SelfInvocation
 impl devlaunch_core::flows::lifecycle::SelfInvocation

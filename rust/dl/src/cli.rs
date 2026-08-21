@@ -149,6 +149,28 @@ impl VerbWord {
     }
 }
 
+/// Whether the workspace is deleted once the session it handed over has ended.
+///
+/// A named pair rather than a bool, and carried by the two arms of [`Verb`] the flag
+/// is *defined* for — which is what makes `dl <ws> code --autorm` unwritable rather
+/// than merely refused, and what stops every other arm carrying a field the
+/// dispatcher has to remember to ignore.
+///
+/// **Two arms and not five, and that is a scope decision rather than a mechanical
+/// one.** `restart`, `recreate` and `reset` also end in a session
+/// (`LaunchVerb::attaches`), so the removal would work behind them; they are out
+/// because `--autorm` means *the throwaway workspace* — open one, use it, let it go —
+/// and not *clean up after whichever verb this was*. Widening it later is adding
+/// arms here; the refusal names the two forms rather than claiming those verbs hand
+/// over nothing, because they do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Autorm {
+    /// `--autorm`: remove the workspace when the session ends, guard and all.
+    OnExit,
+    /// The default: the workspace outlives the session, as it always has.
+    No,
+}
+
 /// What is being asked of one workspace.
 ///
 /// [`Verb::Run`] carries a [`NonEmpty`] rather than a `Vec`, because `dl <ws> --`
@@ -158,9 +180,11 @@ impl VerbWord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Verb {
     /// `dl <ws>` — bring it up and hand over an interactive shell.
-    Attach,
+    Attach {
+        autorm: Autorm,
+    },
     /// `dl <ws> -- <command>` — one command, inside the workspace.
-    Run(NonEmpty<String>),
+    Run(NonEmpty<String>, Autorm),
     Up,
     Stop,
     /// `rm`. `force` is `--force`: delete despite unsaved work, and count an
@@ -179,8 +203,8 @@ impl Verb {
     /// The word this verb is spelled with, for a diagnostic that names it.
     pub(crate) fn word(&self) -> &'static str {
         match self {
-            Verb::Attach => "attach",
-            Verb::Run(_) => "--",
+            Verb::Attach { .. } => "attach",
+            Verb::Run(..) => "--",
             Verb::Up => "up",
             Verb::Stop => "stop",
             Verb::Remove { .. } => "rm",
@@ -303,6 +327,22 @@ pub(crate) enum GrammarError {
     CommandNotAllowed { verb: &'static str },
     /// `--devcontainer` on a command that opens no workspace.
     DevcontainerNotAllowed { command: &'static str },
+    /// `--autorm` on a command the flag is not defined for.
+    ///
+    /// Refused rather than ignored, and `code` is why. `dl <ws> code --autorm`
+    /// returns the moment devpod has told VS Code where to connect — *before* the
+    /// editor is attached — so honouring it there would delete the container out
+    /// from under a window that is still opening. A silently-dropped flag would
+    /// read as "it ran and kept the workspace", which is the one reading that
+    /// makes somebody type it again.
+    AutormNotAllowed { command: &'static str },
+    /// `--force` beside `--autorm`.
+    ///
+    /// The pair looks like it should compose and must not: the unsaved-work guard
+    /// is the whole reason `--autorm` is safe to leave on a recalled line, and a
+    /// `--force` habitually appended to that line would destroy work hours later,
+    /// unattended, with nobody watching the sentence that explained it.
+    AutormForced,
     /// The `--devcontainer` value cannot be a path.
     Devcontainer {
         raw: String,
@@ -425,6 +465,11 @@ pub(crate) struct Cli {
     /// pass it once.
     #[arg(long, value_name = "VARIANT|PATH")]
     devcontainer: Option<String>,
+    /// Delete the workspace once the session ends, like `docker run --rm`. Only
+    /// for the two forms that hand one over: `dl <ws>` and `dl <ws> -- <command>`.
+    /// Stops at work that is nowhere else, exactly as `rm` does.
+    #[arg(long)]
+    autorm: bool,
 }
 
 /// The half of the grammar clap's own argument list cannot show: the verbs are
@@ -441,6 +486,7 @@ const GRAMMAR: &str = "Examples:
   dl blooop/devlaunch -- make test   Run one command inside the workspace
   dl blooop/devlaunch stop           Stop it
   dl stop blooop-devlaunch-main-1a2b Stop it by workspace id
+  dl blooop/devlaunch --autorm       Open it, and delete it when the shell exits
   dl --ls --json                     Every workspace, machine-readable
 
 Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
@@ -474,7 +520,19 @@ alike.
 
 'prune' was a second spelling of the rm verb and is retired: it collided with the
 --prune flag below, which removes clone directories and no workspace at all. Typing
-it says so and names both.";
+it says so and names both.
+
+--autorm is the throwaway workspace: dl <ws> --autorm and dl <ws> --autorm -- <cmd>
+delete the workspace and its clone once the session ends, the way docker run --rm
+does. It stops at work that is nowhere else — the same check dl <ws> rm makes — and
+then leaves the workspace standing and says so, which is what makes it safe to leave
+on a recalled line. The exit code is the session's, not the removal's.
+
+Those two forms and no others: every verb above refuses --autorm rather than ignoring
+it, and 'code' is the one worth knowing about, since it returns while VS Code is still
+connecting. --force does not compose with it either — use dl <ws> rm --force when you
+mean to delete despite the work. Best-effort by nature: a Ctrl-C during the build, or
+a closed terminal, ends dl before the session does and leaves the workspace behind.";
 
 /// What no flag and no verb names: the variables that change a launch.
 ///
@@ -598,6 +656,9 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
     if cli.devcontainer.is_some() {
         return Err(GrammarError::DevcontainerNotAllowed { command: name });
     }
+    if cli.autorm {
+        return Err(GrammarError::AutormNotAllowed { command: name });
+    }
     if !cli.command.is_empty() {
         return Err(GrammarError::CommandNotAllowed { verb: name });
     }
@@ -696,6 +757,13 @@ fn verb_command(cli: &Cli, word: VerbWord, flag: &'static str) -> Result<Resolve
     if !cli.command.is_empty() {
         return Err(GrammarError::CommandNotAllowed { verb: verb.word() });
     }
+    // Before `--yes`, because a `--stop --autorm` line is the more confused of the
+    // two and the flag it is confused about is the one worth naming.
+    if cli.autorm {
+        return Err(GrammarError::AutormNotAllowed {
+            command: verb.word(),
+        });
+    }
     if cli.yes {
         return Err(GrammarError::ModifierNotAllowed {
             modifier: "--yes",
@@ -755,6 +823,24 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
             command: "a workspace command",
         });
     }
+    // Before `force_placement`, and that ordering is the whole of the fix it is.
+    // `--force`'s meaning is recovered from its *position* in the word stream, and
+    // `--autorm` is a word in that stream — so `dl <ws> --autorm --force` reads
+    // `--force` as trailing (the pair, correctly) while `dl --autorm --force <ws>`
+    // reads it as the *verb* slot and answers `Unknown command '--force'` about a
+    // workspace called `--autorm`, which explains nothing about a line whose real
+    // problem is the pair. Asked here, every spelling of the pair gets the sentence
+    // that names it.
+    //
+    // What this gives up is `dl --force --autorm`, which used to be an attach on a
+    // workspace *named* `--force` (the slot-0 reading Python's parity preserves) and
+    // is now the refused pair. That is the better answer: a line carrying both flags
+    // is somebody expecting `--force` to license the removal, not somebody who named
+    // a workspace `--force`. The parity reading is untouched for every line that does
+    // not also say `--autorm`.
+    if cli.autorm && cli.force {
+        return Err(GrammarError::AutormForced);
+    }
     // `--force` only means force where Python read it — after the workspace and the
     // verb. Anywhere earlier it is the word in that slot, and the refusal is
     // Python's for that slot, not a silent forced delete.
@@ -766,7 +852,11 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                 // unknown name does.
                 return Ok(Command::Workspace {
                     target: "--force".to_owned(),
-                    verb: Verb::Attach,
+                    // `Autorm::No` by the check above, not by choice: a line holding
+                    // both flags was refused before it got here.
+                    verb: Verb::Attach {
+                        autorm: autorm_of(&cli),
+                    },
                     devcontainer,
                 });
             }
@@ -784,19 +874,24 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                     word: "--force".to_owned(),
                 });
             }
+            // Where `--force` really is the modifier, and so the one place the pair
+            // with `--autorm` can be told from a workspace that happens to be
+            // called `--force`.
             ForcePlace::Trailing => {}
         }
     }
-    let run = NonEmpty::of(cli.command.iter().cloned()).map(Verb::Run);
+    let autorm = autorm_of(&cli);
+    let run = NonEmpty::of(cli.command.iter().cloned()).map(|words| Verb::Run(words, autorm));
+    let attach = || Verb::Attach { autorm };
     let (target, verb) = match cli.words.as_slice() {
-        [] => (None, run.unwrap_or(Verb::Attach)),
+        [] => (None, run.unwrap_or_else(attach)),
         [only] => match VerbWord::of(only) {
             Some(word) => (None, word.with(cli.force)),
             // A retired word alone is the retirement's diagnostic, not a workspace
             // of that name: `dl prune` used to be the remove verb with no target.
             None => match RetiredWord::of(only) {
                 Some(retired) => return Err(GrammarError::RetiredVerb(retired)),
-                None => (Some(only.clone()), run.unwrap_or(Verb::Attach)),
+                None => (Some(only.clone()), run.unwrap_or_else(attach)),
             },
         },
         [first, second] => match (VerbWord::of(first), VerbWord::of(second)) {
@@ -833,8 +928,17 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
     };
     // A verb that is not the attach family cannot also carry a command: Python
     // discarded the command silently, which is the shape row 2 refuses.
-    if !cli.command.is_empty() && !matches!(verb, Verb::Run(_)) {
+    if !cli.command.is_empty() && !matches!(verb, Verb::Run(..)) {
         return Err(GrammarError::CommandNotAllowed { verb: verb.word() });
+    }
+    // The verb words the grammar just resolved carry no [`Autorm`] — only the two
+    // attach spellings can — so a `--autorm` that reached one of them was written
+    // and could not be honoured. Read off the *verb* rather than the words, so
+    // `dl up <ws> --autorm` and `dl <ws> up --autorm` are refused alike.
+    if cli.autorm && !matches!(verb, Verb::Attach { .. } | Verb::Run(..)) {
+        return Err(GrammarError::AutormNotAllowed {
+            command: verb.word(),
+        });
     }
     Ok(match target {
         None => Command::Select { verb, devcontainer },
@@ -844,6 +948,15 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
             devcontainer,
         },
     })
+}
+
+/// Whether this line asked for the workspace to go when the session does.
+fn autorm_of(cli: &Cli) -> Autorm {
+    if cli.autorm {
+        Autorm::OnExit
+    } else {
+        Autorm::No
+    }
 }
 
 fn devcontainer_of(cli: &Cli) -> Result<Option<DevcontainerPath>, GrammarError> {
@@ -930,8 +1043,20 @@ mod tests {
             .kind()
     }
 
+    /// `dl <ws>` — the plain attach, which is what almost every case below wants.
+    fn attach() -> Verb {
+        Verb::Attach { autorm: Autorm::No }
+    }
+
     fn run(words: &[&str]) -> Verb {
-        Verb::Run(NonEmpty::of(words.iter().map(|word| word.to_string())).expect("a command"))
+        run_with(words, Autorm::No)
+    }
+
+    fn run_with(words: &[&str], autorm: Autorm) -> Verb {
+        Verb::Run(
+            NonEmpty::of(words.iter().map(|word| word.to_string())).expect("a command"),
+            autorm,
+        )
     }
 
     fn workspace(target: &str, verb: Verb) -> Command {
@@ -1077,12 +1202,12 @@ mod tests {
 
     #[test]
     fn a_word_that_is_not_a_verb_is_a_target() {
-        assert_eq!(parse(&["ws"]), Ok(workspace("ws", Verb::Attach)));
+        assert_eq!(parse(&["ws"]), Ok(workspace("ws", attach())));
         assert_eq!(
             parse(&["owner/repo@feature/x"]),
-            Ok(workspace("owner/repo@feature/x", Verb::Attach))
+            Ok(workspace("owner/repo@feature/x", attach()))
         );
-        assert_eq!(parse(&["./here"]), Ok(workspace("./here", Verb::Attach)));
+        assert_eq!(parse(&["./here"]), Ok(workspace("./here", attach())));
     }
 
     #[test]
@@ -1090,7 +1215,7 @@ mod tests {
         assert_eq!(
             parse(&[]),
             Ok(Command::Select {
-                verb: Verb::Attach,
+                verb: attach(),
                 devcontainer: None
             })
         );
@@ -1132,7 +1257,7 @@ mod tests {
     fn a_dash_dash_with_nothing_after_it_is_an_ordinary_attach() {
         // Python's `len(args) > 2`: an empty command is not a command. The
         // `NonEmpty` in `Verb::Run` is what makes the other reading unwritable.
-        assert_eq!(parse(&["ws", "--"]), Ok(workspace("ws", Verb::Attach)));
+        assert_eq!(parse(&["ws", "--"]), Ok(workspace("ws", attach())));
     }
 
     #[test]
@@ -1473,5 +1598,201 @@ mod tests {
         assert!(options < environment, "{help}");
         assert!(help.starts_with("Open a devcontainer"), "{help}");
         assert!(help.contains("Usage: dl "), "{help}");
+    }
+
+    // ================================================================== --autorm
+
+    #[test]
+    fn autorm_is_carried_by_the_two_forms_that_hand_over_a_session() {
+        assert_eq!(
+            parse(&["ws", "--autorm"]),
+            Ok(workspace(
+                "ws",
+                Verb::Attach {
+                    autorm: Autorm::OnExit
+                }
+            ))
+        );
+        assert_eq!(
+            parse(&["ws", "--autorm", "--", "make", "test"]),
+            Ok(workspace("ws", run_with(&["make", "test"], Autorm::OnExit)))
+        );
+        // Position is not the grammar's business: clap strips the flag wherever it
+        // sits, and only `--force` has a slot that means something.
+        assert_eq!(
+            parse(&["--autorm", "ws"]),
+            Ok(workspace(
+                "ws",
+                Verb::Attach {
+                    autorm: Autorm::OnExit
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn autorm_with_no_workspace_named_picks_one_and_keeps_the_flag() {
+        assert_eq!(
+            parse(&["--autorm"]),
+            Ok(Command::Select {
+                verb: Verb::Attach {
+                    autorm: Autorm::OnExit
+                },
+                devcontainer: None
+            })
+        );
+    }
+
+    #[test]
+    fn a_dash_dash_with_nothing_after_it_still_carries_the_flag() {
+        // The empty command is not a command, and the attach it collapses to is
+        // still the attach that was asked to clean up after itself.
+        assert_eq!(
+            parse(&["ws", "--autorm", "--"]),
+            Ok(workspace(
+                "ws",
+                Verb::Attach {
+                    autorm: Autorm::OnExit
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn every_verb_word_refuses_the_flag() {
+        // `code` is why this is a refusal and not a shrug: it returns the moment
+        // devpod has told VS Code where to connect, so honouring `--autorm` there
+        // would delete the container out from under a window still opening.
+        //
+        // `restart`, `recreate` and `reset` are in this list for a different reason
+        // and it is worth not conflating them: those three *do* end in a session, so
+        // the removal would work behind them. They are refused because the flag is
+        // the throwaway workspace rather than a cleanup modifier on every verb that
+        // ends in a shell — a scope decision, which is why the sentence names the
+        // two forms that work instead of claiming these hand over nothing.
+        for word in [
+            "up", "stop", "rm", "code", "restart", "recreate", "reset", "dotfiles",
+        ] {
+            assert_eq!(
+                parse(&["ws", word, "--autorm"]),
+                Err(GrammarError::AutormNotAllowed { command: word }),
+                "dl ws {word} --autorm"
+            );
+            // And from the other position, since the verb wins from either.
+            assert_eq!(
+                parse(&[word, "ws", "--autorm"]),
+                Err(GrammarError::AutormNotAllowed { command: word }),
+                "dl {word} ws --autorm"
+            );
+        }
+    }
+
+    #[test]
+    fn the_flag_spelled_verbs_refuse_it_too() {
+        // `--rm` and `--stop` are the same two verbs and get the same answer, under
+        // the word rather than the flag: the sentence names the verb, not the spelling.
+        assert_eq!(
+            parse(&["ws", "--rm", "--autorm"]),
+            Err(GrammarError::AutormNotAllowed { command: "rm" })
+        );
+        assert_eq!(
+            parse(&["ws", "--stop", "--autorm"]),
+            Err(GrammarError::AutormNotAllowed { command: "stop" })
+        );
+    }
+
+    #[test]
+    fn a_command_that_opens_no_workspace_refuses_it() {
+        assert_eq!(
+            parse(&["--ls", "--autorm"]),
+            Err(GrammarError::AutormNotAllowed { command: "--ls" })
+        );
+        assert_eq!(
+            parse(&["--purge", "--autorm"]),
+            Err(GrammarError::AutormNotAllowed { command: "--purge" })
+        );
+    }
+
+    #[test]
+    fn force_does_not_compose_with_autorm() {
+        // The pair looks like it should and must not: the guard is what makes the
+        // flag safe to leave on a recalled line, and a habitual `--force` beside it
+        // would destroy work later, unattended, with nobody reading the sentence.
+        assert_eq!(
+            parse(&["ws", "--autorm", "--force"]),
+            Err(GrammarError::AutormForced)
+        );
+        assert_eq!(
+            parse(&["ws", "--autorm", "--force", "--", "make"]),
+            Err(GrammarError::AutormForced)
+        );
+    }
+
+    #[test]
+    fn the_pair_is_refused_wherever_force_sits_in_the_line() {
+        // `--force`'s meaning is recovered from its position, and `--autorm` is a word
+        // in the stream that position is counted in — so without this the same pair
+        // gets three different answers depending on where it was typed, two of them
+        // describing the wrong problem: `Unknown command '--force'` about a workspace
+        // called `--autorm`, and `Unknown workspace '--force'`.
+        for line in [
+            vec!["ws", "--autorm", "--force"],
+            vec!["--autorm", "--force", "ws"],
+            vec!["--force", "--autorm", "ws"],
+            vec!["--autorm", "ws", "--force"],
+            // No workspace at all: the selector's line, refused the same way rather
+            // than opening a picker whose choice cannot be honoured.
+            vec!["--force", "--autorm"],
+        ] {
+            assert_eq!(
+                parse(&line),
+                Err(GrammarError::AutormForced),
+                "dl {}",
+                line.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_called_force_still_reads_that_way_without_autorm() {
+        // The parity readings `force_placement` exists to recover are untouched for
+        // every line that does not also say `--autorm`. Slot 0 is a *name*, and the
+        // line earns the same refusal a bare unknown name does; slot 1 is the *verb*,
+        // so `dl ws --force` is an unknown command and not a silent forced anything.
+        assert_eq!(
+            parse(&["--force"]),
+            Ok(workspace("--force", attach())),
+            "the slot-0 reading was lost"
+        );
+        assert_eq!(
+            parse(&["ws", "--force"]),
+            Err(GrammarError::UnknownVerb {
+                target: "ws".to_owned(),
+                word: "--force".to_owned()
+            }),
+            "the slot-1 reading was lost"
+        );
+    }
+
+    #[test]
+    fn autorm_after_the_dash_dash_belongs_to_the_workspace_command() {
+        // Everything after `--` is the command's, flags included: this runs a
+        // program called `--autorm` and removes nothing.
+        assert_eq!(
+            parse(&["ws", "--", "--autorm"]),
+            Ok(workspace("ws", run(&["--autorm"])))
+        );
+    }
+
+    #[test]
+    fn the_help_names_the_flag_where_somebody_would_look_for_it() {
+        use clap::CommandFactory;
+
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("dl blooop/devlaunch --autorm"), "{help}");
+        assert!(
+            help.contains("--autorm is the throwaway workspace"),
+            "{help}"
+        );
     }
 }

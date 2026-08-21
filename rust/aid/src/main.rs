@@ -178,6 +178,11 @@ Options:
                                      an agent. Appendable: recall the line and type
                                      it at the end, prompt and all. Add --force to
                                      --rm to delete despite unsaved work.
+    --autorm                         Delete the workspace once the agent's session
+                                     ends. Also appendable, and unlike --rm it keeps
+                                     the prompt: the agent runs, then the workspace
+                                     goes. Stops at work that is nowhere else and
+                                     says so, leaving the workspace standing.
     --help, -h                       Show this help
     --version                        Show version
 
@@ -191,6 +196,9 @@ Examples:
     aid blooop/devlaunch@fix/42 fix the bug --rm --force
                                                # The line above, recalled, with the
                                                # workspace deleted instead
+    aid blooop/devlaunch@fix/42 fix the bug --autorm
+                                               # Same line, but the agent still runs
+                                               # and the workspace goes afterwards
 
 Everything else — listing, stopping, deleting, VS Code — is dl's job:
     dl --help\n\n"

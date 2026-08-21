@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-21
+
+### Added
+
+- **`--autorm`: the workspace goes when the session does.** `dl <ws> --autorm` and
+  `dl <ws> --autorm -- <cmd>` delete the workspace and its clone once the session
+  they handed over has ended, the way `docker run --rm` does; `aid` takes it too,
+  appendable like `--rm` but keeping the prompt, so the agent runs and *then* the
+  workspace goes.
+
+  The removal is `dl <ws> rm`'s rather than a second one, which decides three things
+  at once. It goes through the **unsaved-work guard**, so a clone holding
+  uncommitted or unpushed work — or one git could not read to find out — refuses,
+  names which, and leaves the workspace standing: the flag never decides that your
+  work was disposable, which is what makes it safe to leave on a line you recall.
+  It resolves the target through the same `target::resolve` the `rm` verb uses, at
+  the cost of one `devpod status` on the exit path, so `--autorm` and `rm` cannot
+  disagree about which workspace they are addressing. And the **launch's** exit
+  code is what reaches the shell — `dl repo --autorm -- make test` exits with the
+  test's status — because a cleanup that refused is not the test failing.
+
+  **What counts as "there is something to remove" is carried, not inferred from the
+  exit code.** `dl` returns exit 1 both for a workspace that never existed and for a
+  container that came up and would not open a session, and those are opposite answers
+  to that question — so `render_launch` now reports a `Reached` beside the `Ending`.
+  The case this gets right is a `devpod up` that dies in `postCreateCommand`: it
+  leaves the container **running**, devpod's record written and the clone cut (which
+  is why `lifecycle::create_record` exists at all), so an unattended
+  `dl owner/repo --autorm -- make test` against a broken devcontainer would otherwise
+  leak, every run, exactly the workspace the flag was reached for. A session devpod
+  refused, and an OpenSSH that is not installed, leave the same thing behind and are
+  collected for the same reason. A launch that stopped before devpod was asked for
+  anything removes nothing.
+
+  **The completion cache is rewritten after the removal, not only before it.**
+  `Refresh` is one detached child per command, and the launch spends it the moment
+  the session returns — describing a world with the workspace still in it. The new
+  `Refresh::rearm` lets the one command that legitimately changes the workspace list
+  *twice* spawn a second child, so tab-completion stops offering a workspace that has
+  just been deleted instead of going on offering it until the cache TTL expires.
+
+  `--force` does **not** compose with it, and is refused rather than ignored: a
+  `--force` habitually appended to a recalled `--autorm` line would destroy work
+  hours later, unattended, with nobody reading the sentence that explained it. Run
+  `dl <ws> rm --force` when that is what you mean.
+
+  Every verb word refuses the flag rather than dropping it, and `code` is why that
+  has to be a refusal — it returns while VS Code is still connecting, so honouring
+  `--autorm` there would delete the container out from under a window that is still
+  opening. `restart`, `recreate` and `reset` are refused for a different reason
+  worth not conflating with it: those three *do* end in a session, so the removal
+  would work behind them, and they are out because `--autorm` is the throwaway
+  workspace rather than a cleanup modifier on every verb that ends in a shell. The
+  refusal names the two forms that work instead of claiming those verbs hand over
+  nothing. The grammar makes the flag unwritable rather than merely refused:
+  `Autorm` is carried by the two `Verb` arms it is defined for, so no other arm has
+  a field to put it in, and widening it later is adding arms there.
+
+  Best-effort by construction, and documented as such: `dl`'s Ctrl-C disposition is
+  a signal handler that `_exit`s, so a Ctrl-C during the container build — or a
+  closed terminal — ends `dl` before the session does and leaves the workspace
+  behind. A Ctrl-C *inside* a running session is unaffected, since the terminal is
+  in raw mode and the interrupt goes to the remote process.
+
 ## [0.3.2] - 2026-08-20
 
 ### Fixed
