@@ -76,12 +76,36 @@ use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
 use crate::timing;
 
+pub mod verdict_cache;
+
+use verdict_cache::VerdictCache;
+
 // ===========================================================================
 // the constants both ends of the pipe are written against
 // ===========================================================================
 
 /// Set this to opt a machine out of installing tools into workspaces.
 pub(crate) const DISABLE_VAR: &str = "DEVLAUNCH_NO_TOOLS";
+
+/// Set this to opt a machine out of the zellij stage alone.
+///
+/// A second variable rather than a value of [`DISABLE_VAR`], because the two
+/// answer different questions and a host that wants one wants the other left on.
+/// `DEVLAUNCH_NO_TOOLS` is "do not install anything", which costs the workspace
+/// `gh` and `claude` — the pair [`REQUIRED_TOOLS`] exists to guarantee, and the
+/// reason `dl` forwards a GitHub token at all. A host whose containers get zellij
+/// some other way (their own dotfiles, a base image, a devcontainer feature), or
+/// which wants no zellij in there at all, is asking only for the stage to stop
+/// running; asking for that with `DEVLAUNCH_NO_TOOLS` would surrender the
+/// guarantee to save one `command -v`.
+///
+/// Deliberately **not** [`crate::flows::launch::ZELLIJ_WRAP_VAR`]'s opposite
+/// number either. That switch decides whether a `dl <ws> -- <cmd>` first makes
+/// sure a zellij *session* exists to open panes into, and it already tolerates a
+/// container with no zellij — its setup is allowed to fail and the command runs
+/// regardless. The two are orthogonal on purpose: this one is about what gets
+/// installed, that one about what gets started.
+pub(crate) const ZELLIJ_DISABLE_VAR: &str = "DEVLAUNCH_NO_ZELLIJ";
 
 /// The values that mean "no" rather than "set, therefore yes". The same list
 /// [`crate::clients::gh`] reads, and kept separately for the reason that module
@@ -297,6 +321,73 @@ impl ToolsSwitch {
     pub fn from_env() -> Self {
         Self::requested(crate::osext::env_str(DISABLE_VAR).as_deref())
     }
+}
+
+/// Whether this pass carries the zellij stage.
+///
+/// A type of its own rather than a second [`ToolsSwitch`], for the reason the two
+/// variables are separate ([`ZELLIJ_DISABLE_VAR`]): they are read from different
+/// places and mean different things, and two values of one type sitting next to
+/// each other in a signature are two values a caller can swap without the compiler
+/// noticing. Distinct types make [`setup_stages`]'s pair unswappable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZellijSwitch {
+    Install,
+    Skip,
+}
+
+impl ZellijSwitch {
+    /// What `DEVLAUNCH_NO_ZELLIJ` set to `value` asks for.
+    ///
+    /// The same [`FALSEY`] list [`ToolsSwitch::requested`] reads, through the same
+    /// [`provisioning_disabled`]: two opt-outs a user spells the same way must
+    /// answer the same way, and `DEVLAUNCH_NO_ZELLIJ=0` reading as *yes, skip it*
+    /// where `DEVLAUNCH_NO_TOOLS=0` reads as *no* is exactly the surprise a shared
+    /// parse exists to prevent.
+    pub(crate) fn requested(value: Option<&str>) -> Self {
+        if provisioning_disabled(value) {
+            Self::Skip
+        } else {
+            Self::Install
+        }
+    }
+
+    /// What the process environment asks for.
+    pub fn from_env() -> Self {
+        Self::requested(crate::osext::env_str(ZELLIJ_DISABLE_VAR).as_deref())
+    }
+}
+
+/// The two opt-outs one pass reads, carried as one value.
+///
+/// Not a convenience: [`provision_tools`] already takes a runner, a workspace, an
+/// occasion, a host layout, a verdict cache and an events sink, and two more
+/// positional parameters on top of that is where a call site starts getting them
+/// in the wrong order. They belong together anyway — both answer "what may this
+/// pass put in the container", and every caller decides both at once, from the
+/// environment, when it is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Switches {
+    pub tools: ToolsSwitch,
+    pub zellij: ZellijSwitch,
+}
+
+impl Switches {
+    /// Both switches as the process environment sets them.
+    pub fn from_env() -> Self {
+        Self {
+            tools: ToolsSwitch::from_env(),
+            zellij: ZellijSwitch::from_env(),
+        }
+    }
+
+    /// Both switches on — the default a machine that set neither variable gets,
+    /// and the shape most tests want.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const INSTALLING: Self = Self {
+        tools: ToolsSwitch::Install,
+        zellij: ZellijSwitch::Install,
+    };
 }
 
 // ===========================================================================
@@ -825,7 +916,17 @@ impl Stage {
 /// installing zellij *is* tool provisioning, where naming a container is not, and a
 /// machine that turned tool installs off has not thereby asked for anonymous
 /// containers. [`provision_tools`] draws the same line for the same reason.
-pub(crate) fn setup_stages(workspace: &str, tools: ToolsSwitch) -> Vec<Stage> {
+///
+/// It is gated on `zellij` as well, and the two are an **and**: the stage runs only
+/// when both switches say install. `DEVLAUNCH_NO_TOOLS` covers zellij because
+/// installing it is tool provisioning; `DEVLAUNCH_NO_ZELLIJ` covers only zellij, so
+/// a host can keep the `gh`/`claude` guarantee and still stop the stage. Neither
+/// touches the hostname, which is not tools work under either variable.
+pub(crate) fn setup_stages(
+    workspace: &str,
+    tools: ToolsSwitch,
+    zellij: ZellijSwitch,
+) -> Vec<Stage> {
     let mut stages = vec![
         // The hostname appears in the bash prompt (user@hostname:path$), which is
         // what tells a session which project and branch it is in. bash reads it
@@ -838,7 +939,7 @@ pub(crate) fn setup_stages(workspace: &str, tools: ToolsSwitch) -> Vec<Stage> {
         )
         .quieter(),
     ];
-    if let ToolsSwitch::Install = tools {
+    if let (ToolsSwitch::Install, ZellijSwitch::Install) = (tools, zellij) {
         stages.push(Stage::new(
             ZELLIJ_STAGE,
             // A nested `bash -c` because a stage is interpolated into
@@ -1398,6 +1499,32 @@ fn ustar_header(arcname: &str, meta: &Metadata) -> Result<[u8; TAR_BLOCK], Bundl
 // the flow
 // ===========================================================================
 
+/// Which of a launch's two provisioning moments this pass is.
+///
+/// The distinction exists because one of them may be skipped and the other may
+/// never be, and nothing else in the call tells them apart: both arrive with a
+/// workspace id and a runner, at a container devpod reports as running.
+///
+/// **The hostname is what separates them.** `sudo hostname <ws>` is a stage of the
+/// pass, and the name it sets lives in the container's UTS namespace, which docker
+/// rebuilds from the container's config on every `start`. So a container that has
+/// just been through `devpod up` — created, or stopped and started again — has lost
+/// the name and has to be told it again, before the session `dl` is about to hand
+/// over reads it into a prompt. That pass travels, always, whatever any cache says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassOccasion {
+    /// The pass that follows this launch's own `devpod up`. The container is new
+    /// to this boot: it has no hostname yet, and whatever was true of the last
+    /// container under this id is not evidence about this one.
+    AfterUp,
+    /// The pass over a container that was already running when the launch arrived —
+    /// the `dl <ws> up` top-up and the sibling-won path. Nothing has restarted, so
+    /// the hostname set by the `up` that started it is still standing, and the only
+    /// question left is whether the tools are there. That question has an answer on
+    /// disk ([`verdict_cache`]) whenever a previous pass found them.
+    TopUp,
+}
+
 /// Something [`provision_tools`] did that the `dl` binary may want to report.
 ///
 /// One arm per `logging.*` call `tools.py` makes, carrying what that line
@@ -1448,6 +1575,18 @@ pub enum ProvisionEvent {
 pub enum Provisioning {
     /// The probe found the official layout: one trip, nothing to do.
     AlreadyProvisioned,
+    /// No trip at all: this was a [`PassOccasion::TopUp`] over a container a
+    /// previous pass found provisioned, and devpod's own records say that container
+    /// has not been through an `up` since ([`verdict_cache`]).
+    ///
+    /// Its own arm rather than a second way of saying [`Self::AlreadyProvisioned`],
+    /// because the two are the same verdict reached by opposite means and only one
+    /// of them is evidence: one asked the container just now, the other asked a file
+    /// the host wrote earlier. A caller that wanted to re-record the verdict, count
+    /// the round trips, or explain a launch's timing needs to be able to tell them
+    /// apart, and a shared arm is how it would come to record a verdict it never
+    /// observed.
+    CachedProvisioned,
     /// The host's own binaries landed in the container.
     Lent,
     /// The container has both tools and a claude that is not the official install,
@@ -1477,7 +1616,11 @@ impl Provisioning {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn tools_present(&self) -> bool {
         match self {
-            Self::AlreadyProvisioned | Self::Lent | Self::ShimKept | Self::Installed => true,
+            Self::AlreadyProvisioned
+            | Self::CachedProvisioned
+            | Self::Lent
+            | Self::ShimKept
+            | Self::Installed => true,
             Self::InstallRefused { .. } | Self::Disabled | Self::TripRefused { .. } => false,
         }
     }
@@ -1533,15 +1676,25 @@ pub struct DevpodMissing;
 /// is not captured — a cold install streams a ~300MB binary or downloads pixi and two
 /// packages, which with nothing on the terminal reads as a hung `dl`, and the
 /// scripts' own progress lines are worth nothing in a buffer.
+///
+/// `verdicts` is `None` for a caller that keeps no host-side memory of past passes —
+/// every pass then travels, which is what this did before the cache existed. When
+/// there is one, it is read on a [`PassOccasion::TopUp`] and written after any pass
+/// that probed provisioned; see [`verdict_cache`] for what makes a remembered
+/// verdict still true.
 pub fn provision_tools(
     runner: &dyn Runner,
     workspace: &str,
-    tools: ToolsSwitch,
+    occasion: PassOccasion,
+    switches: Switches,
     host: Option<&HostLayout>,
+    verdicts: Option<&VerdictCache>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Provisioning, DevpodMissing> {
     timing::stage_result(timing::Stage::Tools, || {
-        provision(runner, workspace, tools, host, events)
+        provision(
+            runner, workspace, occasion, switches, host, verdicts, events,
+        )
     })
 }
 
@@ -1549,16 +1702,29 @@ pub fn provision_tools(
 fn provision(
     runner: &dyn Runner,
     workspace: &str,
-    tools: ToolsSwitch,
+    occasion: PassOccasion,
+    switches: Switches,
     host: Option<&HostLayout>,
+    verdicts: Option<&VerdictCache>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Provisioning, DevpodMissing> {
-    let found = match setup_pass(runner, workspace, tools, events) {
+    // Before the trip, because a trip is the whole of what this saves; and before
+    // the opt-out check below, because that check exists to report what the pass
+    // did with the stages it carried, and here there is no pass. On a top-up there
+    // is nothing for the stages to do either: the container never stopped, so the
+    // hostname the `up` that started it set is still the one it has.
+    if let (PassOccasion::TopUp, Some(verdicts)) = (occasion, verdicts)
+        && verdicts.trusted(workspace)
+    {
+        return Ok(Provisioning::CachedProvisioned);
+    }
+
+    let found = match setup_pass(runner, workspace, switches, events) {
         Ok(found) => found,
         Err(refusal) => return refused(workspace, refusal, events),
     };
 
-    if let ToolsSwitch::Skip = tools {
+    if let ToolsSwitch::Skip = switches.tools {
         events.say(ProvisionEvent::ProvisioningDisabled {
             workspace: workspace.to_owned(),
         });
@@ -1566,6 +1732,11 @@ fn provision(
     }
 
     if let ProbeResult::Provisioned = found {
+        // The one outcome worth remembering, and the reasons the others are not are
+        // in [`verdict_cache`]'s own note.
+        if let Some(verdicts) = verdicts {
+            verdicts.record(workspace);
+        }
         return Ok(Provisioning::AlreadyProvisioned);
     }
 
@@ -1659,10 +1830,10 @@ fn refused(
 fn setup_pass(
     runner: &dyn Runner,
     workspace: &str,
-    tools: ToolsSwitch,
+    switches: Switches,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<ProbeResult, NotRun> {
-    let stages = setup_stages(workspace, tools);
+    let stages = setup_stages(workspace, switches.tools, switches.zellij);
     let call = Call::new([
         "ssh",
         workspace,
@@ -2257,20 +2428,31 @@ fi
         }
     }
 
+    /// The flow with no host-side memory behind it, on the occasion that never
+    /// consults one — which is every flow test that is not about the verdict cache,
+    /// and is exactly what this flow did before the cache existed.
     fn events_of(
         runner: &Trips,
-        tools: ToolsSwitch,
+        switches: Switches,
         host: &HostLayout,
     ) -> (Result<Provisioning, DevpodMissing>, Vec<ProvisionEvent>) {
         let mut events = Vec::new();
-        let outcome = provision_tools(runner, "myws", tools, Some(host), &mut events);
+        let outcome = provision_tools(
+            runner,
+            "myws",
+            PassOccasion::AfterUp,
+            switches,
+            Some(host),
+            None,
+            &mut events,
+        );
         (outcome, events)
     }
 
     /// The flow, with the tools switch on and nothing to lend — the shape most of
     /// the flow tests want.
     fn provision_with(runner: &Trips) -> Provisioning {
-        let (outcome, _) = events_of(runner, ToolsSwitch::Install, &nothing_to_lend());
+        let (outcome, _) = events_of(runner, Switches::INSTALLING, &nothing_to_lend());
         outcome.expect("devpod answered")
     }
 
@@ -2628,7 +2810,7 @@ fi
         // The round trip Python's own tests assert with `shlex.split(runner.script())`:
         // whatever the quoting, the remote shell has to recover exactly `bash`, the
         // flag, and one script.
-        let stages = setup_stages("myws", ToolsSwitch::Install);
+        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install);
         for (payload, flag, script) in [
             (
                 format!("bash -lc {}", quote(&setup_script(&stages))),
@@ -2655,7 +2837,7 @@ fi
     fn the_zellij_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
         // The stage is interpolated into `if <command>; then`, so the quoting has to
         // survive being read by the *pass's* shell before the nested bash sees it.
-        let stages = setup_stages("myws", ToolsSwitch::Install);
+        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install);
         let command = &stages[1].command;
         let words = shlex::split(command).expect("a stage a shell can read");
         assert_eq!(
@@ -2698,12 +2880,20 @@ fi
         // Stages, then the probe — and the zellij stage carries a whole quoted
         // script, which is where a quoting layer that merely *worked* would change
         // these bytes.
-        let with_zellij = setup_script(&setup_stages("myws", ToolsSwitch::Install));
+        let with_zellij = setup_script(&setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+        ));
         assert_eq!(
             with_zellij,
             format!("{PYTHON_HOSTNAME_STAGE}\n{PYTHON_ZELLIJ_STAGE}\n{PYTHON_PROBE_SCRIPT}")
         );
-        let opted_out = setup_script(&setup_stages("myws", ToolsSwitch::Skip));
+        let opted_out = setup_script(&setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Install,
+        ));
         assert_eq!(
             opted_out,
             format!("{PYTHON_HOSTNAME_STAGE}\n{PYTHON_PROBE_SCRIPT}")
@@ -3464,7 +3654,11 @@ fi
         // Composed *from* the probe, never a re-expression of it: the relation the
         // probe reports on is stated once and asked from both ends, so a composition
         // that rewrote or trimmed the probe would be the second copy.
-        let script = setup_script(&setup_stages("myws", ToolsSwitch::Install));
+        let script = setup_script(&setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+        ));
         assert!(script.contains(&probe_script()));
     }
 
@@ -3473,7 +3667,7 @@ fi
         // Order, and it is not cosmetic: the probe exits early when a tool is
         // missing, which is the commonest cold-path answer, so a stage placed behind
         // it would report "not reached" on the very launches the fold exists for.
-        let stages = setup_stages("myws", ToolsSwitch::Install);
+        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install);
         let script = setup_script(&stages);
         let probe_at = script.find(&probe_script()).expect("the probe is in there");
         for stage in &stages {
@@ -3491,7 +3685,11 @@ fi
         // would make the first failing stage take the probe's answer with it, which
         // is why the transfer — correctly `set -eu` for the all-or-nothing sequence
         // it is — is not a stage in this pass.
-        let script = setup_script(&setup_stages("myws", ToolsSwitch::Install));
+        let script = setup_script(&setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+        ));
         assert!(!script.contains("set -e"));
     }
 
@@ -3499,7 +3697,11 @@ fi
     fn a_workspace_name_cannot_run_a_command_of_its_own() {
         // The name is interpolated into a shell script, so it is quoted.
         let name = "myws; touch /tmp/pwned";
-        let script = setup_script(&setup_stages(name, ToolsSwitch::Install));
+        let script = setup_script(&setup_stages(
+            name,
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+        ));
         assert!(script.contains(&format!("hostname {}", quote(name))));
         assert!(!script.contains("hostname myws;"));
     }
@@ -3531,7 +3733,11 @@ fi
         if let Some(status) = sudo_exit {
             write_program(&sysbin.join("sudo"), &format!("#!/bin/sh\nexit {status}\n"));
         }
-        let script = setup_script(&setup_stages(workspace, ToolsSwitch::Install));
+        let script = setup_script(&setup_stages(
+            workspace,
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+        ));
         let ran = bash_with(
             &script,
             &[
@@ -3552,9 +3758,12 @@ fi
 
     /// One stage's outcome out of a pass that runs more than one, by name.
     fn outcome_of(report: &str, stage: StageName) -> Option<StageOutcome> {
-        stage_outcomes(report, &setup_stages("myws", ToolsSwitch::Install))
-            .into_iter()
-            .find(|outcome| outcome.stage == stage)
+        stage_outcomes(
+            report,
+            &setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install),
+        )
+        .into_iter()
+        .find(|outcome| outcome.stage == stage)
     }
 
     #[test]
@@ -3610,7 +3819,7 @@ fi
     /// the one stage because every assertion below is about how one reported line is
     /// *read*.
     fn hostname_outcome(report: &str) -> Vec<StageOutcome> {
-        let stages: Vec<Stage> = setup_stages("myws", ToolsSwitch::Install)
+        let stages: Vec<Stage> = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install)
             .into_iter()
             .filter(|stage| stage.name == HOSTNAME_STAGE)
             .collect();
@@ -3719,7 +3928,11 @@ fi
         assert_eq!(words[..2], ["bash".to_owned(), "-lc".to_owned()]);
         assert_eq!(
             words[2],
-            setup_script(&setup_stages("myws", ToolsSwitch::Install))
+            setup_script(&setup_stages(
+                "myws",
+                ToolsSwitch::Install,
+                ZellijSwitch::Install
+            ))
         );
     }
 
@@ -3773,7 +3986,7 @@ fi
         let runner = Trips::new(&[0, 0]).reporting(REPORT_ABSENT);
         let host = a_host_that_can_lend(scratch.path());
 
-        let (outcome, _) = events_of(&runner, ToolsSwitch::Install, &host);
+        let (outcome, _) = events_of(&runner, Switches::INSTALLING, &host);
 
         assert_eq!(outcome, Ok(Provisioning::Lent));
         assert_eq!(runner.count(), 2);
@@ -3791,7 +4004,7 @@ fi
             .reporting(REPORT_ABSENT);
         let host = a_host_that_can_lend(scratch.path());
 
-        let (outcome, _) = events_of(&runner, ToolsSwitch::Install, &host);
+        let (outcome, _) = events_of(&runner, Switches::INSTALLING, &host);
 
         assert_eq!(outcome, Ok(Provisioning::Installed));
         assert_eq!(runner.count(), 3);
@@ -3807,7 +4020,7 @@ fi
         let runner = Trips::new(&[0, 0]).reporting(REPORT_LENDABLE);
         let host = a_host_that_can_lend(scratch.path());
 
-        let (outcome, _) = events_of(&runner, ToolsSwitch::Install, &host);
+        let (outcome, _) = events_of(&runner, Switches::INSTALLING, &host);
 
         assert_eq!(outcome, Ok(Provisioning::Lent));
         assert_eq!(runner.count(), 2);
@@ -3825,7 +4038,7 @@ fi
         let runner = Trips::new(&[0, 1]).reporting(REPORT_LENDABLE);
         let host = a_host_that_can_lend(scratch.path());
 
-        let (outcome, _) = events_of(&runner, ToolsSwitch::Install, &host);
+        let (outcome, _) = events_of(&runner, Switches::INSTALLING, &host);
 
         assert_eq!(outcome, Ok(Provisioning::ShimKept));
         assert_eq!(runner.count(), 2);
@@ -3838,7 +4051,15 @@ fi
         let runner = Trips::new(&[0, 0]).reporting(REPORT_ABSENT);
         let mut events = Vec::new();
 
-        let outcome = provision_tools(&runner, "myws", ToolsSwitch::Install, None, &mut events);
+        let outcome = provision_tools(
+            &runner,
+            "myws",
+            PassOccasion::AfterUp,
+            Switches::INSTALLING,
+            None,
+            None,
+            &mut events,
+        );
 
         assert_eq!(outcome, Ok(Provisioning::Installed));
         assert_eq!(runner.count(), 2);
@@ -3872,7 +4093,7 @@ fi
         // The workspace is up and the user asked for a session, not an install.
         let runner = Trips::new(&[0, 1]).reporting(REPORT_ABSENT);
 
-        let (outcome, events) = events_of(&runner, ToolsSwitch::Install, &nothing_to_lend());
+        let (outcome, events) = events_of(&runner, Switches::INSTALLING, &nothing_to_lend());
 
         let outcome = outcome.expect("devpod answered");
         assert_eq!(
@@ -3901,7 +4122,7 @@ fi
         // binary renders it as exit 127.
         let runner = Trips::answering(&[Answer::NoDevpod]);
 
-        let (outcome, events) = events_of(&runner, ToolsSwitch::Install, &nothing_to_lend());
+        let (outcome, events) = events_of(&runner, Switches::INSTALLING, &nothing_to_lend());
 
         assert_eq!(outcome, Err(DevpodMissing));
         assert_eq!(events, vec![], "no report came back to read stages from");
@@ -3912,7 +4133,7 @@ fi
         // Python's `except OSError: return False`, as an arm rather than a bool.
         let runner = Trips::answering(&[Answer::Blocked]);
 
-        let (outcome, events) = events_of(&runner, ToolsSwitch::Install, &nothing_to_lend());
+        let (outcome, events) = events_of(&runner, Switches::INSTALLING, &nothing_to_lend());
 
         let refusal = NotRun::Blocked(OsFailure {
             kind: std::io::ErrorKind::PermissionDenied,
@@ -3938,7 +4159,14 @@ fi
         // off with it.
         let runner = Trips::new(&[0]).reporting(REPORT_ABSENT);
 
-        let (outcome, events) = events_of(&runner, ToolsSwitch::Skip, &nothing_to_lend());
+        let (outcome, events) = events_of(
+            &runner,
+            Switches {
+                tools: ToolsSwitch::Skip,
+                zellij: ZellijSwitch::Install,
+            },
+            &nothing_to_lend(),
+        );
 
         let outcome = outcome.expect("devpod answered");
         assert_eq!(outcome, Provisioning::Disabled);
@@ -3947,7 +4175,11 @@ fi
         let words = shlex::split(&runner.script(0)).expect("a readable payload");
         assert_eq!(
             words[2],
-            setup_script(&setup_stages("myws", ToolsSwitch::Skip))
+            setup_script(&setup_stages(
+                "myws",
+                ToolsSwitch::Skip,
+                ZellijSwitch::Install
+            ))
         );
         assert!(words[2].contains("sudo hostname myws"));
         assert!(
@@ -3988,13 +4220,371 @@ fi
     }
 
     // =======================================================================
+    // DEVLAUNCH_NO_ZELLIJ: the narrower opt-out
+    // =======================================================================
+
+    #[test]
+    fn the_zellij_opt_out_drops_only_the_zellij_stage() {
+        // The whole reason for a second variable: a host that wants no zellij
+        // installed keeps everything `DEVLAUNCH_NO_TOOLS` would have cost it —
+        // the container is still named, and the pass still probes for the `gh`
+        // and `claude` the workspace is guaranteed.
+        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Skip)
+            .iter()
+            .map(|stage| stage.name)
+            .collect();
+
+        assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
+        assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
+
+        // And really nothing is installed: a real bash over the composed script
+        // never reaches pixi.
+        let scratch = scratch();
+        let (_, _, calls) = run_zellij_pass(
+            scratch.path(),
+            Switches {
+                tools: ToolsSwitch::Install,
+                zellij: ZellijSwitch::Skip,
+            },
+            false,
+            Some(0),
+        );
+        assert!(!calls.contains("pixi"), "{calls}");
+    }
+
+    #[test]
+    fn either_opt_out_composes_the_same_pass() {
+        // The two switches are an `and`, so the three ways to be without the stage
+        // have to be one script and not three: whichever variable a host set, the
+        // container is asked for exactly the same bytes. A golden of the *pair*
+        // rather than of a rendering, because what is at stake is that these agree
+        // rather than what they say — the bytes themselves are pinned against
+        // Python's in `the_setup_pass_is_the_script_python_composes`.
+        let without = setup_script(&setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Skip,
+        ));
+        for tools in [ToolsSwitch::Install, ToolsSwitch::Skip] {
+            assert_eq!(
+                setup_script(&setup_stages("myws", tools, ZellijSwitch::Skip)),
+                without,
+                "{tools:?}"
+            );
+        }
+        assert_eq!(
+            setup_script(&setup_stages(
+                "myws",
+                ToolsSwitch::Skip,
+                ZellijSwitch::Install
+            )),
+            without
+        );
+        assert_ne!(
+            setup_script(&setup_stages(
+                "myws",
+                ToolsSwitch::Install,
+                ZellijSwitch::Install
+            )),
+            without,
+            "the stage is there when nothing asked for it to go"
+        );
+    }
+
+    #[test]
+    fn the_zellij_opt_out_still_probes_and_lends() {
+        // The switch is about one stage, not about the flow: the pass travels, the
+        // probe answers, and a lendable container is still lent the host's own
+        // binaries. `DEVLAUNCH_NO_TOOLS` is the switch that stops that, and this is
+        // deliberately not it.
+        let scratch = scratch();
+        let host = a_host_that_can_lend(scratch.path());
+        let runner = Trips::new(&[0, 0]).reporting(REPORT_LENDABLE);
+
+        let (outcome, _) = events_of(
+            &runner,
+            Switches {
+                tools: ToolsSwitch::Install,
+                zellij: ZellijSwitch::Skip,
+            },
+            &host,
+        );
+
+        let outcome = outcome.expect("devpod answered");
+        assert_eq!(outcome, Provisioning::Lent);
+        assert!(outcome.tools_present());
+        assert_eq!(runner.count(), 2, "the pass, then the transfer");
+        let words = shlex::split(&runner.script(0)).expect("a readable payload");
+        assert!(words[2].contains("sudo hostname myws"));
+        assert!(!words[2].contains(ZELLIJ_TOOL.command), "{}", words[2]);
+    }
+
+    #[test]
+    fn falsey_zellij_opt_out_values_leave_the_stage_on() {
+        // The same list `DEVLAUNCH_NO_TOOLS` reads, through the same parse: two
+        // opt-outs a user spells the same way have to answer the same way, and
+        // `DEVLAUNCH_NO_ZELLIJ=0` meaning *skip it* where `DEVLAUNCH_NO_TOOLS=0`
+        // means *no* is exactly the surprise sharing the parse prevents.
+        for value in ["", "0", "false", "no", "NO", " no "] {
+            assert_eq!(
+                ZellijSwitch::requested(Some(value)),
+                ZellijSwitch::Install,
+                "{value:?}"
+            );
+        }
+        assert_eq!(ZellijSwitch::requested(None), ZellijSwitch::Install);
+        for value in ["1", "true", "yes", "anything"] {
+            assert_eq!(
+                ZellijSwitch::requested(Some(value)),
+                ZellijSwitch::Skip,
+                "{value:?}"
+            );
+        }
+    }
+
+    // =======================================================================
+    // the trip a remembered verdict saves
+    // =======================================================================
+    //
+    // What [`verdict_cache`]'s own tests pin is when a marker is trusted. What
+    // these pin is what the *flow* does about it: which occasion consults one,
+    // which outcome writes one, and — the number that is the whole point — how
+    // many round trips each of those costs.
+
+    /// A devpod home, a cache, and the verdict cache over the two of them.
+    struct Remembering {
+        devpod_home: tempfile::TempDir,
+        cache: tempfile::TempDir,
+    }
+
+    impl Remembering {
+        /// One workspace, created and finished, as devpod's records leave it.
+        fn new() -> Self {
+            Self {
+                devpod_home: crate::flows::lifecycle::tests::devpod_home_with(&[(
+                    "default",
+                    "myws",
+                    Some(()),
+                )]),
+                cache: tempfile::tempdir().expect("a scratch cache directory"),
+            }
+        }
+
+        fn verdicts(&self) -> VerdictCache {
+            VerdictCache::under(
+                self.cache.path(),
+                Some(self.devpod_home.path().to_path_buf()),
+            )
+        }
+
+        /// devpod completing another `up`, which is a rewritten result file.
+        fn brought_up_again(&self) {
+            let result = self
+                .devpod_home
+                .path()
+                .join("contexts/default/workspaces/myws/workspace_result.json");
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&result)
+                .expect("the result file");
+            let was = file
+                .metadata()
+                .expect("its metadata")
+                .modified()
+                .expect("an mtime");
+            file.set_modified(was + std::time::Duration::from_secs(30))
+                .expect("a moved mtime");
+        }
+    }
+
+    /// The whole flow, with an occasion and a host-side memory behind it.
+    fn pass_of(
+        runner: &Trips,
+        occasion: PassOccasion,
+        verdicts: &VerdictCache,
+    ) -> Result<Provisioning, DevpodMissing> {
+        provision_tools(
+            runner,
+            "myws",
+            occasion,
+            Switches::INSTALLING,
+            Some(&nothing_to_lend()),
+            Some(verdicts),
+            &mut Vec::new(),
+        )
+    }
+
+    #[test]
+    fn a_top_up_with_a_trusted_verdict_makes_no_trip() {
+        // The saving, stated as the only thing that can be measured about it: zero
+        // round trips. A pass that answered from the cache but still opened the
+        // `devpod ssh` channel would save nothing at all — the trip is ~99%
+        // connection and process setup (#157), not the script it carries.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        assert_eq!(
+            pass_of(&first, PassOccasion::TopUp, &verdicts),
+            Ok(Provisioning::AlreadyProvisioned),
+            "the first top-up has nothing remembered and pays for the answer"
+        );
+        assert_eq!(first.count(), 1);
+
+        let again = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        let outcome = pass_of(&again, PassOccasion::TopUp, &verdicts);
+
+        let outcome = outcome.expect("no devpod was needed");
+        assert_eq!(outcome, Provisioning::CachedProvisioned);
+        assert!(outcome.tools_present());
+        assert_eq!(again.count(), 0, "nothing was asked of devpod");
+    }
+
+    #[test]
+    fn an_after_up_pass_travels_even_with_a_trusted_verdict() {
+        // The honest half of the scope. `sudo hostname` is a stage of the pass and
+        // the name lives in the container's UTS namespace, which docker rebuilds
+        // from the container's config on every start — so the pass after an `up`
+        // has work to do that no verdict about the *tools* can excuse it from.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        pass_of(&first, PassOccasion::TopUp, &verdicts).expect("devpod answered");
+
+        let after_up = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        let outcome = pass_of(&after_up, PassOccasion::AfterUp, &verdicts);
+
+        assert_eq!(outcome, Ok(Provisioning::AlreadyProvisioned));
+        assert_eq!(after_up.count(), 1);
+        let words = shlex::split(&after_up.script(0)).expect("a readable payload");
+        assert!(words[2].contains("sudo hostname myws"), "{}", words[2]);
+    }
+
+    #[test]
+    fn a_rebuilt_container_invalidates_the_verdict() {
+        // A `devpod up` by anything — this build, VS Code, a hand-typed one, a
+        // `--recreate` — rewrites `workspace_result.json`, and that is the whole of
+        // the invalidation. The next top-up finds the marker no longer describing
+        // the container standing now and pays for a fresh answer.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        pass_of(&first, PassOccasion::TopUp, &verdicts).expect("devpod answered");
+
+        remembering.brought_up_again();
+
+        let after = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        let outcome = pass_of(&after, PassOccasion::TopUp, &verdicts);
+
+        assert_eq!(outcome, Ok(Provisioning::AlreadyProvisioned));
+        assert_eq!(after.count(), 1, "the pass travelled again");
+    }
+
+    #[test]
+    fn only_a_provisioned_pass_writes_the_verdict() {
+        // A lend, an install and a kept shim are all passes on which the container
+        // just changed, and `ShimKept` is a documented residual that re-attempts a
+        // failing transfer on every `up` — a marker would silently turn that into
+        // never attempting again. Each of them is followed by a later pass that
+        // probes provisioned, and *that* pass is what records.
+        for (report, exits, expected) in [
+            (REPORT_LENDABLE, &[0, 0][..], Provisioning::ShimKept),
+            (REPORT_ABSENT, &[0, 0][..], Provisioning::Installed),
+            (
+                REPORT_ABSENT,
+                &[0, 1][..],
+                Provisioning::InstallRefused {
+                    exit: Exit::Code(1),
+                },
+            ),
+        ] {
+            let remembering = Remembering::new();
+            let verdicts = remembering.verdicts();
+            let runner = Trips::new(exits).reporting(report);
+
+            let outcome = pass_of(&runner, PassOccasion::TopUp, &verdicts);
+
+            assert_eq!(outcome, Ok(expected.clone()), "{report:?}");
+            let next = Trips::new(exits).reporting(report);
+            assert_eq!(
+                pass_of(&next, PassOccasion::TopUp, &verdicts),
+                Ok(expected),
+                "{report:?}"
+            );
+            assert!(
+                next.count() > 0,
+                "the next top-up still travelled: {report:?}"
+            );
+        }
+
+        // And the one that does record, for contrast — the same shape, one arm
+        // different, so the loop above is a pin on the *split* and not just on
+        // three arms happening not to write.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let runner = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        assert_eq!(
+            pass_of(&runner, PassOccasion::TopUp, &verdicts),
+            Ok(Provisioning::AlreadyProvisioned)
+        );
+        let next = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        assert_eq!(
+            pass_of(&next, PassOccasion::TopUp, &verdicts),
+            Ok(Provisioning::CachedProvisioned)
+        );
+        assert_eq!(next.count(), 0);
+    }
+
+    #[test]
+    fn a_caller_that_remembers_nothing_pays_for_every_answer() {
+        // `None` is the shape core's own launch tests and any embedder without a
+        // cache directory use, and it has to be exactly the behaviour that shipped
+        // before the cache existed: every pass travels, on every occasion.
+        for occasion in [PassOccasion::AfterUp, PassOccasion::TopUp] {
+            let runner = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+            let outcome = provision_tools(
+                &runner,
+                "myws",
+                occasion,
+                Switches::INSTALLING,
+                Some(&nothing_to_lend()),
+                None,
+                &mut Vec::new(),
+            );
+            assert_eq!(
+                outcome,
+                Ok(Provisioning::AlreadyProvisioned),
+                "{occasion:?}"
+            );
+            assert_eq!(runner.count(), 1, "{occasion:?}");
+        }
+    }
+
+    #[test]
+    fn a_verdict_is_never_trusted_over_a_container_the_host_cannot_identify() {
+        // No devpod home is no `workspace_result.json` to key on, and the cache
+        // then trusts nothing rather than trusting everything. Worth its own test
+        // because it is the arm a `None` would most plausibly be written to mean
+        // "no constraint".
+        let cache = tempfile::tempdir().expect("a scratch cache directory");
+        let verdicts = VerdictCache::under(cache.path(), None);
+        let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        pass_of(&first, PassOccasion::TopUp, &verdicts).expect("devpod answered");
+
+        let again = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        let outcome = pass_of(&again, PassOccasion::TopUp, &verdicts);
+
+        assert_eq!(outcome, Ok(Provisioning::AlreadyProvisioned));
+        assert_eq!(again.count(), 1);
+    }
+
+    // =======================================================================
     // TestTheHostNamesEveryStageThatIsNotOk
     // =======================================================================
 
     /// Every event about the hostname stage from one run.
     fn hostname_events(stdout: &str, exit: i32) -> Vec<ProvisionEvent> {
         let runner = Trips::new(&[exit, 0]).reporting(stdout);
-        let (_, events) = events_of(&runner, ToolsSwitch::Install, &nothing_to_lend());
+        let (_, events) = events_of(&runner, Switches::INSTALLING, &nothing_to_lend());
         events
             .into_iter()
             .filter(|event| match event {
@@ -4063,10 +4653,11 @@ fi
             Stage::new(StageName::new("x"), "true").failure_level,
             FailureLevel::Warning
         );
-        let levels: Vec<(StageName, FailureLevel)> = setup_stages("myws", ToolsSwitch::Install)
-            .iter()
-            .map(|stage| (stage.name, stage.failure_level))
-            .collect();
+        let levels: Vec<(StageName, FailureLevel)> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install)
+                .iter()
+                .map(|stage| (stage.name, stage.failure_level))
+                .collect();
         assert_eq!(
             levels,
             vec![
@@ -4331,7 +4922,7 @@ fi
         let runner = Trips::new(&[1, 0]).reporting("");
         let host = a_host_that_can_lend(scratch.path());
 
-        let (outcome, _) = events_of(&runner, ToolsSwitch::Install, &host);
+        let (outcome, _) = events_of(&runner, Switches::INSTALLING, &host);
         assert_eq!(outcome, Ok(Provisioning::Lent));
 
         let streamed = runner.trips()[1]
@@ -4518,13 +5109,13 @@ fi
     /// Run the whole setup pass for real and read it the way the host does.
     fn run_zellij_pass(
         scratch: &Path,
-        tools: ToolsSwitch,
+        switches: Switches,
         has_zellij: bool,
         pixi_exit: Option<i32>,
     ) -> (PathBuf, Output, String) {
         let (home, sysbin, log) = zellij_sandbox(scratch, has_zellij, pixi_exit);
         let ran = bash_with(
-            &setup_script(&setup_stages("myws", tools)),
+            &setup_script(&setup_stages("myws", switches.tools, switches.zellij)),
             &[
                 ("HOME", &home.to_string_lossy()),
                 ("PATH", &sysbin.to_string_lossy()),
@@ -4555,10 +5146,11 @@ fi
         // The guarantee, stated where it is made: the pass every entry into Running
         // goes through carries a zellij stage. No dotfiles, no devcontainer.json, no
         // repo cooperation — the ask comes from the invocation.
-        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Install)
-            .iter()
-            .map(|stage| stage.name)
-            .collect();
+        let names: Vec<StageName> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install)
+                .iter()
+                .map(|stage| stage.name)
+                .collect();
         assert!(names.contains(&ZELLIJ_STAGE), "{names:?}");
     }
 
@@ -4585,7 +5177,7 @@ fi
         // in — from anywhere without ~/.pixi/bin on PATH, an installed zellij looks
         // missing and is reinstalled on every launch.
         let scratch = scratch();
-        let (home, ran, calls) = run_zellij_pass(scratch.path(), ToolsSwitch::Install, true, None);
+        let (home, ran, calls) = run_zellij_pass(scratch.path(), Switches::INSTALLING, true, None);
 
         assert_eq!(
             zellij_outcome(&stdout_of(&ran)),
@@ -4607,7 +5199,7 @@ fi
         // forever.
         let scratch = scratch();
         let (home, ran, calls) =
-            run_zellij_pass(scratch.path(), ToolsSwitch::Install, false, Some(0));
+            run_zellij_pass(scratch.path(), Switches::INSTALLING, false, Some(0));
 
         assert_eq!(
             zellij_outcome(&stdout_of(&ran)),
@@ -4627,7 +5219,7 @@ fi
         // answers in the same trip, and the pass still exits 0 — so the container
         // opens without zellij instead of not opening.
         let scratch = scratch();
-        let (_, ran, calls) = run_zellij_pass(scratch.path(), ToolsSwitch::Install, false, Some(1));
+        let (_, ran, calls) = run_zellij_pass(scratch.path(), Switches::INSTALLING, false, Some(1));
 
         let report = stdout_of(&ran);
         assert_eq!(
@@ -4647,7 +5239,7 @@ fi
         // bootstrap's curl fails, there is no pixi behind it, and the stage reports
         // that — while the probe answers and the pass exits 0.
         let scratch = scratch();
-        let (_, ran, _) = run_zellij_pass(scratch.path(), ToolsSwitch::Install, false, None);
+        let (_, ran, _) = run_zellij_pass(scratch.path(), Switches::INSTALLING, false, None);
 
         let report = stdout_of(&ran);
         assert!(
@@ -4672,7 +5264,7 @@ fi
         // an install redirected into it would be invisible, and a cold launch that
         // looks hung is what these scripts print progress for.
         let scratch = scratch();
-        let (_, ran, _) = run_zellij_pass(scratch.path(), ToolsSwitch::Install, false, Some(0));
+        let (_, ran, _) = run_zellij_pass(scratch.path(), Switches::INSTALLING, false, Some(0));
 
         assert!(!stdout_of(&ran).contains("PIXI-NOISE"));
         assert!(String::from_utf8_lossy(&ran.stderr).contains("PIXI-NOISE"));
@@ -4684,7 +5276,7 @@ fi
         // the hostname stage, which is not tools work and is deliberately left
         // outside that switch — a machine that turned tool installs off has not
         // thereby asked for unnamed containers.
-        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Skip)
+        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Skip, ZellijSwitch::Install)
             .iter()
             .map(|stage| stage.name)
             .collect();
@@ -4692,7 +5284,15 @@ fi
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
 
         let scratch = scratch();
-        let (_, _, calls) = run_zellij_pass(scratch.path(), ToolsSwitch::Skip, false, Some(0));
+        let (_, _, calls) = run_zellij_pass(
+            scratch.path(),
+            Switches {
+                tools: ToolsSwitch::Skip,
+                zellij: ZellijSwitch::Install,
+            },
+            false,
+            Some(0),
+        );
         assert!(!calls.contains("pixi"), "{calls}");
     }
 }
