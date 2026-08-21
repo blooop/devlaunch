@@ -65,15 +65,26 @@ impl BootChild {
         let log =
             std::env::temp_dir().join(format!("devlaunch-aid-boot-{}.log", std::process::id()));
         let out = std::fs::File::create(&log).ok()?;
-        let err = out.try_clone().ok()?;
-        let child = Command::new(me)
+        let err = match out.try_clone() {
+            Ok(err) => err,
+            Err(_) => {
+                let _ = std::fs::remove_file(&log);
+                return None;
+            }
+        };
+        let spawned = Command::new(me)
             .arg(BOOT_WORD)
             .args(boot_args)
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err))
-            .spawn()
-            .ok()?;
+            .spawn();
+        let Ok(child) = spawned else {
+            // The fallback path must not litter: the log was created for a boot
+            // that never started.
+            let _ = std::fs::remove_file(&log);
+            return None;
+        };
         Some(BootChild {
             child,
             log,
