@@ -2840,29 +2840,70 @@ pub(crate) fn create_record(devpod_home: Option<&Path>, workspace_id: &str) -> C
     let Some(home) = devpod_home else {
         return CreateRecord::Unknown;
     };
-    let Ok(contexts) = std::fs::read_dir(home.join("contexts")) else {
+    let Some(context) = sole_context_holding(home, workspace_id) else {
         return CreateRecord::Unknown;
     };
-    let mut finished: Option<bool> = None;
+    if devpod_workspace_result(home, &context, workspace_id).is_file() {
+        CreateRecord::Completed
+    } else {
+        CreateRecord::NeverCompleted
+    }
+}
+
+/// The one context whose records name this workspace, or nothing when the question
+/// has no single answer.
+///
+/// Nothing for all four ways of not having one: a `contexts` directory that would
+/// not read, no context holding the id, two contexts holding it, and a context
+/// whose name is not UTF-8 (skipped, because a path this cannot spell is one
+/// devpod's own id lookup cannot have written).
+///
+/// Split out of [`create_record`] because [`sole_workspace_result`] has to walk the
+/// contexts *the same way* and read the same ambiguity out of them: the two answer
+/// different questions about one workspace, and a second copy of this loop is how
+/// they would come to disagree about which context that workspace is in.
+fn sole_context_holding(devpod_home: &Path, workspace_id: &str) -> Option<String> {
+    let contexts = std::fs::read_dir(devpod_home.join("contexts")).ok()?;
+    let mut sole: Option<String> = None;
     for context in contexts.flatten() {
-        // The two paths are built by the same pair of helpers `--reconcile` uses,
-        // so devpod's on-disk layout is spelled out in one place and not three.
+        // The paths are built by the same pair of helpers `--reconcile` uses, so
+        // devpod's on-disk layout is spelled out in one place and not three.
         let Some(name) = context.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !devpod_workspace_record(home, &name, workspace_id).is_file() {
+        if !devpod_workspace_record(devpod_home, &name, workspace_id).is_file() {
             continue;
         }
-        if finished.is_some() {
-            return CreateRecord::Unknown;
+        if sole.is_some() {
+            return None;
         }
-        finished = Some(devpod_workspace_result(home, &name, workspace_id).is_file());
+        sole = Some(name);
     }
-    match finished {
-        Some(true) => CreateRecord::Completed,
-        Some(false) => CreateRecord::NeverCompleted,
-        None => CreateRecord::Unknown,
-    }
+    sole
+}
+
+/// The one `workspace_result.json` this workspace has, if it has exactly one.
+///
+/// devpod rewrites that file on its way out of every *completed* `up`, whoever ran
+/// the `up` — `dl`, VS Code, a hand-typed `devpod up` — which is what makes its
+/// mtime a usable "has this container been rebuilt since?" anchor for
+/// [`crate::flows::provision::verdict_cache`]. The record beside it is not: devpod
+/// writes `workspace.json` on the way *in* and leaves it alone afterwards, so a
+/// container recreated ten times still carries the first create's timestamps.
+///
+/// Nothing rather than a guess in every ambiguous case, because the caller's only
+/// use for the answer is to *skip* work: no devpod home, no record, two contexts
+/// holding the id, or a record with no result beside it (an `up` that died in its
+/// hooks) all mean the same thing to it — there is no file whose mtime can be
+/// trusted to move when this container is rebuilt, so trust nothing.
+pub(crate) fn sole_workspace_result(
+    devpod_home: Option<&Path>,
+    workspace_id: &str,
+) -> Option<PathBuf> {
+    let home = devpod_home?;
+    let context = sole_context_holding(home, workspace_id)?;
+    let result = devpod_workspace_result(home, &context, workspace_id);
+    result.is_file().then_some(result)
 }
 
 /// Why one devpod record could not be re-pointed.
@@ -3050,7 +3091,7 @@ pub fn apply_reconciliation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! What the lifecycle commands do, at three seams.
     //!
     //! **The argv seam.** Every devpod call's whole argv, through the fake runner,
@@ -3111,7 +3152,13 @@ mod tests {
     /// One devpod home holding whatever these workspaces were left holding.
     /// `Some(())` writes the create result beside the record; `None` leaves the
     /// record alone, which is what an aborted `up` leaves behind.
-    fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> tempfile::TempDir {
+    ///
+    /// Shared with `flows::provision`'s tests rather than copied into them: the
+    /// layout it builds is devpod's, spelled here beside the helpers that read it
+    /// ([`devpod_workspace_record`], [`devpod_workspace_result`]), and a second
+    /// copy under another module is a fixture that can drift out of agreement with
+    /// the code it is a fixture for.
+    pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> tempfile::TempDir {
         let home = tempfile::tempdir().expect("a scratch devpod home");
         for (context, workspace_id, result) in entries {
             let dir = home

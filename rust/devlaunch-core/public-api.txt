@@ -1059,7 +1059,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Unquot
 pub trait devlaunch_core::flows::launch::ColdMachinery<'r>
 pub fn devlaunch_core::flows::launch::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
 pub trait devlaunch_core::flows::launch::Provision
-pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str) -> core::result::Result<(), devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion) -> core::result::Result<(), devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::lifecycle
@@ -1820,6 +1820,18 @@ pub fn devlaunch_core::flows::migration::UnusableRecord::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::migration::UnusableRecord
 pub fn devlaunch_core::flows::migration::migrate_cache(&mut devlaunch_core::domain::metadata::MetadataStorage, &std::path::Path) -> core::result::Result<core::option::Option<devlaunch_core::flows::migration::MigrationReport>, devlaunch_core::domain::metadata::MetadataError>
 pub mod devlaunch_core::flows::provision
+pub mod devlaunch_core::flows::provision::verdict_cache
+pub struct devlaunch_core::flows::provision::verdict_cache::VerdictCache
+impl devlaunch_core::flows::provision::verdict_cache::VerdictCache
+pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::under(&std::path::Path, core::option::Option<std::path::PathBuf>) -> Self
+impl core::clone::Clone for devlaunch_core::flows::provision::verdict_cache::VerdictCache
+pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::clone(&self) -> devlaunch_core::flows::provision::verdict_cache::VerdictCache
+impl core::cmp::Eq for devlaunch_core::flows::provision::verdict_cache::VerdictCache
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::verdict_cache::VerdictCache
+pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::eq(&self, &devlaunch_core::flows::provision::verdict_cache::VerdictCache) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::provision::verdict_cache::VerdictCache
+pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::verdict_cache::VerdictCache
 pub enum devlaunch_core::flows::provision::BundleFailed
 pub devlaunch_core::flows::provision::BundleFailed::NameTooLong
 pub devlaunch_core::flows::provision::BundleFailed::NameTooLong::arcname: alloc::string::String
@@ -1853,6 +1865,18 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::FailureLevel
 pub fn devlaunch_core::flows::provision::FailureLevel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::provision::FailureLevel
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::FailureLevel
+pub enum devlaunch_core::flows::provision::PassOccasion
+pub devlaunch_core::flows::provision::PassOccasion::AfterUp
+pub devlaunch_core::flows::provision::PassOccasion::TopUp
+impl core::clone::Clone for devlaunch_core::flows::provision::PassOccasion
+pub fn devlaunch_core::flows::provision::PassOccasion::clone(&self) -> devlaunch_core::flows::provision::PassOccasion
+impl core::cmp::Eq for devlaunch_core::flows::provision::PassOccasion
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::PassOccasion
+pub fn devlaunch_core::flows::provision::PassOccasion::eq(&self, &devlaunch_core::flows::provision::PassOccasion) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::provision::PassOccasion
+pub fn devlaunch_core::flows::provision::PassOccasion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::provision::PassOccasion
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::PassOccasion
 pub enum devlaunch_core::flows::provision::ProvisionEvent
 pub devlaunch_core::flows::provision::ProvisionEvent::NotInstalled
 pub devlaunch_core::flows::provision::ProvisionEvent::NotInstalled::exit: devlaunch_runner::Exit
@@ -1884,6 +1908,7 @@ pub fn devlaunch_core::flows::provision::ProvisionEvent::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ProvisionEvent
 pub enum devlaunch_core::flows::provision::Provisioning
 pub devlaunch_core::flows::provision::Provisioning::AlreadyProvisioned
+pub devlaunch_core::flows::provision::Provisioning::CachedProvisioned
 pub devlaunch_core::flows::provision::Provisioning::Disabled
 pub devlaunch_core::flows::provision::Provisioning::InstallRefused
 pub devlaunch_core::flows::provision::Provisioning::InstallRefused::exit: devlaunch_runner::Exit
@@ -1914,6 +1939,20 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::ToolsSwitch
 pub fn devlaunch_core::flows::provision::ToolsSwitch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::provision::ToolsSwitch
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ToolsSwitch
+pub enum devlaunch_core::flows::provision::ZellijSwitch
+pub devlaunch_core::flows::provision::ZellijSwitch::Install
+pub devlaunch_core::flows::provision::ZellijSwitch::Skip
+impl devlaunch_core::flows::provision::ZellijSwitch
+pub fn devlaunch_core::flows::provision::ZellijSwitch::from_env() -> Self
+impl core::clone::Clone for devlaunch_core::flows::provision::ZellijSwitch
+pub fn devlaunch_core::flows::provision::ZellijSwitch::clone(&self) -> devlaunch_core::flows::provision::ZellijSwitch
+impl core::cmp::Eq for devlaunch_core::flows::provision::ZellijSwitch
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::ZellijSwitch
+pub fn devlaunch_core::flows::provision::ZellijSwitch::eq(&self, &devlaunch_core::flows::provision::ZellijSwitch) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::provision::ZellijSwitch
+pub fn devlaunch_core::flows::provision::ZellijSwitch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::provision::ZellijSwitch
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ZellijSwitch
 pub struct devlaunch_core::flows::provision::DevpodMissing
 impl core::clone::Clone for devlaunch_core::flows::provision::DevpodMissing
 pub fn devlaunch_core::flows::provision::DevpodMissing::clone(&self) -> devlaunch_core::flows::provision::DevpodMissing
@@ -1934,7 +1973,21 @@ pub fn devlaunch_core::flows::provision::HostLayout::eq(&self, &devlaunch_core::
 impl core::fmt::Debug for devlaunch_core::flows::provision::HostLayout
 pub fn devlaunch_core::flows::provision::HostLayout::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::HostLayout
-pub fn devlaunch_core::flows::provision::provision_tools(&dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::ToolsSwitch, core::option::Option<&devlaunch_core::flows::provision::HostLayout>, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> core::result::Result<devlaunch_core::flows::provision::Provisioning, devlaunch_core::flows::provision::DevpodMissing>
+pub struct devlaunch_core::flows::provision::Switches
+pub devlaunch_core::flows::provision::Switches::tools: devlaunch_core::flows::provision::ToolsSwitch
+pub devlaunch_core::flows::provision::Switches::zellij: devlaunch_core::flows::provision::ZellijSwitch
+impl devlaunch_core::flows::provision::Switches
+pub fn devlaunch_core::flows::provision::Switches::from_env() -> Self
+impl core::clone::Clone for devlaunch_core::flows::provision::Switches
+pub fn devlaunch_core::flows::provision::Switches::clone(&self) -> devlaunch_core::flows::provision::Switches
+impl core::cmp::Eq for devlaunch_core::flows::provision::Switches
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::Switches
+pub fn devlaunch_core::flows::provision::Switches::eq(&self, &devlaunch_core::flows::provision::Switches) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::provision::Switches
+pub fn devlaunch_core::flows::provision::Switches::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::provision::Switches
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::Switches
+pub fn devlaunch_core::flows::provision::provision_tools(&dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, devlaunch_core::flows::provision::Switches, core::option::Option<&devlaunch_core::flows::provision::HostLayout>, core::option::Option<&devlaunch_core::flows::provision::verdict_cache::VerdictCache>, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> core::result::Result<devlaunch_core::flows::provision::Provisioning, devlaunch_core::flows::provision::DevpodMissing>
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone

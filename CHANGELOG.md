@@ -44,6 +44,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuild, and which workspace owns one is genuinely ambiguous — which is why the
   sentence still exists (#325).
 
+## [0.4.0] - 2026-08-21
+
+### Added
+
+- **`aid` asks for the prompt while the workspace boots.** A promptless
+  `aid <workspace>` on a terminal now starts the workspace booting in the
+  background and reads the agent's prompt from the terminal while it does — typed
+  free of shell quoting, submitted with Enter, and handed to the agent through
+  the same rewrite an argv prompt takes. An empty Enter (or Ctrl-D) is the plain
+  session a bare `aid` always started, and a piped stdin or `DEVLAUNCH_NO_TTY=1`
+  skips the question entirely, so scripts are untouched. The boot is a background
+  `aid --boot-up` child running dl's own `up` verb — the prewarm shape the
+  per-workspace launch lock already serializes — with its output parked in a log
+  and replayed after the Enter, so the build's progress is still seen, just not
+  interleaved with the typing. Ctrl-C at the editor tears the whole boot down
+  through the shared interrupt disposition: the boot child kills its `devpod up`
+  and unlinks the staged token, exactly as an interrupted foreground launch does.
+  One visible seam: with `DEVLAUNCH_TIMING` set, the boot child's summary arrives
+  inside the replayed log beside the foreground run's own.
+
+- **`DEVLAUNCH_NO_ZELLIJ=1`: no zellij in the container, without giving up the
+  tools.** A second opt-out beside `DEVLAUNCH_NO_TOOLS`, dropping the zellij stage
+  from the setup pass and nothing else — the pass still runs, the container is still
+  named, and `gh` and `claude` are still probed for, lent and installed.
+
+  Two variables because they answer two questions. A host whose containers get
+  zellij another way — their own dotfiles, a base image, a devcontainer feature — or
+  which wants none in there at all, is asking for one stage to stop running;
+  `DEVLAUNCH_NO_TOOLS=1` is the switch that would also surrender the `gh` and
+  `claude` guarantee `dl` forwards a GitHub token for, which is a large price for
+  one `command -v`. The two are an **and**: the stage runs only when neither
+  variable asked for it to go, and all three ways of being without it compose the
+  same script byte for byte.
+
+  Deliberately unrelated to `DEVLAUNCH_ZELLIJ`, which decides whether a
+  `dl <ws> -- <cmd>` first makes sure a zellij *session* exists to open panes into.
+  That one already tolerates a container with no zellij — its setup is allowed to
+  fail and the command runs regardless — so the two switches compose without either
+  one having to know about the other.
+
+### Changed
+
+- **A `dl <ws> up` against a container that is already up no longer pays the tools
+  round trip.** The setup pass is one `devpod ssh`, ~1.7s of which almost all is
+  connection and process setup rather than the script it carries, and a
+  long-provisioned workspace was paying it on every launch to be told the same thing
+  as last time. The verdict is now written down — one small JSON file per workspace
+  under `${XDG_CACHE_HOME:-~/.cache}/devlaunch/tool-verdicts/` — and reused.
+
+  **What makes a written-down verdict stop being true is a container that is not the
+  one it was about**, and the host can read that without asking anything: devpod
+  rewrites `workspace_result.json` on the way out of every completed `up`, whoever
+  ran it — `dl`, VS Code, a hand-typed `devpod up`, a `--recreate`. The marker
+  records that file's mtime and is believed only while the mtime is still *equal* to
+  it. Equality rather than "no newer", because the question is which container this
+  is and not how old the answer is. Every other doubt — no marker, one that will not
+  parse, a workspace with no single result file to key on — also reads as no verdict,
+  and every one of those falls back to making the trip, which is exactly the
+  behaviour that shipped before.
+
+  **Only a launch that found the container already running skips it**, and the
+  hostname is why. `sudo hostname <ws>` is a stage of that same pass, and the name
+  lives in the container's UTS namespace, which docker rebuilds from the container's
+  config on every start — so a `devpod up` that created a container or started a
+  stopped one has lost the name, and the pass has to run again to set it before the
+  session reads it into a prompt. The two paths that skip are the `dl <ws> up`
+  top-up (the pre-warm, where the trip is paid most often) and a launch that waited
+  on a sibling which had already brought the workspace up. The pass after this
+  launch's own `devpod up` always travels.
+
+  Only a pass that probed *provisioned* is recorded. A lend, an install and a kept
+  shim are not: `ShimKept` in particular is a documented residual in which a
+  container re-attempts one failing transfer on every `up`, and a marker would
+  quietly turn that into never attempting again. Each of those is followed by a
+  later pass that probes provisioned, and that is the pass that records.
+
+### Fixed
+
+- **`aid`'s completion refresh no longer dies on arrival.** dl re-spawns its
+  detached completion refresh through `current_exe --update-cache`, which under
+  `aid` is `aid --update-cache` — a line aid used to refuse as "aid needs a
+  workspace", so every refresh an aid launch fired silently failed and
+  completions never refreshed. aid now forwards `--update-cache` verbatim to dl.
+
 ## [0.3.3] - 2026-08-21
 
 ### Added

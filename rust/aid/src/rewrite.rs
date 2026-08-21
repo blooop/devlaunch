@@ -208,6 +208,33 @@ impl AidArgs {
             Task::Verb { .. } => None,
         }
     }
+
+    /// The same line with the prompt the interactive editor collected.
+    ///
+    /// A verb line is returned unchanged — it has no prompt to replace, and the
+    /// interactive flow never reaches one — so this cannot turn "delete the
+    /// workspace" back into "start an agent".
+    pub(crate) fn with_prompt(mut self, typed: String) -> Self {
+        if let Task::Agent { prompt, .. } = &mut self.task {
+            *prompt = typed;
+        }
+        self
+    }
+}
+
+/// The dl command line that boots the workspace without attaching to it.
+///
+/// `[<dl options>…, <spec>, "up"]` — dl's own warm-up verb, which is idempotent
+/// and hands over no session. This is what the interactive flow runs in the
+/// background while the prompt is being typed, so it deliberately carries **no
+/// suffix options**: `--autorm` beside `up` is a pair dl refuses by name, `up`
+/// takes no automatic removal anyway, and the flag still rides on the foreground
+/// attach line where it means what it always meant.
+pub(crate) fn build_boot_args(parsed: &AidArgs) -> Vec<String> {
+    let mut args = parsed.dl_options.clone();
+    args.push(parsed.spec.clone());
+    args.push("up".to_owned());
+    args
 }
 
 /// The agent to use when no flag picks one.
@@ -943,5 +970,87 @@ mod tests {
 
         assert!(help.contains("--autorm"), "{help}");
         assert!(help.contains("it keeps"), "{help}");
+    }
+
+    // ------------------------------------------------ the interactive line
+
+    #[test]
+    fn the_boot_line_is_options_then_spec_then_up_and_nothing_else() {
+        // The background boot must not carry the suffix options: `--autorm` beside
+        // `up` is a pair dl refuses, and the flag's meaning belongs to the attach.
+        let chosen = parsed(&[
+            "--devcontainer",
+            "robot",
+            "owner/repo@fix/x",
+            "--autorm",
+            "--force",
+        ]);
+
+        assert_eq!(
+            build_boot_args(&chosen),
+            ["--devcontainer", "robot", "owner/repo@fix/x", "up"]
+        );
+        // The peeled pair still rides on the attach line, untouched.
+        assert_eq!(chosen.spec_options, ["--autorm", "--force"]);
+    }
+
+    #[test]
+    fn an_unknown_leading_flag_boots_with_the_same_flag() {
+        // Whatever dl makes of it, the boot and the attach must be the same
+        // launch, so the flag goes to both or the two could open different
+        // workspaces.
+        assert_eq!(
+            build_boot_args(&parsed(&["--shared", "owner/repo"])),
+            ["--shared", "owner/repo", "up"]
+        );
+    }
+
+    #[test]
+    fn a_typed_prompt_lands_where_an_argv_prompt_would_have() {
+        // The whole point of `with_prompt`: the editor's text goes through the
+        // same quoting and the same prompt flags as a prompt typed on the command
+        // line, so the two spellings cannot drift.
+        let chosen = parsed(&["owner/repo", "--autorm"]).with_prompt("fix the bug".to_owned());
+
+        assert_eq!(prompt(&chosen), "fix the bug");
+        assert_eq!(
+            build_dl_args(&chosen).expect("an agent line"),
+            [
+                "owner/repo",
+                "--autorm",
+                "--",
+                "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the bug'"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_typed_prompt_keeps_each_agents_own_prompt_grammar() {
+        let chosen = parse_aid_args(&words(&["--gemini", "owner/repo"]), None)
+            .expect("a usable command line")
+            .with_prompt("explain this".to_owned());
+
+        assert_eq!(
+            build_dl_args(&chosen).expect("an agent line"),
+            [
+                "owner/repo",
+                "--",
+                "gemini --prompt-interactive 'explain this'"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_submission_is_the_plain_session_it_always_was() {
+        let chosen = parsed(&["owner/repo"]).with_prompt(String::new());
+
+        assert_eq!(
+            build_dl_args(&chosen).expect("an agent line"),
+            [
+                "owner/repo",
+                "--",
+                "IS_SANDBOX=1 claude --dangerously-skip-permissions"
+            ]
+        );
     }
 }

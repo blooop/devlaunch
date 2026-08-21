@@ -73,7 +73,7 @@ use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
 use crate::flows::listing::CommandContext;
-use crate::flows::provision::DevpodMissing;
+use crate::flows::provision::{DevpodMissing, PassOccasion};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
 use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
@@ -935,9 +935,20 @@ fn lock_reason(error: &LockError) -> String {
 /// renders exit 127 for it. A trait returning `()` could not carry that, and the
 /// binary had to keep a `Cell` beside the launch to reconstruct it — after the
 /// session Python never reached.
+///
+/// `occasion` is the one thing the launch knows that the pass cannot work out for
+/// itself: whether the container it is about to speak to has just been through a
+/// `devpod up` or was already running when this launch arrived. It travels as a
+/// parameter rather than as two trait methods because it is not a different
+/// operation — every implementation does the same thing with it, and one of them
+/// (a host-side verdict cache) is the only reason it is asked at all.
 pub trait Provision {
-    fn provision_tools(&self, runner: &dyn Runner, workspace_id: &str)
-    -> Result<(), DevpodMissing>;
+    fn provision_tools(
+        &self,
+        runner: &dyn Runner,
+        workspace_id: &str,
+        occasion: PassOccasion,
+    ) -> Result<(), DevpodMissing>;
 }
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
@@ -949,10 +960,13 @@ pub trait Provision {
 pub(crate) struct NoProvisioning;
 
 impl Provision for NoProvisioning {
+    /// The occasion is ignored, and that is the whole of what "lends nothing"
+    /// means: there is no pass for it to decide anything about.
     fn provision_tools(
         &self,
         _runner: &dyn Runner,
         _workspace_id: &str,
+        _occasion: PassOccasion,
     ) -> Result<(), DevpodMissing> {
         Ok(())
     }
@@ -1067,8 +1081,20 @@ fn up_under_stage(
         // interrupted between the two, its `up` may have failed after the
         // container started, or it may have run with the tools switched off where
         // this one does not.
+        //
+        // A top-up all the same, and what licenses that is not the paragraph above
+        // being false but the anchor a verdict is checked against: a sibling whose
+        // `up` *completed* rewrote `workspace_result.json` on its way out, which
+        // leaves no marker to trust and sends this pass on the wire. So the case a
+        // remembered verdict survives is the one where the sibling both completed
+        // its `up` and ran its own pass — the prewarm, and the saving this is for.
+        //
+        // The residual is the sibling that started the container and then died
+        // before devpod wrote that file: the stale result still matches, and the
+        // hostname nobody set stays unset. Nothing the host can read tells that
+        // apart from a container that never stopped.
         provision
-            .provision_tools(context.runner(), identity)
+            .provision_tools(context.runner(), identity, PassOccasion::TopUp)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
         return Ok(UpOutcome::SkippedSiblingWon);
     }
@@ -1104,8 +1130,14 @@ fn up_under_stage(
         // A devpod that went missing between the `up` that just worked and the pass
         // that follows it takes the launch with it, as Python's exception does: there
         // is no session to hand over without the binary that opens one.
+        //
+        // `AfterUp`, so this pass always travels. The `up` above either created the
+        // container or started a stopped one, and both rebuild the UTS namespace
+        // from the container's config — the hostname stage has to run again before
+        // the session reads a prompt, whatever any remembered verdict says about
+        // the tools.
         provision
-            .provision_tools(context.runner(), identity)
+            .provision_tools(context.runner(), identity, PassOccasion::AfterUp)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
     }
     drop(serialization);
@@ -2537,8 +2569,16 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             // workspace that missed provisioning gets it, and returning here
             // without them would make the documented recovery the one path that
             // cannot recover.
+            //
+            // The top-up, and the one this cache was built for: `dl <ws> up` is the
+            // prewarm, run repeatedly against a workspace that is already up, and
+            // the round trip it pays here is the whole of what it costs.
             self.provision
-                .provision_tools(self.context.runner(), placement.workspace_id())
+                .provision_tools(
+                    self.context.runner(),
+                    placement.workspace_id(),
+                    PassOccasion::TopUp,
+                )
                 .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
             return Ok(Launched::AlreadyRunning);
         }
@@ -2869,21 +2909,41 @@ mod tests {
         }
     }
 
-    /// Records which workspaces had tools lent to them.
+    /// Records which workspaces had tools lent to them, and on which occasion.
+    ///
+    /// The occasion is recorded beside the id rather than instead of it, because
+    /// the two are asserted separately: most tests here are about *whether* a path
+    /// provisions at all, and only the ones about the pass's cost care which
+    /// occasion it named. Both come out of one list so a test cannot read them out
+    /// of step with each other.
     #[derive(Debug, Default)]
     struct RecordingProvision {
-        provisioned: Mutex<Vec<String>>,
+        passes: Mutex<Vec<(String, PassOccasion)>>,
         /// A devpod that goes missing when the pass is asked for, which is the one
         /// thing a pass can answer.
         lost_devpod: bool,
     }
 
     impl RecordingProvision {
-        fn provisioned(&self) -> Vec<String> {
-            self.provisioned
+        fn passes(&self) -> Vec<(String, PassOccasion)> {
+            self.passes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
+        }
+
+        fn provisioned(&self) -> Vec<String> {
+            self.passes()
+                .into_iter()
+                .map(|(workspace_id, _)| workspace_id)
+                .collect()
+        }
+
+        fn occasions(&self) -> Vec<PassOccasion> {
+            self.passes()
+                .into_iter()
+                .map(|(_, occasion)| occasion)
+                .collect()
         }
     }
 
@@ -2892,11 +2952,12 @@ mod tests {
             &self,
             _runner: &dyn Runner,
             workspace_id: &str,
+            occasion: PassOccasion,
         ) -> Result<(), DevpodMissing> {
-            self.provisioned
+            self.passes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push(workspace_id.to_owned());
+                .push((workspace_id.to_owned(), occasion));
             if self.lost_devpod {
                 return Err(DevpodMissing);
             }
@@ -3244,6 +3305,11 @@ mod tests {
 
         assert_eq!(outcome, Ok(UpOutcome::SkippedSiblingWon));
         assert_eq!(provision.provisioned(), vec!["myws".to_owned()]);
+        // A top-up, and nothing on this path may say otherwise: no `devpod up` was
+        // run here, so nothing restarted the container and its hostname is the one
+        // the sibling's `up` set. That is what lets the pass be answered from the
+        // host's own records rather than from a round trip.
+        assert_eq!(provision.occasions(), vec![PassOccasion::TopUp]);
     }
 
     #[test]
@@ -3395,6 +3461,38 @@ mod tests {
 
         assert_eq!(outcome, Ok(UpOutcome::Started));
         assert_eq!(provision.provisioned(), vec!["myws".to_owned()]);
+    }
+
+    #[test]
+    fn the_pass_after_an_up_is_told_the_container_just_restarted() {
+        // The half of the scope that cannot be skipped, pinned at the call site
+        // that decides it. `sudo hostname <ws>` is a stage of the pass and the name
+        // lives in the container's UTS namespace, which docker rebuilds from the
+        // container's config on every start -- so the pass following *this* launch's
+        // own `devpod up` has work to do whatever the host remembers about the
+        // tools, and `AfterUp` is how it is told so.
+        let scene = Scene::new();
+        let provision = RecordingProvision::default();
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &provision,
+            &request,
+            &mut no_notices(),
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(provision.occasions(), vec![PassOccasion::AfterUp]);
     }
 
     #[test]
@@ -5077,6 +5175,10 @@ mod tests {
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
         assert_eq!(parts.provision.provisioned(), vec!["myws".to_owned()]);
+        // The occasion the verdict cache was built for: `dl <ws> up` is the prewarm,
+        // run over and over against a workspace that is already up, and the round
+        // trip this pass would otherwise pay is the whole of what it costs.
+        assert_eq!(parts.provision.occasions(), vec![PassOccasion::TopUp]);
         assert_eq!(
             scene.devpod_heads(),
             vec![vec!["status".to_owned(), "myws".to_owned()]],
