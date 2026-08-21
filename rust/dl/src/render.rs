@@ -870,10 +870,7 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         LifecycleNotice::VolumesNotRemoved {
             workspace_id,
             refusal,
-        } => format!(
-            "Failed to remove the Docker volumes for {workspace_id}: {}",
-            volumes_refused(refusal)
-        ),
+        } => volumes_not_removed(workspace_id, refusal),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -1073,6 +1070,19 @@ fn not_removed(refusal: &RemoveWorkspaceError) -> String {
     }
 }
 
+/// A refused volume removal, in the one sentence it gets.
+///
+/// One function rather than the same `format!` in both printers: `rm` reports it as
+/// a notice and `--purge` as a step, the vocabularies differ but the sentence does
+/// not, and two copies each pinned by its own test is how they come to differ by a
+/// word.
+fn volumes_not_removed(workspace_id: &str, refusal: &VolumeRefusal) -> String {
+    format!(
+        "Failed to remove the Docker volumes for {workspace_id}: {}",
+        volumes_refused(refusal)
+    )
+}
+
 /// Why a deleted workspace's Docker volumes are still on this machine.
 ///
 /// docker's own stderr where docker spoke, trimmed of the newline it ends on
@@ -1269,10 +1279,7 @@ pub(crate) fn purge_step(step: &PurgeStep) -> Line {
         PurgeStep::VolumesNotRemoved {
             workspace_id,
             refusal,
-        } => Line::Err(format!(
-            "Failed to remove the Docker volumes for {workspace_id}: {}",
-            volumes_refused(refusal)
-        )),
+        } => Line::Err(volumes_not_removed(workspace_id, refusal)),
     }
 }
 

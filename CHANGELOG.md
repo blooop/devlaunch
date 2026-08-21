@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than for want of a fix — they are shared between workspaces, expensive to
   rebuild, and which workspace owns one is genuinely ambiguous — which is why the
   sentence still exists (#325).
+- **`devlaunch_core::api::workspace_delete` takes one more argument**, and so does
+  `flows::lifecycle::purge_all_data`: an `Option<&Path>` for devpod's home
+  directory, which is where the volume names are read from. Resolved by the caller
+  rather than in core, for the reason every other environment answer is — the
+  process that knows what its environment says hands the answer down, and a second
+  answer inside core could disagree with the first. This is a breaking change to
+  the frozen `api::` surface: an out-of-tree caller passes
+  `devlaunch_core::flows::lifecycle::devpod_home().as_deref()` there, or `None` to
+  keep the old behaviour of removing no volumes (#325).
 
 ## [0.4.0] - 2026-08-21
 
