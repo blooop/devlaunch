@@ -1132,7 +1132,13 @@ fn substitutions_of(devpod_home: &Path, workspace_id: &str) -> Option<Substituti
     let contexts = std::fs::read_dir(devpod_home.join("contexts")).ok()?;
     let mut found = None;
     for context in contexts.flatten() {
-        let name = context.file_name().to_str().map(str::to_owned)?;
+        // Skipped rather than answered on, as [`create_record`]'s identical loop
+        // does: one sibling directory devlaunch cannot spell must not cost every
+        // other context its answer, which here would mean a workspace's volumes
+        // staying on disk because of a name nothing was going to read anyway.
+        let Some(name) = context.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
         let path = devpod_workspace_result(devpod_home, &name, workspace_id);
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
@@ -5255,6 +5261,27 @@ pub(crate) mod tests {
                 .iter()
                 .any(|notice| matches!(notice, LifecycleNotice::VolumesNotRemoved { .. })),
             "{notices:?}"
+        );
+    }
+
+    /// A context whose directory name is not text devlaunch can spell holds no
+    /// result it could have read anyway, so it is stepped over — the one that *does*
+    /// hold the record still answers. Losing the answer to it would leave a
+    /// workspace's volumes on disk for a name nothing was going to read.
+    #[test]
+    fn a_context_directory_nobody_can_spell_does_not_cost_the_others_their_answer() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let home = devpod_home_recording("myws", "/host/clones/opened-as", "dc9a8b7c");
+        let unspellable = std::ffi::OsStr::from_bytes(b"\xff\xfe-not-utf8").to_os_string();
+        std::fs::create_dir_all(home.path().join("contexts").join(unspellable))
+            .expect("a context directory");
+
+        let named = devcontainer_volumes(Some(home.path()), "myws").expect("both names");
+
+        assert_eq!(
+            named.iter().cloned().collect::<Vec<_>>(),
+            ["opened-as-pixi", "dind-var-lib-docker-dc9a8b7c"]
         );
     }
 
