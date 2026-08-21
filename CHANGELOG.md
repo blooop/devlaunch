@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dotfiles refresh can now recover a workspace whose chezmoi config predates
+  a new template variable.** `chezmoi update` applies with the config rendered by
+  `chezmoi init` at create, and nothing regenerated it — so a dotfiles repo that
+  adds a variable left every existing workspace pulling fine and then aborting on
+  `map has no entry for key`, on `dl <ws> dotfiles` and the attach refresh alike.
+  The refresh now re-renders the config and applies again when the first attempt
+  fails, after the pull rather than before it, since the template that names the
+  new variable arrives in that pull. A workspace whose update succeeds never takes
+  the branch.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added
