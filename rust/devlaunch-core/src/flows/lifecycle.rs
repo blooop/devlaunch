@@ -16,15 +16,21 @@
 //!
 //! # Three commands remove things, and none of them decides what is finished
 //!
-//! - **`dl <ws> rm`** deletes one workspace and its clone, and refuses when the
+//! - **`dl <ws> rm`** deletes one workspace, its clone and the named docker
+//!   volumes its devcontainer created ([`VolumeSweep`]), and refuses when the
 //!   clone holds work that exists nowhere else. That refusal is the one judgement
 //!   dl makes on its own account (see [`crate::domain::workspace_state`]).
 //! - **`dl --prune`** removes the clone *directories* no live workspace opens. It
 //!   never touches a devpod workspace, a container, an image or a volume, and it
-//!   leaves every bare cache alone.
-//! - **`dl --purge`** deletes the workspaces devlaunch created and its whole cache
-//!   directory. Ownership-scoped ([`crate::flows::listing::workspace_ownership`]),
-//!   and it names what it leaves standing.
+//!   leaves every bare cache alone. **Still true of volumes** after devlaunch#325,
+//!   and not an oversight: it deletes no workspace, so there is no workspace whose
+//!   volumes it could be taking.
+//! - **`dl --purge`** deletes the workspaces devlaunch created — volumes and all —
+//!   and its whole cache directory. Ownership-scoped
+//!   ([`crate::flows::listing::workspace_ownership`]), and it names what it leaves
+//!   standing. It does *not* share `rm`'s delete: it issues its own captured
+//!   `devpod delete --force` per workspace, which is why the volume sweep is wired
+//!   into it explicitly rather than inherited.
 //!
 //! `dl --reconcile` is the fourth of the family and removes nothing at all: it
 //! re-points devpod records the id-scheme change orphaned (devlaunch#88), and an
