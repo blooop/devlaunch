@@ -343,6 +343,11 @@ class TestAidStartsAnAgent:
 
         session = workspace.aid()
         with session:
+            # On a terminal a promptless `aid` asks for the prompt while the
+            # workspace boots; an empty Enter is the plain session this test has
+            # always been about.
+            session.expect(r"press Enter")
+            session.send("")
             # Claude Code prints its banner once the TUI is up; without a
             # terminal it exits before ever getting there.
             session.expect(r"Claude Code|Welcome to Claude")

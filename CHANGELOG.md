@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`aid` asks for the prompt while the workspace boots.** A promptless
+  `aid <workspace>` on a terminal now starts the workspace booting in the
+  background and reads the agent's prompt from the terminal while it does — typed
+  free of shell quoting, submitted with Enter, and handed to the agent through
+  the same rewrite an argv prompt takes. An empty Enter (or Ctrl-D) is the plain
+  session a bare `aid` always started, and a piped stdin or `DEVLAUNCH_NO_TTY=1`
+  skips the question entirely, so scripts are untouched. The boot is a background
+  `aid --boot-up` child running dl's own `up` verb — the prewarm shape the
+  per-workspace launch lock already serializes — with its output parked in a log
+  and replayed after the Enter, so the build's progress is still seen, just not
+  interleaved with the typing. Ctrl-C at the editor tears the whole boot down
+  through the shared interrupt disposition: the boot child kills its `devpod up`
+  and unlinks the staged token, exactly as an interrupted foreground launch does.
+  One visible seam: with `DEVLAUNCH_TIMING` set, the boot child's summary arrives
+  inside the replayed log beside the foreground run's own.
+
+### Fixed
+
+- **`aid`'s completion refresh no longer dies on arrival.** dl re-spawns its
+  detached completion refresh through `current_exe --update-cache`, which under
+  `aid` is `aid --update-cache` — a line aid used to refuse as "aid needs a
+  workspace", so every refresh an aid launch fired silently failed and
+  completions never refreshed. aid now forwards `--update-cache` verbatim to dl.
+
 ## [0.3.3] - 2026-08-21
 
 ### Added

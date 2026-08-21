@@ -30,6 +30,10 @@ tempfile = { workspace = true }
 # binary can reach, and this is a dev-dependency of the tests. The test-support
 # crate's own docs already name dl's and core's tests as its callers.
 devlaunch-test-support = { workspace = true }
+# A pty for the interactive-editor tests: the prompt editor only exists when
+# stdin and stdout are a terminal, and a terminal is the one thing `Command`
+# cannot fake. Dev-only, same as the rest of this table.
+portable-pty = { workspace = true }
 
 [lints]
 workspace = true

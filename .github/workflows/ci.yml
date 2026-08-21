@@ -196,6 +196,14 @@ jobs:
         run: |
           timeout -k 10 300 cargo test --locked -p aid --test interrupt -- --test-threads=1 --nocapture > aid_interrupt.log 2>&1; ec=$?
           cat aid_interrupt.log; exit $ec
+      # Drives aid through a real pty (the editor only exists on a terminal), and
+      # one of its cases is the interrupt suite's blocking `up` interrupted at the
+      # editor — so it gets the same log-pipe fence, for the same reason.
+      - name: Test aid interactive
+        working-directory: rust
+        run: |
+          timeout -k 10 300 cargo test --locked -p aid --test interactive -- --test-threads=1 --nocapture > aid_interactive.log 2>&1; ec=$?
+          cat aid_interactive.log; exit $ec
       - name: Test dl (lib + unit)
         working-directory: rust
         run: timeout 300 cargo test --locked -p dl --lib --bins -- --test-threads=1 --nocapture

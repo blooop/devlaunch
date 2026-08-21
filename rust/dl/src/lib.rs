@@ -121,6 +121,105 @@ pub fn install_interrupt_handler() {
     }
 }
 
+/// Whether this process is talking to a person at a terminal.
+///
+/// stdin *and* stdout, because the question is asked before reading a line the
+/// user is expected to see themselves type: a piped stdin has no one typing, and
+/// a piped stdout gives them no echo to type against. `DEVLAUNCH_NO_TTY` is the
+/// same escape hatch it is for the ssh transport — set to anything but a falsey
+/// value it means "behave as if there were no terminal", so one variable turns
+/// off everything dl and aid only do on one.
+///
+/// Exported for `aid`, whose interactive prompt is gated on it: aid's one
+/// dependency is `dl`, so the isatty call lives here rather than giving aid a
+/// libc of its own.
+pub fn interactive_terminal() -> bool {
+    // SAFETY: `isatty` reads a property of the descriptor and touches nothing.
+    let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
+    tty && !no_tty_requested(std::env::var("DEVLAUNCH_NO_TTY").ok().as_deref())
+}
+
+/// Whether `DEVLAUNCH_NO_TTY` asked for no terminal behaviour.
+///
+/// The falsey list is `clients/ssh.rs`'s (`FALSEY`), copied rather than shared for
+/// the reason that module gives: escape hatches answering to one shared constant
+/// are one edit away from becoming one escape hatch.
+fn no_tty_requested(value: Option<&str>) -> bool {
+    match value {
+        None => false,
+        Some(value) => !matches!(value, "" | "0" | "false" | "no"),
+    }
+}
+
+/// Read one submission from a cooked-mode terminal: the line the user ends with
+/// Enter, plus whatever input was already buffered at that moment — a multi-line
+/// paste — joined as the newlines it arrived with. Empty on a bare Enter or an
+/// immediate Ctrl-D.
+///
+/// The read is byte-by-byte from descriptor 0 rather than through
+/// `std::io::stdin()`, and that is load-bearing twice over. First, `Stdin`'s
+/// buffer would swallow the rest of a paste where nothing can see it — a
+/// zero-timeout `poll` on the descriptor answers for the kernel's queue, not for
+/// bytes a `BufRead` already took. Second, whatever this function does not
+/// consume stays in the terminal's queue for the *next* process to inherit — the
+/// agent session `aid` goes on to attach — so pasted lines that were not drained
+/// here would land inside the agent as keystrokes.
+///
+/// Cooked mode is also why this is safe to call and abandon: no raw mode is
+/// entered, so a Ctrl-C mid-read leaves the terminal exactly as it found it.
+pub fn read_terminal_submission() -> String {
+    let mut bytes: Vec<u8> = Vec::new();
+    // The line itself: up to Enter, or EOF (Ctrl-D on an empty line reads 0).
+    loop {
+        match read_stdin_byte() {
+            None => break,
+            Some(b'\n') => break,
+            Some(byte) => bytes.push(byte),
+        }
+    }
+    // The paste tail: everything the terminal already holds, complete lines and
+    // a final unterminated fragment alike. Only what is *already* queued — the
+    // zero timeout is what keeps a person who typed one line from being waited
+    // on for a second.
+    while stdin_readable_now() {
+        match read_stdin_byte() {
+            None => break,
+            Some(byte) => bytes.push(byte),
+        }
+    }
+    String::from_utf8_lossy(&bytes).trim_end().to_owned()
+}
+
+/// One byte from descriptor 0, or `None` on EOF or an unreadable stdin.
+fn read_stdin_byte() -> Option<u8> {
+    let mut byte: u8 = 0;
+    loop {
+        // SAFETY: reading one byte into a stack buffer of that size.
+        let read = unsafe { libc::read(0, std::ptr::from_mut(&mut byte).cast(), 1) };
+        match read {
+            1 => return Some(byte),
+            0 => return None,
+            // A signal that did not kill the process (SIGWINCH, a stopped and
+            // resumed job) interrupts the read without ending the input.
+            _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+            _ => return None,
+        }
+    }
+}
+
+/// Whether descriptor 0 has bytes to read right now, without waiting for any.
+fn stdin_readable_now() -> bool {
+    let mut asked = libc::pollfd {
+        fd: 0,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: polling one descriptor with a zero timeout; the struct outlives the
+    // call.
+    let ready = unsafe { libc::poll(&mut asked, 1, 0) };
+    ready > 0 && (asked.revents & libc::POLLIN) != 0
+}
+
 /// Run one `dl` command line — the words after the program name — and say how it
 /// ended.
 ///
@@ -290,6 +389,29 @@ fn report_timing() {
     if let Some(report) = timing::emit() {
         for line in report.lines() {
             eprintln!("{line}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal {
+    //! The `DEVLAUNCH_NO_TTY` reading [`interactive_terminal`] shares with the ssh
+    //! transport: unset and the four falsey spellings mean "the terminal stands",
+    //! anything else means "behave as if there were none".
+
+    use super::no_tty_requested;
+
+    #[test]
+    fn unset_and_falsey_values_keep_the_terminal() {
+        for value in [None, Some(""), Some("0"), Some("false"), Some("no")] {
+            assert!(!no_tty_requested(value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn any_other_value_is_a_request_for_no_terminal() {
+        for value in ["1", "true", "yes", "anything"] {
+            assert!(no_tty_requested(Some(value)), "{value:?}");
         }
     }
 }
