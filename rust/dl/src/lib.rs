@@ -170,21 +170,32 @@ fn no_tty_requested(value: Option<&str>) -> bool {
 pub fn read_terminal_submission() -> String {
     let mut bytes: Vec<u8> = Vec::new();
     // The line itself: up to Enter, or EOF (Ctrl-D on an empty line reads 0).
+    let mut ended_with_newline = false;
     loop {
         match read_stdin_byte() {
             None => break,
-            Some(b'\n') => break,
+            Some(b'\n') => {
+                ended_with_newline = true;
+                break;
+            }
             Some(byte) => bytes.push(byte),
         }
     }
-    // The paste tail: everything the terminal already holds, complete lines and
-    // a final unterminated fragment alike. Only what is *already* queued — the
-    // zero timeout is what keeps a person who typed one line from being waited
-    // on for a second.
-    while stdin_readable_now() {
-        match read_stdin_byte() {
-            None => break,
-            Some(byte) => bytes.push(byte),
+    // The paste tail: the newline-terminated lines the terminal already holds.
+    // Only what is *already* queued — the zero timeout is what keeps a person
+    // who typed one line from being waited on for a second — and in cooked mode
+    // that is only *completed* lines: a final fragment a paste left unterminated
+    // is not yet readable, stays queued, and reaches the agent's session as
+    // typed-ahead input. The Enter that ended the first line was consumed above,
+    // so it is put back before the tail or the first two lines would be glued
+    // into one word.
+    if ended_with_newline && stdin_readable_now() {
+        bytes.push(b'\n');
+        while stdin_readable_now() {
+            match read_stdin_byte() {
+                None => break,
+                Some(byte) => bytes.push(byte),
+            }
         }
     }
     String::from_utf8_lossy(&bytes).trim_end().to_owned()

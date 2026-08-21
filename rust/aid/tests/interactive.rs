@@ -230,6 +230,29 @@ fn a_typed_prompt_reaches_the_agent_with_no_shell_in_the_way() {
 }
 
 #[test]
+fn a_pasted_multi_line_prompt_arrives_whole_rather_than_leaking() {
+    // A paste delivers its newlines with it, and the terminal holds the later
+    // lines as completed input. The editor must drain them into the prompt: a
+    // submission cut at the first newline would hand the agent line one and leave
+    // the rest queued in the terminal, to land inside the agent's session as
+    // keystrokes.
+    let world = World::with(&["--warm"]);
+    let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
+    session.expect(BANNER);
+    // One write, as a terminal delivers a paste: both lines arrive together, so
+    // the second is already queued when the first's Enter is read.
+    session.send_line("fix this\nand then that");
+    assert_eq!(session.wait(), 0);
+    assert_eq!(
+        world.devpod_calls().last().expect("a session"),
+        &format!(
+            "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions '\"'\"'fix this\nand then that'\"'\"''"
+        )
+    );
+}
+
+#[test]
 fn an_empty_enter_is_the_plain_session_it_always_was() {
     let world = World::with(&["--warm"]);
     let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
