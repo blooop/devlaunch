@@ -201,11 +201,8 @@ Three more things it does not promise:
   test's status, and a failed build exits with devpod's; a removal that refused is
   never what the code reports. The refusal is on stderr and the workspace is still
   there.
-- **It is best-effort, by construction.** `dl`'s Ctrl-C handler is a signal handler,
-  so it cannot run a removal — a Ctrl-C during the container build, or a closed
-  terminal, ends `dl` before the session does and leaves the workspace behind.
-  Ctrl-C *inside* a running session is fine: the terminal is in raw mode and the
-  interrupt goes to the remote process, not to `dl`.
+- **It is best-effort, by construction** — but Ctrl-C out of a session is *not* one
+  of the gaps. See "How you exit decides whether it fires" below.
 - **It does not know about your other shells.** Nothing serialises two sessions on
   one workspace — the launch lock covers the build, not the session — so a second
   `dl <ws>` in another terminal is attached to the same container, and the `--autorm`
@@ -214,6 +211,30 @@ Three more things it does not promise:
 
 On an `aid` line it is appendable like `--rm`, and unlike `--rm` it **keeps the prompt** —
 the agent still runs, and the workspace goes when it is done.
+
+### How you exit decides whether it fires
+
+The removal runs when `dl` gets control back, so what matters is whether your exit ends
+the session or kills `dl`.
+
+**Ctrl-C out of the program you were running: fires.** Both session transports allocate
+a pty — a bare `dl <ws>` runs `devpod ssh <id>`, and `dl <ws> -- <cmd>` on a terminal
+runs `ssh -t` — which puts your local terminal in raw mode and clears `ISIG`. Ctrl-C is
+then a byte travelling to the remote pty, not a signal to `dl`: the program *inside* the
+container gets the interrupt. So `aid repo 'fix it' --autorm` and Ctrl-C twice to leave
+Claude Code ends the remote command, ends the session, and the workspace goes. In an
+interactive shell Ctrl-C just hands you a fresh prompt — `exit` or Ctrl-D is what ends
+that session, and either fires the removal.
+
+**These do not fire**, because `dl` itself takes the signal and its handler cannot run a
+removal (a signal handler may not allocate or lock, and this one `_exit`s):
+
+- Ctrl-C during the clone or the container build, before any pty exists.
+- Closing the terminal window — SIGHUP, which `dl` does not handle at all.
+
+One-line check for your own setup: start `dl <ws> --autorm` and press Ctrl-C once. A
+fresh prompt *inside* the container means Ctrl-C is being forwarded and the removal will
+fire when you leave. Landing back on the host means it reached `dl`, and it will not.
 
 Those two forms and no others. Every verb word refuses the flag rather than ignoring it,
 and `code` is the one worth knowing about: it returns while VS Code is still connecting,

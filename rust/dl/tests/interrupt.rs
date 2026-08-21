@@ -198,3 +198,111 @@ fn a_ctrl_c_mid_up_removes_the_token_file_and_kills_the_up() {
         "the orphaned devpod up (pid {up}) must have been killed"
     );
 }
+
+/// A `--warm` world whose `devpod ssh` blocks, so an interrupt can land *during the
+/// session* rather than during the build.
+fn blocking_session() -> (tempfile::TempDir, PathBuf) {
+    let scratch = tempfile::Builder::new()
+        .prefix("dlint")
+        .tempdir_in("/tmp")
+        .expect("a scratch directory under /tmp");
+    let root = scratch.path().to_path_buf();
+    let built = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/launch_scenario.py"))
+        .arg(&root)
+        .arg(repo_root().join("test/fixtures/devpod_shim.py"))
+        .arg("--warm")
+        .output()
+        .expect("python3 is installed");
+    assert!(
+        built.status.success(),
+        "launch_scenario.py failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let devpod = root.join("bin/devpod");
+    let original = std::fs::read_to_string(&devpod).expect("the scenario's devpod");
+    let delegate = original
+        .lines()
+        .find(|line| line.starts_with("exec "))
+        .expect("the delegate exec line");
+    // `ssh` blocks; everything else delegates to the shim, so the log still records
+    // the `status` probe and would record a `delete` if one were ever made.
+    let script = format!(
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"ssh\" ]; then\n\
+         \x20 : > \"$DL_SSH_STARTED\"\n\
+         \x20 exec sleep 30\n\
+         fi\n\
+         {delegate}\n"
+    );
+    std::fs::write(&devpod, script).expect("rewrite devpod");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&devpod, std::fs::Permissions::from_mode(0o755))
+        .expect("keep devpod executable");
+    (scratch, root)
+}
+
+#[test]
+fn a_ctrl_c_that_reaches_dl_mid_session_leaves_an_autorm_workspace_standing() {
+    // The limit `--autorm` documents, measured rather than reasoned about. dl's
+    // SIGINT disposition is a signal handler, and a handler may not run a removal —
+    // it cannot allocate, cannot lock, and does not return — so a SIGINT delivered
+    // *to dl* ends the process before the removal it was going to make.
+    //
+    // What this does **not** say is that a terminal Ctrl-C reaches dl during an
+    // ordinary session. It does not: both transports allocate a pty (`ssh -t`, and a
+    // bare `devpod ssh`), which puts the local terminal in raw mode and clears
+    // ISIG, so Ctrl-C travels to the remote program as a byte and dl never sees a
+    // signal. This test reaches dl the way a Ctrl-C during the *build* does — before
+    // any pty exists — and that is the case the README calls best-effort.
+    let (_scratch, root_path) = blocking_session();
+    let root = root_path.display().to_string();
+    let ssh_started = root_path.join("ssh.started");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
+        .args(["devlaunch-main-zovomobo", "--autorm"])
+        .env_clear()
+        .keeping_coverage()
+        .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))
+        .env("HOME", format!("{root}/home"))
+        .env("XDG_CACHE_HOME", format!("{root}/cache"))
+        .env("XDG_CONFIG_HOME", format!("{root}/config"))
+        .env("DEVPOD_HOME", format!("{root}/devpod"))
+        .env("DEVPOD_SHIM_STATE", format!("{root}/shim-state.json"))
+        .env("DEVPOD_SHIM_LOG", format!("{root}/shim-log.jsonl"))
+        .env("DEVPOD_SHIM_CONFIG", format!("{root}/shim-config.json"))
+        .env("DEVLAUNCH_NO_GH_TOKEN", "1")
+        .env("DL_SSH_STARTED", ssh_started.display().to_string())
+        .env("GIT_SSH_COMMAND", "false")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .spawn()
+        .expect("the dl binary runs");
+
+    assert!(
+        wait_for(|| ssh_started.exists()),
+        "the session never started, so the interrupt would prove nothing"
+    );
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .expect("kill is installed")
+            .success(),
+        "sending SIGINT to dl"
+    );
+    let status = child.wait().expect("dl exits");
+    assert_eq!(status.code(), Some(130), "dl's own interrupted ending");
+
+    let log = std::fs::read_to_string(root_path.join("shim-log.jsonl")).unwrap_or_default();
+    assert!(
+        !log.contains("\"delete\""),
+        "the removal ran from a signal handler, which cannot be: {log}"
+    );
+    assert!(
+        root_path
+            .join("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo")
+            .exists(),
+        "the clone went without a removal having run"
+    );
+}
