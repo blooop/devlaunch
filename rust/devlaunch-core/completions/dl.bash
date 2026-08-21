@@ -61,7 +61,9 @@ _dl_completion() {
     fi
 
     # Workspace subcommands
-    local ws_cmds="up stop rm code restart recreate reset dotfiles --"
+    # `--autorm` is not a verb: it rides beside `dl <ws>` and `dl <ws> -- <cmd>`,
+    # which is exactly the position this list is offered in.
+    local ws_cmds="up stop rm code restart recreate reset dotfiles --autorm --"
 
     # Options that take a value; a variant name or a path follows them.
     local value_opts="--devcontainer"

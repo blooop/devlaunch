@@ -291,6 +291,27 @@ impl<'a> Refresh<'a> {
         self.spawned
     }
 
+    /// Allow one more refresh, because the world changed *again* after the last one
+    /// was spawned.
+    ///
+    /// The latch it clears is not a rate limit; it is "one command, one child", and
+    /// what it protects against is a command that warmed the cache on its way in
+    /// spawning a second child on its way out to describe the same world. That is not
+    /// this. `dl <ws> --autorm` is the one command that changes the workspace list
+    /// **twice** — the launch may create a workspace and force the refresh that
+    /// records it, and the removal then deletes it — so the child already spawned is
+    /// indexing a world with a workspace in it that is about to be gone. Leaving the
+    /// latch shut means the completion cache goes on offering a deleted workspace
+    /// until its TTL expires.
+    ///
+    /// Deliberately no argument and no accounting: it re-arms by one, and the caller
+    /// has to have a second state change to justify calling it. A caller that calls
+    /// it without one gets the double spawn the latch exists to prevent, which is why
+    /// this is a named method with this docstring rather than a `pub` field.
+    pub fn rearm(&mut self) {
+        self.spawned = false;
+    }
+
     /// Refresh the completion cache in a detached process, if it is worth it.
     ///
     /// Skipped entirely when this command already spawned one, and — under

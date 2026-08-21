@@ -1126,6 +1126,17 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
     }
 }
 
+/// `--autorm`, at the moment the session has ended and the removal begins.
+///
+/// Named rather than silent, and it names the *target as typed* rather than the
+/// resolved workspace id for two reasons: the id has not been resolved yet when this
+/// is said, and the word the user recognises is the one they wrote. Whatever the
+/// removal then decides — the clone lines, or [`removal_refusal`]'s sentence and a
+/// workspace still standing — reads as an answer to this.
+pub(crate) fn autorm_removing(spec: &str) -> String {
+    format!("--autorm: the session has ended, removing {spec}.")
+}
+
 /// devpod would not let go of the workspace, and the clone was kept.
 pub(crate) fn delete_refused(workspace: &str) -> String {
     format!(

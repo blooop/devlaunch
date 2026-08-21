@@ -126,6 +126,7 @@ transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
 | `dl <user/repo> dotfiles` | Refresh dotfiles in the running workspace (`chezmoi update`) |
 | `dl <user/repo> -- <command>` | Run shell command in workspace (with a terminal, when `dl` has one) |
+| `dl <user/repo> --autorm` | Attach, and [delete the workspace when the session ends](#--autorm-the-throwaway-workspace) |
 
 Every verb in that table also takes the workspace second — `dl stop <user/repo>` — and with no
 workspace at all it opens the selector and applies itself to what you pick. `stop` and `rm` answer to
@@ -158,6 +159,68 @@ allowed to carry an instruction it will not carry out, so a deliberate `--rm` an
 slip have to be told apart. Note that a `--` command tail cannot be overridden this
 way — everything after `--` belongs to the workspace's command, so a `--rm` typed
 there is an argument to that command and not a verb.
+
+### `--autorm`: the throwaway workspace
+
+`--autorm` deletes the workspace once the session ends, the way `docker run --rm` does.
+It applies to the two forms that hand a session over and come back from it:
+
+```bash
+dl kinisi/repo@fix/x --autorm                # shell; the workspace goes when you exit
+dl kinisi/repo@fix/x --autorm -- make test   # one command, then the workspace goes
+aid kinisi/repo@fix/x 'fix the flaky test' --autorm
+```
+
+**It stops at work that is nowhere else.** The removal is `dl <ws> rm`'s, guard included,
+so a clone holding uncommitted or unpushed work — or one git could not read to find out —
+refuses, says which, and leaves the workspace standing:
+
+```
+--autorm: the session has ended, removing kinisi/repo@fix/x.
+kinisi-repo-fix-x-1a2b holds 1 uncommitted change(s) (scratch.txt). Push or commit it,
+or run: dl kinisi/repo@fix/x rm --force
+```
+
+That is what makes it safe to leave on a line you recall: the flag never decides that
+your work was disposable. For the same reason `--force` does not compose with it — a
+`--force` habitually appended to a recalled `--autorm` line would destroy work hours
+later, unattended, with nobody reading the sentence explaining it. Run
+`dl <ws> rm --force` when that is what you mean.
+
+**A build that failed is collected too.** The removal runs whenever the launch got as
+far as asking devpod for the workspace — including when `devpod up` died in
+`postCreateCommand`, which leaves the container *running* and the clone cut. That is
+the case an unattended `dl owner/repo --autorm -- make test` in CI most needs covered.
+A launch that stopped earlier — an unknown workspace, a branch that could not be named,
+a devpod that would not run — created nothing, so nothing is removed and nothing is
+said about it.
+
+Three more things it does not promise:
+
+- **The exit code is the launch's.** `dl repo --autorm -- make test` exits with the
+  test's status, and a failed build exits with devpod's; a removal that refused is
+  never what the code reports. The refusal is on stderr and the workspace is still
+  there.
+- **It is best-effort, by construction.** `dl`'s Ctrl-C handler is a signal handler,
+  so it cannot run a removal — a Ctrl-C during the container build, or a closed
+  terminal, ends `dl` before the session does and leaves the workspace behind.
+  Ctrl-C *inside* a running session is fine: the terminal is in raw mode and the
+  interrupt goes to the remote process, not to `dl`.
+- **It does not know about your other shells.** Nothing serialises two sessions on
+  one workspace — the launch lock covers the build, not the session — so a second
+  `dl <ws>` in another terminal is attached to the same container, and the `--autorm`
+  run exiting first removes it from under that one. Use `--autorm` for the workspace
+  you opened to throw away, not for one you may already be sitting in elsewhere.
+
+On an `aid` line it is appendable like `--rm`, and unlike `--rm` it **keeps the prompt** —
+the agent still runs, and the workspace goes when it is done.
+
+Those two forms and no others. Every verb word refuses the flag rather than ignoring it,
+and `code` is the one worth knowing about: it returns while VS Code is still connecting,
+so honouring `--autorm` there would delete the container out from under a window that is
+still opening. `restart`, `recreate` and `reset` do end in a session and would work, but
+they are out too, because `--autorm` is the throwaway workspace and not a cleanup modifier
+on every verb that ends in a shell.
 
 ### `prune` is no longer a spelling of the `rm` verb
 

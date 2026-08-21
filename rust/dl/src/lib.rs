@@ -248,6 +248,23 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
         cli::GrammarError::DevcontainerNotAllowed { command } => {
             format!("--devcontainer means nothing for {command}: it opens no workspace.")
         }
+        // The two forms it *does* apply to are named, and so is what to type to
+        // delete a workspace now: somebody who reached for `--autorm` on another
+        // verb wants the workspace gone at some point, and this sentence is where
+        // they find out when. Deliberately no claim about *why* the verb refuses —
+        // `restart`, `recreate` and `reset` do hand over a session, and the reason
+        // they are out is that `--autorm` is defined for the throwaway workspace
+        // rather than as a modifier on every verb that ends in a shell.
+        cli::GrammarError::AutormNotAllowed { command } => format!(
+            "--autorm applies to 'dl <workspace>' and 'dl <workspace> -- <command>', not to \
+             {command}. Use 'dl <workspace> rm' to delete a workspace now."
+        ),
+        cli::GrammarError::AutormForced => {
+            "--force does not apply to --autorm: an automatic removal always stops at work \
+             that is nowhere else, which is what makes it safe to leave on a line you recall. \
+             Use 'dl <workspace> rm --force' to delete one despite it."
+                .to_owned()
+        }
         cli::GrammarError::Devcontainer {
             raw,
             why: DevcontainerRefError::Missing,
