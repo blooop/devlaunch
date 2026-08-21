@@ -1603,6 +1603,23 @@ impl DotfilesRefresh {
 /// `chezmoi update` plus `pixi global sync`, falling back to a full `install.sh`
 /// run when chezmoi is not there (a workspace that predates dotfiles setup).
 ///
+/// The retry is what keeps a long-lived workspace reachable by this command at
+/// all. `chezmoi update` pulls the source and applies it, but the config it
+/// applies *with* was rendered by `chezmoi init` when the workspace was created
+/// and is never regenerated. A dotfiles repo that adds a template variable
+/// therefore pulls fine and then aborts on every apply — under
+/// `missingkey=error`, which a careful repo sets, `map has no entry for key` is
+/// fatal — and the workspace is stuck at the revision it had, on the one command
+/// whose job is to unstick it. Re-initialising has to come after the pull rather
+/// than before it, because the template that learned the new variable arrives
+/// *in* that pull; running it as a retry gets the order right without this side
+/// having to take `update` apart into its two halves and own git's failure modes.
+///
+/// It costs a healthy workspace nothing: the first `update` succeeds and the
+/// branch is never taken. A retry after some other failure — an unreachable
+/// remote — re-renders a config locally, which is cheap, and then fails again
+/// with the error that mattered.
+///
 /// `bound` bounds the whole payload and is what makes the automatic refresh safe
 /// to put in front of a shell: every step of this is a network call, and a
 /// non-zero exit being tolerated only helps once the command has decided to exit
@@ -1639,7 +1656,9 @@ pub(crate) fn dotfiles_command(dotfiles_url: Option<&str>, bound: Option<Duratio
     let update = format!(
         "if command -v chezmoi >/dev/null 2>&1; then \
          echo \"Updating dotfiles...\" && \
-         chezmoi update --force && \
+         {{ chezmoi update --force || \
+            {{ echo \"Re-initialising the chezmoi config and retrying...\" && \
+               chezmoi init --force && chezmoi update --force; }} }} && \
          echo \"Syncing pixi global packages...\" && \
          pixi global sync && \
          echo \"Dotfiles updated successfully\"; \
@@ -4538,6 +4557,42 @@ mod tests {
         assert!(
             command.contains("git clone https://example/dots \"$DOTFILES_DIR\""),
             "the fallback clones the configured remote: {command}"
+        );
+    }
+
+    #[test]
+    fn a_refresh_that_cannot_apply_re_renders_its_config_and_tries_again() {
+        // A workspace's chezmoi config is rendered once, at create. When the
+        // dotfiles repo later adds a template variable, the pull succeeds and
+        // every apply after it dies on `map has no entry for key` -- so the
+        // command meant to bring a stale workspace forward was the one command
+        // that could not, and no number of repeats helped. The retry must run
+        // `init` *after* a failed `update`, because the template naming the new
+        // variable arrives in that update's pull.
+        let command = dotfiles_command(Some("https://example/dots"), None);
+
+        let first = command
+            .find("chezmoi update --force")
+            .expect("the refresh still updates");
+        let reinit = command
+            .find("chezmoi init --force")
+            .expect("a failed update re-renders the config");
+        let retry = command[reinit..]
+            .find("chezmoi update --force")
+            .map(|at| at + reinit)
+            .expect("and applies again with it");
+
+        assert!(first < reinit, "the pull comes first: {command}");
+        assert!(reinit < retry, "then the config, then the apply: {command}");
+        assert!(
+            command[first..reinit].contains("||"),
+            "the re-init is the failure branch, not an unconditional second step: {command}"
+        );
+        // The sync is downstream of the whole attempt: a workspace that could not
+        // apply its dotfiles has no new manifest worth syncing.
+        assert!(
+            retry < command.find("pixi global sync").expect("and then syncs"),
+            "{command}"
         );
     }
 
