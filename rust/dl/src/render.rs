@@ -41,6 +41,7 @@ use devlaunch_core::flows::workspace_clone::{
 };
 use devlaunch_core::json::JsonKind;
 use devlaunch_core::notices::Notices;
+use devlaunch_core::shell;
 use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
@@ -1334,14 +1335,17 @@ pub(crate) fn report_refusals<'a>(
     lines.push(String::new());
     lines.push("Usually this means a container wrote them as a different user, and:".to_owned());
     // Quoted: these paths descend from $XDG_CACHE_HOME or $HOME, and a space in one
-    // turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
+    // turns a pasted `sudo rm -rf` into two targets, the first of them wrong. The
+    // crate's one quoter does it, the same one `aid` builds its `dl` command line
+    // with — a private copy here would be a third spelling of `shlex.quote` to keep
+    // true.
+    let by_hand: Vec<String> = remove_by_hand
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
     lines.push(format!(
         "  sudo rm -rf {}",
-        remove_by_hand
-            .iter()
-            .map(|path| shell_quoted(path))
-            .collect::<Vec<_>>()
-            .join(" ")
+        shell::join(by_hand.iter().map(String::as_str))
     ));
     lines.push(
         "clears them. Check the reasons above first -- it does not fix all of them.".to_owned(),
@@ -1360,19 +1364,6 @@ fn refusal_reason(reason: &RefusalReason) -> String {
             format!("is a symbolic link{to}, which a purge will not follow")
         }
     }
-}
-
-/// `path` as `shlex.quote` would write it.
-///
-/// The safe set is Python's: a path built only of those characters is printed
-/// bare, and anything else is single-quoted with embedded quotes broken out.
-fn shell_quoted(path: &Path) -> String {
-    let text = path.display().to_string();
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
-    if !text.is_empty() && text.chars().all(safe) {
-        return text;
-    }
-    format!("'{}'", text.replace('\'', "'\"'\"'"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2294,6 +2285,35 @@ mod tests {
             size,
             last_used: when,
         }
+    }
+
+    // ---------------------------------------------- the refusal advice line
+
+    /// The one line a person is meant to paste, with paths a shell would
+    /// mis-split if they went in bare.
+    ///
+    /// The expectations are CPython's `shlex.quote` output for the same paths —
+    /// including the embedded single quote, which is exactly where the `shlex`
+    /// crate answers different bytes and where a hand-rolled quoter drifts.
+    #[test]
+    fn the_advice_line_quotes_a_path_a_shell_would_mis_split() {
+        let lines = report_refusals(
+            std::iter::empty::<&Refusal>(),
+            "Removed nothing. These refused:",
+            &[
+                PathBuf::from("/home/u/my cache/devlaunch"),
+                PathBuf::from("/home/u/it's/devlaunch"),
+                PathBuf::from("/home/u/.cache/devlaunch"),
+            ],
+        );
+
+        assert!(
+            lines.contains(
+                &r#"  sudo rm -rf '/home/u/my cache/devlaunch' '/home/u/it'"'"'s/devlaunch' /home/u/.cache/devlaunch"#
+                    .to_owned()
+            ),
+            "the pasteable line, got {lines:#?}"
+        );
     }
 
     // ------------------------------------------------- the wrong-owner hint
