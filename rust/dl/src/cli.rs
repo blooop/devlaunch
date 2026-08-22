@@ -1986,6 +1986,35 @@ mod tests {
     }
 
     #[test]
+    fn a_flag_verb_with_no_name_on_the_line_still_takes_force() {
+        // `dl --rm --force` is the selector with force: pick a workspace, delete it
+        // despite work that is nowhere else. It has to keep working, and the reason
+        // is the reason the guard exists at all — `--force` is refused in a name
+        // slot because it is ambiguous there, either the flag or the workspace
+        // somebody meant to delete. A line carrying no name at all cannot be
+        // ambiguous, so a refusal here guards nothing and costs a working command.
+        //
+        // The retired spelling `dl --rm prune --force` says the same thing and has
+        // always resolved this way, so refusing the plain form would also have made
+        // the grammar disagree with itself.
+        for line in [
+            vec!["--rm", "--force"],
+            vec!["--force", "--rm"],
+            vec!["--rm", "prune", "--force"],
+        ] {
+            assert_eq!(
+                parse(&line),
+                Ok(Command::Select {
+                    verb: Verb::Remove { force: true },
+                    devcontainer: None
+                }),
+                "dl {}",
+                line.join(" ")
+            );
+        }
+    }
+
+    #[test]
     fn no_line_forces_a_delete_with_a_name_still_ahead_of_it() {
         // The placement rule, asked of the whole argv space instead of the handful
         // of lines a named test remembers to write down — and it is exactly the

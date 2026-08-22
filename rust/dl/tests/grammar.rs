@@ -198,6 +198,24 @@ fn force_ahead_of_the_workspace_on_a_flag_verb_line_deletes_nothing() {
 }
 
 #[test]
+fn a_flag_verb_with_only_force_on_the_line_is_not_refused() {
+    // The other side of the same rule, and the reason it is stated as "no name
+    // after it" rather than "trailing": `dl --rm --force` names no workspace at
+    // all, so there is nothing for `--force` to be mistaken for and nothing the
+    // guard could be protecting. The line has to reach the picker rather than the
+    // refusal — what the picker then does with no terminal to draw on is its own
+    // business, and not what this asserts.
+    let world = World::full();
+    let run = world.dl(&["--rm", "--force"]);
+
+    assert!(
+        !run.err.contains("Unknown command"),
+        "the selector line was refused by the grammar: {}",
+        run.err
+    );
+}
+
+#[test]
 fn a_path_that_names_no_workspace_is_refused() {
     let world = World::full();
     let run = world.dl(&["/"]);
