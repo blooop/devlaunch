@@ -5,30 +5,49 @@
 #
 # There are three files because there are three different promises:
 #
-#   rust/devlaunch-core/public-api.api.txt   the frozen promise. Every row is a
-#       declaration under `devlaunch_core::api`, the tier an external consumer
-#       is entitled to depend on, so a diff here is a breaking change by
-#       definition and wants a reviewer who reads it that way.
-#   rust/devlaunch-core/public-api.rest.txt  the tripwire. The binary surface --
-#       `flows::`, `domain::`, `clients::` -- which is reachable but never
-#       promised: regenerate it freely, and read a diff for the accidental `pub`
-#       rather than for a broken contract.
+#   rust/devlaunch-core/public-api.api.txt   the promise, as far as a path match
+#       can see it: every row is a declaration *at* `devlaunch_core::api`, the
+#       tier an external consumer is entitled to depend on. A diff here is a
+#       deliberate change to that tier -- a removal or a changed signature is a
+#       break -- and wants a reviewer who reads it that way. The converse does
+#       not hold; see the limit below.
+#   rust/devlaunch-core/public-api.rest.txt  the tripwire, and today also the
+#       promised types' behaviour. Mostly the binary surface -- `flows::`,
+#       `domain::`, `clients::` -- which is reachable but never promised, so
+#       most of a diff here is routine and read for the accidental `pub`. But
+#       see the limit below before reading a diff that touches a promised type
+#       as routine.
 #   rust/devlaunch-runner/public-api.txt     the process seam, as an external
 #       `Runner` implementer sees it. It had no snapshot until the split: the
 #       whole crate entered core's as one unexpanded glob row, so a removed
 #       trait method moved nothing and passed CI.
 #
+# The limit, measured rather than assumed: `cargo public-api` renders inherent
+# methods and trait impls only at a type's *canonical* path, never at the path
+# it is re-exported under. So `api::Launch::run` is rendered
+# `devlaunch_core::flows::launch::Launch::run` and this classifier cannot see
+# it. Of the 79 rows the generator emits for the `api` section, the match keeps
+# 37; the other 42 -- `Launch::new`, `Launch::run`, `CommandContext::new`,
+# `DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on
+# the promised types -- land in the rest file. Renaming `Launch::run` therefore
+# leaves the promise file byte-identical. Two consequences worth carrying:
+# a diff in the rest file that touches a promised type is a contract change
+# too, and this classifier is not the whole guard. Widening it is
+# https://github.com/blooop/devlaunch/issues/352.
+#
 # The classification is one `grep` and it lives here, in the script CI runs,
 # because the alternative is two copies of it -- one in the workflow, one in
 # whatever regenerates the files -- drifting until the promise file quietly
-# stops holding the promise. `.github/workflows/ci.yml`'s `public-api` job runs
-# this into a scratch tree and diffs the result against what the repo carries;
-# a developer runs it with no argument to accept a deliberate change.
+# stops holding even what it does hold. `.github/workflows/ci.yml`'s
+# `public-api` job runs this into a scratch tree and diffs the result against
+# what the repo carries; a developer runs it with no argument to accept a
+# deliberate change.
 #
 # Usage:
 #   scripts/public-api-snapshots.sh            # rewrite the checked-in files
 #   scripts/public-api-snapshots.sh DEST       # write them under DEST instead
 #   scripts/public-api-snapshots.sh --print-pin
+#   scripts/public-api-snapshots.sh --print-files
 #
 # Needs a nightly toolchain (cargo-public-api's rustdoc-JSON backend is
 # nightly-only; the crates themselves still build on the stable pin) and the
@@ -51,7 +70,7 @@ PIN=0.52.0
 # moves -- `UnsafeUnpin` appeared with a nightly, not with a crate change -- and
 # a tripwire that fires on toolchain drift teaches people to update snapshots
 # unread. Derived impls (Clone, Debug, serde) stay in: losing one is a real
-# break.
+# break. Note where they stay -- the rest file, per the limit above.
 FLAGS=(-ss)
 
 # The boundary matters: `\b` is what keeps a future `devlaunch_core::apiary`
@@ -59,14 +78,36 @@ FLAGS=(-ss)
 # holds the checked-in files to this same rule from the other side.
 API_ROW='devlaunch_core::api\b'
 
-if [[ "${1:-}" == "--print-pin" ]]; then
+# Every file this script writes, relative to `rust/` -- which is also every
+# file CI diffs. Emitted rather than restated there, for the same reason the
+# pin is: a fourth snapshot added here should not need a workflow edit to be
+# checked, and a workflow that lists them itself is a list that can fall behind.
+API_FILE=devlaunch-core/public-api.api.txt
+REST_FILE=devlaunch-core/public-api.rest.txt
+RUNNER_FILE=devlaunch-runner/public-api.txt
+FILES=("$API_FILE" "$REST_FILE" "$RUNNER_FILE")
+
+case "${1:-}" in
+--print-pin)
   echo "$PIN"
   exit 0
-fi
+  ;;
+--print-files)
+  printf '%s\n' "${FILES[@]}"
+  exit 0
+  ;;
+esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="${1:-$repo_root/rust}"
-mkdir -p "$dest/devlaunch-core" "$dest/devlaunch-runner"
+for file in "${FILES[@]}"; do
+  mkdir -p "$dest/$(dirname "$file")"
+done
+# Absolute from here on. Everything below runs after a `cd` into `rust/`, which
+# would otherwise re-anchor a relative DEST: the `mkdir` above lands beside the
+# caller and the writes land somewhere else entirely -- or, as it happened,
+# fail at the redirect and report it as a missing `api` module.
+dest="$(cd "$dest" && pwd)"
 
 if ! installed="$(cargo public-api --version 2>/dev/null)"; then
   echo "cargo-public-api is not installed. cargo install cargo-public-api --locked --version $PIN" >&2
@@ -78,6 +119,18 @@ if [[ "$installed" != "cargo-public-api $PIN" ]]; then
   exit 1
 fi
 
+# Stage every file, and move them into place only once all three exist. The
+# shell truncates a redirect target *before* the command on its right runs, so
+# writing the destinations directly means a failed generation -- or a guard
+# below firing -- empties a checked-in snapshot on the way to reporting the
+# problem. That is a script whose whole job is to write those files leaving
+# them at zero bytes, and only one of the tests over them notices.
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+for file in "${FILES[@]}"; do
+  mkdir -p "$staging/$(dirname "$file")"
+done
+
 cd "$repo_root/rust"
 
 core="$(cargo public-api -p devlaunch-core "${FLAGS[@]}")"
@@ -85,13 +138,16 @@ core="$(cargo public-api -p devlaunch-core "${FLAGS[@]}")"
 # Two greps rather than one pass with a fallthrough, so the two files are
 # complements by construction. Either coming out empty means the filter no
 # longer matches the crate, which is a broken split rather than a small API.
-if ! printf '%s\n' "$core" | grep -E "$API_ROW" >"$dest/devlaunch-core/public-api.api.txt"; then
+if ! printf '%s\n' "$core" | grep -E "$API_ROW" >"$staging/$API_FILE"; then
   echo "no rows matched $API_ROW: devlaunch-core no longer declares an 'api' module?" >&2
   exit 1
 fi
-if ! printf '%s\n' "$core" | grep -Ev "$API_ROW" >"$dest/devlaunch-core/public-api.rest.txt"; then
+if ! printf '%s\n' "$core" | grep -Ev "$API_ROW" >"$staging/$REST_FILE"; then
   echo "every row matched $API_ROW: the split has nothing left to classify?" >&2
   exit 1
 fi
+cargo public-api -p devlaunch-runner "${FLAGS[@]}" >"$staging/$RUNNER_FILE"
 
-cargo public-api -p devlaunch-runner "${FLAGS[@]}" >"$dest/devlaunch-runner/public-api.txt"
+for file in "${FILES[@]}"; do
+  mv "$staging/$file" "$dest/$file"
+done
