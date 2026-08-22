@@ -16,6 +16,14 @@
 //! Anything a test wants to happen differently — a mid-provision failure,
 //! malformed output, a provider error — is scripted in the response table,
 //! which short-circuits this machine entirely.
+//!
+//! This is not the only fake devpod in the repo, and that is what
+//! `test/fixtures/devpod/conformance.json` is for: an argv→outcome table this
+//! machine and `test/fixtures/devpod_shim.py` are both driven over, so neither
+//! can quietly become stricter than real devpod again — which is how a `delete
+//! --ignore-not-found` that refused survived here for months after the shim was
+//! fixed for it. A behaviour change in here belongs in a corpus row first; see
+//! the `conformance` module below.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

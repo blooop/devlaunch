@@ -24,10 +24,17 @@ re-homes `test/fixtures/devpod_mock.py`'s proven design as a separate process:
 
 Where real devpod would refuse — an id it has no workspace for, a command it
 does not know — the shim exits non-zero with the refusal on stderr, because
-Tier 2 exists to prove this program never drifts from the real one. A missing
-``DEVPOD_SHIM_STATE`` is different: that is a broken harness, not an empty
-machine, and it exits 78 (EX_CONFIG) naming the variable rather than letting a
-misconfigured run read as "no workspaces".
+Tier 2 exists to prove this program never drifts from the real one.
+
+It is not the only fake devpod here, and that is what `test/fixtures/devpod/
+conformance.json` is for: an argv→outcome table this program and the Rust
+`DevpodMachine` are both driven over, so neither can quietly become stricter
+than devpod again. Any behaviour change in here belongs in a corpus row first —
+`test/unit/test_devpod_conformance.py` is this side of that bargain.
+
+A missing ``DEVPOD_SHIM_STATE`` is different: that is a broken harness, not an
+empty machine, and it exits 78 (EX_CONFIG) naming the variable rather than
+letting a misconfigured run read as "no workspaces".
 """
 
 import fcntl
