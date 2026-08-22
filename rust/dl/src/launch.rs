@@ -151,6 +151,7 @@ impl Provision for ToolProvisioning {
         runner: &dyn Runner,
         workspace_id: &str,
         occasion: PassOccasion,
+        title: Option<&str>,
     ) -> Result<(), DevpodMissing> {
         // The events stream through the same sink as the launch's own notices —
         // one line on stderr at the moment core says it, which is Python's order:
@@ -161,6 +162,7 @@ impl Provision for ToolProvisioning {
             workspace_id,
             occasion,
             self.switches,
+            title,
             self.host.as_ref(),
             Some(&self.verdicts),
             &mut render::Saying,

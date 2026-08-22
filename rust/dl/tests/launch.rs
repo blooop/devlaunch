@@ -608,6 +608,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             ),
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
             &format!("{COLD}: the zellij setup stage did not report; it may not have run."),
+            &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("SSH command: devpod ssh {COLD}"),
         ]
     );

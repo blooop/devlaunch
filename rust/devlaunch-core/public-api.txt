@@ -1115,7 +1115,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Unquot
 pub trait devlaunch_core::flows::launch::ColdMachinery<'r>
 pub fn devlaunch_core::flows::launch::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
 pub trait devlaunch_core::flows::launch::Provision
-pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion) -> core::result::Result<(), devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<(), devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::lifecycle
@@ -2047,7 +2047,7 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::Switches
 pub fn devlaunch_core::flows::provision::Switches::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::provision::Switches
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::Switches
-pub fn devlaunch_core::flows::provision::provision_tools(&dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, devlaunch_core::flows::provision::Switches, core::option::Option<&devlaunch_core::flows::provision::HostLayout>, core::option::Option<&devlaunch_core::flows::provision::verdict_cache::VerdictCache>, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> core::result::Result<devlaunch_core::flows::provision::Provisioning, devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::provision::provision_tools(&dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, devlaunch_core::flows::provision::Switches, core::option::Option<&str>, core::option::Option<&devlaunch_core::flows::provision::HostLayout>, core::option::Option<&devlaunch_core::flows::provision::verdict_cache::VerdictCache>, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> core::result::Result<devlaunch_core::flows::provision::Provisioning, devlaunch_core::flows::provision::DevpodMissing>
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone
