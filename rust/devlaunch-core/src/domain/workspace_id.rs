@@ -372,6 +372,92 @@ fn fit_ref(git_ref: &str, room: usize) -> String {
         .to_string()
 }
 
+/// The `<ref-slug>` an id carries, for a workspace derived for *repo*.
+///
+/// The display-side inverse of [`WorkspaceId::value`]'s readable half. It lives
+/// here because that is where the halves were joined: a caller that spelled out
+/// the suffix width or the repo cap for itself would be a second derivation to
+/// disagree with the first, which is defect #4 of devlaunch#55 — one rule, two
+/// derivations — in the direction nothing has written yet.
+///
+/// **The repo has to come from outside, because the id does not say where its own
+/// first boundary is.** Both slugs may hold dashes, so `devlaunch-main-zovomobo`
+/// reads equally well as repo `devlaunch` with ref `main` and as repo
+/// `devlaunch-main` with no ref at all. The caller that has a repo to pass is the
+/// one reading dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>`, which
+/// names it.
+///
+/// `None` for anything that does not read as one, and every arm of that is a
+/// workspace a caller should show whole instead: an id with no syllable suffix on
+/// it, a repo whose slug is not the prefix under either spelling, or nothing left
+/// between the two. The suffix check is what makes this answer `None` for a name
+/// dl did not derive rather than cutting eight characters off the end of it.
+///
+/// **What comes back is a slug, and a slug is not a ref.** [`slug`] collapses `/`
+/// and `-` alike, and [`fit_ref`] drops whole segments before it truncates
+/// characters — so `feature/auth` and `feature-auth` both read back as
+/// `feature-auth`, and a long ref reads back short. Nothing may hand the result to
+/// [`WorkspaceId::new`] and expect the workspace it came from: it is a label to
+/// read, and the id remains the only thing that addresses anything.
+pub(crate) fn ref_slug_of<'a>(id: &'a str, repo: &str) -> Option<&'a str> {
+    let body = without_suffix(id)?;
+    let repo_slug = slug(repo);
+    if repo_slug.is_empty() {
+        // `value` joins with the empty part dropped, so an id for a repo whose
+        // slug is empty carries no repo part and no separator for one.
+        return non_empty(body);
+    }
+    // The full spelling first and the cut one second. `value` cuts the repo slug
+    // to REPO_SLUG_LENGTH only when the id would otherwise overflow, so both are
+    // live — and trying the cut one first would eat the front of the ref for
+    // every repo whose slug is inside the cap.
+    let cut = head(&repo_slug, REPO_SLUG_LENGTH).trim_matches('-');
+    let rest = after_part(body, &repo_slug).or_else(|| after_part(body, cut))?;
+    non_empty(rest)
+}
+
+/// *body* with `<part>-` taken off the front, or `None` if it does not start that
+/// way.
+///
+/// The separator is required, which is what keeps a repo slug that is merely a
+/// *prefix* of a longer one from matching: `dev` does not strip `devlaunch-main`.
+fn after_part<'a>(body: &'a str, part: &str) -> Option<&'a str> {
+    body.strip_prefix(part)?.strip_prefix('-')
+}
+
+/// An id with its identity suffix and the separator in front of it removed.
+///
+/// `None` unless the last [`SUFFIX_LENGTH`] characters really are a syllable
+/// suffix and a `-` precedes them. Checking the syllables rather than just
+/// counting characters is what makes this a parse: `some-hand-made-ws` is not an
+/// id this module derived, and cutting its last eight characters off would answer
+/// a confident lie where `None` is the truth.
+fn without_suffix(id: &str) -> Option<&str> {
+    let cut = id.len().checked_sub(SUFFIX_LENGTH)?;
+    if !is_syllables(id.get(cut..)?) {
+        return None;
+    }
+    id.get(..cut)?.strip_suffix('-')
+}
+
+/// Whether *text* is exactly what [`syllable_suffix`] emits: [`SYLLABLES`]
+/// consonant-vowel pairs drawn from the two tables.
+///
+/// Byte-wise, which is sound because both tables are ASCII: a non-ASCII character
+/// cannot be in either, so it fails the test rather than splitting a character.
+fn is_syllables(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == SUFFIX_LENGTH
+        && bytes
+            .chunks(2)
+            .all(|pair| CONSONANTS.contains(&pair[0]) && VOWELS.contains(&pair[1]))
+}
+
+/// *text* unless it is empty, so "nothing was left" is one answer and not two.
+fn non_empty(text: &str) -> Option<&str> {
+    (!text.is_empty()).then_some(text)
+}
+
 /// SHA-256 (FIPS 180-4), because the frozen suffix is defined by this digest.
 /// The `sha2` crate rather than a hand-rolled compression function: the golden
 /// ids pin the output either way, and crypto primitives are the one place
@@ -1537,5 +1623,139 @@ mod tests {
         assert_eq!(parsed.owner(), "blooop");
         assert_eq!(parsed.repo(), "devlaunch");
         assert_eq!(parsed.git_ref(), "feature/auth");
+    }
+
+    // -------------------------------------------------- reading an id apart
+
+    /// The id a triple derives, so these read against the real derivation rather
+    /// than against a hand-spelled string that could drift from it.
+    fn derived(owner: &str, repo: &str, git_ref: &str) -> String {
+        WorkspaceId::new(owner, repo, git_ref)
+            .expect("a safe triple")
+            .value()
+    }
+
+    #[test]
+    fn an_id_gives_up_its_ref_slug_when_the_repo_is_known() {
+        // The whole point of the inverse: the readable half of an id is the two
+        // things a person is looking for, and the repo is what says where the
+        // boundary between them falls.
+        let id = derived("blooop", "devlaunch", "main");
+
+        assert_eq!(id, "devlaunch-main-zovomobo");
+        assert_eq!(ref_slug_of(&id, "devlaunch"), Some("main"));
+    }
+
+    #[test]
+    fn a_repo_slug_cut_to_the_cap_is_still_recognised() {
+        // `value` cuts the repo slug to REPO_SLUG_LENGTH when the id would
+        // otherwise overflow, so the prefix in the id is not always `slug(repo)` —
+        // and a reader that only tried the full spelling would answer `None` for
+        // every workspace of a long-named repository.
+        let repo = "a-very-long-repository-name-indeed";
+        let id = derived("blooop", repo, "main");
+
+        assert_eq!(id, "a-very-long-reposito-main-mafedavi");
+        assert!(slug(repo).len() > REPO_SLUG_LENGTH, "the cap has to bite");
+        assert_eq!(ref_slug_of(&id, repo), Some("main"));
+    }
+
+    #[test]
+    fn the_full_repo_spelling_is_tried_before_the_cut_one() {
+        // Order matters and only shows up on a repo whose slug is *inside* the cap:
+        // `head(slug, 20)` of a shorter slug is the slug itself, so both candidates
+        // agree — but a reader that tried a *cut* candidate first on a repo like
+        // `devlaunch` would strip fewer characters than the id spent and hand back
+        // a ref-slug with the tail of the repo name still on the front.
+        let id = derived("blooop", "devlaunch", "feature/auth");
+
+        assert_eq!(ref_slug_of(&id, "devlaunch"), Some("feature-auth"));
+        // The same id read against a repo it was not derived for: the prefix does
+        // not match under either spelling, so there is no ref to report.
+        assert_eq!(ref_slug_of(&id, "wayfinder"), None);
+    }
+
+    #[test]
+    fn a_long_ref_reads_back_as_the_slug_the_id_kept_and_not_as_the_ref() {
+        // The caveat the doc comment leads with, pinned: `fit_ref` drops whole
+        // middle segments, so what comes back is legible and is *not* the ref. A
+        // caller that handed this to `WorkspaceId::new` would derive a different
+        // workspace, which is why nothing does.
+        let git_ref = "dependabot/github_actions/codecov/codecov-action-6";
+        let id = derived("blooop", "devlaunch", git_ref);
+
+        assert_eq!(
+            ref_slug_of(&id, "devlaunch"),
+            Some("dependabot-codecov-action-6")
+        );
+        assert_ne!(ref_slug_of(&id, "devlaunch"), Some(git_ref));
+    }
+
+    #[test]
+    fn two_refs_that_slug_alike_read_back_alike() {
+        // Defect #1 of devlaunch#55, in the one place it survives: `slug` collapses
+        // `/` and `-`, so these two branches are two workspaces with one readable
+        // part between them. The ids differ — that is what the suffix is for — and a
+        // caller drawing only the readable part has to notice, because the string
+        // it is about to print does not distinguish them.
+        let over = derived("blooop", "devlaunch", "feature/auth");
+        let under = derived("blooop", "devlaunch", "feature-auth");
+
+        assert_ne!(over, under);
+        assert_eq!(ref_slug_of(&over, "devlaunch"), Some("feature-auth"));
+        assert_eq!(ref_slug_of(&under, "devlaunch"), Some("feature-auth"));
+    }
+
+    #[test]
+    fn a_name_this_module_did_not_derive_is_refused_rather_than_cut() {
+        // The check that makes this a parse instead of a substring operation.
+        // Without it every one of these would answer a confident lie: eight
+        // characters off the end of a name that never had a suffix on it.
+        for name in [
+            // No syllables: `made-ws` is not four consonant-vowel pairs.
+            "some-hand-made-ws",
+            // Right shape, wrong tables: `q` and `u` are in neither.
+            "devlaunch-main-qulaquli",
+            // Nothing but a suffix, so there is no separator and no repo part.
+            "zovomobo",
+            // Shorter than a suffix.
+            "ws",
+            "",
+        ] {
+            assert_eq!(ref_slug_of(name, "devlaunch"), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_multibyte_name_is_refused_without_splitting_a_character() {
+        // `checked_sub` counts bytes, so a name whose last bytes are the middle of a
+        // character would panic on a naive slice. `str::get` answering `None` on a
+        // boundary that is not one is what keeps this total — and the tables are
+        // ASCII, so no non-ASCII name could have been an id anyway.
+        assert_eq!(ref_slug_of("devlaunch-main-zzzzzzé", "devlaunch"), None);
+        assert_eq!(ref_slug_of("é", "devlaunch"), None);
+    }
+
+    #[test]
+    fn an_id_with_no_ref_part_left_answers_nothing_rather_than_an_empty_label() {
+        // A ref whose slug is empty leaves `<repo>-<suffix>`, so there is a repo
+        // prefix and a suffix and nothing between them. `None` rather than
+        // `Some("")`, so a caller has one answer to handle and not two.
+        let id = derived("blooop", "devlaunch", "_");
+
+        assert_eq!(id, "devlaunch-sasevapo");
+        assert_eq!(ref_slug_of(&id, "devlaunch"), None);
+    }
+
+    #[test]
+    fn a_repo_whose_slug_is_empty_leaves_the_ref_alone() {
+        // The mirror case: `value` drops the empty repo part *and* its separator, so
+        // the id is `<ref-slug>-<suffix>` and there is no prefix to strip. A reader
+        // that insisted on one would answer `None` for a workspace it can describe
+        // perfectly well.
+        let id = derived("blooop", "_", "main");
+
+        assert_eq!(id, "main-gakebofi");
+        assert_eq!(ref_slug_of(&id, "_"), Some("main"));
     }
 }

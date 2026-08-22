@@ -87,11 +87,35 @@ one. It draws the search bar on the top line with the matches reading downward f
 first match is the row nearest what you are typing. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
 stop something, it does not look for a workspace called `stop`.
 
-For the verbs that finish on their own — `up`, `stop`, `rm`, `code` and `dotfiles` — the selector
-takes more than one row: TAB marks any number and Enter applies the verb to each in turn, so
-`dl rm` can clear five dead workspaces in one visit. The forms that end in an interactive session
-(`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several of those
-would just be sessions queued behind each other's exit.
+Each row is `owner | repo | branch`, aligned into columns:
+
+```
+blooop          | devlaunch  | main
+blooop          | devlaunch  | picker-columns
+kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-su
+-               | myproject
+```
+
+That is the [workspace id](#workspace-ids) read apart, with the hashed suffix left
+off — it is there to keep two branches from sharing an id, and reading it is no part
+of choosing a workspace. The owner is not in the id at all, so a fork and its
+upstream used to be two rows spelled the same. A workspace `dl` did not clone has no
+owner or repo to read out of it, so it keeps whatever name devpod has for it and a
+dash where the owner would go.
+
+**The right-hand column is the branch as the id spells it, which is not always the
+branch.** It is slugged, so `feature/auth` reads as `feature-auth`, and a long one is
+shortened — the third row above is really `ags-devcontainer-tooling-support`. That is
+why the row is three columns and not `owner/repo@branch`: the latter reads like
+something you could retype, and retyping a slugged branch name can address a
+different workspace. To act on what you picked, pick it — the row carries the id
+underneath.
+
+Two branches can therefore share the middle and right columns: `feature/auth` and
+`feature-auth` read alike. When that happens **both** rows go back to their full ids,
+suffix and all, because the row's own text is how `dl` knows which workspace you
+picked — two rows reading the same would be one workspace deleted in place of
+another. The suffix appears exactly where it is doing work.
 
 ### Examples
 

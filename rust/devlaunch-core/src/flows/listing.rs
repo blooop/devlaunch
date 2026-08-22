@@ -63,6 +63,7 @@ use crate::clients::devpod::{self, ContainerState, ListingUnreadable, Workspace,
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
+use crate::domain::workspace_id;
 use crate::domain::workspace_state::{self, CloneState, CouldNotTell, NonEmpty, Unsaved};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
@@ -262,32 +263,94 @@ pub fn owner_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
         WorkspaceSource::GitRepository(url) => {
             parse_owner_repo_from_url(url).map(|(owner, _repo)| owner.to_owned())
         }
-        WorkspaceSource::LocalFolder(path) if is_devlaunch_clone(workspace, cache_dir) => {
-            owner_of_clone(Path::new(path), &workspace.id, cache_dir)
+        // The guards live in `layout_of_clone`, so a local folder that is not one of
+        // dl's clones answers `None` there rather than here.
+        WorkspaceSource::LocalFolder(_) => {
+            layout_of_clone(workspace, cache_dir).map(|(owner, _repo)| owner)
         }
-        WorkspaceSource::LocalFolder(_)
-        | WorkspaceSource::UnreadableLocalFolder(_)
-        | WorkspaceSource::Unrecognised(_) => None,
+        WorkspaceSource::UnreadableLocalFolder(_) | WorkspaceSource::Unrecognised(_) => None,
     }
 }
 
-/// dl's clone layout read backwards: the grandparent of a leaf named for the
-/// workspace it holds.
+/// The repo a workspace is a clone of, as dl's own layout names it.
 ///
-/// That grandparent has to be a directory dl put there, which is what the last
-/// check is for — inside the cache and not the cache itself. Without it a
-/// directory a user keeps *in* dl's cache, opened by path, hands back whatever
-/// component sits two above its leaf: `dl ~/.cache/devlaunch/scratch/myproject`
-/// would be credited to an owner called `devlaunch`.
-fn owner_of_clone(path: &Path, workspace_id: &str, cache_dir: &Path) -> Option<String> {
-    if path.file_name()?.to_str()? != workspace_id {
+/// Only ever answered for a clone dl made, and for the same reason [`owner_of`]
+/// only reads an owner out of one: the name lives in the path
+/// `<cache>/repos/<owner>/<repo>/<id>`, which is the only place devpod's own answer
+/// carries it. The same guards apply, because both questions are now answered by
+/// the one reading in [`layout_of_clone`] — so a directory merely *shaped* like the
+/// layout names no repo.
+///
+/// **A git source answers `None` even though its URL names a repo.** A workspace
+/// dl did not clone was named by
+/// [`source_workspace_id`](crate::domain::workspace_id), which hashes a source with
+/// no ref in it at all — so [`ref_slug_of`] has nothing to answer for it either,
+/// and a repo on its own would be half a reading.
+///
+/// The *directory* and not the id's prefix: the id spells `kinisi_ros` as
+/// `kinisi-ros`, because [`slug`](crate::domain::workspace_id) turns `_` into `-`
+/// and may cut what is left to fit — and the underscore is the repository's real
+/// name.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+pub fn repo_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
+    layout_of_clone(workspace, cache_dir).map(|(_owner, repo)| repo)
+}
+
+/// The ref-slug a workspace's id carries, read against the repo it was derived
+/// for.
+///
+/// Answered exactly when [`repo_of`] is, minus the ids that do not read apart —
+/// which is what makes the pair safe to ask separately: a caller wanting both
+/// takes them together and treats one answer without the other as neither.
+///
+/// **What comes back is a slug, and a slug is not a ref.**
+/// [`ref_slug_of`](crate::domain::workspace_id::ref_slug_of) has the whole of that
+/// caveat: `feature/auth` and `feature-auth` read back alike, and a long ref reads
+/// back short. It is a label to read, and the id remains the only thing that
+/// addresses a workspace.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+pub fn ref_slug_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
+    let (_owner, repo) = layout_of_clone(workspace, cache_dir)?;
+    workspace_id::ref_slug_of(&workspace.id, &repo).map(str::to_owned)
+}
+
+/// dl's clone layout read backwards: the two directories above a leaf named for
+/// the workspace it holds, as `(owner, repo)`.
+///
+/// The source has to be a local folder dl put under its cache
+/// ([`is_devlaunch_clone`]), the leaf has to be named for *this* workspace, and the
+/// owner directory has to be one dl put there — inside the cache and not the cache
+/// itself. Without that last check a directory a user keeps *in* dl's cache, opened
+/// by path, hands back whatever component sits two above its leaf:
+/// `dl ~/.cache/devlaunch/scratch/myproject` would be credited to an owner called
+/// `devlaunch`.
+///
+/// One reading for all three callers rather than one each. Every answer comes out
+/// of the same three path components, so the guards cannot be applied to one
+/// question and forgotten on the next — the shape of defect the id derivation was
+/// rebuilt to make unrepresentable (devlaunch#55).
+fn layout_of_clone(workspace: &Workspace, cache_dir: &Path) -> Option<(String, String)> {
+    let WorkspaceSource::LocalFolder(path) = &workspace.source else {
+        return None;
+    };
+    if !is_devlaunch_clone(workspace, cache_dir) {
         return None;
     }
-    let owner_dir = path.parent()?.parent()?;
+    let path = Path::new(path);
+    if path.file_name()?.to_str()? != workspace.id {
+        return None;
+    }
+    let repo_dir = path.parent()?;
+    let owner_dir = repo_dir.parent()?;
     if owner_dir == cache_dir || !owner_dir.starts_with(cache_dir) {
         return None;
     }
-    Some(owner_dir.file_name()?.to_str()?.to_owned())
+    Some((
+        owner_dir.file_name()?.to_str()?.to_owned(),
+        repo_dir.file_name()?.to_str()?.to_owned(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
