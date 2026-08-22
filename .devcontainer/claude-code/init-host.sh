@@ -54,6 +54,16 @@ heal_stale_file_mount() {
     *"//deleted") ;;
     *) return 0 ;;
     esac
+    # The agent socket goes stale the same way and blocks a nested create the
+    # same way, but has no bytes to carry over -- a deleted socket inode is a
+    # dead endpoint however it is mounted -- so its whole heal is the detach.
+    # The test matters beyond that economy: *reading* a stale FIFO blocks
+    # forever, and this runs inside initializeCommand, where hanging is worse
+    # than any failure being healed.
+    if [ ! -f "$mounted" ]; then
+        as_root umount "$mounted" 2>/dev/null || as_root umount -l "$mounted" 2>/dev/null || :
+        return 0
+    fi
     mode=$(stat -c '%a' "$mounted" 2>/dev/null) || return 0
     saved=$(mktemp) || return 0
     # Read through the mount before detaching it: the deleted inode's bytes
@@ -77,7 +87,7 @@ heal_stale_file_mount() {
 
 for mounted_file in "$HOME/.claude/CLAUDE.md" "$HOME/.claude/settings.json" \
     "$HOME/.claude/.credentials.json" "$HOME/.claude/.claude.json" \
-    "$HOME/.ssh/known_hosts"; do
+    "$HOME/.ssh/known_hosts" "$HOME/.ssh/agent.sock"; do
     heal_stale_file_mount "$mounted_file"
 done
 #

@@ -78,6 +78,30 @@ awk -v p="$target" '$5 == p { n++ } END { print n + 0 }' /proc/self/mountinfo \
 chown -R "$(stat -c %u:%g "$home")" "$home" || :
 """
 
+# The consumer also mounts the ssh agent *socket*, and a socket goes stale the
+# same way -- the host's agent restarts and binds a fresh inode at the same
+# path -- with the same consequence for a nested create. There are no bytes to
+# carry over: the deleted inode is a dead endpoint whichever way it is mounted,
+# so the whole heal is the detach. Staged with a FIFO rather than a socket
+# because `mkfifo` is everywhere `sh` is and it is the *harsher* member of the
+# class: a read on it blocks forever, so a heal that wrongly takes the
+# copy-the-bytes path wedges here (and trips the runner's timeout) instead of
+# merely erroring.
+STALE_SPECIAL_MOUNT_SCENARIO = """
+set -eu
+home="$1"; target="$2"; hook="$3"
+mkfifo "$home/replaced-fifo"
+: > "$target"
+mount --bind "$home/replaced-fifo" "$target"
+rm "$home/replaced-fifo"
+awk -v p="$target" '$5 == p && $4 ~ /\\/\\/deleted$/ { found = 1 } END { exit 1 - found }' \
+    /proc/self/mountinfo
+HOME="$home" sh -e "$hook"
+awk -v p="$target" '$5 == p { n++ } END { print n + 0 }' /proc/self/mountinfo \
+    > "$home/mounts-after"
+chown -R "$(stat -c %u:%g "$home")" "$home" || :
+"""
+
 # The same stage with the source left in place: a live mount, the ordinary
 # state of these paths inside every container this repo builds. The content
 # is read back *through* the mount after the hook has run, because "the file
@@ -129,11 +153,16 @@ pytestmark = pytest.mark.skipif(
 
 
 def in_namespace(script: str, *args: str) -> subprocess.CompletedProcess:
+    # The timeout is an assertion, not a courtesy: a heal that tries to *read*
+    # a stale FIFO or socket blocks forever, and initializeCommand hanging is a
+    # worse failure than the one being healed. A wedged scenario must fail the
+    # test rather than the suite.
     return subprocess.run(
         [*NAMESPACE, "sh", "-c", script, "scenario", *args],
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
 
 
@@ -175,6 +204,26 @@ def test_the_hook_replaces_a_deleted_inode_mount_with_the_bytes_it_pinned(scratc
     assert stat.S_IMODE(target.stat().st_mode) == 0o600, (
         f"the heal did not carry over {relative}'s mode"
     )
+
+
+def test_the_hook_detaches_a_deleted_inode_mount_of_the_agent_socket(scratch_home):
+    """The agent socket mount goes stale like the files do, and blocked #326 too.
+
+    No bytes survive -- a deleted socket inode is a dead endpoint -- so the
+    claim is narrower than the file heal's: the mount is gone, the launch was
+    not aborted, and the hook never tried to read it (the FIFO would have hung
+    the scenario into the runner's timeout).
+    """
+    target = scratch_home / ".ssh" / "agent.sock"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    result = in_namespace(
+        STALE_SPECIAL_MOUNT_SCENARIO, str(scratch_home), str(target), str(INIT_HOST)
+    )
+    assert result.returncode == 0, f"the scenario could not run: {result.stdout}\n{result.stderr}"
+
+    mounts_after = (scratch_home / "mounts-after").read_text().strip()
+    assert mounts_after == "0", f"agent.sock is still covered by {mounts_after} mount(s)"
 
 
 def test_the_hook_leaves_a_live_mount_connected(scratch_home):
