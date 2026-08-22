@@ -102,7 +102,10 @@ fn run(argv: &[String]) -> i32 {
     // a shell. Anything else — an inline prompt, a verb line, a pipe — comes back
     // unchanged with no boot, and takes the path it always took.
     let (parsed, boot) = interactive::collect_prompt(parsed);
-    let Some(dl_args) = rewrite::build_dl_args(&parsed) else {
+    // Read here rather than in `rewrite`, which is deliberately a pure
+    // string-to-strings module: the pane is a fact about this process.
+    let pane = dl::herdr::Session::from_env();
+    let Some(dl_args) = rewrite::build_dl_args(&parsed, pane.as_ref()) else {
         // Unreachable by a command line: the parse only ever answers with an agent
         // from the table, and a line that starts no agent cannot fail to build one.
         // Reported rather than panicked on, in the words the refusal for an invented
