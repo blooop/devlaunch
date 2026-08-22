@@ -86,6 +86,25 @@ fn dl_first_argument_flags(script: &str) -> BTreeSet<String> {
     assigned(script, "local global_opts=")
 }
 
+/// What the script offers after a workspace: the verbs, and the flags that ride
+/// beside one.
+///
+/// Two sets rather than one, because they are checked against different originals —
+/// the reserved-verb table and the flag table — and the bare `--` that ends the list
+/// is neither.
+fn dl_workspace_words(script: &str) -> (BTreeSet<String>, BTreeSet<String>) {
+    let words = assigned(script, "local ws_cmds=");
+    assert!(
+        words.contains("--"),
+        "the workspace list offers `--`, which is how a command is run inside one"
+    );
+    let (flags, verbs): (BTreeSet<String>, BTreeSet<String>) = words
+        .into_iter()
+        .filter(|word| word != "--")
+        .partition(|word| word.starts_with('-'));
+    (verbs, flags)
+}
+
 // --- reading the argument grammar's flag table ------------------------------
 
 /// One flag of the `dl` command line, as the grammar declares it.
@@ -150,6 +169,43 @@ fn grammar_flags(grammar: &str) -> Vec<Flag> {
     flags
 }
 
+/// The spellings of a `const NAME: [(&str, _); N]` word table in the grammar.
+///
+/// The declared `N` is checked against the number of entries found, so a table this
+/// walks with the wrong shape fails loudly rather than comparing against a short
+/// list it happened to scrape.
+fn grammar_words(grammar: &str, name: &str) -> BTreeSet<String> {
+    let declaration = grammar
+        .split_once(&format!("const {name}: [(&str, "))
+        .unwrap_or_else(|| panic!("the grammar declares a {name} word table"))
+        .1;
+    let (shape, entries) = declaration
+        .split_once("] = ")
+        .unwrap_or_else(|| panic!("{name}'s table has a declared length"));
+    let declared: usize = shape
+        .split_once("; ")
+        .and_then(|(_, count)| count.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{name} declares how many entries it has, got {shape:?}"));
+    let body = entries
+        .split_once("];")
+        .unwrap_or_else(|| panic!("{name}'s table ends"))
+        .0;
+
+    let words: BTreeSet<String> = body
+        .match_indices("(\"")
+        .filter_map(|(at, _)| {
+            let rest = &body[at + 2..];
+            rest.split_once('"').map(|(word, _)| word.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        words.len(),
+        declared,
+        "{name} has {declared} entries; {words:?} was read out of it"
+    );
+    words
+}
+
 /// Flags the grammar accepts that the completion deliberately does not offer for a
 /// first argument, each with the reason it is left out.
 ///
@@ -196,4 +252,66 @@ fn every_user_facing_dl_flag_is_offered_for_a_first_argument() {
         expected,
         "the completion script's first-argument flags have drifted from the grammar"
     );
+}
+
+#[test]
+fn the_workspace_verbs_offered_are_the_grammars_reserved_verbs() {
+    let script = completion_script();
+    let grammar = argument_grammar();
+
+    let (offered, _) = dl_workspace_words(&script);
+
+    assert_eq!(
+        offered,
+        grammar_words(&grammar, "VERBS"),
+        "the completion script's workspace verbs have drifted from the grammar"
+    );
+}
+
+#[test]
+fn a_retired_verb_is_never_offered() {
+    // A word dropped from the verb table is still recognised by name and refused, so
+    // completing it would hand somebody a line the CLI answers with "that is not a
+    // verb any more". The test above would catch a retired word left in the list
+    // today; this one keeps catching it if the two tables are ever edited together.
+    //
+    // Only the bare word: `prune` is retired as a verb while `--prune` is a current
+    // global flag meaning something else entirely, which is exactly why the word was
+    // retired, and offering the flag is right.
+    let script = completion_script();
+    let grammar = argument_grammar();
+
+    let (verbs, _) = dl_workspace_words(&script);
+    let retired = grammar_words(&grammar, "RETIRED");
+
+    assert!(!retired.is_empty(), "there is a retired word to check for");
+    for word in &retired {
+        assert!(
+            !verbs.contains(word),
+            "{word} is offered as a verb but the grammar retired it"
+        );
+    }
+}
+
+#[test]
+fn every_flag_offered_beside_a_workspace_is_a_flag_the_grammar_accepts() {
+    // The other half of the diff: the script may not invent a flag either. `--autorm`
+    // is offered here rather than only in first position because it rides beside a
+    // workspace, which is the one place the grammar defines it.
+    let script = completion_script();
+    let grammar = argument_grammar();
+
+    let (_, offered) = dl_workspace_words(&script);
+    let accepted: BTreeSet<String> = grammar_flags(&grammar)
+        .iter()
+        .map(|flag| flag.long.clone())
+        .collect();
+
+    assert!(!offered.is_empty(), "the list offers at least one flag");
+    for flag in &offered {
+        assert!(
+            accepted.contains(flag),
+            "{flag} is offered beside a workspace but the grammar does not accept it"
+        );
+    }
 }
