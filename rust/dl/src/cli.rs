@@ -1044,6 +1044,23 @@ mod tests {
     }
 
     #[test]
+    fn a_recalled_prune_line_is_the_retirement_and_the_pair_is_named_ahead_of_it() {
+        // The two readings a `dl prune <ws> --force` line recalled with `--rm`
+        // appended can have, and they are not the same one. Row 30 made the whole
+        // line remove `<ws>`; with the override gone, the words are read again and
+        // `prune` is the retirement — *unless* `--force` is there too, in which case
+        // the pair is what the line got wrong first and the more confused half.
+        assert_eq!(
+            parse(&["prune", "ws", "--rm"]),
+            Err(GrammarError::RetiredVerb(RetiredWord::Prune))
+        );
+        assert_eq!(
+            parse(&["prune", "ws", "--force", "--rm"]),
+            Err(GrammarError::RmForced)
+        );
+    }
+
+    #[test]
     fn a_retired_word_is_never_read_as_the_workspace() {
         // The failure mode the RETIRED table exists to prevent: dropped from the
         // verbs and nothing else, `prune` would be an ordinary word — a workspace

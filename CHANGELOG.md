@@ -67,9 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deleting a workspace without naming or picking it, by appending to whatever the
   last line happened to be.
 
-  One consequence worth knowing: `dl prune <ws> --force --rm` used to remove
-  `<ws>`, and is now the `prune` retirement's refusal, since nothing overrides a
-  line any more. `dl --prune` is unchanged.
+  One consequence worth knowing: `dl prune <ws> --rm` used to remove `<ws>`, and
+  is now the `prune` retirement's refusal, since nothing overrides a line any more.
+  Add `--force` to that line and the `--force`-beside-`--rm` refusal is what you
+  get, because the pair is the more confused half and is named first.
+  `dl --prune` is unchanged.
 
 - **`dl <ws> rm --rm` is refused as the two requests it is**, rather than being
   quietly treated as one of them. The sentence names the verb, which is the
