@@ -254,17 +254,14 @@ pub(crate) fn default_agent(environment: Option<&str>) -> Result<String, UsageEr
     Ok(name.to_owned())
 }
 
-/// What a trailing run of dl flags turned out to be.
+/// Whether a peeled run names a spelling this build has retired.
 ///
-/// One list and a flag rather than two lists: every peeled word goes to dl in the
-/// same place, and `retired` is not *where* a word lands but whether this line still
-/// starts an agent at all.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Suffix {
-    /// dl options, in the order dl needs them. The prompt stands beside these.
-    options: Vec<String>,
-    /// Whether a retired spelling was among them, which is dl's to refuse.
-    retired: bool,
+/// Derived from the run rather than carried beside it: a `retired` field would be a
+/// second copy of a fact the words already state, and the two could disagree.
+fn names_a_retired_spelling(options: &[String]) -> bool {
+    options
+        .iter()
+        .any(|word| SUFFIX_RETIRED.contains(&word.as_str()))
 }
 
 /// Split a trailing run of dl flags off the end of a command line.
@@ -297,7 +294,7 @@ struct Suffix {
 /// **Divergence row 30**, aid's half: Python joined every post-spec word into the
 /// prompt with no exception, so `aid <ws> <prompt> --rm` asked an agent to read
 /// `--rm`.
-fn peel_suffix(argv: &[String]) -> Option<(&[String], Suffix)> {
+fn peel_suffix(argv: &[String]) -> Option<(&[String], Vec<String>)> {
     let is_suffix = |word: &str| {
         SUFFIX_OPTIONS.contains(&word)
             || SUFFIX_RETIRED.contains(&word)
@@ -314,22 +311,19 @@ fn peel_suffix(argv: &[String]) -> Option<(&[String], Suffix)> {
     if !names(SUFFIX_OPTIONS) && !names(SUFFIX_RETIRED) {
         return None;
     }
-    let mut suffix = Suffix {
-        retired: names(SUFFIX_RETIRED),
-        ..Suffix::default()
-    };
     // Modifiers held back and appended, so an option always precedes one — see the
     // positional argument above. Typed order is kept *within* each group.
+    let mut options: Vec<String> = Vec::new();
     let mut modifiers: Vec<String> = Vec::new();
     for word in run {
         if SUFFIX_MODIFIERS.contains(&word.as_str()) {
             modifiers.push(word.clone());
         } else {
-            suffix.options.push(word.clone());
+            options.push(word.clone());
         }
     }
-    suffix.options.append(&mut modifiers);
-    Some((&argv[..at], suffix))
+    options.append(&mut modifiers);
+    Some((&argv[..at], options))
 }
 
 /// Split an aid command line into agent, dl options, workspace spec, and the task.
@@ -352,7 +346,7 @@ pub(crate) fn parse_aid_args(
     let mut agent = default_agent(environment)?;
     let (line, trailing) = match peel_suffix(argv) {
         Some((line, trailing)) => (line, trailing),
-        None => (argv, Suffix::default()),
+        None => (argv, Vec::new()),
     };
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
@@ -384,11 +378,12 @@ pub(crate) fn parse_aid_args(
         return Err(UsageError::NoWorkspace);
     };
     let prompt = line[at.min(line.len())..].join(" ");
+    let retired = names_a_retired_spelling(&trailing);
     Ok(AidArgs {
         spec,
         dl_options,
-        spec_options: trailing.options,
-        task: if trailing.retired {
+        spec_options: trailing,
+        task: if retired {
             Task::Retired
         } else {
             Task::Agent { agent, prompt }
