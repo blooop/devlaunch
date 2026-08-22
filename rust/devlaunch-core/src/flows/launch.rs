@@ -1761,11 +1761,18 @@ pub(crate) fn dotfiles_update(
 /// The id is the only string that is uniformly available and uniformly bounded.
 /// Every placement has one -- a triple, a bare name, a path, a URL -- whereas the
 /// raw spec is `owner/repo` with the branch still unresolved in one arm and a
-/// `./path` in another. It is capped at 47 characters by construction (see
-/// `domain::workspace_id`), so it cannot crowd out a tab bar the way an unbounded
-/// branch name could. And it is already the container's hostname, so the title dl writes
-/// and the `user@host` an interactive prompt repaints over it agree instead of
-/// disagreeing.
+/// `./path` in another. And it is already the container's hostname, so the title
+/// dl writes and the `user@host` an interactive prompt repaints over it agree
+/// instead of disagreeing.
+///
+/// The bound is worth being exact about, because only one arm gets it from
+/// [`WorkspaceId`]'s own 47-character cap. A bare name and a path leaf reach here
+/// as the raw spec and the directory's basename, neither of which this crate
+/// shortens. What bounds *those* is devpod: it refuses to create or report a
+/// workspace whose name exceeds 48 characters, so a longer one fails its `up` or
+/// is never found, and either way the launch ends before the handover. So the
+/// title is short because a workspace with a long name cannot exist, not because
+/// anything here truncates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalTitle {
     /// Write this, exactly.
@@ -1800,18 +1807,18 @@ impl TerminalTitle {
 /// A workspace id with everything a terminal would read as an instruction taken
 /// out, or `None` if that leaves nothing worth writing.
 ///
-/// Not paranoia about the id format: a [`WorkspaceId`] really is safe, but this is
-/// not always given one. `Plan::Existing` carries the raw spec through unvalidated
-/// -- devpod is what eventually refuses a name it does not have -- and the title
-/// is written *before* the session that would do the refusing. So a
-/// `dl $'x\x1b]2;whatever\x07'` would otherwise write two titles, and the second
-/// is the caller's. Dropping controls rather than escaping them keeps the sink
+/// Defence at the boundary the bytes are formed at, and deliberately not sold as
+/// more than that: no reachable spec is known to get an escape this far. Two arms
+/// hand over a string this crate never validated -- `Plan::Existing`'s raw spec
+/// and `Plan::Creatable`'s path leaf -- but both are gated on devpod agreeing the
+/// workspace exists or can be created, and devpod's own name rules refuse
+/// anything with a control in it. The filter is what makes that a local
+/// guarantee rather than one borrowed from another program's validation, which is
+/// the difference between a safe title and a title that is safe until devpod
+/// loosens a rule. Dropping controls rather than escaping them keeps the sink
 /// with nothing to decide.
 fn sanitize_title(workspace_id: &str) -> Option<String> {
-    let text: String = workspace_id
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .collect();
+    let text: String = workspace_id.chars().filter(|ch| !ch.is_control()).collect();
     let text = text.trim();
     if text.is_empty() {
         None
