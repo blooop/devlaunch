@@ -1,16 +1,27 @@
 //! The two files core's public-API snapshot splits into, and the invariant that
 //! keeps them worth reading.
 //!
-//! `public-api.api.txt` is the promise: every row is a declaration under
-//! `devlaunch_core::api`, the surface an external consumer is entitled to
-//! depend on, so a diff there is a breaking change by definition.
-//! `public-api.rest.txt` is the tripwire: the binary surface, reachable but
-//! never promised, regenerated freely whenever a refactor moves it.
+//! `public-api.api.txt` is the promise as a path match can see it: every row is
+//! a declaration written *at* `devlaunch_core::api`, the surface an external
+//! consumer is entitled to depend on, so a diff there is a change to that
+//! contract. `public-api.rest.txt` is the tripwire: the binary surface,
+//! reachable but never promised, regenerated freely whenever a refactor moves
+//! it.
 //!
 //! One snapshot for both tiers is what the split replaced, and the reason is
 //! the signal: a diff that is nine hundred rows of internal churn and one
 //! removed `api` function reads as routine, and the one row that mattered goes
 //! through review unremarked.
+//!
+//! The tests below hold the partition, which is not the same as holding the
+//! promise. `cargo public-api` renders methods and impls only at a type's
+//! canonical path, so `api::Launch::{new, run}` and every derived impl on a
+//! promised type are in the rest file — 42 of the 79 rows the generator emits
+//! for the `api` section — and renaming `Launch::run` diffs neither of these
+//! two files in the place a reader would look. Deliberately not asserted here:
+//! <https://github.com/blooop/devlaunch/issues/352> widens the classifier, and
+//! its red is that rename, so a test pinning today's classification of those
+//! rows would have to be deleted to let the fix land.
 //!
 //! The classification lives in `scripts/public-api-snapshots.sh` and nowhere
 //! else — the CI job runs that script rather than re-implementing its filter.

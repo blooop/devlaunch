@@ -390,16 +390,23 @@ jobs:
   # internal churn and read as routine; and `devlaunch-runner` — the trait an
   # external implementer writes against — entered it as a single unexpanded glob
   # row, so removing a `Runner` method moved nothing at all. Now:
-  # devlaunch-core/public-api.api.txt is the promise (a diff there is a breaking
-  # change by definition), devlaunch-core/public-api.rest.txt the tripwire over
-  # the binary surface, and devlaunch-runner/public-api.txt the process seam.
+  # devlaunch-core/public-api.api.txt is the promise as a path match can see it,
+  # devlaunch-core/public-api.rest.txt the tripwire over the binary surface, and
+  # devlaunch-runner/public-api.txt the process seam.
+  #
+  # "As a path match can see it" is the honest scope, and it is narrower than it
+  # reads: cargo public-api renders methods and impls only at a type's canonical
+  # path, so a promised type's constructors, methods and derived impls are in
+  # the rest file, and renaming `api::Launch::run` leaves the promise file
+  # byte-identical. A diff in the rest file touching a promised type is a
+  # contract change too. Widening the classifier is #352.
   #
   # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crates
-  # themselves still build on the stable pin everywhere else. The pinned version
-  # and the `-ss` rationale live in the regeneration script, which is also what
-  # this job runs: the split filter that decides which row is a promise exists
-  # once, in scripts/public-api-snapshots.sh, rather than once there and once
-  # here in a workflow nobody regenerates from.
+  # themselves still build on the stable pin everywhere else. The pinned
+  # version, the `-ss` rationale, the split filter and the list of files to
+  # check all live in the regeneration script, which is also what this job runs
+  # — so what CI checks cannot drift from what a developer regenerates, and a
+  # fourth snapshot needs no workflow edit to be covered.
   public-api:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -420,18 +427,17 @@ jobs:
           set -euo pipefail
           scripts/public-api-snapshots.sh "$RUNNER_TEMP/public-api"
           changed=0
-          for snapshot in devlaunch-core/public-api.api.txt \
-                          devlaunch-core/public-api.rest.txt \
-                          devlaunch-runner/public-api.txt; do
+          while read -r snapshot; do
             diff -u "rust/$snapshot" "$RUNNER_TEMP/public-api/$snapshot" || changed=1
-          done
+          done < <(scripts/public-api-snapshots.sh --print-files)
           if [ "$changed" -ne 0 ]; then
             echo "::error::A public surface changed. If the change is deliberate," \
               "regenerate the snapshots and commit them:" \
               "scripts/public-api-snapshots.sh (needs a nightly toolchain and the" \
               "cargo-public-api the script pins; see 'The public-API snapshots' in" \
-              "README.md). A diff in devlaunch-core/public-api.api.txt is a" \
-              "breaking change to the promised API — say so in the PR."
+              "README.md). A diff in devlaunch-core/public-api.api.txt is a change" \
+              "to the promised API — say which, and note that a promised type's" \
+              "methods and impls diff in the rest file instead (#352)."
             exit 1
           fi
 
