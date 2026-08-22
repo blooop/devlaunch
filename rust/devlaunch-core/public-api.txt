@@ -816,7 +816,7 @@ impl core::fmt::Debug for devlaunch_core::flows::herdr::HerdrSwitch
 pub fn devlaunch_core::flows::herdr::HerdrSwitch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::herdr::HerdrSwitch
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::herdr::HerdrSwitch
-pub struct devlaunch_core::flows::herdr::HostSocket
+pub struct devlaunch_core::flows::herdr::HostSocket(_)
 impl devlaunch_core::flows::herdr::HostSocket
 pub fn devlaunch_core::flows::herdr::HostSocket::from_env() -> core::option::Option<Self>
 impl core::clone::Clone for devlaunch_core::flows::herdr::HostSocket
@@ -2031,9 +2031,9 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::HostLayout
 pub fn devlaunch_core::flows::provision::HostLayout::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::HostLayout
 pub struct devlaunch_core::flows::provision::Switches
+pub devlaunch_core::flows::provision::Switches::herdr: devlaunch_core::flows::herdr::HerdrSwitch
 pub devlaunch_core::flows::provision::Switches::tools: devlaunch_core::flows::provision::ToolsSwitch
 pub devlaunch_core::flows::provision::Switches::zellij: devlaunch_core::flows::provision::ZellijSwitch
-pub devlaunch_core::flows::provision::Switches::herdr: devlaunch_core::flows::herdr::HerdrSwitch
 impl devlaunch_core::flows::provision::Switches
 pub fn devlaunch_core::flows::provision::Switches::from_env() -> Self
 impl core::clone::Clone for devlaunch_core::flows::provision::Switches
