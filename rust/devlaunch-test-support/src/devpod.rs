@@ -136,6 +136,11 @@ const UP_VALUE_FLAGS: &[&str] = &[
     "--context",
 ];
 
+/// `devpod delete` flags that take a separate value. `--force` and
+/// `--ignore-not-found` are bare, and `--grace-period` is a string, per
+/// `devpod delete --help` at v0.26.1.
+const DELETE_VALUE_FLAGS: &[&str] = &["--grace-period", "--context"];
+
 /// The workspaces and providers a fake devpod knows about.
 #[derive(Clone, Debug)]
 pub struct DevpodMachine {
@@ -267,11 +272,21 @@ impl DevpodMachine {
     }
 
     fn delete(&mut self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, &[]);
+        let (positionals, flags) = split_args(args, DELETE_VALUE_FLAGS);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: delete: no workspace given");
         };
         if self.remove(id).is_none() {
+            // `--ignore-not-found` makes a delete mean "ensure absent", the way
+            // `rm -f` does, and real devpod v0.26.1 exits 0 for it. Refusing
+            // instead is the one thing a fake devpod must not do: `dl <ws> rm
+            // --force` passes the flag on every forced remove, so a run against
+            // a workspace that was already gone failed here and succeeded
+            // against the real thing. Nothing goes to stdout because the line
+            // real devpod prints is a timestamped log line no fake can spell.
+            if flags.contains_key("--ignore-not-found") {
+                return Response::ok();
+            }
             return not_found("delete", id);
         }
         Response::stdout(format!("Successfully deleted workspace {id}\n"))
