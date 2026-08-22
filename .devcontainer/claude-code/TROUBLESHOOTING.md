@@ -180,6 +180,25 @@ chmod 600 ~/.claude/.claude.json
 
 These files contain sensitive data and should only be readable by you.
 
+### Issue 7: Nested `docker run` Fails to Bind a `~/.claude` File
+
+**Symptoms:**
+- Creating a container from *inside* this container (docker-in-docker, `dl <repo>`) fails with:
+  `error mounting "/home/vscode/.claude/.claude.json" ... no such file or directory`
+- The file it names exists and reads fine in this container
+
+**Why?**
+The host replaces these files by rename (Claude rewrites `.claude.json` on
+nearly every session), which swaps the inode. This container's mount stays
+pinned to the old, now-deleted inode — readable in here, but a Docker daemon
+refuses a deleted-inode mount as a bind source.
+
+**Solution:**
+`init-host.sh` heals this before every container create: a mount whose inode
+the kernel marks deleted is detached and replaced with an ordinary file
+holding the same bytes and mode. If the error still appears, the repo being
+launched carries an older `init-host.sh` without the heal.
+
 ## Debugging Commands
 
 ### Check Authentication Status
