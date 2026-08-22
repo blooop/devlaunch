@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The selector's invitation is drawn inside the picker, so TAB is discoverable
+  at last.** The line that says what the rows are — and, for `dl rm`, `dl stop`,
+  `dl up`, `dl code` and `dl dotfiles`, the only thing that says TAB marks several
+  — was printed to stdout immediately before the picker opened. skim's first act is
+  to switch to the alternate screen, which replaces the visible screen wholesale, so
+  that sentence was gone for the entire time the picker was up and came back only
+  once it had exited. Multi-select had been shipped for two releases with its one
+  piece of documentation on a screen nobody could see while choosing.
+
+  It is now skim's sticky header, which the picker draws itself, directly above the
+  matches and below the search bar. Wording is unchanged. stdout keeps the line only
+  for the run that has no picker to put it on — no terminal, so no header either,
+  and stdout is the only surface left; on a terminal the sentence is shown once, in
+  the one place it can be read.
+
+  Proved on a pty, not in the options: the test runs `dl` on a real terminal and
+  reads the screen back, which is the only seam that can tell an option that is
+  spelled right from one that draws something.
+
 ## [0.6.1] - 2026-08-22
 
 ### Changed

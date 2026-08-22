@@ -9,11 +9,12 @@
 //! compiles, reads as the fix, and draws the old picture.
 //!
 //! So this file opens a pty, runs the real binary on it, and reads back the screen.
-//! The assertion is the user's sentence — the search bar is above the matches —
-//! rather than the name of a field.
+//! The assertions are the user's own sentences — the search bar is above the
+//! matches; the line that explains the rows is on the screen while the rows are —
+//! rather than the names of fields.
 //!
 //! The cost is that these are the only tests in the crate that need a terminal and
-//! a spawned process, which is why there are two of them and not a suite: what the
+//! a spawned process, which is why there are four of them and not a suite: what the
 //! picker *offers*, the order it offers it in, and what it does with a choice are
 //! all pure functions tested in `select.rs`, and none of that is re-tested here.
 
@@ -117,6 +118,54 @@ fn what_is_typed_appears_on_the_top_line_and_narrows_the_list_below_it() {
         None,
         "`myproject` does not match `wayfinder` and should have gone:\n{screen}"
     );
+}
+
+#[test]
+fn the_invitation_is_on_the_picker_s_own_screen_and_names_tab_where_tab_works() {
+    // The line that says what the rows are, judged where it has to be read: on the
+    // picker's screen, while the picker is up. `dl` printed it to stdout just
+    // before skim started, and skim's first act is to switch to the alternate
+    // screen — which replaces the visible screen wholesale — so the sentence was
+    // gone for the whole time it had a job to do and came back only once the picker
+    // had exited. No test of the options can see that, and the source cannot show
+    // it either: the `println!` is there, it is spelled right, and it is unreadable.
+    //
+    // For `Arity::Several` this line is the whole of TAB's documentation. `dl rm`,
+    // `stop`, `up`, `code` and `dotfiles` all take any number of marked rows, and a
+    // user who never learns that marks one row at a time forever.
+    for (verb, invitation) in [
+        (
+            vec!["stop"],
+            "Select workspaces (type to filter, TAB to mark several):",
+        ),
+        (vec!["--", "true"], "Select workspace (type to filter):"),
+    ] {
+        let spelled = verb.join(" ");
+        let screen = Screen::of(&verb);
+
+        let row = screen.row_of(invitation).unwrap_or_else(|| {
+            panic!("`dl {spelled}` never showed `{invitation}` on the picker:\n{screen}")
+        });
+        // And where it explains something: under the search bar, above the rows it
+        // is describing.
+        let prompt = screen.prompt_row(&spelled);
+        assert!(
+            prompt < row,
+            "the invitation belongs below the search bar, not above it:\n{screen}"
+        );
+        for workspace in LISTED {
+            let match_row = screen
+                .row_of(workspace)
+                .unwrap_or_else(|| panic!("`{workspace}` was never drawn:\n{screen}"));
+            assert!(
+                row < match_row,
+                "the invitation belongs above the rows it describes, but `{workspace}` is on \
+                 row {} and the invitation on row {}:\n{screen}",
+                match_row + 1,
+                row + 1,
+            );
+        }
+    }
 }
 
 /// What the picker had drawn on its terminal when it settled.

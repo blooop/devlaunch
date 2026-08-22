@@ -89,7 +89,9 @@ stop something, it does not look for a workspace called `stop`.
 
 For the verbs that finish on their own — `up`, `stop`, `rm`, `code` and `dotfiles` — the selector
 takes more than one row: TAB marks any number and Enter applies the verb to each in turn, so
-`dl rm` can clear five dead workspaces in one visit. The forms that end in an interactive session
+`dl rm` can clear five dead workspaces in one visit. The selector says so on its own screen — the
+line above the matches names what it will take, TAB included — rather than on the line printed
+before it opened, which the picker covers up. The forms that end in an interactive session
 (`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several of those
 would just be sessions queued behind each other's exit.
 

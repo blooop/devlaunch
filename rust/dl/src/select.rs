@@ -27,6 +27,14 @@
 //! inherited whatever `fzf` was configured to do on the host — and this one puts
 //! the first match next to the cursor instead of furthest from it.
 //!
+//! **The [`invitation`] is drawn inside the picker, as skim's header.** Python
+//! printed it and then spawned fzf, and `dl` copied that — but skim's first act is
+//! to switch to the alternate screen, which replaces the visible one, so a line
+//! printed on the way in cannot be read while the picker it describes is up. For
+//! [`Arity::Several`] that line is TAB's only documentation, so the multi-select
+//! was there and undiscoverable. stdout keeps the sentence only for the run that
+//! has no picker to put it on ([`Pick::NoTerminal`]).
+//!
 //! [`offered`] is that list and nothing else — a pure function of what devpod said,
 //! which is what makes the spec testable without a terminal. [`pick`] is the
 //! interactive half.
@@ -148,6 +156,19 @@ fn a_terminal_exists() -> bool {
     }
 }
 
+/// The sentence that says what the rows are, and what the picker will take.
+///
+/// One function because the text has two destinations and they must not drift: it
+/// is skim's header when there is a picker to draw it on, and stdout when there is
+/// not. The wording is Python's (`dl.py::fuzzy_select_workspace`), plus the TAB
+/// clause the multi-pick needed.
+pub(crate) fn invitation(arity: Arity) -> &'static str {
+    match arity {
+        Arity::One => "Select workspace (type to filter):",
+        Arity::Several => "Select workspaces (type to filter, TAB to mark several):",
+    }
+}
+
 /// How the picker is drawn, and how many rows it will take.
 ///
 /// A function rather than a literal inside [`run_skim`] because it is the one part
@@ -173,6 +194,18 @@ fn skim_options(arity: Arity) -> SkimOptions {
         // which never calls it. The flag on its own compiles, reads as the fix, and
         // changes nothing (skim 0.20.5).
         layout: String::from("reverse"),
+        // The invitation, drawn *inside* the picker rather than printed before it.
+        // skim's first act is `ESC [ ? 1049 h` — the alternate screen, which
+        // replaces the visible screen wholesale — so a line printed on the way in
+        // is gone for exactly as long as it is needed and comes back only once the
+        // picker has exited. Under `reverse` the model splits the window
+        // query_status / query / status / *header* / selection
+        // (`src/model/mod.rs`), so this lands directly above the rows it describes.
+        //
+        // Unlike `reverse` next door, this field is read straight off the options
+        // by `Header::with_options`, so it works without `SkimOptions::build` —
+        // which is why the pty test is still the thing that proves it.
+        header: Some(invitation(arity).to_owned()),
         ..Default::default()
     }
 }
@@ -362,6 +395,32 @@ mod tests {
         assert!(
             !asked.reverse,
             "the flag is not the lever; setting it instead of `layout` is the bug this pins"
+        );
+    }
+
+    #[test]
+    fn the_invitation_is_the_picker_s_own_header_and_names_tab_only_where_tab_works() {
+        // The line that explains the rows travels with the picker rather than ahead
+        // of it. Printing it first put it on the screen skim was about to replace
+        // with the alternate one, so it was unreadable for the whole time the
+        // picker was up — and for the multi-pick verbs that made TAB, the thing the
+        // sentence exists to teach, discoverable nowhere at all.
+        //
+        // `tests/picker.rs` is what proves the header is *drawn*; this pins that
+        // `dl` asks for it, and that the wording still follows the arity. Both
+        // matter: an unspoken TAB clause on a single-pick picker is a lie, and a
+        // missing one on a multi-pick picker is the defect.
+        assert_eq!(
+            skim_options(Arity::Several).header.as_deref(),
+            Some("Select workspaces (type to filter, TAB to mark several):")
+        );
+        assert_eq!(
+            skim_options(Arity::One).header.as_deref(),
+            Some("Select workspace (type to filter):")
+        );
+        assert!(
+            !invitation(Arity::One).contains("TAB"),
+            "a picker that takes one row must not offer a key that does nothing on it"
         );
     }
 
