@@ -76,9 +76,15 @@ heal_stale_file_mount() {
         # Written into the file the mount was covering rather than renamed
         # over it -- a rename is what made the inode stale in the first place,
         # and the point here is a plain file at a stable inode.
-        as_root cp "$saved" "$mounted" 2>/dev/null || :
-        as_root chown "$(id -u):$(id -g)" "$mounted" 2>/dev/null || :
-        as_root chmod "$mode" "$mounted" 2>/dev/null || :
+        if as_root cp "$saved" "$mounted" 2>/dev/null; then
+            as_root chown "$(id -u):$(id -g)" "$mounted" 2>/dev/null || :
+            as_root chmod "$mode" "$mounted" 2>/dev/null || :
+        else
+            # The mount is gone and the write-back failed, so the temporary
+            # copy is now the only copy: keep it and say where it is.
+            echo "init-host.sh: detached the stale mount at $mounted but could not write its content back; the bytes are kept at $saved" >&2
+            return 0
+        fi
     else
         echo "init-host.sh: $mounted is a mount of a deleted inode and could not be detached; containers created from here may fail to bind it" >&2
     fi

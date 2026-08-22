@@ -102,6 +102,36 @@ awk -v p="$target" '$5 == p { n++ } END { print n + 0 }' /proc/self/mountinfo \
 chown -R "$(stat -c %u:%g "$home")" "$home" || :
 """
 
+# The heal's worst moment: the detach succeeded, and the write-back cannot
+# happen -- staged by remounting the parent directory read-only, which survives
+# the umount where the file mount does not. The bytes the developer could
+# still read a second ago now exist only in the heal's temporary copy, so
+# losing *that* silently is data loss with no witness. TMPDIR is pointed into
+# the scratch home so the test can find what the heal kept.
+STALE_MOUNT_UNWRITABLE_SCENARIO = """
+set -eu
+home="$1"; target="$2"; hook="$3"
+mkdir -p "$home/tmp"
+printf '%s' "$4" > "$home/replaced"
+: > "$target"
+dir=$(dirname "$target")
+# Everything the hook's creation guards would otherwise write, because the
+# directory is about to stop taking writes -- which is exactly a container
+# whose configuration is fully mounted, where those guards never fire.
+mkdir -p "$dir/agents" "$dir/commands" "$dir/hooks" "$dir/skills" "$dir/wf-skills"
+touch "$dir/CLAUDE.md" "$dir/settings.json" "$dir/.credentials.json" "$dir/.claude.json"
+mount --bind "$dir" "$dir"
+mount -o remount,bind,ro "$dir"
+mount --bind "$home/replaced" "$target"
+rm "$home/replaced"
+awk -v p="$target" '$5 == p && $4 ~ /\\/\\/deleted$/ { found = 1 } END { exit 1 - found }' \
+    /proc/self/mountinfo
+HOME="$home" TMPDIR="$home/tmp" sh -e "$hook" 2> "$home/hook-stderr"
+awk -v p="$target" '$5 == p { n++ } END { print n + 0 }' /proc/self/mountinfo \
+    > "$home/mounts-after"
+chown -R "$(stat -c %u:%g "$home")" "$home" || :
+"""
+
 # The same stage with the source left in place: a live mount, the ordinary
 # state of these paths inside every container this repo builds. The content
 # is read back *through* the mount after the hook has run, because "the file
@@ -224,6 +254,30 @@ def test_the_hook_detaches_a_deleted_inode_mount_of_the_agent_socket(scratch_hom
 
     mounts_after = (scratch_home / "mounts-after").read_text().strip()
     assert mounts_after == "0", f"agent.sock is still covered by {mounts_after} mount(s)"
+
+
+def test_a_heal_that_cannot_write_the_bytes_back_says_so_and_keeps_them(scratch_home):
+    """Detached, then unwritable: the one moment the heal holds the only copy.
+
+    Three claims. The launch still goes ahead (a non-zero initializeCommand
+    aborts `devpod up`, and only a nested create was ever at risk). The
+    failure is not silent -- it names the path, because the file the container
+    now sees is empty and someone will ask why. And the bytes are not gone:
+    the heal's temporary copy is kept rather than deleted on this path.
+    """
+    target = scratch_home / CONFIG_DIRNAME / ".claude.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    result = in_namespace(
+        STALE_MOUNT_UNWRITABLE_SCENARIO, str(scratch_home), str(target), str(INIT_HOST), PINNED_BYTES
+    )
+    assert result.returncode == 0, f"the scenario could not run: {result.stdout}\n{result.stderr}"
+
+    assert (scratch_home / "mounts-after").read_text().strip() == "0"
+    stderr = (scratch_home / "hook-stderr").read_text()
+    assert str(target) in stderr, f"the hook lost {target.name}'s bytes without a word"
+    kept = [f for f in (scratch_home / "tmp").iterdir() if f.read_text() == PINNED_BYTES]
+    assert kept, "the heal deleted the only remaining copy of the bytes"
 
 
 def test_the_hook_leaves_a_live_mount_connected(scratch_home):
