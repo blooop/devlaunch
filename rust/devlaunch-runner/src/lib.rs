@@ -428,12 +428,20 @@ impl Runner for ProcessRunner {
         let stdout = drain(child.stdout.take());
         let stderr = drain(child.stderr.take());
         let ending = wait(&mut child, spec.timeout);
-        let io = CapturedText {
-            stdout: collect(stdout),
-            stderr: collect(stderr),
-        };
         match ending {
-            Ending::Ended(exit) => Outcome::Ran { exit, io },
+            Ending::Ended(exit) => Outcome::Ran {
+                exit,
+                io: CapturedText {
+                    stdout: collect(stdout),
+                    stderr: collect(stderr),
+                },
+            },
+            // The drains are abandoned, not joined: a timed-out outcome drops
+            // whatever was written (see [`Outcome::TimedOut`]), and a descendant
+            // in a session of its own — git's ssh ControlMaster is the
+            // production case — survives the kill holding the pipe, so
+            // `read_to_end` may never reach EOF. Joining here is the hang this
+            // arm exists to end.
             Ending::Killed => Outcome::TimedOut,
             Ending::Lost(failure) => Outcome::NotStarted(failure),
         }

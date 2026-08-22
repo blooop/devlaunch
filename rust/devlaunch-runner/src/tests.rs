@@ -327,6 +327,32 @@ fn a_timeout_kills_the_child_rather_than_abandoning_it() {
     assert!(!marker.exists(), "the child outlived its timeout");
 }
 
+/// The `git fetch` over ssh shape: the child forks a descendant in a session of
+/// its own (ssh's ControlMaster is the production example) which inherits the
+/// stdout pipe, then the child itself outstays its timeout. `read_to_end`
+/// returns only at pipe EOF, and a setsid'd descendant escapes any kill aimed
+/// at the child or its group — so a runner whose timeout path waits on the
+/// drains never returns. `capture` must return [`Outcome::TimedOut`] within a
+/// bound regardless of who still holds the pipe.
+#[test]
+fn a_timed_out_capture_returns_even_when_a_grandchild_holds_the_pipe() {
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & exec sleep 30"))
+        .with_timeout(Duration::from_millis(200));
+    // On a thread with a deadline of this test's own: the defect being pinned
+    // is a hang, and a red run must fail rather than stall the suite.
+    let capture = std::thread::spawn(move || ProcessRunner.capture(&spec));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !capture.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "capture never returned: the timeout path is waiting on a pipe a \
+             grandchild still holds"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(capture.join().expect("the capture thread"), Outcome::TimedOut);
+}
+
 #[test]
 fn a_timeout_that_is_not_reached_answers_normally() {
     let spec = SpawnSpec::from(sh("printf quick")).with_timeout(Duration::from_secs(30));
