@@ -42,18 +42,20 @@ use devlaunch_core::timing;
 /// composes one.
 pub use devlaunch_core::shell;
 
+/// Which herdr pane this process is in, for the entry point that starts an agent:
+/// `aid` puts the pane's identity on the agent's own command line so the hook
+/// devlaunch installs in the container knows where to report. Re-exported here for
+/// the reason [`shell`] is — `aid` sees devlaunch through `dl` and nothing else —
+/// and only the reading of the pane is exposed, not the mount or the hook, which
+/// are a launch's business and happen inside [`run`].
+pub use devlaunch_core::flows::herdr;
+
 /// Python's `repr()`, for the entry point that quotes an untrusted name the way
 /// Python did: `aid` names a bad `DEVLAUNCH_AID_AGENT` value with `{name!r}`, and
 /// reaches the one renderer through here rather than carrying a second copy, so a
 /// name holding a quote or a control byte is spelled the same as everywhere else
 /// `dl` quotes what a tool or an environment said.
 pub use render::python_repr;
-
-/// The sentence a `--rm`/`--stop` appended to a line prints about what it
-/// overrode: `aid` swallows the *prompt* when the suffix wins, so it owes the same
-/// notice `dl` owes for a swallowed positional word, in the same words. See
-/// [`render::overridden_notice`].
-pub use render::overridden_notice;
 
 /// The version both binaries print, single-sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -307,21 +309,13 @@ fn command_line(argv: &[String]) -> Result<cli::Command, i32> {
             return Err(usage.exit_code());
         }
     };
-    let resolved = cli::resolve(parsed, argv).map_err(|grammar| {
+    cli::resolve(parsed, argv).map_err(|grammar| {
         eprintln!("{}", grammar_refusal(&grammar));
         // Python's `logging.error(...); return 1` for every shape it refused after
         // parsing. Deliberately not clap's 2: these are the refusals Python also
         // made, and they keep its code.
         commands::Ending::Refused.code()
-    })?;
-    // Printed before the command runs, not after: what it names is the reason a
-    // person may want to hit Ctrl-C, and a notice that arrives once the container
-    // is already gone is a receipt rather than a warning.
-    if let Some(overridden) = &resolved.overridden {
-        let words: Vec<String> = overridden.words.iter().cloned().collect();
-        eprintln!("{}", overridden_notice(overridden.flag, &words));
-    }
-    Ok(resolved.command)
+    })
 }
 
 /// What a command line clap accepted but `dl` could not make a command of.
@@ -345,6 +339,21 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
             retired.word(),
             retired.instead()
         ),
+        // Divergence row 32. Each names the spelling that replaced it, because both
+        // moved on account of `--rm` changing meaning and neither person typing one
+        // can be assumed to know that yet.
+        cli::GrammarError::RetiredFlag(cli::RetiredFlag::Stop) => {
+            "--stop is no longer a flag: the flag spellings now modify a session \
+             (--rm deletes the workspace once one ends) rather than name a verb. Use \
+             'dl <workspace> stop' to stop a workspace."
+                .to_owned()
+        }
+        cli::GrammarError::RetiredFlag(cli::RetiredFlag::Autorm) => {
+            "--autorm is now spelled --rm: 'dl <workspace> --rm' opens the workspace and \
+             deletes it when the session ends, the way 'docker run --rm' does. Use \
+             'dl <workspace> rm' to delete one now."
+                .to_owned()
+        }
         cli::GrammarError::TargetNotAllowed { command } => {
             format!("{command} takes no workspace: it is not a workspace command.")
         }
@@ -359,20 +368,25 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
             format!("--devcontainer means nothing for {command}: it opens no workspace.")
         }
         // The two forms it *does* apply to are named, and so is what to type to
-        // delete a workspace now: somebody who reached for `--autorm` on another
-        // verb wants the workspace gone at some point, and this sentence is where
-        // they find out when. Deliberately no claim about *why* the verb refuses —
+        // delete a workspace now: somebody who reached for `--rm` on another verb
+        // wants the workspace gone at some point, and this sentence is where they
+        // find out when. Deliberately no claim about *why* the verb refuses —
         // `restart`, `recreate` and `reset` do hand over a session, and the reason
-        // they are out is that `--autorm` is defined for the throwaway workspace
-        // rather than as a modifier on every verb that ends in a shell.
-        cli::GrammarError::AutormNotAllowed { command } => format!(
-            "--autorm applies to 'dl <workspace>' and 'dl <workspace> -- <command>', not to \
-             {command}. Use 'dl <workspace> rm' to delete a workspace now."
+        // they are out is that `--rm` is defined for the throwaway workspace rather
+        // than as a modifier on every verb that ends in a shell.
+        //
+        // It has to read correctly for `command` = `rm`, which `dl <ws> rm --rm`
+        // reaches, and it does: the flag is not the verb, and the verb alone is
+        // already the answer the sentence points at.
+        cli::GrammarError::RmNotAllowed { command } => format!(
+            "--rm deletes the workspace when a session ends, so it applies to \
+             'dl <workspace>' and 'dl <workspace> -- <command>', not to '{command}'. Use \
+             'dl <workspace> rm' to delete a workspace now."
         ),
-        cli::GrammarError::AutormForced => {
-            "--force does not apply to --autorm: an automatic removal always stops at work \
-             that is nowhere else, which is what makes it safe to leave on a line you recall. \
-             Use 'dl <workspace> rm --force' to delete one despite it."
+        cli::GrammarError::RmForced => {
+            "--force does not apply to --rm: a removal that waits for the session always \
+             stops at work that is nowhere else, which is what makes it safe to leave on a \
+             line you recall. Use 'dl <workspace> rm --force' to delete one despite it."
                 .to_owned()
         }
         cli::GrammarError::Devcontainer {

@@ -99,7 +99,7 @@ jobs:
             url."https://x-access-token:${{ github.token }}@github.com/".insteadOf \
             "git@github.com:"
 
-      - name: Build the release binaries, and put `dl` on PATH
+      - name: Build the release binaries, and put `dl` and devpod on PATH
         # THE THING BEING BENCHED, named explicitly. Until #267 these steps ran
         # `pixi run dl`, which resolved to a console script the editable Python
         # install put in the environment -- so after the 0.1.0 cutover this trend
@@ -112,12 +112,32 @@ jobs:
         # `pixi run dl` is deliberately not used below for the same reason: it is
         # the edit-run loop's debug build (see the task's comment in
         # pyproject.toml).
+        #
+        # devpod goes on the same PATH, because `dl` shells out to a bare
+        # `devpod` and there is none on a runner: it is a pixi dependency, which
+        # every step that runs `dl` inside `pixi run` gets for free and the
+        # priming launch below -- the one launch that runs `dl` directly -- does
+        # not. #267 made that launch bare in the same edit that stopped it being
+        # `pixi run dl`, and every merge to main from there through 0.10.0 died
+        # in it: `devpod not found on PATH`, exit 127, eighty seconds, nothing
+        # timed.
+        #
+        # A symlink, and not the environment's whole `bin` on PATH: that
+        # directory carries a python, a git and a few hundred other things, and
+        # what the benched launch resolves is part of what is being measured.
         run: |
           set -eu
           pixi run build-release
           mkdir -p /tmp/dl-bench/bin
           ln -sf "$PWD/rust/target/release/dl" /tmp/dl-bench/bin/dl
+          ln -sf "$(pixi run -q bash -c 'command -v devpod' | tr -d '\r\n')" \
+            /tmp/dl-bench/bin/devpod
           echo /tmp/dl-bench/bin >> "$GITHUB_PATH"
+          # Both, resolved through the symlinks, before anything depends on
+          # them: a dangling link fails at the launch otherwise, which reads as
+          # a launch bug rather than as this step.
+          /tmp/dl-bench/bin/dl --version
+          /tmp/dl-bench/bin/devpod version
 
       - name: Register the docker provider in this job's devpod home
         # A fresh DEVPOD_HOME has no provider at all, so this is not optional
