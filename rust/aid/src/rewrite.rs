@@ -46,6 +46,21 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// at all. The variable is claude's own way of being told the refusal is answering
 /// for a machine that isn't there, which is exactly a dl workspace.
 ///
+/// `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` is the other half of dl naming the
+/// terminal after the workspace, and without it that name lasts about a second.
+/// claude writes the terminal title continuously, from its own read of what the
+/// session is doing; a multiplexer takes the last writer's word for it, so the two
+/// are not two signals but one contest, and claude wins every round after the
+/// first. Turning claude's off is what makes dl's stick, and that is the trade
+/// worth taking: which workspace a pane *is* does not change, while what claude is
+/// doing in it is already on screen inside the pane.
+///
+/// Set here rather than forwarded from the host because aid is what decided to
+/// start claude, so aid is what owes the consequence -- a `dl <ws> -- claude ...`
+/// somebody typed themselves is their command, not aid's to rewrite. It also costs
+/// no new machinery: this table is already an env prefix on a payload that runs
+/// under `bash -lc`.
+///
 /// In the order Python's dict is written, which is the order `--help` lists the
 /// flags in after sorting.
 const AGENTS: &[(&str, Agent)] = &[
@@ -54,7 +69,10 @@ const AGENTS: &[(&str, Agent)] = &[
         Agent {
             command: &["claude", "--dangerously-skip-permissions"],
             prompt_flags: &[],
-            env: &[("IS_SANDBOX", "1")],
+            env: &[
+                ("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1"),
+                ("IS_SANDBOX", "1"),
+            ],
         },
     ),
     (
@@ -729,11 +747,17 @@ mod tests {
         // root is ordinary.
         assert_eq!(
             build_agent_command("claude", "fix the bug").as_deref(),
-            Some("IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the bug'")
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions 'fix the bug'"
+            )
         );
         assert_eq!(
             build_agent_command("claude", "").as_deref(),
-            Some("IS_SANDBOX=1 claude --dangerously-skip-permissions")
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions"
+            )
         );
     }
 
@@ -760,11 +784,17 @@ mod tests {
         // argv, and a second command cannot be smuggled into it.
         assert_eq!(
             build_agent_command("claude", "don't break \"this\"").as_deref(),
-            Some("IS_SANDBOX=1 claude --dangerously-skip-permissions 'don'\"'\"'t break \"this\"'")
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions 'don'\"'\"'t break \"this\"'"
+            )
         );
         assert_eq!(
             build_agent_command("claude", "hi; rm -rf /").as_deref(),
-            Some("IS_SANDBOX=1 claude --dangerously-skip-permissions 'hi; rm -rf /'")
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions 'hi; rm -rf /'"
+            )
         );
     }
 
@@ -782,7 +812,8 @@ mod tests {
             [
                 "owner/repo@branch",
                 "--",
-                "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix it'",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions 'fix it'",
             ]
         );
         assert_eq!(
@@ -793,7 +824,8 @@ mod tests {
                 "robot",
                 "owner/repo",
                 "--",
-                "IS_SANDBOX=1 claude --dangerously-skip-permissions",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions",
             ]
         );
     }
@@ -812,7 +844,8 @@ mod tests {
 
         assert_eq!(
             args[after + 1..].join(" "),
-            "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the flaky test'"
+            "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions 'fix the flaky test'"
         );
     }
 
@@ -855,7 +888,8 @@ mod tests {
                 "owner/repo",
                 "--autorm",
                 "--",
-                "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix it'"
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions 'fix it'"
             ]
         );
     }
@@ -1019,7 +1053,8 @@ mod tests {
                 "owner/repo",
                 "--autorm",
                 "--",
-                "IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the bug'"
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions 'fix the bug'"
             ]
         );
     }
@@ -1049,7 +1084,8 @@ mod tests {
             [
                 "owner/repo",
                 "--",
-                "IS_SANDBOX=1 claude --dangerously-skip-permissions"
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions"
             ]
         );
     }
