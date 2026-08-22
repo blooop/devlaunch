@@ -241,14 +241,23 @@ removal (a signal handler may not allocate or lock, and this one `_exit`s):
 - Closing the terminal window.
 
 What all three *do* run is the cleanup the removal is not: the staged plaintext
-`GH_TOKEN` file is unlinked and the `devpod up` child is killed, so no signal leaves a
-credential on disk or a build running behind you. The workspace is what stays — still
-there under its name, and `dl <ws> rm` is how it goes.
+`GH_TOKEN` file is unlinked and the `devpod up` child is killed, so none of these three
+leaves a credential on disk or a build running behind you. (Ctrl-\ — SIGQUIT — is not
+one of them and still does: it means "die now and dump core", and tidying up first is
+not what it asks for.) The workspace is what stays — still there under its name, and
+`dl <ws> rm` is how it goes.
 
 They are told apart by the exit code, which is **128 + the signal number**: 130 for
-Ctrl-C, 143 for a `kill`, 129 for a closed terminal. A signal you had already set to be
-ignored — `nohup dl …`, or a job disowned by a script — stays ignored, so `nohup` still
-outlives the terminal it was started from.
+Ctrl-C, 143 for a `kill`, 129 for a closed terminal.
+
+Two of the three can be switched off in the ordinary way, and one cannot. If a SIGTERM
+or a SIGHUP was **already set to be ignored** when `dl` started — which is what
+`nohup dl …` does — that stays ignored and ends nothing, so `nohup` still outlives the
+terminal it was started from. **Ctrl-C is not switchable like that**, and that is
+deliberate rather than an omission: a shell script backgrounding a job (`dl … &`) hands
+its child an ignored SIGINT whether or not anyone wanted one, so honouring it there
+would quietly stop the cleanup for every `dl` run from a script or a CI step. Ctrl-C
+behaves exactly as it always has.
 
 One-line check for your own setup: start `dl <ws> --autorm` and press Ctrl-C once. A
 fresh prompt *inside* the container means Ctrl-C is being forwarded and the removal will

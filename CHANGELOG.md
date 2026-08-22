@@ -19,10 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signals now run the one async-signal-safe drain — kill the child's process
   group, unlink the registered temp files, `_exit` — and the code they exit with
   is **128 + the signal number**: 130 for Ctrl-C, 143 for a `kill`, 129 for a
-  closed terminal. A signal already set to be ignored when `dl` started stays
-  ignored, so `nohup dl …` still outlives its terminal. What still does not run
-  on any of them is the `--autorm` removal, which a signal handler may not do
-  (#304).
+  closed terminal. What still does not run on any of them is the `--autorm`
+  removal, which a signal handler may not do (#304).
+
+  **`nohup dl …` still outlives its terminal.** A SIGTERM or SIGHUP that was
+  already set to be ignored when `dl` started stays ignored and ends nothing,
+  which is how `nohup` works and what keeps it working. Ctrl-C is deliberately
+  not switchable the same way, and is unchanged from previous releases: a shell
+  script backgrounding a job hands its child an ignored SIGINT whether anyone
+  wanted one or not, so honouring it would silently stop the cleanup for every
+  `dl` launched from a script or a CI step.
 
 ## [0.6.0] - 2026-08-22
 
