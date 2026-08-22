@@ -4,10 +4,12 @@
 //! the `completions.json` cache, `dl --ls --json`, `dl --completion-data`, the
 //! `SOURCE` column's rendering of a source dl cannot read, and the
 //! `DEVLAUNCH_TIMING=json` line — so the spelling is part of the contract rather
-//! than a style choice. One copy of it, at the bottom of the crate, because a
-//! second copy is how one of those documents drifts: the timing document was
-//! written with `serde_json::to_string` and lost the spacing while its own
-//! docstring promised byte-comparability.
+//! than a style choice. One copy of it in this crate, at the bottom of it,
+//! because a second copy is how one of those documents drifts: the timing
+//! document was written with `serde_json::to_string` and lost the spacing while
+//! its own docstring promised byte-comparability. `dl --ls --json` is spelled by
+//! `dl`'s own formatter and still carries a copy of the escaping; devlaunch#346
+//! collapses it onto this one.
 //!
 //! Below the four layers on purpose: `timing` is the crate root's own module and
 //! `flows` sits at the top, so a shared helper either lives here or gets reached
@@ -136,12 +138,19 @@ impl serde_json::ser::Formatter for PythonFormatter {
 
 /// One unescaped run of a JSON string, with Python's `ensure_ascii` applied.
 ///
-/// The escaping half of the spelling, and the *only* copy of it: the pretty
+/// The escaping half of the spelling, and the copy this crate keeps: the pretty
 /// formatter the metadata store writes `metadata.json` with needs exactly this
-/// and differs from [`PythonFormatter`] only in layout, so it calls here too. A
+/// and differs from [`PythonFormatter`] in layout, so it calls here too. A
 /// second copy is the drift this module's docstring is about, and it had one —
 /// two hand-written loops that had to stay character-for-character equal for the
 /// two documents to keep agreeing with the same Python.
+///
+/// **A third copy is still live**, in `dl`'s own pretty formatter for
+/// `dl --ls --json` (`dl/src/render.rs`). Collapsing it onto this one needs a new
+/// `pub` item on this crate, which moves a public-API snapshot, so it waits on
+/// devlaunch#346 — named here rather than left for the next reader to discover,
+/// because a docstring that claims one copy while a second is live is the very
+/// drift this module's own docstring holds up as the cautionary case.
 ///
 /// Non-ASCII becomes `\uXXXX` in lowercase hex, and a character outside the basic
 /// plane becomes the two escapes of its UTF-16 surrogate pair, because that is

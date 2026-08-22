@@ -1008,10 +1008,12 @@ fn encode(document: &Document<'_>) -> Result<Vec<u8>, MetadataError> {
 /// to make the two builds write different bytes for the same data, so the
 /// escaping is matched rather than left to chance.
 ///
-/// Only the layout differs from the compact [`crate::json::PythonFormatter`] —
+/// The layout is what differs from the compact [`crate::json::PythonFormatter`] —
 /// this document is indented and that one is on one line — so the escaping is
 /// the crate's one copy of it rather than a second loop here that had to stay
-/// character-for-character equal to survive.
+/// character-for-character equal to survive. (The compact formatter also spells
+/// floats Python's way; this one does not, which no `Document` can reach today
+/// because its numbers are all `i64`.)
 #[derive(Default)]
 struct PythonJsonFormatter<'indent> {
     pretty: serde_json::ser::PrettyFormatter<'indent>,
