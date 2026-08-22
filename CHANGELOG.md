@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-22
+
+### Changed
+
+- **`--rm` is docker's `--rm`: the workspace goes when the session ends.**
+  `dl <ws> --rm` and `dl <ws> --rm -- <cmd>` hand over a session and delete the
+  workspace and its clone once it ends — which is what `--autorm` did, under the
+  name docker gives it. The `rm` verb is unchanged and is the only way to delete a
+  workspace *now*, so the whole grammar is `docker rm` beside `docker run --rm`,
+  and neither spelling has to be read twice to work out which was meant:
+
+  ```bash
+  dl kinisi/repo@fix/x rm                            # delete it now
+  dl kinisi/repo@fix/x --rm                          # shell; it goes when you exit
+  dl kinisi/repo@fix/x --rm -- make test             # one command, then it goes
+  aid kinisi/repo@fix/x 'fix the flaky test' --rm    # the agent runs, then it goes
+  ```
+
+  Everything the removal already promised is unchanged: it stops at work that is
+  nowhere else and leaves the workspace standing, it collects a build that died in
+  `postCreateCommand`, and the exit code is the session's and never the removal's.
+  `--force` still does not compose with it — that is `dl <ws> rm --force`, which is
+  where docker keeps its `-f` too.
+
+### Removed
+
+- **`--autorm` is now spelled `--rm`.** A rename and nothing else; the behaviour
+  above is what it always did. The old spelling is recognised and refused with the
+  new one rather than dropped, so a line recalled from history says what happened
+  instead of quietly doing nothing:
+
+  ```
+  $ dl <ws> --autorm
+  --autorm is now spelled --rm: 'dl <workspace> --rm' opens the workspace and deletes
+  it when the session ends, the way 'docker run --rm' does. Use 'dl <workspace> rm' to
+  delete one now.
+  ```
+
+- **`--stop` is retired, and so is appending `--rm` to cancel a line.** Both were
+  the *suffix* form of a verb: typed at the end of a line that already asked for
+  something and winning over it, so `aid <ws> 'review this pr' --rm` deleted the
+  workspace and printed `--rm overrode the rest of the line`. That shape cannot
+  survive a `--rm` that means "delete when the session ends" — the two spellings
+  look like a pair, and one cancelling the line while the other runs it is exactly
+  the pair nobody can keep straight. So `aid <ws> 'review this pr' --rm` now runs
+  the review and deletes afterwards, and `--stop` refuses with the word to use:
+
+  ```
+  $ dl <ws> --stop
+  --stop is no longer a flag: the flag spellings now modify a session (--rm deletes
+  the workspace once one ends) rather than name a verb. Use 'dl <workspace> stop' to
+  stop a workspace.
+  ```
+
+  For "I am done with this workspace", `dl <ws> rm` names it and `dl rm` picks it —
+  and the pick marks several with TAB, which for a long `aid` prompt line is fewer
+  keystrokes than recalling it to type at the end. What is genuinely gone is
+  deleting a workspace without naming or picking it, by appending to whatever the
+  last line happened to be.
+
+  One consequence worth knowing: `dl prune <ws> --rm` used to remove `<ws>`, and
+  is now the `prune` retirement's refusal, since nothing overrides a line any more.
+  Add `--force` to that line and the `--force`-beside-`--rm` refusal is what you
+  get, because the pair is the more confused half and is named first.
+  `dl --prune` is unchanged.
+
+- **`dl <ws> rm --rm` is refused as the two requests it is**, rather than being
+  quietly treated as one of them. The sentence names the verb, which is the
+  spelling that already does what such a line most likely meant.
+
 ## [0.8.0] - 2026-08-22
 
 ### Added
