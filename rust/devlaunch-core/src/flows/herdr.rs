@@ -174,9 +174,16 @@ impl HerdrSwitch {
 /// A herdr control socket on this host, which exists and is a socket.
 ///
 /// Checked rather than assumed, because the whole of what this is for is being
-/// bind-mounted: naming a path that is not there makes the container runtime
-/// create a *directory* at the source, which is a silent way to get a mount that
-/// can never carry a connection.
+/// bind-mounted, and `--mount` is strict about its source in a way `-v` is not:
+/// `-v` on a missing path invents a directory, where `--mount` refuses with
+/// `bind source path does not exist` and takes `devpod up` — and so the launch —
+/// down with it. Resolving the socket first is what keeps a herdr that is not
+/// running from costing a workspace.
+///
+/// It narrows that to a race rather than closing it: a herdr that stops between
+/// this check and the `up` leaves a mount whose source has gone, and that launch
+/// fails. Nothing the host can read rules it out, and the window is one launch's
+/// setup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSocket(PathBuf);
 
