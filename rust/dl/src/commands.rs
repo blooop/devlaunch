@@ -1110,7 +1110,7 @@ fn render_select<'r>(
             }
         }
     }
-    match select::pick(&workspaces, arity) {
+    match select::pick(&workspaces, arity, cache) {
         select::Pick::Chose(workspace_ids) => {
             let mut ending = Ending::Done;
             for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
