@@ -15,6 +15,7 @@ on: what the promise file does *not* cover. Each check below is a thing
 somebody could plausibly write, with the reason it must not be written.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -27,6 +28,8 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 README = REPO_ROOT / "README.md"
 RUST = REPO_ROOT / "rust"
 
+# The step whose shell the executable checks at the bottom of this file run.
+CI_CHECK_STEP = "The public surface is the snapshots the repo carries"
 # The classification itself: the pattern that decides "promise" from "rest".
 API_ROW_PATTERN = "devlaunch_core::api\\b"
 # The ticket that widens the classifier to cover a promised type's methods and
@@ -164,3 +167,105 @@ def test_the_docs_say_what_the_promise_file_does_not_cover():
             f"{path.name} states the limit without naming issue #{WIDENING_TICKET}, "
             "which is what turns a known gap into a tracked one"
         )
+
+
+def ci_step_script(job: str, step_name: str) -> str:
+    """The shell of one step of a job, dedented and runnable.
+
+    The checks below run the workflow's own text rather than a paraphrase of
+    it, because a paraphrase is another copy: the day the two disagree, the
+    test still passes and the thing that runs on a runner is the other one.
+    """
+    lines = job.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.strip() == f"- name: {step_name}")
+    run = next(i for i in range(at, len(lines)) if lines[i].strip() == "run: |")
+    body: list[str] = []
+    indent = None
+    for line in lines[run + 1 :]:
+        if not line.strip():
+            body.append("")
+            continue
+        here = len(line) - len(line.lstrip())
+        if indent is None:
+            indent = here
+        elif here < indent:
+            break
+        body.append(line[indent:])
+    assert body, f"the {step_name!r} step has no shell to run"
+    return "\n".join(body)
+
+
+def run_the_ci_check(tmp_path: Path, listed: list[str], differing: str | None = None):
+    """Run ci.yml's check step in a fake checkout, against a stubbed script.
+
+    The stub stands in for the regeneration -- there is no nightly toolchain in
+    this environment, and none is needed to test the *checking*. It writes
+    whatever it claims to write, so the step's diff has something real to
+    compare; ``listed`` is what its ``--print-files`` prints.
+    """
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    stub = root / "scripts" / "public-api-snapshots.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"listed=({' '.join(listed)})\n"
+        'if [ "${1:-}" = "--print-files" ]; then\n'
+        '  [ ${#listed[@]} -eq 0 ] || printf "%s\\n" "${listed[@]}"\n'
+        "  exit 0\n"
+        "fi\n"
+        'dest="$1"\n'
+        'for file in ${listed[@]+"${listed[@]}"}; do\n'
+        '  mkdir -p "$dest/$(dirname "$file")"\n'
+        '  echo generated > "$dest/$file"\n'
+        "done\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    for name in listed:
+        checked_in = root / "rust" / name
+        checked_in.parent.mkdir(parents=True, exist_ok=True)
+        checked_in.write_text("drifted\n" if name == differing else "generated\n", encoding="utf-8")
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    return subprocess.run(
+        ["bash", "-c", ci_step_script(ci_job("public-api"), CI_CHECK_STEP)],
+        cwd=root,
+        env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(runner_temp)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.unit
+def test_the_ci_check_passes_when_every_snapshot_matches(tmp_path):
+    """The control: without it, the two failures below prove only a broken harness."""
+    done = run_the_ci_check(tmp_path, ["a/one.txt", "b/two.txt", "c/three.txt"])
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.unit
+def test_the_ci_check_fails_when_a_snapshot_differs(tmp_path):
+    done = run_the_ci_check(tmp_path, ["a/one.txt", "b/two.txt"], differing="b/two.txt")
+    assert done.returncode != 0, "a changed surface passed the check"
+
+
+@pytest.mark.unit
+def test_the_ci_check_fails_when_it_compared_nothing(tmp_path):
+    """A job that compares no file must not report that nothing changed.
+
+    `set -euo pipefail` does not see a process substitution fail, and a
+    `while read` over no input runs its body zero times and leaves the
+    changed-flag at 0 -- so an empty file list, or a `--print-files` that
+    exited non-zero, reported success having diffed nothing at all.
+    """
+    done = run_the_ci_check(tmp_path, [])
+    assert done.returncode != 0, (
+        "the public-api job passed having compared nothing; a tripwire that "
+        "reports success without checking is the failure this ticket is about"
+    )
+    assert "compared" in done.stdout + done.stderr, (
+        "the failure does not say that nothing was compared, so whoever hits it "
+        "will look for a surface change that is not there"
+    )

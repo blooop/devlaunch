@@ -427,9 +427,23 @@ jobs:
           set -euo pipefail
           scripts/public-api-snapshots.sh "$RUNNER_TEMP/public-api"
           changed=0
+          checked=0
           while read -r snapshot; do
+            checked=$((checked + 1))
             diff -u "rust/$snapshot" "$RUNNER_TEMP/public-api/$snapshot" || changed=1
           done < <(scripts/public-api-snapshots.sh --print-files)
+          # Count what was compared, in the same spirit as the `gate` job's
+          # "this gate covers no jobs" check. `set -e` does not see a process
+          # substitution fail, and a loop that runs zero times leaves changed=0
+          # — so without this, a --print-files that printed nothing (or exited
+          # non-zero) would report success having diffed not one file, which is
+          # the exact shape of tripwire this job exists to stop being.
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::--print-files listed no snapshots, so this job compared" \
+              "nothing. The list lives in scripts/public-api-snapshots.sh; a green" \
+              "tick here would mean the public surface is unchecked, not unchanged."
+            exit 1
+          fi
           if [ "$changed" -ne 0 ]; then
             echo "::error::A public surface changed. If the change is deliberate," \
               "regenerate the snapshots and commit them:" \

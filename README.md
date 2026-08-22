@@ -1925,9 +1925,17 @@ Committing a regenerated `public-api.api.txt` is committing a change to the prom
 say which one in the pull request — and if the change was to a promised type's methods or impls,
 the diff to point at is in `public-api.rest.txt`. `rust/devlaunch-core/tests/public_api_snapshots.rs`
 holds the two core files to the split itself — every promised row is an `api` declaration and none
-of the others is — so a hand-edited snapshot fails in the Rust suite rather than in review. The
-script writes through a staging directory and moves the files into place only once all three
-generated, so a failed run leaves the checked-in snapshots exactly as they were.
+of the others is — so a hand-edited snapshot fails in the Rust suite rather than in review.
+
+**What a failed run leaves behind**, precisely, because "nothing" would be a claim rather than a
+fact. The script checks every destination is writable before it generates anything, then writes
+into a staging directory *inside* the destination and moves the files into place only once all
+three exist. So a run that fails while generating — a compile error, a guard firing, a Ctrl-C —
+leaves the checked-in snapshots byte-identical. Staging on the same filesystem makes each move a
+rename rather than a copy, so no file is ever seen half-written. What is *not* atomic is the set of
+three: a crash between renames leaves some files new and some old, each one whole. CI's
+regenerate-and-diff is what catches that, since a mixed set still satisfies every invariant the
+tests over these files can check.
 
 ### Coverage: two numbers, and neither is the other
 

@@ -119,13 +119,34 @@ if [[ "$installed" != "cargo-public-api $PIN" ]]; then
   exit 1
 fi
 
+# Refuse before generating rather than half-way through applying. Two minutes
+# of rustdoc followed by "permission denied" on the third move is the worst
+# version of this: measured, it leaves two files updated and one stale, and a
+# mixed set satisfies every invariant the tests over these files can check --
+# the partition holds on any complementary pair -- so only CI's
+# regenerate-and-diff would notice.
+for file in "${FILES[@]}"; do
+  if [[ ! -w "$dest/$(dirname "$file")" ]]; then
+    echo "cannot write $dest/$(dirname "$file"): nothing generated, nothing changed." >&2
+    exit 1
+  fi
+done
+
 # Stage every file, and move them into place only once all three exist. The
 # shell truncates a redirect target *before* the command on its right runs, so
 # writing the destinations directly means a failed generation -- or a guard
 # below firing -- empties a checked-in snapshot on the way to reporting the
 # problem. That is a script whose whole job is to write those files leaving
 # them at zero bytes, and only one of the tests over them notices.
-staging="$(mktemp -d)"
+#
+# Staged *inside* `$dest`, not in `/tmp`: a real checkout is a different
+# filesystem from `/tmp` (measured: device 66306 against 81), which makes every
+# `mv` a copy-and-unlink rather than a rename, so an interrupted move can leave
+# a destination half-written. Same filesystem means each move is a rename, and
+# a rename either happened or did not. The set of three is still not one atomic
+# act -- a crash between renames leaves some new and some old, each file whole
+# -- and CI's diff is what catches that.
+staging="$(mktemp -d "$dest/.staging.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 for file in "${FILES[@]}"; do
   mkdir -p "$staging/$(dirname "$file")"
