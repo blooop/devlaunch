@@ -46,7 +46,7 @@ use devlaunch_core::flows::provision::{
 };
 use devlaunch_core::runner::Runner;
 
-use crate::cli::{Autorm, Verb};
+use crate::cli::{RmOnExit, Verb};
 use crate::cold::ColdPath;
 use crate::commands::Ending;
 use crate::render;
@@ -65,29 +65,29 @@ pub(crate) enum Family {
     /// Everything that opens a workspace, and whether the workspace is to go once
     /// the session does.
     ///
-    /// [`Autorm`] rides *with* the launch verb rather than beside it in the
+    /// [`RmOnExit`] rides *with* the launch verb rather than beside it in the
     /// dispatcher, because the two are read together exactly once and only ever
     /// together: the removal is what happens after this launch, not a second thing
     /// the command was asked for.
-    Launch { verb: LaunchVerb, autorm: Autorm },
+    Launch { verb: LaunchVerb, rm: RmOnExit },
 }
 
 /// What each verb asks for, from the word the grammar resolved.
 ///
-/// The `Autorm::No` on the six word verbs is not a default this function chose: the
-/// grammar refuses `--autorm` on all of them ([`cli::GrammarError::AutormNotAllowed`]),
+/// The `RmOnExit::No` on the six word verbs is not a default this function chose: the
+/// grammar refuses `--rm` on all of them ([`cli::GrammarError::RmNotAllowed`]),
 /// so no other answer can reach here — the arms say it because [`Verb`] gives them
 /// nothing to say it with.
 pub(crate) fn family(verb: &Verb) -> Family {
-    let (launched, autorm) = match verb {
+    let (launched, rm) = match verb {
         Verb::Stop => return Family::Stop,
         Verb::Remove { force } => return Family::Remove { force: *force },
-        Verb::Attach { autorm } => (LaunchVerb::Attach { command: None }, *autorm),
+        Verb::Attach { rm } => (LaunchVerb::Attach { command: None }, *rm),
         // Python's `" ".join(args[2:])`: the words are rejoined with single spaces
         // and the result is one shell command, quoted whole into the remote
         // payload. A word that needed quoting to survive the *host's* shell has
         // already been unquoted by it, so the join is what the user typed.
-        Verb::Run(words, autorm) => (
+        Verb::Run(words, rm) => (
             LaunchVerb::Attach {
                 command: Some(
                     words
@@ -97,19 +97,16 @@ pub(crate) fn family(verb: &Verb) -> Family {
                         .join(" "),
                 ),
             },
-            *autorm,
+            *rm,
         ),
-        Verb::Up => (LaunchVerb::Up, Autorm::No),
-        Verb::Code => (LaunchVerb::Code, Autorm::No),
-        Verb::Recreate => (LaunchVerb::Recreate, Autorm::No),
-        Verb::Restart => (LaunchVerb::Restart, Autorm::No),
-        Verb::Reset => (LaunchVerb::Reset, Autorm::No),
-        Verb::Dotfiles => (LaunchVerb::Dotfiles, Autorm::No),
+        Verb::Up => (LaunchVerb::Up, RmOnExit::No),
+        Verb::Code => (LaunchVerb::Code, RmOnExit::No),
+        Verb::Recreate => (LaunchVerb::Recreate, RmOnExit::No),
+        Verb::Restart => (LaunchVerb::Restart, RmOnExit::No),
+        Verb::Reset => (LaunchVerb::Reset, RmOnExit::No),
+        Verb::Dotfiles => (LaunchVerb::Dotfiles, RmOnExit::No),
     };
-    Family::Launch {
-        verb: launched,
-        autorm,
-    }
+    Family::Launch { verb: launched, rm }
 }
 
 /// Lending the host's tools into every workspace dl opens.
@@ -215,7 +212,7 @@ pub(crate) fn render_launch<'r>(
             "{} does not name a workspace: its path has no final component to name one after.",
             render::python_repr(target)
         );
-        // Nothing was opened, so there is nothing for `--autorm` to close.
+        // Nothing was opened, so there is nothing for `--rm` to close.
         return Ran {
             ending: Ending::Refused,
             reached: Reached::Nothing,
@@ -251,7 +248,7 @@ pub(crate) fn render_launch<'r>(
 /// is both "no such workspace" and "the container came up and the session would not
 /// open", and those are opposite answers to "is there something to remove": the
 /// first created nothing, the second left a running container and the clone behind.
-/// Reading the exit code to guess between them is how `--autorm` came to leak the
+/// Reading the exit code to guess between them is how `--rm` came to leak the
 /// workspaces it exists to collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reached {
@@ -336,7 +333,7 @@ fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
                 // `Reached::TheWorkspace` for both, and for `UpRefused` that is the
                 // point: a build that failed in `postCreateCommand` leaves the
                 // container running and the clone cut, so this is exactly the
-                // workspace an unattended `--autorm` line is there to collect.
+                // workspace an unattended `--rm` line is there to collect.
                 LaunchRefusal::UpRefused { exit } => Ran {
                     ending: Ending::Child(exit),
                     reached: Reached::TheWorkspace,

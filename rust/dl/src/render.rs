@@ -298,26 +298,6 @@ impl Formatter for PythonPretty {
 // The suffix verbs' notice
 // ---------------------------------------------------------------------------
 
-/// What `--rm`/`--stop` overrode by being appended, said out loud.
-///
-/// Written here and shared with `aid` rather than duplicated on both sides,
-/// because both sides can be the one that swallows the words: dl when the stale
-/// instruction was a positional word it now ignores, aid when it was the prompt aid
-/// would otherwise have handed an agent. One sentence, one wording.
-///
-/// It is not optional, and that is the point of the suffix form being safe at all.
-/// The line that removes a workspace is now allowed to carry an instruction it will
-/// not carry out, so it has to say which — a deliberate `--rm` and a slip look
-/// identical until then. stderr, like every other diagnostic here.
-pub fn overridden_notice(flag: &str, words: &[String]) -> String {
-    let named: Vec<String> = words.iter().map(|word| python_repr(word)).collect();
-    let was = if named.len() == 1 { "was" } else { "were" };
-    format!(
-        "{flag} overrode the rest of the line: {} {was} not acted on.",
-        named.join(", ")
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Python's repr, for the diagnostics that quote what a tool said
 // ---------------------------------------------------------------------------
@@ -1161,15 +1141,15 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
     }
 }
 
-/// `--autorm`, at the moment the session has ended and the removal begins.
+/// `--rm`, at the moment the session has ended and the removal begins.
 ///
 /// Named rather than silent, and it names the *target as typed* rather than the
 /// resolved workspace id for two reasons: the id has not been resolved yet when this
 /// is said, and the word the user recognises is the one they wrote. Whatever the
 /// removal then decides — the clone lines, or [`removal_refusal`]'s sentence and a
 /// workspace still standing — reads as an answer to this.
-pub(crate) fn autorm_removing(spec: &str) -> String {
-    format!("--autorm: the session has ended, removing {spec}.")
+pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
+    format!("--rm: the session has ended, removing {spec}.")
 }
 
 /// devpod would not let go of the workspace, and the clone was kept.

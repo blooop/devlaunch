@@ -50,11 +50,34 @@ const VERBS: [(&str, VerbWord); 8] = [
 ///
 /// **Recognised rather than forgotten, and that is the whole point of the table.**
 /// A retired word simply dropped from [`VERBS`] would be read as a *workspace
-/// name* — `dl prune <ws>` would report an unknown workspace called `prune`, and
-/// `dl prune <ws> --force --rm` would delete a workspace called `prune` instead of
-/// `<ws>`. Kept here, the word still cannot be a target, still says what to type
-/// instead, and a suffix verb meaning the same thing can absorb it silently.
+/// name* — `dl prune <ws>` would report an unknown workspace called `prune`, naming
+/// the word that moved as if it were the thing being looked for. Kept here, the word
+/// still cannot be a target, and still says what to type instead.
 const RETIRED: [(&str, RetiredWord); 1] = [("prune", RetiredWord::Prune)];
+
+/// The flags that were commands once and are not any more.
+///
+/// **Recognised rather than removed, for the same reason [`RETIRED`] keeps `prune`.**
+/// A flag simply deleted from [`Cli`] is clap's `unexpected argument` at exit 2, which
+/// names the spelling and nothing else — and both of these moved *because* `--rm`
+/// changed meaning, so the spelling is exactly what cannot explain itself. Kept here,
+/// each one is refused at exit 1 by a sentence that says what to type.
+///
+/// Both are hidden on [`Cli`]: they are not options this build offers, only spellings
+/// it still answers for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetiredFlag {
+    /// `--stop`, the flag spelling of the `stop` verb.
+    ///
+    /// It went with row 30's suffix form rather than on its own account. The whole
+    /// point of a flag-spelled verb was that it could be *appended* to a recalled
+    /// line and beat it; once `--rm` means "delete when the session ends", a flag
+    /// that instead cancels the line is the one thing that pair must not be —
+    /// `--rm` and `--stop` look alike, and would then act oppositely.
+    Stop,
+    /// `--autorm`, which is now spelled `--rm`.
+    Autorm,
+}
 
 /// A word this build no longer accepts as a verb.
 ///
@@ -82,17 +105,6 @@ impl RetiredWord {
             .iter()
             .find(|(spelling, _)| *spelling == word)
             .map(|(_, retired)| *retired)
-    }
-
-    /// The verb this word used to mean.
-    ///
-    /// Not for carrying out — the word is refused — but so a *suffix* flag asking
-    /// for the same thing can absorb it instead of reporting that it displaced
-    /// something. `dl prune <ws> --force --rm` says delete twice and means it once.
-    fn was(self) -> VerbWord {
-        match self {
-            Self::Prune => VerbWord::Remove,
-        }
     }
 
     /// The word to type instead.
@@ -152,21 +164,28 @@ impl VerbWord {
 /// Whether the workspace is deleted once the session it handed over has ended.
 ///
 /// A named pair rather than a bool, and carried by the two arms of [`Verb`] the flag
-/// is *defined* for — which is what makes `dl <ws> code --autorm` unwritable rather
-/// than merely refused, and what stops every other arm carrying a field the
-/// dispatcher has to remember to ignore.
+/// is *defined* for — which is what makes `dl <ws> code --rm` unwritable rather than
+/// merely refused, and what stops every other arm carrying a field the dispatcher has
+/// to remember to ignore.
+///
+/// **This is `--rm`, and [`Verb::Remove`] is `rm`** — docker's split, which is where
+/// the spelling comes from: `docker rm` deletes now, `docker run --rm` deletes once
+/// what it ran has finished, and no docker subcommand takes a `--rm` meaning the
+/// first of those. So here too the word is the only way to say "delete it now", the
+/// flag the only way to say "delete it after", and neither spelling has to be read
+/// twice to find out which was meant. Divergence row 32.
 ///
 /// **Two arms and not five, and that is a scope decision rather than a mechanical
 /// one.** `restart`, `recreate` and `reset` also end in a session
 /// (`LaunchVerb::attaches`), so the removal would work behind them; they are out
-/// because `--autorm` means *the throwaway workspace* — open one, use it, let it go —
+/// because `--rm` means *the throwaway workspace* — open one, use it, let it go —
 /// and not *clean up after whichever verb this was*. Widening it later is adding
 /// arms here; the refusal names the two forms rather than claiming those verbs hand
 /// over nothing, because they do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Autorm {
-    /// `--autorm`: remove the workspace when the session ends, guard and all.
-    OnExit,
+pub(crate) enum RmOnExit {
+    /// `--rm`: remove the workspace when the session ends, guard and all.
+    Yes,
     /// The default: the workspace outlives the session, as it always has.
     No,
 }
@@ -181,10 +200,10 @@ pub(crate) enum Autorm {
 pub(crate) enum Verb {
     /// `dl <ws>` — bring it up and hand over an interactive shell.
     Attach {
-        autorm: Autorm,
+        rm: RmOnExit,
     },
     /// `dl <ws> -- <command>` — one command, inside the workspace.
-    Run(NonEmpty<String>, Autorm),
+    Run(NonEmpty<String>, RmOnExit),
     Up,
     Stop,
     /// `rm`. `force` is `--force`: delete despite unsaved work, and count an
@@ -288,45 +307,6 @@ pub(crate) enum Command {
     },
 }
 
-/// Words a flag-spelled verb overrode.
-///
-/// `--rm` and `--stop` are the *suffix* form of their verbs: appended to a line
-/// that already said something else, they win. What they displaced is carried
-/// here rather than dropped, because a line that deletes a workspace must not also
-/// swallow an instruction it did not carry out — the point of typing the suffix is
-/// that the rest of the line is stale, and the risk is that it is not.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Overridden {
-    /// The flag that won, spelled as it was typed.
-    pub(crate) flag: &'static str,
-    /// The words it displaced, in the order they were typed. [`NonEmpty`]
-    /// because nothing displaced is no override at all, not an override of
-    /// nothing — which is what the `None` beside it says.
-    pub(crate) words: NonEmpty<String>,
-}
-
-/// One resolved command line: what to do, and what saying so overrode.
-///
-/// A pair rather than a field on [`Command`], because only the two flag-spelled
-/// verbs can override anything and every other arm would carry an `Option` that is
-/// always `None`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Resolved {
-    pub(crate) command: Command,
-    pub(crate) overridden: Option<Overridden>,
-}
-
-impl Command {
-    /// This command, having overridden nothing — every arm but the flag-spelled
-    /// verbs'.
-    fn alone(self) -> Resolved {
-        Resolved {
-            command: self,
-            overridden: None,
-        }
-    }
-}
-
 /// A command line clap accepted but `dl` cannot make a command of.
 ///
 /// Kept apart from clap's own errors because the two exit differently: clap's
@@ -338,6 +318,8 @@ pub(crate) enum GrammarError {
     UnknownVerb { target: String, word: String },
     /// A word that was a verb in an earlier build and is not one now.
     RetiredVerb(RetiredWord),
+    /// A flag that was a command in an earlier build and is not one now.
+    RetiredFlag(RetiredFlag),
     /// A global command was given a workspace to act on.
     TargetNotAllowed { command: &'static str },
     /// A modifier that means nothing for the command it was given to.
@@ -349,22 +331,29 @@ pub(crate) enum GrammarError {
     CommandNotAllowed { verb: &'static str },
     /// `--devcontainer` on a command that opens no workspace.
     DevcontainerNotAllowed { command: &'static str },
-    /// `--autorm` on a command the flag is not defined for.
+    /// `--rm` on a command the flag is not defined for.
     ///
-    /// Refused rather than ignored, and `code` is why. `dl <ws> code --autorm`
+    /// Refused rather than ignored, and `code` is why. `dl <ws> code --rm`
     /// returns the moment devpod has told VS Code where to connect — *before* the
     /// editor is attached — so honouring it there would delete the container out
     /// from under a window that is still opening. A silently-dropped flag would
     /// read as "it ran and kept the workspace", which is the one reading that
     /// makes somebody type it again.
-    AutormNotAllowed { command: &'static str },
-    /// `--force` beside `--autorm`.
+    ///
+    /// `dl <ws> rm --rm` reaches this too, and the sentence is the useful one there:
+    /// the verb alone already deletes the workspace.
+    RmNotAllowed { command: &'static str },
+    /// `--force` beside `--rm`.
     ///
     /// The pair looks like it should compose and must not: the unsaved-work guard
-    /// is the whole reason `--autorm` is safe to leave on a recalled line, and a
+    /// is the whole reason `--rm` is safe to leave on a recalled line, and a
     /// `--force` habitually appended to that line would destroy work hours later,
     /// unattended, with nobody watching the sentence that explained it.
-    AutormForced,
+    ///
+    /// docker draws the line in the same place, which is worth knowing because it
+    /// makes this a shape rather than a special case: `-f` is `docker rm`'s, and
+    /// `docker run --rm` has no forcing flag at all.
+    RmForced,
     /// The `--devcontainer` value cannot be a path.
     Devcontainer {
         raw: String,
@@ -456,14 +445,15 @@ pub(crate) struct Cli {
     #[arg(long, group = "what")]
     version: bool,
 
-    /// Stop a workspace without deleting it. May be appended to a line that
-    /// already said something else, and wins over it.
-    #[arg(long, group = "what")]
+    /// Retired: the flag spelling of the `stop` verb. Recognised so it can be
+    /// refused with the word to use instead. Deliberately outside the `what` group,
+    /// so `dl --ls --stop` reports the retirement rather than a group conflict about
+    /// a flag that no longer names a command.
+    #[arg(long, hide = true)]
     stop: bool,
-    /// Delete a workspace. Refuses if its clone holds work that is nowhere else.
-    /// May be appended to a line that already said something else, and wins.
-    #[arg(long, group = "what")]
-    rm: bool,
+    /// Retired: what `--rm` is now called.
+    #[arg(long, hide = true)]
+    autorm: bool,
 
     /// The known `owner/repo` strings, one per line (for shell completion).
     #[arg(long, group = "what", hide = true)]
@@ -489,9 +479,9 @@ pub(crate) struct Cli {
     devcontainer: Option<String>,
     /// Delete the workspace once the session ends, like `docker run --rm`. Only
     /// for the two forms that hand one over: `dl <ws>` and `dl <ws> -- <command>`.
-    /// Stops at work that is nowhere else, exactly as `rm` does.
+    /// Stops at work that is nowhere else, exactly as the `rm` verb does.
     #[arg(long)]
-    autorm: bool,
+    rm: bool,
 }
 
 /// The half of the grammar clap's own argument list cannot show: the verbs are
@@ -508,7 +498,7 @@ const GRAMMAR: &str = "Examples:
   dl blooop/devlaunch -- make test   Run one command inside the workspace
   dl blooop/devlaunch stop           Stop it
   dl stop blooop-devlaunch-main-1a2b Stop it by workspace id
-  dl blooop/devlaunch --autorm       Open it, and delete it when the shell exits
+  dl blooop/devlaunch --rm           Open it, and delete it when the shell exits
   dl --ls --json                     Every workspace, machine-readable
 
 Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
@@ -532,32 +522,27 @@ dotfiles, TAB marks several rows and the verb applies to each in turn — dl rm 
 clear five workspaces in one visit. The forms that end in a session (attach, --,
 restart, recreate, reset) take exactly one.
 
---stop and --rm are the same two verbs as flags, and unlike the words they may be
-appended to a line that already says something else, which then loses:
-
-  dl owner/repo 'review this pr' --rm --force
-  dl stop owner/repo --rm
-
-Both act on owner/repo. It is the shape for recalling the previous line and typing
-at the end of it rather than rewriting its front. Whatever the suffix beat is named
-on stderr before anything is removed, so a deliberate one and a slip do not look
-alike.
-
 'prune' was a second spelling of the rm verb and is retired: it collided with the
 --prune flag below, which removes clone directories and no workspace at all. Typing
 it says so and names both.
 
---autorm is the throwaway workspace: dl <ws> --autorm and dl <ws> --autorm -- <cmd>
-delete the workspace and its clone once the session ends, the way docker run --rm
-does. It stops at work that is nowhere else — the same check dl <ws> rm makes — and
-then leaves the workspace standing and says so, which is what makes it safe to leave
-on a recalled line. The exit code is the session's, not the removal's.
+--rm is the throwaway workspace, and it is docker's --rm rather than another spelling
+of the rm verb above: dl <ws> --rm and dl <ws> --rm -- <cmd> hand over a session and
+delete the workspace and its clone once it ends, exactly as docker run --rm does,
+where the rm verb deletes one now. It stops at work that is nowhere else — the same
+check the verb makes — and then leaves the workspace standing and says so, which is
+what makes it safe to leave on a line you recall. The exit code is the session's, not
+the removal's.
 
-Those two forms and no others: every verb above refuses --autorm rather than ignoring
-it, and 'code' is the one worth knowing about, since it returns while VS Code is still
+Those two forms and no others: every verb above refuses --rm rather than ignoring it,
+and 'code' is the one worth knowing about, since it returns while VS Code is still
 connecting. --force does not compose with it either — use dl <ws> rm --force when you
-mean to delete despite the work. Best-effort by nature: a Ctrl-C during the build, or
-a closed terminal, ends dl before the session does and leaves the workspace behind.";
+mean to delete despite the work, which is where docker keeps its -f too. Best-effort
+by nature: a Ctrl-C during the build, or a closed terminal, ends dl before the session
+does and leaves the workspace behind.
+
+--stop is retired, and --autorm is what --rm is now called. Both are still recognised
+and say so.";
 
 /// What no flag and no verb names: the variables that change a launch.
 ///
@@ -583,8 +568,6 @@ enum Chosen {
     Reconcile,
     Purge,
     Version,
-    Stop,
-    Remove,
     Repos,
     CompletionData,
     UpdateCache,
@@ -602,8 +585,6 @@ impl Cli {
             (self.reconcile, Chosen::Reconcile),
             (self.purge, Chosen::Purge),
             (self.version, Chosen::Version),
-            (self.stop, Chosen::Stop),
-            (self.rm, Chosen::Remove),
             (self.repos, Chosen::Repos),
             (self.completion_data, Chosen::CompletionData),
             (self.update_cache, Chosen::UpdateCache),
@@ -611,22 +592,33 @@ impl Cli {
         .into_iter()
         .find_map(|(given, chosen)| given.then_some(chosen))
     }
+
+    /// The retired spelling this line used, if it used one.
+    fn retired_flag(&self) -> Option<RetiredFlag> {
+        [
+            (self.stop, RetiredFlag::Stop),
+            (self.autorm, RetiredFlag::Autorm),
+        ]
+        .into_iter()
+        .find_map(|(given, retired)| given.then_some(retired))
+    }
 }
 
 /// The command `cli` asks for.
 ///
 /// Total over [`Cli`]: every accepted command line is either a [`Command`] or a
 /// named [`GrammarError`], and nothing is left to be worked out later.
-pub(crate) fn resolve(cli: Cli, argv: &[String]) -> Result<Resolved, GrammarError> {
+pub(crate) fn resolve(cli: Cli, argv: &[String]) -> Result<Command, GrammarError> {
+    // First, because both retired spellings moved on account of what `--rm` means
+    // now: a line carrying one of them is asking for a grammar this build has not
+    // got, and every other diagnostic would describe the line it typed instead of
+    // the reason it stopped working.
+    if let Some(retired) = cli.retired_flag() {
+        return Err(GrammarError::RetiredFlag(retired));
+    }
     match cli.chosen() {
-        // The two flag-spelled verbs are the verb-first grammar under another
-        // name, so they go through the same words handling and inherit its
-        // target-or-selector rule — and, being flags, they are also the one form
-        // that can be appended to a line that already said something else.
-        Some(Chosen::Stop) => verb_command(&cli, VerbWord::Stop, flag_of(Chosen::Stop)),
-        Some(Chosen::Remove) => verb_command(&cli, VerbWord::Remove, flag_of(Chosen::Remove)),
-        Some(global) => global_command(&cli, global).map(Command::alone),
-        None => workspace_command(cli, argv).map(Command::alone),
+        Some(global) => global_command(&cli, global),
+        None => workspace_command(cli, argv),
     }
 }
 
@@ -682,8 +674,8 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
     if cli.devcontainer.is_some() {
         return Err(GrammarError::DevcontainerNotAllowed { command: name });
     }
-    if cli.autorm {
-        return Err(GrammarError::AutormNotAllowed { command: name });
+    if cli.rm {
+        return Err(GrammarError::RmNotAllowed { command: name });
     }
     if !cli.command.is_empty() {
         return Err(GrammarError::CommandNotAllowed { verb: name });
@@ -735,11 +727,6 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::Repos => Command::Repos,
         Chosen::CompletionData => Command::CompletionData,
         Chosen::UpdateCache => Command::UpdateCache { force: cli.force },
-        // Handled by `resolve` before this function is reached: they are verbs,
-        // not global commands, and the compiler is the reason that stays true.
-        Chosen::Stop | Chosen::Remove => {
-            return Err(GrammarError::TargetNotAllowed { command: name });
-        }
     })
 }
 
@@ -752,92 +739,10 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::Reconcile => "--reconcile",
         Chosen::Purge => "--purge",
         Chosen::Version => "--version",
-        Chosen::Stop => "--stop",
-        Chosen::Remove => "--rm",
         Chosen::Repos => "--repos",
         Chosen::CompletionData => "--completion-data",
         Chosen::UpdateCache => "--update-cache",
     }
-}
-
-/// `dl --stop [<target>]` and `dl --rm [<target>]`: the verb-first grammar, and
-/// the suffix form of it.
-///
-/// Unlike the bare words, these two may be *appended* to a line that already said
-/// something else, and they win. That is the whole reason they are flags: a shell
-/// makes recalling the previous line and typing at the end of it cheap, and
-/// rewriting the front of a recalled line expensive, so the only shape that can
-/// mean "and now delete it" is a suffix. `dl <ws> 'review this pr' --rm` and
-/// `dl prune <ws> --force --rm` both remove `<ws>`, where the first used to be
-/// [`GrammarError::UnknownVerb`] and the second took `prune` as the *workspace*.
-///
-/// The displaced words are named rather than dropped in silence — see
-/// [`Overridden`] — with one exception: a word spelling the same verb the flag
-/// does displaced nothing, because it is the line saying one thing twice, which is
-/// exactly what appending `--rm` to a `prune` line produces.
-///
-/// **Divergence row 30.** Row 15 made the flag spellings work at all; this is the
-/// one thing they do that the words cannot.
-fn verb_command(cli: &Cli, word: VerbWord, flag: &'static str) -> Result<Resolved, GrammarError> {
-    let verb = word.with(cli.force);
-    if !cli.command.is_empty() {
-        return Err(GrammarError::CommandNotAllowed { verb: verb.word() });
-    }
-    // Before `--yes`, because a `--stop --autorm` line is the more confused of the
-    // two and the flag it is confused about is the one worth naming.
-    if cli.autorm {
-        return Err(GrammarError::AutormNotAllowed {
-            command: verb.word(),
-        });
-    }
-    if cli.yes {
-        return Err(GrammarError::ModifierNotAllowed {
-            modifier: "--yes",
-            command: verb.word(),
-        });
-    }
-    let devcontainer = devcontainer_of(cli)?;
-    let (target, displaced) = pick_target(&cli.words, word);
-    Ok(Resolved {
-        command: match target {
-            None => Command::Select { verb, devcontainer },
-            Some(target) => Command::Workspace {
-                target,
-                verb,
-                devcontainer,
-            },
-        },
-        overridden: NonEmpty::of(displaced).map(|words| Overridden { flag, words }),
-    })
-}
-
-/// The workspace on a `--rm`/`--stop` line, and the words that flag overrode.
-///
-/// The target is the first word that is *not* a verb, so a verb word standing ahead
-/// of the workspace is not mistaken for it. Everything after that first word is
-/// displaced, and so is any verb word naming a different verb — except a word
-/// spelling `flag`'s own verb, which is redundant rather than displaced.
-///
-/// No target at all is the selector, as it is for a bare verb: `dl --rm prune` is
-/// the remove verb spelled twice and names no workspace, so it picks one.
-fn pick_target(words: &[String], flag: VerbWord) -> (Option<String>, Vec<String>) {
-    let mut target = None;
-    let mut displaced = Vec::new();
-    for word in words {
-        // A retired verb word stands for what it used to mean, so it is not a
-        // workspace name here either. `dl prune <ws> --force --rm` is the line this
-        // whole suffix form exists for, and `prune` is exactly the word in it that
-        // is no longer a verb — reading it as the target would delete the wrong
-        // thing, and displacing it would report noise about a line that asked for
-        // one thing twice.
-        match VerbWord::of(word).or_else(|| RetiredWord::of(word).map(RetiredWord::was)) {
-            Some(spelled) if spelled == flag => {}
-            Some(_) => displaced.push(word.clone()),
-            None if target.is_none() => target = Some(word.clone()),
-            None => displaced.push(word.clone()),
-        }
-    }
-    (target, displaced)
 }
 
 /// The workspace-first and verb-first grammar: up to two words, plus `-- <cmd>`.
@@ -851,21 +756,20 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
     }
     // Before `force_placement`, and that ordering is the whole of the fix it is.
     // `--force`'s meaning is recovered from its *position* in the word stream, and
-    // `--autorm` is a word in that stream — so `dl <ws> --autorm --force` reads
-    // `--force` as trailing (the pair, correctly) while `dl --autorm --force <ws>`
-    // reads it as the *verb* slot and answers `Unknown command '--force'` about a
-    // workspace called `--autorm`, which explains nothing about a line whose real
-    // problem is the pair. Asked here, every spelling of the pair gets the sentence
-    // that names it.
+    // `--rm` is a word in that stream — so `dl <ws> --rm --force` reads `--force` as
+    // trailing (the pair, correctly) while `dl --rm --force <ws>` reads it as the
+    // *verb* slot and answers `Unknown command '--force'` about a workspace called
+    // `--rm`, which explains nothing about a line whose real problem is the pair.
+    // Asked here, every spelling of the pair gets the sentence that names it.
     //
-    // What this gives up is `dl --force --autorm`, which used to be an attach on a
+    // What this gives up is `dl --force --rm`, which used to be an attach on a
     // workspace *named* `--force` (the slot-0 reading Python's parity preserves) and
     // is now the refused pair. That is the better answer: a line carrying both flags
     // is somebody expecting `--force` to license the removal, not somebody who named
     // a workspace `--force`. The parity reading is untouched for every line that does
-    // not also say `--autorm`.
-    if cli.autorm && cli.force {
-        return Err(GrammarError::AutormForced);
+    // not also say `--rm`.
+    if cli.rm && cli.force {
+        return Err(GrammarError::RmForced);
     }
     // `--force` only means force where Python read it — after the workspace and the
     // verb. Anywhere earlier it is the word in that slot, and the refusal is
@@ -878,10 +782,10 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                 // unknown name does.
                 return Ok(Command::Workspace {
                     target: "--force".to_owned(),
-                    // `Autorm::No` by the check above, not by choice: a line holding
-                    // both flags was refused before it got here.
+                    // `RmOnExit::No` by the check above, not by choice: a line
+                    // holding both flags was refused before it got here.
                     verb: Verb::Attach {
-                        autorm: autorm_of(&cli),
+                        rm: rm_on_exit_of(&cli),
                     },
                     devcontainer,
                 });
@@ -901,14 +805,14 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                 });
             }
             // Where `--force` really is the modifier, and so the one place the pair
-            // with `--autorm` can be told from a workspace that happens to be
+            // with `--rm` can be told from a workspace that happens to be
             // called `--force`.
             ForcePlace::Trailing => {}
         }
     }
-    let autorm = autorm_of(&cli);
-    let run = NonEmpty::of(cli.command.iter().cloned()).map(|words| Verb::Run(words, autorm));
-    let attach = || Verb::Attach { autorm };
+    let rm = rm_on_exit_of(&cli);
+    let run = NonEmpty::of(cli.command.iter().cloned()).map(|words| Verb::Run(words, rm));
+    let attach = || Verb::Attach { rm };
     let (target, verb) = match cli.words.as_slice() {
         [] => (None, run.unwrap_or_else(attach)),
         [only] => match VerbWord::of(only) {
@@ -957,12 +861,14 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
     if !cli.command.is_empty() && !matches!(verb, Verb::Run(..)) {
         return Err(GrammarError::CommandNotAllowed { verb: verb.word() });
     }
-    // The verb words the grammar just resolved carry no [`Autorm`] — only the two
-    // attach spellings can — so a `--autorm` that reached one of them was written
-    // and could not be honoured. Read off the *verb* rather than the words, so
-    // `dl up <ws> --autorm` and `dl <ws> up --autorm` are refused alike.
-    if cli.autorm && !matches!(verb, Verb::Attach { .. } | Verb::Run(..)) {
-        return Err(GrammarError::AutormNotAllowed {
+    // The verb words the grammar just resolved carry no [`RmOnExit`] — only the two
+    // attach spellings can — so a `--rm` that reached one of them was written and
+    // could not be honoured. Read off the *verb* rather than the words, so
+    // `dl up <ws> --rm` and `dl <ws> up --rm` are refused alike. `dl <ws> rm --rm`
+    // lands here too: the word and the flag are two different requests, and saying so
+    // beats quietly treating the pair as one of them.
+    if cli.rm && !matches!(verb, Verb::Attach { .. } | Verb::Run(..)) {
+        return Err(GrammarError::RmNotAllowed {
             command: verb.word(),
         });
     }
@@ -977,12 +883,8 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
 }
 
 /// Whether this line asked for the workspace to go when the session does.
-fn autorm_of(cli: &Cli) -> Autorm {
-    if cli.autorm {
-        Autorm::OnExit
-    } else {
-        Autorm::No
-    }
+fn rm_on_exit_of(cli: &Cli) -> RmOnExit {
+    if cli.rm { RmOnExit::Yes } else { RmOnExit::No }
 }
 
 fn devcontainer_of(cli: &Cli) -> Result<Option<DevcontainerPath>, GrammarError> {
@@ -1041,26 +943,12 @@ mod tests {
 
     use super::*;
 
-    /// The command a line resolves to, with what it overrode set aside — which is
-    /// `None` for everything but the two flag-spelled verbs, and what
-    /// [`full`] is for when it is not.
+    /// The command a line resolves to.
     fn parse(argv: &[&str]) -> Result<Command, GrammarError> {
-        full(argv).map(|resolved| resolved.command)
-    }
-
-    fn full(argv: &[&str]) -> Result<Resolved, GrammarError> {
         let cli = Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied()))
             .unwrap_or_else(|error| panic!("clap refused {argv:?}: {error}"));
         let raw: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
         resolve(cli, &raw)
-    }
-
-    /// The words a line overrode, in order, or `None` when it overrode nothing.
-    fn overridden(argv: &[&str]) -> Option<(&'static str, Vec<String>)> {
-        let resolved = full(argv).expect("a usable command line");
-        resolved
-            .overridden
-            .map(|had| (had.flag, had.words.iter().cloned().collect()))
     }
 
     fn refused(argv: &[&str]) -> clap::error::ErrorKind {
@@ -1071,17 +959,17 @@ mod tests {
 
     /// `dl <ws>` — the plain attach, which is what almost every case below wants.
     fn attach() -> Verb {
-        Verb::Attach { autorm: Autorm::No }
+        Verb::Attach { rm: RmOnExit::No }
     }
 
     fn run(words: &[&str]) -> Verb {
-        run_with(words, Autorm::No)
+        run_with(words, RmOnExit::No)
     }
 
-    fn run_with(words: &[&str], autorm: Autorm) -> Verb {
+    fn run_with(words: &[&str], rm: RmOnExit) -> Verb {
         Verb::Run(
             NonEmpty::of(words.iter().map(|word| word.to_string())).expect("a command"),
-            autorm,
+            rm,
         )
     }
 
@@ -1159,18 +1047,15 @@ mod tests {
     fn a_retired_word_is_never_read_as_the_workspace() {
         // The failure mode the RETIRED table exists to prevent: dropped from the
         // verbs and nothing else, `prune` would be an ordinary word — a workspace
-        // name in every one of these lines.
+        // name here, and an unknown-workspace refusal naming the word that moved
+        // instead of saying that it moved.
         assert_eq!(
-            parse(&["prune", "ws", "--force", "--rm"]),
-            Ok(workspace("ws", Verb::Remove { force: true })),
-            "the recalled line still removes ws, not a workspace called prune"
+            parse(&["prune", "ws"]),
+            Err(GrammarError::RetiredVerb(RetiredWord::Prune))
         );
-        // And it displaced nothing: `prune` and `--rm` asked for the same thing.
-        assert_eq!(overridden(&["prune", "ws", "--rm"]), None);
-        // Asking for something else with it does displace it, and says so.
         assert_eq!(
-            overridden(&["prune", "ws", "--stop"]),
-            Some(("--stop", vec!["prune".to_owned()]))
+            parse(&["ws", "prune", "--force"]),
+            Err(GrammarError::RetiredVerb(RetiredWord::Prune))
         );
     }
 
@@ -1393,14 +1278,71 @@ mod tests {
     }
 
     #[test]
-    fn the_flag_spelled_verbs_are_the_verb_first_grammar() {
-        assert_eq!(parse(&["--stop", "ws"]), Ok(workspace("ws", Verb::Stop)));
+    fn the_flag_spelled_stop_verb_is_retired_from_every_position() {
+        // Row 15 made `dl --stop <ws>` work and row 30 made it appendable; row 32
+        // takes the spelling back, because `--rm` now modifies a session and a
+        // look-alike flag that cancels the line instead is the one thing the pair
+        // must not be. Every position, so no line finds a corner where it survives.
+        for argv in [
+            &["--stop"][..],
+            &["--stop", "ws"][..],
+            &["ws", "--stop"][..],
+            &["ws", "--stop", "--force"][..],
+        ] {
+            assert_eq!(
+                parse(argv),
+                Err(GrammarError::RetiredFlag(RetiredFlag::Stop)),
+                "dl {}",
+                argv.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn autorm_is_retired_in_favour_of_the_rm_it_became() {
+        // The same behaviour under a new spelling, so the refusal is the only thing
+        // standing between a recalled `--autorm` line and a silent no-op.
+        for argv in [
+            &["--autorm"][..],
+            &["ws", "--autorm"][..],
+            &["--autorm", "ws"][..],
+            &["ws", "--autorm", "--", "make", "test"][..],
+        ] {
+            assert_eq!(
+                parse(argv),
+                Err(GrammarError::RetiredFlag(RetiredFlag::Autorm)),
+                "dl {}",
+                argv.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_flag_is_answered_before_anything_else_the_line_got_wrong() {
+        // Both spellings moved *because* `--rm` changed meaning, so the retirement
+        // is the reason the line stopped working and every other diagnostic would
+        // describe something the person did not do. Asked first for that reason,
+        // and these are the lines that would otherwise answer something else: a
+        // group conflict, and a `--force` in the workspace slot.
         assert_eq!(
-            parse(&["--rm", "ws", "--force"]),
+            parse(&["--ls", "--stop"]),
+            Err(GrammarError::RetiredFlag(RetiredFlag::Stop))
+        );
+        assert_eq!(
+            parse(&["--force", "--autorm"]),
+            Err(GrammarError::RetiredFlag(RetiredFlag::Autorm))
+        );
+    }
+
+    #[test]
+    fn the_words_the_retired_flags_stood_for_still_work() {
+        assert_eq!(parse(&["stop", "ws"]), Ok(workspace("ws", Verb::Stop)));
+        assert_eq!(
+            parse(&["rm", "ws", "--force"]),
             Ok(workspace("ws", Verb::Remove { force: true }))
         );
         assert_eq!(
-            parse(&["--stop"]),
+            parse(&["stop"]),
             Ok(Command::Select {
                 verb: Verb::Stop,
                 devcontainer: None
@@ -1505,79 +1447,20 @@ mod tests {
 
     // ============================================ the cache-refresh argv stripping
 
-    // ================================================ the flag-spelled verbs as a suffix
+    // ============================================ a stale word beside the --rm flag
 
     #[test]
-    fn a_suffix_verb_overrides_a_stale_word_rather_than_refusing_the_line() {
-        // The shape this exists for: an `aid`-style line recalled from history,
-        // with `--rm` typed at the end of it. Before, two words neither of which
-        // is a verb was `UnknownVerb` and the line did nothing.
+    fn a_word_the_grammar_cannot_read_is_still_refused_beside_the_flag() {
+        // The line row 30 taught `--rm` to rescue, and row 32 hands back: an
+        // `aid`-style line recalled with the flag typed at the end. `--rm` no
+        // longer overrides anything, so the two words that are not a verb are
+        // what they were before — a refusal that names the word and how to run it.
         assert_eq!(
-            parse(&["owner/repo@fix/x", "review this pr", "--rm", "--force"]),
-            Ok(workspace("owner/repo@fix/x", Verb::Remove { force: true }))
-        );
-        assert_eq!(
-            overridden(&["owner/repo@fix/x", "review this pr", "--rm"]),
-            Some(("--rm", vec!["review this pr".to_owned()]))
-        );
-    }
-
-    #[test]
-    fn a_leading_verb_word_is_not_mistaken_for_the_workspace() {
-        // What `dl prune <ws> --force` + `--rm --force` recalls to. `--rm` used to
-        // read `prune` as the target and report an unknown workspace called that.
-        assert_eq!(
-            parse(&["prune", "ws", "--force", "--rm"]),
-            Ok(workspace("ws", Verb::Remove { force: true }))
-        );
-        // And it displaced nothing: `prune` and `--rm` are one verb spelled twice.
-        assert_eq!(overridden(&["prune", "ws", "--rm"]), None);
-        assert_eq!(overridden(&["ws", "--rm"]), None);
-    }
-
-    #[test]
-    fn a_suffix_verb_overrides_a_different_verb_and_says_so() {
-        // `dl <ws> stop` recalled with `--rm` appended: the flag wins, and the
-        // verb it beat is named, because the two are not the same request.
-        assert_eq!(
-            parse(&["ws", "stop", "--rm"]),
-            Ok(workspace("ws", Verb::Remove { force: false }))
-        );
-        assert_eq!(
-            overridden(&["ws", "stop", "--rm"]),
-            Some(("--rm", vec!["stop".to_owned()]))
-        );
-        assert_eq!(
-            overridden(&["ws", "rm", "--stop"]),
-            Some(("--stop", vec!["rm".to_owned()]))
-        );
-    }
-
-    #[test]
-    fn a_suffix_verb_with_only_its_own_verb_word_picks_a_workspace() {
-        // `dl --rm prune` names no workspace at all — it is the verb twice — so it
-        // opens the selector, as the bare `dl prune` does.
-        assert_eq!(
-            parse(&["--rm", "prune"]),
-            Ok(Command::Select {
-                verb: Verb::Remove { force: false },
-                devcontainer: None
+            parse(&["owner/repo@fix/x", "review this pr", "--rm"]),
+            Err(GrammarError::UnknownVerb {
+                target: "owner/repo@fix/x".to_owned(),
+                word: "review this pr".to_owned()
             })
-        );
-    }
-
-    #[test]
-    fn the_notice_names_every_word_the_suffix_beat() {
-        assert_eq!(
-            crate::render::overridden_notice("--rm", &["review this pr".to_owned()]),
-            "--rm overrode the rest of the line: 'review this pr' was not acted on."
-        );
-        assert_eq!(
-            crate::render::overridden_notice(
-                "--stop",
-                &["code".to_owned(), "and the rest".to_owned()]
-            ),
-            "--stop overrode the rest of the line: 'code', 'and the rest' were not acted on."
         );
     }
 
@@ -1626,44 +1509,32 @@ mod tests {
         assert!(help.contains("Usage: dl "), "{help}");
     }
 
-    // ================================================================== --autorm
+    // ======================================================================= --rm
 
     #[test]
-    fn autorm_is_carried_by_the_two_forms_that_hand_over_a_session() {
+    fn rm_is_carried_by_the_two_forms_that_hand_over_a_session() {
         assert_eq!(
-            parse(&["ws", "--autorm"]),
-            Ok(workspace(
-                "ws",
-                Verb::Attach {
-                    autorm: Autorm::OnExit
-                }
-            ))
+            parse(&["ws", "--rm"]),
+            Ok(workspace("ws", Verb::Attach { rm: RmOnExit::Yes }))
         );
         assert_eq!(
-            parse(&["ws", "--autorm", "--", "make", "test"]),
-            Ok(workspace("ws", run_with(&["make", "test"], Autorm::OnExit)))
+            parse(&["ws", "--rm", "--", "make", "test"]),
+            Ok(workspace("ws", run_with(&["make", "test"], RmOnExit::Yes)))
         );
         // Position is not the grammar's business: clap strips the flag wherever it
         // sits, and only `--force` has a slot that means something.
         assert_eq!(
-            parse(&["--autorm", "ws"]),
-            Ok(workspace(
-                "ws",
-                Verb::Attach {
-                    autorm: Autorm::OnExit
-                }
-            ))
+            parse(&["--rm", "ws"]),
+            Ok(workspace("ws", Verb::Attach { rm: RmOnExit::Yes }))
         );
     }
 
     #[test]
-    fn autorm_with_no_workspace_named_picks_one_and_keeps_the_flag() {
+    fn rm_with_no_workspace_named_picks_one_and_keeps_the_flag() {
         assert_eq!(
-            parse(&["--autorm"]),
+            parse(&["--rm"]),
             Ok(Command::Select {
-                verb: Verb::Attach {
-                    autorm: Autorm::OnExit
-                },
+                verb: Verb::Attach { rm: RmOnExit::Yes },
                 devcontainer: None
             })
         );
@@ -1674,20 +1545,15 @@ mod tests {
         // The empty command is not a command, and the attach it collapses to is
         // still the attach that was asked to clean up after itself.
         assert_eq!(
-            parse(&["ws", "--autorm", "--"]),
-            Ok(workspace(
-                "ws",
-                Verb::Attach {
-                    autorm: Autorm::OnExit
-                }
-            ))
+            parse(&["ws", "--rm", "--"]),
+            Ok(workspace("ws", Verb::Attach { rm: RmOnExit::Yes }))
         );
     }
 
     #[test]
     fn every_verb_word_refuses_the_flag() {
         // `code` is why this is a refusal and not a shrug: it returns the moment
-        // devpod has told VS Code where to connect, so honouring `--autorm` there
+        // devpod has told VS Code where to connect, so honouring `--rm` there
         // would delete the container out from under a window still opening.
         //
         // `restart`, `recreate` and `reset` are in this list for a different reason
@@ -1700,79 +1566,83 @@ mod tests {
             "up", "stop", "rm", "code", "restart", "recreate", "reset", "dotfiles",
         ] {
             assert_eq!(
-                parse(&["ws", word, "--autorm"]),
-                Err(GrammarError::AutormNotAllowed { command: word }),
-                "dl ws {word} --autorm"
+                parse(&["ws", word, "--rm"]),
+                Err(GrammarError::RmNotAllowed { command: word }),
+                "dl ws {word} --rm"
             );
             // And from the other position, since the verb wins from either.
             assert_eq!(
-                parse(&[word, "ws", "--autorm"]),
-                Err(GrammarError::AutormNotAllowed { command: word }),
-                "dl {word} ws --autorm"
+                parse(&[word, "ws", "--rm"]),
+                Err(GrammarError::RmNotAllowed { command: word }),
+                "dl {word} ws --rm"
             );
         }
     }
 
     #[test]
-    fn the_flag_spelled_verbs_refuse_it_too() {
-        // `--rm` and `--stop` are the same two verbs and get the same answer, under
-        // the word rather than the flag: the sentence names the verb, not the spelling.
+    fn the_rm_verb_beside_the_rm_flag_is_two_requests_and_says_so() {
+        // docker's split, in the one line where a person can trip over it: the word
+        // deletes now, the flag deletes when a session ends, and `dl ws rm --rm` has
+        // asked for both. Refused rather than silently treated as either, and the
+        // sentence names the verb — which is the spelling that already does what the
+        // line most likely wanted.
         assert_eq!(
-            parse(&["ws", "--rm", "--autorm"]),
-            Err(GrammarError::AutormNotAllowed { command: "rm" })
+            parse(&["ws", "rm", "--rm"]),
+            Err(GrammarError::RmNotAllowed { command: "rm" })
         );
         assert_eq!(
-            parse(&["ws", "--stop", "--autorm"]),
-            Err(GrammarError::AutormNotAllowed { command: "stop" })
+            parse(&["rm", "ws", "--rm", "--force"]),
+            Err(GrammarError::RmForced),
+            "the pair is named ahead of the verb, which is the more confused half"
         );
     }
 
     #[test]
     fn a_command_that_opens_no_workspace_refuses_it() {
         assert_eq!(
-            parse(&["--ls", "--autorm"]),
-            Err(GrammarError::AutormNotAllowed { command: "--ls" })
+            parse(&["--ls", "--rm"]),
+            Err(GrammarError::RmNotAllowed { command: "--ls" })
         );
         assert_eq!(
-            parse(&["--purge", "--autorm"]),
-            Err(GrammarError::AutormNotAllowed { command: "--purge" })
+            parse(&["--purge", "--rm"]),
+            Err(GrammarError::RmNotAllowed { command: "--purge" })
         );
     }
 
     #[test]
-    fn force_does_not_compose_with_autorm() {
+    fn force_does_not_compose_with_rm() {
         // The pair looks like it should and must not: the guard is what makes the
         // flag safe to leave on a recalled line, and a habitual `--force` beside it
         // would destroy work later, unattended, with nobody reading the sentence.
         assert_eq!(
-            parse(&["ws", "--autorm", "--force"]),
-            Err(GrammarError::AutormForced)
+            parse(&["ws", "--rm", "--force"]),
+            Err(GrammarError::RmForced)
         );
         assert_eq!(
-            parse(&["ws", "--autorm", "--force", "--", "make"]),
-            Err(GrammarError::AutormForced)
+            parse(&["ws", "--rm", "--force", "--", "make"]),
+            Err(GrammarError::RmForced)
         );
     }
 
     #[test]
     fn the_pair_is_refused_wherever_force_sits_in_the_line() {
-        // `--force`'s meaning is recovered from its position, and `--autorm` is a word
+        // `--force`'s meaning is recovered from its position, and `--rm` is a word
         // in the stream that position is counted in — so without this the same pair
         // gets three different answers depending on where it was typed, two of them
         // describing the wrong problem: `Unknown command '--force'` about a workspace
-        // called `--autorm`, and `Unknown workspace '--force'`.
+        // called `--rm`, and `Unknown workspace '--force'`.
         for line in [
-            vec!["ws", "--autorm", "--force"],
-            vec!["--autorm", "--force", "ws"],
-            vec!["--force", "--autorm", "ws"],
-            vec!["--autorm", "ws", "--force"],
+            vec!["ws", "--rm", "--force"],
+            vec!["--rm", "--force", "ws"],
+            vec!["--force", "--rm", "ws"],
+            vec!["--rm", "ws", "--force"],
             // No workspace at all: the selector's line, refused the same way rather
             // than opening a picker whose choice cannot be honoured.
-            vec!["--force", "--autorm"],
+            vec!["--force", "--rm"],
         ] {
             assert_eq!(
                 parse(&line),
-                Err(GrammarError::AutormForced),
+                Err(GrammarError::RmForced),
                 "dl {}",
                 line.join(" ")
             );
@@ -1815,10 +1685,16 @@ mod tests {
         use clap::CommandFactory;
 
         let help = Cli::command().render_long_help().to_string();
-        assert!(help.contains("dl blooop/devlaunch --autorm"), "{help}");
+        assert!(help.contains("dl blooop/devlaunch --rm"), "{help}");
+        assert!(help.contains("--rm is the throwaway workspace"), "{help}");
+        // And the retired spellings are named there rather than only in the refusal,
+        // because the help is where somebody goes to find out what replaced one.
         assert!(
-            help.contains("--autorm is the throwaway workspace"),
+            help.contains("--stop is retired, and --autorm is what --rm is now called"),
             "{help}"
         );
+        // Hidden means hidden: neither is an option this build offers.
+        assert!(!help.contains("      --stop\n"), "{help}");
+        assert!(!help.contains("      --autorm\n"), "{help}");
     }
 }
