@@ -69,6 +69,7 @@ use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
 use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
+use crate::flows::herdr;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
@@ -153,6 +154,15 @@ pub struct Host {
     pub(crate) no_tty: Option<String>,
     pub(crate) stdin_tty: bool,
     pub(crate) stdout_tty: bool,
+    /// The host's herdr control socket, if it has one listening.
+    ///
+    /// A resolved socket rather than the variable naming it, because whether the
+    /// path is really a socket is the question a mount depends on and answering it
+    /// twice could answer it differently. `None` on every host not running herdr,
+    /// which is what makes [`herdr::up_args`] add nothing there.
+    pub(crate) herdr_socket: Option<herdr::HostSocket>,
+    /// `DEVLAUNCH_NO_HERDR`.
+    pub(crate) herdr: herdr::HerdrSwitch,
     /// `~/.ssh/config`, where devpod publishes its host aliases. `None` on a
     /// machine with no home directory, which reads the same as a config with no
     /// alias in it: fall back to the devpod transport.
@@ -178,6 +188,8 @@ impl Host {
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
+            herdr_socket: herdr::HostSocket::from_env(),
+            herdr: herdr::HerdrSwitch::from_env(),
             ssh_config: ssh::config_path(),
             cache_dir: cache_dir.into(),
             devpod_home: lifecycle::devpod_home(),
@@ -785,6 +797,7 @@ pub(crate) fn up_args(
     options: &ContextOptions,
     pixi: &PixiCache,
     token: &[String],
+    herdr: &HerdrMount,
 ) -> Vec<String> {
     let mut args = vec!["up".to_owned(), request.source.to_owned()];
     if let Some(id) = request.naming.create_as() {
@@ -807,7 +820,34 @@ pub(crate) fn up_args(
     args.extend(options.up_args());
     args.extend(pixi.up_args());
     args.extend(token.iter().cloned());
+    args.extend(herdr.up_args());
     args
+}
+
+/// The herdr socket this launch may bind into the container, if any.
+///
+/// A type of its own rather than a second `&[String]` beside `token`: two slices of
+/// pre-built flags in one signature are two a caller can pass in the wrong order
+/// with nothing to catch it, and these two carry very different things.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HerdrMount {
+    socket: Option<herdr::HostSocket>,
+    switch: herdr::HerdrSwitch,
+}
+
+impl HerdrMount {
+    /// What this host asks for.
+    pub(crate) fn of(host: &Host) -> Self {
+        Self {
+            socket: host.herdr_socket.clone(),
+            switch: host.herdr,
+        }
+    }
+
+    /// The `devpod up` flags, which are none on a host with no herdr.
+    fn up_args(&self) -> Vec<String> {
+        herdr::up_args(self.socket.as_ref(), self.switch)
+    }
 }
 
 // ===========================================================================
@@ -1108,7 +1148,7 @@ fn up_under_stage(
         .as_ref()
         .map(StagedToken::up_args)
         .unwrap_or_default();
-    let args = up_args(request, &options, &pixi, &token_args);
+    let args = up_args(request, &options, &pixi, &token_args, &HerdrMount::of(host));
 
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
@@ -3590,7 +3630,13 @@ mod tests {
             },
         );
 
-        let args = up_args(&request, &ContextOptions::default(), &pixi, &[]);
+        let args = up_args(
+            &request,
+            &ContextOptions::default(),
+            &pixi,
+            &[],
+            &HerdrMount::default(),
+        );
 
         assert_eq!(
             args,
@@ -3634,6 +3680,7 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
+            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -3662,6 +3709,7 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
+            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -3699,6 +3747,7 @@ mod tests {
                 &ContextOptions::default(),
                 &nothing,
                 &[],
+                &HerdrMount::default(),
             )
         };
 
@@ -3729,6 +3778,7 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
+            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -3757,6 +3807,7 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
+            &HerdrMount::default(),
         );
 
         assert_eq!(

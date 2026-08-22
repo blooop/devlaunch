@@ -42,6 +42,14 @@ use devlaunch_core::timing;
 /// composes one.
 pub use devlaunch_core::shell;
 
+/// Which herdr pane this process is in, for the entry point that starts an agent:
+/// `aid` puts the pane's identity on the agent's own command line so the hook
+/// devlaunch installs in the container knows where to report. Re-exported here for
+/// the reason [`shell`] is — `aid` sees devlaunch through `dl` and nothing else —
+/// and only the reading of the pane is exposed, not the mount or the hook, which
+/// are a launch's business and happen inside [`run`].
+pub use devlaunch_core::flows::herdr;
+
 /// Python's `repr()`, for the entry point that quotes an untrusted name the way
 /// Python did: `aid` names a bad `DEVLAUNCH_AID_AGENT` value with `{name!r}`, and
 /// reaches the one renderer through here rather than carrying a second copy, so a

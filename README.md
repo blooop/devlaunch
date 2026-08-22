@@ -17,7 +17,7 @@ launching one again attaches to what is already there.
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
-**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [Agent state in herdr](#agent-state-in-a-herdr-session) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
 
 **Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
 
@@ -352,6 +352,7 @@ are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 | `--autorm` | Run the agent, then delete the workspace when the session ends |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
 | `DEVLAUNCH_NO_TTY=1` | No prompt question, no pty: the old one-shot behaviour |
+| `DEVLAUNCH_NO_HERDR=1` | Do not report agent state to a host-side [herdr](#agent-state-in-a-herdr-session) session |
 
 Everything after the workspace is the prompt, flags and all, so it never needs
 quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
@@ -476,6 +477,97 @@ guarantee that the rest of this README is about, which is a large price for one
 Both variables read the same values: anything but empty, `0`, `false` or `no` means
 yes, turn it off. And neither touches the hostname stage — a host that wants no
 zellij has not thereby asked for unnamed containers.
+
+## Agent state in a herdr session
+
+[herdr](https://herdr.dev) is a terminal multiplexer that shows, per pane, whether
+the coding agent in it is **working**, **idle** or **blocked** waiting for you. Run
+`aid` in a herdr pane and it shows none of that, and the reason is structural:
+herdr decides which agent a pane holds from the pane's foreground process, and
+under `aid` the host's process tree is `aid → dl → ssh` with the agent inside the
+container. There is no `claude` on the host to find.
+
+Nothing else about the hop is broken — the pane's screen bytes and its terminal
+title arrive intact, and herdr's own state rules match against them correctly *once
+it believes an agent is there*. So `dl` supplies the one missing fact and herdr
+does the rest:
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test   # in a herdr pane; the badge appears
+```
+
+Three things make that work, and all three are automatic:
+
+| | |
+|---|---|
+| **The socket** | The host's herdr socket is bind-mounted into the workspace at `/var/tmp/devlaunch-herdr.sock` |
+| **The pane** | `aid` puts `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` on the agent's own command line, with the socket path rewritten to the container's |
+| **The hook** | A setup-pass stage installs `~/.devlaunch/herdr-agent-state.py` and wires it to claude's `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd` hooks |
+
+`Notification` is the event that earns the feature: it is what claude fires when it
+is waiting for a human, which is the one state a fleet of workspaces exists to
+surface.
+
+### What it costs, and when it does nothing
+
+**On a host not running herdr, nothing happens at all** — no mount, no stage, no
+notice, and every command line byte-identical to what it was. That is decided from
+whether a herdr socket exists rather than from whether the feature is enabled, so it
+is true of the payload and not merely of its effects.
+
+The stage is one more line in the setup pass every entry into Running already pays,
+and it can never fail a launch: a container it cannot satisfy reports the stage and
+opens exactly as it would have. It reports at info level rather than warning,
+because failing is its majority case — three things have to be true:
+
+- **`python3` in the container.** The hook talks to a unix socket and merges a JSON
+  settings file, and neither is something shell can do. herdr's own integration
+  requires `python3` for the same reason, so this asks for nothing extra.
+- **A claude configuration directory of the container's own.** If `~/.claude` (or
+  `CLAUDE_CONFIG_DIR`) is mounted from the host, the stage **refuses** rather than
+  merging: writing hooks there would edit your real claude settings from inside
+  every container, on every launch.
+- **The socket mount**, which only lands at container creation. A workspace created
+  before this feature — or by a `dl` on a machine with no herdr running — needs
+  **`dl <ws> recreate`**, not `restart`. This is the one place it differs from the
+  zellij stage above, which needs only a restart because nothing it installs is a
+  mount.
+
+The hook is written whole and moved into place, and it exits 0 in every state
+including every failure. A herdr that stopped listening, a socket whose session has
+ended, a claude that changed its payload: each is a badge that does not appear, and
+none is a turn that fails.
+
+`--codex` and `--gemini` are unaffected — the hook devlaunch installs is claude's,
+and telling another agent where to report would name a reporter that is not there.
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_HERDR=1` | Do not mount the herdr socket into workspaces and do not install the hook. The rest of tool provisioning is untouched |
+
+**Mounting the socket gives the container control of your herdr session** — it is
+the same socket herdr's own CLI drives, so something in there could open panes or
+read other panes' output. That is the trade, and it is why there is an opt-out; it
+is on by default for the reason the forwarded GitHub token is, namely that a `dl`
+workspace is already where you run an agent with `--dangerously-skip-permissions`.
+`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning, and
+both read the same values as the variables above: anything but empty, `0`, `false`
+or `no` means yes, turn it off.
+
+### What this deliberately does not do
+
+It does not install herdr in the container, and it does not use herdr's own
+`herdr integration install claude`. That integration's hook sends
+`pane.report_agent_session` — session *identity* for a pane herdr already knows
+holds an agent — which registers nothing by itself, so forwarding it would carry
+session metadata for an agent herdr does not believe exists. The reports here are
+the ones that make the pane appear.
+
+The other way round works too and needs nothing from `dl`: `herdr --remote
+<workspace-id>.devpod` runs a herdr server *inside* the workspace, where the agent
+really is the pane's foreground process. That gives correct badges with no mount and
+no hook, at the price of one view per workspace instead of one spanning them all,
+and a herdr in the container whose version must match the host's exactly.
 
 ## GitHub Authentication
 
