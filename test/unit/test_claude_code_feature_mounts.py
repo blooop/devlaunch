@@ -126,13 +126,20 @@ def host_config_fixture(tmp_path) -> Path:
 
 
 def resolve(source: str, host_config: Path) -> Path:
-    """A manifest mount source as a path under the test's scratch home."""
-    assert source.startswith(HOST_CONFIG_DIR), f"{source} is outside the configuration directory"
-    return (
-        host_config / source[len(f"{HOST_CONFIG_DIR}/") :]
-        if source != HOST_CONFIG_DIR
-        else host_config
-    )
+    """A manifest mount source as a path under the test's scratch home.
+
+    The separator is part of the prefix, so `~/.claudeX` is outside the
+    configuration directory rather than a zero-length path inside it. Without
+    that, a mount of any sibling whose name merely starts with `.claude`
+    resolved to the configuration directory itself and was then checked in its
+    place -- passing whatever the real source would have failed, the missing
+    source that refuses the container create included.
+    """
+    if source == HOST_CONFIG_DIR:
+        return host_config
+    prefix = f"{HOST_CONFIG_DIR}/"
+    assert source.startswith(prefix), f"{source} is outside the configuration directory"
+    return host_config / source[len(prefix) :]
 
 
 def nested_sources(mounts: list) -> dict:
