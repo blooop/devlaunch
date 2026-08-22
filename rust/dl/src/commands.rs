@@ -1062,13 +1062,23 @@ fn render_reconcile(
 // the selector
 // ---------------------------------------------------------------------------
 
-/// A verb with no workspace named: the embedded fuzzy picker chooses one.
+/// A verb with no workspace named: the embedded fuzzy picker chooses one — or,
+/// for a verb that applies per workspace, several.
 ///
-/// **Divergence row 21** decides where the pick goes: through the same path
+/// **Divergence row 21** decides where each pick goes: through the same path
 /// `dl <ws> <verb>` takes, rather than Python's straight-to-`workspace_up`. One
 /// `devpod status` buys the fast attach every other entry already pays for, and the
 /// verb the selector was opened with is honoured — `dl --stop` picks a workspace and
 /// stops it.
+///
+/// Whether the picker takes one row or many is the verb's to say
+/// ([`Verb::several_at_once`]): `dl rm` lets TAB mark five dead workspaces and
+/// clears them in one visit, while a verb that ends in a session takes one. A batch
+/// is applied in the order the rows were taken, every workspace attempted whatever
+/// happened to the ones before it — the point of marking five is that one refusal
+/// (say, unsaved work) must not silently drop the other four. The command's ending
+/// is the first that was not [`Ending::Done`], so a script still learns something
+/// failed and the specific code of the first failure survives.
 ///
 /// A pick that never came is Python's ending exactly: the help on stdout and exit 1
 /// (`dl.py` 4457-4462). The help is clap's (**row 3**).
@@ -1084,21 +1094,49 @@ fn render_select<'r>(
         Err(refused) => return refuse_listing(&refused),
         Ok(workspaces) => workspaces,
     };
+    let arity = if verb.several_at_once() {
+        select::Arity::Several
+    } else {
+        select::Arity::One
+    };
     // Said before the picker takes the screen, as Python says it: it is the only
-    // thing that explains what the rows are.
+    // thing that explains what the rows are — and, for a verb that takes several,
+    // the only place TAB is discoverable.
     if !workspaces.is_empty() {
-        println!("Select workspace (type to filter):");
+        match arity {
+            select::Arity::One => println!("Select workspace (type to filter):"),
+            select::Arity::Several => {
+                println!("Select workspaces (type to filter, TAB to mark several):");
+            }
+        }
     }
-    match select::pick(&workspaces) {
-        select::Pick::Chose(workspace_id) => render_workspace(
-            runner,
-            context,
-            cache,
-            refresh,
-            &workspace_id,
-            verb,
-            devcontainer,
-        ),
+    match select::pick(&workspaces, arity) {
+        select::Pick::Chose(workspace_ids) => {
+            let mut ending = Ending::Done;
+            for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
+                // Each workspace after the first is one more state change after
+                // whatever refresh the last one spawned, so the child indexing the
+                // old world must not be the last word — the same reasoning as
+                // `--autorm`'s re-arm in `after_the_session`. A no-op for the
+                // single pick every verb used to be.
+                if already_acted > 0 {
+                    refresh.rearm();
+                }
+                let ran = render_workspace(
+                    runner,
+                    context,
+                    cache,
+                    refresh,
+                    workspace_id,
+                    verb.clone(),
+                    devcontainer,
+                );
+                if matches!(ending, Ending::Done) {
+                    ending = ran;
+                }
+            }
+            ending
+        }
         select::Pick::NoWorkspaces => {
             eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
             no_pick()

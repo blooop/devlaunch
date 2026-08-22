@@ -13,6 +13,13 @@
 //! is *offered* rather than quietly dropped from the list
 //! (`test/unit/test_workspace_source.py::TestTheFuzzyPickerOffersEverySource`).
 //!
+//! **One deliberate departure from Python's picker: it can take several rows.**
+//! Python's `iterfzf(..., multi=False)` answered one workspace always. Here the
+//! verb the selector was opened for decides ([`Arity`]): a verb that applies per
+//! workspace and returns — `up`, `stop`, `rm`, `code`, `dotfiles` — lets TAB mark
+//! any number of rows, so `dl rm` can clear five dead workspaces in one visit,
+//! while the forms that end in a session still take exactly one.
+//!
 //! [`offered`] is that list and nothing else — a pure function of what devpod said,
 //! which is what makes the spec testable without a terminal. [`pick`] is the
 //! interactive half.
@@ -21,6 +28,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use devlaunch_core::clients::devpod::Workspace;
+use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::flows::listing::describe_source;
 use skim::prelude::*;
 
@@ -57,6 +65,21 @@ pub(crate) fn offered(workspaces: &[Workspace]) -> Vec<Offer> {
         .collect()
 }
 
+/// How many rows one picker run may take.
+///
+/// Decided by the verb the selector was opened for
+/// ([`Verb::several_at_once`](crate::cli::Verb::several_at_once)), not by the
+/// picker: skim will happily multi-select for anything, and the limit is about
+/// what the verb can do with the answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Arity {
+    /// Enter takes the row under the cursor and nothing else.
+    One,
+    /// TAB marks any number of rows; Enter takes the marked set, or the row under
+    /// the cursor when none are marked.
+    Several,
+}
+
 /// What the picker settled.
 ///
 /// Four arms where Python has `Optional[str]`, because its `None` covers four
@@ -66,9 +89,11 @@ pub(crate) fn offered(workspaces: &[Workspace]) -> Vec<Offer> {
 /// help and exits 1 — but which one happened is the caller's to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
-    /// This workspace, by id.
-    Chose(String),
-    /// The picker was opened and closed without a choice: Esc, Ctrl-C, or a row
+    /// These workspaces, by id, in the order skim handed the rows back. One entry
+    /// always under [`Arity::One`]; [`NonEmpty`] because an empty set of choices
+    /// is [`Pick::Quit`], not a batch of nothing.
+    Chose(NonEmpty<String>),
+    /// The picker was opened and closed without a choice: Esc, Ctrl-C, or rows
     /// that named no workspace.
     Quit,
     /// devpod lists nothing, so there is nothing to offer.
@@ -79,8 +104,9 @@ pub(crate) enum Pick {
     NoTerminal,
 }
 
-/// Offer these workspaces and wait for one to be chosen.
-pub(crate) fn pick(workspaces: &[Workspace]) -> Pick {
+/// Offer these workspaces and wait for one — or, under [`Arity::Several`], any
+/// number — to be chosen.
+pub(crate) fn pick(workspaces: &[Workspace], arity: Arity) -> Pick {
     let offers = offered(workspaces);
     if offers.is_empty() {
         return Pick::NoWorkspaces;
@@ -91,7 +117,7 @@ pub(crate) fn pick(workspaces: &[Workspace]) -> Pick {
     if !a_terminal_exists() {
         return Pick::NoTerminal;
     }
-    chosen(&offers, run_skim(&offers))
+    chosen(&offers, run_skim(&offers, arity))
 }
 
 /// Whether this run has a terminal at all.
@@ -115,12 +141,14 @@ fn a_terminal_exists() -> bool {
     }
 }
 
-/// The row skim was left on, if it was left on one.
-fn run_skim(offers: &[Offer]) -> Option<String> {
+/// The rows skim was left on: empty when the picker was quit without an answer.
+fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
     let options = SkimOptions {
-        // `iterfzf(options, multi=False)`'s defaults: one pick, and the input order
-        // preserved rather than re-sorted (Python's `sort=False` -> `--no-sort`).
-        multi: false,
+        // skim's `--multi` when the verb takes several — TAB toggles a row, as it
+        // does in fzf — and `iterfzf(options, multi=False)`'s one pick otherwise.
+        // Input order preserved rather than re-sorted either way (Python's
+        // `sort=False` -> `--no-sort`).
+        multi: matches!(arity, Arity::Several),
         no_sort: true,
         ..Default::default()
     };
@@ -138,29 +166,33 @@ fn run_skim(offers: &[Offer]) -> Option<String> {
     // The reader stops at the end of the stream, and the stream ends when the last
     // sender is dropped.
     drop(tx);
-    let output = Skim::run_with(&options, Some(rx))?;
+    let Some(output) = Skim::run_with(&options, Some(rx)) else {
+        return Vec::new();
+    };
     if output.is_abort {
-        return None;
+        return Vec::new();
     }
     output
         .selected_items
-        .first()
+        .iter()
         .map(|item| item.output().into_owned())
+        .collect()
 }
 
-/// Which workspace a chosen row names.
+/// Which workspaces the chosen rows name.
 ///
 /// Python looks the label up in its `ws_map` and answers `None` when it is not
-/// there; the same lookup is here, and a row naming no workspace reads as no
-/// choice rather than as a workspace called something else.
-fn chosen(offers: &[Offer], row: Option<String>) -> Pick {
-    let Some(row) = row else {
-        return Pick::Quit;
-    };
-    offers
-        .iter()
-        .find(|offer| offer.label == row)
-        .map_or(Pick::Quit, |offer| Pick::Chose(offer.workspace_id.clone()))
+/// there; the same lookup is here, per row. A row naming no workspace is dropped
+/// rather than read as a workspace called something else, and rows naming nothing
+/// at all — none chosen, or none that map back — read as no choice.
+fn chosen(offers: &[Offer], rows: Vec<String>) -> Pick {
+    let picked = rows.iter().filter_map(|row| {
+        offers
+            .iter()
+            .find(|offer| offer.label == *row)
+            .map(|offer| offer.workspace_id.clone())
+    });
+    NonEmpty::of(picked).map_or(Pick::Quit, Pick::Chose)
 }
 
 /// One offered row, as skim reads it.
@@ -238,8 +270,53 @@ mod tests {
         // Picking the row maps back to the workspace, which is what makes it an
         // offer rather than a line of text.
         assert_eq!(
-            chosen(&offers, Some(offers[1].label.clone())),
-            Pick::Chose("from-an-image".to_owned())
+            chosen(&offers, vec![offers[1].label.clone()]),
+            Pick::Chose(one_id("from-an-image"))
+        );
+    }
+
+    /// A `Pick::Chose` of exactly these ids, for the assertions below.
+    fn ids(named: &[&str]) -> Pick {
+        Pick::Chose(NonEmpty::of(named.iter().map(|id| (*id).to_owned())).expect("at least one id"))
+    }
+
+    fn one_id(named: &str) -> NonEmpty<String> {
+        NonEmpty::of([named.to_owned()]).expect("one id")
+    }
+
+    #[test]
+    fn several_rows_map_to_several_workspaces_in_the_order_taken() {
+        // The multi pick: every chosen row maps back, in the order the rows came
+        // back, so `dl rm` applies to the workspaces in the order they were marked.
+        let offers = offered(&listed(
+            r#"[
+                {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"},
+                {"id": "second", "source": {"localFolder": "/b"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"},
+                {"id": "third", "source": {"localFolder": "/c"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"}
+            ]"#,
+        ));
+
+        assert_eq!(
+            chosen(
+                &offers,
+                vec![offers[2].label.clone(), offers[0].label.clone()]
+            ),
+            ids(&["third", "first"])
+        );
+        // A row naming no workspace is dropped rather than sinking the rows that
+        // do name one — the batch the user marked still happens.
+        assert_eq!(
+            chosen(
+                &offers,
+                vec!["something else".to_owned(), offers[1].label.clone()]
+            ),
+            ids(&["second"])
         );
     }
 
@@ -287,8 +364,9 @@ mod tests {
 
         assert!(offered(&none).is_empty());
         // And no terminal is opened to say so: nothing to pick from is answered
-        // before anything is drawn.
-        assert_eq!(pick(&none), Pick::NoWorkspaces);
+        // before anything is drawn, whichever arity asked.
+        assert_eq!(pick(&none, Arity::One), Pick::NoWorkspaces);
+        assert_eq!(pick(&none, Arity::Several), Pick::NoWorkspaces);
     }
 
     #[test]
@@ -297,9 +375,9 @@ mod tests {
         // `None`, and `None` is the help and exit 1.
         let offers = offered(&listed(&one("mine", r#"{"localFolder": "/p"}"#)));
 
-        assert_eq!(chosen(&offers, None), Pick::Quit);
+        assert_eq!(chosen(&offers, Vec::new()), Pick::Quit);
         assert_eq!(
-            chosen(&offers, Some("something else".to_owned())),
+            chosen(&offers, vec!["something else".to_owned()]),
             Pick::Quit
         );
     }

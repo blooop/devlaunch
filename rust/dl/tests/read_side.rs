@@ -803,12 +803,21 @@ fn a_verb_with_no_workspace_opens_the_selector_and_no_terminal_picks_nothing() {
     // draw no picker at all, so nothing is picked. Python's ending for a pick that
     // never came is this one: the help on stdout, exit 1 — and the help is clap's
     // (row 3).
+    // The invitation names what the picker will take: `stop` and `--rm` apply per
+    // workspace, so TAB may mark several; a `-- <cmd>` ends in one session, so the
+    // line is the single pick's — and the only place TAB is discoverable is here.
     let world = World::full();
-    for args in [vec!["stop"], vec!["--rm"], vec!["--", "make", "test"]] {
+    let several = "Select workspaces (type to filter, TAB to mark several):\n";
+    let one = "Select workspace (type to filter):\n";
+    for (args, invitation) in [
+        (vec!["stop"], several),
+        (vec!["--rm"], several),
+        (vec!["--", "make", "test"], one),
+    ] {
         let run = world.dl(&args);
         run.exited(1);
         assert!(
-            run.out.starts_with("Select workspace (type to filter):\n"),
+            run.out.starts_with(invitation),
             "dl {args:?} did not open the picker: {:?}",
             run.out
         );

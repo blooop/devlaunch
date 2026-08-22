@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The fuzzy selector takes several workspaces for the verbs that can use them.**
+  `dl rm`, `dl stop`, `dl up`, `dl code` and `dl dotfiles` (and the `--rm`/`--stop`
+  spellings) with no workspace named now open the picker in multi-select: TAB marks
+  any number of rows, Enter applies the verb to each in turn, so five dead
+  workspaces are cleared in one visit instead of five. Every marked workspace is
+  attempted whatever happened to the ones before it — one `rm` refused over unsaved
+  work does not drop the rest of the batch — and the exit code is the first
+  failure's, so scripts still learn something went wrong. The forms that end in an
+  interactive session (`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`)
+  still take exactly one, since several of those would just be sessions queued
+  behind each other's exit.
+
 ## [0.5.0] - 2026-08-21
 
 ### Fixed
