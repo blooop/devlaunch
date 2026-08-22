@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-22
+
+### Changed
+
+- **A workspace is now *named* by the spec you typed, where it used to be named by
+  its id.** Two places a person reads a workspace changed, and the id itself did
+  not: it still addresses every workspace, names every clone directory and is still
+  the container's hostname.
+
+  An id is `<repo-slug>-<ref-slug>-<suffix>`, and two of those three parts are what
+  somebody looking at a workspace wants while the third is machinery. The suffix is
+  eight characters of hash, there so two branches cannot share an id, and reading it
+  is no part of choosing a workspace or of knowing which one a tab is. What the id
+  *lacks* is the owner — it carries none at all, so a fork and its upstream were a
+  row and a tab spelled the same — and it spells the branch as a slug, so
+  `feature/auth` reads as `feature-auth`, which is also the name of a different
+  branch the same repository could have.
+
+- **The selector draws `owner | repo | branch`.**
+
+  ```
+  blooop          | devlaunch  | main
+  kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-su
+  -               | myproject
+  ```
+
+  Both halves come off the source devpod already reported, so the picker still opens
+  no records and reads no config. Three columns rather than `owner/repo@branch`,
+  which reads like a spec `dl` would accept and is not one: a ref-slug is lossy, so
+  retyping one can address the other branch.
+
+  The elision is never unconditional. A picked row is mapped back to its workspace by
+  the row's own text, so two rows drawn alike would act on one workspace — and `dl
+  rm` is one of the verbs the selector opens for. Where a split would collide, the
+  rows go back to their whole ids, which puts the suffix on screen in exactly the
+  case it is doing work.
+
+- **A tab is named `blooop/devlaunch@main`, and keeps that name for the session.**
+  The escape dl writes just before the handover used to last about a second: Ubuntu's
+  stock `~/.bashrc` puts `\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt
+  renamed the pane after the hostname, which is the id. The setup pass now appends
+  one line to the profile a login shell reads, so dl's name is the last write of
+  every prompt:
+
+  ```
+  case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac
+  ```
+
+  Appended, because two escapes in one prompt are applied in order and the last one
+  wins — a `PROMPT_COMMAND` would lose, since bash runs that before it prints `PS1`.
+  Nothing is rewritten, so the visible `user@host:path$` still says the hostname and
+  only the tab changes. It rides the hostname stage's existing round trip and costs
+  no extra one.
+
+  Two bargains worth knowing. The line is installed when a workspace enters Running
+  rather than on every attach — the same trade the hostname stage makes — so
+  `DEVLAUNCH_NO_TITLE=1 dl <ws>` on a running workspace silences dl's own escape but
+  not the prompt's, and `dl <ws> recreate` is what re-decides it. And only a spec is
+  installed: a container told to title after its own id is told nothing, since that
+  is already its hostname.
+
+  `DEVLAUNCH_NO_TITLE` governs both halves.
+
+### Fixed
+
+- **A workspace named after another row's columns drew the same selector row.** A
+  workspace dl did not clone, named `devlaunch | main`, drew
+  `blooop | devlaunch | main` beside a clone of `blooop/devlaunch@main` — and picking
+  it acted on the clone. Distinctness is now established over the drawn labels rather
+  than argued from the names devpod permits.
+
+- **An id that two repo spellings explain read back as the wrong branch.** The repo
+  slug is cut to twenty characters only when an id would overflow, so a reader has
+  two spellings to try, and for a repo whose slug has a dash at exactly the cap both
+  can explain one id. The branch column showed the shorter reading, which is a branch
+  name the row could plausibly have had. Such an id is now refused and the row draws
+  the id whole.
+
+- **Opening a workspace by its id renamed its tab back to the hash.** The profile
+  line is deduped by a hash of its own text, so a second name for one workspace
+  appended rather than replaced, and the last append won every prompt.
+
+- **A dash login shell printed the title escape instead of setting it.** `~/.profile`
+  is read by any POSIX login shell, and `/bin/sh` is dash on Debian and Ubuntu, where
+  `\[`, `\e` and `\a` mean nothing — so the prompt showed the escape at every line. A
+  corrupted prompt is worse than an unnamed tab.
+
+- **A ref's trailing newline reached the profile unfiltered**, splitting one `PS1`
+  assignment across two lines of a file every login sources. Both halves of the title
+  now take the same filtered name.
+
 ## [0.9.0] - 2026-08-22
 
 ### Changed
