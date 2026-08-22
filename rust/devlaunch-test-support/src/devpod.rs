@@ -120,26 +120,82 @@ impl FakeWorkspace {
 /// "now", so a test may compare a whole listing without consulting a clock.
 pub const DEFAULT_STAMP: &str = "2026-01-01T00:00:00+0000";
 
+/// The value-taking flags every subcommand inherits, per real devpod v0.26.1's
+/// global flag block. `--debug` and `--silent` are bare and so are absent.
+const GLOBAL_VALUE_FLAGS: &[&str] = &["--context", "--devpod-home", "--log-output", "--provider"];
+
 /// `devpod up` flags that take a separate value, so the positional source can be
-/// found by skipping them. `dl` spells no flag as `--flag=value`, and anything
-/// this parses wrong can be pinned by a response-table entry.
+/// found by skipping them.
+///
+/// Taken from `devpod up --help` at v0.26.1 rather than grown one bug at a time:
+/// every flag it types `string`, `strings`, `stringArray` or a named type is
+/// here, and the booleans (`--recreate`, `--reset`, `--open-ide`, …) are not,
+/// because cobra takes a boolean's value only as `--flag=false`. Growing the
+/// list by hand as flags were needed is what left `--init-env`, `--mount`,
+/// `--dotfiles-script` and `--dotfiles-script-env` out of it, and real devpod
+/// accepts those *before* the positional source, where reading one as bare makes
+/// its value the workspace source.
 const UP_VALUE_FLAGS: &[&str] = &[
-    "--id",
-    "--ide",
-    "--provider",
-    "--source",
+    "--additional-features",
+    "--devcontainer-id",
+    "--devcontainer-image",
     "--devcontainer-path",
     "--dotfiles",
+    "--dotfiles-script",
+    "--dotfiles-script-env",
+    "--dotfiles-script-env-file",
+    "--extra-devcontainer-path",
+    "--fallback-image",
+    "--gidmap",
+    "--git-clone-strategy",
+    "--git-ssh-signing-key",
+    "--id",
+    "--ide",
+    "--ide-option",
+    "--init-env",
+    "--machine",
+    "--mount",
     "--prebuild-repository",
+    "--provider-option",
+    "--source",
+    "--ssh-config",
+    "--uidmap",
+    "--userns",
     "--workspace-env",
     "--workspace-env-file",
-    "--context",
+];
+
+/// `devpod ssh` flags that take a separate value, per `devpod ssh --help` at
+/// v0.26.1. `--workdir` is the one `dl` sends and the one both fakes read as
+/// bare, which made an attach with a working directory look like an attach to a
+/// workspace named after that directory.
+const SSH_VALUE_FLAGS: &[&str] = &[
+    "--command",
+    "--forward-ports",
+    "-L",
+    "--forward-ports-timeout",
+    "--git-ssh-signing-key",
+    "--reverse-forward-ports",
+    "-R",
+    "--send-env",
+    "--set-env",
+    "--ssh-keepalive-interval",
+    "--term-mode",
+    "--user",
+    "--workdir",
 ];
 
 /// `devpod delete` flags that take a separate value. `--force` and
-/// `--ignore-not-found` are bare, and `--grace-period` is a string, per
+/// `--ignore-not-found` are bare and `--grace-period` is a string, per
 /// `devpod delete --help` at v0.26.1.
-const DELETE_VALUE_FLAGS: &[&str] = &["--grace-period", "--context"];
+const DELETE_VALUE_FLAGS: &[&str] = &["--grace-period"];
+
+/// `devpod status` flags that take a separate value. `--container-status` is a
+/// boolean, per `devpod status --help` at v0.26.1.
+const STATUS_VALUE_FLAGS: &[&str] = &["--output", "--timeout"];
+
+/// `devpod stop` has no flags of its own at v0.26.1.
+const STOP_VALUE_FLAGS: &[&str] = &[];
 
 /// The workspaces and providers a fake devpod knows about.
 #[derive(Clone, Debug)]
@@ -260,7 +316,7 @@ impl DevpodMachine {
     }
 
     fn stop(&mut self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, &[]);
+        let (positionals, _) = split_args(args, STOP_VALUE_FLAGS);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: stop: no workspace given");
         };
@@ -315,7 +371,7 @@ impl DevpodMachine {
     }
 
     fn status(&self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, &["--output"]);
+        let (positionals, _) = split_args(args, STATUS_VALUE_FLAGS);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: status: no workspace given");
         };
@@ -341,7 +397,7 @@ impl DevpodMachine {
     }
 
     fn ssh(&mut self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, &["--command", "--user", "--context"]);
+        let (positionals, _) = split_args(args, SSH_VALUE_FLAGS);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: ssh: no workspace given");
         };
@@ -431,13 +487,18 @@ enum Flag {
 }
 
 /// The positionals and flags of one devpod subcommand's argv.
+///
+/// `value_flags` is the subcommand's own set; every subcommand's globals are
+/// added here, because real devpod inherits them everywhere.
 fn split_args(args: &[String], value_flags: &[&str]) -> (Vec<String>, BTreeMap<String, Flag>) {
     let mut positionals = Vec::new();
     let mut flags = BTreeMap::new();
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
-        if value_flags.contains(&arg.as_str()) && index + 1 < args.len() {
+        if (value_flags.contains(&arg.as_str()) || GLOBAL_VALUE_FLAGS.contains(&arg.as_str()))
+            && index + 1 < args.len()
+        {
             flags.insert(arg.clone(), Flag::Value(args[index + 1].clone()));
             index += 2;
         } else if arg.starts_with('-') {
@@ -480,5 +541,7 @@ fn derive_id(source: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod conformance;
 #[cfg(test)]
 mod tests;
