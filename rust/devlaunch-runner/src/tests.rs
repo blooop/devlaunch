@@ -470,6 +470,30 @@ fn a_session_that_times_out_is_killed_like_any_other_run() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
+/// The capture hang's shape through `session`'s one pipe: a descendant in a
+/// session of its own inherits the stderr pipe and outlives the child, so the
+/// reader thread never sees EOF. A `session` whose timeout has expired must
+/// still return — its child cannot even be group-killed, since an interactive
+/// child moved out of the foreground group takes SIGTTIN (see #301).
+#[test]
+fn a_timed_out_session_returns_even_when_a_grandchild_holds_stderr() {
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & exec sleep 30"))
+        .with_timeout(Duration::from_millis(200));
+    // On a thread with a deadline of this test's own: the defect being pinned
+    // is a hang, and a red run must fail rather than stall the suite.
+    let session = std::thread::spawn(move || ProcessRunner.session(&spec, &mut |_| {}));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !session.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "session never returned: the timeout path is waiting on a pipe a \
+             grandchild still holds"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(session.join().expect("the session thread"), Outcome::TimedOut);
+}
+
 #[test]
 fn a_session_reports_a_missing_program_too() {
     let outcome = ProcessRunner.session(
