@@ -131,6 +131,15 @@ const DRAINED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 /// these signals can run an `--autorm` removal; see README's "How you exit decides
 /// whether it fires".
 ///
+/// **A signal already ignored when `dl` started stays ignored.** `nohup dl …` and
+/// a job disowned by a non-interactive shell hand their child a SIG_IGN
+/// disposition across the `exec`, and it is meant to survive: `nohup`'s whole
+/// purpose is outliving the terminal, and a SIGHUP handler that drained and
+/// `_exit`ed would take exactly that away. The check is the classic POSIX idiom,
+/// and it is applied to all three signals rather than to SIGHUP alone because a
+/// per-signal exception is the thing that drifts. The run stays reachable by
+/// whichever signals the caller did *not* disarm.
+///
 /// It lives in the library both entry points share rather than in either `main`
 /// because `dl` and `aid` must install the *same* disposition: `aid` runs [`run`]
 /// in-process, so a signal during an `aid` launch stages and orphans exactly what a
@@ -148,9 +157,15 @@ pub fn install_signal_handlers() {
     for signal in DRAINED {
         // SAFETY: installing a handler before any thread is started. The handler
         // is `extern "C"` and does nothing but call the async-signal-safe
-        // cleanup, which does not return.
+        // cleanup, which does not return. The first call reads the inherited
+        // disposition — `signal` returns the one it replaced — and the SIG_IGN it
+        // installs to do so is the safe thing to be holding in the meantime,
+        // since the only window it widens is one in which the signal is ignored.
         unsafe {
-            libc::signal(signal, drain as *const () as libc::sighandler_t);
+            let inherited = libc::signal(signal, libc::SIG_IGN);
+            if inherited != libc::SIG_IGN {
+                libc::signal(signal, drain as *const () as libc::sighandler_t);
+            }
         }
     }
 }

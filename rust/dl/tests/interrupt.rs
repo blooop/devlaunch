@@ -295,6 +295,21 @@ fn closing_the_terminal_mid_up_removes_the_token_file_and_kills_the_up() {
     assert_eq!(MidUp::reached().signalled("HUP"), drained(129));
 }
 
+#[test]
+fn a_signal_already_ignored_when_dl_started_stays_ignored() {
+    // `nohup dl …` exists to outlive the terminal, and it says so by handing dl
+    // a SIGHUP already set to be ignored. Draining on a signal the caller
+    // deliberately disarmed would take that away, so the inherited disposition
+    // wins — and the run stays reachable by the signals that were not disarmed.
+    let mut run = MidUp::reached_with_signal_ignored("HUP");
+    run.send("HUP");
+    assert!(
+        run.survives(Duration::from_millis(500)),
+        "a SIGHUP inherited as ignored must not end the run"
+    );
+    assert_eq!(run.signalled("TERM"), drained(143));
+}
+
 /// A `--warm` world whose `devpod ssh` blocks, so an interrupt can land *during the
 /// session* rather than during the build.
 fn blocking_session() -> (tempfile::TempDir, PathBuf) {

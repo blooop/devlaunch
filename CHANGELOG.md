@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `kill` or a closed terminal now runs the same cleanup Ctrl-C does.** Only
+  SIGINT had a handler, so `kill <dl>` — a supervisor timing a run out, a CI job
+  being cancelled, a shutdown sweep — and closing the terminal window (SIGHUP)
+  both ended `dl` where it stood, leaving the staged plaintext `GH_TOKEN` file on
+  disk and the `devpod up` child orphaned: the exact pair the SIGINT handler
+  exists to prevent, and in SIGHUP's case unwatched, since the window any
+  complaint would have appeared in is the one that just went away. All three
+  signals now run the one async-signal-safe drain — kill the child's process
+  group, unlink the registered temp files, `_exit` — and the code they exit with
+  is **128 + the signal number**: 130 for Ctrl-C, 143 for a `kill`, 129 for a
+  closed terminal. A signal already set to be ignored when `dl` started stays
+  ignored, so `nohup dl …` still outlives its terminal. What still does not run
+  on any of them is the `--autorm` removal, which a signal handler may not do
+  (#304).
+
 ## [0.6.0] - 2026-08-22
 
 ### Added

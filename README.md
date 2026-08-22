@@ -237,7 +237,18 @@ that session, and either fires the removal.
 removal (a signal handler may not allocate or lock, and this one `_exit`s):
 
 - Ctrl-C during the clone or the container build, before any pty exists.
-- Closing the terminal window — SIGHUP, which `dl` does not handle at all.
+- `kill <dl>` from another shell, and a supervisor or CI runner cancelling the job.
+- Closing the terminal window.
+
+What all three *do* run is the cleanup the removal is not: the staged plaintext
+`GH_TOKEN` file is unlinked and the `devpod up` child is killed, so no signal leaves a
+credential on disk or a build running behind you. The workspace is what stays — still
+there under its name, and `dl <ws> rm` is how it goes.
+
+They are told apart by the exit code, which is **128 + the signal number**: 130 for
+Ctrl-C, 143 for a `kill`, 129 for a closed terminal. A signal you had already set to be
+ignored — `nohup dl …`, or a job disowned by a script — stays ignored, so `nohup` still
+outlives the terminal it was started from.
 
 One-line check for your own setup: start `dl <ws> --autorm` and press Ctrl-C once. A
 fresh prompt *inside* the container means Ctrl-C is being forwarded and the removal will
