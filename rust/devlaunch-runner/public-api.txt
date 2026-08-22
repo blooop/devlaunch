@@ -1,0 +1,202 @@
+pub mod devlaunch_runner
+pub mod devlaunch_runner::interrupt
+pub struct devlaunch_runner::interrupt::Registration
+impl core::fmt::Debug for devlaunch_runner::interrupt::Registration
+pub fn devlaunch_runner::interrupt::Registration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for devlaunch_runner::interrupt::Registration
+pub fn devlaunch_runner::interrupt::Registration::drop(&mut self)
+pub unsafe fn devlaunch_runner::interrupt::cleanup_and_exit(i32) -> never
+pub fn devlaunch_runner::interrupt::register_dir(&std::path::Path) -> core::option::Option<devlaunch_runner::interrupt::Registration>
+pub fn devlaunch_runner::interrupt::register_file(&std::path::Path) -> core::option::Option<devlaunch_runner::interrupt::Registration>
+pub enum devlaunch_runner::DetachOutcome
+pub devlaunch_runner::DetachOutcome::NotStarted(devlaunch_runner::OsFailure)
+pub devlaunch_runner::DetachOutcome::ProgramNotFound
+pub devlaunch_runner::DetachOutcome::Started
+pub devlaunch_runner::DetachOutcome::Started::pid: u32
+impl core::clone::Clone for devlaunch_runner::DetachOutcome
+pub fn devlaunch_runner::DetachOutcome::clone(&self) -> devlaunch_runner::DetachOutcome
+impl core::cmp::Eq for devlaunch_runner::DetachOutcome
+impl core::cmp::PartialEq for devlaunch_runner::DetachOutcome
+pub fn devlaunch_runner::DetachOutcome::eq(&self, &devlaunch_runner::DetachOutcome) -> bool
+impl core::fmt::Debug for devlaunch_runner::DetachOutcome
+pub fn devlaunch_runner::DetachOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_runner::DetachOutcome
+impl core::marker::StructuralPartialEq for devlaunch_runner::DetachOutcome
+pub enum devlaunch_runner::EnvBase
+pub devlaunch_runner::EnvBase::Empty
+pub devlaunch_runner::EnvBase::Parent
+impl core::clone::Clone for devlaunch_runner::EnvBase
+pub fn devlaunch_runner::EnvBase::clone(&self) -> devlaunch_runner::EnvBase
+impl core::cmp::Eq for devlaunch_runner::EnvBase
+impl core::cmp::PartialEq for devlaunch_runner::EnvBase
+pub fn devlaunch_runner::EnvBase::eq(&self, &devlaunch_runner::EnvBase) -> bool
+impl core::default::Default for devlaunch_runner::EnvBase
+pub fn devlaunch_runner::EnvBase::default() -> devlaunch_runner::EnvBase
+impl core::fmt::Debug for devlaunch_runner::EnvBase
+pub fn devlaunch_runner::EnvBase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_runner::EnvBase
+impl core::marker::StructuralPartialEq for devlaunch_runner::EnvBase
+pub enum devlaunch_runner::Exit
+pub devlaunch_runner::Exit::Code(i32)
+pub devlaunch_runner::Exit::Signal(i32)
+impl devlaunch_runner::Exit
+pub fn devlaunch_runner::Exit::is_success(self) -> bool
+impl core::clone::Clone for devlaunch_runner::Exit
+pub fn devlaunch_runner::Exit::clone(&self) -> devlaunch_runner::Exit
+impl core::cmp::Eq for devlaunch_runner::Exit
+impl core::cmp::PartialEq for devlaunch_runner::Exit
+pub fn devlaunch_runner::Exit::eq(&self, &devlaunch_runner::Exit) -> bool
+impl core::fmt::Debug for devlaunch_runner::Exit
+pub fn devlaunch_runner::Exit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_runner::Exit
+impl core::marker::StructuralPartialEq for devlaunch_runner::Exit
+pub enum devlaunch_runner::Outcome<T>
+pub devlaunch_runner::Outcome::NotStarted(devlaunch_runner::OsFailure)
+pub devlaunch_runner::Outcome::ProgramNotFound
+pub devlaunch_runner::Outcome::Ran
+pub devlaunch_runner::Outcome::Ran::exit: devlaunch_runner::Exit
+pub devlaunch_runner::Outcome::Ran::io: T
+pub devlaunch_runner::Outcome::TimedOut
+impl<T> devlaunch_runner::Outcome<T>
+pub fn devlaunch_runner::Outcome<T>::succeeded(&self) -> bool
+impl<T: core::clone::Clone> core::clone::Clone for devlaunch_runner::Outcome<T>
+pub fn devlaunch_runner::Outcome<T>::clone(&self) -> devlaunch_runner::Outcome<T>
+impl<T: core::cmp::Eq> core::cmp::Eq for devlaunch_runner::Outcome<T>
+impl<T: core::cmp::PartialEq> core::cmp::PartialEq for devlaunch_runner::Outcome<T>
+pub fn devlaunch_runner::Outcome<T>::eq(&self, &devlaunch_runner::Outcome<T>) -> bool
+impl<T: core::cmp::PartialEq> core::marker::StructuralPartialEq for devlaunch_runner::Outcome<T>
+impl<T: core::fmt::Debug> core::fmt::Debug for devlaunch_runner::Outcome<T>
+pub fn devlaunch_runner::Outcome<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum devlaunch_runner::StdinPlan
+pub devlaunch_runner::StdinPlan::File(std::path::PathBuf)
+pub devlaunch_runner::StdinPlan::Inherit
+pub devlaunch_runner::StdinPlan::Null
+impl core::clone::Clone for devlaunch_runner::StdinPlan
+pub fn devlaunch_runner::StdinPlan::clone(&self) -> devlaunch_runner::StdinPlan
+impl core::cmp::Eq for devlaunch_runner::StdinPlan
+impl core::cmp::PartialEq for devlaunch_runner::StdinPlan
+pub fn devlaunch_runner::StdinPlan::eq(&self, &devlaunch_runner::StdinPlan) -> bool
+impl core::default::Default for devlaunch_runner::StdinPlan
+pub fn devlaunch_runner::StdinPlan::default() -> devlaunch_runner::StdinPlan
+impl core::fmt::Debug for devlaunch_runner::StdinPlan
+pub fn devlaunch_runner::StdinPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_runner::StdinPlan
+pub struct devlaunch_runner::CapturedText
+pub devlaunch_runner::CapturedText::stderr: alloc::string::String
+pub devlaunch_runner::CapturedText::stdout: alloc::string::String
+impl core::clone::Clone for devlaunch_runner::CapturedText
+pub fn devlaunch_runner::CapturedText::clone(&self) -> devlaunch_runner::CapturedText
+impl core::cmp::Eq for devlaunch_runner::CapturedText
+impl core::cmp::PartialEq for devlaunch_runner::CapturedText
+pub fn devlaunch_runner::CapturedText::eq(&self, &devlaunch_runner::CapturedText) -> bool
+impl core::default::Default for devlaunch_runner::CapturedText
+pub fn devlaunch_runner::CapturedText::default() -> devlaunch_runner::CapturedText
+impl core::fmt::Debug for devlaunch_runner::CapturedText
+pub fn devlaunch_runner::CapturedText::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_runner::CapturedText
+pub struct devlaunch_runner::EnvSpec
+pub devlaunch_runner::EnvSpec::base: devlaunch_runner::EnvBase
+pub devlaunch_runner::EnvSpec::entries: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl devlaunch_runner::EnvSpec
+pub fn devlaunch_runner::EnvSpec::and(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn devlaunch_runner::EnvSpec::empty() -> Self
+pub fn devlaunch_runner::EnvSpec::inherited() -> Self
+impl core::clone::Clone for devlaunch_runner::EnvSpec
+pub fn devlaunch_runner::EnvSpec::clone(&self) -> devlaunch_runner::EnvSpec
+impl core::cmp::Eq for devlaunch_runner::EnvSpec
+impl core::cmp::PartialEq for devlaunch_runner::EnvSpec
+pub fn devlaunch_runner::EnvSpec::eq(&self, &devlaunch_runner::EnvSpec) -> bool
+impl core::default::Default for devlaunch_runner::EnvSpec
+pub fn devlaunch_runner::EnvSpec::default() -> devlaunch_runner::EnvSpec
+impl core::fmt::Debug for devlaunch_runner::EnvSpec
+pub fn devlaunch_runner::EnvSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_runner::EnvSpec
+pub struct devlaunch_runner::Invocation
+pub devlaunch_runner::Invocation::args: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_runner::Invocation::cwd: core::option::Option<std::path::PathBuf>
+pub devlaunch_runner::Invocation::env: devlaunch_runner::EnvSpec
+pub devlaunch_runner::Invocation::program: alloc::string::String
+impl devlaunch_runner::Invocation
+pub fn devlaunch_runner::Invocation::argv(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn devlaunch_runner::Invocation::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn devlaunch_runner::Invocation::with_arg(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn devlaunch_runner::Invocation::with_args<I, S>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::Into<alloc::string::String>
+pub fn devlaunch_runner::Invocation::with_cwd(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_runner::Invocation::with_env(self, devlaunch_runner::EnvSpec) -> Self
+pub fn devlaunch_runner::Invocation::with_var(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for devlaunch_runner::Invocation
+pub fn devlaunch_runner::Invocation::clone(&self) -> devlaunch_runner::Invocation
+impl core::cmp::Eq for devlaunch_runner::Invocation
+impl core::cmp::PartialEq for devlaunch_runner::Invocation
+pub fn devlaunch_runner::Invocation::eq(&self, &devlaunch_runner::Invocation) -> bool
+impl core::convert::From<devlaunch_runner::Invocation> for devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::from(devlaunch_runner::Invocation) -> Self
+impl core::default::Default for devlaunch_runner::Invocation
+pub fn devlaunch_runner::Invocation::default() -> devlaunch_runner::Invocation
+impl core::fmt::Debug for devlaunch_runner::Invocation
+pub fn devlaunch_runner::Invocation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_runner::Invocation
+pub struct devlaunch_runner::OsFailure
+pub devlaunch_runner::OsFailure::errno: core::option::Option<i32>
+pub devlaunch_runner::OsFailure::kind: core::io::error::ErrorKind
+impl core::clone::Clone for devlaunch_runner::OsFailure
+pub fn devlaunch_runner::OsFailure::clone(&self) -> devlaunch_runner::OsFailure
+impl core::cmp::Eq for devlaunch_runner::OsFailure
+impl core::cmp::PartialEq for devlaunch_runner::OsFailure
+pub fn devlaunch_runner::OsFailure::eq(&self, &devlaunch_runner::OsFailure) -> bool
+impl core::convert::From<&core::io::error::Error> for devlaunch_runner::OsFailure
+pub fn devlaunch_runner::OsFailure::from(&core::io::error::Error) -> Self
+impl core::fmt::Debug for devlaunch_runner::OsFailure
+pub fn devlaunch_runner::OsFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_runner::OsFailure
+impl core::marker::StructuralPartialEq for devlaunch_runner::OsFailure
+pub struct devlaunch_runner::ProcessRunner
+impl devlaunch_runner::ProcessRunner
+pub fn devlaunch_runner::ProcessRunner::new() -> Self
+impl core::clone::Clone for devlaunch_runner::ProcessRunner
+pub fn devlaunch_runner::ProcessRunner::clone(&self) -> devlaunch_runner::ProcessRunner
+impl core::default::Default for devlaunch_runner::ProcessRunner
+pub fn devlaunch_runner::ProcessRunner::default() -> devlaunch_runner::ProcessRunner
+impl core::fmt::Debug for devlaunch_runner::ProcessRunner
+pub fn devlaunch_runner::ProcessRunner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_runner::ProcessRunner
+impl devlaunch_runner::Runner for devlaunch_runner::ProcessRunner
+pub fn devlaunch_runner::ProcessRunner::capture(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome<devlaunch_runner::CapturedText>
+pub fn devlaunch_runner::ProcessRunner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
+pub fn devlaunch_runner::ProcessRunner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::ProcessRunner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub struct devlaunch_runner::SpawnSpec
+pub devlaunch_runner::SpawnSpec::invocation: devlaunch_runner::Invocation
+pub devlaunch_runner::SpawnSpec::own_group: bool
+pub devlaunch_runner::SpawnSpec::stdin: devlaunch_runner::StdinPlan
+pub devlaunch_runner::SpawnSpec::timeout: core::option::Option<core::time::Duration>
+impl devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::args(&self) -> &[alloc::string::String]
+pub fn devlaunch_runner::SpawnSpec::leading_its_own_group(self) -> Self
+pub fn devlaunch_runner::SpawnSpec::new(devlaunch_runner::Invocation) -> Self
+pub fn devlaunch_runner::SpawnSpec::program(&self) -> &str
+pub fn devlaunch_runner::SpawnSpec::with_stdin_file(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_runner::SpawnSpec::with_stdin_null(self) -> Self
+pub fn devlaunch_runner::SpawnSpec::with_timeout(self, core::time::Duration) -> Self
+impl core::clone::Clone for devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::clone(&self) -> devlaunch_runner::SpawnSpec
+impl core::cmp::Eq for devlaunch_runner::SpawnSpec
+impl core::cmp::PartialEq for devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::eq(&self, &devlaunch_runner::SpawnSpec) -> bool
+impl core::convert::From<devlaunch_runner::Invocation> for devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::from(devlaunch_runner::Invocation) -> Self
+impl core::default::Default for devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::default() -> devlaunch_runner::SpawnSpec
+impl core::fmt::Debug for devlaunch_runner::SpawnSpec
+pub fn devlaunch_runner::SpawnSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_runner::SpawnSpec
+pub trait devlaunch_runner::Runner
+pub fn devlaunch_runner::Runner::capture(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome<devlaunch_runner::CapturedText>
+pub fn devlaunch_runner::Runner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
+pub fn devlaunch_runner::Runner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::Runner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+impl devlaunch_runner::Runner for devlaunch_runner::ProcessRunner
+pub fn devlaunch_runner::ProcessRunner::capture(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome<devlaunch_runner::CapturedText>
+pub fn devlaunch_runner::ProcessRunner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
+pub fn devlaunch_runner::ProcessRunner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::ProcessRunner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome

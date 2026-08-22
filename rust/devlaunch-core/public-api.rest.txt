@@ -1,14 +1,4 @@
 pub mod devlaunch_core
-pub mod devlaunch_core::api
-pub enum devlaunch_core::api::LaunchVerb
-pub devlaunch_core::api::LaunchVerb::Attach
-pub devlaunch_core::api::LaunchVerb::Attach::command: core::option::Option<alloc::string::String>
-pub devlaunch_core::api::LaunchVerb::Code
-pub devlaunch_core::api::LaunchVerb::Dotfiles
-pub devlaunch_core::api::LaunchVerb::Recreate
-pub devlaunch_core::api::LaunchVerb::Reset
-pub devlaunch_core::api::LaunchVerb::Restart
-pub devlaunch_core::api::LaunchVerb::Up
 impl core::clone::Clone for devlaunch_core::flows::launch::LaunchVerb
 pub fn devlaunch_core::flows::launch::LaunchVerb::clone(&self) -> devlaunch_core::flows::launch::LaunchVerb
 impl core::cmp::Eq for devlaunch_core::flows::launch::LaunchVerb
@@ -17,11 +7,6 @@ pub fn devlaunch_core::flows::launch::LaunchVerb::eq(&self, &devlaunch_core::flo
 impl core::fmt::Debug for devlaunch_core::flows::launch::LaunchVerb
 pub fn devlaunch_core::flows::launch::LaunchVerb::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::LaunchVerb
-pub enum devlaunch_core::api::SpecIdentity<'a>
-pub devlaunch_core::api::SpecIdentity::ExistingName(&'a str)
-pub devlaunch_core::api::SpecIdentity::PathLeaf(&'a str)
-pub devlaunch_core::api::SpecIdentity::RepoLabel(alloc::string::String)
-pub devlaunch_core::api::SpecIdentity::Workspace(alloc::string::String)
 impl<'a> core::clone::Clone for devlaunch_core::domain::spec::SpecIdentity<'a>
 pub fn devlaunch_core::domain::spec::SpecIdentity<'a>::clone(&self) -> devlaunch_core::domain::spec::SpecIdentity<'a>
 impl<'a> core::cmp::Eq for devlaunch_core::domain::spec::SpecIdentity<'a>
@@ -30,16 +15,6 @@ pub fn devlaunch_core::domain::spec::SpecIdentity<'a>::eq(&self, &devlaunch_core
 impl<'a> core::fmt::Debug for devlaunch_core::domain::spec::SpecIdentity<'a>
 pub fn devlaunch_core::domain::spec::SpecIdentity<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::StructuralPartialEq for devlaunch_core::domain::spec::SpecIdentity<'a>
-pub enum devlaunch_core::api::WorkspaceSpec<'a>
-pub devlaunch_core::api::WorkspaceSpec::ExistingIdOrName(&'a str)
-pub devlaunch_core::api::WorkspaceSpec::HostPath(&'a str)
-pub devlaunch_core::api::WorkspaceSpec::OwnerRepo
-pub devlaunch_core::api::WorkspaceSpec::OwnerRepo::branch: core::option::Option<&'a str>
-pub devlaunch_core::api::WorkspaceSpec::OwnerRepo::owner: &'a str
-pub devlaunch_core::api::WorkspaceSpec::OwnerRepo::repo: &'a str
-pub devlaunch_core::api::WorkspaceSpec::Path(&'a str)
-pub devlaunch_core::api::WorkspaceSpec::SshUrl(&'a str)
-pub devlaunch_core::api::WorkspaceSpec::Url(&'a str)
 impl<'a> core::clone::Clone for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 pub fn devlaunch_core::domain::spec::WorkspaceSpec<'a>::clone(&self) -> devlaunch_core::domain::spec::WorkspaceSpec<'a>
 impl<'a> core::cmp::Eq for devlaunch_core::domain::spec::WorkspaceSpec<'a>
@@ -49,12 +24,10 @@ impl<'a> core::fmt::Debug for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 pub fn devlaunch_core::domain::spec::WorkspaceSpec<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Copy for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 impl<'a> core::marker::StructuralPartialEq for devlaunch_core::domain::spec::WorkspaceSpec<'a>
-pub struct devlaunch_core::api::CommandContext<'r>
 impl<'r> devlaunch_core::flows::listing::CommandContext<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::git(&self) -> devlaunch_core::clients::git::Git<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::new(&'r dyn devlaunch_runner::Runner) -> Self
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::workspaces(&mut self) -> core::result::Result<alloc::vec::Vec<devlaunch_core::clients::devpod::Workspace>, devlaunch_core::clients::devpod::ListingUnreadable>
-pub struct devlaunch_core::api::DevcontainerPath(_)
 impl devlaunch_core::domain::spec::DevcontainerPath
 pub fn devlaunch_core::domain::spec::DevcontainerPath::as_str(&self) -> &str
 impl core::clone::Clone for devlaunch_core::domain::spec::DevcontainerPath
@@ -65,19 +38,9 @@ pub fn devlaunch_core::domain::spec::DevcontainerPath::eq(&self, &devlaunch_core
 impl core::fmt::Debug for devlaunch_core::domain::spec::DevcontainerPath
 pub fn devlaunch_core::domain::spec::DevcontainerPath::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::spec::DevcontainerPath
-pub struct devlaunch_core::api::Launch<'a, 'r, 'l>
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
-pub const devlaunch_core::api::HANDOFF_VAR: &str
-pub const devlaunch_core::api::PREWARM_VAR: &str
-pub fn devlaunch_core::api::enriched_listing(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::listing::DlView<'_>, devlaunch_core::flows::listing::Sizes) -> core::result::Result<alloc::vec::Vec<devlaunch_core::flows::listing::ListedWorkspace>, devlaunch_core::clients::devpod::ListingUnreadable>
-pub fn devlaunch_core::api::identity(&str) -> core::result::Result<devlaunch_core::domain::spec::SpecIdentity<'_>, devlaunch_core::domain::workspace_id::UnsafeName>
-pub fn devlaunch_core::api::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
-pub fn devlaunch_core::api::parse(&str) -> devlaunch_core::domain::spec::WorkspaceSpec<'_>
-pub fn devlaunch_core::api::resolve_devcontainer_ref(&str) -> core::result::Result<devlaunch_core::domain::spec::DevcontainerPath, devlaunch_core::domain::spec::DevcontainerRefError>
-pub fn devlaunch_core::api::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&std::path::Path>, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
-pub fn devlaunch_core::api::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::clients
 pub mod devlaunch_core::clients::devpod
 pub enum devlaunch_core::clients::devpod::ContainerState
