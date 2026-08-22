@@ -162,6 +162,20 @@ def config_dir_mount(mounts: list) -> dict:
     )
 
 
+def test_every_mount_is_a_bind_of_a_host_path(mounts):
+    """Each entry binds a real host path, rather than a volume of its own.
+
+    A `type=volume` entry at the same target would leave the container with a
+    plausible-looking, empty configuration and no connection to the host at all,
+    which is a mount list that passes every other test in this file: the source
+    still names a directory that exists, and the read-only flags still line up
+    with the README.
+    """
+    assert mounts, "the feature mounts nothing"
+    for mount in mounts:
+        assert mount.get("type") == "bind", f"{mount.get('target')} is not a bind mount"
+
+
 def test_every_mount_source_is_a_directory(mounts, host_config):
     """No mount names a file, whatever flags it would carry.
 
