@@ -82,9 +82,7 @@ def bench_step_commands(name_fragment: str) -> str:
     runs X" has to read the commands rather than the paragraph above them.
     """
     return "\n".join(
-        line
-        for line in bench_step(name_fragment).splitlines()
-        if not line.lstrip().startswith("#")
+        line for line in bench_step(name_fragment).splitlines() if not line.lstrip().startswith("#")
     )
 
 
