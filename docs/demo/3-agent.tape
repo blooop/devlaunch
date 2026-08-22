@@ -33,7 +33,8 @@ Type "add a --json flag to the timing output"
 Sleep 2s
 Enter
 
-# Attach, then the agent's screen. The window between it painting and the model
-# writing its first line is about two seconds, so this is timed to land inside
-# it -- check the tail of the GIF when you re-record.
-Sleep 8s
+# Attach, then the agent's screen. It paints about four seconds after Enter and
+# the transcript starts scrolling a couple of seconds later, taking the banner
+# with it; this is timed to end while the banner is still whole. Check the last
+# frame when you re-record -- attach time is what moves.
+Sleep 6500ms

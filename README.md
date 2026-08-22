@@ -29,9 +29,7 @@ pixi global install --channel conda-forge --channel https://prefix.dev/blooop de
 
 ### 1. Name a repo, land in a shell inside it
 
-<!-- Recorded by docs/demo/1-launch.tape -- `pixi run demo`, which also uncomments this:
 ![Launching a workspace](docs/demo/1-launch.gif)
--->
 
 ```bash
 dl blooop/devlaunch
@@ -47,18 +45,17 @@ Exit the shell and the container keeps running; nothing is lost between visits.
 
 ### 2. A branch is a container, not a checkout
 
-<!-- Recorded by docs/demo/2-branches.tape -- `pixi run demo`, which also uncomments this:
 ![Two branches, two containers](docs/demo/2-branches.gif)
--->
 
 ```bash
 dl blooop/devlaunch@fix/42
 ```
 
 That is a *second* container for the same repo, with its own checkout on that branch, running
-beside the first. The branch does not have to exist yet — `dl` makes one if it cannot find it. Two branches never share a working tree, an installed dependency set or a running
-service, so a half-finished experiment on one branch cannot break a review on another and you never
-stash anything to switch.
+beside the first, and the branch does not have to exist yet — `dl` makes one if it cannot find it.
+Two branches never share a working tree, an installed dependency set or a running service, so a
+half-finished experiment on one branch cannot break a review on another and you never stash
+anything to switch.
 
 Run `dl` with no arguments and a fuzzy selector opens over everything you have:
 
@@ -70,9 +67,7 @@ Nothing to install for it — no `fzf` on `PATH`, no plugin. Type to filter, Ent
 
 ### 3. An agent instead of a shell
 
-<!-- Recorded by docs/demo/3-agent.tape -- `pixi run demo`, which also uncomments this:
 ![Starting a coding agent](docs/demo/3-agent.gif)
--->
 
 ```bash
 aid blooop/devlaunch@fix/42
@@ -91,9 +86,7 @@ reasonable to let it work without a permission prompt per tool. See
 
 ### 4. Clearing them out
 
-<!-- Recorded by docs/demo/4-cleanup.tape -- `pixi run demo`, which also uncomments this:
 ![Deleting workspaces from the selector](docs/demo/4-cleanup.gif)
--->
 
 ```bash
 dl rm
@@ -111,10 +104,10 @@ Anything else is a verb in that same second position:
 dl blooop/devlaunch code         # open the container in VS Code
 dl blooop/devlaunch stop         # free its memory, keep its disk
 dl blooop/devlaunch rm           # delete the workspace
-dl blooop/devlaunch --autorm     # a shell that deletes the workspace when you leave
+dl blooop/devlaunch --rm         # a shell that deletes the workspace when you leave
 ```
 
-Each of those opens the selector when you leave the workspace out. The full list is in
+The verbs open the selector when you leave the workspace out. The full list is in
 [Workspace Commands](#workspace-commands).
 
 **Next:** [Usage](#usage) for the whole grammar · [Installation](#installation) if pixi is not how

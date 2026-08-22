@@ -65,8 +65,8 @@ Sleep 2500ms
 # `no_sort` (rust/dl/src/select.rs), so it filters but never re-ranks: if both
 # rows survive the query, Enter takes the cursor's, and the cursor is on the
 # workspace you just left -- devpod lists most-recently-used first. `main`
-# narrows to one here because a row is `owner | id` and nothing in
-# `blooop | devlaunch-fix-42-...` spells m-a-i-n.
+# narrows to one here because a row is `owner | repo | ref`, and there is no m
+# in `blooop | devlaunch | fix/42` for the match to start on.
 Type "main"
 Sleep 1800ms
 Enter
