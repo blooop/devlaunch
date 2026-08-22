@@ -1068,9 +1068,10 @@ the 64-byte hostname limit on its own, but tools that stack their own prefixes o
 container name have about 17 characters to work with, so a tool that wants more is the
 one that has to shorten.
 
-The id is *not* what you read on a tab. That shows `owner/repo@branch` — see [Naming
-the terminal after the workspace](#naming-the-terminal-after-the-workspace). The id
-addresses the workspace; the spec names it.
+The id is *not* what you read. A tab shows `owner/repo@branch` — see [Naming the
+terminal after the workspace](#naming-the-terminal-after-the-workspace) — and the
+selector shows `owner | repo | branch`. The id addresses the workspace; those name
+it.
 
 Branch names must be safe as both git refs and directory names — a name with a space or
 a leading dash is rejected rather than quietly rewritten.
