@@ -1099,18 +1099,7 @@ fn render_select<'r>(
     } else {
         select::Arity::One
     };
-    // Said before the picker takes the screen, as Python says it: it is the only
-    // thing that explains what the rows are — and, for a verb that takes several,
-    // the only place TAB is discoverable.
-    if !workspaces.is_empty() {
-        match arity {
-            select::Arity::One => println!("Select workspace (type to filter):"),
-            select::Arity::Several => {
-                println!("Select workspaces (type to filter, TAB to mark several):");
-            }
-        }
-    }
-    match select::pick(&workspaces, arity) {
+    match select::pick(&workspaces, arity, cache) {
         select::Pick::Chose(workspace_ids) => {
             let mut ending = Ending::Done;
             for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
@@ -1137,13 +1126,21 @@ fn render_select<'r>(
             }
             ending
         }
+        // Nothing to say: a user who quit the picker watched themselves do it, and
+        // read the invitation on the way past.
+        select::Pick::Quit => no_pick(),
         select::Pick::NoWorkspaces => {
             eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
             no_pick()
         }
-        // Nothing to add for either: a user who quit the picker knows they did, and
-        // a run with no terminal is one no message on that terminal would reach.
-        select::Pick::Quit | select::Pick::NoTerminal => no_pick(),
+        // The one run that needs the invitation on stdout. No terminal means no
+        // picker was drawn, so its header was never drawn either, and stdout is the
+        // only surface left — the one case where printing the line is not writing it
+        // under a screen that is about to cover it.
+        select::Pick::NoTerminal => {
+            println!("{}", select::invitation(arity));
+            no_pick()
+        }
     }
 }
 

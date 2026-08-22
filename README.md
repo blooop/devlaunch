@@ -83,14 +83,16 @@ dl <user/repo> -- <command>      # Run shell command in workspace
 
 The selector is built in — no `fzf` on `PATH` and no `iterfzf`, which is why there is nothing to
 install for it and why `dl` with its input redirected away from a terminal simply declines to open
-one. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
+one. It draws the search bar on the top line with the matches reading downward from it, so the
+first match is the row nearest what you are typing. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
 stop something, it does not look for a workspace called `stop`.
 
 For the verbs that finish on their own — `up`, `stop`, `rm`, `code` and `dotfiles` — the selector
 takes more than one row: TAB marks any number and Enter applies the verb to each in turn, so
-`dl rm` can clear five dead workspaces in one visit. The forms that end in an interactive session
-(`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several of those
-would just be sessions queued behind each other's exit.
+`dl rm` can clear five dead workspaces in one visit. The selector says so on its own screen: the
+line above the matches names what it will take, TAB included. The forms that end in an interactive
+session (`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several
+of those would just be sessions queued behind each other's exit.
 
 ### Examples
 
@@ -478,6 +480,87 @@ Both variables read the same values: anything but empty, `0`, `false` or `no` me
 yes, turn it off. And neither touches the hostname stage — a host that wants no
 zellij has not thereby asked for unnamed containers.
 
+## Naming the terminal after the workspace
+
+Every launch writes the workspace id to the terminal as its title, just before the
+session takes over:
+
+```
+ESC ] 2 ; devlaunch-main-zovomobo BEL
+```
+
+That is one escape sequence to whichever stream dl was given, and the point of
+doing it that way is that dl does not have to know what is reading it. zellij and
+tmux both take OSC 2 as the focused pane's title, and a bare terminal takes it as
+the window title — so `dl` names the pane in zellij, in byobu-on-tmux, and in a
+plain kitty or xterm window, with one write and no detection.
+
+It is on unless you turn it off:
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_TITLE=1` | Do not write a terminal title. Everything else about the launch is unchanged |
+
+A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are not
+the same size of decision. That one installs a session into a container; this one
+writes an escape sequence that the next shell prompt overwrites anyway.
+
+**It is the workspace id, not the spec you typed.** The id is the only string that
+is always available and always bounded: every launch has one — a triple, a bare
+name, a path, a URL — whereas `owner/repo` still has its branch unresolved at that
+point and `./some/dir` is not a spec at all. It is also already the container's
+hostname — so the title dl writes and the `user@host` an interactive prompt paints
+over it agree instead of disagreeing.
+
+It stays short enough for a tab bar, but not by anything dl does: only a
+`owner/repo@branch` launch gets its id from the 47-character derivation under
+[Workspace IDs](#workspace-ids). A bare workspace name or a `./path` arrives as
+what you typed, and what keeps *those* short is devpod, which refuses to create or
+report a workspace whose name runs past 48 characters — so a longer one ends the
+launch before there is a session to name.
+
+**Written to stderr, and only when stderr is a terminal.** stdout belongs to the
+completion machinery and to `wf`, which parse it. The tty check is on stderr for
+the same reason: `dl <ws> -- make test > log` has redirected stdout and still has a
+terminal worth naming, while a run whose stderr is a pipe would only be writing
+escapes into somebody else's capture.
+
+### What overwrites it, and the one case worth knowing
+
+A terminal title has exactly one value and the last writer sets it, so anything in
+the session that writes its own title wins. Two do, routinely:
+
+- **An interactive shell's prompt.** Ubuntu's stock `~/.bashrc` puts
+  `\e]0;\u@\h: \w\a` in `PS1`, so `dl someone/repo` shows the workspace name until
+  the first prompt renders and `vscode@devlaunch-main-zovomobo: ~/repo` after it.
+  Nothing is lost — that string is the container's hostname, which is the same
+  workspace id — so this case is already labelled and dl does not fight it.
+- **claude.** It writes the title continuously from its own read of what the
+  session is doing, which would leave a `dl <ws> -- claude` pane named after the
+  task rather than the workspace within a second. `aid` therefore starts claude
+  with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, so the workspace name is what
+  stands. What claude is doing is on screen inside the pane; which workspace the
+  pane *is* is not otherwise anywhere.
+
+  This is `aid`'s doing and not `dl`'s: a `dl <ws> -- claude ...` you typed
+  yourself is your command, and dl does not rewrite it. Set the variable yourself
+  if you want the same result from the long form.
+
+Two multiplexer limits are worth stating, because neither is dl's to fix:
+
+- **In tmux the *window* name needs `allow-rename on`** (off by default in recent
+  tmux), and the outer terminal title needs `set-titles on`. The pane title always
+  takes it. Both are your tmux config.
+- **GNU screen** — byobu's other backend — names windows with `ESC k <name> ESC \`
+  and ignores OSC 2. Emitting both sequences would put stray text in any terminal
+  that groks neither, so screen is out of scope rather than half-served.
+
+**zellij tab names are not this.** A zellij *tab* is renamed only by `zellij
+action rename-tab` or a plugin; no escape sequence reaches it, which is why this
+names the pane instead. The window title zellij then publishes to the outer
+terminal is `<session> | <pane title>`, so the workspace id is what shows up in a
+kitty tab bar.
+
 ## Agent state in a herdr session
 
 [herdr](https://herdr.dev) is a terminal multiplexer that shows, per pane, whether
@@ -487,10 +570,9 @@ herdr decides which agent a pane holds from the pane's foreground process, and
 under `aid` the host's process tree is `aid → dl → ssh` with the agent inside the
 container. There is no `claude` on the host to find.
 
-Nothing else about the hop is broken — the pane's screen bytes and its terminal
-title arrive intact, and herdr's own state rules match against them correctly *once
-it believes an agent is there*. So `dl` supplies the one missing fact and herdr
-does the rest:
+Nothing else about the hop is broken — the pane's screen bytes arrive intact, and
+herdr's own screen rules match against them correctly *once it believes an agent is
+there*. So `dl` supplies the missing fact and herdr does the rest:
 
 ```bash
 aid blooop/devlaunch@fix/42 fix the flaky test   # in a herdr pane; the badge appears
@@ -507,6 +589,14 @@ Three things make that work, and all three are automatic:
 `Notification` is the event that earns the feature: it is what claude fires when it
 is waiting for a human, which is the one state a fleet of workspaces exists to
 surface.
+
+This pairs with [the terminal title](#naming-the-terminal-after-the-workspace)
+rather than competing with it. herdr can classify state from a title as well as
+from the screen, and `aid` deliberately suppresses claude's own title so the
+workspace id is what stands — so under `aid` the title is never the state signal,
+which is exactly why the state comes from the hook. What you get is both halves
+naming different things: the badge says what the agent is doing, and the pane name
+says which workspace it is doing it in.
 
 ### What it costs, and when it does nothing
 
@@ -812,6 +902,7 @@ accounting, and the internals worth knowing when something surprises you.*
 | `--devcontainer <variant\|path>` | Use a non-default `devcontainer.json`. A bare name means `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so pass it once. |
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal; always use the plain `devpod ssh` transport. |
 | `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before handing over an interactive shell. Off by default; see below. |
+| `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace. On by default; see [Naming the terminal](#naming-the-terminal-after-the-workspace). |
 
 Projects with demanding devcontainers — several variants, compose sidecars, or a
 host-side `initializeCommand` that has to tell branch workspaces apart — are

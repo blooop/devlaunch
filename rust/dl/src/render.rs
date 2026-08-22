@@ -1700,6 +1700,14 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
+        // --- the terminal title (no level at all: not a sentence)
+        //
+        // The one notice with no line. What it carries is an escape sequence, so
+        // rendering it as one would put its bytes into `--prune`'s collected
+        // report and into every test that asserts on a launch's sentences.
+        // `Saying` writes it instead, which is the only sink that should.
+        LaunchNotice::TerminalTitle(_) => return None,
+
         // --- passed through from the layers below, in those modules' own words
         LaunchNotice::Cache(cache) => return cache_notice(cache),
         LaunchNotice::Lifecycle(notice) => return lifecycle_notice(notice),
@@ -1723,6 +1731,21 @@ pub(crate) struct Saying;
 
 impl Notices<LaunchNotice> for Saying {
     fn say(&mut self, notice: LaunchNotice) {
+        // The terminal title before the line check, because it is the one notice
+        // `launch_notice` has no line for and this is the sink that owes it its
+        // bytes. Written raw: no newline, since an OSC sequence is not a line,
+        // and flushed, because the next thing to touch this terminal is a session
+        // that may hold it for hours -- an unflushed title is a title that
+        // arrives when the work is over.
+        if let LaunchNotice::TerminalTitle(title) = &notice {
+            if let Some(osc) = title.osc() {
+                use std::io::Write as _;
+                let mut stderr = io::stderr();
+                let _ = stderr.write_all(osc.as_bytes());
+                let _ = stderr.flush();
+            }
+            return;
+        }
         if let Some(line) = launch_notice(&notice) {
             eprintln!("{line}");
         }
@@ -2280,6 +2303,7 @@ mod tests {
     use std::path::PathBuf;
 
     use devlaunch_core::flows::disk_usage::DiskUsage;
+    use devlaunch_core::flows::launch::TerminalTitle;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
@@ -2648,6 +2672,35 @@ mod tests {
                 exit: Exit::Code(9)
             }),
             None
+        );
+    }
+
+    #[test]
+    fn the_terminal_title_is_the_one_notice_with_no_line() {
+        // Not a debug line -- a notice that is not a sentence at all. Rendering it
+        // as one would put an escape sequence into `launch_notices`, which is what
+        // fills a collected report and what the tests that assert on a launch's
+        // words read. `Saying` is the only sink that may write these bytes.
+        assert_eq!(
+            launch_notice(&LaunchNotice::TerminalTitle(TerminalTitle::Write(
+                "\x1b]2;myws\x07".to_owned()
+            ))),
+            None
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::TerminalTitle(TerminalTitle::Off)),
+            None
+        );
+        assert!(
+            launch_notices(&[
+                LaunchNotice::TerminalTitle(TerminalTitle::Write("\x1b]2;myws\x07".to_owned())),
+                LaunchNotice::WaitingForSiblingLaunch {
+                    workspace_id: "ws".to_owned(),
+                },
+            ])
+            .iter()
+            .all(|line| !line.contains('\x1b')),
+            "no escape reaches a collected report"
         );
     }
 

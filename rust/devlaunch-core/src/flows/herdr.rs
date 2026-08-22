@@ -9,12 +9,18 @@
 //! on the host can see it. herdr registers no agent for the pane and shows no
 //! state.
 //!
-//! What it is *not* is a rendering problem. The pane's screen bytes and its OSC
-//! title cross the ssh hop intact — herdr's own state rules match against them
-//! correctly once it believes an agent is there — so everything needed to classify
-//! the state already arrives. Only the identification is missing, and herdr takes
-//! an answer for that over its socket: `pane.report_agent` names the pane, the
-//! agent and the state, and holds until released.
+//! What it is *not* is a rendering problem. The pane's screen bytes cross the ssh
+//! hop intact — herdr's own screen rules match against them correctly once it
+//! believes an agent is there — so what is missing is the identification, and herdr
+//! takes an answer for that over its socket: `pane.report_agent` names the pane,
+//! the agent and the state, and holds until released.
+//!
+//! herdr's other state signal, the OSC title, is not available here and that is
+//! deliberate rather than a loss: `aid` starts claude with
+//! `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` so the workspace id
+//! [`crate::flows::launch`] writes is the name that stands. Under `aid` the title
+//! names the workspace and the hook reports the state, which is why the two do not
+//! contend for one signal.
 //!
 //! So this module carries three things across the boundary and nothing else:
 //!

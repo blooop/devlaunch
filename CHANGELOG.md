@@ -7,6 +7,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-22
+
+### Fixed
+
+- **The selector's invitation is drawn inside the picker, so TAB is discoverable
+  at last.** The line that says what the rows are — and, for `dl rm`, `dl stop`,
+  `dl up`, `dl code` and `dl dotfiles`, the only thing that says TAB marks several
+  — was printed to stdout immediately before the picker opened. skim's first act is
+  to switch to the alternate screen, which replaces the visible screen wholesale, so
+  that sentence was gone for the entire time the picker was up and came back only
+  once it had exited. Multi-select had shipped in every release since 0.6.0 with its
+  one piece of documentation on a screen nobody could see while choosing.
+
+  It is now skim's sticky header, which the picker draws itself, directly above the
+  matches and below the search bar. Wording is unchanged. stdout keeps the line only
+  for the run that has no picker to put it on — no terminal, so no header either,
+  and stdout is the only surface left; on a terminal the sentence is shown once, in
+  the one place it can be read.
+
+  Proved on a pty, not in the options: the test runs `dl` on a real terminal and
+  reads the screen back, which is the only seam that can tell an option that is
+  spelled right from one that draws something. It pins both halves — the sentence
+  is on the picker's screen, and it is not on the screen the picker covers — so the
+  redundant print cannot come back unnoticed.
+
+## [0.7.2] - 2026-08-22
+
+### Fixed
+
+- **Changing your Claude account on the host reaches the containers again.** The
+  `claude-code` feature mounted `~/.claude` a path at a time, and four of those
+  paths were *files*. A bind mount of a file is attached to the dentry, so when
+  the host replaces it by rename — which is what Claude does on every token
+  refresh, and on an account switch — the mount is left pointing at an inode with
+  no name. The container reads it happily and forever, which is why nothing
+  reported it as broken: a workspace created before the switch went on
+  authenticating as the account you had left, and each one froze at a different
+  moment, so three running containers held three different credentials files and
+  none of them held the host's.
+
+  `~/.claude` is now mounted as the directory, read-write, and a directory mount
+  resolves names on each access — so it follows the rename and the container
+  reads what the host has. `.credentials.json` and `.claude.json` have no mount
+  of their own any more; they are reached through it.
+
+- **The read-only mounts over `CLAUDE.md` and `settings.json` are gone, because
+  they were not read-only.** The same rename removes a nested file mount from the
+  namespace entirely, and the path then falls through to whatever the parent
+  provides. Measured on Docker, both ways round, since the direction of the
+  failure follows the parent and neither direction is safe: under a read-write
+  parent the file ends up **writable**, so a protection the manifest still
+  advertises is silently gone from the first host edit onwards, and under a
+  read-only parent a read-write file mount ends up **read-only**, so a token
+  refresh fails.
+
+  A mount of a *directory* survives the same rename with its flags intact, so the
+  read-only list is now exactly the five instruction directories — `agents/`,
+  `commands/`, `hooks/`, `skills/`, `wf-skills/` — and every source in the
+  manifest is a directory. A test asserts that rather than asserting the paths,
+  because the tempting change is to protect the two files by naming them again,
+  which passes review, appears in `docker inspect`, and stops being true on the
+  next edit.
+
+  The cost is stated where it is met rather than buried: `CLAUDE.md` and
+  `settings.json` are writable from the container, and `settings.json` can name
+  hook commands inline, so this is a real hole. It is the same hole the previous
+  layout had after one edit, minus the claim that it was closed.
+
+- **The pre-create hook no longer seeds empty files.** With nothing mounted a
+  file at a time, a missing `.credentials.json` can no longer refuse the create,
+  and Claude writes each of these itself on first use. An empty `{}` credentials
+  file on a host that has never run Claude is indistinguishable from a logged-out
+  session, and existed only to satisfy a bind source that is gone. The stale-mount
+  heal stays, for containers built by the older layout that are still running.
+## [0.7.1] - 2026-08-22
+
+### Changed
+
+- **The fuzzy selector's columns are the owner and the workspace id.** The picker
+  drew `id | local | /a/long/path`, and both of the columns that have gone were
+  answering a question nobody standing at the picker is asking: the middle one
+  reads `local` for every workspace `dl` makes, since `dl` always hands devpod a
+  path, and the last is the clone directory `dl` chose and manages — whose own
+  last component is already the id beside it.
+
+  What an id cannot say is whose repository it is. An id is
+  `<repo-slug>-<ref-slug>-<suffix>`, so it carries the repo and no owner, and a
+  fork and its upstream are two rows spelled the same. The owner column is
+  derived from the source devpod already reported — a git URL's owner, or `dl`'s
+  own clone layout read backwards — and never from `metadata.json`, which records
+  the owner outright but is a file a warm launch must be able to prove it never
+  opened.
+
+  This is a search change as much as a display one: the row text is what the
+  fuzzy matcher matches, so typing an owner now narrows the list, which no
+  arrangement of the id alone could do.
+
+  A workspace whose owner `dl` cannot establish — one opened from a path, from a
+  URL that is not GitHub's, or a clone under a `repos_dir` a `config.toml` moved
+  outside the cache — shows `-`, padded like any other owner so the ids stay in
+  one column.
+
+## [0.7.0] - 2026-08-22
+
+### Added
+
+- **Every launch names the terminal after the workspace, so a multiplexer's tab bar
+  says which workspace a pane is.** `dl` writes the workspace id as an OSC 2 title
+  just before the session takes the terminal — one escape sequence to stderr, and
+  therefore no detection: zellij and tmux both read it as the focused pane's title,
+  and a bare kitty or xterm reads it as the window title. zellij publishes
+  `<session> | <pane title>` outward, so the id is what reaches the outer tab bar.
+  `DEVLAUNCH_NO_TITLE=1` turns it off; a "no" variable rather than an opt-in one
+  because, unlike `DEVLAUNCH_ZELLIJ`, what it does is write bytes the next shell
+  prompt overwrites anyway.
+
+  The workspace id rather than the spec, because it exists for every launch where
+  the spec does not: a bare `owner/repo` still has its branch unresolved at that
+  point, and `./some/dir` is not a spec at all. It is also already the container's
+  hostname, so dl's title and the `user@host` an interactive prompt paints over it
+  are the same string rather than two. It stays tab-bar short because devpod
+  refuses to create or report a workspace whose name runs past 48 characters, not
+  because dl truncates anything.
+
+  Written to stderr because stdout is parsed by the completion machinery and by
+  `wf`, and skipped unless stderr is a terminal — which is why `dl <ws> -- make test
+  > log`, whose stdout is a file and whose terminal is still there, is still named.
+
+- **`aid` starts claude with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which is what
+  makes the workspace name stick.** A terminal title has one value and the last
+  writer sets it; claude writes one continuously from its own read of what the
+  session is doing, so the two are not two signals but one contest that claude wins
+  within a second. Turning claude's off is the trade worth taking: what claude is
+  doing is already on screen in the pane, and which workspace the pane *is* is not
+  otherwise anywhere. Scoped to `aid`, which is what decided to start claude — a
+  `dl <ws> -- claude ...` somebody typed themselves is their command and not aid's
+  to rewrite.
+
+  Nothing new had to be plumbed for it. aid's agent table is already an env prefix on
+  a payload that runs under `bash -lc`, so this is one more entry beside the
+  `IS_SANDBOX=1` that was already there, and no host variable is forwarded.
+
+## [0.6.1] - 2026-08-22
+
+### Changed
+
+- **The fuzzy selector's search bar is at the top of the picker, not the bottom.**
+  The prompt is now the first line and the matches read downward from it, so the
+  best match is the row next to what you are typing rather than the one furthest
+  from it, and narrowing a query no longer walks the whole list up past the cursor.
+  skim's default layout is the other way round — query at the bottom, list growing
+  upward — and `dl` had been taking that default rather than choosing it. Nothing
+  else about the picker moves: devpod's order is still the order, and TAB still
+  marks any number of rows for the verbs that take several.
+
+  The layout is now pinned by tests that open a terminal, run `dl` on it and read
+  the screen back, rather than by ones that read the options `dl` asked for. That
+  distinction is the whole of why it is worth saying: skim carries a `reverse` flag
+  next to the layout, documented as shorthand for exactly this, which is expanded by
+  a `build()` that the entry point `dl` uses never calls — so setting it compiles,
+  reviews as the fix, and draws the old picture. Measured, not reasoned about.
+
 ## [0.6.0] - 2026-08-22
 
 ### Added

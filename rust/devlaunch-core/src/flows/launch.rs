@@ -103,6 +103,15 @@ pub(crate) const ZELLIJ_WRAP_VAR: &str = "DEVLAUNCH_ZELLIJ";
 /// documented interface — `zellij -s devlaunch action new-pane -- <cmd>`.
 pub(crate) const ZELLIJ_SESSION: &str = "devlaunch";
 
+/// `DEVLAUNCH_NO_TITLE`: do not name the terminal after the workspace.
+///
+/// A "no" variable rather than an opt-in one, unlike [`ZELLIJ_WRAP_VAR`], and the
+/// asymmetry is the cost of being wrong. `DEVLAUNCH_ZELLIJ` installs a session
+/// into a container; this writes one escape sequence to a stream that the next
+/// shell prompt overwrites anyway. Defaulting it on costs a title nobody asked
+/// for; defaulting it off costs everybody the feature.
+pub(crate) const TITLE_DISABLE_VAR: &str = "DEVLAUNCH_NO_TITLE";
+
 /// The variable a project's host-side `initializeCommand` reads to tell branch
 /// workspaces apart; devpod gives the hook no workspace identity of its own (see
 /// docs/devcontainer-projects.md).
@@ -152,8 +161,16 @@ pub struct Host {
     pub(crate) zellij: Option<String>,
     /// `DEVLAUNCH_NO_TTY`.
     pub(crate) no_tty: Option<String>,
+    /// `DEVLAUNCH_NO_TITLE`.
+    pub(crate) no_title: Option<String>,
     pub(crate) stdin_tty: bool,
     pub(crate) stdout_tty: bool,
+    /// Whether stderr is a terminal, which is the stream the title is written to
+    /// and so the only one whose tty-ness decides whether to write it. Tracked
+    /// apart from `stdout_tty` because the two genuinely differ, and the
+    /// difference is a case worth serving: `dl <ws> -- make test > log` has
+    /// redirected stdout and still has a terminal to name.
+    pub(crate) stderr_tty: bool,
     /// The host's herdr control socket, if it has one listening.
     ///
     /// A resolved socket rather than the variable naming it, because whether the
@@ -186,8 +203,10 @@ impl Host {
             dotfiles_on_attach: crate::osext::env_str(DOTFILES_ON_ATTACH_VAR),
             zellij: crate::osext::env_str(ZELLIJ_WRAP_VAR),
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
+            no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
+            stderr_tty: is_a_terminal(libc::STDERR_FILENO),
             herdr_socket: herdr::HostSocket::from_env(),
             herdr: herdr::HerdrSwitch::from_env(),
             ssh_config: ssh::config_path(),
@@ -308,6 +327,16 @@ pub enum LaunchNotice {
     /// devpod itself failed the session; its own diagnostics are already on the
     /// user's stderr.
     DevpodSessionFailed { exit: Exit },
+    /// Name the terminal after the workspace about to take it over, as the bytes
+    /// to write and nothing else.
+    ///
+    /// A notice because the *moment* is the whole point -- the title has to land
+    /// before the session takes the terminal, and which moment that is only
+    /// core's stages know -- and because core writes to no stream, so the writing
+    /// is the binary's. It is the one notice that is not a line: what it carries
+    /// is an escape sequence, so the renderer that turns notices into sentences
+    /// drops it and the sink that prints them writes this one raw.
+    TerminalTitle(TerminalTitle),
 
     // --- the launch's own arms (dl.py `_run_cli`)
     /// The workspace is already running, so this launch attaches straight to it.
@@ -1739,6 +1768,106 @@ pub(crate) fn dotfiles_update(
 }
 
 // ===========================================================================
+// naming the terminal after the workspace
+// ===========================================================================
+
+/// The escape sequence that names a terminal, and the decision to write one.
+///
+/// `Off` is a real arm rather than an `Option` at the call site so that the two
+/// reasons not to write -- opted out, or no terminal to write to -- collapse into
+/// one thing the caller cannot forget to check.
+///
+/// # Why an escape sequence and not a multiplexer command
+///
+/// Because the escape reaches every multiplexer at once, and a command reaches
+/// one. dl writes to the stream it was given; whoever owns that pty parses it.
+/// zellij, tmux and byobu-on-tmux all take OSC 2 as the pane title, and a bare
+/// terminal takes it as the window title, so one write covers them without dl
+/// having to know which of them it is inside. `zellij action rename-tab` would
+/// mean detecting zellij, shelling out, and doing nothing for anyone else.
+///
+/// Two limits are worth stating because they are not dl's to fix:
+///
+/// - **GNU screen** -- byobu's other backend -- names windows with `ESC k <name>
+///   ESC \` and ignores OSC 2. Emitting both sequences would put stray text in
+///   any terminal that groks neither, so screen is out of scope rather than
+///   half-served.
+/// - **In tmux the window name needs `allow-rename on`** (off by default in
+///   recent tmux), and the outer title needs `set-titles on`. The *pane* title
+///   always takes it. Both are the user's config, not a call dl can make.
+///
+/// # Why the workspace id and not the spec the user typed
+///
+/// The id is the only string that is uniformly available and uniformly bounded.
+/// Every placement has one -- a triple, a bare name, a path, a URL -- whereas the
+/// raw spec is `owner/repo` with the branch still unresolved in one arm and a
+/// `./path` in another. And it is already the container's hostname, so the title
+/// dl writes and the `user@host` an interactive prompt repaints over it agree
+/// instead of disagreeing.
+///
+/// The bound is worth being exact about, because only one arm gets it from
+/// [`WorkspaceId`]'s own 47-character cap. A bare name and a path leaf reach here
+/// as the raw spec and the directory's basename, neither of which this crate
+/// shortens. What bounds *those* is devpod: it refuses to create or report a
+/// workspace whose name exceeds 48 characters, so a longer one fails its `up` or
+/// is never found, and either way the launch ends before the handover. So the
+/// title is short because a workspace with a long name cannot exist, not because
+/// anything here truncates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalTitle {
+    /// Write this, exactly.
+    Write(String),
+    /// Write nothing.
+    Off,
+}
+
+impl TerminalTitle {
+    /// What this host wants for this workspace.
+    pub(crate) fn from_host(host: &Host, workspace_id: &str) -> Self {
+        if switched_on(host.no_title.as_deref()) || !host.stderr_tty {
+            return Self::Off;
+        }
+        match sanitize_title(workspace_id) {
+            Some(text) => Self::Write(format!("\x1b]2;{text}\x07")),
+            None => Self::Off,
+        }
+    }
+
+    /// The bytes to write, or nothing.
+    ///
+    /// Borrowed rather than cloned: the sink writes it and drops it.
+    pub fn osc(&self) -> Option<&str> {
+        match self {
+            Self::Write(osc) => Some(osc),
+            Self::Off => None,
+        }
+    }
+}
+
+/// A workspace id with everything a terminal would read as an instruction taken
+/// out, or `None` if that leaves nothing worth writing.
+///
+/// Defence at the boundary the bytes are formed at, and deliberately not sold as
+/// more than that: no reachable spec is known to get an escape this far. Two arms
+/// hand over a string this crate never validated -- `Plan::Existing`'s raw spec
+/// and `Plan::Creatable`'s path leaf -- but both are gated on devpod agreeing the
+/// workspace exists or can be created, and devpod's own name rules refuse
+/// anything with a control in it. The filter is what makes that a local
+/// guarantee rather than one borrowed from another program's validation, which is
+/// the difference between a safe title and a title that is safe until devpod
+/// loosens a rule. Dropping controls rather than escaping them keeps the sink
+/// with nothing to decide.
+fn sanitize_title(workspace_id: &str) -> Option<String> {
+    let text: String = workspace_id.chars().filter(|ch| !ch.is_control()).collect();
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_owned())
+    }
+}
+
+// ===========================================================================
 // the attach
 // ===========================================================================
 
@@ -1770,6 +1899,14 @@ pub(crate) fn attach_workspace(
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     timing::stage_result(timing::Stage::Attach, || {
+        // First, and unconditionally on the way to every session: the terminal is
+        // about to belong to something else, and after that this process may not
+        // print again for hours. `Off` is said too, so the sink is what decides
+        // nothing rather than the caller deciding twice.
+        notices.say(LaunchNotice::TerminalTitle(TerminalTitle::from_host(
+            session.host,
+            workspace_id,
+        )));
         if command.is_none()
             && matches!(
                 DotfilesRefresh::from_host(session.host),
@@ -4045,6 +4182,102 @@ mod tests {
         assert_eq!(ZellijWrap::from_host(&Host::default()), ZellijWrap::Off);
     }
 
+    // ---------------------------------------------------- the terminal title
+
+    /// A host with a terminal on stderr and no opinion about titles.
+    fn titling() -> Host {
+        Host {
+            stderr_tty: true,
+            ..Host::default()
+        }
+    }
+
+    #[test]
+    fn the_terminal_is_named_after_the_workspace_with_osc_2() {
+        // OSC 2 and BEL-terminated, which is the pair every multiplexer in scope
+        // reads: zellij and tmux take it as the pane title, a bare terminal as the
+        // window title. The id and nothing else -- no `dl ` prefix, because a tab
+        // bar's columns are the scarce thing being spent here.
+        let title = TerminalTitle::from_host(&titling(), "devlaunch-main-zovomobo");
+
+        assert_eq!(title.osc(), Some("\x1b]2;devlaunch-main-zovomobo\x07"));
+    }
+
+    #[test]
+    fn no_terminal_on_stderr_means_no_title() {
+        // The guard is stderr and not stdout because stderr is the stream written
+        // to. `dl <ws> -- make test > log` keeps its terminal and still gets named;
+        // a run whose stderr is a pipe would only be writing escapes into somebody
+        // else's capture.
+        let piped = Host {
+            stderr_tty: false,
+            ..Host::default()
+        };
+
+        assert_eq!(
+            TerminalTitle::from_host(&piped, "devlaunch-main-zovomobo"),
+            TerminalTitle::Off
+        );
+    }
+
+    #[test]
+    fn the_title_switch_reads_the_same_denials_as_the_others() {
+        // A "no" variable, so consent is the default and this is the only one of
+        // the family whose *absence* means on. The vocabulary is still shared:
+        // `DEVLAUNCH_NO_TITLE=0` is what somebody who once turned it off writes to
+        // turn it back on.
+        for denial in ["", "0", "false", "no", "FALSE", " no "] {
+            let host = Host {
+                no_title: Some(denial.to_owned()),
+                ..titling()
+            };
+            assert!(host_titles(&host), "{denial:?}");
+        }
+        for consent in ["1", "yes", "true"] {
+            let host = Host {
+                no_title: Some(consent.to_owned()),
+                ..titling()
+            };
+            assert!(!host_titles(&host), "{consent:?}");
+        }
+        assert!(host_titles(&titling()), "unset names the terminal");
+    }
+
+    /// Whether this host would write a title at all.
+    fn host_titles(host: &Host) -> bool {
+        TerminalTitle::from_host(host, "devlaunch-main-zovomobo")
+            .osc()
+            .is_some()
+    }
+
+    #[test]
+    fn a_spec_cannot_smuggle_a_second_escape_into_the_title() {
+        // `Plan::Existing` carries the raw spec through unvalidated -- devpod is
+        // what eventually refuses a name it does not have -- and the title is
+        // written before the session that would do the refusing. So the controls
+        // come out here, or a `dl $'x\x1b]2;...'` writes its own title after dl's.
+        let title = TerminalTitle::from_host(&titling(), "ws\x1b]2;pwned\x07x\nrest");
+
+        assert_eq!(title.osc(), Some("\x1b]2;ws]2;pwnedxrest\x07"));
+        // DEL and the 8-bit String Terminator, the other two ways to end an OSC.
+        // `char::is_control` is the Cc category and covers both, which is why the
+        // filter does not name them.
+        assert_eq!(
+            TerminalTitle::from_host(&titling(), "ws\x7fx\u{9c}y").osc(),
+            Some("\x1b]2;wsxy\x07")
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_nothing_but_controls_is_no_title_at_all() {
+        // Sanitising down to the empty string must not write `ESC ] 2 ; BEL`, which
+        // would blank the terminal's name rather than leave it alone.
+        assert_eq!(
+            TerminalTitle::from_host(&titling(), "\x1b\x07 \n"),
+            TerminalTitle::Off
+        );
+    }
+
     #[test]
     fn a_command_no_remote_shell_could_be_given_is_refused() {
         // A NUL cannot survive a shell word, so there is no payload to build.
@@ -4737,6 +4970,48 @@ mod tests {
 
             assert_eq!(scene.devpod_commands().len(), 1, "{command:?}");
         }
+    }
+
+    #[test]
+    fn the_handover_names_the_terminal_before_the_session_takes_it() {
+        // Ordering is the whole property. After the session starts, this process
+        // may not print again for hours -- so a title said even one notice late is
+        // a title that arrives when the work is over. It goes in front of the
+        // dotfiles refresh too, which is why it is the first thing the attach does
+        // rather than the last thing before the ssh.
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.stderr_tty = true;
+        scene.host.dotfiles_on_attach = Some("1".to_owned());
+        let token = HostToken::new();
+        let mut notices = Vec::new();
+
+        let _ = attaching(&scene, &token, "myws", None, &mut notices);
+
+        assert_eq!(
+            notices.first(),
+            Some(&LaunchNotice::TerminalTitle(TerminalTitle::Write(
+                "\x1b]2;myws\x07".to_owned()
+            ))),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn a_handover_that_names_no_terminal_still_says_so() {
+        // `Off` is said rather than skipped, so the sink is the one place that
+        // decides nothing gets written. A caller that filtered here would be the
+        // second place deciding it, and the two would drift.
+        let scene = Scene::new().with_running("myws");
+        let token = HostToken::new();
+        let mut notices = Vec::new();
+
+        let _ = attaching(&scene, &token, "myws", None, &mut notices);
+
+        assert_eq!(
+            notices.first(),
+            Some(&LaunchNotice::TerminalTitle(TerminalTitle::Off)),
+            "{notices:?}"
+        );
     }
 
     // ------------------------------------------------- stage one: the plan
