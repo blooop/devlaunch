@@ -569,3 +569,50 @@ mod build_marker {
         );
     }
 }
+
+#[cfg(test)]
+mod drained_signals {
+    //! A guard on the handled-signal set, and the honest limit of what it buys.
+    //!
+    //! Each signal's *behaviour* is proved at the binary boundary by
+    //! `INHERITED_IGNORE` in `dl/tests/interrupt.rs` — which is a second,
+    //! independent list. It has to be: an integration test is a separate crate, so
+    //! it cannot see [`DRAINED`] at all (measured: `constant DRAINED is private`),
+    //! and giving it sight would mean `pub`-ing an implementation detail of a crate
+    //! whose surface is deliberately small. So nothing can machine-check that the
+    //! two lists *agree*.
+    //!
+    //! What this guard buys instead is that the set cannot be extended in
+    //! **silence**: a fourth signal added to [`DRAINED`] fails the assertion below,
+    //! and the failure names the file whose table has to grow with it. That is the
+    //! whole claim — "cannot be added without being told what else to edit", not
+    //! "cannot disagree".
+    //!
+    //! What still slips through, said plainly so nobody reads more into it: an
+    //! author who edits this expectation *and* [`DRAINED`] together and still leaves
+    //! the boundary table alone. That is a deliberate act rather than an oversight —
+    //! the class of mistake a tripwire cannot catch and review can — and accepting
+    //! it is what keeps this at four lines instead of a `pub`.
+
+    use super::{DRAINED, InheritedIgnore};
+
+    #[test]
+    fn the_handled_set_cannot_grow_without_the_boundary_table_growing_too() {
+        let held: Vec<(libc::c_int, bool)> = DRAINED
+            .iter()
+            .map(|(signal, inherited)| (*signal, matches!(inherited, InheritedIgnore::Wins)))
+            .collect();
+        assert_eq!(
+            held,
+            vec![
+                (libc::SIGINT, false),
+                (libc::SIGTERM, true),
+                (libc::SIGHUP, true),
+            ],
+            "the handled signals changed. Add or remove the matching row in \
+             `INHERITED_IGNORE` in `dl/tests/interrupt.rs`, which proves each \
+             one's behaviour at the binary boundary, and only then update this \
+             expectation."
+        );
+    }
+}

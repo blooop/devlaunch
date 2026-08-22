@@ -313,8 +313,17 @@ enum Ignored {
     Honoured { up_survives: bool },
 }
 
-/// The whole of the inherited-ignore rule stated as data, so no signal is left
-/// untested by omission — which is how the SIGINT half slipped through once.
+/// The inherited-ignore rule stated as data, one row per signal `dl` handles —
+/// which is what the SIGINT half was missing when it slipped through once.
+///
+/// **This list cannot see the one it mirrors.** An integration test is its own
+/// crate, so the handled-signal set in `dl`'s library is private to it (measured:
+/// `constant DRAINED is private`), and nothing here can check the two agree. What
+/// stands in for that is a guard on the far side: the `drained_signals` unit test
+/// beside that set pins its exact contents, so a signal added there fails a test
+/// whose message names *this* table. So the guarantee is "the set cannot grow in
+/// silence", not "the two lists cannot disagree" — and a row deleted from here
+/// while the set stays put is caught by nothing but review.
 const INHERITED_IGNORE: [(&str, Ignored); 3] = [
     ("INT", Ignored::StillDrains(130)),
     // The one row whose child outlives the Ctrl-C, and not because of anything
