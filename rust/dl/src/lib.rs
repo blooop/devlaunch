@@ -80,42 +80,84 @@ pub const BUILD_MARKER: &str = if cfg!(feature = "dev-build") {
 /// The code a `dl` cut short by signal `signal` exits with: **128 + the signal
 /// number**, the convention a shell reports for a process a signal ended.
 ///
-/// One rule for every signal the drain handles rather than one constant each,
-/// because the alternative — a code chosen per signal — is a table that has to be
-/// remembered, and this one can be read off `kill -l`. It is also already what
-/// this binary did: Python's `except KeyboardInterrupt: sys.exit(130)` was 128 +
-/// SIGINT written out long-hand, and 130 is what [`INTERRUPTED`] still is.
+/// One rule for every signal in [`DRAINED`] rather than one constant each, because
+/// the alternative — a code chosen per signal — is a table that has to be
+/// remembered, and this one can be read off `kill -l`. It is also what a Ctrl-C
+/// already exited with: Python's `except KeyboardInterrupt: sys.exit(130)` was
+/// 128 + SIGINT written out long-hand.
 ///
 /// The exit is reproduced rather than left to the default disposition because the
 /// difference is observable: a process that dies *by* the signal has no exit code
 /// at all, and a caller reading `Popen.returncode` sees `-2` where it used to see
 /// `130`.
-pub const fn signalled(signal: i32) -> i32 {
+///
+/// **This is not the same question as a child's status, and the repo answers the
+/// two opposite ways on purpose.** `flows::launch::Session::exit_status` renders a
+/// *remote program* killed by a signal as Python's negative `returncode`, and says
+/// so in as many words — "rather than inventing 128+n". That is about reporting
+/// what happened to somebody else's process, where Python had already fixed the
+/// spelling and parity is the whole point. This is about what code `dl`'s own
+/// death leaves behind, where Python had also already fixed the spelling — and
+/// fixed it at 130. Each follows its own precedent; neither generalises to the
+/// other.
+const fn signalled(signal: i32) -> i32 {
     128 + signal
 }
 
-/// The code a `dl` killed by Ctrl-C exits with — 128 + SIGINT, and the one
-/// [`signalled`] code with a name of its own because so much of the port's
-/// history is written in terms of it.
-pub const INTERRUPTED: i32 = signalled(libc::SIGINT);
+/// Whether a `SIG_IGN` disposition `dl` inherited at startup survives, for one
+/// signal in [`DRAINED`].
+///
+/// Two named variants rather than a `bool`, because which one a signal gets is a
+/// judgement about what an inherited ignore *means* coming from that signal, and
+/// the two meanings are not two settings of one dial.
+#[derive(Clone, Copy)]
+enum InheritedIgnore {
+    /// The inherited disposition wins: the signal is left ignored, reaches no
+    /// handler, and ends nothing.
+    Wins,
+    /// The handler goes in regardless, so the signal drains even though it
+    /// arrived already ignored.
+    Loses,
+}
 
 /// The signals whose delivery runs the drain instead of ending `dl` where it
-/// stands. Every one of them means "this run is over" and leaves `dl` holding a
-/// staged plaintext token and a live `devpod up` child if nothing intervenes.
+/// stands, and what an inherited `SIG_IGN` means for each. Every one of them says
+/// "this run is over", and leaves `dl` holding a staged plaintext token and a live
+/// `devpod up` child if nothing intervenes.
 ///
-/// SIGINT is the terminal's Ctrl-C. SIGTERM is every orderly kill there is — a
-/// supervisor timing a run out, a cancelled CI job, the shutdown sweep — and was
-/// the gap: `kill <dl>` leaked the exact pair the SIGINT handler exists to
-/// prevent. SIGHUP is the terminal window closing, which leaked the same pair for
-/// the same reason, unwatched — the window any complaint would have appeared in
-/// is the one that just went away.
+/// **SIGINT** is the terminal's Ctrl-C, and the one that was always handled. An
+/// inherited ignore *loses* for it, which is to say Ctrl-C behaves exactly as it
+/// did before SIGTERM and SIGHUP were added. That is not an oversight in the rule
+/// below but the point of stating the rule per signal: a non-interactive shell
+/// backgrounding a job hands its child an ignored SIGINT and SIGQUIT under POSIX
+/// job control (measured: `SigIgn` `0x6`), and nobody typed anything to ask for
+/// that. Honouring it would stop the drain for every `dl` launched as `… &` from a
+/// script or a CI step — leaving the staged credential and the `devpod up` child
+/// to outlive a run that was cancelled, in the case where the abandoned run is
+/// least likely to be noticed.
+///
+/// **SIGTERM** is every orderly kill there is — a supervisor timing a run out, a
+/// cancelled CI job, the shutdown sweep — and was the gap this closes: `kill <dl>`
+/// leaked the exact pair the Ctrl-C handler exists to prevent. **SIGHUP** is the
+/// terminal window closing, which leaked the same pair for the same reason,
+/// unwatched: the window any complaint would have appeared in is the one that just
+/// went away.
+///
+/// An inherited ignore *wins* for both, and there it is a statement rather than an
+/// accident: something disarmed a signal this process had no handler for until
+/// now, and `nohup dl …` disarms SIGHUP for the express purpose of outliving the
+/// terminal. Draining on it would take that away.
 ///
 /// SIGQUIT is deliberately absent: it means "die now and dump core", and a
 /// handler that tidies up first is not what someone reaching for it asked for.
-const DRAINED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+const DRAINED: [(libc::c_int, InheritedIgnore); 3] = [
+    (libc::SIGINT, InheritedIgnore::Loses),
+    (libc::SIGTERM, InheritedIgnore::Wins),
+    (libc::SIGHUP, InheritedIgnore::Wins),
+];
 
-/// Install the signal disposition both binaries share: any of [`DRAINED`] exits
-/// [`signalled`] with that signal's code after cleaning up, rather than killing
+/// Install the signal disposition both binaries share: any of `DRAINED` exits
+/// `signalled` with that signal's code after cleaning up, rather than killing
 /// the process by signal.
 ///
 /// The handler does the little a signal handler safely may:
@@ -131,14 +173,18 @@ const DRAINED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 /// these signals can run an `--autorm` removal; see README's "How you exit decides
 /// whether it fires".
 ///
-/// **A signal already ignored when `dl` started stays ignored.** `nohup dl …` and
-/// a job disowned by a non-interactive shell hand their child a SIG_IGN
-/// disposition across the `exec`, and it is meant to survive: `nohup`'s whole
-/// purpose is outliving the terminal, and a SIGHUP handler that drained and
-/// `_exit`ed would take exactly that away. The check is the classic POSIX idiom,
-/// and it is applied to all three signals rather than to SIGHUP alone because a
-/// per-signal exception is the thing that drifts. The run stays reachable by
-/// whichever signals the caller did *not* disarm.
+/// **A SIGTERM or SIGHUP already ignored when `dl` started stays ignored; a SIGINT
+/// does not.** `nohup dl …` sets SIGHUP to `SIG_IGN` and that disposition survives
+/// the `exec` — it is how `nohup` works, and honouring it is the only way `dl` can
+/// still outlive its terminal. The check is the classic POSIX idiom, applied to
+/// exactly the two signals where an inherited ignore is a statement; `DRAINED`
+/// has the argument for why SIGINT is not one of them, and gets read rather than
+/// guessed at because the answer lives in that table.
+///
+/// Note what the idiom does *not* cover, since it is easy to over-credit: `disown`
+/// and `setsid` set no `SIG_IGN` at all (measured). A disowned job survives its
+/// terminal because the shell does not send it SIGHUP, and a `setsid` one because
+/// it left the session — neither reaches this code, and neither needs to.
 ///
 /// It lives in the library both entry points share rather than in either `main`
 /// because `dl` and `aid` must install the *same* disposition: `aid` runs [`run`]
@@ -154,18 +200,24 @@ pub fn install_signal_handlers() {
         // `DRAINED` and none of them can be given the wrong code.
         unsafe { devlaunch_runner::interrupt::cleanup_and_exit(signalled(signal)) }
     }
-    for signal in DRAINED {
-        // SAFETY: installing a handler before any thread is started. The handler
-        // is `extern "C"` and does nothing but call the async-signal-safe
-        // cleanup, which does not return. The first call reads the inherited
-        // disposition — `signal` returns the one it replaced — and the SIG_IGN it
-        // installs to do so is the safe thing to be holding in the meantime,
-        // since the only window it widens is one in which the signal is ignored.
-        unsafe {
-            let inherited = libc::signal(signal, libc::SIG_IGN);
-            if inherited != libc::SIG_IGN {
+    for (signal, inherited_ignore) in DRAINED {
+        match inherited_ignore {
+            // SAFETY: installing a handler before any thread is started. The
+            // handler is `extern "C"` and does nothing but call the
+            // async-signal-safe cleanup, which does not return.
+            InheritedIgnore::Loses => unsafe {
                 libc::signal(signal, drain as *const () as libc::sighandler_t);
-            }
+            },
+            // SAFETY: as above. The first call reads the inherited disposition —
+            // `signal` returns the one it replaced — and the SIG_IGN it installs
+            // to do so is the safe thing to be holding in the meantime, since the
+            // only window it widens is one in which the signal is ignored.
+            InheritedIgnore::Wins => unsafe {
+                let inherited = libc::signal(signal, libc::SIG_IGN);
+                if inherited != libc::SIG_IGN {
+                    libc::signal(signal, drain as *const () as libc::sighandler_t);
+                }
+            },
         }
     }
 }

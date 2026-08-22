@@ -1,15 +1,19 @@
-//! Ctrl-C during a `devpod up`, judged at the binary boundary.
+//! A run cut short during a `devpod up`, judged at the binary boundary.
 //!
-//! The concurrency review found (F2/H4/R8, F3) that `dl`'s `_exit(130)` signal
-//! handler ran no destructors, so a SIGINT during the minutes-long `devpod up`
-//! left the plaintext GitHub-token file (`$TMPDIR/devlaunch-gh-*.env`, mode 0600)
-//! on disk and orphaned the `up` child — which then went on running after the
-//! launch lock `dl` held had already been released. Python's unwinding
-//! `KeyboardInterrupt` cleaned both up.
+//! The concurrency review found (F2/H4/R8, F3) that `dl`'s `_exit` signal handler
+//! ran no destructors, so a SIGINT during the minutes-long `devpod up` left the
+//! plaintext GitHub-token file (`$TMPDIR/devlaunch-gh-*.env`, mode 0600) on disk
+//! and orphaned the `up` child — which then went on running after the launch lock
+//! `dl` held had already been released. Python's unwinding `KeyboardInterrupt`
+//! cleaned both up. #304 then found the same pair reachable through two doors
+//! SIGINT's handler did not cover: `kill <dl>` and a closed terminal window.
 //!
-//! This test reproduces that exact moment with a fake `devpod` whose `up` blocks
-//! forever, so the interrupt lands while the token is staged and the child is
-//! live, and asserts the fix: the token file is gone and the `up` child is dead.
+//! These tests reproduce that exact moment with a fake `devpod` whose `up` blocks
+//! forever, so the signal lands while the token is staged and the child is live,
+//! and assert the fix for each signal that handles it: the process exits
+//! 128 + signo, the token file is gone and the `up` child is dead. The last of
+//! them covers the asymmetry in the inherited-`SIG_IGN` rule, which is the one
+//! part of this that is a judgement rather than a mechanism.
 //!
 //! Linux-only (as the whole port is, #254): it reads `/proc`-style liveness
 //! through `kill -0` and derives paths the same way the sibling suites do.
@@ -166,10 +170,14 @@ impl MidUp {
         Self::spawned(command)
     }
 
-    /// A `dl` reached through a shell that first sets `signal` to be ignored —
-    /// what `nohup` does, and what a job disowned by a non-interactive shell
-    /// inherits. The disposition survives the `exec`, so `dl` starts with that
-    /// signal already ignored, in the same process the shell occupied.
+    /// A `dl` reached through a shell that first sets `signal` to be ignored: what
+    /// `nohup` does to SIGHUP, and what a non-interactive shell does to SIGINT for
+    /// a job it backgrounds. The disposition survives the `exec`, so `dl` starts
+    /// with that signal already ignored, in the same process the shell occupied.
+    ///
+    /// One caveat this is the right place to record, since it is what one row of
+    /// `INHERITED_IGNORE` turns on: the ignore reaches everything `dl` goes on to
+    /// spawn, not just `dl`.
     fn reached_with_signal_ignored(signal: &str) -> Self {
         let mut command = Command::new("/bin/sh");
         command
@@ -295,19 +303,69 @@ fn closing_the_terminal_mid_up_removes_the_token_file_and_kills_the_up() {
     assert_eq!(MidUp::reached().signalled("HUP"), drained(129));
 }
 
+/// What an inherited `SIG_IGN` buys one signal.
+enum Ignored {
+    /// The inherited ignore loses: the signal drains anyway, exiting this code.
+    StillDrains(i32),
+    /// The inherited ignore wins: the signal ends nothing, and the run is left for
+    /// a Ctrl-C to finish — which drains at 130 and reaches the `devpod up` child,
+    /// unless `up_survives` says the disarming reached the child too.
+    Honoured { up_survives: bool },
+}
+
+/// The whole of the inherited-ignore rule stated as data, so no signal is left
+/// untested by omission — which is how the SIGINT half slipped through once.
+const INHERITED_IGNORE: [(&str, Ignored); 3] = [
+    ("INT", Ignored::StillDrains(130)),
+    // The one row whose child outlives the Ctrl-C, and not because of anything
+    // `dl` decides: `trap '' TERM` is inherited by everything `dl` spawns, and the
+    // drain fells the build with a `killpg(…, SIGTERM)`. Disarming SIGTERM for the
+    // run therefore disarms the drain's own reach into the child — inherent to
+    // killing a group with the signal the caller switched off, and true of any
+    // program that tears its children down that way.
+    ("TERM", Ignored::Honoured { up_survives: true }),
+    ("HUP", Ignored::Honoured { up_survives: false }),
+];
+
 #[test]
-fn a_signal_already_ignored_when_dl_started_stays_ignored() {
-    // `nohup dl …` exists to outlive the terminal, and it says so by handing dl
-    // a SIGHUP already set to be ignored. Draining on a signal the caller
-    // deliberately disarmed would take that away, so the inherited disposition
-    // wins — and the run stays reachable by the signals that were not disarmed.
-    let mut run = MidUp::reached_with_signal_ignored("HUP");
-    run.send("HUP");
-    assert!(
-        run.survives(Duration::from_millis(500)),
-        "a SIGHUP inherited as ignored must not end the run"
-    );
-    assert_eq!(run.signalled("TERM"), drained(143));
+fn an_inherited_ignore_wins_for_the_two_signals_that_mean_it_and_loses_for_ctrl_c() {
+    for (signal, expected) in INHERITED_IGNORE {
+        let mut run = MidUp::reached_with_signal_ignored(signal);
+        match expected {
+            // Ctrl-C is left exactly as it was, and an inherited ignore is where
+            // that matters most: a non-interactive shell backgrounding a job hands
+            // its child an ignored SIGINT under POSIX job control, with nobody
+            // having asked for it. Honouring it there would abandon the staged
+            // credential and the build — the very leak this closes — in the case
+            // where nobody is watching for it.
+            Ignored::StillDrains(code) => assert_eq!(
+                run.signalled(signal),
+                drained(code),
+                "a SIG{signal} inherited as ignored must still drain"
+            ),
+            // For the two signals this branch adds, an inherited ignore is a
+            // statement: `nohup dl …` disarms SIGHUP precisely so the run outlives
+            // the terminal, and draining on it would take that away.
+            Ignored::Honoured { up_survives } => {
+                run.send(signal);
+                assert!(
+                    run.survives(Duration::from_millis(500)),
+                    "a SIG{signal} inherited as ignored must not end the run"
+                );
+                // Disarming one signal disarms only that one: the run is still
+                // reachable, and still cleans up, through the ones it did not.
+                assert_eq!(
+                    run.signalled("INT"),
+                    Aftermath {
+                        code: Some(130),
+                        token_left: false,
+                        up_alive: up_survives,
+                    },
+                    "after SIG{signal} was disarmed the run must still answer Ctrl-C"
+                );
+            }
+        }
+    }
 }
 
 /// A `--warm` world whose `devpod ssh` blocks, so an interrupt can land *during the
