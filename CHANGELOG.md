@@ -30,6 +30,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is on the picker's screen, and it is not on the screen the picker covers — so the
   redundant print cannot come back unnoticed.
 
+## [0.7.2] - 2026-08-22
+
+### Fixed
+
+- **Changing your Claude account on the host reaches the containers again.** The
+  `claude-code` feature mounted `~/.claude` a path at a time, and four of those
+  paths were *files*. A bind mount of a file is attached to the dentry, so when
+  the host replaces it by rename — which is what Claude does on every token
+  refresh, and on an account switch — the mount is left pointing at an inode with
+  no name. The container reads it happily and forever, which is why nothing
+  reported it as broken: a workspace created before the switch went on
+  authenticating as the account you had left, and each one froze at a different
+  moment, so three running containers held three different credentials files and
+  none of them held the host's.
+
+  `~/.claude` is now mounted as the directory, read-write, and a directory mount
+  resolves names on each access — so it follows the rename and the container
+  reads what the host has. `.credentials.json` and `.claude.json` have no mount
+  of their own any more; they are reached through it.
+
+- **The read-only mounts over `CLAUDE.md` and `settings.json` are gone, because
+  they were not read-only.** The same rename removes a nested file mount from the
+  namespace entirely, and the path then falls through to whatever the parent
+  provides. Measured on Docker, both ways round, since the direction of the
+  failure follows the parent and neither direction is safe: under a read-write
+  parent the file ends up **writable**, so a protection the manifest still
+  advertises is silently gone from the first host edit onwards, and under a
+  read-only parent a read-write file mount ends up **read-only**, so a token
+  refresh fails.
+
+  A mount of a *directory* survives the same rename with its flags intact, so the
+  read-only list is now exactly the five instruction directories — `agents/`,
+  `commands/`, `hooks/`, `skills/`, `wf-skills/` — and every source in the
+  manifest is a directory. A test asserts that rather than asserting the paths,
+  because the tempting change is to protect the two files by naming them again,
+  which passes review, appears in `docker inspect`, and stops being true on the
+  next edit.
+
+  The cost is stated where it is met rather than buried: `CLAUDE.md` and
+  `settings.json` are writable from the container, and `settings.json` can name
+  hook commands inline, so this is a real hole. It is the same hole the previous
+  layout had after one edit, minus the claim that it was closed.
+
+- **The pre-create hook no longer seeds empty files.** With nothing mounted a
+  file at a time, a missing `.credentials.json` can no longer refuse the create,
+  and Claude writes each of these itself on first use. An empty `{}` credentials
+  file on a host that has never run Claude is indistinguishable from a logged-out
+  session, and existed only to satisfy a bind source that is gone. The stale-mount
+  heal stays, for containers built by the older layout that are still running.
 ## [0.7.1] - 2026-08-22
 
 ### Changed

@@ -48,6 +48,7 @@ from unit.test_claude_code_feature_mounts import (
 )
 
 WORKSPACE_ID = "e2e-test-claude-config-protection"
+RENAME_WORKSPACE_ID = "e2e-test-claude-config-rename"
 
 # Small, and already on any machine that has run this suite. It needs no `curl`
 # and no `vscode` user because the installer is stubbed out: what has to be real
@@ -59,7 +60,7 @@ echo "stubbed installer: this workspace exists to test mounts, not installation"
 """
 
 
-def in_container(command: str) -> subprocess.CompletedProcess:
+def in_container(command: str, workspace: str = WORKSPACE_ID) -> subprocess.CompletedProcess:
     """Run a command in the workspace, failing loudly with its output.
 
     devpod reports a failed remote command as its own exit 1 and buries the
@@ -67,7 +68,7 @@ def in_container(command: str) -> subprocess.CompletedProcess:
     that something went wrong somewhere in the tunnel.
     """
     result = subprocess.run(
-        ["devpod", "ssh", WORKSPACE_ID, "--command", command],
+        ["devpod", "ssh", workspace, "--command", command],
         capture_output=True,
         text=True,
         check=False,
@@ -121,17 +122,22 @@ def workspace_cleanup_fixture(devpod_cleanup):
     torn down before `devpod_cleanup`, which is what deletes it.
     """
     yield devpod_cleanup
-    subprocess.run(
-        [
-            "devpod",
-            "ssh",
-            WORKSPACE_ID,
-            "--command",
-            f"rm -rf /workspaces/{WORKSPACE_ID}/.devcontainer/.devpod-internal",
-        ],
-        capture_output=True,
-        check=False,
-    )
+    # Every workspace the scope created, rather than one named here. The tracker
+    # is the only thing that knows, and a second test with a second id was
+    # otherwise a second undeletable directory nobody would connect to this
+    # fixture.
+    for workspace_id in devpod_cleanup.workspaces:
+        subprocess.run(
+            [
+                "devpod",
+                "ssh",
+                workspace_id,
+                "--command",
+                f"rm -rf /workspaces/{workspace_id}/.devcontainer/.devpod-internal",
+            ],
+            capture_output=True,
+            check=False,
+        )
 
 
 @pytest.mark.e2e
@@ -222,3 +228,71 @@ def test_the_container_cannot_write_the_host_files_the_feature_protects(
         f"cd /workspaces/{WORKSPACE_ID} "
         f'&& HOME="$(dirname "{config_dir}")" sh -e .devcontainer/{FEATURE_DIR.name}/init-host.sh'
     )
+
+
+@pytest.mark.e2e
+@pytest.mark.creates_workspace
+def test_the_container_follows_the_host_replacing_a_file_by_rename(workspace_cleanup, tmp_path):
+    """The container reads what the host has now, after the host swaps the inode.
+
+    This is the defect the layout exists to prevent, and it cannot be observed
+    anywhere but here. Claude does not edit `.credentials.json` in place: it
+    writes a new file and renames it over the old one, which is what a token
+    refresh and a change of account both do. A bind mount of that *file* is
+    attached to the dentry, so the rename leaves the mount pointing at an inode
+    with no name -- the container reads it happily, forever, and a developer who
+    switches account finds every running workspace still authenticating as the
+    account they left.
+
+    The mount of the *directory* is what fixes it, because a directory mount
+    resolves names on each access. So the assertion is about a file with no mount
+    of its own, read through the directory that has one, across a rename.
+
+    The protected directories are re-probed afterwards for the reverse failure.
+    A read-only mount nested in a read-write parent is exactly the arrangement
+    that used to be relied on for `CLAUDE.md` and `settings.json`, and a *file*
+    mount there does not survive this rename either -- it leaves the namespace
+    and the path falls through to the writable parent, so the protection is gone
+    with the manifest still advertising it. Directory mounts survive, which is
+    why the read-only list is only directories, and this is what says so.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    project = consumer_project(tmp_path)
+    host_config = home / CONFIG_DIRNAME
+
+    create_e2e_workspace(
+        str(project),
+        RENAME_WORKSPACE_ID,
+        cleanup=workspace_cleanup,
+        env={**os.environ, "HOME": str(home)},
+    )
+
+    config_dir = json.loads(FEATURE_JSON.read_text())["containerEnv"]["CLAUDE_CONFIG_DIR"]
+
+    for state in sorted(documented_paths(READ_WRITE_HEADING)):
+        (host_config / state).write_text('{"account": "before"}')
+        assert "before" in in_container(f'cat "{config_dir}/{state}"', RENAME_WORKSPACE_ID).stdout
+
+        # Precisely what Claude does, and the reason a plain overwrite would not
+        # do: the temporary file is a different inode, and the rename is what
+        # moves the name onto it.
+        replacement = host_config / f"{state}.tmp"
+        replacement.write_text('{"account": "after"}')
+        replacement.replace(host_config / state)
+
+        seen = in_container(f'cat "{config_dir}/{state}"', RENAME_WORKSPACE_ID).stdout
+        assert "after" in seen, (
+            f"the container still reads the pre-rename {state}: it is pinned to a dead inode, "
+            f"which is a host account switch reaching no running workspace"
+        )
+
+    for name in documented_paths(READ_ONLY_HEADING):
+        probe = f"{config_dir}/{name}injected.md"
+        attempt = in_container(
+            f'if echo injected >> "{probe}" 2>/dev/null; then echo accepted; else echo refused; fi',
+            RENAME_WORKSPACE_ID,
+        )
+        assert "accepted" not in attempt.stdout, (
+            f"the {name} mount stopped protecting the host after an unrelated rename"
+        )
