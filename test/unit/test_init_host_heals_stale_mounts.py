@@ -269,7 +269,11 @@ def test_a_heal_that_cannot_write_the_bytes_back_says_so_and_keeps_them(scratch_
     target.parent.mkdir(parents=True, exist_ok=True)
 
     result = in_namespace(
-        STALE_MOUNT_UNWRITABLE_SCENARIO, str(scratch_home), str(target), str(INIT_HOST), PINNED_BYTES
+        STALE_MOUNT_UNWRITABLE_SCENARIO,
+        str(scratch_home),
+        str(target),
+        str(INIT_HOST),
+        PINNED_BYTES,
     )
     assert result.returncode == 0, f"the scenario could not run: {result.stdout}\n{result.stderr}"
 
