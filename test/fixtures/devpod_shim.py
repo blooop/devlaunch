@@ -39,22 +39,80 @@ import time
 
 EX_CONFIG = 78
 
+#: The value-taking flags every subcommand inherits, from real devpod v0.26.1's
+#: global flag block. `--debug` and `--silent` are bare and so are absent.
+_GLOBAL_VALUE_FLAGS = {"--context", "--devpod-home", "--log-output", "--provider"}
+
 #: `devpod up` flags that consume a value, so the positional source is found by
-#: skipping them. Grown as needed; an unknown `--flag value` pair would make the
-#: value read as the source, so unknown flags with separate values are the one
-#: shape this parser can misread — dl uses `--flag=value` nowhere, and the
-#: response table can pin any call this parses wrong.
+#: skipping them.
+#:
+#: Taken wholesale from `devpod up --help` at v0.26.1 rather than grown one flag
+#: at a time: every flag it types `string`, `strings`, `stringArray` or a named
+#: type is here, and the booleans (`--recreate`, `--reset`, `--open-ide`, …) are
+#: not, because cobra takes a boolean's value only as `--flag=false`. Growing
+#: this by hand is what left `--init-env`, `--mount`, `--dotfiles-script`,
+#: `--dotfiles-script-env` and `--workspace-env-file` out of it, and real devpod
+#: accepts those *before* the positional source, where reading one as bare makes
+#: its value the workspace source. The conformance corpus drives that shape.
 _UP_VALUE_FLAGS = {
-    "--id",
-    "--ide",
-    "--provider",
-    "--source",
+    "--additional-features",
+    "--devcontainer-id",
+    "--devcontainer-image",
     "--devcontainer-path",
     "--dotfiles",
+    "--dotfiles-script",
+    "--dotfiles-script-env",
+    "--dotfiles-script-env-file",
+    "--extra-devcontainer-path",
+    "--fallback-image",
+    "--gidmap",
+    "--git-clone-strategy",
+    "--git-ssh-signing-key",
+    "--id",
+    "--ide",
+    "--ide-option",
+    "--init-env",
+    "--machine",
+    "--mount",
     "--prebuild-repository",
+    "--provider-option",
+    "--source",
+    "--ssh-config",
+    "--uidmap",
+    "--userns",
     "--workspace-env",
-    "--context",
+    "--workspace-env-file",
 }
+
+#: `devpod ssh` flags that consume a value, from `devpod ssh --help` at v0.26.1.
+#: `--workdir` is the one dl sends and the one this read as bare, which made an
+#: attach with a working directory look like an attach to a workspace named after
+#: that directory.
+_SSH_VALUE_FLAGS = {
+    "--command",
+    "--forward-ports",
+    "-L",
+    "--forward-ports-timeout",
+    "--git-ssh-signing-key",
+    "--reverse-forward-ports",
+    "-R",
+    "--send-env",
+    "--set-env",
+    "--ssh-keepalive-interval",
+    "--term-mode",
+    "--user",
+    "--workdir",
+}
+
+#: `devpod delete` flags that consume a value. `--force` and
+#: `--ignore-not-found` are bare and `--grace-period` is a string.
+_DELETE_VALUE_FLAGS = {"--grace-period"}
+
+#: `devpod status` flags that consume a value. `--container-status` is a boolean.
+_STATUS_VALUE_FLAGS = {"--output", "--timeout"}
+
+#: `devpod stop` has no flags of its own at v0.26.1.
+_STOP_VALUE_FLAGS = frozenset()
 
 
 def _log(argv):
@@ -147,6 +205,12 @@ def _derive_id(source):
 
 
 def _positional_and_flags(args, value_flags):
+    """The positionals and flags of one subcommand's argv.
+
+    `value_flags` is the subcommand's own set; the globals are added here,
+    because real devpod inherits them everywhere.
+    """
+    value_flags = set(value_flags) | _GLOBAL_VALUE_FLAGS
     positionals = []
     flags = {}
     i = 0
@@ -202,7 +266,7 @@ def cmd_up(args):
 
 
 def cmd_stop(args):
-    positionals, _ = _positional_and_flags(args, set())
+    positionals, _ = _positional_and_flags(args, _STOP_VALUE_FLAGS)
     if not positionals:
         print("devpod-shim: stop: no workspace given", file=sys.stderr)
         return 1
@@ -216,7 +280,7 @@ def cmd_stop(args):
 
 
 def cmd_delete(args):
-    positionals, flags = _positional_and_flags(args, set())
+    positionals, flags = _positional_and_flags(args, _DELETE_VALUE_FLAGS)
     if not positionals:
         print("devpod-shim: delete: no workspace given", file=sys.stderr)
         return 1
@@ -257,7 +321,7 @@ def cmd_list(args):
 
 
 def cmd_status(args):
-    positionals, _ = _positional_and_flags(args, set())
+    positionals, _ = _positional_and_flags(args, _STATUS_VALUE_FLAGS)
     if not positionals:
         print("devpod-shim: status: no workspace given", file=sys.stderr)
         return 1
@@ -279,7 +343,7 @@ def cmd_status(args):
 
 
 def cmd_ssh(args):
-    positionals, _ = _positional_and_flags(args, {"--command", "--user", "--context"})
+    positionals, _ = _positional_and_flags(args, _SSH_VALUE_FLAGS)
     if not positionals:
         print("devpod-shim: ssh: no workspace given", file=sys.stderr)
         return 1
