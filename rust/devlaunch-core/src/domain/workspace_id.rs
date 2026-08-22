@@ -389,9 +389,10 @@ fn fit_ref(git_ref: &str, room: usize) -> String {
 ///
 /// `None` for anything that does not read as one, and every arm of that is a
 /// workspace a caller should show whole instead: an id with no syllable suffix on
-/// it, a repo whose slug is not the prefix under either spelling, or nothing left
-/// between the two. The suffix check is what makes this answer `None` for a name
-/// dl did not derive rather than cutting eight characters off the end of it.
+/// it, a repo whose slug is not the prefix under either spelling, nothing left
+/// between the two, or an id that *both* spellings explain and disagree about. The
+/// suffix check is what makes this answer `None` for a name dl did not derive rather
+/// than cutting eight characters off the end of it.
 ///
 /// **What comes back is a slug, and a slug is not a ref.** [`slug`] collapses `/`
 /// and `-` alike, and [`fit_ref`] drops whole segments before it truncates
@@ -407,13 +408,20 @@ pub(crate) fn ref_slug_of<'a>(id: &'a str, repo: &str) -> Option<&'a str> {
         // slug is empty carries no repo part and no separator for one.
         return non_empty(body);
     }
-    // The full spelling first and the cut one second. `value` cuts the repo slug
-    // to REPO_SLUG_LENGTH only when the id would otherwise overflow, so both are
-    // live — and trying the cut one first would eat the front of the ref for
-    // every repo whose slug is inside the cap.
+    // Both spellings `value` can have used, because it cuts the repo slug to
+    // REPO_SLUG_LENGTH only when the id would otherwise overflow.
     let cut = head(&repo_slug, REPO_SLUG_LENGTH).trim_matches('-');
-    let rest = after_part(body, &repo_slug).or_else(|| after_part(body, cut))?;
-    non_empty(rest)
+    match (after_part(body, &repo_slug), after_part(body, cut)) {
+        // Both explain the id and they disagree about where the boundary is, so
+        // nothing here knows which spelling produced it: it takes a repo slug over
+        // the cap with a dash at exactly the cap, and a ref beginning with the
+        // segment after it. Answering one of them is how a row shows a branch that
+        // is not the branch, so it answers neither and the caller draws the id
+        // whole.
+        (Some(under), Some(over)) if under != over => None,
+        (Some(rest), _) | (None, Some(rest)) => non_empty(rest),
+        (None, None) => None,
+    }
 }
 
 /// *body* with `<part>-` taken off the front, or `None` if it does not start that
@@ -1757,5 +1765,60 @@ mod tests {
 
         assert_eq!(id, "main-gakebofi");
         assert_eq!(ref_slug_of(&id, "_"), Some("main"));
+    }
+
+    #[test]
+    fn an_id_two_repo_spellings_both_explain_is_refused_rather_than_guessed() {
+        // A repo slug over the cap with a dash at exactly the cap, and a branch
+        // starting with the segment after it. Both readings derive this very id:
+        //
+        //   repo `…-bbbb` untruncated, ref slug `cccccccccc`
+        //   repo cut to the twenty a's, ref slug `bbbb-cccccccccc`   <- the real one
+        //
+        // Nothing in the id says which, because the cut is applied on a length the
+        // ref has already been fitted to and neither reading overruns it. Reading it
+        // one way and answering confidently is how a row shows a branch that is not
+        // the branch, so it answers `None` and the caller draws the id whole.
+        let repo = "aaaaaaaaaaaaaaaaaaaa-bbbb";
+        let id = derived("o", repo, "bbbb-cccccccccc");
+
+        assert_eq!(id, "aaaaaaaaaaaaaaaaaaaa-bbbb-cccccccccc-vekozazi");
+        assert!(slug(repo).len() > REPO_SLUG_LENGTH, "the cap has to bite");
+        assert_eq!(ref_slug_of(&id, repo), None);
+    }
+
+    #[test]
+    fn only_a_repo_slug_with_a_dash_at_the_cap_can_be_read_two_ways() {
+        // The refusal above is conservative, and this is the whole of what it costs.
+        // Two spellings can only both match when the cut lands on a `-`: the cut
+        // reading needs a `-` at the cap in the *body*, and the full reading needs
+        // the same position in the *slug*, so a repo slug without one there is read
+        // apart under exactly one spelling however long it is.
+        //
+        // For this repo that means some ids a cleverer reader could resolve are
+        // refused too — `main` below is only derivable under the full spelling,
+        // since the cut one would not have overflowed. Recovering it means
+        // re-deriving the cut rule from a ref that has already been fitted, which is
+        // arithmetic this module would have to keep in step with `value` forever, for
+        // a prettier column on repositories named like this one.
+        let dashed = "aaaaaaaaaaaaaaaaaaaa-bbbb";
+        assert_eq!(ref_slug_of(&derived("o", dashed, "main"), dashed), None);
+
+        // Only one spelling matches here, so it is answered: `bbbb` is not the front
+        // of this ref, so there is nothing for the full spelling to strip.
+        let cut = derived("o", dashed, "release/9999999999999999999999999176");
+        assert_eq!(cut, "aaaaaaaaaaaaaaaaaaaa-release-999999999-dobakero");
+        assert_eq!(ref_slug_of(&cut, dashed), Some("release-999999999"));
+
+        // And a repo slug just as far over the cap with no dash at it is unaffected,
+        // which is every long repository name that is not this shape.
+        let plain = "aaaaaaaaaaaaaaaaaaaaabbbb";
+        assert!(slug(plain).len() > REPO_SLUG_LENGTH, "the cap has to bite");
+        assert_eq!(
+            ref_slug_of(&derived("o", plain, "main"), plain),
+            Some("main")
+        );
+        let plain_cut = derived("o", plain, "release/9999999999999999999999999176");
+        assert_eq!(ref_slug_of(&plain_cut, plain), Some("release-999999999"));
     }
 }

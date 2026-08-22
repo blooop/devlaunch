@@ -135,9 +135,12 @@ pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> 
         // would have to be about which names devpod permits, and a row this picker
         // can act on is not the place to borrow another program's validation.
         //
-        // Every remaining split goes back to its id, which leaves one shape and a
-        // last column that is unique per row. Bluntness is affordable here: nothing
-        // but a name built out of another row's columns ever reaches it.
+        // Every remaining split goes back to its id, which is what this can offer
+        // and not a promise of distinctness: two workspaces of one id in two devpod
+        // contexts draw one row whatever is done here, because an id is unique per
+        // context and nothing in an `Offer` carries the context. That predates the
+        // columns — `<owner> | <id>` collided the same way — and closing it means
+        // addressing a workspace by more than its id.
         for naming in &mut namings {
             naming.tail = Tail::Whole(naming.id.clone());
         }
