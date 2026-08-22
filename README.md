@@ -86,6 +86,12 @@ install for it and why `dl` with its input redirected away from a terminal simpl
 one. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
 stop something, it does not look for a workspace called `stop`.
 
+For the verbs that finish on their own — `up`, `stop`, `rm`, `code` and `dotfiles` — the selector
+takes more than one row: TAB marks any number and Enter applies the verb to each in turn, so
+`dl rm` can clear five dead workspaces in one visit. The forms that end in an interactive session
+(`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several of those
+would just be sessions queued behind each other's exit.
+
 ### Examples
 
 ```bash
@@ -129,7 +135,8 @@ transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
 | `dl <user/repo> --autorm` | Attach, and [delete the workspace when the session ends](#--autorm-the-throwaway-workspace) |
 
 Every verb in that table also takes the workspace second — `dl stop <user/repo>` — and with no
-workspace at all it opens the selector and applies itself to what you pick. `stop` and `rm` answer to
+workspace at all it opens the selector and applies itself to what you pick — everything you pick,
+for the verbs the selector lets TAB mark several of. `stop` and `rm` answer to
 `--stop` and `--rm` as well, since the flag spellings were documented long before they worked.
 
 ### `--stop` and `--rm` can be appended to a line that says something else

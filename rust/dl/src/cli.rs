@@ -200,6 +200,27 @@ pub(crate) enum Verb {
 }
 
 impl Verb {
+    /// Whether the selector may hand this verb several workspaces at once.
+    ///
+    /// Yes for the verbs that finish on their own: `up`, `stop`, `rm`, `code` and
+    /// `dotfiles` apply to each workspace in turn and return, so `dl rm` can mark
+    /// five dead workspaces and clear them in one visit — the same TAB-to-mark
+    /// batch `fzf --multi` taught everyone. No for anything that ends in an
+    /// interactive session — attach, `--`, and the three rebuild verbs, whose
+    /// launch attaches when it is done (`LaunchVerb::attaches`): several of those
+    /// would be sessions run back to back, each waiting on the last one's exit,
+    /// which is a queue nobody asked the picker for.
+    /// Exhaustive rather than a `matches!` with a default, so a new verb does not
+    /// get single-select by omission: whoever adds the arm answers the question.
+    pub(crate) fn several_at_once(&self) -> bool {
+        match self {
+            Verb::Up | Verb::Stop | Verb::Remove { .. } | Verb::Code | Verb::Dotfiles => true,
+            Verb::Attach { .. } | Verb::Run(..) | Verb::Recreate | Verb::Restart | Verb::Reset => {
+                false
+            }
+        }
+    }
+
     /// The word this verb is spelled with, for a diagnostic that names it.
     pub(crate) fn word(&self) -> &'static str {
         match self {
@@ -253,7 +274,8 @@ pub(crate) enum Command {
     Reconcile { yes: bool },
     /// `dl --purge [-y]`
     Purge { yes: bool },
-    /// A verb with no workspace named: the fuzzy selector picks one (M8).
+    /// A verb with no workspace named: the fuzzy selector picks one (M8) — or,
+    /// for a verb that applies per workspace ([`Verb::several_at_once`]), several.
     Select {
         verb: Verb,
         devcontainer: Option<DevcontainerPath>,
@@ -505,7 +527,10 @@ Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   dotfiles                           Refresh dotfiles (chezmoi update)
   -- <command>                       Run one command inside it
 
-A verb with no workspace named picks one interactively.
+A verb with no workspace named picks interactively. For up, stop, rm, code and
+dotfiles, TAB marks several rows and the verb applies to each in turn — dl rm can
+clear five workspaces in one visit. The forms that end in a session (attach, --,
+restart, recreate, reset) take exactly one.
 
 --stop and --rm are the same two verbs as flags, and unlike the words they may be
 appended to a line that already says something else, which then loses:
