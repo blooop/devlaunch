@@ -210,11 +210,15 @@ impl Verb {
     /// launch attaches when it is done (`LaunchVerb::attaches`): several of those
     /// would be sessions run back to back, each waiting on the last one's exit,
     /// which is a queue nobody asked the picker for.
+    /// Exhaustive rather than a `matches!` with a default, so a new verb does not
+    /// get single-select by omission: whoever adds the arm answers the question.
     pub(crate) fn several_at_once(&self) -> bool {
-        matches!(
-            self,
-            Verb::Up | Verb::Stop | Verb::Remove { .. } | Verb::Code | Verb::Dotfiles
-        )
+        match self {
+            Verb::Up | Verb::Stop | Verb::Remove { .. } | Verb::Code | Verb::Dotfiles => true,
+            Verb::Attach { .. } | Verb::Run(..) | Verb::Recreate | Verb::Restart | Verb::Reset => {
+                false
+            }
+        }
     }
 
     /// The word this verb is spelled with, for a diagnostic that names it.
