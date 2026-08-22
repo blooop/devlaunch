@@ -645,11 +645,17 @@ enum ForcePlace {
     /// `--force` in `args[1]`: the verb is `--force`, and this is the target it
     /// followed.
     VerbSlot { target: String },
-    /// `--force` in `args[2:]`, where it means what it says.
+    /// `--force` past both name slots, where it means what it says.
     Trailing,
 }
 
-fn force_placement(argv: &[String]) -> Option<ForcePlace> {
+/// Spelled once, because the placement rule asks about this exact word in four
+/// places and a typo in any of them is a silent forced delete.
+const FORCE: &str = "--force";
+
+/// The word stream the slots are counted in: argv up to `--`, without the
+/// `--devcontainer` value, which is a path rather than a name.
+fn slot_stream(argv: &[String]) -> Vec<&str> {
     let mut stream = Vec::new();
     let mut rest = argv.iter();
     while let Some(argument) = rest.next() {
@@ -665,13 +671,67 @@ fn force_placement(argv: &[String]) -> Option<ForcePlace> {
         }
         stream.push(argument.as_str());
     }
-    match stream.iter().position(|word| *word == "--force") {
+    stream
+}
+
+fn force_placement(argv: &[String]) -> Option<ForcePlace> {
+    let stream = slot_stream(argv);
+    match stream.iter().position(|word| *word == FORCE) {
         None => None,
         Some(0) => Some(ForcePlace::WorkspaceSlot),
         Some(1) => Some(ForcePlace::VerbSlot {
             target: stream[0].to_owned(),
         }),
         Some(_) => Some(ForcePlace::Trailing),
+    }
+}
+
+/// The same question on a *flag-verb* line, where the verb is `--rm` or `--stop`
+/// rather than a word — asked of a stream the verb flag is not in.
+///
+/// **The flag is not a name, so it holds no slot.** Counting it shifts every slot
+/// by one, and that shift is what let a mid-line `--force` read as the modifier:
+/// `dl --rm stop --force ws` put `--rm` in slot 0 and so found `--force` in slot 2,
+/// with the workspace it deleted still *after* it. The word spelling of the same
+/// shape, `dl stop --force ws`, refuses that placement, and these two are meant to
+/// be the same verb read the same way.
+///
+/// **With the flag out, the modifier's slot is "no name follows", not "slot 2".**
+/// The flag supplies the verb, so the longest line left is a name, a name and a
+/// `--force`; asking for slot 2 exactly would be the same off-by-one from the other
+/// end. Said as "nothing after it", the rule also keeps `dl --rm --force` meaning a
+/// forced remove of whatever the selector picks: a line naming no workspace has
+/// nothing for `--force` to have been mistaken for, so there is nothing there for
+/// the guard to protect and refusing it would cost a working command for nothing.
+fn flag_verb_force_placement(argv: &[String], flag: &str) -> Option<ForcePlace> {
+    let stream: Vec<&str> = slot_stream(argv)
+        .into_iter()
+        .filter(|word| *word != flag)
+        .collect();
+    let at = stream.iter().position(|word| *word == FORCE)?;
+    if at + 1 == stream.len() {
+        return Some(ForcePlace::Trailing);
+    }
+    Some(match at {
+        0 => ForcePlace::WorkspaceSlot,
+        _ => ForcePlace::VerbSlot {
+            target: stream[0].to_owned(),
+        },
+    })
+}
+
+/// The refusal a `--force` standing in the verb slot earns, in either grammar.
+///
+/// A *retired* verb as the target earns the retirement's sentence instead: `dl
+/// prune --force` was the remove verb with `--force` and no target, and a
+/// diagnostic naming `--force` explains nothing about why the line stopped working.
+fn force_in_the_verb_slot(target: String) -> GrammarError {
+    match RetiredWord::of(&target) {
+        Some(retired) => GrammarError::RetiredVerb(retired),
+        None => GrammarError::UnknownVerb {
+            target,
+            word: FORCE.to_owned(),
+        },
     }
 }
 
@@ -771,9 +831,12 @@ fn flag_of(chosen: Chosen) -> &'static str {
 /// [`GrammarError::UnknownVerb`] and the second took `prune` as the *workspace*.
 ///
 /// The displaced words are named rather than dropped in silence — see
-/// [`Overridden`] — with one exception: a word spelling the same verb the flag
+/// [`Overridden`] — with two exceptions. A word spelling the same verb the flag
 /// does displaced nothing, because it is the line saying one thing twice, which is
-/// exactly what appending `--rm` to a `prune` line produces.
+/// exactly what appending `--rm` to a `prune` line produces. And a `--force` in the
+/// workspace slot takes the target for itself, so every word on the line falls away
+/// with it, unnamed: that line resolves to a workspace called `--force`, which
+/// exists nowhere, so nothing is acted on for the notice to be about.
 ///
 /// **Divergence row 30.** Row 15 made the flag spellings work at all; this is the
 /// one thing they do that the words cannot.
@@ -801,12 +864,11 @@ fn verb_command(
         });
     }
     let devcontainer = devcontainer_of(cli)?;
-    // The same positional recovery the word grammar runs: `--force` means force
-    // only in the trailing slot, the one place Python read it, and the flag verb
-    // is a word in the stream that position is counted in. clap-parsed Rust
-    // accepted the flag anywhere and *deleted* — the bypass this closes was
-    // `dl --rm --force <ws>`, refused as `dl rm --force <ws>` always was.
-    if let Some(place) = force_placement(argv) {
+    // The same positional recovery the word grammar runs, counted the way a
+    // flag-verb line is shaped — see [`flag_verb_force_placement`]. `--force` is
+    // the modifier only where no name follows it; clap-parsed Rust accepted the
+    // flag anywhere and *deleted*, which is the bypass this closes.
+    if let Some(place) = flag_verb_force_placement(argv, flag) {
         match place {
             ForcePlace::WorkspaceSlot => {
                 // The workspace named `--force`, as in the word grammar: routed
@@ -814,25 +876,13 @@ fn verb_command(
                 // workspace '--force'" a bare unknown name does, with the flag's
                 // force reading dropped along with the rest of the line.
                 return Ok(Command::Workspace {
-                    target: "--force".to_owned(),
+                    target: FORCE.to_owned(),
                     verb: word.with(false),
                     devcontainer,
                 }
                 .alone());
             }
-            ForcePlace::VerbSlot { target } => {
-                // A retired verb in that slot earns the retirement's sentence,
-                // exactly as it does in the word grammar: `dl prune --force`
-                // recalled with the flag appended is still the retirement's
-                // problem, not `--force`'s.
-                if let Some(retired) = RetiredWord::of(&target) {
-                    return Err(GrammarError::RetiredVerb(retired));
-                }
-                return Err(GrammarError::UnknownVerb {
-                    target,
-                    word: "--force".to_owned(),
-                });
-            }
+            ForcePlace::VerbSlot { target } => return Err(force_in_the_verb_slot(target)),
             // Where `--force` really is the modifier.
             ForcePlace::Trailing => {}
         }
@@ -917,7 +967,7 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                 // path so it earns the same "Unknown workspace '--force'" a bare
                 // unknown name does.
                 return Ok(Command::Workspace {
-                    target: "--force".to_owned(),
+                    target: FORCE.to_owned(),
                     // `Autorm::No` by the check above, not by choice: a line holding
                     // both flags was refused before it got here.
                     verb: Verb::Attach {
@@ -926,20 +976,7 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                     devcontainer,
                 });
             }
-            ForcePlace::VerbSlot { target } => {
-                // A *retired* verb in the workspace slot earns the retirement's
-                // sentence instead. `dl prune --force` was the remove verb with
-                // `--force` and no target — the selector form — and a diagnostic
-                // naming `--force` explains nothing about why the line stopped
-                // working.
-                if let Some(retired) = RetiredWord::of(&target) {
-                    return Err(GrammarError::RetiredVerb(retired));
-                }
-                return Err(GrammarError::UnknownVerb {
-                    target,
-                    word: "--force".to_owned(),
-                });
-            }
+            ForcePlace::VerbSlot { target } => return Err(force_in_the_verb_slot(target)),
             // Where `--force` really is the modifier, and so the one place the pair
             // with `--autorm` can be told from a workspace that happens to be
             // called `--force`.
@@ -1107,6 +1144,62 @@ mod tests {
         Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied()))
             .expect_err("clap should refuse this")
             .kind()
+    }
+
+    /// What a line resolves to, or `None` when clap or the grammar refused it.
+    ///
+    /// The matrix tests below walk lines that are *meant* to be refused, so a
+    /// refusal has to be a skip rather than the panic [`parse`] raises.
+    fn resolved_or_refused(argv: &[&str]) -> Option<Command> {
+        let cli = Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied())).ok()?;
+        let raw: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+        resolve(cli, &raw).ok().map(|resolved| resolved.command)
+    }
+
+    /// Every command line of up to `longest` tokens over `alphabet`, no token twice.
+    ///
+    /// The placement rule is a rule about *order*, so the space it has to hold over
+    /// is the orderings of the tokens that can occupy a slot — small enough to walk
+    /// outright, and far too large to write down as named cases. Named cases are
+    /// what missed the mid-line `--force` in the first place.
+    fn every_line(alphabet: &[&'static str], longest: usize) -> Vec<Vec<&'static str>> {
+        fn grow(
+            alphabet: &[&'static str],
+            longest: usize,
+            prefix: &mut Vec<&'static str>,
+            lines: &mut Vec<Vec<&'static str>>,
+        ) {
+            if prefix.len() == longest {
+                return;
+            }
+            for token in alphabet {
+                if prefix.contains(token) {
+                    continue;
+                }
+                prefix.push(token);
+                lines.push(prefix.clone());
+                grow(alphabet, longest, prefix, lines);
+                prefix.pop();
+            }
+        }
+        let mut lines = Vec::new();
+        grow(alphabet, longest, &mut Vec::new(), &mut lines);
+        lines
+    }
+
+    /// Whether the line deletes a workspace despite work that is nowhere else —
+    /// the outcome the placement rule exists to keep out of reach.
+    fn deletes_by_force(command: &Command) -> bool {
+        matches!(
+            command,
+            Command::Select {
+                verb: Verb::Remove { force: true },
+                ..
+            } | Command::Workspace {
+                verb: Verb::Remove { force: true },
+                ..
+            }
+        )
     }
 
     /// `dl <ws>` — the plain attach, which is what almost every case below wants.
@@ -1842,19 +1935,41 @@ mod tests {
 
     #[test]
     fn a_force_in_the_verb_slot_is_refused_on_a_flag_verb_line_too() {
-        // `dl --rm --force ws` puts `--force` in the verb slot, exactly where
-        // `dl rm --force ws` puts it — and the word spelling refuses that slot.
-        // clap strips the flag wherever it sits, so without the placement check
-        // the flag spelling silently force-deleted instead.
+        // The verb slot on a flag-verb line is the *second* name, because the flag
+        // is the verb and holds no name slot of its own. So `dl --rm stop --force
+        // ws` is the flag spelling of `dl stop --force ws`, and gets the word
+        // spelling's answer: an unknown command, about the workspace `stop`.
+        //
+        // Reading `--rm` itself as a name is the off-by-one that let this line
+        // through — it put `--force` a slot late, in the modifier's slot, with the
+        // workspace it force-deleted still after it.
         assert_eq!(
-            parse(&["--rm", "--force", "ws"]),
+            parse(&["stop", "--force", "ws"]),
             Err(GrammarError::UnknownVerb {
-                target: "--rm".to_owned(),
+                target: "stop".to_owned(),
                 word: "--force".to_owned()
-            })
+            }),
+            "the word spelling this one has to agree with"
         );
+        // Wherever the flag itself was typed: it is a suffix, so its position on the
+        // line says nothing about which slot `--force` is in.
+        for line in [
+            vec!["--rm", "stop", "--force", "ws"],
+            vec!["stop", "--rm", "--force", "ws"],
+        ] {
+            assert_eq!(
+                parse(&line),
+                Err(GrammarError::UnknownVerb {
+                    target: "stop".to_owned(),
+                    word: "--force".to_owned()
+                }),
+                "dl {}",
+                line.join(" ")
+            );
+        }
         // Trailing is where `--force` means force, and appending it there to
-        // either flag-verb spelling still works.
+        // either flag-verb spelling still works — including behind a whole line
+        // the flag overrode, which is what the suffix form is for.
         assert_eq!(
             parse(&["--rm", "ws", "--force"]),
             Ok(workspace("ws", Verb::Remove { force: true }))
@@ -1863,6 +1978,49 @@ mod tests {
             parse(&["ws", "--rm", "--force"]),
             Ok(workspace("ws", Verb::Remove { force: true }))
         );
+        assert_eq!(
+            parse(&["--rm", "stop", "ws", "--force"]),
+            Ok(workspace("ws", Verb::Remove { force: true })),
+            "nothing follows --force here, so it is the modifier it looks like"
+        );
+    }
+
+    #[test]
+    fn no_line_forces_a_delete_with_a_name_still_ahead_of_it() {
+        // The placement rule, asked of the whole argv space instead of the handful
+        // of lines a named test remembers to write down — and it is exactly the
+        // lines nobody wrote down that got through: `dl --rm stop --force ws` sat
+        // one slot past where the named cases looked and force-deleted `ws`.
+        //
+        // The property, said without reference to slot numbers: `--force` is the
+        // force modifier only when no *name* follows it. A name after it means it
+        // is standing in a slot where a workspace or a verb goes, and honouring it
+        // there is the silent forced delete this whole guard exists to stop.
+        //
+        // The two verb flags are not names — they are the verb, so there is nothing
+        // for `--force` to have been mistaken for — which is why they come out of
+        // the stream before the question is asked. Counting them was the off-by-one.
+        const VERB_FLAGS: [&str; 2] = ["--rm", "--stop"];
+        let alphabet = ["ws", "other", "stop", "prune", "--rm", "--stop", "--force"];
+        for line in every_line(&alphabet, 4) {
+            let Some(command) = resolved_or_refused(&line) else {
+                continue;
+            };
+            if !deletes_by_force(&command) {
+                continue;
+            }
+            let names: Vec<&str> = line
+                .iter()
+                .copied()
+                .filter(|token| !VERB_FLAGS.contains(token))
+                .collect();
+            assert_eq!(
+                names.last(),
+                Some(&"--force"),
+                "dl {} force-deletes with a name still after --force: {command:?}",
+                line.join(" ")
+            );
+        }
     }
 
     #[test]
@@ -1871,15 +2029,23 @@ mod tests {
         // reads as a workspace *name* — so the line targets a workspace called
         // `--force`, earns "Unknown workspace '--force'" at runtime, and
         // force-deletes nothing, instead of clap's silent forced delete of ws.
+        for line in [
+            vec!["--force", "ws", "--rm"],
+            vec!["--rm", "--force", "ws"],
+            vec!["--force", "--rm", "ws"],
+        ] {
+            assert_eq!(
+                parse(&line),
+                Ok(workspace(FORCE, Verb::Remove { force: false })),
+                "dl {}",
+                line.join(" ")
+            );
+        }
+        // And `--stop` reads it the same way, though `stop` would have ignored the
+        // force either way: the slot is decided before the verb is consulted.
         assert_eq!(
-            parse(&["--force", "ws", "--rm"]),
-            Ok(workspace("--force", Verb::Remove { force: false }))
-        );
-        // With no other word it is still that name, not a forced remove handed
-        // to whatever a selector picks.
-        assert_eq!(
-            parse(&["--force", "--rm"]),
-            Ok(workspace("--force", Verb::Remove { force: false }))
+            parse(&["--force", "ws", "--stop"]),
+            Ok(workspace(FORCE, Verb::Stop))
         );
     }
 

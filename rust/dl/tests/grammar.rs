@@ -14,6 +14,9 @@
 //!   accepts `--force` in any position and strips it; Python read it positionally
 //!   (`"--force" in args[2:]`, dl.py:4726), so a `--force` in the workspace or verb
 //!   slot was an unknown name and the delete never happened. The port deleted.
+//!   The flag spellings of the same two verbs are held to the same rule, though
+//!   Python had no such spelling to capture: `--rm` is the verb and holds no name
+//!   slot, so a `--force` with a name still after it is in a name slot there too.
 //! - a path spec normalising to an empty leaf (`dl /`, `//`, `/.`): the derived id
 //!   was empty, handed to devpod as `--id ""`, and run to a reported success. The
 //!   empty derived id is now refused (its wording is the port's, since Python
@@ -167,6 +170,31 @@ fn force_after_the_verb_still_deletes() {
         "Successfully deleted workspace blooop-devlaunch-main-4f3a2b1c\n"
     );
     assert!(!world.clone_is_there(), "the clone was deleted");
+}
+
+#[test]
+fn force_ahead_of_the_workspace_on_a_flag_verb_line_deletes_nothing() {
+    // The same guard, in the spelling that slipped past it. `--rm` is a flag rather
+    // than a positional word, so a line can carry a word, then `--force`, then the
+    // workspace — and `--force` sitting *ahead of the name it deletes* is precisely
+    // the placement the word grammar refuses (`dl stop --force <ws>`). The flag
+    // spelling honoured it and deleted, which is the same silent forced delete the
+    // two tests above exist to prevent, one slot further along the line.
+    let world = World::full();
+    let run = world.dl(&["--rm", "stop", "--force", "blooop/devlaunch@main"]);
+
+    assert_eq!(run.code, Some(1), "stderr: {}", run.err);
+    assert_eq!(run.out, "");
+    // The word spelling's own sentence, about the same slot: `--rm` is the verb, so
+    // the name `--force` displaced is the second one, `stop`.
+    assert_eq!(
+        run.err,
+        "Unknown command '--force'. Use 'dl stop -- --force' to run a shell command.\n"
+    );
+    assert!(
+        world.clone_is_there(),
+        "the clone must not have been deleted"
+    );
 }
 
 #[test]
