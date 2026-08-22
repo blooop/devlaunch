@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The fuzzy selector's search bar is at the top of the picker, not the bottom.**
+  The prompt is now the first line and the matches read downward from it, so the
+  best match is the row next to what you are typing rather than the one furthest
+  from it, and narrowing a query no longer walks the whole list up past the cursor.
+  skim's default layout is the other way round — query at the bottom, list growing
+  upward — and `dl` had been taking that default rather than choosing it. Nothing
+  else about the picker moves: devpod's order is still the order, and TAB still
+  marks any number of rows for the verbs that take several.
+
+  The layout is now pinned by tests that open a terminal, run `dl` on it and read
+  the screen back, rather than by ones that read the options `dl` asked for. That
+  distinction is the whole of why it is worth saying: skim carries a `reverse` flag
+  next to the layout, documented as shorthand for exactly this, which is expanded by
+  a `build()` that the entry point `dl` uses never calls — so setting it compiles,
+  reviews as the fix, and draws the old picture. Measured, not reasoned about.
+
 ## [0.6.0] - 2026-08-22
 
 ### Added

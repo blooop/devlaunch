@@ -533,6 +533,7 @@ dependencies = [
  "devlaunch-runner",
  "devlaunch-test-support",
  "libc",
+ "portable-pty",
  "serde",
  "serde_json",
  "skim",

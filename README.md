@@ -83,7 +83,8 @@ dl <user/repo> -- <command>      # Run shell command in workspace
 
 The selector is built in — no `fzf` on `PATH` and no `iterfzf`, which is why there is nothing to
 install for it and why `dl` with its input redirected away from a terminal simply declines to open
-one. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
+one. It draws the search bar on the top line with the matches reading downward from it, so the
+first match is the row nearest what you are typing. A reserved verb wins over a workspace name of the same spelling: `dl stop` opens the selector to
 stop something, it does not look for a workspace called `stop`.
 
 For the verbs that finish on their own — `up`, `stop`, `rm`, `code` and `dotfiles` — the selector
