@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The launch-latency trend has been publishing nothing since 0.3.0, and the bench
+  workflow now puts devpod on the PATH it runs `dl` from.** `dl` shells out to a bare
+  `devpod`, devpod is a pixi dependency rather than an install step, and the priming
+  launch is the one launch in that job that runs outside `pixi run` — so it had no
+  devpod at all. `devpod not found on PATH`, exit 127, eighty seconds, nothing timed:
+  23 consecutive merges to main, every one from the commit that retired the Python
+  tree through 0.10.0.
+
+  The same edit is what made the trend measure the right build in the first place —
+  before it, these steps ran `pixi run dl`, which resolved to the editable Python
+  install — so the fix is a devpod symlink into the directory that already puts the
+  release `dl` on PATH, not a return to `pixi run dl`. A symlink rather than the pixi
+  environment's whole `bin`, because that directory carries a python and a git too,
+  and what the benched launch resolves is part of what is being measured.
+
+
 ## [0.10.0] - 2026-08-22
 
 ### Changed
