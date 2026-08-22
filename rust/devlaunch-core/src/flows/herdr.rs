@@ -1077,8 +1077,7 @@ mod tests {
             &mountinfo,
             format!(
                 "23 1 0:24 / / rw - overlay overlay rw\n\
-                 24 23 0:25 /home/ags{} {} rw - ext4 /dev/sda1 rw\n",
-                "",
+                 24 23 0:25 /home/on-the-host {} rw - ext4 /dev/sda1 rw\n",
                 home.display()
             ),
         )
