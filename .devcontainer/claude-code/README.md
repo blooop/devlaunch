@@ -241,14 +241,12 @@ These are the paths this feature mounts, and all of them have to exist before th
 container is created:
 
 ```bash
-~/.claude/
-├── CLAUDE.md           # Global instructions
-├── settings.json       # Claude settings
+~/.claude/              # the directory itself, mounted read-write
 ├── agents/             # Custom agents
 ├── commands/           # Custom commands
 ├── hooks/              # Event hooks
-├── .credentials.json   # OAuth tokens
-└── .claude.json        # Account and workspace state
+├── skills/             # Agent Skills
+└── wf-skills/          # Skill bodies
 ```
 
 **None of them is optional.** A missing one aborts the container create rather
@@ -256,13 +254,14 @@ than producing a warning — see "The host-side prerequisite" above, which is ho
 this is normally handled. By hand, it is:
 
 ```bash
-mkdir -p ~/.claude/{agents,commands,hooks}
-touch ~/.claude/CLAUDE.md
-echo '{}' > ~/.claude/settings.json
+mkdir -p ~/.claude/{agents,commands,hooks,skills,wf-skills}
 ```
 
-(A host that has ever run `claude` already has `.credentials.json` and
-`.claude.json`.)
+Only directories appear here, and that is the point of the layout rather than an
+omission: nothing is mounted a file at a time, so no file has to exist for the
+create to succeed. `CLAUDE.md`, `settings.json`, `.credentials.json` and
+`.claude.json` are reached through the directory mount, and Claude writes each of
+them itself on first use.
 
 ### Container
 
@@ -378,7 +377,7 @@ devpod up . --recreate
 
 ## Modifying Configuration
 
-Every mounted configuration file except `.credentials.json` and `.claude.json` is read-only. You **cannot** modify Claude settings from within the container.
+The five instruction directories — `agents/`, `commands/`, `hooks/`, `skills/`, `wf-skills/` — are read-only, so you **cannot** add or change an agent, command, hook or skill from within the container. Everything else under `~/.claude` is writable and reaches the host, `settings.json` and `CLAUDE.md` included; see "Why only directories are mounted" for why those two could not be protected.
 
 To change configuration:
 
