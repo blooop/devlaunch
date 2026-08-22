@@ -50,6 +50,10 @@ as_root() {
 
 heal_stale_file_mount() {
     mounted="$1"
+    # mountinfo is Linux; a macOS host runs devpod too, and five awk
+    # complaints per create is this heal charging a platform it cannot
+    # even be needed on.
+    [ -r /proc/self/mountinfo ] || return 0
     case "$(awk -v p="$mounted" '$5 == p { r = $4 } END { print r }' /proc/self/mountinfo)" in
     *"//deleted") ;;
     *) return 0 ;;
