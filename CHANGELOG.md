@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-22
+
+### Changed
+
+- **The fuzzy selector's columns are the owner and the workspace id.** The picker
+  drew `id | local | /a/long/path`, and both of the columns that have gone were
+  answering a question nobody standing at the picker is asking: the middle one
+  reads `local` for every workspace `dl` makes, since `dl` always hands devpod a
+  path, and the last is the clone directory `dl` chose and manages — whose own
+  last component is already the id beside it.
+
+  What an id cannot say is whose repository it is. An id is
+  `<repo-slug>-<ref-slug>-<suffix>`, so it carries the repo and no owner, and a
+  fork and its upstream are two rows spelled the same. The owner column is
+  derived from the source devpod already reported — a git URL's owner, or `dl`'s
+  own clone layout read backwards — and never from `metadata.json`, which records
+  the owner outright but is a file a warm launch must be able to prove it never
+  opened.
+
+  This is a search change as much as a display one: the row text is what the
+  fuzzy matcher matches, so typing an owner now narrows the list, which no
+  arrangement of the id alone could do.
+
+  A workspace whose owner `dl` cannot establish — one opened from a path, from a
+  URL that is not GitHub's, or a clone under a `repos_dir` a `config.toml` moved
+  outside the cache — shows `-`, padded like any other owner so the ids stay in
+  one column.
+
 ## [0.7.0] - 2026-08-22
 
 ### Added
