@@ -854,6 +854,7 @@ pub devlaunch_core::flows::launch::LaunchNotice::SshCommand
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles
 pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
 pub devlaunch_core::flows::launch::LaunchNotice::TokenNotStaged
 pub devlaunch_core::flows::launch::LaunchNotice::TokenNotStaged::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::WaitingForSiblingLaunch
@@ -1016,6 +1017,19 @@ pub fn devlaunch_core::flows::launch::SessionRefused::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::launch::SessionRefused
 pub fn devlaunch_core::flows::launch::SessionRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::SessionRefused
+pub enum devlaunch_core::flows::launch::TerminalTitle
+pub devlaunch_core::flows::launch::TerminalTitle::Off
+pub devlaunch_core::flows::launch::TerminalTitle::Write(alloc::string::String)
+impl devlaunch_core::flows::launch::TerminalTitle
+pub fn devlaunch_core::flows::launch::TerminalTitle::osc(&self) -> core::option::Option<&str>
+impl core::clone::Clone for devlaunch_core::flows::launch::TerminalTitle
+pub fn devlaunch_core::flows::launch::TerminalTitle::clone(&self) -> devlaunch_core::flows::launch::TerminalTitle
+impl core::cmp::Eq for devlaunch_core::flows::launch::TerminalTitle
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::TerminalTitle
+pub fn devlaunch_core::flows::launch::TerminalTitle::eq(&self, &devlaunch_core::flows::launch::TerminalTitle) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::TerminalTitle
+pub fn devlaunch_core::flows::launch::TerminalTitle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::TerminalTitle
 pub struct devlaunch_core::flows::launch::Cold<'a, 'r>
 pub devlaunch_core::flows::launch::Cold::clones: &'a devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
 pub devlaunch_core::flows::launch::Cold::storage: &'a mut devlaunch_core::domain::metadata::MetadataStorage

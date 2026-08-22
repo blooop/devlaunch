@@ -244,11 +244,12 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     assert_eq!(
         run.err.lines().collect::<Vec<&str>>(),
         [
-            "aid -> dl devlaunch-main-zovomobo -- 'IS_SANDBOX=1 claude \
-             --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
+            "aid -> dl devlaunch-main-zovomobo -- 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 \
+             IS_SANDBOX=1 claude --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
             "Workspace devlaunch-main-zovomobo is already running, attaching...",
-            "SSH command: devpod ssh devlaunch-main-zovomobo --command bash -lc 'IS_SANDBOX=1 \
-             claude --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
+            "SSH command: devpod ssh devlaunch-main-zovomobo --command bash -lc \
+             'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
         ]
     );
     assert_eq!(
@@ -256,7 +257,8 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
         [
             format!("devpod status {MAIN} --output json"),
             format!(
-                "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+                "devpod ssh {MAIN} --command bash -lc \
+                 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
                  --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''"
             ),
         ]
@@ -275,7 +277,8 @@ fn no_prompt_starts_the_agents_plain_session() {
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
-            "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+            "devpod ssh {MAIN} --command bash -lc \
+             'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions'"
         )
     );
