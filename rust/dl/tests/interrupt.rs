@@ -421,8 +421,8 @@ fn blocking_session() -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
-fn a_ctrl_c_that_reaches_dl_mid_session_leaves_an_autorm_workspace_standing() {
-    // The limit `--autorm` documents, measured rather than reasoned about. dl's
+fn a_ctrl_c_that_reaches_dl_mid_session_leaves_a_throwaway_workspace_standing() {
+    // The limit `--rm` documents, measured rather than reasoned about. dl's
     // SIGINT disposition is a signal handler, and a handler may not run a removal —
     // it cannot allocate, cannot lock, and does not return — so a SIGINT delivered
     // *to dl* ends the process before the removal it was going to make.
@@ -438,7 +438,7 @@ fn a_ctrl_c_that_reaches_dl_mid_session_leaves_an_autorm_workspace_standing() {
     let ssh_started = root_path.join("ssh.started");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
-        .args(["devlaunch-main-zovomobo", "--autorm"])
+        .args(["devlaunch-main-zovomobo", "--rm"])
         .env_clear()
         .keeping_coverage()
         .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))

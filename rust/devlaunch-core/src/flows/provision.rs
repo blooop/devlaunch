@@ -71,6 +71,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 use crate::clients::devpod::{self, Call, NotRun};
+use crate::flows::herdr::{self, HerdrSwitch};
 use crate::notices::Notices;
 use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
@@ -195,6 +196,17 @@ pub(crate) const HOSTNAME_STAGE: StageName = StageName::new("hostname");
 /// The stage that puts `zellij` in the container (see [`ZELLIJ_TOOL`]). Also free
 /// of round trips: it rides the pass every entry into Running already pays.
 pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
+
+/// The stage that wires the agent's lifecycle events to a host-side herdr session
+/// (see [`crate::flows::herdr`]). Free of round trips for the same reason, and
+/// [`Stage::quieter`] because most containers will not satisfy it: it needs a
+/// `python3`, a claude configuration directory of the container's own, and the
+/// socket mount, and the launch is unharmed by any of those being absent.
+pub(crate) const HERDR_STAGE: StageName = StageName::new("herdr");
+
+/// The stage that teaches the shell to keep naming the terminal after this
+/// workspace. Rides the same trip as the three above it.
+pub(crate) const TITLE_STAGE: StageName = StageName::new("title");
 
 // ===========================================================================
 // quoting
@@ -370,23 +382,26 @@ impl ZellijSwitch {
 pub struct Switches {
     pub tools: ToolsSwitch,
     pub zellij: ZellijSwitch,
+    pub herdr: HerdrSwitch,
 }
 
 impl Switches {
-    /// Both switches as the process environment sets them.
+    /// Every switch as the process environment sets it.
     pub fn from_env() -> Self {
         Self {
             tools: ToolsSwitch::from_env(),
             zellij: ZellijSwitch::from_env(),
+            herdr: HerdrSwitch::from_env(),
         }
     }
 
-    /// Both switches on — the default a machine that set neither variable gets,
-    /// and the shape most tests want.
+    /// Every switch on — the default a machine that set no variable gets, and the
+    /// shape most tests want.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const INSTALLING: Self = Self {
         tools: ToolsSwitch::Install,
         zellij: ZellijSwitch::Install,
+        herdr: HerdrSwitch::Report,
     };
 }
 
@@ -462,6 +477,46 @@ pub(crate) fn profile_prepend(line: &str, on_failure: Option<&str>) -> String {
         "grep -qxF {mark} \"$PROFILE\" 2>/dev/null || printf '%s\\n' {mark} {line} >> \"$PROFILE\"{tail}",
         mark = quote(&mark),
         line = quote(line),
+    )
+}
+
+/// The `PS1` edit that keeps a pane named after *title* for the whole session.
+///
+/// dl writes an OSC 2 of its own just before the handover, and for a one-shot
+/// `dl <ws> -- cmd` that is the end of it: nothing in that session renders a prompt.
+/// An **interactive** session overwrites it within a second, because Ubuntu's stock
+/// `~/.bashrc` puts `\e]0;\u@\h: \w\a` at the *front* of `PS1` — so every prompt
+/// renames the pane after the container's hostname, which is the workspace id. This
+/// line is what makes dl's name the one that stands.
+///
+/// **Appended to `PS1`, and that is the whole mechanism.** A `PROMPT_COMMAND` cannot
+/// do it: bash runs that *before* it expands and prints `PS1`, so the stock title
+/// escape would be written afterwards and win. Two escapes in one prompt string are
+/// resolved by the terminal in order, so the last one sets the title — which is why
+/// this goes on the end rather than replacing anything. Nothing is rewritten, so a
+/// `PS1` an image or a dotfile built stays exactly as it was, prompt text included:
+/// the visible `user@host:path$` still names the hostname, and only the tab changes.
+///
+/// Interactive **bash** only, and both halves of that are load-bearing.
+/// `case $- in *i*` keeps the edit out of the login shells that render no prompt,
+/// which is every `dl <ws> -- cmd`, since `bash -lc` reads this file too. And
+/// `$BASH_VERSION` keeps it out of the shells that would render it *literally*:
+/// `$PROFILE` may be `~/.profile`, which any POSIX login shell reads, and `\[`,
+/// `\e` and `\a` mean nothing to dash — `/bin/sh` on Debian and Ubuntu — so an
+/// unguarded append puts the escape on screen at every prompt instead of in the
+/// title. It is the same test Ubuntu's own `~/.profile` makes before it sources
+/// `~/.bashrc`.
+///
+/// *title* is interpolated as its own quoted word rather than into the double-quoted
+/// assignment, so a name holding a `$` or a backtick is text and not shell. A spec
+/// cannot hold either — [`WorkspaceId`](crate::domain::workspace_id::WorkspaceId)
+/// refused every character but word ones, dots, slashes and dashes — but the other
+/// three placements title after a bare devpod name or a path leaf, which this crate
+/// never validated.
+fn profile_title_line(title: &str) -> String {
+    format!(
+        r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"{}"\a\]" ;; esac"#,
+        quote(title)
     )
 }
 
@@ -922,10 +977,25 @@ impl Stage {
 /// installing it is tool provisioning; `DEVLAUNCH_NO_ZELLIJ` covers only zellij, so
 /// a host can keep the `gh`/`claude` guarantee and still stop the stage. Neither
 /// touches the hostname, which is not tools work under either variable.
+/// `title` is the name a shell in this container should keep putting on the terminal,
+/// or `None` for a launch that wants none — which is `DEVLAUNCH_NO_TITLE`, or a spec
+/// that resolved no triple, both decided by the caller. Last of the four because it
+/// is the one that is not a switch, and neither tools switch touches it either:
+/// naming a pane is no more tool provisioning than naming a container is.
+///
+/// **The stage runs on the pass, so the name is installed when a workspace enters
+/// Running and not on every attach.** A workspace already up keeps whatever its
+/// profile was given, so `DEVLAUNCH_NO_TITLE=1 dl <ws>` silences dl's own write and
+/// leaves the prompt's — `dl <ws> recreate` is what re-decides it. That is the same
+/// bargain the hostname stage makes, and for the same reason: the alternative is a
+/// round trip per attach, which is what moving the hostname off the attach bought
+/// back (#157).
 pub(crate) fn setup_stages(
     workspace: &str,
     tools: ToolsSwitch,
     zellij: ZellijSwitch,
+    herdr: HerdrSwitch,
+    title: Option<&str>,
 ) -> Vec<Stage> {
     let mut stages = vec![
         // The hostname appears in the bash prompt (user@hostname:path$), which is
@@ -958,6 +1028,46 @@ pub(crate) fn setup_stages(
             // nothing to show for it.
             format!("bash -c {} >&2", quote(&zellij_script())),
         ));
+    }
+    // Gated the same way and for the same reason: writing a hook into the
+    // container is tool provisioning, so `DEVLAUNCH_NO_TOOLS` covers it, and
+    // `DEVLAUNCH_NO_HERDR` covers only this. A nested `bash -c` for the reason the
+    // zellij stage needs one — a stage is interpolated into `if <command>; then`,
+    // which is one line, and this script is not.
+    if let (ToolsSwitch::Install, HerdrSwitch::Report) = (tools, herdr) {
+        stages.push(
+            Stage::new(
+                HERDR_STAGE,
+                format!("bash -c {} >&2", quote(&herdr::hook_script())),
+            )
+            .quieter(),
+        );
+    }
+    if let Some(title) = title {
+        stages.push(
+            Stage::new(
+                TITLE_STAGE,
+                // Two statements, so a nested `bash -c` for the reason the zellij
+                // stage has one: a stage is interpolated into `if <command>; then`,
+                // which is one line. The profile is resolved and appended to exactly
+                // as the PATH writers do it, so every edit finds the others' dedupe
+                // marks in the one file bash will actually read.
+                format!(
+                    "bash -c {}",
+                    quote(
+                        &[
+                            profile_resolution("$HOME"),
+                            profile_prepend(&profile_title_line(title), None),
+                        ]
+                        .join("\n")
+                    )
+                ),
+            )
+            // Quieter for the hostname stage's reason: an image that will not let
+            // this be written is a tab with a duller name, not a launch to warn
+            // about.
+            .quieter(),
+        );
     }
     stages
 }
@@ -1682,28 +1792,37 @@ pub struct DevpodMissing;
 /// there is one, it is read on a [`PassOccasion::TopUp`] and written after any pass
 /// that probed provisioned; see [`verdict_cache`] for what makes a remembered
 /// verdict still true.
+/// `title` sits beside `switches` rather than inside it, and that is the lifetime
+/// and not a judgement about where it belongs: [`Switches`] is `Copy` and built by
+/// `from_env`, and a borrowed field would make it `Switches<'_>` everywhere it is
+/// held. One more positional parameter is the cheaper of the two, and the parameter
+/// it follows is the one it goes with.
+#[allow(clippy::too_many_arguments)]
 pub fn provision_tools(
     runner: &dyn Runner,
     workspace: &str,
     occasion: PassOccasion,
     switches: Switches,
+    title: Option<&str>,
     host: Option<&HostLayout>,
     verdicts: Option<&VerdictCache>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Provisioning, DevpodMissing> {
     timing::stage_result(timing::Stage::Tools, || {
         provision(
-            runner, workspace, occasion, switches, host, verdicts, events,
+            runner, workspace, occasion, switches, title, host, verdicts, events,
         )
     })
 }
 
 /// [`provision_tools`] without the stage guard around it.
+#[allow(clippy::too_many_arguments)]
 fn provision(
     runner: &dyn Runner,
     workspace: &str,
     occasion: PassOccasion,
     switches: Switches,
+    title: Option<&str>,
     host: Option<&HostLayout>,
     verdicts: Option<&VerdictCache>,
     events: &mut dyn Notices<ProvisionEvent>,
@@ -1722,7 +1841,7 @@ fn provision(
     // Before the pass, not after it: see [`VerdictCache::observe`].
     let observed = verdicts.and_then(|verdicts| verdicts.observe(workspace));
 
-    let found = match setup_pass(runner, workspace, switches, events) {
+    let found = match setup_pass(runner, workspace, switches, title, events) {
         Ok(found) => found,
         Err(refusal) => return refused(workspace, refusal, events),
     };
@@ -1834,9 +1953,16 @@ fn setup_pass(
     runner: &dyn Runner,
     workspace: &str,
     switches: Switches,
+    title: Option<&str>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<ProbeResult, NotRun> {
-    let stages = setup_stages(workspace, switches.tools, switches.zellij);
+    let stages = setup_stages(
+        workspace,
+        switches.tools,
+        switches.zellij,
+        switches.herdr,
+        title,
+    );
     let call = Call::new([
         "ssh",
         workspace,
@@ -2445,6 +2571,7 @@ fi
             "myws",
             PassOccasion::AfterUp,
             switches,
+            None,
             Some(host),
             None,
             &mut events,
@@ -2813,7 +2940,13 @@ fi
         // The round trip Python's own tests assert with `shlex.split(runner.script())`:
         // whatever the quoting, the remote shell has to recover exactly `bash`, the
         // flag, and one script.
-        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Report,
+            None,
+        );
         for (payload, flag, script) in [
             (
                 format!("bash -lc {}", quote(&setup_script(&stages))),
@@ -2840,7 +2973,13 @@ fi
     fn the_zellij_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
         // The stage is interpolated into `if <command>; then`, so the quoting has to
         // survive being read by the *pass's* shell before the nested bash sees it.
-        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Report,
+            None,
+        );
         let command = &stages[1].command;
         let words = shlex::split(command).expect("a stage a shell can read");
         assert_eq!(
@@ -2887,6 +3026,8 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
         ));
         assert_eq!(
             with_zellij,
@@ -2896,6 +3037,8 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
         ));
         assert_eq!(
             opted_out,
@@ -3661,6 +3804,8 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
         ));
         assert!(script.contains(&probe_script()));
     }
@@ -3670,7 +3815,13 @@ fi
         // Order, and it is not cosmetic: the probe exits early when a tool is
         // missing, which is the commonest cold-path answer, so a stage placed behind
         // it would report "not reached" on the very launches the fold exists for.
-        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Report,
+            None,
+        );
         let script = setup_script(&stages);
         let probe_at = script.find(&probe_script()).expect("the probe is in there");
         for stage in &stages {
@@ -3692,6 +3843,8 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
         ));
         assert!(!script.contains("set -e"));
     }
@@ -3704,6 +3857,8 @@ fi
             name,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
         ));
         assert!(script.contains(&format!("hostname {}", quote(name))));
         assert!(!script.contains("hostname myws;"));
@@ -3740,6 +3895,8 @@ fi
             workspace,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
         ));
         let ran = bash_with(
             &script,
@@ -3763,7 +3920,13 @@ fi
     fn outcome_of(report: &str, stage: StageName) -> Option<StageOutcome> {
         stage_outcomes(
             report,
-            &setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install),
+            &setup_stages(
+                "myws",
+                ToolsSwitch::Install,
+                ZellijSwitch::Install,
+                HerdrSwitch::Report,
+                None,
+            ),
         )
         .into_iter()
         .find(|outcome| outcome.stage == stage)
@@ -3822,10 +3985,16 @@ fi
     /// the one stage because every assertion below is about how one reported line is
     /// *read*.
     fn hostname_outcome(report: &str) -> Vec<StageOutcome> {
-        let stages: Vec<Stage> = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install)
-            .into_iter()
-            .filter(|stage| stage.name == HOSTNAME_STAGE)
-            .collect();
+        let stages: Vec<Stage> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Report,
+            None,
+        )
+        .into_iter()
+        .filter(|stage| stage.name == HOSTNAME_STAGE)
+        .collect();
         assert!(!stages.is_empty(), "the pass no longer names the container");
         stage_outcomes(report, &stages)
     }
@@ -3934,7 +4103,9 @@ fi
             setup_script(&setup_stages(
                 "myws",
                 ToolsSwitch::Install,
-                ZellijSwitch::Install
+                ZellijSwitch::Install,
+                HerdrSwitch::Report,
+                None,
             ))
         );
     }
@@ -4061,6 +4232,7 @@ fi
             Switches::INSTALLING,
             None,
             None,
+            None,
             &mut events,
         );
 
@@ -4167,6 +4339,7 @@ fi
             Switches {
                 tools: ToolsSwitch::Skip,
                 zellij: ZellijSwitch::Install,
+                herdr: HerdrSwitch::Skip,
             },
             &nothing_to_lend(),
         );
@@ -4181,7 +4354,9 @@ fi
             setup_script(&setup_stages(
                 "myws",
                 ToolsSwitch::Skip,
-                ZellijSwitch::Install
+                ZellijSwitch::Install,
+                HerdrSwitch::Skip,
+                None,
             ))
         );
         assert!(words[2].contains("sudo hostname myws"));
@@ -4223,19 +4398,272 @@ fi
     }
 
     // =======================================================================
+    // DEVLAUNCH_NO_HERDR: the other narrow opt-out
+    // =======================================================================
+
+    #[test]
+    fn the_herdr_stage_is_carried_only_when_both_switches_ask_for_it() {
+        let names = |tools, herdr| -> Vec<StageName> {
+            setup_stages("myws", tools, ZellijSwitch::Skip, herdr, None)
+                .iter()
+                .map(|stage| stage.name)
+                .collect()
+        };
+
+        // Both on: the stage rides the pass every launch already pays for.
+        let both = names(ToolsSwitch::Install, HerdrSwitch::Report);
+        assert!(both.contains(&HERDR_STAGE), "{both:?}");
+
+        // Either off is enough to drop it, and neither costs the hostname —
+        // installing a hook is tools work, naming a container is not.
+        for (tools, herdr) in [
+            (ToolsSwitch::Install, HerdrSwitch::Skip),
+            (ToolsSwitch::Skip, HerdrSwitch::Report),
+            (ToolsSwitch::Skip, HerdrSwitch::Skip),
+        ] {
+            let names = names(tools, herdr);
+            assert!(!names.contains(&HERDR_STAGE), "{tools:?}/{herdr:?}");
+            assert!(names.contains(&HOSTNAME_STAGE), "{tools:?}/{herdr:?}");
+        }
+    }
+
+    // =======================================================================
     // DEVLAUNCH_NO_ZELLIJ: the narrower opt-out
     // =======================================================================
 
+    // ------------------------------------------------------- the title stage
+
+    #[test]
+    fn a_title_puts_a_stage_in_the_pass_and_no_title_leaves_it_out() {
+        // The stage exists only when there is a name to install, so a host that
+        // turned titles off pays no part of it — not the append, and not the line in
+        // the profile that a later launch would have to reason about.
+        let named: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            Some("blooop/devlaunch@main"),
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
+        let unnamed: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
+
+        assert!(named.contains(&TITLE_STAGE), "{named:?}");
+        assert!(!unnamed.contains(&TITLE_STAGE), "{unnamed:?}");
+    }
+
+    #[test]
+    fn neither_tools_switch_touches_the_title_stage() {
+        // The same line the hostname stage is on: naming a pane is not tool
+        // provisioning, so a host that installs nothing still gets its tabs named.
+        // `DEVLAUNCH_NO_TITLE` is the one variable that stops it.
+        for (tools, zellij) in [
+            (ToolsSwitch::Skip, ZellijSwitch::Skip),
+            (ToolsSwitch::Skip, ZellijSwitch::Install),
+            (ToolsSwitch::Install, ZellijSwitch::Skip),
+        ] {
+            let names: Vec<StageName> = setup_stages(
+                "myws",
+                tools,
+                zellij,
+                HerdrSwitch::Skip,
+                Some("blooop/devlaunch@main"),
+            )
+            .iter()
+            .map(|stage| stage.name)
+            .collect();
+
+            assert!(
+                names.contains(&TITLE_STAGE),
+                "{tools:?} {zellij:?} {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_title_line_appends_to_ps1_so_it_is_the_last_write_of_every_prompt() {
+        // The mechanism, spelled out because it is the whole reason this works.
+        // Ubuntu's stock `~/.bashrc` puts `\e]0;\u@\h: \w\a` at the *front* of PS1,
+        // so a prompt renames the pane after the hostname -- which is the workspace
+        // id, the thing the spec is here to replace. Two escapes in one prompt are
+        // applied in order, so the last one wins and this one has to be appended.
+        //
+        // A `PROMPT_COMMAND` would lose: bash runs that before it prints PS1, so the
+        // stock escape would come afterwards.
+        let line = profile_title_line("blooop/devlaunch@main");
+
+        assert_eq!(
+            line,
+            r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac"#
+        );
+        // `$PS1` first, so nothing an image or a dotfile put in the prompt is
+        // rewritten -- only added to.
+        assert!(line.contains(r#"PS1="$PS1"#), "{line}");
+        // And it is inert in the shells that render no prompt, which is every
+        // `dl <ws> -- cmd`: `bash -lc` reads the profile too.
+        assert!(line.starts_with("case $- in *i*)"), "{line}");
+    }
+
+    #[test]
+    fn a_title_holding_shell_metacharacters_is_text_and_not_shell() {
+        // A spec cannot hold these -- `WorkspaceId` refused every character but word
+        // ones, dots, slashes and dashes -- but the other three placements title
+        // after a bare devpod name or a path leaf, which this crate never validated.
+        // So the name is its own quoted word rather than interpolated into the
+        // double-quoted assignment.
+        let line = profile_title_line("$(touch /tmp/pwned)`id`'x");
+
+        assert!(
+            line.contains(r#"'$(touch /tmp/pwned)`id`'"'"'x'"#),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_title_stage_edits_the_profile_a_login_shell_will_actually_read() {
+        // The append rides the same `$PROFILE` resolution the PATH writers use, so
+        // all of them edit the one file bash reads and find each other's dedupe
+        // marks there. A stage that picked `~/.profile` in an image shipping a
+        // `~/.bash_profile` would write to a file nothing sources -- the failure the
+        // resolution exists for -- and would do it silently.
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            Some("blooop/devlaunch@main"),
+        );
+        let stage = stages
+            .iter()
+            .find(|stage| stage.name == TITLE_STAGE)
+            .expect("the title stage");
+
+        assert!(stage.command.contains(".bash_profile"), "{}", stage.command);
+        assert!(stage.command.contains(PROFILE_MARK), "{}", stage.command);
+    }
+
+    #[test]
+    fn a_real_bash_over_the_title_stage_leaves_a_profile_that_titles_the_pane() {
+        // The stage's effect rather than its text: run the composed script with a
+        // real bash over a real HOME, then source what it wrote and read PS1 back.
+        // What this pins is the ordering the whole feature rests on -- our OSC 2 ends
+        // up *after* the stock title escape, so it is the write that stands.
+        let scratch = scratch();
+        let home = scratch.path();
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            HerdrSwitch::Skip,
+            Some("blooop/devlaunch@main"),
+        );
+        let stage = stages
+            .iter()
+            .find(|stage| stage.name == TITLE_STAGE)
+            .expect("the title stage");
+
+        let install = std::process::Command::new("bash")
+            .args(["-c", &stage.command])
+            .env("HOME", home)
+            .output()
+            .expect("bash to run the stage");
+        assert!(install.status.success(), "{install:?}");
+
+        // Ubuntu's stock interactive PS1, then the profile the stage just wrote.
+        let read_back = std::process::Command::new("bash")
+            .args([
+                // `-i` and not `set -i`: the line guards on `$-` holding an `i`,
+                // which only a shell *started* interactive has. That guard is the
+                // feature -- it keeps the edit out of every `bash -lc` one-shot -- so
+                // a test that sidestepped it would be pinning a different line.
+                "-i",
+                "-c",
+                r#"PS1='\[\e]0;\u@\h: \w\a\]\u@\h:\w\$ '; . "$HOME/.profile"; printf '%s' "$PS1""#,
+            ])
+            .env("HOME", home)
+            .output()
+            .expect("bash to read the profile back");
+        let ps1 = String::from_utf8_lossy(&read_back.stdout).to_string();
+
+        let stock = ps1.find(r"\e]0;").expect("the stock title escape");
+        let ours = ps1.find(r"\e]2;").expect("our title escape");
+        assert!(ours > stock, "ours must come last: {ps1:?}");
+        assert!(ps1.contains("blooop/devlaunch@main"), "{ps1:?}");
+
+        // Appended once, however many times the pass runs: the dedupe mark is what
+        // keeps a profile from growing one escape per launch.
+        let again = std::process::Command::new("bash")
+            .args(["-c", &stage.command])
+            .env("HOME", home)
+            .output()
+            .expect("bash to run the stage again");
+        assert!(again.status.success(), "{again:?}");
+        let profile = std::fs::read_to_string(home.join(".profile")).expect("the profile");
+        assert_eq!(profile.matches(r"\e]2;").count(), 1, "{profile:?}");
+    }
+
+    #[test]
+    fn a_shell_that_is_not_bash_leaves_its_prompt_alone() {
+        // `$PROFILE` is one of `~/.bash_profile`, `~/.bash_login` or `~/.profile`,
+        // and the last of those is read by any POSIX login shell -- `/bin/sh` is
+        // dash on Debian and Ubuntu. `\[`, `\e` and `\a` mean nothing to dash, which
+        // renders a prompt literally, so an unguarded append puts
+        // `\[\e]2;blooop/devlaunch@main\a\]` on screen at every prompt. That is worse
+        // than no title: it is a corrupted one.
+        //
+        // The guard is the same `$BASH_VERSION` test Ubuntu's own `~/.profile` uses
+        // before it sources `~/.bashrc`. Asserted as an implication so this reads the
+        // same whichever shell `sh` is on the machine running it.
+        let line = profile_title_line("blooop/devlaunch@main");
+        let script = format!(
+            "PS1=untouched\n{line}\nprintf '%s\\n%s\\n' \"${{BASH_VERSION:+bash}}\" \"$PS1\""
+        );
+
+        let out = std::process::Command::new("sh")
+            .args(["-i", "-c", &script])
+            .output()
+            .expect("sh to run the line");
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut lines = said.lines();
+        let is_bash = lines.next() == Some("bash");
+        let ps1 = lines.next().expect("the prompt back");
+
+        if is_bash {
+            assert_ne!(
+                ps1, "untouched",
+                "bash should have been appended to: {said:?}"
+            );
+        } else {
+            assert_eq!(ps1, "untouched", "a non-bash prompt was edited: {said:?}");
+        }
+    }
     #[test]
     fn the_zellij_opt_out_drops_only_the_zellij_stage() {
         // The whole reason for a second variable: a host that wants no zellij
         // installed keeps everything `DEVLAUNCH_NO_TOOLS` would have cost it —
         // the container is still named, and the pass still probes for the `gh`
         // and `claude` the workspace is guaranteed.
-        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Skip)
-            .iter()
-            .map(|stage| stage.name)
-            .collect();
+        let names: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Skip,
+            HerdrSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
 
         assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
@@ -4248,6 +4676,7 @@ fi
             Switches {
                 tools: ToolsSwitch::Install,
                 zellij: ZellijSwitch::Skip,
+                herdr: HerdrSwitch::Skip,
             },
             false,
             Some(0),
@@ -4267,10 +4696,18 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Skip,
+            HerdrSwitch::Skip,
+            None,
         ));
         for tools in [ToolsSwitch::Install, ToolsSwitch::Skip] {
             assert_eq!(
-                setup_script(&setup_stages("myws", tools, ZellijSwitch::Skip)),
+                setup_script(&setup_stages(
+                    "myws",
+                    tools,
+                    ZellijSwitch::Skip,
+                    HerdrSwitch::Skip,
+                    None,
+                )),
                 without,
                 "{tools:?}"
             );
@@ -4279,7 +4716,9 @@ fi
             setup_script(&setup_stages(
                 "myws",
                 ToolsSwitch::Skip,
-                ZellijSwitch::Install
+                ZellijSwitch::Install,
+                HerdrSwitch::Skip,
+                None,
             )),
             without
         );
@@ -4287,7 +4726,9 @@ fi
             setup_script(&setup_stages(
                 "myws",
                 ToolsSwitch::Install,
-                ZellijSwitch::Install
+                ZellijSwitch::Install,
+                HerdrSwitch::Skip,
+                None,
             )),
             without,
             "the stage is there when nothing asked for it to go"
@@ -4309,6 +4750,7 @@ fi
             Switches {
                 tools: ToolsSwitch::Install,
                 zellij: ZellijSwitch::Skip,
+                herdr: HerdrSwitch::Skip,
             },
             &host,
         );
@@ -4411,6 +4853,7 @@ fi
             "myws",
             occasion,
             Switches::INSTALLING,
+            None,
             Some(&nothing_to_lend()),
             Some(verdicts),
             &mut Vec::new(),
@@ -4531,6 +4974,7 @@ fi
             "myws",
             PassOccasion::TopUp,
             Switches::INSTALLING,
+            None,
             Some(&nothing_to_lend()),
             Some(&verdicts),
             &mut Vec::new(),
@@ -4616,6 +5060,7 @@ fi
                 "myws",
                 occasion,
                 Switches::INSTALLING,
+                None,
                 Some(&nothing_to_lend()),
                 None,
                 &mut Vec::new(),
@@ -4723,11 +5168,16 @@ fi
             Stage::new(StageName::new("x"), "true").failure_level,
             FailureLevel::Warning
         );
-        let levels: Vec<(StageName, FailureLevel)> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install)
-                .iter()
-                .map(|stage| (stage.name, stage.failure_level))
-                .collect();
+        let levels: Vec<(StageName, FailureLevel)> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Report,
+            None,
+        )
+        .iter()
+        .map(|stage| (stage.name, stage.failure_level))
+        .collect();
         assert_eq!(
             levels,
             vec![
@@ -4736,6 +5186,13 @@ fi
                 // degradation of a container, so it takes the default rather than
                 // declaring an exception.
                 (ZELLIJ_STAGE, FailureLevel::Warning),
+                // The herdr stage is the other direction: most containers cannot
+                // satisfy it — no `python3`, no claude configuration directory of
+                // their own, no socket because the workspace predates the mount —
+                // and none of that degrades the container for anything else. A
+                // warning per launch for a badge that did not appear is noise, so it
+                // declares the exception the hostname does.
+                (HERDR_STAGE, FailureLevel::Info),
             ]
         );
     }
@@ -5185,7 +5642,13 @@ fi
     ) -> (PathBuf, Output, String) {
         let (home, sysbin, log) = zellij_sandbox(scratch, has_zellij, pixi_exit);
         let ran = bash_with(
-            &setup_script(&setup_stages("myws", switches.tools, switches.zellij)),
+            &setup_script(&setup_stages(
+                "myws",
+                switches.tools,
+                switches.zellij,
+                switches.herdr,
+                None,
+            )),
             &[
                 ("HOME", &home.to_string_lossy()),
                 ("PATH", &sysbin.to_string_lossy()),
@@ -5216,11 +5679,16 @@ fi
         // The guarantee, stated where it is made: the pass every entry into Running
         // goes through carries a zellij stage. No dotfiles, no devcontainer.json, no
         // repo cooperation — the ask comes from the invocation.
-        let names: Vec<StageName> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install)
-                .iter()
-                .map(|stage| stage.name)
-                .collect();
+        let names: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Report,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
         assert!(names.contains(&ZELLIJ_STAGE), "{names:?}");
     }
 
@@ -5346,10 +5814,16 @@ fi
         // the hostname stage, which is not tools work and is deliberately left
         // outside that switch — a machine that turned tool installs off has not
         // thereby asked for unnamed containers.
-        let names: Vec<StageName> = setup_stages("myws", ToolsSwitch::Skip, ZellijSwitch::Install)
-            .iter()
-            .map(|stage| stage.name)
-            .collect();
+        let names: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
         assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
 
@@ -5359,6 +5833,7 @@ fi
             Switches {
                 tools: ToolsSwitch::Skip,
                 zellij: ZellijSwitch::Install,
+                herdr: HerdrSwitch::Skip,
             },
             false,
             Some(0),

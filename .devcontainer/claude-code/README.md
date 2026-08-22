@@ -1,13 +1,13 @@
 # Claude Code CLI - Local Dev Container Feature
 
-A local Dev Container Feature that installs the Claude Code CLI and gives the container your host machine's Claude configuration as a short, explicit list of binds — the files holding executable instructions read-only.
+A local Dev Container Feature that installs the Claude Code CLI and gives the container your host machine's Claude configuration as a live bind of the directory, with the subdirectories holding executable instructions mounted read-only over it.
 
 ## What This Feature Does
 
 This feature combines two capabilities:
 
 1. **CLI Installation**: Installs the `@anthropic-ai/claude-code` npm package globally
-2. **Configuration Mounting**: Mounts a named list of files and directories from your host machine's Claude configuration into the container — read-only except for the two that hold credentials and onboarding state
+2. **Configuration Mounting**: Mounts your host machine's Claude configuration directory into the container, with each subdirectory of executable instructions mounted read-only on top of it
 
 ## What Gets Installed
 
@@ -20,18 +20,21 @@ This feature combines two capabilities:
 The following files and directories from your **host machine** are mounted into the container:
 
 ### Read-Only Mounts (Security-Protected)
-- `~/.claude/CLAUDE.md` → Global project instructions
-- `~/.claude/settings.json` → Claude CLI settings
 - `~/.claude/agents/` → Custom agent configurations
 - `~/.claude/commands/` → Command definitions
 - `~/.claude/hooks/` → Event-driven shell hooks
 - `~/.claude/skills/` → Agent Skills, and the links a skill installer leaves there
 - `~/.claude/wf-skills/` → the skill bodies those links point at
 
-These are **read-only** (`ro` flag) to prevent:
+These are **read-only** (`readonly` flag) to prevent:
 - Prompt injection attacks that could modify your Claude configuration
 - Accidental modification of shared configuration from within containers
 - Security issues related to hook manipulation
+
+Every one of them is a **directory**, and that is a constraint rather than a
+coincidence — see "Why only directories are mounted" below. `CLAUDE.md` and
+`settings.json` are the two instruction files this list does not cover, because
+a read-only mount over either of them could not be kept.
 
 Skills are two mounts because they are one thing. An installer that keeps the
 prompt bodies in a sibling directory and leaves *relative* links behind —
@@ -47,29 +50,79 @@ reports that it could not refresh them and carries on.
 - `~/.claude/.credentials.json` → OAuth access/refresh tokens
 - `~/.claude/.claude.json` → Account info, user ID, workspace setup tracking
 
-These files **must be writable** to enable:
+Neither has a mount of its own. Both are reached through the one bind of
+`~/.claude` itself, which is mounted read-write, and that is what keeps them
+**live**: the container reads whatever the host has now, not what it had when
+the container was created.
+
+That distinction is the whole point of the layout. These two files **must be
+writable** to enable:
 - OAuth authentication flow and token refresh
 - Workspace setup state tracking (`projectOnboardingSeenCount`)
 - Your account and its onboarding state surviving container rebuilds (session
   *transcripts* do not: see "What Is Not Mounted")
 
-### What Is Not Mounted
+They must also be **current**, which is the harder half. Claude replaces both by
+rename — a token refresh writes a new `.credentials.json` and moves it into
+place — and a container mounting either of them *as a file* went on reading the
+inode that existed when it was created, for as long as it lived. Changing your
+Claude account on the host then reached no running container: it kept
+authenticating as the account you had left. Mounting the directory is what fixes
+that, because a directory mount resolves names on each access and so follows the
+rename.
+
+### Why only directories are mounted
+
+A bind mount of a file does not survive its source being replaced by rename. The
+mount is attached to the dentry; the rename puts a new one at that name and the
+mount is dropped from the namespace altogether. The path then reads through
+whatever the parent mount provides, and the flags that were on the file mount
+are simply gone.
+
+Measured both ways round, on Docker, against a host doing exactly what Claude
+does (write a temporary file, `mv` it into place):
+
+| arrangement | after the host replaces the file |
+|---|---|
+| read-write parent, **read-only file** mounts | the file is **writable** — the protection is gone, silently, from the first host edit |
+| read-only parent, **read-write file** mounts | the file is **read-only** — a token refresh fails |
+| either parent, **read-only directory** mounts | unchanged: still live, still read-only |
+
+So a file mount is unsound in both directions, and the direction it fails in is
+decided by the parent rather than by what the mount asked for. Only directory
+mounts are kept, and every source in the manifest is a directory. A test asserts
+that, because the tempting change — protecting `CLAUDE.md` and `settings.json`
+by naming them in the mount list — is one that passes review, appears in
+`docker inspect`, and stops being true the next time you edit either file.
+
+The cost is stated plainly: `CLAUDE.md` and `settings.json` are writable from
+the container. `settings.json` can name hook commands inline, so this is a real
+hole and not only a theoretical one. It is smaller than the alternative, which
+was the same hole with a manifest claiming it was closed.
+
+### What Is Not Mounted Read-Only
 
 Everything else under `~/.claude` — session transcripts, `projects/`,
-`history.jsonl`, `shell-snapshots/`, `plugins/` — is **not** mounted.
-Those paths still exist in the container and are writable; they are simply the
-container's own, and they die with it.
+`history.jsonl`, `shell-snapshots/`, `plugins/`, and the two instruction files
+`CLAUDE.md` and `settings.json` — is inside the read-write directory mount. The
+container sees the host's copy of each, live, and can write to all of them.
 
-The list above is an allow-list, and that is the point: a directory Claude starts
-writing to next month cannot silently become another way onto your host. What it
-costs is real and worth knowing before you meet it. A container does not resume a
-session you started on the host, and the plugins installed on your host are not
-visible in there.
+This is the part of the layout to weigh before using it. The read-only list is
+an allow-list of *protection*, not of visibility: a directory Claude starts
+writing to next month is visible and writable from the container the day it
+appears, and only the five named directories are proof against a prompt
+injection that tries to edit its own instructions.
+
+What you get for that is a container whose Claude is the same Claude as the
+host's — same account, same login, same settings, updated in place when you
+change them — rather than one holding a snapshot of the moment it was built.
+Sessions you start on the host do resume in the container, because `projects/`
+is shared.
 
 One consequence people go looking for after the fact: a `settings.json` entry
-naming a script that lives outside the mounted paths — a `statusLine` command
-under `~/.claude/scripts/`, say — arrives in the container pointing at a file
-that is not there. The setting is mounted; the script it names is not.
+naming a script under `~/.claude/scripts/` — a `statusLine` command, say —
+resolves in the container, because that directory is inside the mount too. The
+same entry naming a script *outside* `~/.claude` does not.
 
 ### Why These Must Be Writable
 
@@ -77,7 +130,7 @@ that is not there. The setting is mounted; the script it names is not.
 
 **`.claude.json`**: Claude tracks per-workspace setup state here. The `projectOnboardingSeenCount` field must be writable so Claude doesn't show the setup wizard on every launch.
 
-⚠️ **Security Note**: These files contain sensitive data and are mounted read-write by necessity. They are only accessible by the container user and stored with `600` permissions. Only use this feature with trusted repositories.
+⚠️ **Security Note**: These files contain sensitive data and are reachable read-write by necessity. They are only accessible by the container user and stored with `600` permissions. Only use this feature with trusted repositories.
 
 ## Usage
 
@@ -121,13 +174,11 @@ Skipping it does not degrade the container, it stops it. Measured on devpod
 
 ```
 devcontainer up: runner run container: bind mount source path does not exist
-  …/.claude/.claude.json
+  …/.claude/skills
 ```
 
 Nothing is created on the host when that happens; the create is refused before
-any container exists. This is not a cost of the granular mounts either — the
-single whole-directory mount that preceded them failed in exactly the same way on
-the same host.
+any container exists.
 
 ### The OAuth callback, and why host networking is not the answer
 
@@ -190,14 +241,12 @@ These are the paths this feature mounts, and all of them have to exist before th
 container is created:
 
 ```bash
-~/.claude/
-├── CLAUDE.md           # Global instructions
-├── settings.json       # Claude settings
+~/.claude/              # the directory itself, mounted read-write
 ├── agents/             # Custom agents
 ├── commands/           # Custom commands
 ├── hooks/              # Event hooks
-├── .credentials.json   # OAuth tokens
-└── .claude.json        # Account and workspace state
+├── skills/             # Agent Skills
+└── wf-skills/          # Skill bodies
 ```
 
 **None of them is optional.** A missing one aborts the container create rather
@@ -205,13 +254,14 @@ than producing a warning — see "The host-side prerequisite" above, which is ho
 this is normally handled. By hand, it is:
 
 ```bash
-mkdir -p ~/.claude/{agents,commands,hooks}
-touch ~/.claude/CLAUDE.md
-echo '{}' > ~/.claude/settings.json
+mkdir -p ~/.claude/{agents,commands,hooks,skills,wf-skills}
 ```
 
-(A host that has ever run `claude` already has `.credentials.json` and
-`.claude.json`.)
+Only directories appear here, and that is the point of the layout rather than an
+omission: nothing is mounted a file at a time, so no file has to exist for the
+create to succeed. `CLAUDE.md`, `settings.json`, `.credentials.json` and
+`.claude.json` are reached through the directory mount, and Claude writes each of
+them itself on first use.
 
 ### Container
 
@@ -327,7 +377,7 @@ devpod up . --recreate
 
 ## Modifying Configuration
 
-Every mounted configuration file except `.credentials.json` and `.claude.json` is read-only. You **cannot** modify Claude settings from within the container.
+The five instruction directories — `agents/`, `commands/`, `hooks/`, `skills/`, `wf-skills/` — are read-only, so you **cannot** add or change an agent, command, hook or skill from within the container. Everything else under `~/.claude` is writable and reaches the host, `settings.json` and `CLAUDE.md` included; see "Why only directories are mounted" for why those two could not be protected.
 
 To change configuration:
 
