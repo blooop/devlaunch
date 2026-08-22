@@ -553,6 +553,13 @@ It is written once — the line carries a content-hash comment the next launch
 recognises — and it rides the same round trip as the hostname stage, so it costs no
 extra trip.
 
+**Only a spec is installed this way.** `dl myworkspace` teaches the container
+nothing: the id is already its hostname, so the stock prompt writes that anyway. It
+also cannot, safely — the line is recognised by a hash of its own text, so a second,
+different name for one workspace would not replace the first but sit after it, and
+the last one wins. Keying on the spec alone means a workspace has at most one such
+line, ever.
+
 **It is installed when a workspace enters Running, not on every attach.** A
 workspace that is already up keeps whatever its profile was given, so
 `DEVLAUNCH_NO_TITLE=1 dl <ws>` silences dl's own escape and leaves the prompt's;

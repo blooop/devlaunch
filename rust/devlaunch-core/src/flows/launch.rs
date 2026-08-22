@@ -1848,6 +1848,21 @@ fn sanitize_title(name: &str) -> Option<String> {
 // the attach
 // ===========================================================================
 
+/// `owner/repo@ref`, the three parts of a triple as the user's own spec spelled
+/// them.
+///
+/// One rendering, for the two places a launch names a workspace to a person: the
+/// escape dl writes and the line the pass installs. Two spellings of it would be two
+/// names for one workspace, and the tab would change when the prompt repainted.
+fn spec_of(workspace: &WorkspaceId) -> String {
+    format!(
+        "{}/{}@{}",
+        workspace.owner(),
+        workspace.repo(),
+        workspace.git_ref()
+    )
+}
+
 /// Hand the workspace to the user: ssh in, and nothing else.
 ///
 /// One trip, and it is the session. This used to pay a `devpod ssh` of its own in
@@ -2771,7 +2786,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                     self.context.runner(),
                     placement.workspace_id(),
                     PassOccasion::TopUp,
-                    self.container_title(placement.workspace_id()).as_deref(),
+                    self.container_title().as_deref(),
                 )
                 .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
             return Ok(Launched::AlreadyRunning);
@@ -2804,7 +2819,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
             let request = UpRequest::new(placement.source(), naming);
-            let title = self.container_title(placement.workspace_id());
+            let title = self.container_title();
             let outcome = workspace_up(
                 self.context,
                 self.host,
@@ -2841,7 +2856,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
             .with_devcontainer(devcontainer);
-        let title = self.container_title(placement.workspace_id());
+        let title = self.container_title();
         let outcome = workspace_up(
             self.context,
             self.host,
@@ -2913,22 +2928,28 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// triple whose parts overflow 47 characters is refused before this.
     fn titled(&self, workspace_id: &str) -> String {
         match &self.resolved {
-            Some(workspace) => format!(
-                "{}/{}@{}",
-                workspace.owner(),
-                workspace.repo(),
-                workspace.git_ref()
-            ),
+            Some(workspace) => spec_of(workspace),
             None => workspace_id.to_owned(),
         }
     }
 
     /// The name a shell in this container should keep putting on the terminal, or
-    /// `None` when this host wants none.
+    /// `None` when there is none worth installing.
     ///
-    /// The same name [`Self::titled`] gives dl's own write, and the same switch —
-    /// `DEVLAUNCH_NO_TITLE` — decides both, so one variable governs the whole
-    /// feature rather than half of it.
+    /// The **spec** and only the spec, where [`Self::titled`] falls back to the id.
+    /// Two reasons, and the second is the load-bearing one.
+    ///
+    /// A container told to title after its own id is told nothing: the id is already
+    /// its hostname, so the stock prompt writes exactly that anyway. And the line is
+    /// deduped by a hash of its own text, so a name that varies for one workspace
+    /// does not replace the line — it adds another, and the last append is the one
+    /// every prompt then obeys. A workspace opened once as `blooop/devlaunch@main`
+    /// and once by its id would end up permanently titled after the id. Keying on the
+    /// spec alone makes the line a pure function of the triple, so a workspace has at
+    /// most one, ever.
+    ///
+    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
+    /// the feature rather than half of it.
     ///
     /// `stderr_tty` is deliberately *not* consulted, where
     /// [`TerminalTitle::from_host`] does consult it. That flag answers "is there a
@@ -2936,11 +2957,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// this process is about to emit and the wrong one for a line installed in a
     /// profile: `dl <ws> up` is a prewarm with its output redirected, and the
     /// interactive session that arrives later is the one the line is for.
-    fn container_title(&self, workspace_id: &str) -> Option<String> {
+    fn container_title(&self) -> Option<String> {
         if switched_on(self.host.no_title.as_deref()) {
             return None;
         }
-        Some(self.titled(workspace_id))
+        self.resolved.as_ref().map(spec_of)
     }
 
     /// A session outcome, with the two never-ran arms lifted to [`LaunchAborted`].
@@ -5746,6 +5767,54 @@ mod tests {
     }
 
     #[test]
+    fn only_a_spec_is_installed_in_the_container_so_a_name_cannot_pile_up() {
+        // One workspace, opened both ways: by spec, and later by the id it derived.
+        // The profile line is deduped by a hash of its own text, so a second,
+        // different name for one workspace would not replace the first -- it would
+        // append, and the last append is what every prompt obeys. A single launch by
+        // id would have renamed the tab back to the hash for good.
+        //
+        // So the pass is told the spec or nothing. Nothing is the honest answer for
+        // an id: it is already the container's hostname, so the stock prompt writes
+        // exactly that anyway and the line would buy nothing to lose.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run("blooop/devlaunch@main", &LaunchVerb::Up, None);
+        }
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@main".to_owned()), None]
+        );
+    }
+
+    #[test]
     fn the_pass_is_told_to_have_the_container_keep_titling_after_the_spec() {
         // The other half of the title, and the half that lasts. dl's own escape is
         // overwritten by the first interactive prompt; this is the name the pass
@@ -5814,7 +5883,8 @@ mod tests {
         // to. The container is still taught the name, because the session that
         // arrives later is the one it is for, and asking this pass to guess whether
         // one ever will is a question it cannot answer.
-        let scene = Scene::new().with_running("myws");
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
         assert!(!scene.host.stderr_tty, "the premise of this test");
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
@@ -5830,11 +5900,23 @@ mod tests {
                 &mut parts.chatter,
                 &mut parts.said,
             );
-            launch.run("myws", &LaunchVerb::Up, None)
+            launch.run("blooop/devlaunch@main", &LaunchVerb::Up, None)
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(parts.provision.titles(), vec![Some("myws".to_owned())]);
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@main".to_owned())]
+        );
+        // And nothing was written to the terminal that is not there.
+        assert!(
+            !parts.said.iter().any(|notice| matches!(
+                notice,
+                LaunchNotice::TerminalTitle(TerminalTitle::Write(_))
+            )),
+            "{:?}",
+            parts.said
+        );
     }
 
     /// `dl <ws> up` is what a user types to fix a workspace, so it is the worst

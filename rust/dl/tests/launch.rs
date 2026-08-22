@@ -715,7 +715,6 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             // pass that tops its tools up runs, because that is when it was found.
             &format!("Workspace {MAIN} is already running.") as &str,
             &format!("{MAIN}: the hostname setup stage did not report; it may not have run."),
-            &format!("{MAIN}: the title setup stage did not report; it may not have run."),
             &format!("{MAIN}: the zellij setup stage did not report; it may not have run."),
         ]
     );
