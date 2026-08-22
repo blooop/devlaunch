@@ -2948,6 +2948,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// spec alone makes the line a pure function of the triple, so a workspace has at
     /// most one, ever.
     ///
+    /// Filtered by [`sanitize_title`], the same way the escape is, because the two
+    /// halves must not disagree about what a name may hold. `is_safe_name` accepts
+    /// one trailing newline, so `main\n` is a ref — and a newline reaching the
+    /// profile line lands inside the quoted word, splitting one `PS1` assignment
+    /// across two physical lines of a file every login sources.
     /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
     /// the feature rather than half of it.
     ///
@@ -2961,7 +2966,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         if switched_on(self.host.no_title.as_deref()) {
             return None;
         }
-        self.resolved.as_ref().map(spec_of)
+        self.resolved
+            .as_ref()
+            .map(spec_of)
+            .and_then(|spec| sanitize_title(&spec))
     }
 
     /// A session outcome, with the two never-ran arms lifted to [`LaunchAborted`].
@@ -5811,6 +5819,43 @@ mod tests {
         assert_eq!(
             parts.provision.titles(),
             vec![Some("blooop/devlaunch@main".to_owned()), None]
+        );
+    }
+
+    #[test]
+    fn a_name_holding_a_control_is_filtered_before_it_reaches_the_container() {
+        // `is_safe_name` accepts one trailing newline -- Python's `$` anchor did, and
+        // the quirk is ported deliberately -- so `main\n` is a ref and
+        // `blooop/devlaunch@main\n` is a name. dl's own escape drops controls at the
+        // boundary it forms bytes at; the profile line is written by a different
+        // path, and an unfiltered newline lands in a file every login sources, inside
+        // the quoted word, splitting one PS1 assignment over two physical lines.
+        //
+        // One filtered name for both halves, so a title cannot be safe in the escape
+        // and not in the profile.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main\n").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("blooop/devlaunch@main\n", &LaunchVerb::Up, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::AlreadyRunning));
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@main".to_owned())]
         );
     }
 
