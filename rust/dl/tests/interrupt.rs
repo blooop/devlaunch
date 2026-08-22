@@ -286,6 +286,15 @@ fn a_kill_mid_up_removes_the_token_file_and_kills_the_up() {
     assert_eq!(MidUp::reached().signalled("TERM"), drained(143));
 }
 
+#[test]
+fn closing_the_terminal_mid_up_removes_the_token_file_and_kills_the_up() {
+    // Closing the terminal window is a SIGHUP, and it left the same token on
+    // disk and the same build orphaned — with nobody watching, since the window
+    // it would have been reported in is the one that just went away. 129 is
+    // 128 + SIGHUP.
+    assert_eq!(MidUp::reached().signalled("HUP"), drained(129));
+}
+
 /// A `--warm` world whose `devpod ssh` blocks, so an interrupt can land *during the
 /// session* rather than during the build.
 fn blocking_session() -> (tempfile::TempDir, PathBuf) {

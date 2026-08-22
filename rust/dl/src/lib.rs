@@ -106,11 +106,13 @@ pub const INTERRUPTED: i32 = signalled(libc::SIGINT);
 /// SIGINT is the terminal's Ctrl-C. SIGTERM is every orderly kill there is — a
 /// supervisor timing a run out, a cancelled CI job, the shutdown sweep — and was
 /// the gap: `kill <dl>` leaked the exact pair the SIGINT handler exists to
-/// prevent.
+/// prevent. SIGHUP is the terminal window closing, which leaked the same pair for
+/// the same reason, unwatched — the window any complaint would have appeared in
+/// is the one that just went away.
 ///
 /// SIGQUIT is deliberately absent: it means "die now and dump core", and a
 /// handler that tidies up first is not what someone reaching for it asked for.
-const DRAINED: [libc::c_int; 2] = [libc::SIGINT, libc::SIGTERM];
+const DRAINED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 
 /// Install the signal disposition both binaries share: any of [`DRAINED`] exits
 /// [`signalled`] with that signal's code after cleaning up, rather than killing
