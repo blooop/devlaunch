@@ -122,17 +122,22 @@ def workspace_cleanup_fixture(devpod_cleanup):
     torn down before `devpod_cleanup`, which is what deletes it.
     """
     yield devpod_cleanup
-    subprocess.run(
-        [
-            "devpod",
-            "ssh",
-            WORKSPACE_ID,
-            "--command",
-            f"rm -rf /workspaces/{WORKSPACE_ID}/.devcontainer/.devpod-internal",
-        ],
-        capture_output=True,
-        check=False,
-    )
+    # Every workspace the scope created, rather than one named here. The tracker
+    # is the only thing that knows, and a second test with a second id was
+    # otherwise a second undeletable directory nobody would connect to this
+    # fixture.
+    for workspace_id in devpod_cleanup.workspaces:
+        subprocess.run(
+            [
+                "devpod",
+                "ssh",
+                workspace_id,
+                "--command",
+                f"rm -rf /workspaces/{workspace_id}/.devcontainer/.devpod-internal",
+            ],
+            capture_output=True,
+            check=False,
+        )
 
 
 @pytest.mark.e2e
@@ -227,7 +232,7 @@ def test_the_container_cannot_write_the_host_files_the_feature_protects(
 
 @pytest.mark.e2e
 @pytest.mark.creates_workspace
-def test_the_container_follows_the_host_replacing_a_file_by_rename(devpod_cleanup, tmp_path):
+def test_the_container_follows_the_host_replacing_a_file_by_rename(workspace_cleanup, tmp_path):
     """The container reads what the host has now, after the host swaps the inode.
 
     This is the defect the layout exists to prevent, and it cannot be observed
@@ -259,28 +264,28 @@ def test_the_container_follows_the_host_replacing_a_file_by_rename(devpod_cleanu
     create_e2e_workspace(
         str(project),
         RENAME_WORKSPACE_ID,
-        cleanup=devpod_cleanup,
+        cleanup=workspace_cleanup,
         env={**os.environ, "HOME": str(home)},
     )
 
     config_dir = json.loads(FEATURE_JSON.read_text())["containerEnv"]["CLAUDE_CONFIG_DIR"]
-    state = next(iter(documented_paths(READ_WRITE_HEADING)))
 
-    (host_config / state).write_text('{"account": "before"}')
-    assert "before" in in_container(f'cat "{config_dir}/{state}"', RENAME_WORKSPACE_ID).stdout
+    for state in sorted(documented_paths(READ_WRITE_HEADING)):
+        (host_config / state).write_text('{"account": "before"}')
+        assert "before" in in_container(f'cat "{config_dir}/{state}"', RENAME_WORKSPACE_ID).stdout
 
-    # Precisely what Claude does, and the reason a plain overwrite would not do:
-    # the temporary file is a different inode, and the rename is what moves the
-    # name onto it.
-    replacement = host_config / f"{state}.tmp"
-    replacement.write_text('{"account": "after"}')
-    replacement.replace(host_config / state)
+        # Precisely what Claude does, and the reason a plain overwrite would not
+        # do: the temporary file is a different inode, and the rename is what
+        # moves the name onto it.
+        replacement = host_config / f"{state}.tmp"
+        replacement.write_text('{"account": "after"}')
+        replacement.replace(host_config / state)
 
-    seen = in_container(f'cat "{config_dir}/{state}"', RENAME_WORKSPACE_ID).stdout
-    assert "after" in seen, (
-        f"the container still reads the pre-rename {state}: it is pinned to a dead inode, "
-        f"which is a host account switch reaching no running workspace"
-    )
+        seen = in_container(f'cat "{config_dir}/{state}"', RENAME_WORKSPACE_ID).stdout
+        assert "after" in seen, (
+            f"the container still reads the pre-rename {state}: it is pinned to a dead inode, "
+            f"which is a host account switch reaching no running workspace"
+        )
 
     for name in documented_paths(READ_ONLY_HEADING):
         probe = f"{config_dir}/{name}injected.md"
