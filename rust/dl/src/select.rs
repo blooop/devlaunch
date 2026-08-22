@@ -58,7 +58,7 @@
 //! terminal. [`pick`] is the interactive half.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -88,6 +88,10 @@ const NO_OWNER: &str = "-";
 struct Naming {
     owner: String,
     tail: Tail,
+    /// The workspace's own id, kept beside the tail because it is what every
+    /// fallback falls back *to* — and a fallback that had to go looking for it
+    /// again could look in the wrong row.
+    id: String,
 }
 
 /// What a row says after its owner.
@@ -121,20 +125,60 @@ enum Tail {
 /// `--purge` decides ownership by, so they cannot disagree about which workspaces
 /// are dl's.
 pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> {
-    let namings = named(workspaces, cache_dir);
+    let mut namings = named(workspaces, cache_dir);
+    let mut labels = drawn(&namings);
+    if !all_distinct(&labels) {
+        // A collision the key pass could not see, because the two rows that made it
+        // have different key shapes: a whole-name row drawn `<owner> | <name>` can
+        // equal a split row drawn `<owner> | <repo> | <ref>` when the name is those
+        // last two columns. Rare, and not rare enough to argue away — the argument
+        // would have to be about which names devpod permits, and a row this picker
+        // can act on is not the place to borrow another program's validation.
+        //
+        // Every remaining split goes back to its id, which leaves one shape and a
+        // last column that is unique per row. Bluntness is affordable here: nothing
+        // but a name built out of another row's columns ever reaches it.
+        for naming in &mut namings {
+            naming.tail = Tail::Whole(naming.id.clone());
+        }
+        labels = drawn(&namings);
+    }
+    workspaces
+        .iter()
+        .zip(labels)
+        .map(|(workspace, label)| Offer {
+            label,
+            workspace_id: workspace.id.clone(),
+        })
+        .collect()
+}
+
+/// Every row's label, padded against the widest entry in each column.
+///
+/// Both columns before the last are padded to the widest entry *in this list*,
+/// which is why the labels are drawn from all of them at once rather than one row at
+/// a time: alignment is a fact about the set of rows, not about any one of them. The
+/// repo column is measured over the rows that have one, so a listing of nothing but
+/// foreign workspaces is not padded out around a column it has not got.
+fn drawn(namings: &[Naming]) -> Vec<String> {
     let owner_width = widest(namings.iter().map(|naming| naming.owner.as_str()));
     let repo_width = widest(namings.iter().filter_map(|naming| match &naming.tail {
         Tail::Split { repo, .. } => Some(repo.as_str()),
         Tail::Whole(_) => None,
     }));
-    workspaces
+    namings
         .iter()
-        .zip(namings)
-        .map(|(workspace, naming)| Offer {
-            label: label(&naming, owner_width, repo_width),
-            workspace_id: workspace.id.clone(),
-        })
+        .map(|naming| label(naming, owner_width, repo_width))
         .collect()
+}
+
+/// Whether no two of *labels* are the same string.
+///
+/// The property [`chosen`] needs and cannot check for itself: it finds a picked row
+/// by matching its text, first match winning, so two rows drawn alike are a row that
+/// acts on the other one's workspace.
+fn all_distinct(labels: &[String]) -> bool {
+    labels.iter().collect::<HashSet<&String>>().len() == labels.len()
 }
 
 /// How every row wants to be named, with any split that would not have been
@@ -169,15 +213,16 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
                 (Some(repo), Some(git_ref)) => Tail::Split { repo, git_ref },
                 _ => Tail::Whole(workspace.id.clone()),
             },
+            id: workspace.id.clone(),
         })
         .collect();
     let mut drawn: HashMap<String, usize> = HashMap::new();
     for naming in &namings {
         *drawn.entry(shared_key(naming)).or_default() += 1;
     }
-    for (naming, workspace) in namings.iter_mut().zip(workspaces) {
+    for naming in &mut namings {
         if matches!(naming.tail, Tail::Split { .. }) && drawn[&shared_key(naming)] > 1 {
-            naming.tail = Tail::Whole(workspace.id.clone());
+            naming.tail = Tail::Whole(naming.id.clone());
         }
     }
     namings
@@ -209,8 +254,8 @@ fn shared_key(naming: &Naming) -> String {
 /// than a column left blank: a foreign workspace has no repo, and a dash under a
 /// repo heading would be inventing the same answer twice.
 ///
-/// The two shapes cannot collide, because a devpod workspace name holds no spaces
-/// — so nothing drawn with two separators can equal anything drawn with one.
+/// Nothing here keeps two rows apart. Whether the labels are distinct is a fact
+/// about the whole list, and [`offered`] is where it is established.
 fn label(naming: &Naming, owner_width: usize, repo_width: usize) -> String {
     match &naming.tail {
         Tail::Split { repo, git_ref } => {
@@ -708,6 +753,41 @@ mod tests {
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
             Pick::Chose(one_id("devlaunch-feature-auth-nesatabe"))
+        );
+    }
+
+    #[test]
+    fn a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row() {
+        // The cross-shape collision the two-column and three-column rows can make
+        // between them: a workspace dl did not clone keeps whatever name devpod has
+        // for it, and if that name is the middle and right columns of some *other*
+        // row, the two rows are the same text. `chosen` then maps both to whichever
+        // came first, so picking the second one acts on the first -- and `dl rm` is
+        // one of the verbs this picker opens for.
+        //
+        // The collision key cannot see this one: the two rows have different key
+        // shapes, so counting keys finds no duplicate.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache());
+
+        let labels: Vec<&String> = offers.iter().map(|offer| &offer.label).collect();
+        assert_ne!(labels[0], labels[1], "two rows drawn alike: {labels:?}");
+        // And the property that matters: each row still reaches its own workspace.
+        assert_eq!(
+            chosen(&offers, vec![offers[1].label.clone()]),
+            Pick::Chose(one_id("devlaunch | main"))
         );
     }
 
