@@ -505,11 +505,16 @@ writes an escape sequence that the next shell prompt overwrites anyway.
 **It is the workspace id, not the spec you typed.** The id is the only string that
 is always available and always bounded: every launch has one — a triple, a bare
 name, a path, a URL — whereas `owner/repo` still has its branch unresolved at that
-point and `./some/dir` is not a spec at all. It is capped at 47 characters by
-construction ([Workspace IDs](#workspace-ids)), so it cannot crowd a tab bar out
-the way a long branch name could, and it is already the container's hostname — so
-the title dl writes and the `user@host` an interactive prompt paints over it agree
-instead of disagreeing.
+point and `./some/dir` is not a spec at all. It is also already the container's
+hostname — so the title dl writes and the `user@host` an interactive prompt paints
+over it agree instead of disagreeing.
+
+It stays short enough for a tab bar, but not by anything dl does: only a
+`owner/repo@branch` launch gets its id from the 47-character derivation under
+[Workspace IDs](#workspace-ids). A bare workspace name or a `./path` arrives as
+what you typed, and what keeps *those* short is devpod, which refuses to create or
+report a workspace whose name runs past 48 characters — so a longer one ends the
+launch before there is a session to name.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for

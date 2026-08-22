@@ -19,12 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because, unlike `DEVLAUNCH_ZELLIJ`, what it does is write bytes the next shell
   prompt overwrites anyway.
 
-  The workspace id rather than the spec, on two properties the spec does not have:
-  it exists for every launch (a bare `owner/repo` still has its branch unresolved at
-  that point, and `./some/dir` is not a spec at all) and it is capped at 47
-  characters, so it cannot crowd out a tab bar the way a long branch name could. It
-  is also already the container's hostname, so dl's title and the `user@host` an
-  interactive prompt paints over it are the same string rather than two.
+  The workspace id rather than the spec, because it exists for every launch where
+  the spec does not: a bare `owner/repo` still has its branch unresolved at that
+  point, and `./some/dir` is not a spec at all. It is also already the container's
+  hostname, so dl's title and the `user@host` an interactive prompt paints over it
+  are the same string rather than two. It stays tab-bar short because devpod
+  refuses to create or report a workspace whose name runs past 48 characters, not
+  because dl truncates anything.
 
   Written to stderr because stdout is parsed by the completion machinery and by
   `wf`, and skipped unless stderr is a terminal — which is why `dl <ws> -- make test
