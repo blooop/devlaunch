@@ -33,7 +33,9 @@ use std::path::PathBuf;
 /// resolved from this crate's manifest directory so the test does not care where it
 /// was run from.
 fn source(relative: &str) -> String {
-    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", relative].iter().collect();
+    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", relative]
+        .iter()
+        .collect();
     fs::read_to_string(&path).unwrap_or_else(|why| panic!("{} is readable: {why}", path.display()))
 }
 
@@ -43,6 +45,10 @@ fn completion_script() -> String {
 
 fn argument_grammar() -> String {
     source("dl/src/cli.rs")
+}
+
+fn aid_rewrite() -> String {
+    source("aid/src/rewrite.rs")
 }
 
 // --- reading the bash script's tables ---------------------------------------
@@ -114,6 +120,9 @@ struct Flag {
     long: String,
     /// `hide = true`: not in `--help`, so not offered by a completion either.
     hidden: bool,
+    /// A value follows this flag as a separate word, which the script has to know
+    /// so it can complete the value instead of another flag.
+    takes_value: bool,
 }
 
 /// Every flag the `Cli` struct declares, in declaration order.
@@ -142,10 +151,9 @@ fn grammar_flags(grammar: &str) -> Vec<Flag> {
         let Some(attribute) = pending.take() else {
             continue;
         };
-        let name = line
+        let (name, ty) = line
             .split_once(':')
-            .expect("an argument attribute is followed by its field")
-            .0;
+            .expect("an argument attribute is followed by its field");
         let parts: Vec<&str> = attribute.split(',').map(str::trim).collect();
         let long = parts.iter().find_map(|part| {
             if *part == "long" {
@@ -160,6 +168,7 @@ fn grammar_flags(grammar: &str) -> Vec<Flag> {
         flags.push(Flag {
             long: format!("--{long}"),
             hidden: parts.contains(&"hide = true"),
+            takes_value: ty.trim().trim_end_matches(',') != "bool",
         });
     }
     assert!(
@@ -204,6 +213,64 @@ fn grammar_words(grammar: &str, name: &str) -> BTreeSet<String> {
         "{name} has {declared} entries; {words:?} was read out of it"
     );
     words
+}
+
+// --- reading aid's rewrite tables -------------------------------------------
+
+/// The entries of a `const NAME: &[...] = &[ ... ];` declaration.
+fn slice_body<'a>(rust: &'a str, name: &str) -> &'a str {
+    let after = rust
+        .split_once(&format!("const {name}: &["))
+        .unwrap_or_else(|| panic!("aid's rewrite declares {name}"))
+        .1;
+    after
+        .split_once("= &[")
+        .unwrap_or_else(|| panic!("{name} is initialised from a slice literal"))
+        .1
+        .split_once("];")
+        .unwrap_or_else(|| panic!("{name}'s declaration ends"))
+        .0
+}
+
+/// The agents aid can start, from its agent table.
+///
+/// Matched line by line rather than by scanning for string literals, because the
+/// table's entries contain string literals of their own — the words each agent is
+/// started with, and the environment pairs. A name is the only entry written as a
+/// bare quoted word on a line of its own.
+fn aid_agents(rewrite: &str) -> BTreeSet<String> {
+    let body = slice_body(rewrite, "AGENTS");
+    let names: BTreeSet<String> = body
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix("\","))
+                .filter(|word| !word.contains('"'))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        names.len(),
+        body.matches("Agent {").count(),
+        "one name was read per agent in the table, got {names:?}"
+    );
+    names
+}
+
+/// A `const NAME: &[&str] = &["a", "b"];` list of flag spellings.
+fn aid_flag_list(rewrite: &str, name: &str) -> BTreeSet<String> {
+    let flags: BTreeSet<String> = slice_body(rewrite, name)
+        .split(',')
+        .filter_map(|part| {
+            part.trim()
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(!flags.is_empty(), "{name} lists at least one flag");
+    flags
 }
 
 /// Flags the grammar accepts that the completion deliberately does not offer for a
@@ -314,4 +381,70 @@ fn every_flag_offered_beside_a_workspace_is_a_flag_the_grammar_accepts() {
             "{flag} is offered beside a workspace but the grammar does not accept it"
         );
     }
+}
+
+#[test]
+fn the_flags_a_value_follows_are_the_grammars_value_taking_flags() {
+    // Three copies of this one fact, so all three are compared: the script switches
+    // to completing a value after these, aid has to tell such a value from the
+    // workspace spec, and the grammar is where the flag's value is declared. A
+    // second value-taking flag added to the grammar and missed here would complete
+    // as though a flag came next.
+    let script = completion_script();
+    let grammar = argument_grammar();
+    let rewrite = aid_rewrite();
+
+    let expected: BTreeSet<String> = grammar_flags(&grammar)
+        .iter()
+        .filter(|flag| flag.takes_value && !flag.hidden)
+        .map(|flag| flag.long.clone())
+        .collect();
+
+    assert_eq!(assigned(&script, "local value_opts="), expected);
+    assert_eq!(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"), expected);
+    assert!(
+        expected.is_subset(&dl_first_argument_flags(&script)),
+        "a flag whose value is completed is a flag that can be reached"
+    );
+}
+
+/// Flags `aid` offers for a first argument beyond one per agent, and where each
+/// comes from.
+///
+/// Hand-written for the same reason as [`NOT_OFFERED_FIRST`]: aid's grammar is not a
+/// clap grammar and could not be one (an unknown leading flag is passed through to
+/// dl, and everything after the workspace is prompt), so its help text is the
+/// interface and there is no table to derive these two from. The agent flags, which
+/// are a table, are derived.
+///
+/// aid's `--rm`, `--stop`, `--autorm` and `--force` are absent on purpose: they are
+/// *suffix* flags, peeled off the end of a line, and the script offers nothing after
+/// an aid workspace because everything there is prompt.
+const AID_FLAGS_BESIDE_THE_AGENTS: [(&str, &str); 3] = [
+    ("--help", "aid's own, checked before anything is rewritten"),
+    ("-h", "the same"),
+    ("--version", "aid's own, likewise"),
+];
+
+#[test]
+fn aid_offers_one_flag_per_agent_it_can_start() {
+    let script = completion_script();
+    let rewrite = aid_rewrite();
+
+    let mut expected: BTreeSet<String> = aid_agents(&rewrite)
+        .iter()
+        .map(|agent| format!("--{agent}"))
+        .collect();
+    expected.extend(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"));
+    expected.extend(
+        AID_FLAGS_BESIDE_THE_AGENTS
+            .iter()
+            .map(|(flag, _)| (*flag).to_owned()),
+    );
+
+    assert_eq!(
+        assigned(&script, "global_opts="),
+        expected,
+        "the completion script's aid flags have drifted from aid's agent table"
+    );
 }
