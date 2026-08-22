@@ -214,6 +214,82 @@ pub fn describe_source(source: &WorkspaceSource) -> SourceDescription {
     SourceDescription { kind, detail }
 }
 
+/// Whose repository a workspace opens, when its source says.
+///
+/// The fuzzy picker's first column. Owner is not part of a workspace id — that is
+/// `<repo-slug>-<ref-slug>-<suffix>` and carries no owner at all — so a list of
+/// workspaces drawn from ids alone cannot tell `blooop/devlaunch` from a fork of
+/// it, which is exactly the distinction someone scanning the picker is making.
+///
+/// Read from the source devpod already reported and the cache directory the
+/// command already resolved, and from nothing else: no `metadata.json`, no
+/// config, no disk. `metadata.json` records the owner outright and would be the
+/// obvious place to ask, which is exactly what this avoids — a launch that never
+/// needed the records must be shown never to have opened them (devlaunch#145),
+/// and a column in the picker is not a reason to open them.
+///
+/// Two readings, one per arm that can carry an owner:
+///
+/// - A git source is read off its URL, the same three GitHub spellings
+///   [`parse_owner_repo_from_url`] recognises everywhere else.
+/// - A local folder is read as dl's own clone layout,
+///   `<cache>/repos/<owner>/<repo>/<workspace id>` — but only for a directory
+///   [`is_devlaunch_clone`] already places inside dl's cache, and only when its
+///   leaf is named for this very workspace. Both guards earn their keep, because
+///   a path three components deep is not on its own evidence of anything: without
+///   the containment test `dl ~/dev/myproject` — whose devpod id *is* `myproject`,
+///   so the leaf matches — reads as an owner called `dev`, and without the leaf
+///   test any directory a user keeps under the cache would too.
+///
+/// `None` for everything else, the conservative direction: a workspace whose owner
+/// dl cannot establish shows no owner, rather than showing a path component that
+/// happens to sit where an owner would.
+///
+/// One consequence worth naming. A `config.toml` that points `repos_dir` outside
+/// the cache directory puts dl's own clones somewhere this does not recognise, so
+/// those rows lose their owner — the same blind spot, from the same containment
+/// test, that `--purge` and the `SIZE` column already have (see
+/// [`is_devlaunch_clone`]). Closing it here would mean reading the config on the
+/// picker's path, which is the read the paragraph above is about.
+///
+/// Owned, like [`describe_source`] beside it, rather than borrowed from the
+/// workspace: it keeps the signature free of lifetime plumbing for one short
+/// string per row of a picker that is about to draw a terminal.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+pub fn owner_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
+    match &workspace.source {
+        WorkspaceSource::GitRepository(url) => {
+            parse_owner_repo_from_url(url).map(|(owner, _repo)| owner.to_owned())
+        }
+        WorkspaceSource::LocalFolder(path) if is_devlaunch_clone(workspace, cache_dir) => {
+            owner_of_clone(Path::new(path), &workspace.id, cache_dir)
+        }
+        WorkspaceSource::LocalFolder(_)
+        | WorkspaceSource::UnreadableLocalFolder(_)
+        | WorkspaceSource::Unrecognised(_) => None,
+    }
+}
+
+/// dl's clone layout read backwards: the grandparent of a leaf named for the
+/// workspace it holds.
+///
+/// That grandparent has to be a directory dl put there, which is what the last
+/// check is for — inside the cache and not the cache itself. Without it a
+/// directory a user keeps *in* dl's cache, opened by path, hands back whatever
+/// component sits two above its leaf: `dl ~/.cache/devlaunch/scratch/myproject`
+/// would be credited to an owner called `devlaunch`.
+fn owner_of_clone(path: &Path, workspace_id: &str, cache_dir: &Path) -> Option<String> {
+    if path.file_name()?.to_str()? != workspace_id {
+        return None;
+    }
+    let owner_dir = path.parent()?.parent()?;
+    if owner_dir == cache_dir || !owner_dir.starts_with(cache_dir) {
+        return None;
+    }
+    Some(owner_dir.file_name()?.to_str()?.to_owned())
+}
+
 // ---------------------------------------------------------------------------
 // which workspaces are devlaunch's
 // ---------------------------------------------------------------------------

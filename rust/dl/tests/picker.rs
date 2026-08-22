@@ -12,10 +12,17 @@
 //! The assertion is the user's sentence — the search bar is above the matches —
 //! rather than the name of a field.
 //!
+//! The same reasoning admits one test that is not about the layout: a pick has to
+//! travel *out* through skim as well, as the label bytes `select::chosen` then
+//! matches against, and a label skim does not hand back verbatim reaches no
+//! workspace at all. That is the same class of failure — everything on dl's side
+//! spelled right, and the picker doing nothing — and it is equally invisible to a
+//! unit test, which feeds `chosen` the very strings it built.
+//!
 //! The cost is that these are the only tests in the crate that need a terminal and
-//! a spawned process, which is why there are two of them and not a suite: what the
-//! picker *offers*, the order it offers it in, and what it does with a choice are
-//! all pure functions tested in `select.rs`, and none of that is re-tested here.
+//! a spawned process, which is why there are four of them and not a suite: what
+//! the picker *offers* and the order it offers it in are pure functions tested in
+//! `select.rs`, and neither is re-tested here.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -119,6 +126,51 @@ fn what_is_typed_appears_on_the_top_line_and_narrows_the_list_below_it() {
     );
 }
 
+#[test]
+fn taking_a_row_acts_on_the_workspace_that_rows_label_names() {
+    // The seam every other test here stops short of: skim hands a *label* back,
+    // and `select::chosen` finds the workspace by matching that label against the
+    // ones it offered. Both sides are dl's, but the bytes travel through skim in
+    // between — so a label skim does not return verbatim maps back to nothing, and
+    // the picker silently does nothing at all. The unit tests in `select.rs` cannot
+    // see this: they feed `chosen` the very strings they built.
+    //
+    // Worth a terminal since the owner column arrived, because the label is no
+    // longer a bare id: it carries a separator and a run of padding spaces, and
+    // anything a later change adds to it — colour especially, which would put
+    // escape sequences in `SkimItem::text` — travels this same path.
+    let (screen, calls) = Screen::run(
+        &["stop"],
+        "wayfinder",
+        |screen| screen.row_of("blooop-devlaunch").is_none(),
+        Dismiss::Take,
+    );
+
+    assert!(
+        calls.iter().any(|call| call == "stop blooop-wayfinder"),
+        "the pick should have stopped `blooop-wayfinder`, but devpod was asked \
+         {calls:?}, from this screen:\n{screen}"
+    );
+}
+
+/// How the picker is left once the screen has been taken.
+#[derive(Clone, Copy)]
+enum Dismiss {
+    /// Esc: the picker's quit, and the shortest way to let the child go.
+    Quit,
+    /// Enter: the row under the cursor is taken, and `dl` goes on to act on it.
+    Take,
+}
+
+impl Dismiss {
+    fn key(self) -> &'static [u8] {
+        match self {
+            Dismiss::Quit => b"\x1b",
+            Dismiss::Take => b"\r",
+        }
+    }
+}
+
 /// What the picker had drawn on its terminal when it settled.
 struct Screen {
     rows: Vec<String>,
@@ -137,6 +189,20 @@ impl Screen {
     /// The same, after typing `keys` — taken once `settled` says the screen has
     /// caught up with them.
     fn after(args: &[&str], keys: &str, settled: impl Fn(&Screen) -> bool) -> Self {
+        Self::run(args, keys, settled, Dismiss::Quit).0
+    }
+
+    /// The screen, and every call the fake devpod took before the child was gone.
+    ///
+    /// `dismiss` is how the picker is left: quit, or the pick taken. The calls are
+    /// read after the child has exited, which is what makes the ones a pick causes
+    /// visible — the screen is snapshotted before, since dismissing draws over it.
+    fn run(
+        args: &[&str],
+        keys: &str,
+        settled: impl Fn(&Screen) -> bool,
+        dismiss: Dismiss,
+    ) -> (Self, Vec<String>) {
         let world = World::new();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -198,8 +264,7 @@ impl Screen {
             screen = waiting(&settled);
         }
 
-        // Esc, which is the picker's quit and the shortest way to let the child go.
-        let _ = writer.write_all(b"\x1b");
+        let _ = writer.write_all(dismiss.key());
         let _ = writer.flush();
         let gone = Instant::now() + DEADLINE;
         while Instant::now() < gone {
@@ -211,7 +276,7 @@ impl Screen {
         }
         let _ = child.kill();
 
-        screen
+        (screen, world.devpod_calls())
     }
 
     /// The bytes a terminal received, as the grid it would be showing.
@@ -337,7 +402,7 @@ impl Screen {
     /// same glyph as the cursor on the selected match — searching for it finds
     /// whichever comes first, which is the bug this file exists to catch answering
     /// the question asked about it. What tells them apart is the label: a match row
-    /// carries `id | kind | detail` and the prompt carries only what was typed.
+    /// carries `owner | id` and the prompt carries only what was typed.
     fn prompt_row(&self, spelled: &str) -> usize {
         self.rows
             .iter()
@@ -378,7 +443,8 @@ impl World {
         std::fs::write(
             &devpod,
             r#"#!/bin/sh
-# Only the listing is asked for here: the picker is opened, looked at, and quit.
+# Every call is recorded, so a test can ask which workspace a pick reached.
+echo "$@" >> "$DL_TEST_DEVPOD_LOG"
 if [ "$1" = "list" ]; then
   cat <<'JSON'
 [{"id": "blooop-devlaunch", "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
@@ -409,6 +475,23 @@ exit 0
         }
     }
 
+    /// Where the fake devpod writes one line per call.
+    fn devpod_log(&self) -> std::path::PathBuf {
+        self.root.join("devpod-calls")
+    }
+
+    /// Every call the fake devpod was made, one per line, in the order they came.
+    ///
+    /// The background refresh `dl` spawns drives devpod too, so this is read for
+    /// what it *contains* rather than compared whole.
+    fn devpod_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.devpod_log())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// `dl <args>` against this world, environment and all.
     ///
     /// The same scratch `HOME`/`XDG_*`/`DEVPOD_HOME` shape `tests/read_side.rs`
@@ -428,6 +511,10 @@ exit 0
             command.env("LLVM_PROFILE_FILE", profile);
         }
         command.env("PATH", format!("{root}/bin:/usr/bin:/bin"));
+        command.env(
+            "DL_TEST_DEVPOD_LOG",
+            self.devpod_log().display().to_string(),
+        );
         command.env("HOME", format!("{root}/home"));
         command.env("XDG_CACHE_HOME", format!("{root}/cache"));
         command.env("XDG_CONFIG_HOME", format!("{root}/config"));

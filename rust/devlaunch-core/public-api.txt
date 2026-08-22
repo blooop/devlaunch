@@ -1721,6 +1721,7 @@ pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch
 pub fn devlaunch_core::flows::listing::enriched_listing(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::listing::DlView<'_>, devlaunch_core::flows::listing::Sizes) -> core::result::Result<alloc::vec::Vec<devlaunch_core::flows::listing::ListedWorkspace>, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::listing::flatten_repos(&indexmap::map::IndexMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::listing::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
+pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::workspace_table(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path, devlaunch_core::flows::listing::Sizes) -> core::result::Result<devlaunch_core::flows::listing::WorkspaceTable, devlaunch_core::clients::devpod::ListingUnreadable>
 pub mod devlaunch_core::flows::migration
 pub enum devlaunch_core::flows::migration::Listing
