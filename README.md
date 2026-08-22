@@ -554,7 +554,7 @@ workspace is already where you run an agent with `--dangerously-skip-permissions
 both read the same values as the variables above: anything but empty, `0`, `false`
 or `no` means yes, turn it off.
 
-### What this deliberately does not do
+### Why not herdr's own integration
 
 It does not install herdr in the container, and it does not use herdr's own
 `herdr integration install claude`. That integration's hook sends

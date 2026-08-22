@@ -92,6 +92,14 @@ const REPORT_SOURCE: &str = "devlaunch";
 /// it is one devlaunch created, so nothing else syncs, prunes or rewrites it.
 const HOOK_RELPATH: &str = ".devlaunch/herdr-agent-state.py";
 
+/// Where the installer reads this container's mount table from.
+///
+/// A variable rather than the one path, so the host-shared refusal can be tested
+/// against a stated set of mounts. A test cannot mount anything -- that needs
+/// privileges a test run has no business holding -- and a guard nothing exercises
+/// is a guard that is wrong the first time it matters.
+const MOUNTINFO_VAR: &str = "DEVLAUNCH_MOUNTINFO";
+
 // ===========================================================================
 // the opt-out
 // ===========================================================================
@@ -406,29 +414,68 @@ EVENTS = [
 {events}
 ]
 HOOK_RELPATH = "{hook_relpath}"
+# The table that says which of this container's paths are shared with the host.
+# Overridable so the refusal below can be tested against a stated set of mounts:
+# the alternative is a test that has to mount something, which needs privileges a
+# test run does not have.
+MOUNTINFO = os.environ.get("{mountinfo_var}") or "/proc/self/mountinfo"
 HOOK_SOURCE = r'''{hook_source}'''
 
 home = os.path.expanduser("~")
 config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")
 
-# A configuration directory the host shares with the container is one where
-# writing hooks would edit the developer's own claude settings, from inside every
-# container, on every launch. Refused rather than merged into: the reports this
-# buys are not worth a machine-wide edit nobody asked for. Read from mountinfo
-# rather than guessed at, and an unreadable mountinfo is not taken as permission.
+hook = os.path.join(home, HOOK_RELPATH)
+settings_path = os.path.join(config_dir, "settings.json")
+
+
+def host_shared(path):
+    """The mount that would carry a write to `path` back to the host, or None.
+
+    A path is host-shared when the most specific mount covering it is a bind of
+    somewhere else -- which is what mountinfo's root field says: it is "/" for a
+    filesystem mounted whole (the container's own root, a tmpfs on /tmp) and the
+    source subpath for a bind. Asking whether `path` is *itself* a mount point is
+    the version of this that does not work, because the common shape is a mounted
+    parent: this repo's own devcontainer binds ~/.claude/hooks and ~/.claude/agents
+    while ~/.claude itself is container-local, and a container that binds ~/.config
+    with CLAUDE_CONFIG_DIR inside it shares the settings file without ever making
+    it a mount point.
+    """
+    try:
+        with open(MOUNTINFO, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except FileNotFoundError:
+        # No mountinfo is no evidence of sharing, and this is the ordinary state
+        # of anything that is not Linux.
+        return None
+    covering = None
+    target = os.path.realpath(path)
+    for line in lines:
+        fields = line.split(" ")
+        if len(fields) < 5:
+            continue
+        root, point = fields[3], os.path.realpath(fields[4])
+        if target == point or target.startswith(point.rstrip("/") + "/"):
+            if covering is None or len(point) >= len(covering[1]):
+                covering = (root, point)
+    if covering and covering[0] != "/":
+        return covering[1]
+    return None
+
+
+# Writing into a directory the host shares would edit the developer's own claude
+# settings, from inside every container, on every launch. Refused rather than
+# merged into: the reports this buys are not worth a machine-wide edit nobody
+# asked for. An unreadable mountinfo is not taken as permission.
 try:
-    with open("/proc/self/mountinfo", encoding="utf-8") as handle:
-        mounts = {{line.split(" ")[4] for line in handle if len(line.split(" ")) > 4}}
-except FileNotFoundError:
-    mounts = set()
+    shared = host_shared(settings_path) or host_shared(hook)
 except Exception:
-    print("devlaunch: cannot read /proc/self/mountinfo; not writing hooks")
+    print("devlaunch: cannot tell whether %s is shared with the host; not writing hooks" % config_dir)
     raise SystemExit(1)
-if os.path.realpath(config_dir) in {{os.path.realpath(mount) for mount in mounts}}:
-    print("devlaunch: %s is mounted from the host; not writing hooks into it" % config_dir)
+if shared:
+    print("devlaunch: %s is mounted from the host; not writing hooks into it" % shared)
     raise SystemExit(1)
 
-hook = os.path.join(home, HOOK_RELPATH)
 os.makedirs(os.path.dirname(hook), exist_ok=True)
 os.makedirs(config_dir, exist_ok=True)
 
@@ -445,24 +492,23 @@ os.replace(tmp, hook)
 # A merge and not a write. A container's settings file can hold the repo's own
 # hooks, a base image's, or a developer's dotfiles' -- and this runs on every
 # launch, so a write would delete them all, repeatedly.
-path = os.path.join(config_dir, "settings.json")
 try:
-    with open(path, encoding="utf-8") as handle:
+    with open(settings_path, encoding="utf-8") as handle:
         settings = json.load(handle)
 except FileNotFoundError:
     settings = {{}}
 except Exception:
     # An unreadable settings file is somebody else's: truncating it to install a
     # badge would cost more than the badge is worth.
-    print("devlaunch: %s is not readable JSON; leaving it alone" % path)
+    print("devlaunch: %s is not readable JSON; leaving it alone" % settings_path)
     raise SystemExit(1)
 if not isinstance(settings, dict):
-    print("devlaunch: %s is not a JSON object; leaving it alone" % path)
+    print("devlaunch: %s is not a JSON object; leaving it alone" % settings_path)
     raise SystemExit(1)
 
 hooks = settings.setdefault("hooks", {{}})
 if not isinstance(hooks, dict):
-    print("devlaunch: the hooks in %s are not an object; leaving them alone" % path)
+    print("devlaunch: the hooks in %s are not an object; leaving them alone" % settings_path)
     raise SystemExit(1)
 
 for event, action in EVENTS:
@@ -470,7 +516,7 @@ for event, action in EVENTS:
     if not isinstance(entries, list):
         entries = []
     # Ours out, everyone else's untouched, ours back in. Found by the hook's own
-    # path rather than by an exact command match, so an entry written by an older
+    # settings_path rather than by an exact command match, so an entry written by an older
     # devlaunch is replaced rather than duplicated.
     kept = []
     for entry in entries:
@@ -486,14 +532,15 @@ for event, action in EVENTS:
     )
     hooks[event] = kept
 
-tmp = path + ".devlaunch.tmp"
+tmp = settings_path + ".devlaunch.tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(settings, handle, indent=2)
     handle.write("\n")
-os.replace(tmp, path)
+os.replace(tmp, settings_path)
 "####,
         events = events,
         hook_relpath = HOOK_RELPATH,
+        mountinfo_var = MOUNTINFO_VAR,
         hook_source = hook_source(),
     )
 }
@@ -993,6 +1040,99 @@ mod tests {
         assert!(!ran.status.success(), "no python3 must refuse");
         assert!(String::from_utf8_lossy(&ran.stderr).contains("python3"));
         assert!(!home.join(HOOK_RELPATH).exists(), "nothing may be written");
+    }
+
+    /// A settings file inside a *mounted parent* is shared with the host just as
+    /// surely as one that is itself a mount point, and that is the common shape
+    /// rather than the exotic one: this repo's own devcontainer binds
+    /// `~/.claude/hooks` and `~/.claude/agents` while `~/.claude` stays
+    /// container-local, and a container that binds `~/.config` with
+    /// `CLAUDE_CONFIG_DIR` inside it shares the settings file without ever making
+    /// it a mount point.
+    #[test]
+    fn a_settings_file_under_a_mounted_parent_is_refused() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let (home, socket, _listener) = a_container(scratch.path());
+        let path = sysbin(scratch.path(), &INSTALLER_COMMANDS);
+        let config = home.join(".claude");
+        fs::create_dir_all(&config).expect("a config dir");
+
+        // mountinfo's shape: id parent major:minor root mount-point ...
+        // The bind is of the *parent*; the config directory itself is never named.
+        let mountinfo = scratch.path().join("mountinfo");
+        fs::write(
+            &mountinfo,
+            format!(
+                "23 1 0:24 / / rw - overlay overlay rw\n\
+                 24 23 0:25 /home/ags{} {} rw - ext4 /dev/sda1 rw\n",
+                "",
+                home.display()
+            ),
+        )
+        .expect("a scratch mountinfo");
+
+        let ran = bash_with(
+            &hook_script_at(&socket.to_string_lossy()),
+            &[
+                ("HOME", &home.to_string_lossy()),
+                ("PATH", &path.to_string_lossy()),
+                ("DEVLAUNCH_MOUNTINFO", &mountinfo.to_string_lossy()),
+            ],
+        );
+
+        assert!(
+            !ran.status.success(),
+            "a mounted parent must refuse: {}",
+            String::from_utf8_lossy(&ran.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&ran.stderr).contains("mounted from the host"),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert!(
+            !config.join("settings.json").exists(),
+            "the host's settings must not be written"
+        );
+        assert!(!home.join(HOOK_RELPATH).exists(), "nor the hook");
+    }
+
+    /// The refusal must not fire on an ordinary container, where the paths written
+    /// are under a filesystem mounted whole (root `/`) rather than a bind.
+    #[test]
+    fn a_container_local_settings_file_is_written() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let (home, socket, _listener) = a_container(scratch.path());
+        let path = sysbin(scratch.path(), &INSTALLER_COMMANDS);
+        let mountinfo = scratch.path().join("mountinfo");
+        // A tmpfs on the scratch root and an overlay on /: both mounted whole, so
+        // neither shares anything with a host.
+        fs::write(
+            &mountinfo,
+            format!(
+                "23 1 0:24 / / rw - overlay overlay rw\n\
+                 25 23 0:26 / {} rw - tmpfs tmpfs rw\n",
+                scratch.path().display()
+            ),
+        )
+        .expect("a scratch mountinfo");
+
+        let ran = bash_with(
+            &hook_script_at(&socket.to_string_lossy()),
+            &[
+                ("HOME", &home.to_string_lossy()),
+                ("PATH", &path.to_string_lossy()),
+                ("DEVLAUNCH_MOUNTINFO", &mountinfo.to_string_lossy()),
+            ],
+        );
+
+        assert!(
+            ran.status.success(),
+            "an ordinary container must install: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert!(home.join(".claude/settings.json").is_file());
+        assert!(home.join(HOOK_RELPATH).is_file());
     }
 
     /// What the hook actually puts on the socket, checked against herdr's schema:
