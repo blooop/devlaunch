@@ -56,7 +56,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -443,6 +443,11 @@ impl Runner for ProcessRunner {
         let stderr = drain(child.stderr.take());
         let ending = wait(&mut child, spec.timeout);
         match ending {
+            // Bounded, not joined (see [`collect`] and [`DRAIN_GRACE`]): the
+            // child has exited, but a descendant it forked into a session of its
+            // own — git's ssh ControlMaster is the production case — can hold
+            // the pipe open with no EOF ever coming, and this is the path that
+            // reaches that far the more often of the two.
             Ending::Ended(exit) => Outcome::Ran {
                 exit,
                 io: CapturedText {
@@ -450,12 +455,10 @@ impl Runner for ProcessRunner {
                     stderr: collect(stderr),
                 },
             },
-            // The drains are abandoned, not joined: a timed-out outcome drops
-            // whatever was written (see [`Outcome::TimedOut`]), and a descendant
-            // in a session of its own — git's ssh ControlMaster is the
-            // production case — survives the kill holding the pipe, so
-            // `read_to_end` may never reach EOF. Joining here is the hang this
-            // arm exists to end.
+            // The same bound, at zero: a timed-out outcome drops whatever was
+            // written (see [`Outcome::TimedOut`]), so there is nothing here to
+            // wait even a moment for. The drains are dropped mid-read and the
+            // threads end when — if — the pipe ever closes.
             Ending::Killed => Outcome::TimedOut,
             Ending::Lost(failure) => Outcome::NotStarted(failure),
         }
@@ -582,10 +585,12 @@ impl Runner for ProcessRunner {
         };
         // The reader is joined only when the pipe closed of its own accord (the
         // loop broke on Closed, so the thread is already on its way out). On a
-        // timeout it is abandoned: a descendant in a session of its own can
-        // hold the stderr pipe past the kill — which here can only take the
-        // child itself, since an interactive child stays in this process's
-        // group — and `read_until` would block the join forever (#301).
+        // timeout it is abandoned: a descendant in a session of its own can hold
+        // the stderr pipe past the kill, and `read_until` would block the join
+        // forever (#301). A bound of zero, where `capture`'s success path takes
+        // [`DRAIN_GRACE`], and for the same reason its own timeout path does:
+        // the lines have already been handed over as they arrived, so there is
+        // nothing left here that waiting could collect.
         if !timed_out && let Some(reader) = reader {
             let _ = reader.join();
         }
@@ -793,25 +798,69 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A pipe being read to EOF on a thread of its own, and what it has read so far.
+///
+/// The bytes live behind a lock rather than in the thread's return value so that
+/// they can be taken *without* joining it. Joining is what cannot be relied on:
+/// a descendant that inherited the write end — ssh's ControlMaster is the
+/// production case — holds the pipe open long after the child that wrote them
+/// exited, and EOF, the read, and the join with it, then never come at all
+/// (#301, #302).
+struct Drain {
+    reading: thread::JoinHandle<()>,
+    read: Arc<Mutex<Vec<u8>>>,
+}
+
 /// Read a pipe to the end on a thread of its own. `None` in means `None` out —
 /// a stream that was inherited has nothing to read, which is not an error.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<thread::JoinHandle<Vec<u8>>> {
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
     pipe.map(|mut pipe| {
-        thread::spawn(move || {
-            let mut buffer = Vec::new();
-            // A read that fails mid-stream leaves what it got: partial output
-            // is what the child wrote, and there is nowhere better to put it.
-            let _ = pipe.read_to_end(&mut buffer);
-            buffer
-        })
+        let read = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&read);
+        let reading = thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    // A read that fails mid-stream leaves what it got: partial
+                    // output is what the child wrote, and there is nowhere
+                    // better to put it.
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => held(&sink).extend_from_slice(&chunk[..read]),
+                }
+            }
+        });
+        Drain { reading, read }
     })
 }
 
-fn collect(reader: Option<thread::JoinHandle<Vec<u8>>>) -> String {
-    let bytes = reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
-    String::from_utf8_lossy(&bytes).into_owned()
+/// What a drain has read, waiting up to [`DRAIN_GRACE`] for it to reach EOF.
+///
+/// Called once the child is gone, so the wait is for the pipe to close rather
+/// than for anything more to be written; when it expires the reading thread is
+/// abandoned with the pipe it will never see the end of, and the bytes it did
+/// read are the answer.
+fn collect(drain: Option<Drain>) -> String {
+    let Some(drain) = drain else {
+        return String::new();
+    };
+    let deadline = Instant::now() + DRAIN_GRACE;
+    // `is_finished` rather than a join: a finished thread has already put its
+    // last bytes behind the lock, and an unfinished one must not be waited for.
+    while !drain.reading.is_finished() && Instant::now() < deadline {
+        thread::sleep(POLL_INTERVAL);
+    }
+    String::from_utf8_lossy(&held(&drain.read)).into_owned()
+}
+
+/// The bytes a drain has read, however the last reader left the lock.
+///
+/// A poisoned lock means a panic somewhere else in the process, not a doubt
+/// about the bytes: the drain thread does nothing under this lock but extend a
+/// `Vec`, so what is there is what was read.
+fn held<T>(bytes: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    bytes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Wait for `child`, killing it if `timeout` runs out first.
@@ -859,6 +908,19 @@ fn kill(child: &mut Child) -> Ending {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// How long [`collect`] gives a drained pipe to reach EOF once the child has
+/// exited.
+///
+/// A bound rather than an unbounded join, and this is the whole of #302's fix.
+/// The child is gone by the time it is waited on, so everything it wrote is
+/// already read or sitting in the pipe buffer and a moment covers the rest; what
+/// the wait must not do is outlast a descendant that inherited the write end and
+/// lives on, because EOF then never arrives. An unbounded join there hangs `dl`
+/// for good on the three captures that pass no timeout at all — `git clone
+/// --bare`, `git push -u` and the launch-path fetch — and hangs it for the whole
+/// timeout on the rest.
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 /// A waited-for child either exited with a status or died of a signal, and
 /// `ExitStatus` cannot say which of the two it holds. An answer that is neither

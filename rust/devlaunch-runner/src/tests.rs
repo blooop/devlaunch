@@ -327,6 +327,42 @@ fn a_timeout_kills_the_child_rather_than_abandoning_it() {
     assert!(!marker.exists(), "the child outlived its timeout");
 }
 
+/// Every defect the three tests below pin is a *hang*, so each runs its attempt
+/// on a thread of its own and fails at `bound` rather than stalling the suite
+/// forever. `hang` is what a red run says: what never came back, and why.
+fn within<T: Send + 'static>(
+    bound: Duration,
+    hang: &str,
+    attempt: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let running = thread::spawn(attempt);
+    let deadline = Instant::now() + bound;
+    while !running.is_finished() {
+        assert!(Instant::now() < deadline, "{hang}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    running.join().expect("the attempt thread")
+}
+
+/// The grandchild tests below put a descendant in a session of its own with
+/// `setsid`. Without that tool the script still runs, the descendant stays in
+/// the family, and the test goes green having pinned nothing — so each one
+/// checks the tool is there first.
+fn require_setsid() {
+    let found = ProcessRunner.capture(&sh("command -v setsid").into());
+    assert!(
+        matches!(
+            found,
+            Outcome::Ran {
+                exit: Exit::Code(0),
+                ..
+            }
+        ),
+        "these tests need setsid to put a descendant in a session of its own, \
+         and `command -v setsid` said {found:?}"
+    );
+}
+
 /// The `git fetch` over ssh shape: the child forks a descendant in a session of
 /// its own (ssh's ControlMaster is the production example) which inherits the
 /// stdout pipe, then the child itself outstays its timeout. `read_to_end`
@@ -336,23 +372,43 @@ fn a_timeout_kills_the_child_rather_than_abandoning_it() {
 /// bound regardless of who still holds the pipe.
 #[test]
 fn a_timed_out_capture_returns_even_when_a_grandchild_holds_the_pipe() {
+    require_setsid();
     let spec = SpawnSpec::from(sh("setsid sleep 30 & exec sleep 30"))
         .with_timeout(Duration::from_millis(200));
-    // On a thread with a deadline of this test's own: the defect being pinned
-    // is a hang, and a red run must fail rather than stall the suite.
-    let capture = std::thread::spawn(move || ProcessRunner.capture(&spec));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !capture.is_finished() {
-        assert!(
-            Instant::now() < deadline,
-            "capture never returned: the timeout path is waiting on a pipe a \
-             grandchild still holds"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let outcome = within(
+        Duration::from_secs(5),
+        "capture never returned: the timeout path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.capture(&spec),
+    );
+    assert_eq!(outcome, Outcome::TimedOut);
+}
+
+/// The same shape on the path that *succeeds*, which is the commoner one: the
+/// child exits 0 while the setsid'd descendant it forked still holds the stdout
+/// pipe. The status is in hand and every byte the child wrote has been read, so
+/// nothing is left to wait for except an EOF that is never coming — and
+/// `capture` must hand back what it has.
+///
+/// No timeout, deliberately: three captures pass none (`git clone --bare`,
+/// `git push -u`, the launch-path fetch), so there is no deadline to end this
+/// wait, and after the child has exited a timeout is not what the drain is
+/// bounded by anyway.
+#[test]
+fn a_capture_returns_when_a_grandchild_holds_the_pipe_past_a_clean_exit() {
+    require_setsid();
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & printf done"));
+    let outcome = within(
+        Duration::from_secs(5),
+        "capture never returned: the success path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.capture(&spec),
+    );
+    let (exit, io) = ran(outcome);
+    assert_eq!(exit, Exit::Code(0));
     assert_eq!(
-        capture.join().expect("the capture thread"),
-        Outcome::TimedOut
+        io.stdout, "done",
+        "what the child wrote is still the answer"
     );
 }
 
@@ -462,24 +518,16 @@ fn a_session_that_times_out_is_killed_like_any_other_run() {
 /// child moved out of the foreground group takes SIGTTIN (see #301).
 #[test]
 fn a_timed_out_session_returns_even_when_a_grandchild_holds_stderr() {
+    require_setsid();
     let spec = SpawnSpec::from(sh("setsid sleep 30 & exec sleep 30"))
         .with_timeout(Duration::from_millis(200));
-    // On a thread with a deadline of this test's own: the defect being pinned
-    // is a hang, and a red run must fail rather than stall the suite.
-    let session = std::thread::spawn(move || ProcessRunner.session(&spec, &mut |_| {}));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !session.is_finished() {
-        assert!(
-            Instant::now() < deadline,
-            "session never returned: the timeout path is waiting on a pipe a \
-             grandchild still holds"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        session.join().expect("the session thread"),
-        Outcome::TimedOut
+    let outcome = within(
+        Duration::from_secs(5),
+        "session never returned: the timeout path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.session(&spec, &mut |_| {}),
     );
+    assert_eq!(outcome, Outcome::TimedOut);
 }
 
 #[test]
