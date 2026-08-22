@@ -523,10 +523,15 @@ because failing is its majority case — three things have to be true:
 - **`python3` in the container.** The hook talks to a unix socket and merges a JSON
   settings file, and neither is something shell can do. herdr's own integration
   requires `python3` for the same reason, so this asks for nothing extra.
-- **A claude configuration directory of the container's own.** If `~/.claude` (or
-  `CLAUDE_CONFIG_DIR`) is mounted from the host, the stage **refuses** rather than
-  merging: writing hooks there would edit your real claude settings from inside
-  every container, on every launch.
+- **A claude configuration directory of the container's own.** If the settings file
+  or the hook's own path is inside anything bind-mounted from the host, the stage
+  **refuses** rather than merging: writing hooks there would edit your real claude
+  settings from inside every container, on every launch. A mounted *parent* counts,
+  which is the shape that actually occurs — `dl` never mounts `~/.claude` into a
+  workspace, but **this repo's own devcontainer does** (`.devcontainer/claude-code`
+  binds `settings.json` among others), so a workspace on devlaunch itself reports
+  the stage and installs nothing, by design. Arbitrary repos, which is what `dl`
+  launches, have a container-local `~/.claude` and get the badge.
 - **The socket mount**, which only lands at container creation. A workspace created
   before this feature — or by a `dl` on a machine with no herdr running — needs
   **`dl <ws> recreate`**, not `restart`. This is the one place it differs from the
