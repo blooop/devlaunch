@@ -7,6 +7,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-22
+
+### Changed
+
+- **`--rm` is docker's `--rm`: the workspace goes when the session ends.**
+  `dl <ws> --rm` and `dl <ws> --rm -- <cmd>` hand over a session and delete the
+  workspace and its clone once it ends — which is what `--autorm` did, under the
+  name docker gives it. The `rm` verb is unchanged and is the only way to delete a
+  workspace *now*, so the whole grammar is `docker rm` beside `docker run --rm`,
+  and neither spelling has to be read twice to work out which was meant:
+
+  ```bash
+  dl kinisi/repo@fix/x rm                            # delete it now
+  dl kinisi/repo@fix/x --rm                          # shell; it goes when you exit
+  dl kinisi/repo@fix/x --rm -- make test             # one command, then it goes
+  aid kinisi/repo@fix/x 'fix the flaky test' --rm    # the agent runs, then it goes
+  ```
+
+  Everything the removal already promised is unchanged: it stops at work that is
+  nowhere else and leaves the workspace standing, it collects a build that died in
+  `postCreateCommand`, and the exit code is the session's and never the removal's.
+  `--force` still does not compose with it — that is `dl <ws> rm --force`, which is
+  where docker keeps its `-f` too.
+
+### Removed
+
+- **`--autorm` is now spelled `--rm`.** A rename and nothing else; the behaviour
+  above is what it always did. The old spelling is recognised and refused with the
+  new one rather than dropped, so a line recalled from history says what happened
+  instead of quietly doing nothing:
+
+  ```
+  $ dl <ws> --autorm
+  --autorm is now spelled --rm: 'dl <workspace> --rm' opens the workspace and deletes
+  it when the session ends, the way 'docker run --rm' does. Use 'dl <workspace> rm' to
+  delete one now.
+  ```
+
+- **`--stop` is retired, and so is appending `--rm` to cancel a line.** Both were
+  the *suffix* form of a verb: typed at the end of a line that already asked for
+  something and winning over it, so `aid <ws> 'review this pr' --rm` deleted the
+  workspace and printed `--rm overrode the rest of the line`. That shape cannot
+  survive a `--rm` that means "delete when the session ends" — the two spellings
+  look like a pair, and one cancelling the line while the other runs it is exactly
+  the pair nobody can keep straight. So `aid <ws> 'review this pr' --rm` now runs
+  the review and deletes afterwards, and `--stop` refuses with the word to use:
+
+  ```
+  $ dl <ws> --stop
+  --stop is no longer a flag: the flag spellings now modify a session (--rm deletes
+  the workspace once one ends) rather than name a verb. Use 'dl <workspace> stop' to
+  stop a workspace.
+  ```
+
+  For "I am done with this workspace", `dl <ws> rm` names it and `dl rm` picks it —
+  and the pick marks several with TAB, which for a long `aid` prompt line is fewer
+  keystrokes than recalling it to type at the end. What is genuinely gone is
+  deleting a workspace without naming or picking it, by appending to whatever the
+  last line happened to be.
+
+  One consequence worth knowing: `dl prune <ws> --rm` used to remove `<ws>`, and
+  is now the `prune` retirement's refusal, since nothing overrides a line any more.
+  Add `--force` to that line and the `--force`-beside-`--rm` refusal is what you
+  get, because the pair is the more confused half and is named first.
+  `dl --prune` is unchanged.
+
+- **`dl <ws> rm --rm` is refused as the two requests it is**, rather than being
+  quietly treated as one of them. The sentence names the verb, which is the
+  spelling that already does what such a line most likely meant.
+
+## [0.8.0] - 2026-08-22
+
+### Added
+
+- **A host-side [herdr](https://herdr.dev) session now shows what the agent in a
+  workspace is doing.** herdr shows, per pane, whether the coding agent in it is
+  working, idle or blocked waiting for a human, and under `aid` it showed none of
+  that. The cause is structural: herdr identifies a pane's agent from the pane's
+  foreground process, and the host's tree is `aid → dl → ssh` with the agent inside
+  the container, where no process table on the host can see it.
+
+  It was measured rather than assumed. Two panes in one container, same claude —
+  one running it directly, one behind `script -qc claude /dev/null`, which is the
+  same pty-proxy shape as the ssh hop — produce equivalent detection snapshots, and
+  herdr registers an agent for the first and `agent_not_found` for the second.
+  Screen content is not the missing signal; process identity is. herdr takes an
+  answer for that over its socket, so devlaunch supplies it.
+
+  Three things cross the container boundary and nothing else. The socket, bind
+  mounted at `/var/tmp/devlaunch-herdr.sock`. The pane's identity, on the agent's
+  own command line rather than in workspace environment — a pane id is a fact about
+  this session, and attaching to a running workspace skips the `up` that would
+  refresh workspace environment, so the container would otherwise report into
+  whichever pane was current when it was last built. And a hook wired to claude's
+  `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd`,
+  because a held report nothing updates is a badge that lies. `Notification` is the
+  event that earns the feature: it is what claude fires when it is waiting for a
+  human.
+
+  Not herdr's own `integration install claude`: that hook sends only
+  `pane.report_agent_session`, which registers nothing by itself — calling it
+  against an unregistered pane still answers `agent_not_found` — so forwarding it
+  would carry session metadata for an agent herdr does not believe exists.
+
+  It pairs with the terminal title above rather than competing with it. herdr can
+  read state from a title too, but `aid` suppresses claude's own title so the
+  workspace id is what stands, which is exactly why the state comes from the hook:
+  the badge says what the agent is doing and the pane name says where.
+
+  On a host not running herdr nothing happens at all — no mount, no stage, no
+  notice, every command line byte-identical. That is decided from whether a socket
+  exists rather than from whether the feature is on, so it is true of the payload
+  and not merely of its effects. `DEVLAUNCH_NO_HERDR=1` opts out, and
+  `DEVLAUNCH_NO_TOOLS=1` covers it too. Mounting the socket gives the container
+  control of your herdr session, which is the trade and the reason for the opt-out;
+  it is on by default for the reason the forwarded GitHub token is.
+
+  The stage can never fail a launch, and three things have to be true for it to do
+  anything: a `python3` in the container, a claude configuration directory that is
+  not shared with the host, and the socket mount — which lands only at container
+  creation, so a workspace that predates it needs `dl <ws> recreate` rather than a
+  restart. The middle one refuses rather than merging, and a mounted *parent*
+  counts: `dl` never mounts `~/.claude` into a workspace, but this repo's own
+  devcontainer does, so devlaunch's own workspaces report the stage and install
+  nothing while the arbitrary repos `dl` exists to launch get the badge.
+
+## [0.7.3] - 2026-08-22
+
+### Fixed
+
+- **The selector's invitation is drawn inside the picker, so TAB is discoverable
+  at last.** The line that says what the rows are — and, for `dl rm`, `dl stop`,
+  `dl up`, `dl code` and `dl dotfiles`, the only thing that says TAB marks several
+  — was printed to stdout immediately before the picker opened. skim's first act is
+  to switch to the alternate screen, which replaces the visible screen wholesale, so
+  that sentence was gone for the entire time the picker was up and came back only
+  once it had exited. Multi-select had shipped in every release since 0.6.0 with its
+  one piece of documentation on a screen nobody could see while choosing.
+
+  It is now skim's sticky header, which the picker draws itself, directly above the
+  matches and below the search bar. Wording is unchanged. stdout keeps the line only
+  for the run that has no picker to put it on — no terminal, so no header either,
+  and stdout is the only surface left; on a terminal the sentence is shown once, in
+  the one place it can be read.
+
+  Proved on a pty, not in the options: the test runs `dl` on a real terminal and
+  reads the screen back, which is the only seam that can tell an option that is
+  spelled right from one that draws something. It pins both halves — the sentence
+  is on the picker's screen, and it is not on the screen the picker covers — so the
+  redundant print cannot come back unnoticed.
+
 ## [0.7.2] - 2026-08-22
 
 ### Fixed
@@ -56,7 +207,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file on a host that has never run Claude is indistinguishable from a logged-out
   session, and existed only to satisfy a bind source that is gone. The stale-mount
   heal stays, for containers built by the older layout that are still running.
-||||||| db3bb93
 ## [0.7.1] - 2026-08-22
 
 ### Changed

@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aid"
-version = "0.7.2"
+version = "0.9.0"
 dependencies = [
  "devlaunch-test-support",
  "dl",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-core"
-version = "0.7.2"
+version = "0.9.0"
 dependencies = [
  "devlaunch-runner",
  "devlaunch-test-support",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-runner"
-version = "0.7.2"
+version = "0.9.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-test-support"
-version = "0.7.2"
+version = "0.9.0"
 dependencies = [
  "devlaunch-runner",
  "serde_json",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "dl"
-version = "0.7.2"
+version = "0.9.0"
 dependencies = [
  "assert_cmd",
  "clap",
