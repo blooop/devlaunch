@@ -13,16 +13,31 @@
 //!
 //! **The columns are not Python's.** `dl.py::fuzzy_select_workspace` drew
 //! `{id} | {kind} | {detail}`, where the last two came from `describe_source`; this
-//! draws `{owner} | {id}`. Both of the columns that went were answering questions
-//! nobody standing at this picker is asking: `kind` reads `local` for every
-//! workspace dl makes, since dl always hands devpod a path, and `detail` is the
-//! clone directory dl chose and manages — a long, mechanically derived path whose
-//! own last component is already the id in the column beside it. What is *missing*
-//! from an id is the owner: an id is `<repo-slug>-<ref-slug>-<suffix>`
-//! ([`devlaunch_core::domain::workspace_id`]) and carries no owner at all, so a
-//! fork and its upstream are two rows spelled the same. [`owner_of`] derives it
-//! from the source devpod already reported — no records opened for it — and the
-//! column is padded to a common width so the ids line up under each other.
+//! draws `{owner} | {repo} | {ref}`. Both of the columns that went were answering
+//! questions nobody standing at this picker is asking: `kind` reads `local` for
+//! every workspace dl makes, since dl always hands devpod a path, and `detail` is
+//! the clone directory dl chose and manages — a long, mechanically derived path
+//! whose own last component is already the id.
+//!
+//! **What replaced the id is the id, read apart.** An id is
+//! `<repo-slug>-<ref-slug>-<suffix>` ([`devlaunch_core::domain::workspace_id`]),
+//! and two of those three parts are what a person at this picker is looking for
+//! while the third is machinery: the suffix is eight characters of hash, there to
+//! keep two branches from sharing a name, and reading it is no part of choosing a
+//! workspace. The owner is missing from the id altogether, so a fork and its
+//! upstream were two rows spelled the same. All three come out of the source
+//! devpod already reported — [`owner_of`], [`repo_of`] and [`ref_slug_of`] read
+//! dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>`, with no records
+//! opened and no config read — and each column but the last is padded to a common
+//! width so the rows line up under each other.
+//!
+//! Two things this deliberately does not do. It does not draw `owner/repo@ref`:
+//! that reads as a spec `dl` would accept, and a ref-slug is not a ref — `slug`
+//! collapses `/` and `-` alike, so the row for `feature/auth` would invite a
+//! retype that addresses `feature-auth` instead. And it never *only* elides: where
+//! a split would leave two rows drawn the same, both go back to their whole ids,
+//! because the row's own text is what [`chosen`] maps back to a workspace (see
+//! [`named`]).
 //!
 //! **One deliberate departure from Python's picker: it can take several rows.**
 //! Python's `iterfzf(..., multi=False)` answered one workspace always. Here the
@@ -51,12 +66,13 @@
 //! terminal. [`pick`] is the interactive half.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use devlaunch_core::clients::devpod::Workspace;
 use devlaunch_core::domain::workspace_state::NonEmpty;
-use devlaunch_core::flows::listing::owner_of;
+use devlaunch_core::flows::listing::{owner_of, ref_slug_of, repo_of};
 use skim::prelude::*;
 
 /// One row the picker offers, and the workspace it stands for.
@@ -76,38 +92,197 @@ pub(crate) struct Offer {
 /// reads as a column that failed to draw, where a dash reads as an answer.
 const NO_OWNER: &str = "-";
 
+/// One row's naming, before padding turns it into a label.
+struct Naming {
+    owner: String,
+    tail: Tail,
+    /// The workspace's own id, kept beside the tail because it is what every
+    /// fallback falls back *to* — and a fallback that had to go looking for it
+    /// again could look in the wrong row.
+    id: String,
+}
+
+/// What a row says after its owner.
+///
+/// A sum and not a repo beside an optional ref, because the two are not
+/// independently absent: dl's own layout names both halves or neither, and a row
+/// holding one of them would be a column with the wrong thing under it.
+enum Tail {
+    /// The id read apart into the repo it was derived for and the ref-slug it
+    /// carries.
+    Split { repo: String, git_ref: String },
+    /// devpod's workspace name, whole — for a workspace dl did not clone, and for
+    /// one whose split would not have been unique (see [`named`]).
+    Whole(String),
+}
+
 /// Every workspace devpod listed, in devpod's order, as the picker shows it.
 ///
 /// No filtering of any kind: the picker is a view of `dl --ls`, so a workspace
 /// devlaunch did not create and one whose source it cannot read are both offered.
 ///
-/// The owner column is padded to the widest owner *in this list*, which is why the
-/// labels are built here in one pass over all of them rather than one workspace at
-/// a time: alignment is a fact about the set of rows, not about any one of them.
+/// Both columns before the last are padded to the widest entry *in this list*,
+/// which is why the labels are built here in one pass over all of them rather than
+/// one workspace at a time: alignment is a fact about the set of rows, not about
+/// any one of them. The repo column is measured over the rows that have one, so a
+/// listing of nothing but foreign workspaces is not padded out around a column it
+/// has not got.
 ///
-/// `cache_dir` is where dl keeps its clones, and it is what [`owner_of`] reads a
-/// clone's owner out of the layout with — the same directory `--purge` decides
-/// ownership by, so the two cannot disagree about which workspaces are dl's.
+/// `cache_dir` is where dl keeps its clones, and it is what [`owner_of`],
+/// [`repo_of`] and [`ref_slug_of`] read a clone's layout with — the same directory
+/// `--purge` decides ownership by, so they cannot disagree about which workspaces
+/// are dl's.
 pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> {
-    let owners: Vec<String> = workspaces
-        .iter()
-        .map(|workspace| owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned()))
-        .collect();
-    // Characters and not bytes: a non-ASCII owner is one column per character on
-    // the terminal, and `{:width$}` counts the same way.
-    let width = owners
-        .iter()
-        .map(|owner| owner.chars().count())
-        .max()
-        .unwrap_or(0);
+    let mut namings = named(workspaces, cache_dir);
+    let mut labels = drawn(&namings);
+    if !all_distinct(&labels) {
+        // A collision the key pass could not see, because the two rows that made it
+        // have different key shapes: a whole-name row drawn `<owner> | <name>` can
+        // equal a split row drawn `<owner> | <repo> | <ref>` when the name is those
+        // last two columns. Rare, and not rare enough to argue away — the argument
+        // would have to be about which names devpod permits, and a row this picker
+        // can act on is not the place to borrow another program's validation.
+        //
+        // Every remaining split goes back to its id, which is what this can offer
+        // and not a promise of distinctness: two workspaces of one id in two devpod
+        // contexts draw one row whatever is done here, because an id is unique per
+        // context and nothing in an `Offer` carries the context. That predates the
+        // columns — `<owner> | <id>` collided the same way — and closing it means
+        // addressing a workspace by more than its id.
+        for naming in &mut namings {
+            naming.tail = Tail::Whole(naming.id.clone());
+        }
+        labels = drawn(&namings);
+    }
     workspaces
         .iter()
-        .zip(owners)
-        .map(|(workspace, owner)| Offer {
-            label: format!("{owner:width$} | {}", workspace.id),
+        .zip(labels)
+        .map(|(workspace, label)| Offer {
+            label,
             workspace_id: workspace.id.clone(),
         })
         .collect()
+}
+
+/// Every row's label, padded against the widest entry in each column.
+///
+/// Both columns before the last are padded to the widest entry *in this list*,
+/// which is why the labels are drawn from all of them at once rather than one row at
+/// a time: alignment is a fact about the set of rows, not about any one of them. The
+/// repo column is measured over the rows that have one, so a listing of nothing but
+/// foreign workspaces is not padded out around a column it has not got.
+fn drawn(namings: &[Naming]) -> Vec<String> {
+    let owner_width = widest(namings.iter().map(|naming| naming.owner.as_str()));
+    let repo_width = widest(namings.iter().filter_map(|naming| match &naming.tail {
+        Tail::Split { repo, .. } => Some(repo.as_str()),
+        Tail::Whole(_) => None,
+    }));
+    namings
+        .iter()
+        .map(|naming| label(naming, owner_width, repo_width))
+        .collect()
+}
+
+/// Whether no two of *labels* are the same string.
+///
+/// The property [`chosen`] needs and cannot check for itself: it finds a picked row
+/// by matching its text, first match winning, so two rows drawn alike are a row that
+/// acts on the other one's workspace.
+fn all_distinct(labels: &[String]) -> bool {
+    labels.iter().collect::<HashSet<&String>>().len() == labels.len()
+}
+
+/// How every row wants to be named, with any split that would not have been
+/// unique put back together.
+///
+/// **The second pass is not cosmetic.** [`chosen`] maps a picked row back to its
+/// workspace by the row's own text, first match winning, so two rows drawn the same
+/// are a row that selects the other workspace — and `dl rm` is one of the verbs
+/// this picker opens for. A ref-slug is a lossy reading of a ref ([`slug`] collapses
+/// `/` and `-` alike, and a long ref loses whole segments), so one repo really can
+/// hold two branches that read apart identically: `feature/auth` and `feature-auth`
+/// are devlaunch#55's own example, and they are two workspaces.
+///
+/// Falling back to the whole id is what settles it, because that is the string the
+/// ids were given a hashed suffix to make unique in the first place. It also puts
+/// the suffix on screen in exactly the case it is doing work, and nowhere else.
+///
+/// [`slug`]: devlaunch_core::domain::workspace_id
+fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
+    let mut namings: Vec<Naming> = workspaces
+        .iter()
+        .map(|workspace| Naming {
+            owner: owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned()),
+            tail: match (
+                repo_of(workspace, cache_dir),
+                ref_slug_of(workspace, cache_dir),
+            ) {
+                // Both or neither: the two are one reading of one layout, and a repo
+                // with no ref beside it would be a column with the wrong thing under
+                // it. `listing` answers them separately only so that neither has to
+                // return a pair.
+                (Some(repo), Some(git_ref)) => Tail::Split { repo, git_ref },
+                _ => Tail::Whole(workspace.id.clone()),
+            },
+            id: workspace.id.clone(),
+        })
+        .collect();
+    let mut drawn: HashMap<String, usize> = HashMap::new();
+    for naming in &namings {
+        *drawn.entry(shared_key(naming)).or_default() += 1;
+    }
+    for naming in &mut namings {
+        if matches!(naming.tail, Tail::Split { .. }) && drawn[&shared_key(naming)] > 1 {
+            naming.tail = Tail::Whole(naming.id.clone());
+        }
+    }
+    namings
+}
+
+/// What two rows drawn the same have in common, with the field boundaries kept.
+///
+/// NUL-delimited for the reason [`syllable_suffix`] joins on it: without a
+/// delimiter no key could tell the repo `a` with ref `bc` from the repo `ab` with
+/// ref `c`, and the padding a label is drawn with is not in the key at all — a
+/// collision is between what the rows *say*, not how wide they were printed.
+///
+/// [`syllable_suffix`]: devlaunch_core::domain::workspace_id
+fn shared_key(naming: &Naming) -> String {
+    match &naming.tail {
+        Tail::Split { repo, git_ref } => format!("{}\0{repo}\0{git_ref}", naming.owner),
+        // An id is unique within one devpod listing, so a whole-name row can never
+        // share its key — it is counted anyway rather than skipped, so that the one
+        // pass answers for every row and the fallback below has nothing to special-
+        // case.
+        Tail::Whole(name) => format!("{}\0{name}", naming.owner),
+    }
+}
+
+/// One row, padded into the label skim draws and [`chosen`] reads back.
+///
+/// A split row takes three columns and a whole-name row takes two, so the name
+/// runs on through the space a ref would have occupied. That is deliberate rather
+/// than a column left blank: a foreign workspace has no repo, and a dash under a
+/// repo heading would be inventing the same answer twice.
+///
+/// Nothing here keeps two rows apart. Whether the labels are distinct is a fact
+/// about the whole list, and [`offered`] is where it is established.
+fn label(naming: &Naming, owner_width: usize, repo_width: usize) -> String {
+    match &naming.tail {
+        Tail::Split { repo, git_ref } => {
+            format!(
+                "{owner:owner_width$} | {repo:repo_width$} | {git_ref}",
+                owner = naming.owner
+            )
+        }
+        Tail::Whole(name) => format!("{owner:owner_width$} | {name}", owner = naming.owner),
+    }
+}
+
+/// The width of the widest of *texts*, in the characters a terminal draws and
+/// `{:width$}` counts — not the bytes a non-ASCII owner or repo would measure.
+fn widest<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
+    texts.map(|text| text.chars().count()).max().unwrap_or(0)
 }
 
 /// How many rows one picker run may take.
@@ -566,11 +741,14 @@ mod tests {
     }
 
     #[test]
-    fn a_clone_of_dls_own_is_offered_under_the_owner_its_directory_names() {
+    fn a_clone_of_dls_own_is_read_apart_into_owner_repo_and_ref() {
         // The row a user of `dl` actually sees: every workspace `dl owner/repo`
         // makes is a clone at `<cache>/repos/<owner>/<repo>/<workspace id>` handed
-        // to devpod as a path, so the owner is read back out of the layout — no
-        // records opened, no config read, no disk touched.
+        // to devpod as a path, so the owner and the repo are read back out of the
+        // layout and the ref off the id — no records opened, no config read, no disk
+        // touched. The eight-character suffix does not appear: it is what keeps two
+        // branches from sharing an id, and choosing a workspace never involves
+        // reading it.
         let workspaces = listed(&one(
             "devlaunch-main-zovomobo",
             r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"}"#,
@@ -578,7 +756,165 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache())[0].label,
-            "blooop | devlaunch-main-zovomobo"
+            "blooop | devlaunch | main"
+        );
+    }
+
+    #[test]
+    fn a_repo_whose_slug_the_id_cut_is_still_read_apart() {
+        // The id's repo part is cut to twenty characters when the id would overflow,
+        // so the prefix in the id is not the repo directory's name. The *directory*
+        // is what the column shows, because that is the repository's actual name and
+        // the cut is an artefact of the id's length budget.
+        let workspaces = listed(&one(
+            "a-very-long-reposito-main-mafedavi",
+            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/a-very-long-repository-name-indeed/a-very-long-reposito-main-mafedavi"}"#,
+        ));
+
+        assert_eq!(
+            offered(&workspaces, cache())[0].label,
+            "blooop | a-very-long-repository-name-indeed | main"
+        );
+    }
+
+    #[test]
+    fn two_rows_that_would_be_drawn_alike_go_back_to_their_whole_ids() {
+        // `feature/auth` and `feature-auth` are two branches, two workspaces and two
+        // ids — and one ref-slug, because `slug` collapses `/` and `-` alike
+        // (devlaunch#55, defect #1). Drawn apart they would be the same row twice,
+        // and `chosen` maps a picked row back by its text with the first match
+        // winning: marking the second would remove the first. `dl rm` is one of the
+        // verbs this picker opens for, so that is a workspace deleted for a
+        // legibility win.
+        //
+        // Both rows go back to the whole id — not just the second — because there is
+        // no first: the collision is between what the two rows say, and neither has a
+        // better claim on the shorter spelling.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-feature-auth-poliseno",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-feature-auth-nesatabe",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-nesatabe"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache());
+
+        assert_eq!(
+            offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
+            [
+                "blooop | devlaunch-feature-auth-poliseno",
+                "blooop | devlaunch-feature-auth-nesatabe",
+            ]
+        );
+        // And the property the fallback exists for: each row still maps back to its
+        // own workspace.
+        assert_eq!(
+            chosen(&offers, vec![offers[1].label.clone()]),
+            Pick::Chose(one_id("devlaunch-feature-auth-nesatabe"))
+        );
+    }
+
+    #[test]
+    fn a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row() {
+        // The cross-shape collision the two-column and three-column rows can make
+        // between them: a workspace dl did not clone keeps whatever name devpod has
+        // for it, and if that name is the middle and right columns of some *other*
+        // row, the two rows are the same text. `chosen` then maps both to whichever
+        // came first, so picking the second one acts on the first -- and `dl rm` is
+        // one of the verbs this picker opens for.
+        //
+        // The collision key cannot see this one: the two rows have different key
+        // shapes, so counting keys finds no duplicate.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache());
+
+        let labels: Vec<&String> = offers.iter().map(|offer| &offer.label).collect();
+        assert_ne!(labels[0], labels[1], "two rows drawn alike: {labels:?}");
+        // And the property that matters: each row still reaches its own workspace.
+        assert_eq!(
+            chosen(&offers, vec![offers[1].label.clone()]),
+            Pick::Chose(one_id("devlaunch | main"))
+        );
+    }
+
+    #[test]
+    fn a_collision_only_pulls_in_the_rows_that_collide() {
+        // The fallback is scoped to the rows drawn alike. A third workspace of the
+        // same repository keeps its split row, because nothing else is drawn like it
+        // — so one ambiguous pair does not put the suffix back on a whole listing.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-feature-auth-poliseno",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-feature-auth-nesatabe",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-nesatabe"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            [
+                "blooop | devlaunch-feature-auth-poliseno",
+                "blooop | devlaunch-feature-auth-nesatabe",
+                "blooop | devlaunch | main",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_repo_name_under_two_owners_is_two_rows_that_read_apart() {
+        // A fork and its upstream: one repository name, one branch, two workspaces.
+        // The ids differ only in the suffix that is no longer drawn, so the owner
+        // column is the whole of what tells the rows apart — and it is enough, so
+        // neither row falls back.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-dedavevi",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/someone/devlaunch/devlaunch-main-dedavevi"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            ["blooop  | devlaunch | main", "someone | devlaunch | main"]
         );
     }
 
@@ -625,6 +961,46 @@ mod tests {
         ));
 
         assert_eq!(offered(&workspaces, cache())[0].label, "- | myproject");
+    }
+
+    #[test]
+    fn the_repo_column_is_padded_over_the_rows_that_have_one() {
+        // Alignment across the two row shapes. The repo column is measured over the
+        // split rows only, so a foreign workspace's name does not widen a column it
+        // has no entry in — it runs on through the space a ref would have taken,
+        // which is what a row with nothing to put in two columns should do.
+        //
+        // `kinisi_ros` also pins the column on the *directory* rather than the id's
+        // prefix: the id spells it `kinisi-ros`, because `slug` turns `_` into `-`,
+        // and the underscore is the repository's real name.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "kinisi-ros-main-zivefoti",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/kinisi-robotics/kinisi_ros/kinisi-ros-main-zivefoti"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "a-very-long-workspace-name-of-its-own",
+                 "source": {"localFolder": "/home/dev/myproject"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            [
+                "blooop          | devlaunch  | main",
+                "kinisi-robotics | kinisi_ros | main",
+                "-               | a-very-long-workspace-name-of-its-own",
+            ]
+        );
     }
 
     #[test]
