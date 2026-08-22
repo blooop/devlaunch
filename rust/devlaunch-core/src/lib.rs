@@ -39,9 +39,13 @@
 //! So a `pub` item here is not automatically part of the promised API. Only
 //! what [`api`] re-exports is. The distinction is enforced by keeping [`api`]
 //! the single re-export point, by the doc note above on every binary-surface
-//! item, and by the `cargo public-api` snapshot in `public-api.txt`, which CI
-//! diffs on every pull request: any change to the crate's public surface is a
-//! committed, reviewed diff or a red tick.
+//! item, and by two `cargo public-api` snapshots that CI diffs on every pull
+//! request: any change to the crate's public surface is a committed, reviewed
+//! diff or a red tick. The two tiers get a file each — `public-api.api.txt`
+//! for the promise, `public-api.rest.txt` for the binary surface — so that a
+//! breaking change is a diff in the small file rather than one row inside two
+//! thousand of routine churn. `scripts/public-api-snapshots.sh` regenerates
+//! them; see "The public-API snapshots" in README.md.
 
 // `runner` is pub so `devlaunch-test-support` can implement the trait; that
 // crate is dev-only and never shipped.

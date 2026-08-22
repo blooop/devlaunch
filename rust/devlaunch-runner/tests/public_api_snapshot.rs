@@ -24,7 +24,9 @@ fn rows(snapshot: &str) -> Vec<&str> {
 }
 
 fn has_row_starting(snapshot: &str, prefix: &str) -> bool {
-    rows(snapshot).into_iter().any(|row| row.starts_with(prefix))
+    rows(snapshot)
+        .into_iter()
+        .any(|row| row.starts_with(prefix))
 }
 
 #[test]
@@ -44,7 +46,10 @@ fn the_snapshot_pins_the_trait_an_implementor_writes_against() {
     );
     for method in ["capture", "passthrough", "session", "detach"] {
         assert!(
-            has_row_starting(SNAPSHOT, &format!("pub fn devlaunch_runner::Runner::{method}(")),
+            has_row_starting(
+                SNAPSHOT,
+                &format!("pub fn devlaunch_runner::Runner::{method}(")
+            ),
             "Runner::{method} is missing from the snapshot; every method of this \
              trait is a promise to whoever implements it"
         );

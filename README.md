@@ -1874,6 +1874,46 @@ an installed release, the wheel's binary:
 DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
 ```
 
+### The public-API snapshots
+
+Three files under `rust/` are the crates' public surface as `cargo public-api` renders it, and
+CI's `public-api` job fails until a change to any of them is committed. They are not one file
+because they are not one promise:
+
+| File | What a diff means |
+| --- | --- |
+| `devlaunch-core/public-api.api.txt` | **A breaking change.** The `devlaunch_core::api` tier is the frozen contract; a row leaving it breaks a consumer. |
+| `devlaunch-core/public-api.rest.txt` | Routine. The binary surface — `flows::`, `domain::`, `clients::` — is reachable but never promised; read the diff for the accidental `pub`. |
+| `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementor writes against. |
+
+The runner had no snapshot of its own until #338: its whole surface entered core's as the single
+unexpanded row `pub use devlaunch_core::runner::<<devlaunch_runner::*>>`, so removing a trait
+method moved nothing and passed. And core's one file mixed the two tiers, which is worse than it
+sounds — a breaking `api` change arrives as one row inside two thousand of internal churn, and
+reads as routine.
+
+Regenerate all three with one command, from anywhere in the checkout:
+
+```bash
+scripts/public-api-snapshots.sh
+```
+
+That script is also what CI runs — into a scratch tree, then diffing — so the filter that decides
+which row is a promise, the `-ss` flag and the pinned `cargo-public-api` version exist in exactly
+one place. Two prerequisites, and this repository's devcontainer has neither, so it is a host
+command: a nightly toolchain (cargo-public-api's rustdoc-JSON backend is nightly-only; the crates
+themselves still build on the stable pin) and the pinned tool.
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-public-api --locked --version "$(scripts/public-api-snapshots.sh --print-pin)"
+```
+
+Committing a regenerated `public-api.api.txt` is committing a breaking change, so say which one in
+the pull request. `rust/devlaunch-core/tests/public_api_snapshots.rs` holds the two core files to
+the split itself — every promised row is an `api` declaration and none of the others is — so a
+hand-edited snapshot fails in the Rust suite rather than in review.
+
 ### Coverage: two numbers, and neither is the other
 
 The crates that ship and the harness that judges them are measured separately, because they are

@@ -376,24 +376,30 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  # The API-freeze tripwire (#251 §7, #262). devlaunch-core's crate docs promise
-  # two tiers of `pub` — the frozen wf API behind `api`, and binary surface that
-  # is reachable but not promised — and this job is what makes that promise
-  # checkable rather than prose: rust/devlaunch-core/public-api.txt is the whole
-  # public surface as `cargo public-api` renders it, and any change to it fails
-  # here until the new snapshot is committed. That turns every surface change
-  # into a reviewed diff: an addition to `api` is a deliberate PR, a removal a
-  # visible breaking change, and an accidental `pub` a red tick instead of a
-  # silent promise.
+  # The API-freeze tripwire (#251 §7, #262, re-scoped by #312). devlaunch-core's
+  # crate docs promise two tiers of `pub` — the frozen wf API behind `api`, and
+  # binary surface that is reachable but not promised — and this job is what
+  # makes that promise checkable rather than prose: any change to a checked-in
+  # `cargo public-api` snapshot fails here until the new one is committed. That
+  # turns every surface change into a reviewed diff: an addition to `api` is a
+  # deliberate PR, a removal a visible breaking change, and an accidental `pub`
+  # a red tick instead of a silent promise.
   #
-  # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crate
-  # itself still builds on the stable pin everywhere else. `-ss` (omit blanket
-  # and auto-trait impls) rather than the full listing, because auto-trait rows
-  # move when *rustdoc* moves — `UnsafeUnpin` appeared with a nightly, not with
-  # a crate change — and a tripwire that fires on toolchain drift teaches people
-  # to update the snapshot unread. Derived impls (Clone, Debug, serde) stay in:
-  # losing one is a real API break. cargo-public-api is pinned for the same
-  # reason; bump it together with a freshly generated snapshot.
+  # Three snapshots, because one file could not tell those tiers apart. It held
+  # both, so a breaking `api` change arrived as one row inside two thousand of
+  # internal churn and read as routine; and `devlaunch-runner` — the trait an
+  # external implementor writes against — entered it as a single unexpanded glob
+  # row, so removing a `Runner` method moved nothing at all. Now:
+  # devlaunch-core/public-api.api.txt is the promise (a diff there is a breaking
+  # change by definition), devlaunch-core/public-api.rest.txt the tripwire over
+  # the binary surface, and devlaunch-runner/public-api.txt the process seam.
+  #
+  # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crates
+  # themselves still build on the stable pin everywhere else. The pinned version
+  # and the `-ss` rationale live in the regeneration script, which is also what
+  # this job runs: the split filter that decides which row is a promise exists
+  # once, in scripts/public-api-snapshots.sh, rather than once there and once
+  # here in a workflow nobody regenerates from.
   public-api:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -404,19 +410,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: Install cargo-public-api (pinned)
-        run: cargo install cargo-public-api --locked --version 0.52.0
-      - name: The public surface is the snapshot the repo carries
-        working-directory: rust
+      - name: Install cargo-public-api (the pin the script names)
         run: |
           set -euo pipefail
-          cargo public-api -p devlaunch-core -ss > /tmp/public-api.txt
-          if ! diff -u devlaunch-core/public-api.txt /tmp/public-api.txt; then
-            echo "::error::devlaunch-core's public API changed. If the change is" \
-              "deliberate, regenerate the snapshot and commit it:" \
-              "cd rust && cargo +nightly public-api -p devlaunch-core -ss" \
-              "> devlaunch-core/public-api.txt (needs cargo install" \
-              "cargo-public-api --locked --version 0.52.0 on a nightly toolchain)."
+          cargo install cargo-public-api --locked \
+            --version "$(scripts/public-api-snapshots.sh --print-pin)"
+      - name: The public surface is the snapshots the repo carries
+        run: |
+          set -euo pipefail
+          scripts/public-api-snapshots.sh "$RUNNER_TEMP/public-api"
+          changed=0
+          for snapshot in devlaunch-core/public-api.api.txt \
+                          devlaunch-core/public-api.rest.txt \
+                          devlaunch-runner/public-api.txt; do
+            diff -u "rust/$snapshot" "$RUNNER_TEMP/public-api/$snapshot" || changed=1
+          done
+          if [ "$changed" -ne 0 ]; then
+            echo "::error::A public surface changed. If the change is deliberate," \
+              "regenerate the snapshots and commit them:" \
+              "scripts/public-api-snapshots.sh (needs a nightly toolchain and the" \
+              "cargo-public-api the script pins; see 'The public-API snapshots' in" \
+              "README.md). A diff in devlaunch-core/public-api.api.txt is a" \
+              "breaking change to the promised API — say so in the PR."
             exit 1
           fi
 

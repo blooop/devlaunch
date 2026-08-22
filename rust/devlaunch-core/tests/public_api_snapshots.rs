@@ -61,7 +61,10 @@ fn every_promised_row_is_an_api_declaration() {
 
 #[test]
 fn no_row_of_the_rest_is_an_api_declaration() {
-    let promised: Vec<&str> = rows(REST).into_iter().filter(|row| names_api(row)).collect();
+    let promised: Vec<&str> = rows(REST)
+        .into_iter()
+        .filter(|row| names_api(row))
+        .collect();
     assert!(
         promised.is_empty(),
         "these devlaunch_core::api declarations are in the freely regenerated \
