@@ -350,7 +350,10 @@ fn a_timed_out_capture_returns_even_when_a_grandchild_holds_the_pipe() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(capture.join().expect("the capture thread"), Outcome::TimedOut);
+    assert_eq!(
+        capture.join().expect("the capture thread"),
+        Outcome::TimedOut
+    );
 }
 
 /// The cleanup half of the same decision (#301): abandoning the drains must
@@ -491,7 +494,10 @@ fn a_timed_out_session_returns_even_when_a_grandchild_holds_stderr() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(session.join().expect("the session thread"), Outcome::TimedOut);
+    assert_eq!(
+        session.join().expect("the session thread"),
+        Outcome::TimedOut
+    );
 }
 
 #[test]

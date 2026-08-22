@@ -588,10 +588,8 @@ impl Runner for ProcessRunner {
         // hold the stderr pipe past the kill — which here can only take the
         // child itself, since an interactive child stays in this process's
         // group — and `read_until` would block the join forever (#301).
-        if !timed_out {
-            if let Some(reader) = reader {
-                let _ = reader.join();
-            }
+        if !timed_out && let Some(reader) = reader {
+            let _ = reader.join();
         }
         ending.into()
     }
