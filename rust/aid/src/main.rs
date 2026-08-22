@@ -118,21 +118,6 @@ fn run(argv: &[String]) -> i32 {
         );
         return 1;
     };
-    // A `--rm`/`--stop` appended to a recalled line beat a prompt, and the prompt is
-    // the thing aid would otherwise have handed an agent — so aid, not dl, is the one
-    // that swallowed it and the one that owes the sentence. dl's wording, through
-    // dl, for the same reason `python_repr` is: one sentence, not two spellings of
-    // one. Printed before the `aid -> dl` line so the reason to reach for Ctrl-C
-    // comes before the command that needs interrupting.
-    if let (rewrite::Task::Verb { overridden, .. }, Some(flag)) =
-        (&parsed.task, parsed.task.verb_flag())
-        && !overridden.is_empty()
-    {
-        eprintln!(
-            "{}",
-            dl::overridden_notice(flag, std::slice::from_ref(overridden))
-        );
-    }
     // Python's `logging.info("aid -> dl %s", shlex.join(dl_args))`, which lands on
     // stderr as the bare message. It is how a person sees what aid actually asked
     // for, and the quoting is what makes it a line they can paste.
@@ -210,15 +195,14 @@ Options:
     {agents}
                                      Pick the agent (default: {default})
     --devcontainer <variant|path>    Passed through to dl
-    --rm, --stop                     Do that to the workspace instead of starting
-                                     an agent. Appendable: recall the line and type
-                                     it at the end, prompt and all. Add --force to
-                                     --rm to delete despite unsaved work.
-    --autorm                         Delete the workspace once the agent's session
-                                     ends. Also appendable, and unlike --rm it keeps
-                                     the prompt: the agent runs, then the workspace
-                                     goes. Stops at work that is nowhere else and
-                                     says so, leaving the workspace standing.
+    --rm                             Delete the workspace once the agent's session
+                                     ends, the way docker run --rm does. Appendable:
+                                     recall the line and type it at the end, prompt
+                                     and all — the agent still runs, and the workspace
+                                     goes when it is done. Stops at work that is
+                                     nowhere else and says so, leaving the workspace
+                                     standing. To delete one now instead, that is
+                                     dl's rm verb: dl <workspace> rm.
     --help, -h                       Show this help
     --version                        Show version
 
@@ -229,12 +213,10 @@ Examples:
     aid blooop/devlaunch                       # Start {default} in the workspace
     aid blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
     aid --gemini ./my-project explain this     # Pick a different agent
-    aid blooop/devlaunch@fix/42 fix the bug --rm --force
+    aid blooop/devlaunch@fix/42 fix the bug --rm
                                                # The line above, recalled, with the
-                                               # workspace deleted instead
-    aid blooop/devlaunch@fix/42 fix the bug --autorm
-                                               # Same line, but the agent still runs
-                                               # and the workspace goes afterwards
+                                               # workspace deleted once the agent is
+                                               # done with it
 
 Everything else — listing, stopping, deleting, VS Code — is dl's job:
     dl --help\n\n"

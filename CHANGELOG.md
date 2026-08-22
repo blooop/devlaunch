@@ -7,6 +7,223 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-22
+
+### Changed
+
+- **A workspace is now *named* by the spec you typed, where it used to be named by
+  its id.** Two places a person reads a workspace changed, and the id itself did
+  not: it still addresses every workspace, names every clone directory and is still
+  the container's hostname.
+
+  An id is `<repo-slug>-<ref-slug>-<suffix>`, and two of those three parts are what
+  somebody looking at a workspace wants while the third is machinery. The suffix is
+  eight characters of hash, there so two branches cannot share an id, and reading it
+  is no part of choosing a workspace or of knowing which one a tab is. What the id
+  *lacks* is the owner — it carries none at all, so a fork and its upstream were a
+  row and a tab spelled the same — and it spells the branch as a slug, so
+  `feature/auth` reads as `feature-auth`, which is also the name of a different
+  branch the same repository could have.
+
+- **The selector draws `owner | repo | branch`.**
+
+  ```
+  blooop          | devlaunch  | main
+  kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-su
+  -               | myproject
+  ```
+
+  Both halves come off the source devpod already reported, so the picker still opens
+  no records and reads no config. Three columns rather than `owner/repo@branch`,
+  which reads like a spec `dl` would accept and is not one: a ref-slug is lossy, so
+  retyping one can address the other branch.
+
+  The elision is never unconditional. A picked row is mapped back to its workspace by
+  the row's own text, so two rows drawn alike would act on one workspace — and `dl
+  rm` is one of the verbs the selector opens for. Where a split would collide, the
+  rows go back to their whole ids, which puts the suffix on screen in exactly the
+  case it is doing work.
+
+- **A tab is named `blooop/devlaunch@main`, and keeps that name for the session.**
+  The escape dl writes just before the handover used to last about a second: Ubuntu's
+  stock `~/.bashrc` puts `\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt
+  renamed the pane after the hostname, which is the id. The setup pass now appends
+  one line to the profile a login shell reads, so dl's name is the last write of
+  every prompt:
+
+  ```
+  case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac
+  ```
+
+  Appended, because two escapes in one prompt are applied in order and the last one
+  wins — a `PROMPT_COMMAND` would lose, since bash runs that before it prints `PS1`.
+  Nothing is rewritten, so the visible `user@host:path$` still says the hostname and
+  only the tab changes. It rides the hostname stage's existing round trip and costs
+  no extra one.
+
+  Two bargains worth knowing. The line is installed when a workspace enters Running
+  rather than on every attach — the same trade the hostname stage makes — so
+  `DEVLAUNCH_NO_TITLE=1 dl <ws>` on a running workspace silences dl's own escape but
+  not the prompt's, and `dl <ws> recreate` is what re-decides it. And only a spec is
+  installed: a container told to title after its own id is told nothing, since that
+  is already its hostname.
+
+  `DEVLAUNCH_NO_TITLE` governs both halves.
+
+### Fixed
+
+- **A workspace named after another row's columns drew the same selector row.** A
+  workspace dl did not clone, named `devlaunch | main`, drew
+  `blooop | devlaunch | main` beside a clone of `blooop/devlaunch@main` — and picking
+  it acted on the clone. Distinctness is now established over the drawn labels rather
+  than argued from the names devpod permits.
+
+- **An id that two repo spellings explain read back as the wrong branch.** The repo
+  slug is cut to twenty characters only when an id would overflow, so a reader has
+  two spellings to try, and for a repo whose slug has a dash at exactly the cap both
+  can explain one id. The branch column showed the shorter reading, which is a branch
+  name the row could plausibly have had. Such an id is now refused and the row draws
+  the id whole.
+
+- **Opening a workspace by its id renamed its tab back to the hash.** The profile
+  line is deduped by a hash of its own text, so a second name for one workspace
+  appended rather than replaced, and the last append won every prompt.
+
+- **A dash login shell printed the title escape instead of setting it.** `~/.profile`
+  is read by any POSIX login shell, and `/bin/sh` is dash on Debian and Ubuntu, where
+  `\[`, `\e` and `\a` mean nothing — so the prompt showed the escape at every line. A
+  corrupted prompt is worse than an unnamed tab.
+
+- **A ref's trailing newline reached the profile unfiltered**, splitting one `PS1`
+  assignment across two lines of a file every login sources. Both halves of the title
+  now take the same filtered name.
+
+## [0.9.0] - 2026-08-22
+
+### Changed
+
+- **`--rm` is docker's `--rm`: the workspace goes when the session ends.**
+  `dl <ws> --rm` and `dl <ws> --rm -- <cmd>` hand over a session and delete the
+  workspace and its clone once it ends — which is what `--autorm` did, under the
+  name docker gives it. The `rm` verb is unchanged and is the only way to delete a
+  workspace *now*, so the whole grammar is `docker rm` beside `docker run --rm`,
+  and neither spelling has to be read twice to work out which was meant:
+
+  ```bash
+  dl kinisi/repo@fix/x rm                            # delete it now
+  dl kinisi/repo@fix/x --rm                          # shell; it goes when you exit
+  dl kinisi/repo@fix/x --rm -- make test             # one command, then it goes
+  aid kinisi/repo@fix/x 'fix the flaky test' --rm    # the agent runs, then it goes
+  ```
+
+  Everything the removal already promised is unchanged: it stops at work that is
+  nowhere else and leaves the workspace standing, it collects a build that died in
+  `postCreateCommand`, and the exit code is the session's and never the removal's.
+  `--force` still does not compose with it — that is `dl <ws> rm --force`, which is
+  where docker keeps its `-f` too.
+
+### Removed
+
+- **`--autorm` is now spelled `--rm`.** A rename and nothing else; the behaviour
+  above is what it always did. The old spelling is recognised and refused with the
+  new one rather than dropped, so a line recalled from history says what happened
+  instead of quietly doing nothing:
+
+  ```
+  $ dl <ws> --autorm
+  --autorm is now spelled --rm: 'dl <workspace> --rm' opens the workspace and deletes
+  it when the session ends, the way 'docker run --rm' does. Use 'dl <workspace> rm' to
+  delete one now.
+  ```
+
+- **`--stop` is retired, and so is appending `--rm` to cancel a line.** Both were
+  the *suffix* form of a verb: typed at the end of a line that already asked for
+  something and winning over it, so `aid <ws> 'review this pr' --rm` deleted the
+  workspace and printed `--rm overrode the rest of the line`. That shape cannot
+  survive a `--rm` that means "delete when the session ends" — the two spellings
+  look like a pair, and one cancelling the line while the other runs it is exactly
+  the pair nobody can keep straight. So `aid <ws> 'review this pr' --rm` now runs
+  the review and deletes afterwards, and `--stop` refuses with the word to use:
+
+  ```
+  $ dl <ws> --stop
+  --stop is no longer a flag: the flag spellings now modify a session (--rm deletes
+  the workspace once one ends) rather than name a verb. Use 'dl <workspace> stop' to
+  stop a workspace.
+  ```
+
+  For "I am done with this workspace", `dl <ws> rm` names it and `dl rm` picks it —
+  and the pick marks several with TAB, which for a long `aid` prompt line is fewer
+  keystrokes than recalling it to type at the end. What is genuinely gone is
+  deleting a workspace without naming or picking it, by appending to whatever the
+  last line happened to be.
+
+  One consequence worth knowing: `dl prune <ws> --rm` used to remove `<ws>`, and
+  is now the `prune` retirement's refusal, since nothing overrides a line any more.
+  Add `--force` to that line and the `--force`-beside-`--rm` refusal is what you
+  get, because the pair is the more confused half and is named first.
+  `dl --prune` is unchanged.
+
+- **`dl <ws> rm --rm` is refused as the two requests it is**, rather than being
+  quietly treated as one of them. The sentence names the verb, which is the
+  spelling that already does what such a line most likely meant.
+
+## [0.8.0] - 2026-08-22
+
+### Added
+
+- **A host-side [herdr](https://herdr.dev) session now shows what the agent in a
+  workspace is doing.** herdr shows, per pane, whether the coding agent in it is
+  working, idle or blocked waiting for a human, and under `aid` it showed none of
+  that. The cause is structural: herdr identifies a pane's agent from the pane's
+  foreground process, and the host's tree is `aid → dl → ssh` with the agent inside
+  the container, where no process table on the host can see it.
+
+  It was measured rather than assumed. Two panes in one container, same claude —
+  one running it directly, one behind `script -qc claude /dev/null`, which is the
+  same pty-proxy shape as the ssh hop — produce equivalent detection snapshots, and
+  herdr registers an agent for the first and `agent_not_found` for the second.
+  Screen content is not the missing signal; process identity is. herdr takes an
+  answer for that over its socket, so devlaunch supplies it.
+
+  Three things cross the container boundary and nothing else. The socket, bind
+  mounted at `/var/tmp/devlaunch-herdr.sock`. The pane's identity, on the agent's
+  own command line rather than in workspace environment — a pane id is a fact about
+  this session, and attaching to a running workspace skips the `up` that would
+  refresh workspace environment, so the container would otherwise report into
+  whichever pane was current when it was last built. And a hook wired to claude's
+  `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd`,
+  because a held report nothing updates is a badge that lies. `Notification` is the
+  event that earns the feature: it is what claude fires when it is waiting for a
+  human.
+
+  Not herdr's own `integration install claude`: that hook sends only
+  `pane.report_agent_session`, which registers nothing by itself — calling it
+  against an unregistered pane still answers `agent_not_found` — so forwarding it
+  would carry session metadata for an agent herdr does not believe exists.
+
+  It pairs with the terminal title above rather than competing with it. herdr can
+  read state from a title too, but `aid` suppresses claude's own title so the
+  workspace id is what stands, which is exactly why the state comes from the hook:
+  the badge says what the agent is doing and the pane name says where.
+
+  On a host not running herdr nothing happens at all — no mount, no stage, no
+  notice, every command line byte-identical. That is decided from whether a socket
+  exists rather than from whether the feature is on, so it is true of the payload
+  and not merely of its effects. `DEVLAUNCH_NO_HERDR=1` opts out, and
+  `DEVLAUNCH_NO_TOOLS=1` covers it too. Mounting the socket gives the container
+  control of your herdr session, which is the trade and the reason for the opt-out;
+  it is on by default for the reason the forwarded GitHub token is.
+
+  The stage can never fail a launch, and three things have to be true for it to do
+  anything: a `python3` in the container, a claude configuration directory that is
+  not shared with the host, and the socket mount — which lands only at container
+  creation, so a workspace that predates it needs `dl <ws> recreate` rather than a
+  restart. The middle one refuses rather than merging, and a mounted *parent*
+  counts: `dl` never mounts `~/.claude` into a workspace, but this repo's own
+  devcontainer does, so devlaunch's own workspaces report the stage and install
+  nothing while the arbitrary repos `dl` exists to launch get the badge.
+
 ## [0.7.3] - 2026-08-22
 
 ### Fixed

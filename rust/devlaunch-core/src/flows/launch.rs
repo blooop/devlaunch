@@ -1017,6 +1017,7 @@ pub trait Provision {
         runner: &dyn Runner,
         workspace_id: &str,
         occasion: PassOccasion,
+        title: Option<&str>,
     ) -> Result<(), DevpodMissing>;
 }
 
@@ -1036,6 +1037,7 @@ impl Provision for NoProvisioning {
         _runner: &dyn Runner,
         _workspace_id: &str,
         _occasion: PassOccasion,
+        _title: Option<&str>,
     ) -> Result<(), DevpodMissing> {
         Ok(())
     }
@@ -1096,10 +1098,11 @@ pub(crate) fn workspace_up(
     token: &HostToken,
     provision: &dyn Provision,
     request: &UpRequest<'_>,
+    title: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<UpOutcome, NotRun> {
     timing::stage_result(timing::Stage::DevpodUp, || {
-        up_under_stage(context, host, token, provision, request, notices)
+        up_under_stage(context, host, token, provision, request, title, notices)
     })
 }
 
@@ -1109,6 +1112,7 @@ fn up_under_stage(
     token: &HostToken,
     provision: &dyn Provision,
     request: &UpRequest<'_>,
+    title: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<UpOutcome, NotRun> {
     let options = context_options(
@@ -1163,7 +1167,7 @@ fn up_under_stage(
         // hostname nobody set stays unset. Nothing the host can read tells that
         // apart from a container that never stopped.
         provision
-            .provision_tools(context.runner(), identity, PassOccasion::TopUp)
+            .provision_tools(context.runner(), identity, PassOccasion::TopUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
         return Ok(UpOutcome::SkippedSiblingWon);
     }
@@ -1206,7 +1210,7 @@ fn up_under_stage(
         // the session reads a prompt, whatever any remembered verdict says about
         // the tools.
         provision
-            .provision_tools(context.runner(), identity, PassOccasion::AfterUp)
+            .provision_tools(context.runner(), identity, PassOccasion::AfterUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
     }
     drop(serialization);
@@ -1796,23 +1800,32 @@ pub(crate) fn dotfiles_update(
 ///   recent tmux), and the outer title needs `set-titles on`. The *pane* title
 ///   always takes it. Both are the user's config, not a call dl can make.
 ///
-/// # Why the workspace id and not the spec the user typed
+/// # What the title says, and why it is not the id
 ///
-/// The id is the only string that is uniformly available and uniformly bounded.
-/// Every placement has one -- a triple, a bare name, a path, a URL -- whereas the
-/// raw spec is `owner/repo` with the branch still unresolved in one arm and a
-/// `./path` in another. And it is already the container's hostname, so the title
-/// dl writes and the `user@host` an interactive prompt repaints over it agree
-/// instead of disagreeing.
+/// The name is the caller's to choose ([`Launch::titled`]): the **resolved spec**,
+/// `owner/repo@ref`, for a launch that had one, and the workspace id for the three
+/// arms that did not — a bare name, a path, a URL.
 ///
-/// The bound is worth being exact about, because only one arm gets it from
-/// [`WorkspaceId`]'s own 47-character cap. A bare name and a path leaf reach here
-/// as the raw spec and the directory's basename, neither of which this crate
-/// shortens. What bounds *those* is devpod: it refuses to create or report a
-/// workspace whose name exceeds 48 characters, so a longer one fails its `up` or
-/// is never found, and either way the launch ends before the handover. So the
-/// title is short because a workspace with a long name cannot exist, not because
-/// anything here truncates.
+/// This used to be the id always, on the grounds that it is the one string every
+/// placement has and that it is already the container's hostname, so the title dl
+/// writes and the `user@host` an interactive prompt repaints over it agreed instead
+/// of disagreeing. The first half still holds and is why the id is still the answer
+/// wherever there is no triple. The second was worth less than it looked: the prompt
+/// overwrites this title within a second of the session starting either way, so the
+/// agreement bought a moment of consistency at the price of every tab being named
+/// after a hash. An id carries no owner at all, so a fork and its upstream are two
+/// tabs spelled the same; and it spells the ref as a slug, so `feature/auth` reads
+/// as `feature-auth` and a long ref loses whole segments.
+///
+/// The bound is worth being exact about, because no arm gets it from [`WorkspaceId`]'s
+/// own 47-character cap any more. A spec is bounded by the id it derived — a triple
+/// with an unsafe or overlong part is refused before a session exists — and a bare
+/// name or path leaf reaches here as the raw spec and the directory's basename,
+/// neither of which this crate shortens. What bounds *those* is devpod: it refuses to
+/// create or report a workspace whose name exceeds 48 characters, so a longer one
+/// fails its `up` or is never found, and either way the launch ends before the
+/// handover. So the title is short because a workspace with a long name cannot
+/// exist, not because anything here truncates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalTitle {
     /// Write this, exactly.
@@ -1822,12 +1835,15 @@ pub enum TerminalTitle {
 }
 
 impl TerminalTitle {
-    /// What this host wants for this workspace.
-    pub(crate) fn from_host(host: &Host, workspace_id: &str) -> Self {
+    /// What this host wants written for *name*.
+    ///
+    /// *name* is what a person should read, not what devpod is addressed by — see the
+    /// type's own docs and [`Launch::titled`] for which of the two it is.
+    pub(crate) fn from_host(host: &Host, name: &str) -> Self {
         if switched_on(host.no_title.as_deref()) || !host.stderr_tty {
             return Self::Off;
         }
-        match sanitize_title(workspace_id) {
+        match sanitize_title(name) {
             Some(text) => Self::Write(format!("\x1b]2;{text}\x07")),
             None => Self::Off,
         }
@@ -1844,21 +1860,22 @@ impl TerminalTitle {
     }
 }
 
-/// A workspace id with everything a terminal would read as an instruction taken
-/// out, or `None` if that leaves nothing worth writing.
+/// A name with everything a terminal would read as an instruction taken out, or
+/// `None` if that leaves nothing worth writing.
 ///
 /// Defence at the boundary the bytes are formed at, and deliberately not sold as
-/// more than that: no reachable spec is known to get an escape this far. Two arms
-/// hand over a string this crate never validated -- `Plan::Existing`'s raw spec
-/// and `Plan::Creatable`'s path leaf -- but both are gated on devpod agreeing the
-/// workspace exists or can be created, and devpod's own name rules refuse
-/// anything with a control in it. The filter is what makes that a local
-/// guarantee rather than one borrowed from another program's validation, which is
-/// the difference between a safe title and a title that is safe until devpod
-/// loosens a rule. Dropping controls rather than escaping them keeps the sink
-/// with nothing to decide.
-fn sanitize_title(workspace_id: &str) -> Option<String> {
-    let text: String = workspace_id.chars().filter(|ch| !ch.is_control()).collect();
+/// more than that: no reachable name is known to get an escape this far. A spec
+/// cannot, because [`WorkspaceId::new`] refused every part that is not a word
+/// character, dot, slash or dash before this launch had an id at all. Two arms hand
+/// over a string this crate never validated -- `Plan::Existing`'s raw spec and
+/// `Plan::Creatable`'s path leaf -- but both are gated on devpod agreeing the
+/// workspace exists or can be created, and devpod's own name rules refuse anything
+/// with a control in it. The filter is what makes that a local guarantee rather than
+/// one borrowed from two other programs' validation, which is the difference between
+/// a safe title and a title that is safe until devpod loosens a rule. Dropping
+/// controls rather than escaping them keeps the sink with nothing to decide.
+fn sanitize_title(name: &str) -> Option<String> {
+    let text: String = name.chars().filter(|ch| !ch.is_control()).collect();
     let text = text.trim();
     if text.is_empty() {
         None
@@ -1870,6 +1887,21 @@ fn sanitize_title(workspace_id: &str) -> Option<String> {
 // ===========================================================================
 // the attach
 // ===========================================================================
+
+/// `owner/repo@ref`, the three parts of a triple as the user's own spec spelled
+/// them.
+///
+/// One rendering, for the two places a launch names a workspace to a person: the
+/// escape dl writes and the line the pass installs. Two spellings of it would be two
+/// names for one workspace, and the tab would change when the prompt repainted.
+fn spec_of(workspace: &WorkspaceId) -> String {
+    format!(
+        "{}/{}@{}",
+        workspace.owner(),
+        workspace.repo(),
+        workspace.git_ref()
+    )
+}
 
 /// Hand the workspace to the user: ssh in, and nothing else.
 ///
@@ -1894,6 +1926,7 @@ fn sanitize_title(workspace_id: &str) -> Option<String> {
 pub(crate) fn attach_workspace(
     session: &SessionContext<'_>,
     workspace_id: &str,
+    title: TerminalTitle,
     command: Option<&str>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
@@ -1903,10 +1936,11 @@ pub(crate) fn attach_workspace(
         // about to belong to something else, and after that this process may not
         // print again for hours. `Off` is said too, so the sink is what decides
         // nothing rather than the caller deciding twice.
-        notices.say(LaunchNotice::TerminalTitle(TerminalTitle::from_host(
-            session.host,
-            workspace_id,
-        )));
+        //
+        // Decided by the caller and not here, because what a workspace is *called*
+        // is a fact about the spec that was launched and this function is given only
+        // an id — see [`Launch::titled`].
+        notices.say(LaunchNotice::TerminalTitle(title));
         if command.is_none()
             && matches!(
                 DotfilesRefresh::from_host(session.host),
@@ -2485,6 +2519,18 @@ pub struct Launch<'a, 'r, 'l> {
     /// Where this launch's notices go, as they happen. A `Vec` in a test that wants
     /// the sequence, the binary's printer in production.
     notices: &'a mut dyn Notices<LaunchNotice>,
+    /// The triple this launch resolved, when the spec was one.
+    ///
+    /// Set by [`Self::place_triple`] and read only by [`Self::titled`]: it is the
+    /// only place a launch holds the `owner`, `repo` and `ref` after they have been
+    /// collapsed into a [`Placement`]'s id, and the terminal title is the one thing
+    /// that wants them back. `None` for a bare name, a path and a URL, which have
+    /// no triple to remember.
+    ///
+    /// A field rather than a third value threaded out of `place`, because it is a
+    /// fact about this launch and not a step's answer: five arms reach a session and
+    /// every one of them goes through [`Self::attach`] carrying nothing but an id.
+    resolved: Option<WorkspaceId>,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -2506,6 +2552,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             forward,
             token: HostToken::new(),
             notices,
+            resolved: None,
         }
     }
 
@@ -2601,6 +2648,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Ok(workspace) => workspace,
             Err(unsafe_name) => return Ok(Err(LaunchRefusal::UnsafeSpec(unsafe_name))),
         };
+        // Remembered for the terminal title, which is the one later step that wants
+        // the triple rather than the id it derives: an id carries no owner and
+        // spells the ref as a slug, so `blooop/devlaunch@feature/auth` is a name
+        // this launch can put on a tab and nothing downstream could reconstruct.
+        self.resolved = Some(workspace.clone());
         // A devpod that could not be run ends the launch here, before the clone:
         // it is the probe Python raises `DevpodNotInstalled` out of.
         let resolved = resolve_triple(self.context, self.cold, &workspace, &mut *self.notices)
@@ -2774,6 +2826,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                     self.context.runner(),
                     placement.workspace_id(),
                     PassOccasion::TopUp,
+                    self.container_title().as_deref(),
                 )
                 .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
             return Ok(Launched::AlreadyRunning);
@@ -2806,12 +2859,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
             let request = UpRequest::new(placement.source(), naming);
+            let title = self.container_title();
             let outcome = workspace_up(
                 self.context,
                 self.host,
                 &self.token,
                 self.provision,
                 &request,
+                title.as_deref(),
                 &mut *self.notices,
             )
             .map_err(LaunchAborted::DevpodNotRun)?;
@@ -2841,12 +2896,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
             .with_devcontainer(devcontainer);
+        let title = self.container_title();
         let outcome = workspace_up(
             self.context,
             self.host,
             &self.token,
             self.provision,
             &request,
+            title.as_deref(),
             &mut *self.notices,
         )
         .map_err(LaunchAborted::DevpodNotRun)?;
@@ -2871,10 +2928,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         workspace_id: &str,
         command: Option<&str>,
     ) -> Result<Launched, LaunchAborted> {
+        let title = TerminalTitle::from_host(self.host, &self.titled(workspace_id));
         let context = SessionContext::new(self.context.runner(), self.host, &self.token);
         let session = attach_workspace(
             &context,
             workspace_id,
+            title,
             command,
             self.forward,
             &mut *self.notices,
@@ -2885,6 +2944,72 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Err(SessionRefused::Ssh(not_run)) => Err(LaunchAborted::SshNotRun(not_run)),
             Err(other) => Ok(Launched::Refused(LaunchRefusal::NoSession(other))),
         }
+    }
+
+    /// What to call this workspace where a person reads it, rather than where devpod
+    /// is addressed.
+    ///
+    /// The spec when this launch resolved one — `owner/repo@ref`, the three parts
+    /// exactly as the user's own spec spelled them — and the workspace id otherwise.
+    ///
+    /// The spec is the better name for the two reasons an id is a worse one. It
+    /// carries the **owner**, which an id
+    /// ([`devlaunch_core::domain::workspace_id`](crate::domain::workspace_id)) does
+    /// not hold at all, so a fork and its upstream are two tabs named the same. And
+    /// it spells the **ref**, where an id holds a slug of one: `feature/auth` is
+    /// `feature-auth` in an id, indistinguishable from the branch of that name, and a
+    /// long ref loses whole segments. Neither is recoverable from the id afterwards,
+    /// which is why the triple is remembered rather than read back.
+    ///
+    /// The id for the other three arms, and not as a fallback so much as the only
+    /// name they have: a bare workspace name *is* the id, and a path or URL spec
+    /// never had a ref for an `@` to precede. Bounded for the same reasons as before
+    /// — see [`TerminalTitle`] — and a spec is bounded by the id it derived, since a
+    /// triple whose parts overflow 47 characters is refused before this.
+    fn titled(&self, workspace_id: &str) -> String {
+        match &self.resolved {
+            Some(workspace) => spec_of(workspace),
+            None => workspace_id.to_owned(),
+        }
+    }
+
+    /// The name a shell in this container should keep putting on the terminal, or
+    /// `None` when there is none worth installing.
+    ///
+    /// The **spec** and only the spec, where [`Self::titled`] falls back to the id.
+    /// Two reasons, and the second is the load-bearing one.
+    ///
+    /// A container told to title after its own id is told nothing: the id is already
+    /// its hostname, so the stock prompt writes exactly that anyway. And the line is
+    /// deduped by a hash of its own text, so a name that varies for one workspace
+    /// does not replace the line — it adds another, and the last append is the one
+    /// every prompt then obeys. A workspace opened once as `blooop/devlaunch@main`
+    /// and once by its id would end up permanently titled after the id. Keying on the
+    /// spec alone makes the line a pure function of the triple, so a workspace has at
+    /// most one, ever.
+    ///
+    /// Filtered by [`sanitize_title`], the same way the escape is, because the two
+    /// halves must not disagree about what a name may hold. `is_safe_name` accepts
+    /// one trailing newline, so `main\n` is a ref — and a newline reaching the
+    /// profile line lands inside the quoted word, splitting one `PS1` assignment
+    /// across two physical lines of a file every login sources.
+    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
+    /// the feature rather than half of it.
+    ///
+    /// `stderr_tty` is deliberately *not* consulted, where
+    /// [`TerminalTitle::from_host`] does consult it. That flag answers "is there a
+    /// terminal to write to right now", which is the right question for one escape
+    /// this process is about to emit and the wrong one for a line installed in a
+    /// profile: `dl <ws> up` is a prewarm with its output redirected, and the
+    /// interactive session that arrives later is the one the line is for.
+    fn container_title(&self) -> Option<String> {
+        if switched_on(self.host.no_title.as_deref()) {
+            return None;
+        }
+        self.resolved
+            .as_ref()
+            .map(spec_of)
+            .and_then(|spec| sanitize_title(&spec))
     }
 
     /// A session outcome, with the two never-ran arms lifted to [`LaunchAborted`].
@@ -3105,23 +3230,24 @@ mod tests {
         }
     }
 
-    /// Records which workspaces had tools lent to them, and on which occasion.
+    /// Records which workspaces had tools lent to them, on which occasion, and under
+    /// what name the container was told to title a terminal.
     ///
-    /// The occasion is recorded beside the id rather than instead of it, because
-    /// the two are asserted separately: most tests here are about *whether* a path
-    /// provisions at all, and only the ones about the pass's cost care which
-    /// occasion it named. Both come out of one list so a test cannot read them out
-    /// of step with each other.
+    /// All three in one list rather than three, because they are asserted
+    /// separately: most tests here are about *whether* a path provisions at all,
+    /// only the ones about the pass's cost care which occasion it named, and only
+    /// the title tests care about the third. One list is what keeps a test from
+    /// reading them out of step with each other.
     #[derive(Debug, Default)]
     struct RecordingProvision {
-        passes: Mutex<Vec<(String, PassOccasion)>>,
+        passes: Mutex<Vec<(String, PassOccasion, Option<String>)>>,
         /// A devpod that goes missing when the pass is asked for, which is the one
         /// thing a pass can answer.
         lost_devpod: bool,
     }
 
     impl RecordingProvision {
-        fn passes(&self) -> Vec<(String, PassOccasion)> {
+        fn passes(&self) -> Vec<(String, PassOccasion, Option<String>)> {
             self.passes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -3131,14 +3257,22 @@ mod tests {
         fn provisioned(&self) -> Vec<String> {
             self.passes()
                 .into_iter()
-                .map(|(workspace_id, _)| workspace_id)
+                .map(|(workspace_id, _, _)| workspace_id)
                 .collect()
         }
 
         fn occasions(&self) -> Vec<PassOccasion> {
             self.passes()
                 .into_iter()
-                .map(|(_, occasion)| occasion)
+                .map(|(_, occasion, _)| occasion)
+                .collect()
+        }
+
+        /// What each pass was told to have the container's shells title a terminal.
+        fn titles(&self) -> Vec<Option<String>> {
+            self.passes()
+                .into_iter()
+                .map(|(_, _, title)| title)
                 .collect()
         }
     }
@@ -3149,11 +3283,12 @@ mod tests {
             _runner: &dyn Runner,
             workspace_id: &str,
             occasion: PassOccasion,
+            title: Option<&str>,
         ) -> Result<(), DevpodMissing> {
             self.passes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push((workspace_id.to_owned(), occasion));
+                .push((workspace_id.to_owned(), occasion, title.map(str::to_owned)));
             if self.lost_devpod {
                 return Err(DevpodMissing);
             }
@@ -3164,13 +3299,16 @@ mod tests {
     fn no_notices() -> Vec<LaunchNotice> {
         Vec::new()
     }
-
     /// A sink that drops devpod's own session chatter, for the tests that are not
     /// about it. A plain `fn` pointer, because that is an `FnMut(&str)` a struct
     /// can hold by value and hand out as `&mut dyn FnMut(&str)`.
     fn nowhere(_line: &str) {}
 
     /// [`attach_workspace`] with the chatter thrown away.
+    ///
+    /// Titles the workspace after its id, which is what the bare-name arm does: these
+    /// tests are given an id and no triple, so there is no spec for [`Launch::titled`]
+    /// to prefer. The launch-level tests are where the spec form is pinned.
     fn attaching(
         scene: &Scene,
         token: &HostToken,
@@ -3179,7 +3317,15 @@ mod tests {
         notices: &mut Vec<LaunchNotice>,
     ) -> Result<Session, SessionRefused> {
         let session = SessionContext::new(&scene.runner, &scene.host, token);
-        attach_workspace(&session, workspace_id, command, &mut nowhere, notices)
+        let title = TerminalTitle::from_host(&scene.host, workspace_id);
+        attach_workspace(
+            &session,
+            workspace_id,
+            title,
+            command,
+            &mut nowhere,
+            notices,
+        )
     }
 
     /// Backdate `path`'s modification time by `by`.
@@ -3366,6 +3512,7 @@ mod tests {
                     &token,
                     provision,
                     request,
+                    None,
                     &mut inner,
                 );
                 (outcome, inner)
@@ -3615,6 +3762,7 @@ mod tests {
             &token,
             &NoProvisioning,
             &request,
+            None,
             &mut no_notices(),
         );
 
@@ -3652,6 +3800,7 @@ mod tests {
             &token,
             &provision,
             &request,
+            None,
             &mut no_notices(),
         );
 
@@ -3684,6 +3833,7 @@ mod tests {
             &token,
             &provision,
             &request,
+            None,
             &mut no_notices(),
         );
 
@@ -3714,6 +3864,7 @@ mod tests {
             &token,
             &provision,
             &request,
+            None,
             &mut no_notices(),
         );
 
@@ -3745,6 +3896,7 @@ mod tests {
             &token,
             &NoProvisioning,
             &request,
+            None,
             &mut no_notices(),
         );
 
@@ -4610,6 +4762,7 @@ mod tests {
             &token,
             &NoProvisioning,
             &request,
+            None,
             &mut no_notices(),
         );
 
@@ -4647,6 +4800,7 @@ mod tests {
                     workspace_id: "myws",
                 },
             ),
+            None,
             &mut no_notices(),
         );
 
@@ -4771,6 +4925,7 @@ mod tests {
                     workspace_id: "myws",
                 },
             ),
+            None,
             &mut notices,
         );
         let _ = attaching(&logged_in, &token, "myws", None, &mut notices);
@@ -5267,6 +5422,109 @@ mod tests {
     }
 
     #[test]
+    fn a_triple_names_the_terminal_after_the_spec_and_not_after_the_id() {
+        // What a person reads on the tab is the spec they typed, resolved. The id is
+        // still what devpod is addressed by in the same launch -- the `status` and
+        // `ssh` below -- so this is the one place the two names part company.
+        //
+        // `feature/auth` is the ref that makes the difference matter rather than
+        // merely look nicer: the id spells it `feature-auth`, which is also the name
+        // of a different branch this repository could have, so the id is a tab name
+        // that cannot say which of the two the session is in.
+        let workspace =
+            WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        scene.host.stderr_tty = true;
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "blooop/devlaunch@feature/auth",
+            &LaunchVerb::Attach {
+                command: Some("echo hi".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert!(
+            parts.said.iter().any(|notice| notice
+                == &LaunchNotice::TerminalTitle(TerminalTitle::Write(
+                    "\x1b]2;blooop/devlaunch@feature/auth\x07".to_owned()
+                ))),
+            "{:?}",
+            parts.said
+        );
+        // And the id is what devpod was given, unchanged by any of this.
+        assert_eq!(workspace.value(), "devlaunch-feature-auth-poliseno");
+        assert!(
+            scene
+                .devpod_commands()
+                .iter()
+                .all(|call| call.contains(&workspace.value())),
+            "{:?}",
+            scene.devpod_commands()
+        );
+    }
+
+    #[test]
+    fn a_bare_name_names_the_terminal_after_the_id_because_that_is_all_it_has() {
+        // The other three arms have no triple to prefer, and for a bare name the id
+        // *is* what the user typed. Pinned beside the spec case so that a change to
+        // one has to say what it means for the other.
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.stderr_tty = true;
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "myws",
+            &LaunchVerb::Attach {
+                command: Some("echo hi".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert!(
+            parts.said.iter().any(|notice| notice
+                == &LaunchNotice::TerminalTitle(TerminalTitle::Write(
+                    "\x1b]2;myws\x07".to_owned()
+                ))),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    #[test]
     fn a_warm_bare_name_attach_is_one_status_and_one_ssh() {
         let scene = Scene::new().with_running("myws");
         let updater = SelfInvocation::new("dl");
@@ -5564,6 +5822,196 @@ mod tests {
             scene.devpod_heads(),
             vec![vec!["status".to_owned(), "myws".to_owned()]],
             "and no up at all"
+        );
+    }
+
+    #[test]
+    fn only_a_spec_is_installed_in_the_container_so_a_name_cannot_pile_up() {
+        // One workspace, opened both ways: by spec, and later by the id it derived.
+        // The profile line is deduped by a hash of its own text, so a second,
+        // different name for one workspace would not replace the first -- it would
+        // append, and the last append is what every prompt obeys. A single launch by
+        // id would have renamed the tab back to the hash for good.
+        //
+        // So the pass is told the spec or nothing. Nothing is the honest answer for
+        // an id: it is already the container's hostname, so the stock prompt writes
+        // exactly that anyway and the line would buy nothing to lose.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run("blooop/devlaunch@main", &LaunchVerb::Up, None);
+        }
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@main".to_owned()), None]
+        );
+    }
+
+    #[test]
+    fn a_name_holding_a_control_is_filtered_before_it_reaches_the_container() {
+        // `is_safe_name` accepts one trailing newline -- Python's `$` anchor did, and
+        // the quirk is ported deliberately -- so `main\n` is a ref and
+        // `blooop/devlaunch@main\n` is a name. dl's own escape drops controls at the
+        // boundary it forms bytes at; the profile line is written by a different
+        // path, and an unfiltered newline lands in a file every login sources, inside
+        // the quoted word, splitting one PS1 assignment over two physical lines.
+        //
+        // One filtered name for both halves, so a title cannot be safe in the escape
+        // and not in the profile.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main\n").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("blooop/devlaunch@main\n", &LaunchVerb::Up, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::AlreadyRunning));
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@main".to_owned())]
+        );
+    }
+
+    #[test]
+    fn the_pass_is_told_to_have_the_container_keep_titling_after_the_spec() {
+        // The other half of the title, and the half that lasts. dl's own escape is
+        // overwritten by the first interactive prompt; this is the name the pass
+        // installs in the container's profile so every prompt after that writes it
+        // again. Same string as the escape, same switch governing it -- one name,
+        // two places it has to reach.
+        let workspace =
+            WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("blooop/devlaunch@feature/auth", &LaunchVerb::Up, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::AlreadyRunning));
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@feature/auth".to_owned())]
+        );
+    }
+
+    #[test]
+    fn the_title_switch_reaches_the_container_and_not_just_dls_own_escape() {
+        // `DEVLAUNCH_NO_TITLE` has to govern both halves or it governs neither: a
+        // host that silenced the escape and still had its profile edited would find
+        // the variable did nothing it could see.
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.no_title = Some("1".to_owned());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Up, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::AlreadyRunning));
+        assert_eq!(parts.provision.titles(), vec![None]);
+    }
+
+    #[test]
+    fn a_headless_up_still_installs_the_name_the_next_session_will_read() {
+        // `stderr_tty` is false here, which is `dl <ws> up` redirected -- a prewarm.
+        // dl writes no escape of its own, correctly: there is no terminal to write
+        // to. The container is still taught the name, because the session that
+        // arrives later is the one it is for, and asking this pass to guess whether
+        // one ever will is a question it cannot answer.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        assert!(!scene.host.stderr_tty, "the premise of this test");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("blooop/devlaunch@main", &LaunchVerb::Up, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::AlreadyRunning));
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some("blooop/devlaunch@main".to_owned())]
+        );
+        // And nothing was written to the terminal that is not there.
+        assert!(
+            !parts.said.iter().any(|notice| matches!(
+                notice,
+                LaunchNotice::TerminalTitle(TerminalTitle::Write(_))
+            )),
+            "{:?}",
+            parts.said
         );
     }
 
@@ -6155,6 +6603,7 @@ mod tests {
                         workspace_id: "brand-new",
                     },
                 ),
+                None,
                 &mut no_notices(),
             )
         });
@@ -6220,6 +6669,7 @@ mod tests {
                         workspace_id: "brand-new",
                     },
                 ),
+                None,
                 &mut no_notices(),
             )
         });
