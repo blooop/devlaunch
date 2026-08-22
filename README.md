@@ -480,11 +480,11 @@ zellij has not thereby asked for unnamed containers.
 
 ## Naming the terminal after the workspace
 
-Every launch writes the workspace id to the terminal as its title, just before the
+Every launch names the terminal after the workspace it is opening, just before the
 session takes over:
 
 ```
-ESC ] 2 ; devlaunch-main-zovomobo BEL
+ESC ] 2 ; blooop/devlaunch@main BEL
 ```
 
 That is one escape sequence to whichever stream dl was given, and the point of
@@ -497,25 +497,29 @@ It is on unless you turn it off:
 
 | Variable | Description |
 |----------|-------------|
-| `DEVLAUNCH_NO_TITLE=1` | Do not write a terminal title. Everything else about the launch is unchanged |
+| `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal — neither the escape below nor the profile edit under [What keeps it named](#what-keeps-it-named). Everything else about the launch is unchanged |
 
 A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are not
 the same size of decision. That one installs a session into a container; this one
-writes an escape sequence that the next shell prompt overwrites anyway.
+writes an escape sequence and one line into a profile.
 
-**It is the workspace id, not the spec you typed.** The id is the only string that
-is always available and always bounded: every launch has one — a triple, a bare
-name, a path, a URL — whereas `owner/repo` still has its branch unresolved at that
-point and `./some/dir` is not a spec at all. It is also already the container's
-hostname — so the title dl writes and the `user@host` an interactive prompt paints
-over it agree instead of disagreeing.
+**It is the spec you typed, resolved — not the workspace id.** `dl blooop/devlaunch`
+names the pane `blooop/devlaunch@main`, with the branch filled in as the launch
+resolved it. The [id](#workspace-ids) is a worse name for two reasons: it carries no
+owner at all, so a fork and its upstream are two tabs spelled the same, and it
+spells the branch as a slug, so `feature/auth` reads as `feature-auth` — the name of
+a different branch the same repository could have.
 
-It stays short enough for a tab bar, but not by anything dl does: only a
-`owner/repo@branch` launch gets its id from the 47-character derivation under
-[Workspace IDs](#workspace-ids). A bare workspace name or a `./path` arrives as
-what you typed, and what keeps *those* short is devpod, which refuses to create or
-report a workspace whose name runs past 48 characters — so a longer one ends the
-launch before there is a session to name.
+The other three ways of naming a workspace have no triple to resolve, so they keep
+the id: a bare `dl myworkspace` *is* its id, and `dl ./some/dir` or a plain URL
+never had a branch for an `@` to precede.
+
+It stays short enough for a tab bar, but not by anything dl does. A spec is bounded
+by the id it derived — a triple whose parts overrun 47 characters is refused before
+there is a session — and a bare workspace name or a `./path` arrives as what you
+typed. What keeps *those* short is devpod, which refuses to create or report a
+workspace whose name runs past 48 characters, so a longer one ends the launch before
+there is a session to name.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for
@@ -523,26 +527,50 @@ the same reason: `dl <ws> -- make test > log` has redirected stdout and still ha
 terminal worth naming, while a run whose stderr is a pipe would only be writing
 escapes into somebody else's capture.
 
-### What overwrites it, and the one case worth knowing
+### What keeps it named
 
-A terminal title has exactly one value and the last writer sets it, so anything in
-the session that writes its own title wins. Two do, routinely:
+A terminal title has exactly one value and the last writer sets it. An interactive
+shell overwrites dl's within a second of arriving: Ubuntu's stock `~/.bashrc` puts
+`\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt renames the pane after
+the container's hostname — which is the workspace id, the name we just went to
+some trouble not to use.
 
-- **An interactive shell's prompt.** Ubuntu's stock `~/.bashrc` puts
-  `\e]0;\u@\h: \w\a` in `PS1`, so `dl someone/repo` shows the workspace name until
-  the first prompt renders and `vscode@devlaunch-main-zovomobo: ~/repo` after it.
-  Nothing is lost — that string is the container's hostname, which is the same
-  workspace id — so this case is already labelled and dl does not fight it.
-- **claude.** It writes the title continuously from its own read of what the
-  session is doing, which would leave a `dl <ws> -- claude` pane named after the
-  task rather than the workspace within a second. `aid` therefore starts claude
-  with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, so the workspace name is what
-  stands. What claude is doing is on screen inside the pane; which workspace the
-  pane *is* is not otherwise anywhere.
+So the setup pass appends one line to the profile a login shell reads:
 
-  This is `aid`'s doing and not `dl`'s: a `dl <ws> -- claude ...` you typed
-  yourself is your command, and dl does not rewrite it. Set the variable yourself
-  if you want the same result from the long form.
+```
+case $- in *i*) PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac
+```
+
+Appended, and that is the whole mechanism: two escapes in one prompt are applied in
+order, so the last one sets the title. Nothing is rewritten — the visible
+`vscode@devlaunch-main-zovomobo:~/repo$` still says the hostname, and only the tab
+changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
+`PS1`, so the stock escape would land afterwards and win.) Interactive shells only,
+so a `dl <ws> -- cmd` one-shot, which reads the same profile through `bash -lc`, is
+untouched.
+
+It is written once — the line carries a content-hash comment the next launch
+recognises — and it rides the same round trip as the hostname stage, so it costs no
+extra trip.
+
+**It is installed when a workspace enters Running, not on every attach.** A
+workspace that is already up keeps whatever its profile was given, so
+`DEVLAUNCH_NO_TITLE=1 dl <ws>` silences dl's own escape and leaves the prompt's;
+`dl <ws> recreate` is what re-decides it. That is the same bargain the hostname
+stage makes, and for the same reason — the alternative is a round trip per attach.
+
+### The one other writer worth knowing
+
+**claude** writes the title continuously from its own read of what the session is
+doing, which would leave a `dl <ws> -- claude` pane named after the task rather than
+the workspace within a second. `aid` therefore starts claude with
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, so the workspace name is what stands. What
+claude is doing is on screen inside the pane; which workspace the pane *is* is not
+otherwise anywhere.
+
+This is `aid`'s doing and not `dl`'s: a `dl <ws> -- claude ...` you typed yourself
+is your command, and dl does not rewrite it. Set the variable yourself if you want
+the same result from the long form.
 
 Two multiplexer limits are worth stating, because neither is dl's to fix:
 
@@ -556,8 +584,8 @@ Two multiplexer limits are worth stating, because neither is dl's to fix:
 **zellij tab names are not this.** A zellij *tab* is renamed only by `zellij
 action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
-terminal is `<session> | <pane title>`, so the workspace id is what shows up in a
-kitty tab bar.
+terminal is `<session> | <pane title>`, so the spec is what shows up in a kitty tab
+bar.
 
 ## GitHub Authentication
 
@@ -872,6 +900,10 @@ ceiling of 48 — a 49-character id is refused outright, not truncated — and w
 the 64-byte hostname limit on its own, but tools that stack their own prefixes onto the
 container name have about 17 characters to work with, so a tool that wants more is the
 one that has to shorten.
+
+The id is *not* what you read on a tab. That shows `owner/repo@branch` — see [Naming
+the terminal after the workspace](#naming-the-terminal-after-the-workspace). The id
+addresses the workspace; the spec names it.
 
 Branch names must be safe as both git refs and directory names — a name with a space or
 a leading dash is rejected rather than quietly rewritten.
