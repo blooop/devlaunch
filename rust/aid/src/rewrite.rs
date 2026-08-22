@@ -6,6 +6,7 @@
 //! containers itself is an `aid` that builds one `dl` would have reused, which is
 //! the drift `aid.py` was rewritten to end.
 
+use dl::herdr;
 use dl::shell;
 
 /// How one coding agent is started inside the workspace.
@@ -22,6 +23,12 @@ struct Agent {
     /// Variables set for the agent's process and nothing else, sorted by name —
     /// Python sorts them, and the order is in the payload's bytes.
     env: &'static [(&'static str, &'static str)],
+    /// The label this agent is reported to herdr under, when there is a herdr pane
+    /// to report to and devlaunch installs a hook for it.
+    ///
+    /// `None` for the agents whose lifecycle events devlaunch does not yet wire up:
+    /// the variables alone would tell a hook that is not there where to report.
+    herdr: Option<&'static str>,
 }
 
 /// The agent this build starts when nothing picks one.
@@ -73,6 +80,7 @@ const AGENTS: &[(&str, Agent)] = &[
                 ("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1"),
                 ("IS_SANDBOX", "1"),
             ],
+            herdr: Some("claude"),
         },
     ),
     (
@@ -81,6 +89,7 @@ const AGENTS: &[(&str, Agent)] = &[
             command: &["codex"],
             prompt_flags: &[],
             env: &[],
+            herdr: None,
         },
     ),
     (
@@ -89,6 +98,7 @@ const AGENTS: &[(&str, Agent)] = &[
             command: &["gemini"],
             prompt_flags: &["--prompt-interactive"],
             env: &[],
+            herdr: None,
         },
     ),
 ];
@@ -443,7 +453,11 @@ fn agent_flag(word: &str) -> Option<&'static str> {
 ///
 /// `None` is an agent this build has no entry for, which only a caller inventing a
 /// name can produce — [`parse_aid_args`] answers with a name from the table.
-pub(crate) fn build_agent_command(agent: &str, prompt: &str) -> Option<String> {
+pub(crate) fn build_agent_command(
+    agent: &str,
+    prompt: &str,
+    herdr: Option<&herdr::Session>,
+) -> Option<String> {
     let (_, started) = AGENTS.iter().find(|(name, _)| *name == agent)?;
     // No prompt to be interactive about: start the agent's plain session, without
     // the flags that only make sense alongside one.
@@ -460,6 +474,16 @@ pub(crate) fn build_agent_command(agent: &str, prompt: &str) -> Option<String> {
         .iter()
         .map(|(name, value)| format!("{name}={}", shell::quote(value)))
         .collect();
+    // Which pane to report to, when this aid is running in one and the agent is one
+    // devlaunch installs a hook for. Nothing is added otherwise, which is what keeps
+    // every command line off a herdr-less host byte-identical to what it was.
+    if let (Some(session), Some(_)) = (herdr, started.herdr) {
+        line.extend(
+            herdr::session_env(session)
+                .into_iter()
+                .map(|(name, value)| format!("{name}={}", shell::quote(&value))),
+        );
+    }
     line.push(shell::join(words));
     Some(line.join(" "))
 }
@@ -478,7 +502,10 @@ pub(crate) fn build_agent_command(agent: &str, prompt: &str) -> Option<String> {
 /// is that no agent is being started. The verb flags go *after* the spec so that a
 /// `--force` among them lands where dl reads it as the modifier rather than as the
 /// workspace's name.
-pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
+pub(crate) fn build_dl_args(
+    parsed: &AidArgs,
+    herdr: Option<&herdr::Session>,
+) -> Option<Vec<String>> {
     let mut args = parsed.dl_options.clone();
     args.push(parsed.spec.clone());
     // Behind the spec and ahead of the verb flags, which is where dl reads them as
@@ -487,7 +514,7 @@ pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
     match &parsed.task {
         Task::Agent { agent, prompt } => {
             args.push("--".to_owned());
-            args.push(build_agent_command(agent, prompt)?);
+            args.push(build_agent_command(agent, prompt, herdr)?);
         }
         Task::Verb { flags, .. } => args.extend(flags.iter().cloned()),
     }
@@ -661,23 +688,18 @@ mod tests {
         // agent to run one. `--force` lands after the spec, where dl reads it as
         // the modifier rather than as the workspace's name.
         assert_eq!(
-            build_dl_args(&parsed(&[
-                "owner/repo@fix/x",
-                "review this pr",
-                "--rm",
-                "--force"
-            ]))
+            build_dl_args(
+                &parsed(&["owner/repo@fix/x", "review this pr", "--rm", "--force"]),
+                None
+            )
             .expect("a verb line needs no agent"),
             ["owner/repo@fix/x", "--rm", "--force"]
         );
         assert_eq!(
-            build_dl_args(&parsed(&[
-                "--devcontainer",
-                "robot",
-                "owner/repo",
-                "hi",
-                "--stop"
-            ]))
+            build_dl_args(
+                &parsed(&["--devcontainer", "robot", "owner/repo", "hi", "--stop"]),
+                None
+            )
             .expect("a verb line needs no agent"),
             ["--devcontainer", "robot", "owner/repo", "--stop"]
         );
@@ -688,7 +710,7 @@ mod tests {
         // `aid --rm owner/repo` used to hand dl a verb *and* an agent command, a
         // pair dl refuses. It is collected as the verb instead.
         assert_eq!(
-            build_dl_args(&parsed(&["--rm", "owner/repo"])).expect("a verb line"),
+            build_dl_args(&parsed(&["--rm", "owner/repo"]), None).expect("a verb line"),
             ["owner/repo", "--rm"]
         );
         assert_eq!(overridden(&["--rm", "owner/repo"]).1, "");
@@ -746,14 +768,14 @@ mod tests {
         // --dangerously-skip-permissions under uid 0, and a devcontainer running as
         // root is ordinary.
         assert_eq!(
-            build_agent_command("claude", "fix the bug").as_deref(),
+            build_agent_command("claude", "fix the bug", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions 'fix the bug'"
             )
         );
         assert_eq!(
-            build_agent_command("claude", "").as_deref(),
+            build_agent_command("claude", "", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions"
@@ -761,10 +783,60 @@ mod tests {
         );
     }
 
+    /// Inside a herdr pane the agent is told which pane to report to, and where the
+    /// socket is *inside the container* — the host's path would be a variable that
+    /// is set and useless.
+    #[test]
+    fn a_herdr_pane_is_named_on_the_agents_own_command_line() {
+        let session = herdr::Session::for_pane("w1:p2");
+        // The pane's variables come after the agent's own, which keeps every
+        // command line Python ever produced byte-identical: those are sorted
+        // together and this is a suffix nothing else has an opinion about.
+        assert_eq!(
+            build_agent_command("claude", "fix it", Some(&session)).as_deref(),
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 \
+                 HERDR_ENV=1 HERDR_PANE_ID=w1:p2 \
+                 HERDR_SOCKET_PATH=/var/tmp/devlaunch-herdr.sock \
+                 claude --dangerously-skip-permissions 'fix it'"
+            )
+        );
+    }
+
+    /// The variables are for a hook devlaunch installs, and it installs one for
+    /// claude only: setting them for an agent with no hook would name a reporter
+    /// that is not there.
+    #[test]
+    fn an_agent_with_no_hook_is_told_nothing_about_herdr() {
+        let session = herdr::Session::for_pane("w1:p2");
+        for agent in ["codex", "gemini"] {
+            let command = build_agent_command(agent, "hi", Some(&session)).expect("a known agent");
+            assert!(!command.contains("HERDR"), "{command}");
+        }
+    }
+
+    /// Outside a pane, every command line is the one it always was.
+    #[test]
+    fn no_pane_changes_no_command_line() {
+        for agent in agent_names() {
+            for prompt in ["", "fix it"] {
+                assert_eq!(
+                    build_agent_command(agent, prompt, None),
+                    build_agent_command(agent, prompt, None),
+                );
+                assert!(
+                    !build_agent_command(agent, prompt, None)
+                        .expect("a known agent")
+                        .contains("HERDR")
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_agent_that_needs_no_variable_gets_none() {
         for agent in ["codex", "gemini"] {
-            let command = build_agent_command(agent, "hi").expect("a known agent");
+            let command = build_agent_command(agent, "hi", None).expect("a known agent");
             assert!(!command.contains("IS_SANDBOX"), "{command}");
         }
     }
@@ -772,10 +844,13 @@ mod tests {
     #[test]
     fn gemini_gets_its_interactive_flag_only_beside_a_prompt() {
         assert_eq!(
-            build_agent_command("gemini", "hi").as_deref(),
+            build_agent_command("gemini", "hi", None).as_deref(),
             Some("gemini --prompt-interactive hi")
         );
-        assert_eq!(build_agent_command("gemini", "").as_deref(), Some("gemini"));
+        assert_eq!(
+            build_agent_command("gemini", "", None).as_deref(),
+            Some("gemini")
+        );
     }
 
     #[test]
@@ -783,14 +858,14 @@ mod tests {
         // Python's `shlex.quote` spelling, byte for byte: the payload travels in
         // argv, and a second command cannot be smuggled into it.
         assert_eq!(
-            build_agent_command("claude", "don't break \"this\"").as_deref(),
+            build_agent_command("claude", "don't break \"this\"", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions 'don'\"'\"'t break \"this\"'"
             )
         );
         assert_eq!(
-            build_agent_command("claude", "hi; rm -rf /").as_deref(),
+            build_agent_command("claude", "hi; rm -rf /", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions 'hi; rm -rf /'"
@@ -800,7 +875,7 @@ mod tests {
 
     #[test]
     fn an_agent_nothing_knows_has_no_command() {
-        assert_eq!(build_agent_command("clippy", "hi"), None);
+        assert_eq!(build_agent_command("clippy", "hi", None), None);
     }
 
     // ------------------------------------------- the dl command line
@@ -808,7 +883,8 @@ mod tests {
     #[test]
     fn the_dl_command_line_is_options_then_spec_then_the_command() {
         assert_eq!(
-            build_dl_args(&parsed(&["owner/repo@branch", "fix", "it"])).expect("a known agent"),
+            build_dl_args(&parsed(&["owner/repo@branch", "fix", "it"]), None)
+                .expect("a known agent"),
             [
                 "owner/repo@branch",
                 "--",
@@ -817,7 +893,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_dl_args(&parsed(&["--devcontainer", "robot", "owner/repo"]))
+            build_dl_args(&parsed(&["--devcontainer", "robot", "owner/repo"]), None)
                 .expect("a known agent"),
             [
                 "--devcontainer",
@@ -835,8 +911,11 @@ mod tests {
         // The prompt survives dl's own parsing of `-- <command>`: dl joins
         // everything after `--` with spaces, so the quoting aid applies has to live
         // inside a single argument rather than be spread across several.
-        let args = build_dl_args(&parsed(&["owner/repo", "fix", "the", "flaky", "test"]))
-            .expect("a known agent");
+        let args = build_dl_args(
+            &parsed(&["owner/repo", "fix", "the", "flaky", "test"]),
+            None,
+        )
+        .expect("a known agent");
         let after = args
             .iter()
             .position(|word| word == "--")
@@ -856,7 +935,7 @@ mod tests {
                 .expect("a usable command line");
 
             assert_eq!(chosen.agent(), Some(name));
-            assert!(build_agent_command(name, "hi").is_some(), "{name}");
+            assert!(build_agent_command(name, "hi", None).is_some(), "{name}");
         }
     }
 
@@ -879,7 +958,7 @@ mod tests {
         // Behind the spec, because that is where dl reads a flag as a modifier
         // rather than as the workspace's name, and ahead of the `--`, because
         // everything after that belongs to the workspace's command.
-        let built = build_dl_args(&parsed(&["owner/repo", "fix it", "--autorm"]))
+        let built = build_dl_args(&parsed(&["owner/repo", "fix it", "--autorm"]), None)
             .expect("an agent line builds");
 
         assert_eq!(
@@ -898,8 +977,8 @@ mod tests {
     fn autorm_before_the_spec_is_the_same_request() {
         // An unknown leading flag is passed through to dl, which is all `--autorm`
         // needs: dl accepts it in any position, unlike `--force`.
-        let built =
-            build_dl_args(&parsed(&["--autorm", "owner/repo", "fix it"])).expect("an agent line");
+        let built = build_dl_args(&parsed(&["--autorm", "owner/repo", "fix it"]), None)
+            .expect("an agent line");
 
         assert_eq!(built[0], "--autorm");
         assert_eq!(built[1], "owner/repo");
@@ -969,7 +1048,7 @@ mod tests {
 
         assert_eq!(typed_backwards.spec_options, ["--autorm", "--force"]);
         assert_eq!(prompt(&typed_backwards), "fix it");
-        let built = build_dl_args(&typed_backwards).expect("an agent line");
+        let built = build_dl_args(&typed_backwards, None).expect("an agent line");
         assert_eq!(
             built.iter().position(|word| word == "--force"),
             Some(2),
@@ -993,7 +1072,7 @@ mod tests {
         }
         assert_eq!(chosen.spec_options, ["--autorm"]);
         assert_eq!(
-            build_dl_args(&chosen).expect("a verb line"),
+            build_dl_args(&chosen, None).expect("a verb line"),
             ["owner/repo", "--autorm", "--rm"]
         );
     }
@@ -1048,7 +1127,7 @@ mod tests {
 
         assert_eq!(prompt(&chosen), "fix the bug");
         assert_eq!(
-            build_dl_args(&chosen).expect("an agent line"),
+            build_dl_args(&chosen, None).expect("an agent line"),
             [
                 "owner/repo",
                 "--autorm",
@@ -1066,7 +1145,7 @@ mod tests {
             .with_prompt("explain this".to_owned());
 
         assert_eq!(
-            build_dl_args(&chosen).expect("an agent line"),
+            build_dl_args(&chosen, None).expect("an agent line"),
             [
                 "owner/repo",
                 "--",
@@ -1080,7 +1159,7 @@ mod tests {
         let chosen = parsed(&["owner/repo"]).with_prompt(String::new());
 
         assert_eq!(
-            build_dl_args(&chosen).expect("an agent line"),
+            build_dl_args(&chosen, None).expect("an agent line"),
             [
                 "owner/repo",
                 "--",
