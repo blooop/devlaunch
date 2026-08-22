@@ -20,6 +20,13 @@
 //! any number of rows, so `dl rm` can clear five dead workspaces in one visit,
 //! while the forms that end in a session still take exactly one.
 //!
+//! **And one departure from skim's defaults: the search bar is at the top.** skim
+//! draws its query line at the bottom and grows the match list upward from it;
+//! [`skim_options`] asks for `reverse`, so the prompt is the first line and the
+//! matches read downward from it. Neither shape is Python's to keep — `iterfzf`
+//! inherited whatever `fzf` was configured to do on the host — and this one puts
+//! the first match next to the cursor instead of furthest from it.
+//!
 //! [`offered`] is that list and nothing else — a pure function of what devpod said,
 //! which is what makes the spec testable without a terminal. [`pick`] is the
 //! interactive half.
@@ -141,17 +148,38 @@ fn a_terminal_exists() -> bool {
     }
 }
 
-/// The rows skim was left on: empty when the picker was quit without an answer.
-fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
-    let options = SkimOptions {
+/// How the picker is drawn, and how many rows it will take.
+///
+/// A function rather than a literal inside [`run_skim`] because it is the one part
+/// of the interactive half a test can read without a terminal: these options *are*
+/// the picker's shape, so a lever that quietly does nothing is caught here rather
+/// than by looking at it.
+fn skim_options(arity: Arity) -> SkimOptions {
+    SkimOptions {
         // skim's `--multi` when the verb takes several — TAB toggles a row, as it
         // does in fzf — and `iterfzf(options, multi=False)`'s one pick otherwise.
         // Input order preserved rather than re-sorted either way (Python's
         // `sort=False` -> `--no-sort`).
         multi: matches!(arity, Arity::Several),
         no_sort: true,
+        // The search bar on the first line, with the matches reading downward from
+        // it. skim's default draws the query at the *bottom* and grows the list
+        // upward, which puts the first match furthest from where the eye already
+        // is and moves the rows under it as the query narrows.
+        //
+        // Named as a layout and not as `reverse: true`, though the field beside it
+        // is documented as shorthand for exactly this: the shorthand is expanded by
+        // `SkimOptions::build`, and `dl` hands its options to `Skim::run_with`,
+        // which never calls it. The flag on its own compiles, reads as the fix, and
+        // changes nothing (skim 0.20.5).
+        layout: String::from("reverse"),
         ..Default::default()
-    };
+    }
+}
+
+/// The rows skim was left on: empty when the picker was quit without an answer.
+fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
+    let options = skim_options(arity);
     let (tx, rx): (SkimItemSender, SkimItemReceiver) = unbounded();
     for row in rows_of(offers) {
         // A send that fails means the reader is gone, which is a picker that is not
@@ -299,6 +327,52 @@ mod tests {
             chosen(&offers, vec![offers[1].label.clone()]),
             Pick::Chose(one_id("from-an-image"))
         );
+    }
+
+    #[test]
+    fn the_search_bar_is_at_the_top_with_the_list_reading_downward() {
+        // skim's default layout draws the query line at the *bottom* of the picker
+        // and grows the list upward from it, so the first match sits furthest from
+        // the cursor and the rows move under the eye as the query is typed. `dl`
+        // asks for `reverse`: prompt on the first line, matches reading downward
+        // from it, first match nearest the prompt — the shape every other fuzzy
+        // finder a user of this has met puts up.
+        //
+        // Both arities, because the layout is not the multi-select's business: a
+        // single-pick `dl stop` is drawn exactly like a multi-pick `dl rm`.
+        assert_eq!(skim_options(Arity::One).layout, "reverse");
+        assert_eq!(skim_options(Arity::Several).layout, "reverse");
+    }
+
+    #[test]
+    fn the_layout_is_asked_for_by_name_because_the_reverse_flag_is_inert() {
+        // `SkimOptions` carries a `reverse: bool` next to `layout`, documented as
+        // "shorthand for reverse layout" — and it is shorthand that only
+        // `SkimOptions::build`/`SkimOptionsBuilder::build` ever expand. `dl` hands
+        // its options straight to `Skim::run_with`, which never calls either, and
+        // the model reads `options.layout` alone (skim 0.20.5,
+        // `src/model/mod.rs`). So a `reverse: true` on its own would compile, read
+        // as the fix, and draw the old picture.
+        //
+        // Pinned so that a later tidy-up cannot "simplify" the layout string into
+        // the flag and silently put the search bar back at the bottom.
+        let asked = skim_options(Arity::One);
+
+        assert_eq!(asked.layout, "reverse");
+        assert!(
+            !asked.reverse,
+            "the flag is not the lever; setting it instead of `layout` is the bug this pins"
+        );
+    }
+
+    #[test]
+    fn what_the_picker_will_take_is_the_arity_and_the_order_is_never_skim_s() {
+        // The two options the layout change sits beside, so a mistyped struct
+        // literal cannot trade one for another unnoticed.
+        assert!(!skim_options(Arity::One).multi);
+        assert!(skim_options(Arity::Several).multi);
+        assert!(skim_options(Arity::One).no_sort);
+        assert!(skim_options(Arity::Several).no_sort);
     }
 
     /// A `Pick::Chose` of exactly these ids, for the assertions below.
