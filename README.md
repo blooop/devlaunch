@@ -538,16 +538,18 @@ some trouble not to use.
 So the setup pass appends one line to the profile a login shell reads:
 
 ```
-case $- in *i*) PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac
+case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac
 ```
 
 Appended, and that is the whole mechanism: two escapes in one prompt are applied in
 order, so the last one sets the title. Nothing is rewritten — the visible
 `vscode@devlaunch-main-zovomobo:~/repo$` still says the hostname, and only the tab
 changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
-`PS1`, so the stock escape would land afterwards and win.) Interactive shells only,
-so a `dl <ws> -- cmd` one-shot, which reads the same profile through `bash -lc`, is
-untouched.
+`PS1`, so the stock escape would land afterwards and win.) Interactive bash only:
+`bash -lc` reads the same profile on every `dl <ws> -- cmd` one-shot, and `\[`, `\e`
+and `\a` mean nothing to dash — which is `/bin/sh`, and which reads `~/.profile` too
+— so an unguarded line would print the escape at every prompt instead of acting on
+it.
 
 It is written once — the line carries a content-hash comment the next launch
 recognises — and it rides the same round trip as the hostname stage, so it costs no

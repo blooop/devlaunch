@@ -486,9 +486,15 @@ pub(crate) fn profile_prepend(line: &str, on_failure: Option<&str>) -> String {
 /// `PS1` an image or a dotfile built stays exactly as it was, prompt text included:
 /// the visible `user@host:path$` still names the hostname, and only the tab changes.
 ///
-/// Interactive shells only (`case $- in *i*`), because a login shell that renders no
-/// prompt has no use for one and `bash -lc` reads this file on every `dl <ws> --
-/// cmd`.
+/// Interactive **bash** only, and both halves of that are load-bearing.
+/// `case $- in *i*` keeps the edit out of the login shells that render no prompt,
+/// which is every `dl <ws> -- cmd`, since `bash -lc` reads this file too. And
+/// `$BASH_VERSION` keeps it out of the shells that would render it *literally*:
+/// `$PROFILE` may be `~/.profile`, which any POSIX login shell reads, and `\[`,
+/// `\e` and `\a` mean nothing to dash — `/bin/sh` on Debian and Ubuntu — so an
+/// unguarded append puts the escape on screen at every prompt instead of in the
+/// title. It is the same test Ubuntu's own `~/.profile` makes before it sources
+/// `~/.bashrc`.
 ///
 /// *title* is interpolated as its own quoted word rather than into the double-quoted
 /// assignment, so a name holding a `$` or a backtick is text and not shell. A spec
@@ -498,7 +504,7 @@ pub(crate) fn profile_prepend(line: &str, on_failure: Option<&str>) -> String {
 /// never validated.
 fn profile_title_line(title: &str) -> String {
     format!(
-        r#"case $- in *i*) PS1="$PS1\[\e]2;"{}"\a\]" ;; esac"#,
+        r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"{}"\a\]" ;; esac"#,
         quote(title)
     )
 }
@@ -4394,7 +4400,7 @@ fi
         // globs. A name that needs quotes gets them; the test below is that one.
         assert_eq!(
             line,
-            r#"case $- in *i*) PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac"#
+            r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac"#
         );
         // `$PS1` first, so nothing an image or a dotfile put in the prompt is
         // rewritten -- only added to.
@@ -4402,6 +4408,42 @@ fi
         // And it is inert in the shells that render no prompt, which is every
         // `dl <ws> -- cmd`: `bash -lc` reads the profile too.
         assert!(line.starts_with("case $- in *i*)"), "{line}");
+    }
+
+    #[test]
+    fn a_shell_that_is_not_bash_leaves_its_prompt_alone() {
+        // `$PROFILE` is one of `~/.bash_profile`, `~/.bash_login` or `~/.profile`,
+        // and the last of those is read by any POSIX login shell -- `/bin/sh` is
+        // dash on Debian and Ubuntu. `\[`, `\e` and `\a` mean nothing to dash, which
+        // renders a prompt literally, so an unguarded append puts
+        // `\[\e]2;blooop/devlaunch@main\a\]` on screen at every prompt. That is worse
+        // than no title: it is a corrupted one.
+        //
+        // The guard is the same `$BASH_VERSION` test Ubuntu's own `~/.profile` uses
+        // before it sources `~/.bashrc`. Asserted as an implication so this reads the
+        // same whichever shell `sh` is on the machine running it.
+        let line = profile_title_line("blooop/devlaunch@main");
+        let script = format!(
+            "PS1=untouched\n{line}\nprintf '%s\\n%s\\n' \"${{BASH_VERSION:+bash}}\" \"$PS1\""
+        );
+
+        let out = std::process::Command::new("sh")
+            .args(["-i", "-c", &script])
+            .output()
+            .expect("sh to run the line");
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut lines = said.lines();
+        let is_bash = lines.next() == Some("bash");
+        let ps1 = lines.next().expect("the prompt back");
+
+        if is_bash {
+            assert_ne!(
+                ps1, "untouched",
+                "bash should have been appended to: {said:?}"
+            );
+        } else {
+            assert_eq!(ps1, "untouched", "a non-bash prompt was edited: {said:?}");
+        }
     }
 
     #[test]
