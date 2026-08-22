@@ -162,3 +162,54 @@ def test_every_flag_the_readme_hands_a_reader_is_a_flag_dl_accepts(flag):
     assert not rejected_as_unknown, (
         f"README documents `{DOCUMENTED_FLAGS[flag]}`, but dl has no {flag}: {first_line}"
     )
+
+
+# ---------------------------------------------------------------------------
+# the version the README quotes
+# ---------------------------------------------------------------------------
+
+# The transcript whose output line is the claim: the fence that runs
+# `dl --version`. Matched on the command rather than on a heading, because the
+# section around it is free to be rewritten and the transcript is not free to be
+# wrong.
+VERSION_TRANSCRIPT = re.compile(r"^\$ dl --version\n(?P<output>.+)$", re.MULTILINE)
+
+# The conda badge, which republishes the same fact as a picture. Only the version
+# is captured; the colour and the logo are nobody's business here.
+CONDA_BADGE = re.compile(r"img\.shields\.io/badge/conda-v(?P<version>[0-9][^-]*)-")
+
+
+@pytest.mark.unit
+def test_the_version_transcript_quotes_the_version_that_ships():
+    """`dl --version` printed in the README must be what it prints.
+
+    This is the guard's cheapest catch and the one that had already gone wrong:
+    the transcript quoted 0.1.0 for four minor releases, under a paragraph
+    promising "the version and nothing else". Compared against
+    `rust/Cargo.toml` rather than against a `dl --version` run, because that file
+    is where the version is written down -- a run would confirm the binary agrees
+    with itself and let a `-dev` build launder a stale number.
+    """
+    transcript = VERSION_TRANSCRIPT.search(_readme())
+    assert transcript, "the README no longer shows a `$ dl --version` transcript"
+    assert transcript.group("output").strip() == f"dl {_shipped_version()}", (
+        f"the README quotes {transcript.group('output').strip()!r} as the output of "
+        f"`dl --version`; rust/Cargo.toml says the version is {_shipped_version()}"
+    )
+
+
+@pytest.mark.unit
+def test_the_conda_badge_names_the_version_that_ships():
+    """The badge is a hand-written version string wearing a picture.
+
+    Every other badge in the header is generated from live state by shields.io;
+    this one hard-codes the number, and had been advertising 0.0.9 since well
+    before 0.6.0 shipped. Guarded rather than removed because the channel it
+    points at is real: what is wrong is the copy, not the link.
+    """
+    badge = CONDA_BADGE.search(_readme())
+    assert badge, "the README header no longer carries a conda version badge"
+    assert badge.group("version") == _shipped_version(), (
+        f"the conda badge advertises v{badge.group('version')}; rust/Cargo.toml says "
+        f"the version is {_shipped_version()}. Both move together at release."
+    )

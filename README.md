@@ -12,7 +12,7 @@ launching one again attaches to what is already there.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.6.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -287,7 +287,7 @@ is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
 ```bash
 $ dl --version
-dl 0.1.0
+dl 0.6.0
 ```
 
 The version and nothing else. `aid --version` reports the same version under its
@@ -1925,6 +1925,14 @@ rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the con
 `.github/workflows/publish.yml` and `conda-publish.yml` do exactly that on a version bump, in that
 order, off one tag; `ci.yml`'s `packaging` job builds the wheel and renders the recipe on every pull
 request, so a broken release is a red tick rather than a surprise.
+
+Two places in this document restate that number — the `dl --version` transcript under
+[Global Commands](#global-commands) and the conda badge at the top — and both are read back
+against `rust/Cargo.toml` by `test/test_readme_cli_doc.py`, so a bump that forgets them is a
+failing test rather than a README advertising a release from last year. That guard reads the
+same file for the flags: every long flag written on a `dl` command line anywhere here is handed
+to the binary's own parser, which is what makes a documented flag that does not exist a red tick
+too.
 
 The Python half uses [pixi](https://pixi.sh) for environment management.
 
