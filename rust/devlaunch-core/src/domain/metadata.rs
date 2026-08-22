@@ -1007,6 +1007,11 @@ fn encode(document: &Document<'_>) -> Result<Vec<u8>, MetadataError> {
 /// character as a `\uXXXX` escape. A branch name with an umlaut in it is enough
 /// to make the two builds write different bytes for the same data, so the
 /// escaping is matched rather than left to chance.
+///
+/// Only the layout differs from the compact [`crate::json::PythonFormatter`] —
+/// this document is indented and that one is on one line — so the escaping is
+/// the crate's one copy of it rather than a second loop here that had to stay
+/// character-for-character equal to survive.
 #[derive(Default)]
 struct PythonJsonFormatter<'indent> {
     pretty: serde_json::ser::PrettyFormatter<'indent>,
@@ -1017,21 +1022,7 @@ impl serde_json::ser::Formatter for PythonJsonFormatter<'_> {
     where
         W: ?Sized + io::Write,
     {
-        let mut ascii_from = 0;
-        for (at, character) in fragment.char_indices() {
-            if character.is_ascii() {
-                continue;
-            }
-            writer.write_all(&fragment.as_bytes()[ascii_from..at])?;
-            ascii_from = at + character.len_utf8();
-            // Surrogate pairs for anything outside the basic plane, which is
-            // what Python writes for an emoji.
-            let mut units = [0u16; 2];
-            for unit in character.encode_utf16(&mut units) {
-                write!(writer, "\\u{unit:04x}")?;
-            }
-        }
-        writer.write_all(&fragment.as_bytes()[ascii_from..])
+        crate::json::write_ensure_ascii(writer, fragment)
     }
 
     // The rest is the pretty printer's layout, delegated unchanged.
@@ -1553,6 +1544,37 @@ mod tests {
             .expect("saved");
 
         assert_eq!(read(&path), PYTHON_METADATA);
+    }
+
+    /// The escaping the pretty formatter shares with the compact one, at the
+    /// document it writes.
+    ///
+    /// The golden above carries a BMP character only; an emoji in a branch name
+    /// is the case that needs two escapes for one code point, and it is the one
+    /// that would go quietly wrong if the shared escaper were reached for
+    /// half-way. Expectation from `json.dumps(..., indent=2)` under the frozen
+    /// Python build (3.14).
+    #[test]
+    fn the_indent_two_document_escapes_an_astral_character_as_the_pair() {
+        let mut bytes = Vec::new();
+        let mut serializer =
+            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        json!({ "branch": "feature/br\u{fc}nch", "tags": ["\u{1f680}", "plain"] })
+            .serialize(&mut serializer)
+            .expect("a Vec never fails to write");
+
+        assert_eq!(
+            String::from_utf8(bytes).expect("the escaping writes ASCII"),
+            concat!(
+                "{\n",
+                "  \"branch\": \"feature/br\\u00fcnch\",\n",
+                "  \"tags\": [\n",
+                "    \"\\ud83d\\ude80\",\n",
+                "    \"plain\"\n",
+                "  ]\n",
+                "}",
+            )
+        );
     }
 
     #[test]
