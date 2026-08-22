@@ -33,7 +33,7 @@ use std::io::Write as _;
 use rewrite::UsageError;
 
 fn main() {
-    dl::install_interrupt_handler();
+    dl::install_signal_handlers();
     // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
     // argument that is not valid UTF-8, which would end `aid $'\xff'` with an exit
     // 101 and a traceback. Python decoded argv lossily and carried on

@@ -133,70 +133,157 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
     false
 }
 
+/// What a signalled `dl` left behind — the three facts every one of these tests
+/// judges, gathered as one value so a test reads as a single expectation.
+#[derive(Debug, PartialEq, Eq)]
+struct Aftermath {
+    /// The exit code, or `None` for a `dl` that died *by* the signal instead of
+    /// exiting. The difference is observable to whatever spawned `dl`, which is
+    /// why the code is asserted rather than just "it stopped".
+    code: Option<i32>,
+    /// Whether the plaintext GitHub-token file is still on disk.
+    token_left: bool,
+    /// Whether the `devpod up` child outlived the `dl` that started it.
+    up_alive: bool,
+}
+
+/// A `dl` held at the exact moment the leak needs: `devpod up` blocking, the
+/// plaintext token staged, the `up` child alive in a process group of its own.
+/// Every signal these tests deliver is delivered here.
+struct MidUp {
+    _world: World,
+    child: std::process::Child,
+    tmpdir: PathBuf,
+    up: String,
+}
+
+impl MidUp {
+    /// A `dl` reached the ordinary way, with every signal at its default
+    /// disposition.
+    fn reached() -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
+        command.arg("blooop/devlaunch@cold");
+        Self::spawned(command)
+    }
+
+    /// A `dl` reached through a shell that first sets `signal` to be ignored —
+    /// what `nohup` does, and what a job disowned by a non-interactive shell
+    /// inherits. The disposition survives the `exec`, so `dl` starts with that
+    /// signal already ignored, in the same process the shell occupied.
+    fn reached_with_signal_ignored(signal: &str) -> Self {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!("trap '' {signal}; exec \"$@\""))
+            .arg("sh")
+            .arg(env!("CARGO_BIN_EXE_dl"))
+            .arg("blooop/devlaunch@cold");
+        Self::spawned(command)
+    }
+
+    fn spawned(mut command: Command) -> Self {
+        let world = World::blocking_up();
+        let root = world.root.display().to_string();
+        let tmpdir = world.path("tmp");
+        let up_pid = world.path("up.pid");
+        let up_started = world.path("up.started");
+
+        let child = command
+            .env_clear()
+            .keeping_coverage()
+            .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))
+            .env("HOME", format!("{root}/home"))
+            .env("XDG_CACHE_HOME", format!("{root}/cache"))
+            .env("XDG_CONFIG_HOME", format!("{root}/config"))
+            .env("DEVPOD_HOME", format!("{root}/devpod"))
+            .env("DEVPOD_SHIM_STATE", format!("{root}/shim-state.json"))
+            .env("DEVPOD_SHIM_LOG", format!("{root}/shim-log.jsonl"))
+            .env("DEVPOD_SHIM_CONFIG", format!("{root}/shim-config.json"))
+            // The token is staged under TMPDIR, so pointing it at the scratch
+            // tree is what lets these tests both find the file and prove it is
+            // gone.
+            .env("TMPDIR", tmpdir.display().to_string())
+            .env("DL_UP_PID", up_pid.display().to_string())
+            .env("DL_UP_STARTED", up_started.display().to_string())
+            .env("GIT_SSH_COMMAND", "false")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .spawn()
+            .expect("the dl binary runs");
+
+        // Wait until `devpod up` is blocking and the token has been staged: both
+        // are the preconditions the leak needs, so a test that signalled earlier
+        // would prove nothing.
+        assert!(
+            wait_for(|| up_started.exists() && token_file(&tmpdir).is_some()),
+            "devpod up never blocked with a token staged"
+        );
+        assert!(
+            token_file(&tmpdir).is_some(),
+            "the token is on disk before the signal"
+        );
+        let up = std::fs::read_to_string(&up_pid).expect("the up pid");
+        MidUp {
+            _world: world,
+            child,
+            tmpdir,
+            up: up.trim().to_string(),
+        }
+    }
+
+    /// Send `signal` to `dl` alone — the way a terminal Ctrl-C reaches `dl`'s
+    /// group while the `up`, now in a group of its own, is spared, and the way a
+    /// `kill <dl>` from another shell arrives.
+    fn send(&self, signal: &str) {
+        assert!(
+            Command::new("kill")
+                .args([&format!("-{signal}"), &self.child.id().to_string()])
+                .status()
+                .expect("kill is installed")
+                .success(),
+            "sending SIG{signal} to dl"
+        );
+    }
+
+    /// Whether `dl` is still running after `grace` — for the signal that must
+    /// *not* end it.
+    fn survives(&mut self, grace: Duration) -> bool {
+        std::thread::sleep(grace);
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Deliver `signal` and report what the run left behind.
+    fn signalled(mut self, signal: &str) -> Aftermath {
+        self.send(signal);
+        let status = self.child.wait().expect("dl exits");
+        Aftermath {
+            code: status.code(),
+            token_left: token_file(&self.tmpdir).is_some(),
+            up_alive: !is_dead(&self.up),
+        }
+    }
+}
+
+/// The drain ran and left nothing behind, ending on `code`.
+fn drained(code: i32) -> Aftermath {
+    Aftermath {
+        code: Some(code),
+        token_left: false,
+        up_alive: false,
+    }
+}
+
 #[test]
 fn a_ctrl_c_mid_up_removes_the_token_file_and_kills_the_up() {
-    let world = World::blocking_up();
-    let root = world.root.display().to_string();
-    let tmpdir = world.path("tmp");
-    let up_pid = world.path("up.pid");
-    let up_started = world.path("up.started");
+    assert_eq!(MidUp::reached().signalled("INT"), drained(130));
+}
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
-        .arg("blooop/devlaunch@cold")
-        .env_clear()
-        .keeping_coverage()
-        .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))
-        .env("HOME", format!("{root}/home"))
-        .env("XDG_CACHE_HOME", format!("{root}/cache"))
-        .env("XDG_CONFIG_HOME", format!("{root}/config"))
-        .env("DEVPOD_HOME", format!("{root}/devpod"))
-        .env("DEVPOD_SHIM_STATE", format!("{root}/shim-state.json"))
-        .env("DEVPOD_SHIM_LOG", format!("{root}/shim-log.jsonl"))
-        .env("DEVPOD_SHIM_CONFIG", format!("{root}/shim-config.json"))
-        // The token is staged under TMPDIR, so pointing it at the scratch tree is
-        // what lets this test both find the file and prove it is gone.
-        .env("TMPDIR", tmpdir.display().to_string())
-        .env("DL_UP_PID", up_pid.display().to_string())
-        .env("DL_UP_STARTED", up_started.display().to_string())
-        .env("GIT_SSH_COMMAND", "false")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .spawn()
-        .expect("the dl binary runs");
-
-    // Wait until `devpod up` is blocking and the token has been staged: both are
-    // the preconditions the leak needs, so a test that interrupted earlier would
-    // prove nothing.
-    assert!(
-        wait_for(|| up_started.exists() && token_file(&tmpdir).is_some()),
-        "devpod up never blocked with a token staged"
-    );
-    let staged = token_file(&tmpdir).expect("a staged token file");
-    assert!(staged.exists(), "the token is on disk before the interrupt");
-    let up = std::fs::read_to_string(&up_pid).expect("the up pid");
-    let up = up.trim();
-
-    // The interrupt itself: SIGINT to `dl` alone, exactly as a terminal Ctrl-C
-    // reaches `dl`'s group while the `up` — now in its own group — does not.
-    assert!(
-        Command::new("kill")
-            .args(["-INT", &child.id().to_string()])
-            .status()
-            .expect("kill is installed")
-            .success(),
-        "sending SIGINT to dl"
-    );
-
-    let status = child.wait().expect("dl exits");
-    assert_eq!(status.code(), Some(130), "dl exits 130 on interrupt");
-    assert!(
-        token_file(&tmpdir).is_none(),
-        "the token file must be gone after the interrupt, was {staged:?}"
-    );
-    assert!(
-        is_dead(up),
-        "the orphaned devpod up (pid {up}) must have been killed"
-    );
+#[test]
+fn a_kill_mid_up_removes_the_token_file_and_kills_the_up() {
+    // `kill <dl>` — a supervisor timing a run out, a CI job being cancelled, a
+    // shell shutting down — is the same moment as a Ctrl-C and leaked the same
+    // pair, because only SIGINT was handled. 143 is 128 + SIGTERM.
+    assert_eq!(MidUp::reached().signalled("TERM"), drained(143));
 }
 
 /// A `--warm` world whose `devpod ssh` blocks, so an interrupt can land *during the

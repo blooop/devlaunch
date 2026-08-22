@@ -1,7 +1,7 @@
 //! `dl` as a library: the whole of the binary except the process it runs in.
 //!
-//! The binary is [`main.rs`](../main.rs) and holds three things — the SIGINT
-//! disposition, the process's argv, and `exit()`. Everything else is here, because
+//! The binary is [`main.rs`](../main.rs) and holds three things — the signal
+//! dispositions, the process's argv, and `exit()`. Everything else is here, because
 //! `aid` is a second entry point into the *same* command line rather than a second
 //! launcher: Python's `aid.py` rewrites its argv and calls `dl.main(dl_args)`
 //! in-process, and [`run`] is that function. An `aid` that spawned `dl` instead
@@ -77,18 +77,44 @@ pub const BUILD_MARKER: &str = if cfg!(feature = "dev-build") {
     ""
 };
 
-/// The code a `dl` killed by Ctrl-C exits with.
+/// The code a `dl` cut short by signal `signal` exits with: **128 + the signal
+/// number**, the convention a shell reports for a process a signal ended.
 ///
-/// 128 + SIGINT, which is what a shell reports for a process the terminal
-/// interrupted, and what Python's `except KeyboardInterrupt: sys.exit(130)`
-/// produced. Reproduced rather than left to the default disposition because the
+/// One rule for every signal the drain handles rather than one constant each,
+/// because the alternative — a code chosen per signal — is a table that has to be
+/// remembered, and this one can be read off `kill -l`. It is also already what
+/// this binary did: Python's `except KeyboardInterrupt: sys.exit(130)` was 128 +
+/// SIGINT written out long-hand, and 130 is what [`INTERRUPTED`] still is.
+///
+/// The exit is reproduced rather than left to the default disposition because the
 /// difference is observable: a process that dies *by* the signal has no exit code
 /// at all, and a caller reading `Popen.returncode` sees `-2` where it used to see
 /// `130`.
-pub const INTERRUPTED: i32 = 130;
+pub const fn signalled(signal: i32) -> i32 {
+    128 + signal
+}
 
-/// Install the SIGINT disposition both binaries share: a Ctrl-C exits
-/// [`INTERRUPTED`] after cleaning up, rather than killing the process by signal.
+/// The code a `dl` killed by Ctrl-C exits with — 128 + SIGINT, and the one
+/// [`signalled`] code with a name of its own because so much of the port's
+/// history is written in terms of it.
+pub const INTERRUPTED: i32 = signalled(libc::SIGINT);
+
+/// The signals whose delivery runs the drain instead of ending `dl` where it
+/// stands. Every one of them means "this run is over" and leaves `dl` holding a
+/// staged plaintext token and a live `devpod up` child if nothing intervenes.
+///
+/// SIGINT is the terminal's Ctrl-C. SIGTERM is every orderly kill there is — a
+/// supervisor timing a run out, a cancelled CI job, the shutdown sweep — and was
+/// the gap: `kill <dl>` leaked the exact pair the SIGINT handler exists to
+/// prevent.
+///
+/// SIGQUIT is deliberately absent: it means "die now and dump core", and a
+/// handler that tidies up first is not what someone reaching for it asked for.
+const DRAINED: [libc::c_int; 2] = [libc::SIGINT, libc::SIGTERM];
+
+/// Install the signal disposition both binaries share: any of [`DRAINED`] exits
+/// [`signalled`] with that signal's code after cleaning up, rather than killing
+/// the process by signal.
 ///
 /// The handler does the little a signal handler safely may:
 /// [`devlaunch_runner::interrupt::cleanup_and_exit`] kills the foreground child's
@@ -99,25 +125,31 @@ pub const INTERRUPTED: i32 = 130;
 /// timing summary of an interrupted run, which Python's unwinding
 /// `KeyboardInterrupt` managed to write and which docs/rust-rewrite-plan.md row 5
 /// says is not a parity dimension — it cannot be, as none of what it needs
-/// (allocation, formatting, a lock) is safe here.
+/// (allocation, formatting, a lock) is safe here. For the same reason none of
+/// these signals can run an `--autorm` removal; see README's "How you exit decides
+/// whether it fires".
 ///
 /// It lives in the library both entry points share rather than in either `main`
 /// because `dl` and `aid` must install the *same* disposition: `aid` runs [`run`]
-/// in-process, so a Ctrl-C during an `aid` launch stages and orphans exactly what a
+/// in-process, so a signal during an `aid` launch stages and orphans exactly what a
 /// `dl` launch does. Two copies in two `main`s drifted once — aid's stayed a bare
 /// `_exit` that left the token file on disk and the `up` child running — which is
 /// the drift a single definition ends.
-pub fn install_interrupt_handler() {
-    extern "C" fn interrupted(_signal: libc::c_int) {
+pub fn install_signal_handlers() {
+    extern "C" fn drain(signal: libc::c_int) {
         // SAFETY: called only as a signal handler; `cleanup_and_exit` is
-        // async-signal-safe and never returns.
-        unsafe { devlaunch_runner::interrupt::cleanup_and_exit(INTERRUPTED) }
+        // async-signal-safe and never returns. The code is derived from the
+        // signal the kernel passed in, so one handler serves every signal in
+        // `DRAINED` and none of them can be given the wrong code.
+        unsafe { devlaunch_runner::interrupt::cleanup_and_exit(signalled(signal)) }
     }
-    // SAFETY: installing a handler for SIGINT before any thread is started. The
-    // handler is `extern "C"` and does nothing but call the async-signal-safe
-    // cleanup, which does not return.
-    unsafe {
-        libc::signal(libc::SIGINT, interrupted as *const () as libc::sighandler_t);
+    for signal in DRAINED {
+        // SAFETY: installing a handler before any thread is started. The handler
+        // is `extern "C"` and does nothing but call the async-signal-safe
+        // cleanup, which does not return.
+        unsafe {
+            libc::signal(signal, drain as *const () as libc::sighandler_t);
+        }
     }
 }
 

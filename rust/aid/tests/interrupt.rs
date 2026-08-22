@@ -6,7 +6,7 @@
 //! `up` child. The audit that followed the port found aid's `main` had kept a bare
 //! `_exit` handler that cleaned up neither, where `dl`'s handler did — the two
 //! process entry points had drifted. Both now install one shared disposition
-//! (`dl::install_interrupt_handler`); this is aid's half of the proof, the twin of
+//! (`dl::install_signal_handlers`); this is aid's half of the proof, the twin of
 //! `dl/tests/interrupt.rs`.
 //!
 //! Linux-only (as the whole port is, #254): it reads liveness through `kill -0` and
