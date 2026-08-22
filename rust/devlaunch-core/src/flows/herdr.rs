@@ -193,9 +193,22 @@ impl HostSocket {
         Self::at(&candidate)
     }
 
-    /// The socket at `path`, if there is a socket there.
+    /// The socket at `path`, if there is a socket there and it can be named in a
+    /// mount specification.
+    ///
+    /// The second condition is not fussiness. A specification is comma-delimited
+    /// `key=value` pairs, so a comma in the path does not produce a wrong mount —
+    /// it produces a `docker run` that rejects its own command line, which fails
+    /// `devpod up` and with it the launch. Refusing here is what keeps that
+    /// impossible: no socket is a state the whole module already handles, and the
+    /// mount is the one part of this that a stage's "can never fail a launch"
+    /// contract does not cover.
     fn at(path: &Path) -> Option<Self> {
         use std::os::unix::fs::FileTypeExt;
+        let name = path.to_str()?;
+        if name.contains(',') || name.chars().any(char::is_control) {
+            return None;
+        }
         let kind = std::fs::metadata(path).ok()?.file_type();
         kind.is_socket().then(|| Self(path.to_owned()))
     }
@@ -732,6 +745,27 @@ mod tests {
                 ("HERDR_SOCKET_PATH".to_owned(), CONTAINER_SOCKET.to_owned()),
             ]
         );
+    }
+
+    /// A mount specification is comma-delimited, so a comma anywhere in the source
+    /// path does not make a bad mount — it makes `docker run` reject the whole
+    /// command line, which fails `devpod up` and with it the launch. This module
+    /// promises never to cost a launch anything, and the mount is the one part of it
+    /// that is not inside a stage's protection.
+    #[test]
+    fn a_socket_whose_path_would_break_a_mount_specification_is_refused() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        for name in ["co,mma", "new\nline"] {
+            let dir = scratch.path().join(name);
+            fs::create_dir_all(&dir).expect("a scratch directory");
+            let path = dir.join("herdr.sock");
+            let _listener = UnixListener::bind(&path).expect("a scratch socket");
+            assert_eq!(
+                HostSocket::at(&path),
+                None,
+                "{name:?} must not reach a mount specification"
+            );
+        }
     }
 
     #[test]
