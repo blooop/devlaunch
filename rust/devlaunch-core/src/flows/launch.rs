@@ -1810,7 +1810,7 @@ impl TerminalTitle {
 fn sanitize_title(workspace_id: &str) -> Option<String> {
     let text: String = workspace_id
         .chars()
-        .filter(|ch| !ch.is_control() && *ch != '\u{7f}')
+        .filter(|ch| !ch.is_control())
         .collect();
     let text = text.trim();
     if text.is_empty() {
@@ -4201,6 +4201,13 @@ mod tests {
         let title = TerminalTitle::from_host(&titling(), "ws\x1b]2;pwned\x07x\nrest");
 
         assert_eq!(title.osc(), Some("\x1b]2;ws]2;pwnedxrest\x07"));
+        // DEL and the 8-bit String Terminator, the other two ways to end an OSC.
+        // `char::is_control` is the Cc category and covers both, which is why the
+        // filter does not name them.
+        assert_eq!(
+            TerminalTitle::from_host(&titling(), "ws\x7fx\u{9c}y").osc(),
+            Some("\x1b]2;wsxy\x07")
+        );
     }
 
     #[test]
