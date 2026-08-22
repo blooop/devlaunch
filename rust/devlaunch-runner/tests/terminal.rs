@@ -1,52 +1,73 @@
 //! What a captured child may do with the terminal, judged on a real pty.
 //!
-//! A capture pipes stdout and stderr, but not stdin: an inherited stdin is
-//! the default, and `/dev/tty` is reachable whatever stdin is. So the terminal
-//! is part of a capture's contract in two ways that only a controlling terminal
-//! can show:
+//! A capture pipes stdout and stderr, but not stdin: an inherited stdin is the
+//! default, and `/dev/tty` is reachable whatever stdin is. So the terminal is
+//! part of a capture's contract in two ways that only a controlling terminal can
+//! show:
 //!
 //! - the child may **read** it — ssh's host-key confirmation, ssh's passphrase
 //!   prompt and git's credential prompt all do, and three captures pass no
 //!   timeout at all (`git clone --bare`, `git push -u`, the launch-path fetch),
 //!   so a child that stops on SIGTTIN instead hangs `dl` for good;
 //! - a **Ctrl-C** at that terminal reaches it, which is what stops `dl`'s
-//!   `_exit` from leaving an unsignalled `git fetch` writing the bare cache
-//!   with the repo lock already released (concurrency review F3).
+//!   `_exit` from leaving an unsignalled `git fetch` writing the bare cache with
+//!   the repo lock already released (concurrency review F3).
 //!
 //! Both are properties of the process group the child lands in, and a `cargo
 //! test` process has no controlling terminal to observe them from. So each test
-//! here opens a pty, spawns `examples/terminal_capture.rs` on it as the session
-//! leader, and types at it the way a person would — the same shape as
-//! `aid/tests/interactive.rs`.
+//! here opens a pty and re-executes *this binary* on it — the session leader on a
+//! pty is what a capture's child inherits its group from — then types at it the
+//! way a person would. Same shape as `aid/tests/interactive.rs`, which drives a
+//! real `aid` through a pty for the same reason.
 
 use std::io::{Read as _, Write as _};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use devlaunch_runner::{Invocation, ProcessRunner, Runner};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-/// The example binary, beside this test binary in the same target directory.
+/// Which side of the test a copy of this binary is: set, it is the one on the pty
+/// running the capture; unset, it is the test driving one.
 ///
-/// `cargo test` builds a crate's examples along with its tests, so this is
-/// present for the workspace run CI makes and for a plain `cargo test -p
-/// devlaunch-runner`. A single-target run (`--test terminal`) does not build it,
-/// which the message says rather than failing as a missing file.
-fn example() -> PathBuf {
-    let mut target = std::env::current_exe().expect("this test binary");
-    target.pop(); // deps
-    target.pop(); // debug
-    let path = target.join("examples").join("terminal_capture"); // (debug)/examples
-    assert!(
-        path.exists(),
-        "{} is not built — run the whole crate's tests (`cargo test -p devlaunch-runner`) \
-         so cargo builds the example this drives",
-        path.display()
-    );
-    path
+/// This binary re-executed rather than a separate example or helper binary,
+/// because the coverage run is `cargo llvm-cov`, which spawns `cargo test
+/// --tests` — and that builds no examples. A helper that is missing under one of
+/// the two CI runs is worse than one that cannot go missing.
+const ROLE: &str = "DEVLAUNCH_TEST_TERMINAL_ROLE";
+
+/// Where the interrupt test's captured child would leave its mark, if anything
+/// let it get that far.
+const MARKER: &str = "DEVLAUNCH_TEST_TERMINAL_MARKER";
+
+/// The shell, as in the unit tests: POSIX `/bin/sh`, nothing bash-only.
+fn sh(script: &str) -> Invocation {
+    Invocation::new("/bin/sh").with_arg("-c").with_arg(script)
 }
 
-/// The example on a pty: the child, a way to type at it, and everything it said.
+/// The pty side of the test: one capture from inside a session that owns a
+/// controlling terminal, with what came back printed for the test to read.
+fn capture_beside_the_terminal(role: &str) {
+    let what = match role {
+        // Reads the controlling terminal, the way ssh's host-key confirmation,
+        // ssh's passphrase prompt and git's credential prompt all do (through
+        // `/dev/tty`, whatever stdin is). A child outside the terminal's
+        // foreground process group takes SIGTTIN on that read and stops — and a
+        // stopped child is not an exited one, so the wait never ends.
+        "read-tty" => sh("printf 'prompt: ' >&2; head -c 3 /dev/tty"),
+        // Outlives the Ctrl-C the test types, if anything lets it: the marker
+        // appears only if the child never got the terminal's SIGINT.
+        "outlive-interrupt" => {
+            let marker = std::env::var(MARKER).expect("a marker path");
+            sh(&format!("sleep 2; : > {marker}"))
+        }
+        other => panic!("unknown role {other:?}"),
+    };
+    println!("started");
+    println!("outcome: {:?}", ProcessRunner.capture(&what.into()));
+}
+
+/// This binary on a pty: the child, a way to type at it, and everything it said.
 struct Pty {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn std::io::Write + Send>,
@@ -57,7 +78,10 @@ struct Pty {
 }
 
 impl Pty {
-    fn spawn(args: &[&str]) -> Self {
+    /// Re-execute this binary on a pty, running `test` alone and in `role`.
+    /// `--nocapture` so what it prints reaches the terminal rather than libtest's
+    /// buffer.
+    fn spawn(test: &str, role: &str, marker: Option<&str>) -> Self {
         let pty = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -66,14 +90,16 @@ impl Pty {
                 pixel_height: 0,
             })
             .expect("a pty");
-        let mut command = CommandBuilder::new(example());
-        command.args(args);
-        // The example writes a marker into a scratch directory this passes as an
-        // argument; nothing else about the environment matters to it.
+        let mut command = CommandBuilder::new(std::env::current_exe().expect("this test binary"));
+        command.args(["--exact", test, "--nocapture", "--test-threads=1"]);
+        command.env(ROLE, role);
+        if let Some(marker) = marker {
+            command.env(MARKER, marker);
+        }
         let child = pty
             .slave
             .spawn_command(command)
-            .expect("the example spawns on the pty");
+            .expect("this binary spawns on the pty");
         drop(pty.slave);
         let mut reader = pty.master.try_clone_reader().expect("the pty reader");
         let writer = pty.master.take_writer().expect("the pty writer");
@@ -104,7 +130,7 @@ impl Pty {
 
     /// Wait for `needle` to appear, or panic with everything that did.
     fn expect(&self, needle: &str, why: &str) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if self.text().contains(needle) {
                 return;
@@ -135,17 +161,17 @@ impl Pty {
             .expect("interrupting the pty");
     }
 
-    /// Wait for the example to exit, or panic — a test must not leave a child of
+    /// Wait for the child to exit, or panic — a test must not leave a process of
     /// its own behind, and the interesting failure here is a hang.
     fn wait_for_exit(&mut self, why: &str) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
                 _ => std::thread::sleep(Duration::from_millis(25)),
             }
         }
-        panic!("the example never exited: {why}");
+        panic!("the child never exited: {why}");
     }
 }
 
@@ -161,20 +187,24 @@ impl Drop for Pty {
 /// terminal's foreground group and its read of `/dev/tty` is served rather than
 /// stopped with SIGTTIN.
 ///
-/// Measured against the process-group build this replaces (#301, #302): there
-/// the capture never returned and the child sat in state `T`.
+/// Measured against the process-group build this replaces (#301, #302): there the
+/// capture never returned and the child sat in state `T`.
 #[test]
 fn a_captured_child_may_read_the_terminal() {
-    let mut pty = Pty::spawn(&["read-tty"]);
-    // Typed straight away: the prompt the child writes goes to its stderr
-    // *pipe*, not to the terminal, so there is nothing on the pty to wait for —
-    // and the line discipline holds what is typed until the child reads it.
+    if let Ok(role) = std::env::var(ROLE) {
+        return capture_beside_the_terminal(&role);
+    }
+    let mut pty = Pty::spawn("a_captured_child_may_read_the_terminal", "read-tty", None);
+    pty.expect("started", "the child never started its capture");
+    // The prompt the captured child writes goes to its stderr *pipe*, not to the
+    // terminal, so there is nothing more on the pty to wait for — and the line
+    // discipline holds what is typed until the child reads it.
     pty.send_line("yes");
     pty.expect(
         "outcome: ",
         "the capture never returned — a child outside the terminal's foreground \
-         process group takes SIGTTIN on a terminal read, and a stopped child \
-         never exits",
+         process group takes SIGTTIN on a terminal read, and a stopped child never \
+         exits",
     );
     let said = pty.text();
     assert!(
@@ -190,17 +220,24 @@ fn a_captured_child_may_read_the_terminal() {
 /// `killpg`, and `dl`'s handler `_exit`s without waiting, so group membership is
 /// the *only* thing that kills the child.
 ///
-/// Measured against the process-group build this replaces: the child outlived
-/// the interrupt and left the marker.
+/// Measured against the process-group build this replaces: the child outlived the
+/// interrupt and left the marker.
 #[test]
 fn a_terminal_interrupt_reaches_a_captured_child() {
+    if let Ok(role) = std::env::var(ROLE) {
+        return capture_beside_the_terminal(&role);
+    }
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let marker = scratch.path().join("survived");
-    let mut pty = Pty::spawn(&["outlive-interrupt", &marker.display().to_string()]);
-    pty.expect("started", "the example never started its capture");
+    let mut pty = Pty::spawn(
+        "a_terminal_interrupt_reaches_a_captured_child",
+        "outlive-interrupt",
+        Some(&marker.display().to_string()),
+    );
+    pty.expect("started", "the child never started its capture");
     pty.interrupt();
-    pty.wait_for_exit("the example ignored the terminal's SIGINT");
-    // The child would touch the marker two seconds in; give it three.
+    pty.wait_for_exit("it ignored the terminal's SIGINT");
+    // The captured child would touch the marker two seconds in; give it three.
     std::thread::sleep(Duration::from_secs(3));
     assert!(
         !marker.exists(),
