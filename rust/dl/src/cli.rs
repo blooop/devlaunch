@@ -806,17 +806,36 @@ fn verb_command(
     // is a word in the stream that position is counted in. clap-parsed Rust
     // accepted the flag anywhere and *deleted* — the bypass this closes was
     // `dl --rm --force <ws>`, refused as `dl rm --force <ws>` always was.
-    if let Some(ForcePlace::VerbSlot { target }) = force_placement(argv) {
-        // A retired verb in that slot earns the retirement's sentence, exactly
-        // as it does in the word grammar: `dl prune --force` recalled with the
-        // flag appended is still the retirement's problem, not `--force`'s.
-        if let Some(retired) = RetiredWord::of(&target) {
-            return Err(GrammarError::RetiredVerb(retired));
+    if let Some(place) = force_placement(argv) {
+        match place {
+            ForcePlace::WorkspaceSlot => {
+                // The workspace named `--force`, as in the word grammar: routed
+                // through the normal target path so it earns the same "Unknown
+                // workspace '--force'" a bare unknown name does, with the flag's
+                // force reading dropped along with the rest of the line.
+                return Ok(Command::Workspace {
+                    target: "--force".to_owned(),
+                    verb: word.with(false),
+                    devcontainer,
+                }
+                .alone());
+            }
+            ForcePlace::VerbSlot { target } => {
+                // A retired verb in that slot earns the retirement's sentence,
+                // exactly as it does in the word grammar: `dl prune --force`
+                // recalled with the flag appended is still the retirement's
+                // problem, not `--force`'s.
+                if let Some(retired) = RetiredWord::of(&target) {
+                    return Err(GrammarError::RetiredVerb(retired));
+                }
+                return Err(GrammarError::UnknownVerb {
+                    target,
+                    word: "--force".to_owned(),
+                });
+            }
+            // Where `--force` really is the modifier.
+            ForcePlace::Trailing => {}
         }
-        return Err(GrammarError::UnknownVerb {
-            target,
-            word: "--force".to_owned(),
-        });
     }
     let (target, displaced) = pick_target(&cli.words, word);
     Ok(Resolved {
@@ -1843,6 +1862,24 @@ mod tests {
         assert_eq!(
             parse(&["ws", "--rm", "--force"]),
             Ok(workspace("ws", Verb::Remove { force: true }))
+        );
+    }
+
+    #[test]
+    fn a_force_in_the_workspace_slot_is_a_name_on_a_flag_verb_line_too() {
+        // `dl --force ws --rm` leads with `--force`, the slot the word grammar
+        // reads as a workspace *name* — so the line targets a workspace called
+        // `--force`, earns "Unknown workspace '--force'" at runtime, and
+        // force-deletes nothing, instead of clap's silent forced delete of ws.
+        assert_eq!(
+            parse(&["--force", "ws", "--rm"]),
+            Ok(workspace("--force", Verb::Remove { force: false }))
+        );
+        // With no other word it is still that name, not a forced remove handed
+        // to whatever a selector picks.
+        assert_eq!(
+            parse(&["--force", "--rm"]),
+            Ok(workspace("--force", Verb::Remove { force: false }))
         );
     }
 
