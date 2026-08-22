@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-22
+
+### Added
+
+- **A host-side [herdr](https://herdr.dev) session now shows what the agent in a
+  workspace is doing.** herdr shows, per pane, whether the coding agent in it is
+  working, idle or blocked waiting for a human, and under `aid` it showed none of
+  that. The cause is structural: herdr identifies a pane's agent from the pane's
+  foreground process, and the host's tree is `aid → dl → ssh` with the agent inside
+  the container, where no process table on the host can see it.
+
+  It was measured rather than assumed. Two panes in one container, same claude —
+  one running it directly, one behind `script -qc claude /dev/null`, which is the
+  same pty-proxy shape as the ssh hop — produce equivalent detection snapshots, and
+  herdr registers an agent for the first and `agent_not_found` for the second.
+  Screen content is not the missing signal; process identity is. herdr takes an
+  answer for that over its socket, so devlaunch supplies it.
+
+  Three things cross the container boundary and nothing else. The socket, bind
+  mounted at `/var/tmp/devlaunch-herdr.sock`. The pane's identity, on the agent's
+  own command line rather than in workspace environment — a pane id is a fact about
+  this session, and attaching to a running workspace skips the `up` that would
+  refresh workspace environment, so the container would otherwise report into
+  whichever pane was current when it was last built. And a hook wired to claude's
+  `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd`,
+  because a held report nothing updates is a badge that lies. `Notification` is the
+  event that earns the feature: it is what claude fires when it is waiting for a
+  human.
+
+  Not herdr's own `integration install claude`: that hook sends only
+  `pane.report_agent_session`, which registers nothing by itself — calling it
+  against an unregistered pane still answers `agent_not_found` — so forwarding it
+  would carry session metadata for an agent herdr does not believe exists.
+
+  It pairs with the terminal title above rather than competing with it. herdr can
+  read state from a title too, but `aid` suppresses claude's own title so the
+  workspace id is what stands, which is exactly why the state comes from the hook:
+  the badge says what the agent is doing and the pane name says where.
+
+  On a host not running herdr nothing happens at all — no mount, no stage, no
+  notice, every command line byte-identical. That is decided from whether a socket
+  exists rather than from whether the feature is on, so it is true of the payload
+  and not merely of its effects. `DEVLAUNCH_NO_HERDR=1` opts out, and
+  `DEVLAUNCH_NO_TOOLS=1` covers it too. Mounting the socket gives the container
+  control of your herdr session, which is the trade and the reason for the opt-out;
+  it is on by default for the reason the forwarded GitHub token is.
+
+  The stage can never fail a launch, and three things have to be true for it to do
+  anything: a `python3` in the container, a claude configuration directory that is
+  not shared with the host, and the socket mount — which lands only at container
+  creation, so a workspace that predates it needs `dl <ws> recreate` rather than a
+  restart. The middle one refuses rather than merging, and a mounted *parent*
+  counts: `dl` never mounts `~/.claude` into a workspace, but this repo's own
+  devcontainer does, so devlaunch's own workspaces report the stage and install
+  nothing while the arbitrary repos `dl` exists to launch get the badge.
+
 ## [0.7.3] - 2026-08-22
 
 ### Fixed
