@@ -11,6 +11,11 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# A pty for `tests/terminal.rs`: what a captured child may do with the terminal
+# — read it, and take a Ctrl-C at it — is a property of the process group it
+# lands in, and a `cargo test` process has no controlling terminal to observe
+# that from. Dev-only, as in `aid`.
+portable-pty = { workspace = true }
 
 [lints]
 workspace = true
