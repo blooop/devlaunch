@@ -1884,7 +1884,7 @@ because they are not one promise:
 | --- | --- |
 | `devlaunch-core/public-api.api.txt` | **A breaking change.** The `devlaunch_core::api` tier is the frozen contract; a row leaving it breaks a consumer. |
 | `devlaunch-core/public-api.rest.txt` | Routine. The binary surface — `flows::`, `domain::`, `clients::` — is reachable but never promised; read the diff for the accidental `pub`. |
-| `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementor writes against. |
+| `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementer writes against. |
 
 The runner had no snapshot of its own until #338: its whole surface entered core's as the single
 unexpanded row `pub use devlaunch_core::runner::<<devlaunch_runner::*>>`, so removing a trait

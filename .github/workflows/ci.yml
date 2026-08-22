@@ -388,7 +388,7 @@ jobs:
   # Three snapshots, because one file could not tell those tiers apart. It held
   # both, so a breaking `api` change arrived as one row inside two thousand of
   # internal churn and read as routine; and `devlaunch-runner` — the trait an
-  # external implementor writes against — entered it as a single unexpanded glob
+  # external implementer writes against — entered it as a single unexpanded glob
   # row, so removing a `Runner` method moved nothing at all. Now:
   # devlaunch-core/public-api.api.txt is the promise (a diff there is a breaking
   # change by definition), devlaunch-core/public-api.rest.txt the tripwire over

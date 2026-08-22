@@ -14,7 +14,7 @@
 #       promised: regenerate it freely, and read a diff for the accidental `pub`
 #       rather than for a broken contract.
 #   rust/devlaunch-runner/public-api.txt     the process seam, as an external
-#       `Runner` implementor sees it. It had no snapshot until the split: the
+#       `Runner` implementer sees it. It had no snapshot until the split: the
 #       whole crate entered core's as one unexpanded glob row, so a removed
 #       trait method moved nothing and passed CI.
 #

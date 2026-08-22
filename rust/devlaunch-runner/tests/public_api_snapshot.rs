@@ -1,5 +1,5 @@
 //! This crate's public surface is checked in, because it is the one an
-//! external `Runner` implementor actually sees.
+//! external `Runner` implementer actually sees.
 //!
 //! Until the split it had no snapshot of its own: the whole crate entered
 //! `devlaunch-core`'s snapshot as a single unexpanded row -- the glob re-export
@@ -39,7 +39,7 @@ fn the_seam_carries_a_snapshot_of_its_own() {
 }
 
 #[test]
-fn the_snapshot_pins_the_trait_an_implementor_writes_against() {
+fn the_snapshot_pins_the_trait_an_implementer_writes_against() {
     assert!(
         rows(SNAPSHOT).contains(&"pub trait devlaunch_runner::Runner"),
         "the Runner trait is missing from the snapshot"
