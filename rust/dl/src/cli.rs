@@ -622,8 +622,8 @@ pub(crate) fn resolve(cli: Cli, argv: &[String]) -> Result<Resolved, GrammarErro
         // name, so they go through the same words handling and inherit its
         // target-or-selector rule — and, being flags, they are also the one form
         // that can be appended to a line that already said something else.
-        Some(Chosen::Stop) => verb_command(&cli, VerbWord::Stop, flag_of(Chosen::Stop)),
-        Some(Chosen::Remove) => verb_command(&cli, VerbWord::Remove, flag_of(Chosen::Remove)),
+        Some(Chosen::Stop) => verb_command(&cli, argv, VerbWord::Stop, flag_of(Chosen::Stop)),
+        Some(Chosen::Remove) => verb_command(&cli, argv, VerbWord::Remove, flag_of(Chosen::Remove)),
         Some(global) => global_command(&cli, global).map(Command::alone),
         None => workspace_command(cli, argv).map(Command::alone),
     }
@@ -777,7 +777,12 @@ fn flag_of(chosen: Chosen) -> &'static str {
 ///
 /// **Divergence row 30.** Row 15 made the flag spellings work at all; this is the
 /// one thing they do that the words cannot.
-fn verb_command(cli: &Cli, word: VerbWord, flag: &'static str) -> Result<Resolved, GrammarError> {
+fn verb_command(
+    cli: &Cli,
+    argv: &[String],
+    word: VerbWord,
+    flag: &'static str,
+) -> Result<Resolved, GrammarError> {
     let verb = word.with(cli.force);
     if !cli.command.is_empty() {
         return Err(GrammarError::CommandNotAllowed { verb: verb.word() });
@@ -796,6 +801,23 @@ fn verb_command(cli: &Cli, word: VerbWord, flag: &'static str) -> Result<Resolve
         });
     }
     let devcontainer = devcontainer_of(cli)?;
+    // The same positional recovery the word grammar runs: `--force` means force
+    // only in the trailing slot, the one place Python read it, and the flag verb
+    // is a word in the stream that position is counted in. clap-parsed Rust
+    // accepted the flag anywhere and *deleted* — the bypass this closes was
+    // `dl --rm --force <ws>`, refused as `dl rm --force <ws>` always was.
+    if let Some(ForcePlace::VerbSlot { target }) = force_placement(argv) {
+        // A retired verb in that slot earns the retirement's sentence, exactly
+        // as it does in the word grammar: `dl prune --force` recalled with the
+        // flag appended is still the retirement's problem, not `--force`'s.
+        if let Some(retired) = RetiredWord::of(&target) {
+            return Err(GrammarError::RetiredVerb(retired));
+        }
+        return Err(GrammarError::UnknownVerb {
+            target,
+            word: "--force".to_owned(),
+        });
+    }
     let (target, displaced) = pick_target(&cli.words, word);
     Ok(Resolved {
         command: match target {
@@ -1796,6 +1818,31 @@ mod tests {
                 word: "--force".to_owned()
             }),
             "the slot-1 reading was lost"
+        );
+    }
+
+    #[test]
+    fn a_force_in_the_verb_slot_is_refused_on_a_flag_verb_line_too() {
+        // `dl --rm --force ws` puts `--force` in the verb slot, exactly where
+        // `dl rm --force ws` puts it — and the word spelling refuses that slot.
+        // clap strips the flag wherever it sits, so without the placement check
+        // the flag spelling silently force-deleted instead.
+        assert_eq!(
+            parse(&["--rm", "--force", "ws"]),
+            Err(GrammarError::UnknownVerb {
+                target: "--rm".to_owned(),
+                word: "--force".to_owned()
+            })
+        );
+        // Trailing is where `--force` means force, and appending it there to
+        // either flag-verb spelling still works.
+        assert_eq!(
+            parse(&["--rm", "ws", "--force"]),
+            Ok(workspace("ws", Verb::Remove { force: true }))
+        );
+        assert_eq!(
+            parse(&["ws", "--rm", "--force"]),
+            Ok(workspace("ws", Verb::Remove { force: true }))
         );
     }
 
