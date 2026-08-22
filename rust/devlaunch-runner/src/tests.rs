@@ -353,6 +353,24 @@ fn a_timed_out_capture_returns_even_when_a_grandchild_holds_the_pipe() {
     assert_eq!(capture.join().expect("the capture thread"), Outcome::TimedOut);
 }
 
+/// The cleanup half of the same decision (#301): abandoning the drains must
+/// not mean abandoning the tree. A capture leads a process group of its own
+/// and the expiry kill takes the whole group, so a grandchild the child forked
+/// — here one that would leave a marker a second from now — dies with it.
+#[test]
+fn a_timed_out_capture_kills_the_whole_process_group() {
+    let dir = tmp();
+    let marker = dir.path().join("survived");
+    let spec = SpawnSpec::from(sh(&format!(
+        "(sleep 1; : > {}) & exec sleep 30",
+        marker.display()
+    )))
+    .with_timeout(Duration::from_millis(100));
+    assert_eq!(ProcessRunner.capture(&spec), Outcome::TimedOut);
+    std::thread::sleep(Duration::from_millis(1600));
+    assert!(!marker.exists(), "the grandchild outlived the timeout kill");
+}
+
 #[test]
 fn a_timeout_that_is_not_reached_answers_normally() {
     let spec = SpawnSpec::from(sh("printf quick")).with_timeout(Duration::from_secs(30));

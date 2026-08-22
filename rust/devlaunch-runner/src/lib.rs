@@ -418,16 +418,29 @@ impl ProcessRunner {
 
 impl Runner for ProcessRunner {
     fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-        let mut child = match start(spec, Stdio::piped(), Stdio::piped(), OwnGroup::No) {
+        // A capture leads a process group of its own so the expiry kill can
+        // take the whole tree — `git fetch` over ssh forks helpers that share
+        // the pipe, and killing one pid left them running and the pipe open
+        // (#301). Nothing here reads the terminal, so the SIGTTIN hazard that
+        // keeps an interactive child in this process's group does not apply.
+        let mut child = match start(spec, Stdio::piped(), Stdio::piped(), OwnGroup::Yes) {
             Ok(child) => child,
             Err(outcome) => return outcome.retyped(),
         };
+        // The child led its own group from its `pre_exec`, so its pgid is its
+        // pid; set it from the parent too to close the fork-to-exec window.
+        // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
+        // exec'd) and ESRCH (already gone) are both fine — the child's own
+        // `pre_exec` establishes the group regardless.
+        unsafe {
+            libc::setpgid(child.id() as i32, child.id() as i32);
+        }
         // Drained on threads rather than after the wait: a child that fills a
         // pipe while this process is waiting for it to exit would deadlock, and
         // the timeout below has to be able to elapse while output is pending.
         let stdout = drain(child.stdout.take());
         let stderr = drain(child.stderr.take());
-        let ending = wait(&mut child, spec.timeout);
+        let ending = wait(&mut child, spec.timeout, OwnGroup::Yes);
         match ending {
             Ending::Ended(exit) => Outcome::Ran {
                 exit,
@@ -462,8 +475,10 @@ impl Runner for ProcessRunner {
         // child in a group of its own is no longer the controlling terminal's
         // foreground group, so its first read of the PTY earns a SIGTTIN and the
         // session hangs. It stays in this process's group, which is also what
-        // the Python original did. `capture`'s children are short and pipe their
-        // streams, and `session`'s child likewise stays in this process's group.
+        // the Python original did — as does `session`'s child, for the same
+        // reason. `capture`'s children pipe their streams and never read the
+        // terminal, so they lead their own group unconditionally: the timeout
+        // kill takes the whole tree that way (#301).
         if spec.own_group {
             let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
                 Ok(child) => child,
@@ -479,7 +494,7 @@ impl Runner for ProcessRunner {
                 libc::setpgid(pgid, pgid);
             }
             interrupt::note_foreground_child(pgid);
-            let ending = wait(&mut child, spec.timeout);
+            let ending = wait(&mut child, spec.timeout, OwnGroup::Yes);
             // Reaped now, so the handler must not signal a possibly-recycled pgid.
             interrupt::clear_foreground_child();
             ending.into()
@@ -492,7 +507,7 @@ impl Runner for ProcessRunner {
                 Ok(child) => child,
                 Err(outcome) => return outcome.retyped(),
             };
-            wait(&mut child, spec.timeout).into()
+            wait(&mut child, spec.timeout, OwnGroup::No).into()
         }
     }
 
@@ -557,13 +572,14 @@ impl Runner for ProcessRunner {
             }
         }
         let ending = if timed_out {
-            kill(&mut child)
+            kill(&mut child, OwnGroup::No)
         } else {
             // The pipe is closed, so the child is on its way out; whatever is
             // left of its timeout is what it has to finish in.
             wait(
                 &mut child,
                 deadline.map(|d| d.saturating_duration_since(Instant::now())),
+                OwnGroup::No,
             )
         };
         if let Some(reader) = reader {
@@ -794,8 +810,9 @@ fn collect(reader: Option<thread::JoinHandle<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Wait for `child`, killing it if `timeout` runs out first.
-fn wait(child: &mut Child, timeout: Option<Duration>) -> Ending {
+/// Wait for `child`, killing it if `timeout` runs out first. `own_group` is
+/// how the child was spawned, so the kill knows how wide to aim (see [`kill`]).
+fn wait(child: &mut Child, timeout: Option<Duration>, own_group: OwnGroup) -> Ending {
     let Some(limit) = timeout else {
         return match child.wait() {
             Ok(status) => ended(status),
@@ -814,7 +831,7 @@ fn wait(child: &mut Child, timeout: Option<Duration>) -> Ending {
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return kill(child);
+            return kill(child, own_group);
         }
         thread::sleep(left.min(POLL_INTERVAL));
     }
@@ -823,7 +840,23 @@ fn wait(child: &mut Child, timeout: Option<Duration>) -> Ending {
 /// Kill a child that outstayed its timeout, and reap it — the two halves of
 /// what `subprocess.run(timeout=)` does, and a kill without the wait leaves a
 /// zombie for the life of the process.
-fn kill(child: &mut Child) -> Ending {
+///
+/// A child that leads its own group is killed as a group: the timeout exists
+/// so a hung tool costs one pass rather than the session, and the tool's own
+/// helpers (`git fetch`'s ssh) are part of what hung. A child in this
+/// process's group gets a single-pid kill — a `killpg` there would fell this
+/// process too.
+fn kill(child: &mut Child, own_group: OwnGroup) -> Ending {
+    if let OwnGroup::Yes = own_group {
+        // SAFETY: `killpg` on the group our own child leads; the child is not
+        // yet reaped, so its pid — and with it the pgid — cannot have been
+        // recycled. ESRCH (everyone already gone) is fine.
+        unsafe {
+            libc::killpg(child.id() as i32, libc::SIGKILL);
+        }
+    }
+    // Single-pid kill as well either way: if the group kill raced the child's
+    // own `setpgid` (fork-to-exec window), this one still lands.
     let _ = child.kill();
     match child.wait() {
         Ok(_) => Ending::Killed,
