@@ -17,7 +17,7 @@ launching one again attaches to what is already there.
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
-**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [Agent state in herdr](#agent-state-in-a-herdr-session) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
 
 **Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
 
@@ -89,9 +89,10 @@ stop something, it does not look for a workspace called `stop`.
 
 For the verbs that finish on their own — `up`, `stop`, `rm`, `code` and `dotfiles` — the selector
 takes more than one row: TAB marks any number and Enter applies the verb to each in turn, so
-`dl rm` can clear five dead workspaces in one visit. The forms that end in an interactive session
-(`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several of those
-would just be sessions queued behind each other's exit.
+`dl rm` can clear five dead workspaces in one visit. The selector says so on its own screen: the
+line above the matches names what it will take, TAB included. The forms that end in an interactive
+session (`dl`, `dl -- <command>`, `restart`, `recreate`, `reset`) take exactly one, since several
+of those would just be sessions queued behind each other's exit.
 
 ### Examples
 
@@ -133,79 +134,61 @@ transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
 | `dl <user/repo> reset` | Clean slate (remove all, recreate) |
 | `dl <user/repo> dotfiles` | Refresh dotfiles in the running workspace (`chezmoi update`) |
 | `dl <user/repo> -- <command>` | Run shell command in workspace (with a terminal, when `dl` has one) |
-| `dl <user/repo> --autorm` | Attach, and [delete the workspace when the session ends](#--autorm-the-throwaway-workspace) |
+| `dl <user/repo> --rm` | Attach, and [delete the workspace when the session ends](#--rm-the-throwaway-workspace) |
 
 Every verb in that table also takes the workspace second — `dl stop <user/repo>` — and with no
 workspace at all it opens the selector and applies itself to what you pick — everything you pick,
-for the verbs the selector lets TAB mark several of. `stop` and `rm` answer to
-`--stop` and `--rm` as well, since the flag spellings were documented long before they worked.
+for the verbs the selector lets TAB mark several of.
 
-### `--stop` and `--rm` can be appended to a line that says something else
+`rm` is a word and `--rm` is a flag, and they are two different requests — docker's
+split, described next. `--stop` is not a spelling of anything: it was the flag form of
+the `stop` verb and is [retired](#--stop-and---autorm-are-retired).
 
-The flag spellings do one thing the words cannot: they may be typed at the *end* of a
-line that already asked for something, and they win over it.
+### `--rm`: the throwaway workspace
 
-```bash
-aid kinisi/repo@fix/x 'review this pr'      # work happens
-aid kinisi/repo@fix/x 'review this pr' --rm --force   # ↑, with `--rm --force` appended
-```
-
-Both `dl` and `aid` accept it, and a leading verb word on the recalled line is not
-mistaken for the workspace, so `dl prune <ws> --force` recalled with `--rm` appended
-still removes `<ws>`. This exists because a shell makes appending to the previous line
-cheap and rewriting the front of it expensive — deleting the workspace you were just
-working in should not cost an edit in the middle of a long prompt.
-
-What the suffix beat is named on stderr before anything is removed:
-
-```
---rm overrode the rest of the line: 'review this pr' was not acted on.
-```
-
-That notice is the price of the convenience and is not optional: the line is now
-allowed to carry an instruction it will not carry out, so a deliberate `--rm` and a
-slip have to be told apart. Note that a `--` command tail cannot be overridden this
-way — everything after `--` belongs to the workspace's command, so a `--rm` typed
-there is an argument to that command and not a verb.
-
-### `--autorm`: the throwaway workspace
-
-`--autorm` deletes the workspace once the session ends, the way `docker run --rm` does.
-It applies to the two forms that hand a session over and come back from it:
+`--rm` deletes the workspace once the session ends, the way `docker run --rm` does. It
+applies to the two forms that hand a session over and come back from it:
 
 ```bash
-dl kinisi/repo@fix/x --autorm                # shell; the workspace goes when you exit
-dl kinisi/repo@fix/x --autorm -- make test   # one command, then the workspace goes
-aid kinisi/repo@fix/x 'fix the flaky test' --autorm
+dl kinisi/repo@fix/x --rm                # shell; the workspace goes when you exit
+dl kinisi/repo@fix/x --rm -- make test   # one command, then the workspace goes
+aid kinisi/repo@fix/x 'fix the flaky test' --rm
 ```
+
+**The word and the flag are docker's two commands, not two spellings of one.**
+`docker rm` deletes a container now; `docker run --rm` deletes one when what it ran
+has finished; and no docker subcommand takes a `--rm` meaning the first of those. Here
+too: `dl <ws> rm` deletes now, `dl <ws> --rm` deletes after, and neither has to be read
+twice to work out which was meant. `--force` follows docker as well — it is `dl <ws> rm
+--force`'s, never `--rm`'s.
 
 **It stops at work that is nowhere else.** The removal is `dl <ws> rm`'s, guard included,
 so a clone holding uncommitted or unpushed work — or one git could not read to find out —
 refuses, says which, and leaves the workspace standing:
 
 ```
---autorm: the session has ended, removing kinisi/repo@fix/x.
+--rm: the session has ended, removing kinisi/repo@fix/x.
 kinisi-repo-fix-x-1a2b holds 1 uncommitted change(s) (scratch.txt). Push or commit it,
 or run: dl kinisi/repo@fix/x rm --force
 ```
 
 That is what makes it safe to leave on a line you recall: the flag never decides that
 your work was disposable. For the same reason `--force` does not compose with it — a
-`--force` habitually appended to a recalled `--autorm` line would destroy work hours
+`--force` habitually appended to a recalled `--rm` line would destroy work hours
 later, unattended, with nobody reading the sentence explaining it. Run
 `dl <ws> rm --force` when that is what you mean.
 
 **A build that failed is collected too.** The removal runs whenever the launch got as
 far as asking devpod for the workspace — including when `devpod up` died in
 `postCreateCommand`, which leaves the container *running* and the clone cut. That is
-the case an unattended `dl owner/repo --autorm -- make test` in CI most needs covered.
+the case an unattended `dl owner/repo --rm -- make test` in CI most needs covered.
 A launch that stopped earlier — an unknown workspace, a branch that could not be named,
 a devpod that would not run — created nothing, so nothing is removed and nothing is
 said about it.
 
 Three more things it does not promise:
 
-- **The exit code is the launch's.** `dl repo --autorm -- make test` exits with the
+- **The exit code is the launch's.** `dl repo --rm -- make test` exits with the
   test's status, and a failed build exits with devpod's; a removal that refused is
   never what the code reports. The refusal is on stderr and the workspace is still
   there.
@@ -213,12 +196,16 @@ Three more things it does not promise:
   of the gaps. See "How you exit decides whether it fires" below.
 - **It does not know about your other shells.** Nothing serialises two sessions on
   one workspace — the launch lock covers the build, not the session — so a second
-  `dl <ws>` in another terminal is attached to the same container, and the `--autorm`
-  run exiting first removes it from under that one. Use `--autorm` for the workspace
+  `dl <ws>` in another terminal is attached to the same container, and the `--rm`
+  run exiting first removes it from under that one. Use `--rm` for the workspace
   you opened to throw away, not for one you may already be sitting in elsewhere.
 
-On an `aid` line it is appendable like `--rm`, and unlike `--rm` it **keeps the prompt** —
-the agent still runs, and the workspace goes when it is done.
+On an `aid` line it is **appendable**, and it keeps the prompt: recall the line, type
+`--rm` at the end, and the agent still runs — the workspace goes when it is done. That
+is the shape a shell makes cheap, appending to the previous line rather than editing
+the front of it. Note that a `--` command tail is not appendable this way: everything
+after `--` belongs to the workspace's command, so a `--rm` typed there is an argument
+to that command.
 
 ### How you exit decides whether it fires
 
@@ -229,7 +216,7 @@ the session or kills `dl`.
 a pty — a bare `dl <ws>` runs `devpod ssh <id>`, and `dl <ws> -- <cmd>` on a terminal
 runs `ssh -t` — which puts your local terminal in raw mode and clears `ISIG`. Ctrl-C is
 then a byte travelling to the remote pty, not a signal to `dl`: the program *inside* the
-container gets the interrupt. So `aid repo 'fix it' --autorm` and Ctrl-C twice to leave
+container gets the interrupt. So `aid repo 'fix it' --rm` and Ctrl-C twice to leave
 Claude Code ends the remote command, ends the session, and the workspace goes. In an
 interactive shell Ctrl-C just hands you a fresh prompt — `exit` or Ctrl-D is what ends
 that session, and either fires the removal.
@@ -240,16 +227,54 @@ removal (a signal handler may not allocate or lock, and this one `_exit`s):
 - Ctrl-C during the clone or the container build, before any pty exists.
 - Closing the terminal window — SIGHUP, which `dl` does not handle at all.
 
-One-line check for your own setup: start `dl <ws> --autorm` and press Ctrl-C once. A
+One-line check for your own setup: start `dl <ws> --rm` and press Ctrl-C once. A
 fresh prompt *inside* the container means Ctrl-C is being forwarded and the removal will
 fire when you leave. Landing back on the host means it reached `dl`, and it will not.
 
 Those two forms and no others. Every verb word refuses the flag rather than ignoring it,
 and `code` is the one worth knowing about: it returns while VS Code is still connecting,
-so honouring `--autorm` there would delete the container out from under a window that is
+so honouring `--rm` there would delete the container out from under a window that is
 still opening. `restart`, `recreate` and `reset` do end in a session and would work, but
-they are out too, because `--autorm` is the throwaway workspace and not a cleanup modifier
+they are out too, because `--rm` is the throwaway workspace and not a cleanup modifier
 on every verb that ends in a shell.
+
+### `--stop` and `--autorm` are retired
+
+Both moved because `--rm` changed meaning, and both are still recognised so that a
+line recalled from history says what happened instead of quietly doing something else:
+
+```
+$ dl <ws> --autorm
+--autorm is now spelled --rm: 'dl <workspace> --rm' opens the workspace and deletes it
+when the session ends, the way 'docker run --rm' does. Use 'dl <workspace> rm' to
+delete one now.
+
+$ dl <ws> --stop
+--stop is no longer a flag: the flag spellings now modify a session (--rm deletes the
+workspace once one ends) rather than name a verb. Use 'dl <workspace> stop' to stop a
+workspace.
+```
+
+`--autorm` is a rename and nothing else: the behaviour above is what it always did.
+
+`--stop` is a genuine withdrawal, and so is the thing `--rm` used to do. Both were the
+*suffix* form of a verb — appended to a line that already asked for something, and
+winning over it, so that `aid <ws> 'review this pr' --rm` deleted the workspace and
+printed `--rm overrode the rest of the line`. That shape cannot survive `--rm` meaning
+"delete when the session ends": the two spellings look alike, and one cancelling the
+line while the other runs it is the one pair a person cannot keep straight.
+
+What replaces it, for "I am done with this workspace":
+
+```bash
+dl <ws> rm            # the workspace named
+dl rm                 # or pick it — TAB marks several, and rm takes each in turn
+```
+
+For a long `aid` prompt line that is the cheaper edit anyway: `dl rm` and a pick
+beats recalling the line to type at the end of it. What is genuinely gone is deleting
+a workspace *without naming or picking it*, by appending to whatever the last line
+happened to be.
 
 ### `prune` is no longer a spelling of the `rm` verb
 
@@ -266,10 +291,10 @@ $ dl <ws> prune
 or 'dl --prune' to remove the clone directories no workspace opens any more.
 ```
 
-`dl --prune` is unchanged. The word is still *recognised* rather than forgotten, so
-it is never read as a workspace name: a `dl prune <ws> --force` line recalled with
-`--rm` appended still removes `<ws>`, and a workspace that really is called `prune`
-is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
+`dl --prune` is unchanged. The word is still *recognised* rather than forgotten, so it
+is never read as a workspace name — `dl prune <ws>` says what moved instead of
+reporting an unknown workspace called `prune` — and a workspace that really is called
+`prune` is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
 ## Global Commands
 
@@ -349,10 +374,10 @@ are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 |--------|-------------|
 | `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
-| `--rm`, `--stop` | Do that to the workspace instead of starting an agent; appendable to a recalled line, `--force` with `--rm` deletes despite unsaved work |
-| `--autorm` | Run the agent, then delete the workspace when the session ends |
+| `--rm` | Run the agent, then [delete the workspace when the session ends](#--rm-the-throwaway-workspace). Appendable to a recalled line, prompt and all. To delete one *now* instead, that is `dl <ws> rm` |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
 | `DEVLAUNCH_NO_TTY=1` | No prompt question, no pty: the old one-shot behaviour |
+| `DEVLAUNCH_NO_HERDR=1` | Do not report agent state to a host-side [herdr](#agent-state-in-a-herdr-session) session |
 
 Everything after the workspace is the prompt, flags and all, so it never needs
 quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
@@ -595,6 +620,109 @@ action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
 terminal is `<session> | <pane title>`, so the spec is what shows up in a kitty tab
 bar.
+
+## Agent state in a herdr session
+
+[herdr](https://herdr.dev) is a terminal multiplexer that shows, per pane, whether
+the coding agent in it is **working**, **idle** or **blocked** waiting for you. Run
+`aid` in a herdr pane and it shows none of that, and the reason is structural:
+herdr decides which agent a pane holds from the pane's foreground process, and
+under `aid` the host's process tree is `aid → dl → ssh` with the agent inside the
+container. There is no `claude` on the host to find.
+
+Nothing else about the hop is broken — the pane's screen bytes arrive intact, and
+herdr's own screen rules match against them correctly *once it believes an agent is
+there*. So `dl` supplies the missing fact and herdr does the rest:
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test   # in a herdr pane; the badge appears
+```
+
+Three things make that work, and all three are automatic:
+
+| | |
+|---|---|
+| **The socket** | The host's herdr socket is bind-mounted into the workspace at `/var/tmp/devlaunch-herdr.sock` |
+| **The pane** | `aid` puts `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` on the agent's own command line, with the socket path rewritten to the container's |
+| **The hook** | A setup-pass stage installs `~/.devlaunch/herdr-agent-state.py` and wires it to claude's `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd` hooks |
+
+`Notification` is the event that earns the feature: it is what claude fires when it
+is waiting for a human, which is the one state a fleet of workspaces exists to
+surface.
+
+This pairs with [the terminal title](#naming-the-terminal-after-the-workspace)
+rather than competing with it. herdr can classify state from a title as well as
+from the screen, and `aid` deliberately suppresses claude's own title so the
+workspace id is what stands — so under `aid` the title is never the state signal,
+which is exactly why the state comes from the hook. What you get is both halves
+naming different things: the badge says what the agent is doing, and the pane name
+says which workspace it is doing it in.
+
+### What it costs, and when it does nothing
+
+**On a host not running herdr, nothing happens at all** — no mount, no stage, no
+notice, and every command line byte-identical to what it was. That is decided from
+whether a herdr socket exists rather than from whether the feature is enabled, so it
+is true of the payload and not merely of its effects.
+
+The stage is one more line in the setup pass every entry into Running already pays,
+and it can never fail a launch: a container it cannot satisfy reports the stage and
+opens exactly as it would have. It reports at info level rather than warning,
+because failing is its majority case — three things have to be true:
+
+- **`python3` in the container.** The hook talks to a unix socket and merges a JSON
+  settings file, and neither is something shell can do. herdr's own integration
+  requires `python3` for the same reason, so this asks for nothing extra.
+- **A claude configuration directory of the container's own.** If the settings file
+  or the hook's own path is inside anything bind-mounted from the host, the stage
+  **refuses** rather than merging: writing hooks there would edit your real claude
+  settings from inside every container, on every launch. A mounted *parent* counts,
+  which is the shape that actually occurs — `dl` never mounts `~/.claude` into a
+  workspace, but **this repo's own devcontainer does** (`.devcontainer/claude-code`
+  binds `settings.json` among others), so a workspace on devlaunch itself reports
+  the stage and installs nothing, by design. Arbitrary repos, which is what `dl`
+  launches, have a container-local `~/.claude` and get the badge.
+- **The socket mount**, which only lands at container creation. A workspace created
+  before this feature — or by a `dl` on a machine with no herdr running — needs
+  **`dl <ws> recreate`**, not `restart`. This is the one place it differs from the
+  zellij stage above, which needs only a restart because nothing it installs is a
+  mount.
+
+The hook is written whole and moved into place, and it exits 0 in every state
+including every failure. A herdr that stopped listening, a socket whose session has
+ended, a claude that changed its payload: each is a badge that does not appear, and
+none is a turn that fails.
+
+`--codex` and `--gemini` are unaffected — the hook devlaunch installs is claude's,
+and telling another agent where to report would name a reporter that is not there.
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_HERDR=1` | Do not mount the herdr socket into workspaces and do not install the hook. The rest of tool provisioning is untouched |
+
+**Mounting the socket gives the container control of your herdr session** — it is
+the same socket herdr's own CLI drives, so something in there could open panes or
+read other panes' output. That is the trade, and it is why there is an opt-out; it
+is on by default for the reason the forwarded GitHub token is, namely that a `dl`
+workspace is already where you run an agent with `--dangerously-skip-permissions`.
+`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning, and
+both read the same values as the variables above: anything but empty, `0`, `false`
+or `no` means yes, turn it off.
+
+### Why not herdr's own integration
+
+It does not install herdr in the container, and it does not use herdr's own
+`herdr integration install claude`. That integration's hook sends
+`pane.report_agent_session` — session *identity* for a pane herdr already knows
+holds an agent — which registers nothing by itself, so forwarding it would carry
+session metadata for an agent herdr does not believe exists. The reports here are
+the ones that make the pane appear.
+
+The other way round works too and needs nothing from `dl`: `herdr --remote
+<workspace-id>.devpod` runs a herdr server *inside* the workspace, where the agent
+really is the pane's foreground process. That gives correct badges with no mount and
+no hook, at the price of one view per workspace instead of one spanning them all,
+and a herdr in the container whose version must match the host's exactly.
 
 ## GitHub Authentication
 
@@ -988,7 +1116,7 @@ Removing a workspace removes three things: the devpod workspace, the local clone
 (unless it holds work that exists nowhere else — see [cleaning up
 workspaces](#cleaning-up-workspaces)), and **the named Docker volumes that
 workspace's devcontainer created**. Every path that removes a workspace does all three:
-`dl <ws> rm`, the appended `--rm`, `--autorm`, and `--purge`.
+`dl <ws> rm`, `dl <ws> --rm`, and `--purge`.
 
 Two volumes per workspace, both named from what devpod recorded substituting into
 the devcontainer:

@@ -9,8 +9,9 @@
 //! compiles, reads as the fix, and draws the old picture.
 //!
 //! So this file opens a pty, runs the real binary on it, and reads back the screen.
-//! The assertion is the user's sentence — the search bar is above the matches —
-//! rather than the name of a field.
+//! The assertions are the user's own sentences — the search bar is above the
+//! matches; the line that explains the rows is on the screen while the rows are —
+//! rather than the names of fields.
 //!
 //! The same reasoning admits one test that is not about the layout: a pick has to
 //! travel *out* through skim as well, as the label bytes `select::chosen` then
@@ -20,7 +21,7 @@
 //! unit test, which feeds `chosen` the very strings it built.
 //!
 //! The cost is that these are the only tests in the crate that need a terminal and
-//! a spawned process, which is why there are four of them and not a suite: what
+//! a spawned process, which is why there are five of them and not a suite: what
 //! the picker *offers* and the order it offers it in are pure functions tested in
 //! `select.rs`, and neither is re-tested here.
 
@@ -127,6 +128,78 @@ fn what_is_typed_appears_on_the_top_line_and_narrows_the_list_below_it() {
 }
 
 #[test]
+fn the_invitation_is_on_the_picker_s_screen_and_never_on_the_one_it_covers() {
+    // The line that says what the rows are, judged where it has to be read: on the
+    // picker's screen, while the picker is up. `dl` printed it to stdout just
+    // before skim started, and skim's first act is to switch to the alternate
+    // screen — which replaces the visible screen wholesale — so the sentence was
+    // gone for the whole time it had a job to do and came back only once the picker
+    // had exited. No test of the options can see that, and the source cannot show
+    // it either: the `println!` is there, it is spelled right, and it is unreadable.
+    //
+    // For `Arity::Several` this line is the whole of TAB's documentation. `dl rm`,
+    // `stop`, `up`, `code` and `dotfiles` all take any number of marked rows, and a
+    // user who never learns that marks one row at a time forever.
+    //
+    // Both halves are asserted, and the second is the one with teeth. Drawing the
+    // header while *also* keeping the old print would satisfy the first half
+    // completely — the sentence would be on the picker, the picker would look
+    // right, and every other test in this crate would stay green, because a grid
+    // that models `?1049` by blanking itself structurally cannot see a line written
+    // before the switch. That is the shape of the defect being fixed, so it is the
+    // shape a regression would take: not a missing header, but a print that came
+    // back. `underneath` is the only place that can be seen, so the claim is made
+    // there — the invitation is written on the screen that survives the switch, and
+    // on no other.
+    for (verb, invitation) in [
+        (
+            vec!["stop"],
+            "Select workspaces (type to filter, TAB to mark several):",
+        ),
+        (vec!["--", "true"], "Select workspace (type to filter):"),
+    ] {
+        let spelled = verb.join(" ");
+        let screen = Screen::of(&verb);
+
+        let row = screen.row_of(invitation).unwrap_or_else(|| {
+            panic!("`dl {spelled}` never showed `{invitation}` on the picker:\n{screen}")
+        });
+        // And where it explains something: under the search bar, above the rows it
+        // is describing.
+        let prompt = screen.prompt_row(&spelled);
+        assert!(
+            prompt < row,
+            "the invitation belongs below the search bar, not above it:\n{screen}"
+        );
+        for workspace in LISTED {
+            let match_row = screen
+                .row_of(workspace)
+                .unwrap_or_else(|| panic!("`{workspace}` was never drawn:\n{screen}"));
+            assert!(
+                row < match_row,
+                "the invitation belongs above the rows it describes, but `{workspace}` is on \
+                 row {} and the invitation on row {}:\n{screen}",
+                match_row + 1,
+                row + 1,
+            );
+        }
+
+        // Said once, and on the readable screen. A run with a terminal has a header
+        // to carry the sentence, so stdout must not carry it too: that line would
+        // land on the screen the picker is about to cover, be unreadable for as long
+        // as it had anything to say, and then sit in the scrollback afterwards
+        // describing a choice already made.
+        assert!(
+            !screen.underneath.contains(invitation),
+            "`dl {spelled}` wrote the invitation onto the screen the picker covers, where it \
+             cannot be read — it belongs in the picker's header and nowhere else. What was \
+             sent before the switch: {:?}",
+            screen.underneath,
+        );
+    }
+}
+
+#[test]
 fn taking_a_row_acts_on_the_workspace_that_rows_label_names() {
     // The seam every other test here stops short of: skim hands a *label* back,
     // and `select::chosen` finds the workspace by matching that label against the
@@ -171,9 +244,18 @@ impl Dismiss {
     }
 }
 
-/// What the picker had drawn on its terminal when it settled.
+/// What the picker had drawn on its terminal when it settled — and what had been
+/// written on the screen it covered up to draw it.
 struct Screen {
     rows: Vec<String>,
+    /// Everything the terminal received *before* the picker switched to the
+    /// alternate screen, decoded but not laid out.
+    ///
+    /// The screen underneath, in other words: bytes that were on the terminal and
+    /// then were not, for as long as the picker was up. `rows` cannot hold them —
+    /// modelling `?1049` means blanking the grid — so a claim about what `dl` does
+    /// *not* write there has nowhere else to be made.
+    underneath: String,
 }
 
 impl Screen {
@@ -330,9 +412,17 @@ impl Screen {
                         }
                     }
                     // Into the alternate screen: the picker's own, and a blank one.
-                    // Modelled rather than ignored so that what this renders is the
-                    // screen the picker drew, and never the invitation `dl` printed
-                    // before it on the screen underneath.
+                    // Modelled rather than ignored because it is the boundary every
+                    // assertion in this file is on one side or the other of. What
+                    // follows it is the picker's own screen, which is the only screen
+                    // a user looking at the picker can see, so that is what `rows`
+                    // holds. What precedes it is the screen the picker covers, kept
+                    // whole in `underneath` rather than laid out, because the claim
+                    // made about it is a negative one: `dl` writes the invitation on
+                    // the screen that survives the switch and never on the one that
+                    // does not. Blanking the grid here is what makes the two halves
+                    // separable — and is exactly why `underneath` has to exist
+                    // alongside it rather than be read back off these rows.
                     b'h' if params == "?1049" => {
                         for line in grid.iter_mut() {
                             line.fill(' ');
@@ -388,7 +478,25 @@ impl Screen {
                 .into_iter()
                 .map(|line| line.into_iter().collect::<String>().trim_end().to_string())
                 .collect(),
+            underneath: Self::underneath(raw),
         }
+    }
+
+    /// What the terminal was sent before the picker took the screen.
+    ///
+    /// Nothing is laid out: the question asked of it is only whether a given
+    /// sentence is in there, and a byte written to a screen that is about to be
+    /// replaced counts wherever on it it landed. Everything is "underneath" when the
+    /// switch never happened — which is the honest reading, since a run that drew no
+    /// picker covered nothing, and it makes the assertion fail loudly rather than
+    /// vacuously pass on a picker that never opened.
+    fn underneath(raw: &[u8]) -> String {
+        const ALTERNATE: &[u8] = b"\x1b[?1049h";
+        let covered = raw
+            .windows(ALTERNATE.len())
+            .position(|window| window == ALTERNATE)
+            .unwrap_or(raw.len());
+        String::from_utf8_lossy(&raw[..covered]).into_owned()
     }
 
     /// The first row showing `text`, counted from 0.

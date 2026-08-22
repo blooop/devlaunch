@@ -607,8 +607,8 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
                 "Creating workspace clone at {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD}"
             ),
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
-            &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("{COLD}: the zellij setup stage did not report; it may not have run."),
+            &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("SSH command: devpod ssh {COLD}"),
         ]
     );
@@ -1416,11 +1416,11 @@ fn the_prose_timing_summary_names_a_launchs_round_trips() {
 }
 
 // ===========================================================================
-// --autorm: the workspace, once the session it was opened for has ended
+// --rm: the workspace, once the session it was opened for has ended
 // ===========================================================================
 
 #[test]
-fn autorm_removes_the_workspace_once_the_session_has_ended() {
+fn rm_on_exit_removes_the_workspace_once_the_session_has_ended() {
     // The whole flag as one observation: the fast attach happens exactly as it does
     // without the flag, and *then* the removal — resolved through the same
     // `devpod status` a `dl <ws> rm` resolves through, so the two cannot disagree
@@ -1429,7 +1429,7 @@ fn autorm_removes_the_workspace_once_the_session_has_ended() {
     let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo";
     assert!(world.path(clone).exists(), "the fixture's clean clone");
 
-    let run = world.dl(&[MAIN, "--autorm"]);
+    let run = world.dl(&[MAIN, "--rm"]);
     run.exited(0);
     // devpod's own line, inherited: the delete is a passthrough call.
     assert_eq!(run.out, format!("Successfully deleted workspace {MAIN}\n"));
@@ -1441,7 +1441,7 @@ fn autorm_removes_the_workspace_once_the_session_has_ended() {
             // Said before the removal, not after: what it names is the reason to
             // reach for Ctrl-C, and a notice that arrives once the container is
             // gone is a receipt rather than a warning.
-            &format!("--autorm: the session has ended, removing {MAIN}."),
+            &format!("--rm: the session has ended, removing {MAIN}."),
             "Removed workspace clone: {ROOT}/cache/devlaunch/repos/blooop/devlaunch/\
              devlaunch-main-zovomobo",
             &format!("Removed local clone for {MAIN}"),
@@ -1463,11 +1463,11 @@ fn autorm_removes_the_workspace_once_the_session_has_ended() {
 }
 
 #[test]
-fn autorm_runs_the_command_first_and_removes_the_workspace_after_it() {
-    // `dl <ws> --autorm -- <cmd>` is the throwaway one-shot: the payload is the same
+fn rm_on_exit_runs_the_command_first_and_removes_the_workspace_after_it() {
+    // `dl <ws> --rm -- <cmd>` is the throwaway one-shot: the payload is the same
     // quoted `bash -lc` an ordinary `-- <cmd>` sends, and the removal follows it.
     let world = World::with(&["--warm"]);
-    let run = world.dl(&[MAIN, "--autorm", "--", "echo", "hi"]);
+    let run = world.dl(&[MAIN, "--rm", "--", "echo", "hi"]);
     run.exited(0);
     assert_eq!(
         world.calls().exact(&world.root),
@@ -1481,7 +1481,7 @@ fn autorm_runs_the_command_first_and_removes_the_workspace_after_it() {
 }
 
 #[test]
-fn autorm_stops_at_work_that_is_nowhere_else_and_leaves_the_workspace_standing() {
+fn rm_on_exit_stops_at_work_that_is_nowhere_else_and_leaves_the_workspace_standing() {
     // The guard is the whole safety story of the flag, and it is `rm`'s guard rather
     // than a second one: an uncommitted file in the clone refuses the removal, in
     // the same sentence `dl <ws> rm` refuses it with, and the workspace survives the
@@ -1491,7 +1491,7 @@ fn autorm_stops_at_work_that_is_nowhere_else_and_leaves_the_workspace_standing()
     std::fs::write(world.path(clone).join("scratch.txt"), "unsaved\n")
         .expect("the clone is dirtied");
 
-    let run = world.dl(&[MAIN, "--autorm"]);
+    let run = world.dl(&[MAIN, "--rm"]);
     // The session's ending, not the cleanup's: a script reading `$?` after this
     // wants the session's answer, and a removal that refused is not the session
     // failing.
@@ -1519,12 +1519,12 @@ fn autorm_stops_at_work_that_is_nowhere_else_and_leaves_the_workspace_standing()
 }
 
 #[test]
-fn autorm_hands_back_the_sessions_own_status_and_still_removes() {
+fn rm_on_exit_hands_back_the_sessions_own_status_and_still_removes() {
     // The two halves are independent: `--remote-exit` ends the session with the
     // remote program's 130, which is what the shell reads, and the removal that
     // follows changes it to nothing.
     let world = World::with(&["--warm", "--remote-exit"]);
-    let run = world.dl(&[MAIN, "--autorm"]);
+    let run = world.dl(&[MAIN, "--rm"]);
     run.exited(130);
     assert!(
         world
@@ -1536,12 +1536,12 @@ fn autorm_hands_back_the_sessions_own_status_and_still_removes() {
 }
 
 #[test]
-fn autorm_removes_nothing_when_no_session_was_ever_handed_over() {
+fn rm_on_exit_removes_nothing_when_no_session_was_ever_handed_over() {
     // A launch that refused before a session created nothing this line should now
     // delete, and answering one refusal with a second unrelated one is exactly what
     // keying the removal on `Ending::Session` avoids.
     let world = World::with(&["--warm"]);
-    let run = world.dl(&["no-such-workspace", "--autorm"]);
+    let run = world.dl(&["no-such-workspace", "--rm"]);
     run.exited(1);
     assert!(
         !world
@@ -1554,7 +1554,7 @@ fn autorm_removes_nothing_when_no_session_was_ever_handed_over() {
 }
 
 #[test]
-fn a_cold_launch_with_autorm_removes_the_clone_it_just_created() {
+fn a_cold_launch_with_rm_on_exit_removes_the_clone_it_just_created() {
     // The one ordering this flag could plausibly get wrong. A cold launch *writes*
     // `metadata.json` — the record naming the clone it cut — and the removal then
     // reads it to find that clone. Both go through the command's one `ColdPath`, so
@@ -1564,7 +1564,7 @@ fn a_cold_launch_with_autorm_removes_the_clone_it_just_created() {
     let world = World::with(&[]);
     let clone = format!("cache/devlaunch/repos/blooop/devlaunch/{COLD}");
 
-    let run = world.dl(&["blooop/devlaunch@cold", "--autorm"]);
+    let run = world.dl(&["blooop/devlaunch@cold", "--rm"]);
     run.exited(0);
     assert!(
         run.err.contains(&format!("Removed local clone for {COLD}")),
@@ -1592,15 +1592,15 @@ fn a_cold_launch_with_autorm_removes_the_clone_it_just_created() {
 }
 
 #[test]
-fn autorm_removes_a_workspace_whose_session_devpod_never_ran() {
+fn rm_on_exit_removes_a_workspace_whose_session_devpod_never_ran() {
     // A deliberate choice, pinned rather than left to fall out of `Ending::Session`:
     // `devpod ssh` refusing is still a session that was handed over and came back,
     // and the removal happens. The alternative — keep the workspace when the
     // transport failed — leaks exactly the workspaces an unattended
-    // `dl repo --autorm -- <cmd>` was reached for to stop leaking, and the container
+    // `dl repo --rm -- <cmd>` was reached for to stop leaking, and the container
     // is reproducible from the spec where a leaked one has to be found by hand.
     let world = World::with(&["--warm", "--fail-session"]);
-    let run = world.dl(&[MAIN, "--autorm"]);
+    let run = world.dl(&[MAIN, "--rm"]);
     // devpod's own status, unchanged by the removal that followed it.
     run.exited(3);
     assert!(
@@ -1613,22 +1613,21 @@ fn autorm_removes_a_workspace_whose_session_devpod_never_ran() {
 }
 
 #[test]
-fn autorm_collects_a_workspace_whose_up_failed() {
+fn rm_on_exit_collects_a_workspace_whose_up_failed() {
     // The case keying the cleanup on the exit code got wrong, and the one that
     // matters most: a `devpod up` that dies leaves the container running, devpod's
     // record written and the clone cut — see `lifecycle::create_record`, which exists
-    // because of it. An unattended `dl owner/repo --autorm -- <cmd>` against a broken
+    // because of it. An unattended `dl owner/repo --rm -- <cmd>` against a broken
     // devcontainer would otherwise leak exactly the workspace the flag was reached
     // for, on every run, silently.
     let world = World::with(&["--stopped", "--fail-up"]);
     let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo";
 
-    let run = world.dl(&[MAIN, "--autorm"]);
+    let run = world.dl(&[MAIN, "--rm"]);
     // devpod's own status, unchanged: the removal is not the `up` failing.
     run.exited(7);
     assert!(
-        run.err
-            .contains("--autorm: the session has ended, removing"),
+        run.err.contains("--rm: the session has ended, removing"),
         "the removal never ran: {}",
         run.err
     );
@@ -1661,10 +1660,10 @@ fn a_launch_that_created_nothing_is_not_followed_by_a_removal() {
     // nothing to remove, and a removal attempted anyway would report a second,
     // unrelated failure about a workspace that never existed.
     let world = World::with(&["--warm"]);
-    let run = world.dl(&["/", "--autorm"]);
+    let run = world.dl(&["/", "--rm"]);
     run.exited(1);
     assert!(
-        !run.err.contains("--autorm"),
+        !run.err.contains("--rm"),
         "a launch that created nothing announced a removal: {}",
         run.err
     );
@@ -1679,7 +1678,7 @@ fn a_launch_that_created_nothing_is_not_followed_by_a_removal() {
 }
 
 #[test]
-fn autorm_refreshes_the_completions_after_the_removal_and_not_only_before_it() {
+fn rm_on_exit_refreshes_the_completions_after_the_removal_and_not_only_before_it() {
     // The launch forces a refresh the moment the session returns, which spends this
     // command's one detached child — and that child is indexing a world with the
     // workspace still in it. Without re-arming the latch, the cache a user's next
@@ -1689,7 +1688,7 @@ fn autorm_refreshes_the_completions_after_the_removal_and_not_only_before_it() {
     // Two children is the observable: each one's first act is a `devpod list`, and
     // nothing else on this path lists at all.
     let world = World::with(&["--warm"]);
-    world.dl(&[MAIN, "--autorm"]).exited(0);
+    world.dl(&[MAIN, "--rm"]).exited(0);
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut lists = 0;
