@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Proved on a pty, not in the options: the test runs `dl` on a real terminal and
   reads the screen back, which is the only seam that can tell an option that is
-  spelled right from one that draws something.
+  spelled right from one that draws something. It pins both halves — the sentence
+  is on the picker's screen, and it is not on the screen the picker covers — so the
+  redundant print cannot come back unnoticed.
 
 ## [0.6.1] - 2026-08-22
 

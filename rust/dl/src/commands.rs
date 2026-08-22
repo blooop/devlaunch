@@ -1126,21 +1126,21 @@ fn render_select<'r>(
             }
             ending
         }
+        // Nothing to say: a user who quit the picker watched themselves do it, and
+        // read the invitation on the way past.
+        select::Pick::Quit => no_pick(),
         select::Pick::NoWorkspaces => {
             eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
             no_pick()
         }
-        // A user who quit the picker knows they did, and has already read the
-        // invitation on it. A run with no terminal read nothing: the picker was
-        // never drawn, so its header was never drawn either, and the only surface
-        // left is stdout. That is where the invitation goes now — the one place it
-        // can still be read, and the one case where printing it is not writing a
-        // line under a screen that is about to cover it.
+        // The one run that needs the invitation on stdout. No terminal means no
+        // picker was drawn, so its header was never drawn either, and stdout is the
+        // only surface left — the one case where printing the line is not writing it
+        // under a screen that is about to cover it.
         select::Pick::NoTerminal => {
             println!("{}", select::invitation(arity));
             no_pick()
         }
-        select::Pick::Quit => no_pick(),
     }
 }
 

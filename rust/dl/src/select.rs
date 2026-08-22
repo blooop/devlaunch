@@ -302,7 +302,11 @@ mod tests {
     //! answer through the listing parser — so the label is pinned over the whole
     //! path a source travels rather than over a hand-built value.
     //!
-    //! The interactive half needs a terminal, and is left to manual testing (M9).
+    //! The interactive half needs a terminal, so what these can reach of it is the
+    //! options `dl` asks for and nothing further. `tests/picker.rs` takes it from
+    //! there: it opens a pty, runs the binary on it and reads the screen back, which
+    //! is the only seam that can tell an option that is spelled right from one that
+    //! draws something.
 
     use super::*;
 
@@ -414,13 +418,11 @@ mod tests {
             skim_options(Arity::Several).header.as_deref(),
             Some("Select workspaces (type to filter, TAB to mark several):")
         );
+        // And no TAB clause on the picker that takes one row: a key named in the
+        // header and inert under the cursor is worse than an unmentioned one.
         assert_eq!(
             skim_options(Arity::One).header.as_deref(),
             Some("Select workspace (type to filter):")
-        );
-        assert!(
-            !invitation(Arity::One).contains("TAB"),
-            "a picker that takes one row must not offer a key that does nothing on it"
         );
     }
 
