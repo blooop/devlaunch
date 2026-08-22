@@ -153,10 +153,7 @@ fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
         ..Default::default()
     };
     let (tx, rx): (SkimItemSender, SkimItemReceiver) = unbounded();
-    for offer in offers {
-        let row: Arc<dyn SkimItem> = Arc::new(Row {
-            label: offer.label.clone(),
-        });
+    for row in rows_of(offers) {
         // A send that fails means the reader is gone, which is a picker that is not
         // going to answer; the remaining rows are not worth a diagnostic.
         if tx.send(row).is_err() {
@@ -179,6 +176,21 @@ fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
         .collect()
 }
 
+/// The offers as skim items, each carrying its own position as the item index.
+fn rows_of(offers: &[Offer]) -> Vec<Arc<dyn SkimItem>> {
+    offers
+        .iter()
+        .enumerate()
+        .map(|(index, offer)| {
+            let row: Arc<dyn SkimItem> = Arc::new(Row {
+                label: offer.label.clone(),
+                index,
+            });
+            row
+        })
+        .collect()
+}
+
 /// Which workspaces the chosen rows name.
 ///
 /// Python looks the label up in its `ws_map` and answers `None` when it is not
@@ -198,11 +210,25 @@ fn chosen(offers: &[Offer], rows: Vec<String>) -> Pick {
 /// One offered row, as skim reads it.
 struct Row {
     label: String,
+    /// The row's position among the offers. skim's multi-select keys every marked
+    /// row by `(run, get_index())`, and `get_index()` defaults to 0 — so rows that
+    /// do not carry their own index all collide on one key, and each TAB *removes*
+    /// the previous mark instead of adding to it. One distinct index per row is
+    /// what makes marking accumulate.
+    index: usize,
 }
 
 impl SkimItem for Row {
     fn text(&self) -> Cow<'_, str> {
         Cow::Borrowed(&self.label)
+    }
+
+    fn get_index(&self) -> usize {
+        self.index
+    }
+
+    fn set_index(&mut self, index: usize) {
+        self.index = index;
     }
 }
 
@@ -282,6 +308,37 @@ mod tests {
 
     fn one_id(named: &str) -> NonEmpty<String> {
         NonEmpty::of([named.to_owned()]).expect("one id")
+    }
+
+    #[test]
+    fn every_row_carries_its_own_index_or_marking_cannot_accumulate() {
+        // skim's multi-select keys each marked row by `(run, get_index())`, and the
+        // trait's `get_index()` defaults to 0. Rows all answering 0 therefore share
+        // one key, and every TAB after the first *removes* the previous mark
+        // instead of adding to it — observed live: mark two workspaces, and only
+        // the last one is acted on. Distinct indices are what make marking
+        // accumulate, so they are the spec.
+        let offers = offered(&listed(
+            r#"[
+                {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"},
+                {"id": "second", "source": {"localFolder": "/b"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"},
+                {"id": "third", "source": {"localFolder": "/c"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"}
+            ]"#,
+        ));
+
+        assert_eq!(
+            rows_of(&offers)
+                .iter()
+                .map(|row| row.get_index())
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
     }
 
     #[test]
