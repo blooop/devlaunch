@@ -213,3 +213,81 @@ def test_the_conda_badge_names_the_version_that_ships():
         f"the conda badge advertises v{badge.group('version')}; rust/Cargo.toml says "
         f"the version is {_shipped_version()}. Both move together at release."
     )
+
+
+# ---------------------------------------------------------------------------
+# the reverse direction: a flag dl offers a reader must be in the README
+# ---------------------------------------------------------------------------
+#
+# Strictness settled deliberately, and it is not symmetric with the forward
+# check. Forward asks the *parser*, because "would this work if I typed it"
+# includes the hidden completion flags. Reverse asks `--help`, because the
+# question is a different one: which flags does `dl` hold out to a reader, and are
+# they all in the document that reader is sent to. `--repos` and `--update-cache`
+# are hidden precisely so nobody is sent to them, and requiring them to be
+# documented would be requiring the opposite of what hiding them said.
+#
+# The other deliberate looseness: a flag counts as documented if the README names
+# *any* of its spellings. `-y` is documented and `--yes` is written nowhere, and
+# that is a complete answer for a reader rather than a gap -- a check that failed
+# on it would be failing for a reason nobody would fix, and what people reach for
+# then is deleting the check.
+#
+# What is *not* loose: the mention may be anywhere in the document, not only on a
+# `dl` line. This direction is coverage, not attribution, and a false pass here
+# costs a reader nothing while a false failure costs the guard its life.
+
+OPTION_LINE = re.compile(
+    r"^\s+(?:-(?P<short>\w), )?--(?P<long>[a-z][a-z0-9-]*)(?: <[^>]+>)?$", re.MULTILINE
+)
+
+
+def offered_flags() -> dict[str, str | None]:
+    """The flags `dl --help` lists, each with its short alias if it has one."""
+    help_text = subprocess.run(
+        dl_command() + ["--help"], capture_output=True, text=True, check=True
+    ).stdout
+    options = help_text.split("Options:", 1)
+    assert len(options) == 2, "`dl --help` no longer prints an Options: section"
+    # Up to the next unindented heading -- `Environment:` today.
+    body = re.split(r"^\S", options[1], maxsplit=1, flags=re.MULTILINE)[0]
+    return {match.group("long"): match.group("short") for match in OPTION_LINE.finditer(body)}
+
+
+@pytest.mark.integration
+def test_help_offers_a_recognisable_options_table():
+    """The premise the reverse direction rests on.
+
+    A `--help` this file could no longer parse would yield an empty set and a
+    green run over nothing, which is the failure mode every guard in this repo is
+    written to avoid. `--help` is asserted by name because it is the one flag clap
+    will always render.
+    """
+    offered = offered_flags()
+    assert "help" in offered, f"`dl --help` listed {sorted(offered)}, which cannot be right"
+    assert len(offered) >= 10, (
+        f"`dl --help` listed only {sorted(offered)}; the options table is no longer "
+        "being read correctly"
+    )
+
+
+@pytest.mark.integration
+def test_every_flag_dl_offers_a_reader_is_named_in_the_readme():
+    """A flag `--help` shows and the README never mentions is undocumented.
+
+    This is the direction that catches the next flag rather than the last one: a
+    flag added to the CLI with no README sentence beside it is exactly the drift
+    the forward check cannot see, and it is a cheap failure to act on -- write the
+    sentence -- which is the whole reason it is worth having.
+    """
+    readme = _readme()
+    missing = [
+        f"--{long}"
+        for long, short in sorted(offered_flags().items())
+        if not re.search(rf"(?<![\w-])--{re.escape(long)}(?![\w-])", readme)
+        and not (short and re.search(rf"(?<![\w-])-{re.escape(short)}(?![\w-])", readme))
+    ]
+    assert not missing, (
+        f"dl --help offers {', '.join(missing)}, and the README never names them. "
+        "Every flag a reader is shown needs a sentence in the document they are sent to."
+    )
