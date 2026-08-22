@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Every launch names the terminal after the workspace, so a multiplexer's tab bar
+  says which workspace a pane is.** `dl` writes the workspace id as an OSC 2 title
+  just before the session takes the terminal — one escape sequence to stderr, and
+  therefore no detection: zellij and tmux both read it as the focused pane's title,
+  and a bare kitty or xterm reads it as the window title. zellij publishes
+  `<session> | <pane title>` outward, so the id is what reaches the outer tab bar.
+  `DEVLAUNCH_NO_TITLE=1` turns it off; a "no" variable rather than an opt-in one
+  because, unlike `DEVLAUNCH_ZELLIJ`, what it does is write bytes the next shell
+  prompt overwrites anyway.
+
+  The workspace id rather than the spec, on two properties the spec does not have:
+  it exists for every launch (a bare `owner/repo` still has its branch unresolved at
+  that point, and `./some/dir` is not a spec at all) and it is capped at 47
+  characters, so it cannot crowd out a tab bar the way a long branch name could. It
+  is also already the container's hostname, so dl's title and the `user@host` an
+  interactive prompt paints over it are the same string rather than two.
+
+  Written to stderr because stdout is parsed by the completion machinery and by
+  `wf`, and skipped unless stderr is a terminal — which is why `dl <ws> -- make test
+  > log`, whose stdout is a file and whose terminal is still there, is still named.
+
+- **`aid` starts claude with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which is what
+  makes the workspace name stick.** A terminal title has one value and the last
+  writer sets it; claude writes one continuously from its own read of what the
+  session is doing, so the two are not two signals but one contest that claude wins
+  within a second. Turning claude's off is the trade worth taking: what claude is
+  doing is already on screen in the pane, and which workspace the pane *is* is not
+  otherwise anywhere. Scoped to `aid`, which is what decided to start claude — a
+  `dl <ws> -- claude ...` somebody typed themselves is their command and not aid's
+  to rewrite.
+
+  Nothing new had to be plumbed for it. aid's agent table is already an env prefix on
+  a payload that runs under `bash -lc`, so this is one more entry beside the
+  `IS_SANDBOX=1` that was already there, and no host variable is forwarded.
+
 ## [0.6.0] - 2026-08-22
 
 ### Added
