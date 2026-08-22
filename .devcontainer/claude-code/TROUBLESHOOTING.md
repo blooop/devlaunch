@@ -5,15 +5,25 @@
 ### Files That Must Exist on Host
 
 ```bash
-~/.claude/
-├── .credentials.json    # OAuth tokens (must be writable)
-├── .claude.json         # Account info, setup state (must be writable)
-├── CLAUDE.md           # Global instructions (read-only)
-├── settings.json       # Settings (read-only)
-├── agents/             # Custom agents (read-only)
-├── commands/           # Custom commands (read-only)
-└── hooks/              # Event hooks (read-only)
+~/.claude/              # bound read-write: everything below is live
+├── .credentials.json    # OAuth tokens (writable, no mount of its own)
+├── .claude.json         # Account info, setup state (writable, no mount of its own)
+├── CLAUDE.md           # Global instructions (writable — see below)
+├── settings.json       # Settings (writable — see below)
+├── agents/             # Custom agents (read-only mount)
+├── commands/           # Custom commands (read-only mount)
+├── hooks/              # Event hooks (read-only mount)
+├── skills/             # Agent Skills (read-only mount)
+└── wf-skills/          # Skill bodies (read-only mount)
 ```
+
+Only the directories are mounted. `~/.claude` itself is one read-write bind, and
+the five instruction directories are read-only binds on top of it; the files are
+reached *through* the directory rather than bound one at a time. That is what
+keeps them live — a bind mount of a file does not survive the host replacing it
+by rename, which is what Claude does on every token refresh — and it is why
+`CLAUDE.md` and `settings.json` are writable from the container: a read-only
+mount over either of them could not be kept for longer than one host edit.
 
 ### Critical Configuration in devcontainer.json
 
@@ -123,7 +133,8 @@ Two different issues:
 - Have to authenticate again
 
 **Root Cause:**
-`.credentials.json` or `.claude.json` is not mounted, or is mounted read-only.
+`~/.claude` is not mounted, or is mounted read-only, so the two state files
+reached through it are missing or unwritable.
 
 **Solution:**
 
@@ -133,11 +144,16 @@ Two different issues:
    mount | grep claude
    ```
 
-   Should show:
+   Should show the directory bind read-write, and the instruction
+   directories read-only on top of it:
    ```
-   /dev/... on /home/vscode/.claude/.credentials.json type ext4 (rw,...)
-   /dev/... on /home/vscode/.claude/.claude.json type ext4 (rw,...)
+   /dev/... on /home/vscode/.claude type ext4 (rw,...)
+   /dev/... on /home/vscode/.claude/agents type ext4 (ro,...)
    ```
+
+   The state files have no line of their own, and should not: they are inside
+   the read-write directory mount. A line naming `.credentials.json` means an
+   older layout that pins the file to a dead inode on the next token refresh.
 
 2. **Check files exist on host:**
    ```bash
@@ -154,8 +170,13 @@ Two different issues:
 - Operations fail with "Read-only file system"
 
 **Expected Behavior:**
-This is intentional! Security files are mounted read-only:
-- `CLAUDE.md`, `settings.json`, `agents/`, `commands/`, `hooks/` → Read-only
+This is intentional! The instruction directories are mounted read-only:
+- `agents/`, `commands/`, `hooks/`, `skills/`, `wf-skills/` → Read-only
+
+`CLAUDE.md` and `settings.json` are **not** protected, and a write to either
+succeeds and reaches the host. See "Why only directories are mounted" in the
+README: under the read-write parent this feature needs, a read-only mount over
+a file survives only until the host next replaces that file by rename.
 
 **Why?**
 Prevents prompt injection attacks that could modify your Claude configuration.
@@ -163,7 +184,8 @@ Prevents prompt injection attacks that could modify your Claude configuration.
 **Solution:**
 Edit these files on your HOST machine, then restart/rebuild the container.
 
-Only `.credentials.json` and `.claude.json` are read-write (needed for auth and state).
+Everything else under `~/.claude` is read-write, including `.credentials.json`
+and `.claude.json` (needed for auth and state).
 
 ### Issue 6: File Permission Errors (600 vs 664)
 
@@ -188,16 +210,22 @@ These files contain sensitive data and should only be readable by you.
 - The file it names exists and reads fine in this container
 
 **Why?**
-The host replaces these files by rename (Claude rewrites `.claude.json` on
-nearly every session), which swaps the inode. This container's mount stays
-pinned to the old, now-deleted inode — readable in here, but a Docker daemon
-refuses a deleted-inode mount as a bind source.
+The container was built by a version of this feature that mounted those files
+one at a time. The host replaces them by rename (Claude rewrites `.claude.json`
+on nearly every session), which swaps the inode, and a file mount stays pinned
+to the old, now-deleted one — readable in here, but a Docker daemon refuses a
+deleted-inode mount as a bind source.
+
+The same pinning is why such a container never saw a host account switch: it
+went on reading the credentials that existed when it was created.
 
 **Solution:**
-`init-host.sh` heals this before every container create: a mount whose inode
-the kernel marks deleted is detached and replaced with an ordinary file
-holding the same bytes and mode. If the error still appears, the repo being
-launched carries an older `init-host.sh` without the heal.
+Rebuild the container. The current layout mounts no files, so it cannot reach
+this state. Until you do, `init-host.sh` heals it before every container
+create: a mount whose inode the kernel marks deleted is detached and replaced
+with an ordinary file holding the same bytes and mode. If the error still
+appears, the repo being launched carries an older `init-host.sh` without the
+heal.
 
 ## Debugging Commands
 
