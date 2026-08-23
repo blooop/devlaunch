@@ -44,7 +44,6 @@ rustix = { version = "1", features = ["fs"] }
 jiff = "0.2"
 shlex = "2"
 tempfile = "3"
-assert_cmd = "2"
 portable-pty = "0.9"
 
 [workspace.lints.rust]
