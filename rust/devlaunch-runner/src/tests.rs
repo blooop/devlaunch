@@ -327,6 +327,91 @@ fn a_timeout_kills_the_child_rather_than_abandoning_it() {
     assert!(!marker.exists(), "the child outlived its timeout");
 }
 
+/// Every defect the three tests below pin is a *hang*, so each runs its attempt
+/// on a thread of its own and fails at `bound` rather than stalling the suite
+/// forever. `hang` is what a red run says: what never came back, and why.
+fn within<T: Send + 'static>(
+    bound: Duration,
+    hang: &str,
+    attempt: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let running = thread::spawn(attempt);
+    let deadline = Instant::now() + bound;
+    while !running.is_finished() {
+        assert!(Instant::now() < deadline, "{hang}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    running.join().expect("the attempt thread")
+}
+
+/// The grandchild tests below put a descendant in a session of its own with
+/// `setsid`. Without that tool the script still runs, the descendant stays in
+/// the family, and the test goes green having pinned nothing — so each one
+/// checks the tool is there first.
+fn require_setsid() {
+    let found = ProcessRunner.capture(&sh("command -v setsid").into());
+    assert!(
+        matches!(
+            found,
+            Outcome::Ran {
+                exit: Exit::Code(0),
+                ..
+            }
+        ),
+        "these tests need setsid to put a descendant in a session of its own, \
+         and `command -v setsid` said {found:?}"
+    );
+}
+
+/// The `git fetch` over ssh shape: the child forks a descendant in a session of
+/// its own (ssh's ControlMaster is the production example) which inherits the
+/// stdout pipe, then the child itself outstays its timeout. `read_to_end`
+/// returns only at pipe EOF, and a setsid'd descendant escapes any kill aimed
+/// at the child or its group — so a runner whose timeout path waits on the
+/// drains never returns. `capture` must return [`Outcome::TimedOut`] within a
+/// bound regardless of who still holds the pipe.
+#[test]
+fn a_timed_out_capture_returns_even_when_a_grandchild_holds_the_pipe() {
+    require_setsid();
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & exec sleep 30"))
+        .with_timeout(Duration::from_millis(200));
+    let outcome = within(
+        Duration::from_secs(5),
+        "capture never returned: the timeout path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.capture(&spec),
+    );
+    assert_eq!(outcome, Outcome::TimedOut);
+}
+
+/// The same shape on the path that *succeeds*, which is the commoner one: the
+/// child exits 0 while the setsid'd descendant it forked still holds the stdout
+/// pipe. The status is in hand and every byte the child wrote has been read, so
+/// nothing is left to wait for except an EOF that is never coming — and
+/// `capture` must hand back what it has.
+///
+/// No timeout, deliberately: three captures pass none (`git clone --bare`,
+/// `git push -u`, the launch-path fetch), so there is no deadline to end this
+/// wait, and after the child has exited a timeout is not what the drain is
+/// bounded by anyway.
+#[test]
+fn a_capture_returns_when_a_grandchild_holds_the_pipe_past_a_clean_exit() {
+    require_setsid();
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & printf done"));
+    let outcome = within(
+        Duration::from_secs(5),
+        "capture never returned: the success path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.capture(&spec),
+    );
+    let (exit, io) = ran(outcome);
+    assert_eq!(exit, Exit::Code(0));
+    assert_eq!(
+        io.stdout, "done",
+        "what the child wrote is still the answer"
+    );
+}
+
 #[test]
 fn a_timeout_that_is_not_reached_answers_normally() {
     let spec = SpawnSpec::from(sh("printf quick")).with_timeout(Duration::from_secs(30));
@@ -424,6 +509,25 @@ fn a_session_that_times_out_is_killed_like_any_other_run() {
     let started = Instant::now();
     assert_eq!(ProcessRunner.session(&spec, &mut |_| {}), Outcome::TimedOut);
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// The capture hang's shape through `session`'s one pipe: a descendant in a
+/// session of its own inherits the stderr pipe and outlives the child, so the
+/// reader thread never sees EOF. A `session` whose timeout has expired must
+/// still return — its child cannot even be group-killed, since an interactive
+/// child moved out of the foreground group takes SIGTTIN (see #301).
+#[test]
+fn a_timed_out_session_returns_even_when_a_grandchild_holds_stderr() {
+    require_setsid();
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & exec sleep 30"))
+        .with_timeout(Duration::from_millis(200));
+    let outcome = within(
+        Duration::from_secs(5),
+        "session never returned: the timeout path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.session(&spec, &mut |_| {}),
+    );
+    assert_eq!(outcome, Outcome::TimedOut);
 }
 
 #[test]
@@ -561,5 +665,55 @@ fn passthrough_keeps_the_child_in_our_group_by_default() {
         pgrp.trim().parse::<i32>().expect("a numeric pgrp"),
         ours,
         "the child stays in this process's group"
+    );
+}
+
+/// A reader that yields its pieces in order, raising `EINTR` between them.
+///
+/// Not a mock of a pipe — a pipe is what every other test here uses — but the
+/// one condition a real pipe will not produce on demand: a signal landing
+/// mid-read. `read_to_end` retried that; the hand-rolled loop that replaced it
+/// has to as well, or a `capture` reports short output as a clean success.
+struct Interrupting {
+    pieces: std::vec::IntoIter<&'static str>,
+    interrupt_next: bool,
+}
+
+impl Read for Interrupting {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.interrupt_next {
+            self.interrupt_next = false;
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        match self.pieces.next() {
+            None => Ok(0),
+            Some(piece) => {
+                self.interrupt_next = true;
+                buffer[..piece.len()].copy_from_slice(piece.as_bytes());
+                Ok(piece.len())
+            }
+        }
+    }
+}
+
+/// `EINTR` is a retry, not an end of stream. A signal arriving mid-read says
+/// nothing about the pipe, and a drain that breaks on it hands back a prefix of
+/// what the child wrote inside an `Outcome::Ran` with a success exit — silent
+/// truncation, which is the one answer worse than an error for callers that
+/// parse this text.
+///
+/// Unreachable through `dl` today, since the only handler it installs is a
+/// glibc `signal()` and so carries `SA_RESTART` — but `read_to_end`, which this
+/// loop replaced, retried for free, and nothing but this test keeps that.
+#[test]
+fn a_drain_treats_an_interrupted_read_as_a_retry_not_an_ending() {
+    let pieces = vec!["ab", "cd", "ef"];
+    let drained = collect(drain(Some(Interrupting {
+        pieces: pieces.into_iter(),
+        interrupt_next: false,
+    })));
+    assert_eq!(
+        drained, "abcdef",
+        "an interrupted read ended the drain and truncated the output"
     );
 }
