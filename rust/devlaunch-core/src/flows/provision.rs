@@ -198,7 +198,7 @@ pub(crate) const HOSTNAME_STAGE: StageName = StageName::new("hostname");
 pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
 
 /// The stage that teaches the shell to keep naming the terminal after this
-/// workspace. Rides the same trip as the three above it.
+/// workspace. Rides the same trip as the two above it.
 pub(crate) const TITLE_STAGE: StageName = StageName::new("title");
 
 // ===========================================================================
@@ -969,7 +969,7 @@ impl Stage {
 /// touches the hostname, which is not tools work under either variable.
 /// `title` is the name a shell in this container should keep putting on the terminal,
 /// or `None` for a launch that wants none — which is `DEVLAUNCH_NO_TITLE`, or a spec
-/// that resolved no triple, both decided by the caller. Last of the four because it
+/// that resolved no triple, both decided by the caller. Last of the three because it
 /// is the one that is not a switch, and neither tools switch touches it either:
 /// naming a pane is no more tool provisioning than naming a container is.
 ///
