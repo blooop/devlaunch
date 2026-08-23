@@ -3969,7 +3969,7 @@ fi
         write_program(
             &sysbin.join("sudo"),
             &format!(
-                "#!/bin/sh\necho \"$# $*\" > {}\nexit 0\n",
+                "#!/bin/sh\necho \"$# $*\" > \"{}\"\nexit 0\n",
                 seen.to_string_lossy()
             ),
         );
