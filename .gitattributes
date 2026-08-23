@@ -42,5 +42,11 @@
 *.pkl filter=lfs diff=lfs merge=lfs -text
 # numpy file format
 *.npy filter=lfs diff=lfs merge=lfs -text
+# The README's demo GIFs, in plain git rather than LFS. They autoplay on the
+# front page, which makes them the most-fetched bytes in the repo, and LFS
+# serves those out of a bandwidth quota. Run out and the images 404 rather than
+# degrade. Well under a megabyte all together, so ordinary blobs it is.
+docs/demo/*.gif -filter -diff -merge -text
+
 # GitHub syntax highlighting
 pixi.lock linguist-language=YAML merge=ourslock

@@ -17,7 +17,103 @@ launching one again attaches to what is already there.
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
-**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+## Quickstart
+
+The whole workflow is one command with a repo in it. `dl owner/repo@branch` gets you a shell inside
+a devcontainer built from that repo, on that branch — and every `repo@branch` you name gets a
+container of its own, so switching branches is switching containers, not rebuilding one.
+
+```bash
+pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
+```
+
+### 1. Name a repo, land in a shell inside it
+
+![Launching a workspace](docs/demo/1-launch.gif)
+
+```bash
+dl blooop/devlaunch
+```
+
+There is no clone step, no `devcontainer.json` to write and no build command. `dl` clones the repo
+if it has to, builds or starts its devcontainer, and leaves you at a prompt inside it, in the
+checkout. The first run of a repo builds an image and takes minutes. Every run after that attaches
+to the container that is already there, in about a second — so the same line you used to create the
+workspace is also the line you use to get back to it tomorrow.
+
+Exit the shell and the container keeps running; nothing is lost between visits.
+
+### 2. A branch is a container, not a checkout
+
+![Two branches, two containers](docs/demo/2-branches.gif)
+
+```bash
+dl blooop/devlaunch@feature/json-flag
+```
+
+That is a *second* container for the same repo, with its own checkout on that branch, running
+beside the first, and the branch does not have to exist yet — `dl` makes one if it cannot find it.
+Two branches never share a working tree, an installed dependency set or a running service, so a
+half-finished experiment on one branch cannot break a review on another and you never stash
+anything to switch.
+
+Run `dl` with no arguments and a fuzzy selector opens over everything you have:
+
+```bash
+dl
+```
+
+Nothing to install for it — no `fzf` on `PATH`, no plugin. Type to filter, Enter to attach.
+
+### 3. An agent instead of a shell
+
+![Starting a coding agent](docs/demo/3-agent.gif)
+
+```bash
+aid blooop/devlaunch@fix/flaky-test
+```
+
+`aid` is `dl` with a coding agent started for you — the same clone and the same container `dl` would
+have given you for that spec. Name the repo and it asks for the prompt *while the container boots*,
+so the minute the container takes and the minute you take writing the prompt are the same minute.
+Press Enter and you are in the container, with the agent working in the checkout. That is a third
+container: the feature branch from step 2 is still running beside it. Put the prompt on the line
+instead, `aid blooop/devlaunch@feature/json-flag add a --json flag`, and it skips the question.
+
+The agent runs inside a disposable container holding only that one repo, which is what makes it
+reasonable to let it work without a permission prompt per tool. See
+[aid](#aid-start-a-coding-agent-in-a-workspace) for the trade that involves.
+
+### 4. Clearing them out
+
+![Deleting workspaces from the selector](docs/demo/4-cleanup.gif)
+
+```bash
+dl rm
+```
+
+Workspaces pile up. A verb with no workspace named opens the same selector, and TAB marks more than
+one row — all three here — so `dl rm` clears them in one pass.
+
+### Managing what you have
+
+Anything else is a verb in that same second position:
+
+```bash
+dl blooop/devlaunch code         # open the container in VS Code
+dl blooop/devlaunch stop         # free its memory, keep its disk
+dl blooop/devlaunch rm           # delete the workspace
+dl blooop/devlaunch --rm         # a shell that deletes the workspace when you leave
+```
+
+The verbs open the selector when you leave the workspace out. The full list is in
+[Workspace Commands](#workspace-commands).
+
+**Next:** [Usage](#usage) for the whole grammar · [Installation](#installation) if pixi is not how
+you install things · [GitHub auth](#github-authentication) for pushing from inside a container ·
+[Cleaning up](#cleaning-up-purge-prune-reconcile) once workspaces have accumulated
+
+**Start here:** [Quickstart](#quickstart) · [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
 
 **Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
 
@@ -2100,6 +2196,23 @@ Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `car
 working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
 [AGENTS.md](AGENTS.md).
+
+### The Quickstart's demo GIFs
+
+The four GIFs in the Quickstart come from VHS tapes in `docs/demo/`:
+
+```bash
+pixi run demo                  # all four, in order
+pixi run demo 2-branches       # one, while you tune it
+```
+
+`scripts/record_demo.sh` records them, optimises them with `gifsicle`, and prints what to check
+before you commit. A GIF that has not been recorded yet keeps its README line commented out, so a
+clone without them shows no broken images; the script uncomments each line as its file appears.
+
+The tapes film the released `dl`, not this working tree. So the GIFs show what someone who installed
+devlaunch sees, and they go stale when the released UI changes. Re-record after a release, not
+before.
 
 Until 0.1.0 this repository held a second, Python implementation of `dl`, and a parity harness that
 ran both against the same fixtures and compared them. Both retired once the binaries shipped; the
