@@ -206,7 +206,9 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         # one input that makes a handle ambiguous, and the only fixture that can
         # show a verb refusing rather than choosing.
         sibling = MAIN_WS[: -len("zovomobo")] + "hesirora"
-        workspaces[sibling] = _workspace(sibling, repos / "other" / "devlaunch" / sibling, "Running")
+        workspaces[sibling] = _workspace(
+            sibling, repos / "other" / "devlaunch" / sibling, "Running"
+        )
 
     (cache / "metadata.json").write_text(
         json.dumps(
