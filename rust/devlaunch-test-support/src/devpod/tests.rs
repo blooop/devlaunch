@@ -147,6 +147,28 @@ fn deleting_a_workspace_devpod_never_heard_of_refuses() {
     assert!(stderr_of(&response).contains("couldn't find workspace ghost"));
 }
 
+#[test]
+fn ignore_not_found_makes_a_delete_mean_ensure_absent() {
+    // Measured against real devpod v0.26.1: `delete <missing> --ignore-not-found`
+    // exits 0, where the same call without the flag exits 1. A fake that refuses
+    // here is stricter than the real thing, which is the one direction a fake
+    // devpod must never drift in — `dl <ws> rm --force` passes this flag on every
+    // forced remove, so a workspace that was already gone failed against the fake
+    // and succeeded against devpod.
+    let mut machine = DevpodMachine::new();
+    let response = call(&mut machine, &["delete", "ghost", "--ignore-not-found"]);
+    failed_with(&response, 0);
+}
+
+#[test]
+fn ignore_not_found_is_honoured_before_the_workspace_too() {
+    // Real devpod is a cobra program: the flag parses on either side of the
+    // positional, and both orders exit 0 for a workspace that is not there.
+    let mut machine = DevpodMachine::new();
+    let response = call(&mut machine, &["delete", "--ignore-not-found", "ghost"]);
+    failed_with(&response, 0);
+}
+
 // ---------------------------------------------------------------------- list
 
 #[test]

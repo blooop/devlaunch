@@ -14,5 +14,10 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 
+[dev-dependencies]
+# Only the conformance corpus reader needs derived deserialization, and it is a
+# test module — so this stays out of the crate's own dependency set.
+serde = { workspace = true }
+
 [lints]
 workspace = true
