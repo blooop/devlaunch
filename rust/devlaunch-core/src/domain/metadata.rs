@@ -1579,6 +1579,45 @@ mod tests {
         );
     }
 
+    /// The classes the shared escaper never sees, at the indented document.
+    ///
+    /// The compact formatter has the same pin in `json.rs`; this is the other
+    /// side of the split, because the two formatters share the escaping and not
+    /// the escape *table* — serde's table is what spells the quotes, the
+    /// backslash and everything under `0x20`, and a `metadata.json` whose branch
+    /// name carries one of those has to come out the bytes Python wrote before
+    /// the rewrite. Expectation from `json.dumps(..., indent=2)` under the frozen
+    /// Python build.
+    #[test]
+    fn the_indent_two_document_spells_the_serde_escapes_pythons_way() {
+        let mut bytes = Vec::new();
+        let mut serializer =
+            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        json!({
+            "branch": "a\"b\\c\nd\te\rf\u{8}g\u{c}h",
+            "tags": ["\u{0}\u{1}\u{1f}", "/slash/", "\u{2028}\u{2029}"],
+        })
+        .serialize(&mut serializer)
+        .expect("a Vec never fails to write");
+
+        assert_eq!(
+            String::from_utf8(bytes).expect("the escaping writes ASCII"),
+            concat!(
+                "{\n",
+                r#"  "branch": "a\"b\\c\nd\te\rf\bg\fh","#,
+                "\n",
+                "  \"tags\": [\n",
+                r#"    "\u0000\u0001\u001f","#,
+                "\n",
+                "    \"/slash/\",\n",
+                r#"    "\u2028\u2029""#,
+                "\n",
+                "  ]\n",
+                "}",
+            )
+        );
+    }
+
     #[test]
     fn an_empty_save_is_byte_for_byte_what_python_writes() {
         let dir = temp_dir();

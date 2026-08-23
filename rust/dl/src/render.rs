@@ -2316,6 +2316,40 @@ mod tests {
         );
     }
 
+    /// The rest of the classes a pasted line has to survive: the shell
+    /// metacharacters, a newline, and a path that stringifies to nothing.
+    ///
+    /// Single quoting is what makes `$` and a backtick inert rather than a
+    /// substitution the paste would run as root, and an empty word has to survive
+    /// as a word — `sudo rm -rf` with one silently dropped is a command that
+    /// removes the wrong thing. Expectations are CPython's `shlex.join` for the
+    /// same words.
+    #[test]
+    fn the_advice_line_makes_the_shell_metacharacters_inert() {
+        let lines = report_refusals(
+            std::iter::empty::<&Refusal>(),
+            "Removed nothing. These refused:",
+            &[
+                PathBuf::from("/home/u/a\nb/devlaunch"),
+                PathBuf::from("/home/u/$HOME/devlaunch"),
+                PathBuf::from("/home/u/`id`/devlaunch"),
+                PathBuf::from(""),
+                PathBuf::from("/home/u/na\u{ef}ve/devlaunch"),
+            ],
+        );
+
+        assert!(
+            lines.contains(
+                &concat!(
+                    "  sudo rm -rf '/home/u/a\nb/devlaunch' '/home/u/$HOME/devlaunch' ",
+                    "'/home/u/`id`/devlaunch' '' '/home/u/na\u{ef}ve/devlaunch'",
+                )
+                .to_owned()
+            ),
+            "the pasteable line, got {lines:#?}"
+        );
+    }
+
     // ------------------------------------------------- the wrong-owner hint
     //
     // The whole refusal cannot be built here — `GitRefused` has no public

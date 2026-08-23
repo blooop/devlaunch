@@ -312,6 +312,34 @@ mod tests {
         }
     }
 
+    /// The classes serde escapes before the shared escaper is ever reached, at
+    /// the document.
+    ///
+    /// [`write_ensure_ascii`] only ever sees the runs serde left alone, so the
+    /// quotes, the backslash and everything under `0x20` are spelled by serde's
+    /// own table rather than by anything in this module — which is exactly why
+    /// they want pinning here: nothing else in the crate asserts that the table
+    /// happens to agree with Python's, and the escaper extraction is the sort of
+    /// edit that invites a hand-written table beside it. `/` is here because
+    /// Python leaves it bare and a lot of JSON writers do not, and `U+2028`/
+    /// `U+2029` because they are the non-ASCII pair a JavaScript-flavoured
+    /// escaper singles out and Python does not.
+    ///
+    /// Expectation from `json.dumps` under the frozen Python build.
+    #[test]
+    fn the_escapes_serde_writes_are_the_ones_python_writes() {
+        assert_eq!(
+            as_python_writes_it(&serde_json::json!({
+                "branch": "a\"b\\c\nd\te\rf\u{8}g\u{c}h",
+                "tags": ["\u{0}\u{1}\u{1f}", "/slash/", "\u{2028}\u{2029}"],
+            })),
+            concat!(
+                r#"{"branch": "a\"b\\c\nd\te\rf\bg\fh", "#,
+                r#""tags": ["\u0000\u0001\u001f", "/slash/", "\u2028\u2029"]}"#,
+            )
+        );
+    }
+
     #[test]
     fn a_compact_document_escapes_the_same_way() {
         // What `json.dumps({"branch": "feature/brünch"})` printed.
