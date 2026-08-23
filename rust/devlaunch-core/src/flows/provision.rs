@@ -71,6 +71,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 use crate::clients::devpod::{self, Call, NotRun};
+use crate::domain::workspace_id::hostname_of;
 use crate::flows::herdr::{self, HerdrSwitch};
 use crate::notices::Notices;
 use crate::runner::interrupt;
@@ -1003,9 +1004,13 @@ pub(crate) fn setup_stages(
         // once when the shell starts, so it has to be set before the session dl
         // hands over — which is why it rides the `up`'s own trip rather than the
         // attach's.
+        //
+        // The id's readable half, not the id: the identity suffix is what makes an
+        // id address one workspace, and a UTS name addresses nothing. See
+        // [`hostname_of`] for what dropping it costs.
         Stage::new(
             HOSTNAME_STAGE,
-            format!("sudo hostname {}", quote(workspace)),
+            format!("sudo hostname {}", quote(hostname_of(workspace))),
         )
         .quieter(),
     ];
@@ -1615,7 +1620,7 @@ fn ustar_header(arcname: &str, meta: &Metadata) -> Result<[u8; TAR_BLOCK], Bundl
 /// never be, and nothing else in the call tells them apart: both arrive with a
 /// workspace id and a runner, at a container devpod reports as running.
 ///
-/// **The hostname is what separates them.** `sudo hostname <ws>` is a stage of the
+/// **The hostname is what separates them.** `sudo hostname` is a stage of the
 /// pass, and the name it sets lives in the container's UTS namespace, which docker
 /// rebuilds from the container's config on every `start`. So a container that has
 /// just been through `devpod up` — created, or stopped and started again — has lost
@@ -3834,6 +3839,25 @@ fi
     }
 
     #[test]
+    fn the_hostname_stage_names_the_container_without_the_id_s_suffix() {
+        // The workspace id is what devpod is called with; the name in the container's
+        // UTS namespace addresses nothing, so it carries the readable half alone. The
+        // stage still receives the id — it is what the whole pass is keyed on — and
+        // the drop happens here, in the one place a hostname is spelled.
+        let id = "devlaunch-main-zovomobo";
+        let script = setup_script(&setup_stages(
+            id,
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
+        ));
+
+        assert!(script.contains("sudo hostname devlaunch-main;"), "{script}");
+        assert!(!script.contains(&format!("hostname {id}")));
+    }
+
+    #[test]
     fn no_set_e_spans_the_stages() {
         // One stage's failure is contained to that stage. `-e` anywhere in the pass
         // would make the first failing stage take the probe's answer with it, which
@@ -3930,6 +3954,50 @@ fi
         )
         .into_iter()
         .find(|outcome| outcome.stage == stage)
+    }
+
+    #[test]
+    fn a_real_bash_over_the_pass_calls_hostname_with_the_id_s_readable_half() {
+        // The derivation through a real shell, reading what `hostname` was actually
+        // handed rather than what the script says. The name is interpolated as a
+        // quoted word, so this is also where a quoting change that split it into two
+        // arguments would show up: `$#` is recorded beside them.
+        let scratch = scratch();
+        let home = a_home(scratch.path());
+        let sysbin = sysbin(scratch.path(), &["readlink"]);
+        let seen = scratch.path().join("sudo-argv");
+        write_program(
+            &sysbin.join("sudo"),
+            &format!(
+                "#!/bin/sh\necho \"$# $*\" > \"{}\"\nexit 0\n",
+                seen.to_string_lossy()
+            ),
+        );
+        let script = setup_script(&setup_stages(
+            "devlaunch-main-zovomobo",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            HerdrSwitch::Skip,
+            None,
+        ));
+
+        let ran = bash_with(
+            &script,
+            &[
+                ("HOME", &home.to_string_lossy()),
+                ("PATH", &sysbin.to_string_lossy()),
+            ],
+        );
+
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(&seen).expect("sudo ran").trim(),
+            "2 hostname devlaunch-main"
+        );
     }
 
     #[test]

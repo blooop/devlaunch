@@ -1807,7 +1807,7 @@ pub(crate) fn dotfiles_update(
 /// arms that did not — a bare name, a path, a URL.
 ///
 /// This used to be the id always, on the grounds that it is the one string every
-/// placement has and that it is already the container's hostname, so the title dl
+/// placement has and that it was then the container's hostname too, so the title dl
 /// writes and the `user@host` an interactive prompt repaints over it agreed instead
 /// of disagreeing. The first half still holds and is why the id is still the answer
 /// wherever there is no triple. The second was worth less than it looked: the prompt
@@ -2979,14 +2979,15 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// The **spec** and only the spec, where [`Self::titled`] falls back to the id.
     /// Two reasons, and the second is the load-bearing one.
     ///
-    /// A container told to title after its own id is told nothing: the id is already
-    /// its hostname, so the stock prompt writes exactly that anyway. And the line is
-    /// deduped by a hash of its own text, so a name that varies for one workspace
-    /// does not replace the line — it adds another, and the last append is the one
-    /// every prompt then obeys. A workspace opened once as `blooop/devlaunch@main`
-    /// and once by its id would end up permanently titled after the id. Keying on the
-    /// spec alone makes the line a pure function of the triple, so a workspace has at
-    /// most one, ever.
+    /// A container told to title after its own id is told almost nothing: the stock
+    /// prompt already writes the id's readable half, which is its hostname, and the
+    /// eight characters of hash this would add are the part nobody reads. And the
+    /// line is deduped by a hash of its own text, so a name that varies for one
+    /// workspace does not replace the line — it adds another, and the last append is
+    /// the one every prompt then obeys. A workspace opened once as
+    /// `blooop/devlaunch@main` and once by its id would end up permanently titled
+    /// after the id. Keying on the spec alone makes the line a pure function of the
+    /// triple, so a workspace has at most one, ever.
     ///
     /// Filtered by [`sanitize_title`], the same way the escape is, because the two
     /// halves must not disagree about what a name may hold. `is_safe_name` accepts
@@ -3811,7 +3812,7 @@ mod tests {
     #[test]
     fn the_pass_after_an_up_is_told_the_container_just_restarted() {
         // The half of the scope that cannot be skipped, pinned at the call site
-        // that decides it. `sudo hostname <ws>` is a stage of the pass and the name
+        // that decides it. `sudo hostname` is a stage of the pass and the name it sets
         // lives in the container's UTS namespace, which docker rebuilds from the
         // container's config on every start -- so the pass following *this* launch's
         // own `devpod up` has work to do whatever the host remembers about the
@@ -5834,8 +5835,9 @@ mod tests {
         // id would have renamed the tab back to the hash for good.
         //
         // So the pass is told the spec or nothing. Nothing is the honest answer for
-        // an id: it is already the container's hostname, so the stock prompt writes
-        // exactly that anyway and the line would buy nothing to lose.
+        // an id: the container's hostname is that id's readable half already, so the
+        // stock prompt writes all of it anyone reads and the line would buy eight
+        // characters of hash to lose.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let scene = Scene::new().with_running(&workspace.value());
         let updater = SelfInvocation::new("dl");

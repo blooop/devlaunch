@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The container hostname is now the workspace id without its identity suffix**, so
+  a prompt reads `vscode@devlaunch-main:~/repo$` where it used to read
+  `vscode@devlaunch-main-zovomobo:~/repo$`. The id is unchanged and still addresses
+  everything it did — the devpod workspace, the clone directory, the verdict cache —
+  and only the name in the container's UTS namespace is shorter.
+
+  The suffix is eight characters of hash. It is in the id to make the id injective,
+  one workspace per `(owner, repo, ref)`, and nothing addresses a container by its
+  hostname: dl reads the id back from devpod, never from the container. So the
+  hostname carried nine characters that no reader of a prompt has any use for, in the
+  one place they were read most often.
+
+  What it costs is one prompt for two workspaces where the suffix was the only thing
+  telling them apart: one repository under two owners, and `feature/auth` beside
+  `feature-auth`, which slug alike. They remain two workspaces with two ids, two
+  containers and two clones, and the tab — which carries the spec whole,
+  `owner/repo@ref` — is what tells them apart. A prompt long enough to be unique was
+  not thereby legible.
+
+  **A workspace that is already running keeps its old hostname.** The stage rides the
+  pass that follows a `devpod up`, so the name is decided when a container starts and
+  nothing re-sets it on attach — `dl <ws> restart` or `dl <ws> recreate` is what
+  re-decides it, and the container this build was compiled in was named by the build
+  that opened it.
+
+  Two things follow that are worth knowing. A name dl did not derive is *mostly* left
+  alone: `dl myworkspace` still gets `myworkspace`, because the suffix is parsed — its
+  fixed width and its consonant-vowel alphabet both — rather than counted off the end.
+  Mostly, because four consonant-vowel pairs is a shape English words have too, so a
+  hand-named workspace ending in one — `foo-motorola` — does lose that word from its
+  prompt. And the 64-byte hostname reserve that held the id at 38 characters until
+  0.3.0 is no longer the binding one: what a downstream tool builds a name onto now
+  tops out at 38 characters rather than 47, leaving ~26 of the 64. devpod's
+  48-character ceiling on the id is what keeps the cap at 47.
+
 ### Fixed
 
 - **The launch-latency trend has been publishing nothing since 0.3.0, and the bench

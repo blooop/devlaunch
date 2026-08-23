@@ -587,8 +587,8 @@ escapes into somebody else's capture.
 A terminal title has exactly one value and the last writer sets it. An interactive
 shell overwrites dl's within a second of arriving: Ubuntu's stock `~/.bashrc` puts
 `\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt renames the pane after
-the container's hostname — which is the workspace id, the name we just went to
-some trouble not to use.
+the container's hostname — which is the workspace id's readable half,
+`devlaunch-main`, and so says nothing about the owner and spells the ref as a slug.
 
 So the setup pass appends one line to the profile a login shell reads:
 
@@ -598,7 +598,7 @@ case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main
 
 Appended, and that is the whole mechanism: two escapes in one prompt are applied in
 order, so the last one sets the title. Nothing is rewritten — the visible
-`vscode@devlaunch-main-zovomobo:~/repo$` still says the hostname, and only the tab
+`vscode@devlaunch-main:~/repo$` still says the hostname, and only the tab
 changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
 `PS1`, so the stock escape would land afterwards and win.) Interactive bash only:
 `bash -lc` reads the same profile on every `dl <ws> -- cmd` one-shot, and `\[`, `\e`
@@ -611,11 +611,11 @@ recognises — and it rides the same round trip as the hostname stage, so it cos
 extra trip.
 
 **Only a spec is installed this way.** `dl myworkspace` teaches the container
-nothing: the id is already its hostname, so the stock prompt writes that anyway. It
-also cannot, safely — the line is recognised by a hash of its own text, so a second,
-different name for one workspace would not replace the first but sit after it, and
-the last one wins. Keying on the spec alone means a workspace has at most one such
-line, ever.
+little: the hostname is the readable half of that same id, so the stock prompt
+already writes everything in it anyone reads. It also cannot, safely — the line is
+recognised by a hash of its own text, so a second, different name for one workspace
+would not replace the first but sit after it, and the last one wins. Keying on the
+spec alone means a workspace has at most one such line, ever.
 
 **It is installed when a workspace enters Running, not on every attach.** A
 workspace that is already up keeps whatever its profile was given, so
@@ -1062,11 +1062,19 @@ Branch names are case-sensitive, because git refs are.
 URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
 hashed over the URL.
 
-The id is also the container hostname. 47 characters is one inside devpod's own hard
-ceiling of 48 — a 49-character id is refused outright, not truncated — and well inside
-the 64-byte hostname limit on its own, but tools that stack their own prefixes onto the
-container name have about 17 characters to work with, so a tool that wants more is the
-one that has to shorten.
+The container hostname is this id **without the suffix** — `devlaunch-main` for the
+workspace devpod addresses as `devlaunch-main-zovomobo`. The suffix is what makes the
+id injective, and nothing addresses a container by the name in its UTS namespace, so
+a prompt carries the half of the name that is read. That is 38 characters at most,
+leaving ~26 of the 64-byte hostname limit for tools that stack their own prefixes onto
+the container name.
+
+47 is held by devpod instead: it is one character inside devpod's own hard ceiling of
+48, and a 49-character id is refused outright rather than truncated.
+
+The cost is that two workspaces differing only in their suffix now show one prompt —
+one repo under two owners, or `feature/auth` beside `feature-auth`. They are still two
+workspaces, and the tab is what tells them apart.
 
 The id is *not* what you read. A tab shows `owner/repo@branch` — see [Naming the
 terminal after the workspace](#naming-the-terminal-after-the-workspace) — and the
