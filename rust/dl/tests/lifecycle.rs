@@ -401,24 +401,53 @@ fn a_config_choice_a_stop_cannot_honour_is_said_rather_than_discarded() {
 }
 
 #[test]
-fn the_flag_spelled_verbs_stop_and_remove_a_workspace() {
-    // Divergence row 15. dl.py's docstring promised `dl --stop <ws>`; its dispatch
-    // read `--stop` as a workspace spec, so Python answered
-    // `Unknown workspace '--stop'` and exited 1. There is no Python golden for this
-    // one — the row is the reason it works.
+fn the_retired_flag_spellings_name_the_words_that_replaced_them() {
+    // Divergence rows 15 and 30 gave `--stop` and `--rm` a verb-first grammar and
+    // then made them appendable; row 32 takes both spellings back, because `--rm`
+    // now means "delete the workspace when the session ends" and a look-alike flag
+    // that cancels the line instead is the one thing that pair must not be. Refused
+    // at exit 1 with the word to type — never clap's exit 2, which would name the
+    // spelling and not the replacement.
     let world = World::base();
-    world.dl(&["--stop", "someones-project"]).exited(0);
+    let stopping = world.dl(&["--stop", "someones-project"]);
+    stopping.exited(1);
+    assert!(
+        stopping.err.contains("dl <workspace> stop"),
+        "{}",
+        stopping.err
+    );
+    assert!(world.devpod_calls().is_empty(), "a refusal touched devpod");
+
+    // And the words still do the work, from either position.
+    let stopped = World::base();
+    stopped.dl(&["stop", "someones-project"]).exited(0);
     assert_eq!(
-        world.devpod_calls().last().expect("a call"),
+        stopped.devpod_calls().last().expect("a call"),
         "devpod stop someones-project"
     );
 
     let removing = World::base();
-    removing.dl(&["--rm", "someones-project"]).exited(0);
+    removing.dl(&["someones-project", "rm"]).exited(0);
     assert_eq!(
         removing.devpod_calls().last().expect("a call"),
         "devpod delete someones-project"
     );
+}
+
+#[test]
+fn autorm_is_refused_with_the_spelling_that_replaced_it() {
+    // The one that matters most for a line recalled from history: the behaviour is
+    // unchanged, only the name moved, so a silent no-op would be the worst answer
+    // and a refusal naming `--rm` is the whole of what is owed.
+    let world = World::base();
+    let run = world.dl(&["someones-project", "--autorm"]);
+    run.exited(1);
+    assert!(
+        run.err.contains("--autorm is now spelled --rm"),
+        "{}",
+        run.err
+    );
+    assert!(world.devpod_calls().is_empty(), "a refusal touched devpod");
 }
 
 // ===========================================================================

@@ -214,6 +214,46 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
 /// the one the e2e suite keys on too.
 const BANNER: &str = "press Enter";
 
+/// The OSC 2 title `dl` writes for [`MAIN`], bytes and all.
+const TITLE: &str = "\x1b]2;devlaunch-main-zovomobo\x07";
+
+#[test]
+fn the_terminal_really_is_named_on_a_real_pty() {
+    // The one test that proves the bytes arrive. Everything else about the title
+    // is judged on a `Host` value or a notice; this watches the escape come out of
+    // the pty the launch was handed, through the shipped binary, which is the only
+    // place the stderr-is-a-tty guard is exercised for real. An argv prompt rather
+    // than a typed one so the editor is out of the way and the title is the only
+    // thing under test.
+    let world = World::with(&["--warm"]);
+    let session = PtyAid::spawn(&world, &[MAIN, "fix", "the", "bug"], &[]);
+    session.expect(TITLE);
+    assert_eq!(session.wait(), 0);
+}
+
+#[test]
+fn the_title_switch_really_silences_it_on_a_real_pty() {
+    // Off means no escape at all, not an empty title: `ESC ] 2 ; BEL` would blank
+    // the terminal's name, which is not what "leave it alone" means.
+    let world = World::with(&["--warm"]);
+    let session = PtyAid::spawn(
+        &world,
+        &[MAIN, "fix", "the", "bug"],
+        &[("DEVLAUNCH_NO_TITLE", "1")],
+    );
+    // `SSH command:` is said from inside the session call, which the title is
+    // written in front of -- so once this is on screen, a title that was coming
+    // has already come and its absence means something.
+    session.expect("SSH command:");
+    let seen = session.text();
+
+    assert!(
+        !seen.contains("\x1b]2;"),
+        "an OSC 2 was written anyway; the pty said:\n{seen:?}"
+    );
+    assert_eq!(session.wait(), 0);
+}
+
 #[test]
 fn a_typed_prompt_reaches_the_agent_with_no_shell_in_the_way() {
     // The double quotes are the point: they reach the agent literally, because
@@ -228,7 +268,7 @@ fn a_typed_prompt_reaches_the_agent_with_no_shell_in_the_way() {
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
-            "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+            "devpod ssh {MAIN} --command bash -lc 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions '\"'\"'fix the \"flaky\" test'\"'\"''"
         )
     );
@@ -251,7 +291,7 @@ fn a_pasted_multi_line_prompt_arrives_whole_rather_than_leaking() {
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
-            "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+            "devpod ssh {MAIN} --command bash -lc 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions '\"'\"'fix this\nand then that'\"'\"''"
         )
     );
@@ -267,7 +307,7 @@ fn an_empty_enter_is_the_plain_session_it_always_was() {
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
-            "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+            "devpod ssh {MAIN} --command bash -lc 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions'"
         )
     );
@@ -296,7 +336,7 @@ fn the_boot_runs_while_the_prompt_is_still_being_typed() {
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
-            "devpod ssh {MAIN} --command bash -lc 'IS_SANDBOX=1 claude \
+            "devpod ssh {MAIN} --command bash -lc 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions go'"
         )
     );

@@ -57,6 +57,10 @@ required-features = ["wheel"]
 [dev-dependencies]
 devlaunch-test-support = { workspace = true }
 tempfile = { workspace = true }
+# `tests/picker.rs` opens a terminal and reads back what the picker drew on it.
+# Already a workspace dependency -- `aid` runs its session on one of these -- so
+# this adds a name to a dev-dependency list and nothing to the dependency tree.
+portable-pty = { workspace = true }
 
 [lints]
 workspace = true
