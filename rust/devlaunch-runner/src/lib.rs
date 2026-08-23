@@ -56,7 +56,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -807,17 +807,35 @@ fn is_executable_file(path: &Path) -> bool {
 /// exited, and EOF, the read, and the join with it, then never come at all
 /// (#301, #302).
 struct Drain {
-    reading: thread::JoinHandle<()>,
-    read: Arc<Mutex<Vec<u8>>>,
+    read: Arc<(Mutex<Reading>, Condvar)>,
+}
+
+/// What a drain has read so far, and whether the pipe has reached its end.
+///
+/// `ended` is the drain thread's own answer, set under the lock as it leaves, so
+/// that the condvar it then signals cannot lose a wakeup: [`collect`] tests this
+/// flag under the same lock it waits on.
+struct Reading {
+    bytes: Vec<u8>,
+    ended: bool,
 }
 
 /// Read a pipe to the end on a thread of its own. `None` in means `None` out —
 /// a stream that was inherited has nothing to read, which is not an error.
 fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
     pipe.map(|mut pipe| {
-        let read = Arc::new(Mutex::new(Vec::new()));
+        let read = Arc::new((
+            Mutex::new(Reading {
+                bytes: Vec::new(),
+                ended: false,
+            }),
+            Condvar::new(),
+        ));
         let sink = Arc::clone(&read);
-        let reading = thread::spawn(move || {
+        // Detached, never joined: see [`Drain`]. What replaces the join is the
+        // `ended` flag below, which says the same thing without the wait being
+        // able to outlast the pipe.
+        thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             loop {
                 match pipe.read(&mut chunk) {
@@ -825,11 +843,13 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
                     // output is what the child wrote, and there is nowhere
                     // better to put it.
                     Ok(0) | Err(_) => break,
-                    Ok(read) => held(&sink).extend_from_slice(&chunk[..read]),
+                    Ok(read) => held(&sink.0).bytes.extend_from_slice(&chunk[..read]),
                 }
             }
+            held(&sink.0).ended = true;
+            sink.1.notify_all();
         });
-        Drain { reading, read }
+        Drain { read }
     })
 }
 
@@ -839,17 +859,32 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
 /// than for anything more to be written; when it expires the reading thread is
 /// abandoned with the pipe it will never see the end of, and the bytes it did
 /// read are the answer.
+///
+/// A condvar rather than a poll of `JoinHandle::is_finished`, because this is on
+/// the hot path: every capture ends here, and the drain thread usually reaches
+/// EOF a few microseconds *after* the wait for the child returned. Polling at
+/// [`POLL_INTERVAL`] therefore charged nearly every capture a full sleep — 5ms,
+/// twice, against a `capture` that otherwise costs well under a millisecond —
+/// where waiting to be woken costs the microseconds it actually takes. The bound
+/// is the same; only the waiting is exact.
 fn collect(drain: Option<Drain>) -> String {
     let Some(drain) = drain else {
         return String::new();
     };
+    let (reading, ended) = &*drain.read;
     let deadline = Instant::now() + DRAIN_GRACE;
-    // `is_finished` rather than a join: a finished thread has already put its
-    // last bytes behind the lock, and an unfinished one must not be waited for.
-    while !drain.reading.is_finished() && Instant::now() < deadline {
-        thread::sleep(POLL_INTERVAL);
+    let mut read = held(reading);
+    while !read.ended {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        read = ended
+            .wait_timeout(read, left)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .0;
     }
-    String::from_utf8_lossy(&held(&drain.read)).into_owned()
+    String::from_utf8_lossy(&read.bytes).into_owned()
 }
 
 /// The bytes a drain has read, however the last reader left the lock.
