@@ -28,14 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `owner/repo@ref` — is what tells them apart. A prompt long enough to be unique was
   not thereby legible.
 
-  Two things follow that are worth knowing. A name dl did not derive is left alone:
-  `dl myworkspace` still gets `myworkspace`, because the suffix is *parsed* — its
-  fixed width and its consonant-vowel alphabet both — rather than counted off the
-  end, so a hand-made name is recognised as one and not cut. And the 64-byte hostname
-  reserve that held the id at 38 characters until 0.3.0 is no longer the binding
-  one: what a downstream tool builds a name onto now tops out at 38 characters rather
-  than 47, leaving ~26 of the 64. devpod's 48-character ceiling on the id is what
-  keeps the cap at 47.
+  **A workspace that is already running keeps its old hostname.** The stage rides the
+  pass that follows a `devpod up`, so the name is decided when a container starts and
+  nothing re-sets it on attach — `dl <ws> restart` or `dl <ws> recreate` is what
+  re-decides it, and the container this build was compiled in was named by the build
+  that opened it.
+
+  Two things follow that are worth knowing. A name dl did not derive is *mostly* left
+  alone: `dl myworkspace` still gets `myworkspace`, because the suffix is parsed — its
+  fixed width and its consonant-vowel alphabet both — rather than counted off the end.
+  Mostly, because four consonant-vowel pairs is a shape English words have too, so a
+  hand-named workspace ending in one — `foo-motorola` — does lose that word from its
+  prompt. And the 64-byte hostname reserve that held the id at 38 characters until
+  0.3.0 is no longer the binding one: what a downstream tool builds a name onto now
+  tops out at 38 characters rather than 47, leaving ~26 of the 64. devpod's
+  48-character ceiling on the id is what keeps the cap at 47.
 
 ### Fixed
 

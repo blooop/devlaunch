@@ -446,9 +446,17 @@ pub(crate) fn ref_slug_of<'a>(id: &'a str, repo: &str) -> Option<&'a str> {
 ///
 /// *id* whole for anything that does not read as an id this module derived: a bare
 /// devpod name (`dl myworkspace`), and an id whose readable half is empty because
-/// its source slugged to nothing. Both are what a container was called before there
-/// was a suffix to drop, which is why the fallback is the id rather than a refusal —
-/// every caller wants a hostname, and every id is a legal one.
+/// its source slugged to nothing. The fallback is the id rather than a refusal
+/// because every caller wants a hostname and every id is already a legal one.
+///
+/// **The suffix check is a syllable test and not proof of derivation.** Four
+/// consonant-vowel pairs is a shape English words have too, so a hand-named devpod
+/// workspace ending in one — `foo-motorola`, `release-bananana` — loses that word
+/// from its prompt. Accepted rather than fixed: what a false positive costs is a
+/// shorter prompt on a workspace dl did not name, and the fix is to carry the
+/// derived name down from the launch through a trait every caller implements.
+/// [`ref_slug_of`] takes the same bet for a worse prize, since a false positive
+/// there prints a branch label that is not the branch.
 pub(crate) fn hostname_of(id: &str) -> &str {
     without_suffix(id).and_then(non_empty).unwrap_or(id)
 }
@@ -1882,7 +1890,7 @@ mod tests {
     }
 
     #[test]
-    fn a_name_this_module_did_not_derive_is_its_own_hostname() {
+    fn a_name_with_no_syllable_suffix_is_its_own_hostname() {
         // The same parse `ref_slug_of` makes, for the same reason: cutting eight
         // characters off a name that never carried a suffix would name a container
         // after a lie. Only the fallback differs — the name whole rather than
@@ -1911,5 +1919,18 @@ mod tests {
 
         assert_eq!(id, "mifaboje");
         assert_eq!(hostname_of(&id), id);
+    }
+
+    #[test]
+    fn a_hand_made_name_ending_in_a_syllable_shaped_word_loses_that_word() {
+        // The limit of the parse, pinned so it is known rather than discovered. Four
+        // consonant-vowel pairs over these tables is `motorola` as readily as it is
+        // `zovomobo`, so a workspace dl did not name can be read as though it had a
+        // suffix. The cost is the prompt on somebody's hand-made workspace reading
+        // short, which is why the check is kept as it is.
+        assert_eq!(hostname_of("foo-motorola"), "foo");
+        assert_eq!(hostname_of("release-bananana"), "release");
+        // And nothing about addressing moves with it: the id is untouched.
+        assert!(is_syllables("motorola"));
     }
 }
