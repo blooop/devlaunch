@@ -330,6 +330,26 @@ fn a_stop_addresses_the_workspace_and_says_nothing() {
 }
 
 #[test]
+fn a_stop_by_handle_says_which_workspace_it_resolved_to() {
+    // The verb path's own notice channel — `say_launch(&addressed.notices)` rather
+    // than the launch's — so this is the second place the resolution has to be
+    // announced. It matters most here: the next line of this function stops a
+    // container, and `rm` deletes one.
+    let world = World::base();
+    let run = world.dl(&["someones", "stop"]);
+    run.exited(0);
+    assert_eq!(run.err, "'someones' is someones-project.\n");
+    assert_eq!(
+        world.devpod_calls(),
+        [
+            "devpod status someones --output json",
+            "devpod list --output json",
+            "devpod stop someones-project",
+        ]
+    );
+}
+
+#[test]
 fn a_stop_reaches_the_workspace_the_record_names() {
     // devlaunch#88, and `test_stored_workspace_id.py`'s
     // TestTheSubcommandsAddressWhatWasResolved at the boundary: the record holds a
