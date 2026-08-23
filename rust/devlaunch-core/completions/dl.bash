@@ -54,8 +54,18 @@ _dl_completion() {
         cmd="${words[0]##*/}"
     fi
 
-    # Global command options (only valid as first arg)
-    local global_opts="--ls --install --help -h --version --devcontainer"
+    # Global command options (only valid as first arg).
+    #
+    # Every user-facing flag dl's argument grammar declares, and a test diffs the
+    # two: `dl/tests/completion_tables.rs`. Four are deliberately absent —
+    # --json, --size, --yes and --force modify a line that already named a
+    # command, so none of them is ever the first word — and that test names them
+    # with the reason. Anything added below has to be added there too.
+    #
+    # The retired spellings (--stop, --autorm) are absent by rule rather than by
+    # hand: the grammar marks them `hide = true`, and the test drops every hidden
+    # flag, so a spelling this build only still answers for is never offered.
+    local global_opts="--ls --install --refresh --prune --reconcile --purge --rm --devcontainer --help -h --version"
     if [[ "$cmd" == aid ]]; then
         global_opts="--claude --codex --gemini --devcontainer --help -h --version"
     fi
