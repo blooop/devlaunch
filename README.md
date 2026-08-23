@@ -12,7 +12,7 @@ launching one again attaches to what is already there.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.12.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -115,7 +115,7 @@ you install things · [GitHub auth](#github-authentication) for pushing from ins
 
 **Start here:** [Quickstart](#quickstart) · [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
 
-**Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
+**Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Launch freshness](#how-fresh-a-launch-is) · [Launch timing](#measuring-launch-time) · [Development](#development)
 
 ## Features
 
@@ -439,7 +439,7 @@ reporting an unknown workspace called `prune` — and a workspace that really is
 
 ```bash
 $ dl --version
-dl 0.1.0
+dl 0.12.0
 ```
 
 The version and nothing else. `aid --version` reports the same version under its
@@ -963,8 +963,9 @@ After running `dl --install`, you get intelligent tab completion:
 
 The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
 building it means a `git ls-remote` per known repo — seconds of work. So it is
-rebuilt in the background at most once an hour (the same interval the worktree
-backend's background fetch sweep uses), and at most once per `dl` invocation. Commands
+rebuilt in the background at most once an hour (the same interval the background
+fetch sweep uses — see [How fresh a launch is](#how-fresh-a-launch-is)), and at
+most once per `dl` invocation. Commands
 that change your workspaces (starting, stopping or deleting one) rebuild it as
 soon as they finish, regardless of when it was last built. Commands with no use
 for it — `dl --help`, `dl --version` — do not touch it at all.
@@ -1856,13 +1857,16 @@ own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
 directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
 user's own again.
 
-## Worktree Backend
+## How fresh a launch is
 
-For git repositories, devlaunch uses an efficient worktree backend by default:
-
-- **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
-- **Shared Git Objects**: All branches share git objects, saving disk space
-- **Targeted Fetch**: A launch fetches only the one branch it is launching, so no launch waits on a repo-wide refresh
+`dl` keeps one bare clone per repo at `~/.cache/devlaunch/repos/owner/repo/.bare/`
+and cuts every workspace's checkout from it as a sibling directory named after the
+workspace id — an ordinary clone whose git objects are hardlinks into that cache,
+not a git worktree. [How much disk a workspace costs](#how-much-disk-a-workspace-costs)
+is the accounting for that. What follows is the other half: how fresh the branch
+you land on is, which is what decides whether the tip you just pushed is the tip
+you get. A launch fetches only the one branch it is launching, so no launch waits
+on a repo-wide refresh.
 
 ### What you get when you push and immediately launch
 
@@ -1879,24 +1883,9 @@ For git repositories, devlaunch uses an efficient worktree backend by default:
   background updater within the configured interval (default: 1 hour), which
   never blocks a launch.
 
-### Container Sharing Mode
+### Preparing a workspace without attaching
 
-Use `--shared` to share a single container across multiple branches of the same repo:
-
-```bash
-dl --shared owner/repo@branch1  # Creates container "owner-repo"
-dl --shared owner/repo@branch2  # Reuses "owner-repo" container
-```
-
-### Pre-warming
-
-Use `--warm` to prepare a workspace without attaching a shell:
-
-```bash
-dl --warm owner/repo@branch  # Creates container in background
-```
-
-`dl <workspace> up` is the other way to prepare one, and running it repeatedly is
+`dl <workspace> up` prepares one, and running it repeatedly is
 cheap on purpose: against a container that is already up, a second `up` costs one
 `devpod status` and nothing else. It used to also pay the tools setup pass —
 ~1.7s of `devpod ssh` to be told the tools it was told about last time — and now
@@ -1904,6 +1893,12 @@ reuses the recorded answer instead. See
 [The trip a launch can skip](#the-trip-a-launch-can-skip) for what makes a recorded
 answer stop being believed; the short version is that any completed `devpod up`,
 by anything, does.
+
+There is no flag that shares one container across several branches, and none that
+warms a workspace in the background. An earlier revision of this section
+documented `--shared` and `--warm` with worked examples; neither has ever existed
+in the shipped `dl`, which exits 2 on both, and the guard in
+`test/test_readme_cli_doc.py` is why a third cannot appear here unnoticed.
 
 ## Measuring launch time
 
@@ -2188,8 +2183,8 @@ Leave it out of a new spawn and the test still passes; it just stops counting, s
 whatever it was the only cover for down with it. Measured before that seam existed, one five-test
 suite that runs `dl` end to end reported `render.rs`, `commands.rs` and `cli.rs` at 0.00%.
 
-Two cargo tests are outside the CI measurement on purpose: `dl --test interrupt` and
-`--test lock_wait` kill real process trees, and a SIGKILLed process writes no counters. They run in
+Two cargo tests are outside the CI measurement on purpose: `cargo test -p dl --test interrupt`
+and `--test lock_wait` kill real process trees, and a SIGKILLed process writes no counters. They run in
 the `rust` job like everything else, and `pixi run coverage-rust` includes them locally.
 
 Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
@@ -2230,6 +2225,14 @@ rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the con
 `.github/workflows/publish.yml` and `conda-publish.yml` do exactly that on a version bump, in that
 order, off one tag; `ci.yml`'s `packaging` job builds the wheel and renders the recipe on every pull
 request, so a broken release is a red tick rather than a surprise.
+
+Two places in this document restate that number — the `dl --version` transcript under
+[Global Commands](#global-commands) and the conda badge at the top — and both are read back
+against `rust/Cargo.toml` by `test/test_readme_cli_doc.py`, so a bump that forgets them is a
+failing test rather than a README advertising a release from last year. That guard reads the
+same file for the flags: every long flag written on a `dl` command line anywhere here is handed
+to the binary's own parser, which is what makes a documented flag that does not exist a red tick
+too.
 
 The Python half uses [pixi](https://pixi.sh) for environment management.
 
