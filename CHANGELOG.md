@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Reporting agent state to a host-side herdr session, added in 0.8.0, is gone** —
+  the mount, the setup stage, the hook, the pane variables on the agent's command
+  line and `DEVLAUNCH_NO_HERDR`. The container half needed a `python3` and most
+  containers do not have one, which made the feature's majority case "installs
+  nothing".
+
+  It is the requirement rather than the code that decides this.
+  `mcr.microsoft.com/devcontainers/base:ubuntu-24.04` — this repo's own base image,
+  and the family a large share of devcontainers start from — carries no python at
+  all: not `/usr/bin/python3`, not a versioned binary without the symlink, nothing
+  on any entry of a login shell's PATH. So the stage's `command -v python3` failed
+  and it exited before writing anything, on a container that had every other piece
+  in place. The hook needs to talk to a unix socket and merge a JSON settings file,
+  and 0.8.0's own history is the argument against doing that in shell: the version
+  that shelled out installed an *empty* hook in a container with no `cat` and
+  reported success. Neither half of that is fixable by writing the payload
+  differently; a hook that runs inside the developer's own agent needs an
+  interpreter that is really there.
+
+  The other half of why it goes is that the failure could not be read. The stage
+  prints its reason to stderr precisely so a developer can act on it — but only the
+  exit status becomes a `ProvisionEvent`, so a launch said
+  `<ws>: the herdr setup stage exited 1.` and nothing else, on every launch, with
+  the sentence naming the cause discarded. A feature whose majority case is a
+  refusal has to be able to say which refusal.
+
+  **What a host running herdr can still do, with nothing from `dl`:**
+  `herdr --remote <workspace-id>.devpod` runs a herdr server *inside* the
+  workspace, where the agent really is the pane's foreground process, so the badges
+  are correct with no mount and no hook. The price is one view per workspace rather
+  than one spanning them all, and a herdr in the container whose version matches
+  the host's.
+
+  Two leftovers, both inert. A container that did get the hook keeps
+  `~/.devlaunch/herdr-agent-state.py` and its entries in that container's own
+  `~/.claude/settings.json` until `dl <ws> recreate`, and the socket mount likewise
+  lands and leaves only at creation. Neither does anything: the hook returns
+  immediately without the variables `aid` no longer sets, and it exits 0 in every
+  state including every failure, which is why it was safe to leave. `DEVLAUNCH_NO_HERDR`
+  is no longer read, so a host that set it needs no change; `DEVLAUNCH_NO_TOOLS` is
+  untouched and still covers the rest of provisioning.
+
 ## [0.11.0] - 2026-08-23
 
 ### Changed
