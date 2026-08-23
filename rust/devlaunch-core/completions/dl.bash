@@ -54,16 +54,28 @@ _dl_completion() {
         cmd="${words[0]##*/}"
     fi
 
-    # Global command options (only valid as first arg)
-    local global_opts="--ls --install --help -h --version --devcontainer"
+    # Global command options (only valid as first arg).
+    #
+    # Every user-facing flag dl's argument grammar declares, and a test diffs the
+    # two: `dl/tests/completion_tables.rs`. Four are deliberately absent —
+    # --json, --size, --yes and --force modify a line that already named a
+    # command, so none of them is ever the first word — and that test names them
+    # with the reason. Anything added below has to be added there too.
+    #
+    # The retired spellings (--stop, --autorm) are absent by rule rather than by
+    # hand: the grammar marks them `hide = true`, and the test drops every hidden
+    # flag, so a spelling this build only still answers for is never offered.
+    local global_opts="--ls --install --refresh --prune --reconcile --purge --rm --devcontainer --help -h --version"
     if [[ "$cmd" == aid ]]; then
         global_opts="--claude --codex --gemini --devcontainer --help -h --version"
     fi
 
     # Workspace subcommands
-    # `--autorm` is not a verb: it rides beside `dl <ws>` and `dl <ws> -- <cmd>`,
-    # which is exactly the position this list is offered in.
-    local ws_cmds="up stop rm code restart recreate reset dotfiles --autorm --"
+    # `--rm` is not a verb — the `rm` beside it is: the flag rides on `dl <ws>` and
+    # `dl <ws> -- <cmd>` and deletes the workspace when that session ends, which is
+    # exactly the position this list is offered in. Both are here because they are
+    # two different requests, docker's `rm` and `run --rm`.
+    local ws_cmds="up stop rm code restart recreate reset dotfiles --rm --"
 
     # Options that take a value; a variant name or a path follows them.
     local value_opts="--devcontainer"

@@ -803,15 +803,20 @@ fn a_verb_with_no_workspace_opens_the_selector_and_no_terminal_picks_nothing() {
     // draw no picker at all, so nothing is picked. Python's ending for a pick that
     // never came is this one: the help on stdout, exit 1 — and the help is clap's
     // (row 3).
-    // The invitation names what the picker will take: `stop` and `--rm` apply per
+    // The invitation names what the picker will take: `stop` and `rm` apply per
     // workspace, so TAB may mark several; a `-- <cmd>` ends in one session, so the
-    // line is the single pick's — and the only place TAB is discoverable is here.
+    // line is the single pick's. On a terminal that sentence is skim's header, drawn
+    // inside the picker where it can be read; stdout is the *fallback*, and this
+    // suite is the case that needs one — a run with no terminal draws no picker, so
+    // its header is never drawn either and stdout is the only surface left. That
+    // makes these two lines the whole of what a no-terminal run has to say about
+    // what it tried to do, which is why they are pinned to the byte.
     let world = World::full();
     let several = "Select workspaces (type to filter, TAB to mark several):\n";
     let one = "Select workspace (type to filter):\n";
     for (args, invitation) in [
         (vec!["stop"], several),
-        (vec!["--rm"], several),
+        (vec!["rm"], several),
         (vec!["--", "make", "test"], one),
     ] {
         let run = world.dl(&args);

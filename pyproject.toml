@@ -176,6 +176,16 @@ dev-restart-vs = { cmd = "devpod up . --recreate --ide vscode", depends-on = ["d
 # hand -- after `docker login ghcr.io` -- to publish from a branch. Idempotent
 # either way: an existing prebuild is found and returned, not rebuilt.
 devcontainer-prebuild = { cmd = "devpod build . --tag {{ alias }}", args = [{ arg = "alias", default = "latest" }], depends-on = ["dev-add-docker"] }
+# Re-record the README's demo GIFs from the tapes in docs/demo/.
+#
+# A task so that `pixi task list` mentions the demos exist at all; the logic is
+# in the script because it needs a loop and a `command -v`, and pixi's task
+# shell has neither.
+#
+# Easiest on a host: it films the released `dl`, which drives devpod and docker.
+# `vhs`, `ttyd` and `ffmpeg` are not in this environment -- the script checks
+# for them and says what is missing, container or host.
+demo = "bash scripts/record_demo.sh"
 prek = "prek run -a"
 prek-update = "prek autoupdate"
 format = "ruff format ."

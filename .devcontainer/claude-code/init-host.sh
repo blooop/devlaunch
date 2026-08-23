@@ -4,46 +4,71 @@
 # Everything here is idempotent - it only creates what is missing, and never
 # clobbers or reconfigures anything the developer already has.
 
-# The claude-code feature mounts the developer's Claude configuration a path at
-# a time rather than as one directory, so that the files holding *executable
-# instructions* -- CLAUDE.md, settings.json, agents/, commands/, hooks/, skills/
-# and wf-skills/ -- can be read-only while credentials and onboarding state stay
-# writable. Every one of
-# those sources has to exist before the container is created, and the cost of a
-# missing one is not a warning: the create is refused outright with `bind mount
-# source path does not exist`, measured on devpod 0.26.1. That is the same
-# failure the single whole-directory mount had on a host with no ~/.claude, so
-# this list is longer than it was rather than newly load-bearing -- and nothing
-# is written to the host when it happens, which is why creating these here is
-# the whole fix.
+# The claude-code feature mounts the developer's Claude configuration as the
+# directory itself, plus a read-only mount over each subdirectory holding
+# *executable instructions* -- agents/, commands/, hooks/, skills/ and
+# wf-skills/. Every one of those sources has to exist before the container is
+# created, and the cost of a missing one is not a warning: the create is refused
+# outright with `bind mount source path does not exist`, measured on devpod
+# 0.26.1 -- and nothing is written to the host when it happens, which is why
+# creating them here is the whole fix.
+#
+# Only directories are mounted, and that is the load-bearing part rather than an
+# accident of which paths happen to be directories. A bind mount of a *file*
+# does not survive its source being replaced by rename: the mount is attached to
+# the dentry, the rename puts a new one at that name, and the mount is dropped
+# from the namespace entirely. Measured both ways round, because the direction
+# of the failure follows the parent mount and neither direction is safe:
+#
+#   rw parent + read-only file mounts -> after the rename the file is WRITABLE,
+#       so a protection the manifest still advertises is silently gone from the
+#       first host edit onwards
+#   ro parent + read-write file mounts -> after the rename the file is READ-ONLY,
+#       so a token refresh fails
+#
+# A mount of a *directory* survives the same rename with its flags intact, which
+# is why the read-only list is exactly the five instruction directories and why
+# CLAUDE.md and settings.json are no longer mounted at all: under a writable
+# parent their read-only mounts were enforceable only until the developer next
+# edited them, which is worse than not claiming the protection.
+#
+# The same rename is what used to make these paths go stale in the other
+# direction. A container holds the mount it was created with, so a file mount
+# pinned the pre-rename inode and the container went on reading it forever --
+# an account switch on the host reached no running container, which is the
+# regression this layout exists to end. The directory mount resolves names per
+# access, so it follows the rename and the container reads what the host has.
 #
 # A Feature cannot declare a host-side hook, which is why this list lives here
 # rather than beside the mounts it serves; the consuming devcontainer wires this
 # script up as its initializeCommand.
 #
-# Before anything is created: every file mounted one at a time is a file its
-# owner replaces *by rename* -- Claude rewrites .claude.json on nearly every
-# host session, a token refresh rewrites .credentials.json, ssh rewrites
-# known_hosts when a key rotates. A rename swaps the inode and a bind mount
-# pins the old one, so run from inside a container created before the rename,
-# these paths are mounts of **deleted** inodes. The container itself reads them
-# fine, which is why nothing notices -- until it creates a container of its
-# own: a Docker daemon refuses a deleted-inode mount as a bind source (runc:
-# `no such file or directory`), which is `dl <repo>` in here failing for every
-# repo that mounts these same files (devlaunch#326). This hook is the one
-# thing that runs host-side before every create, so it is where the stale
-# mount is caught: detach it and leave an ordinary file holding the same bytes
-# and mode, so the nested bind has a real inode to pin. Only a mount whose
-# root the kernel marks deleted is touched -- a live mount is the container's
-# working connection to the host file, and detaching one would sever every
-# container this repo builds from its own configuration. On a real host these
-# paths are ordinary files, no mountinfo entry matches, and none of this runs
-# -- including the `sudo` that detaching needs when the caller is not root,
-# which is why it can be asked for here at all: it is only reached inside a
-# container, where this repo's images give the user passwordless root. A stale
-# mount that still cannot be detached costs the heal and not the launch: the
-# path stays readable, only a *nested* create was ever going to trip on it,
-# and aborting `devpod up` here would turn that maybe into a certainty.
+# Before anything is created: a container built by an *earlier* version of this
+# feature mounted CLAUDE.md, settings.json, .credentials.json and .claude.json
+# one file at a time, and those mounts go stale exactly as described above --
+# the container reads them fine, which is why nothing notices, until it creates
+# a container of its own: a Docker daemon refuses a deleted-inode mount as a
+# bind source (runc: `no such file or directory`), which is `dl <repo>` in there
+# failing for every repo that mounts the same paths (devlaunch#326).
+#
+# Nothing this feature mounts today can reach that state, so on a host, and in
+# any container built since, every path below is an ordinary file, no mountinfo
+# entry matches and none of this runs. It stays because the containers that
+# *do* have those mounts are still running: they are healed in place rather than
+# having to be rebuilt, and the list can be deleted once they are gone.
+#
+# This hook is the one thing that runs host-side before every create, so it is
+# where the stale mount is caught: detach it and leave an ordinary file holding
+# the same bytes and mode, so the nested bind has a real inode to pin. Only a
+# mount whose root the kernel marks deleted is touched -- a live mount is the
+# container's working connection to the host file, and detaching one would sever
+# every container this repo builds from its own configuration. The `sudo` that
+# detaching needs when the caller is not root is only ever reached inside a
+# container, where this repo's images give the user passwordless root, which is
+# why it can be asked for here at all. A stale mount that still cannot be
+# detached costs the heal and not the launch: the path stays readable, only a
+# *nested* create was ever going to trip on it, and aborting `devpod up` here
+# would turn that maybe into a certainty.
 as_root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
 }
@@ -103,28 +128,20 @@ done
 #
 # Every line is guarded on absence, and that is load-bearing rather than tidy.
 # Run from *inside* a container this repo built -- which is the point of giving
-# it a Docker daemon -- these paths are the read-only mounts, and a write to one
-# fails with EROFS. A non-zero initializeCommand aborts `devpod up` outright.
-# `mkdir -p` on a directory that already exists writes nothing and is safe there;
-# `touch` on a file that already exists is not, so files are created only when
-# absent. The two JSON files are seeded with an empty object rather than left
-# zero-length because Claude parses them, and the pair holding secrets is created
-# 600 -- applied only when this script is the one creating the file, so a
-# developer's existing permissions are never rewritten.
+# it a Docker daemon -- the five instruction directories are the read-only
+# mounts, and a write to one fails with EROFS. A non-zero initializeCommand
+# aborts `devpod up` outright. `mkdir -p` on a directory that already exists
+# writes nothing and is safe there.
+#
+# Only the mounted directories are created. The files that used to be created
+# here -- CLAUDE.md, settings.json, .credentials.json, .claude.json -- are no
+# longer mounted one at a time, so a missing one can no longer refuse the
+# create, and Claude makes each of them itself on first use. Seeding an empty
+# `{}` over a credentials file was never anything but a way to satisfy a bind
+# source, and on a host that has never run Claude it is indistinguishable from
+# a logged-out session.
 mkdir -p "$HOME/.claude" "$HOME/.claude/agents" "$HOME/.claude/commands" \
     "$HOME/.claude/hooks" "$HOME/.claude/skills" "$HOME/.claude/wf-skills"
-[ -e "$HOME/.claude/CLAUDE.md" ] || touch "$HOME/.claude/CLAUDE.md"
-[ -e "$HOME/.claude/settings.json" ] || echo '{}' > "$HOME/.claude/settings.json"
-[ -e "$HOME/.claude/.credentials.json" ] || {
-    touch "$HOME/.claude/.credentials.json"
-    chmod 600 "$HOME/.claude/.credentials.json"
-    echo '{}' > "$HOME/.claude/.credentials.json"
-}
-[ -e "$HOME/.claude/.claude.json" ] || {
-    touch "$HOME/.claude/.claude.json"
-    chmod 600 "$HOME/.claude/.claude.json"
-    echo '{}' > "$HOME/.claude/.claude.json"
-}
 
 # known_hosts is mounted as a *file*, and Docker creates nothing for a file
 # source: if it is missing the container does not start degraded, it does not

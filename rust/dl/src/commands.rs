@@ -22,7 +22,7 @@ use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::runner::{Exit, Runner};
 
-use crate::cli::{self, Autorm, Command, ListOutput, Verb};
+use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
 use crate::cold::ColdPath;
 use crate::launch::{self, Family, Reached};
 use crate::render;
@@ -531,10 +531,7 @@ fn render_workspace<'r>(
         }
         // Launch: clone, `devpod up`, fast attach, `-- <cmd>` through
         // `devpod ssh --command`.
-        Family::Launch {
-            verb: launched,
-            autorm,
-        } => {
+        Family::Launch { verb: launched, rm } => {
             let ran = launch::render_launch(
                 context,
                 cache,
@@ -544,14 +541,12 @@ fn render_workspace<'r>(
                 &launched,
                 devcontainer,
             );
-            after_the_session(
-                runner, context, cache, refresh, &mut cold, target, autorm, ran,
-            )
+            after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
         }
     }
 }
 
-/// `--autorm`: the workspace, once the session it was opened for has ended.
+/// `--rm`: the workspace, once the session it was opened for has ended.
 ///
 /// Three decisions live here, and each one is the answer to a question the flag
 /// cannot dodge.
@@ -566,7 +561,7 @@ fn render_workspace<'r>(
 /// one an earlier draft of this got wrong by keying on the exit code. It leaves the
 /// container **running**, devpod's record written and the clone cut — which is why
 /// [`lifecycle::create_record`] exists at all — so an unattended
-/// `dl owner/repo --autorm -- make test` against a broken devcontainer would leak
+/// `dl owner/repo --rm -- make test` against a broken devcontainer would leak
 /// precisely the workspace the flag was reached for. A session devpod refused
 /// outright, and an OpenSSH that is not installed, leave the same thing behind and
 /// are collected for the same reason.
@@ -580,12 +575,12 @@ fn render_workspace<'r>(
 /// rather than anything carried out of the launch. That is a round trip this path
 /// could have saved — the launch already named the workspace — and it buys the one
 /// thing worth more than a round trip on a path that deletes: there is exactly one
-/// answer to "which workspace is `<target>`", so `--autorm` and `rm` cannot disagree
-/// about what they are removing. It is also cheap where it matters: by now the
+/// answer to "which workspace is `<target>`", so `--rm` and the `rm` verb cannot
+/// disagree about what they are removing. It is also cheap where it matters: by now the
 /// workspace exists and its record is written, so a bare `owner/repo` reads its
 /// default branch off the record rather than the network.
 ///
-/// **Whose exit code.** The launch's, always. `dl owner/repo --autorm -- make test`
+/// **Whose exit code.** The launch's, always. `dl owner/repo --rm -- make test`
 /// is read by a script that wants the test's answer, and a cleanup that refused is
 /// not the test failing. The refusal is loud on stderr and the workspace is still
 /// there, which is the recoverable state — `dl <target> rm --force` is one line away,
@@ -598,11 +593,11 @@ fn after_the_session<'r>(
     refresh: &mut Refresh<'_>,
     cold: &mut ColdPath<'r>,
     target: &str,
-    autorm: Autorm,
+    rm: RmOnExit,
     ran: launch::Ran,
 ) -> Ending {
     let launch::Ran { ending, reached } = ran;
-    let Autorm::OnExit = autorm else {
+    let RmOnExit::Yes = rm else {
         return ending;
     };
     let Reached::TheWorkspace = reached else {
@@ -610,9 +605,8 @@ fn after_the_session<'r>(
     };
     // Said before the removal rather than after it: what it names is the reason
     // somebody may want to hit Ctrl-C, and a notice that arrives once the container
-    // is already gone is a receipt rather than a warning. Same rule as the
-    // `--rm`/`--stop` override notice in `command_line`.
-    eprintln!("{}", render::autorm_removing(target));
+    // is already gone is a receipt rather than a warning.
+    eprintln!("{}", render::rm_on_exit_removing(target));
     // The launch has already spent this command's one refresh — `run_attach` forces
     // one the moment the session returns — and that child is describing a world this
     // removal is about to change. Without re-arming, the cache a user's next
@@ -1099,25 +1093,14 @@ fn render_select<'r>(
     } else {
         select::Arity::One
     };
-    // Said before the picker takes the screen, as Python says it: it is the only
-    // thing that explains what the rows are — and, for a verb that takes several,
-    // the only place TAB is discoverable.
-    if !workspaces.is_empty() {
-        match arity {
-            select::Arity::One => println!("Select workspace (type to filter):"),
-            select::Arity::Several => {
-                println!("Select workspaces (type to filter, TAB to mark several):");
-            }
-        }
-    }
-    match select::pick(&workspaces, arity) {
+    match select::pick(&workspaces, arity, cache) {
         select::Pick::Chose(workspace_ids) => {
             let mut ending = Ending::Done;
             for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
                 // Each workspace after the first is one more state change after
                 // whatever refresh the last one spawned, so the child indexing the
                 // old world must not be the last word — the same reasoning as
-                // `--autorm`'s re-arm in `after_the_session`. A no-op for the
+                // `--rm`'s re-arm in `after_the_session`. A no-op for the
                 // single pick every verb used to be.
                 if already_acted > 0 {
                     refresh.rearm();
@@ -1137,13 +1120,21 @@ fn render_select<'r>(
             }
             ending
         }
+        // Nothing to say: a user who quit the picker watched themselves do it, and
+        // read the invitation on the way past.
+        select::Pick::Quit => no_pick(),
         select::Pick::NoWorkspaces => {
             eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
             no_pick()
         }
-        // Nothing to add for either: a user who quit the picker knows they did, and
-        // a run with no terminal is one no message on that terminal would reach.
-        select::Pick::Quit | select::Pick::NoTerminal => no_pick(),
+        // The one run that needs the invitation on stdout. No terminal means no
+        // picker was drawn, so its header was never drawn either, and stdout is the
+        // only surface left — the one case where printing the line is not writing it
+        // under a screen that is about to cover it.
+        select::Pick::NoTerminal => {
+            println!("{}", select::invitation(arity));
+            no_pick()
+        }
     }
 }
 

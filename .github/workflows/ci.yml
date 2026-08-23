@@ -213,6 +213,14 @@ jobs:
       - name: Test dl grammar
         working-directory: rust
         run: timeout 300 cargo test --locked -p dl --test grammar -- --test-threads=1 --nocapture
+      # Named here because the steps above name one binary each: a test binary
+      # left out of this list is built by the `Build` step and run by nothing, so
+      # it reads exactly like a check that passed. This one is the completion
+      # script's tables diffed against the grammar that defines them, which is a
+      # guard that would be worth nothing unrun.
+      - name: Test dl completion tables
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test completion_tables -- --test-threads=1 --nocapture
       - name: Test dl lifecycle
         working-directory: rust
         run: timeout 300 cargo test --locked -p dl --test lifecycle -- --test-threads=1 --nocapture
@@ -325,6 +333,7 @@ jobs:
             "-p dl --lib --bins" \
             "-p dl --test read_side" \
             "-p dl --test grammar" \
+            "-p dl --test completion_tables" \
             "-p dl --test lifecycle" \
             "-p dl --test launch" \
             "-p dl --test migration" \

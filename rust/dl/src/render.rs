@@ -41,6 +41,7 @@ use devlaunch_core::flows::workspace_clone::{
 };
 use devlaunch_core::json::JsonKind;
 use devlaunch_core::notices::Notices;
+use devlaunch_core::shell;
 use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
@@ -292,30 +293,6 @@ impl Formatter for PythonPretty {
         }
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// The suffix verbs' notice
-// ---------------------------------------------------------------------------
-
-/// What `--rm`/`--stop` overrode by being appended, said out loud.
-///
-/// Written here and shared with `aid` rather than duplicated on both sides,
-/// because both sides can be the one that swallows the words: dl when the stale
-/// instruction was a positional word it now ignores, aid when it was the prompt aid
-/// would otherwise have handed an agent. One sentence, one wording.
-///
-/// It is not optional, and that is the point of the suffix form being safe at all.
-/// The line that removes a workspace is now allowed to carry an instruction it will
-/// not carry out, so it has to say which — a deliberate `--rm` and a slip look
-/// identical until then. stderr, like every other diagnostic here.
-pub fn overridden_notice(flag: &str, words: &[String]) -> String {
-    let named: Vec<String> = words.iter().map(|word| python_repr(word)).collect();
-    let was = if named.len() == 1 { "was" } else { "were" };
-    format!(
-        "{flag} overrode the rest of the line: {} {was} not acted on.",
-        named.join(", ")
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,15 +1138,15 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
     }
 }
 
-/// `--autorm`, at the moment the session has ended and the removal begins.
+/// `--rm`, at the moment the session has ended and the removal begins.
 ///
 /// Named rather than silent, and it names the *target as typed* rather than the
 /// resolved workspace id for two reasons: the id has not been resolved yet when this
 /// is said, and the word the user recognises is the one they wrote. Whatever the
 /// removal then decides — the clone lines, or [`removal_refusal`]'s sentence and a
 /// workspace still standing — reads as an answer to this.
-pub(crate) fn autorm_removing(spec: &str) -> String {
-    format!("--autorm: the session has ended, removing {spec}.")
+pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
+    format!("--rm: the session has ended, removing {spec}.")
 }
 
 /// devpod would not let go of the workspace, and the clone was kept.
@@ -1334,14 +1311,17 @@ pub(crate) fn report_refusals<'a>(
     lines.push(String::new());
     lines.push("Usually this means a container wrote them as a different user, and:".to_owned());
     // Quoted: these paths descend from $XDG_CACHE_HOME or $HOME, and a space in one
-    // turns a pasted `sudo rm -rf` into two targets, the first of them wrong.
+    // turns a pasted `sudo rm -rf` into two targets, the first of them wrong. The
+    // crate's one quoter does it, the same one `aid` builds its `dl` command line
+    // with — a private copy here would be a third spelling of `shlex.quote` to keep
+    // true.
+    let by_hand: Vec<String> = remove_by_hand
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
     lines.push(format!(
         "  sudo rm -rf {}",
-        remove_by_hand
-            .iter()
-            .map(|path| shell_quoted(path))
-            .collect::<Vec<_>>()
-            .join(" ")
+        shell::join(by_hand.iter().map(String::as_str))
     ));
     lines.push(
         "clears them. Check the reasons above first -- it does not fix all of them.".to_owned(),
@@ -1360,19 +1340,6 @@ fn refusal_reason(reason: &RefusalReason) -> String {
             format!("is a symbolic link{to}, which a purge will not follow")
         }
     }
-}
-
-/// `path` as `shlex.quote` would write it.
-///
-/// The safe set is Python's: a path built only of those characters is printed
-/// bare, and anything else is single-quoted with embedded quotes broken out.
-fn shell_quoted(path: &Path) -> String {
-    let text = path.display().to_string();
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
-    if !text.is_empty() && text.chars().all(safe) {
-        return text;
-    }
-    format!("'{}'", text.replace('\'', "'\"'\"'"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1700,6 +1667,14 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
+        // --- the terminal title (no level at all: not a sentence)
+        //
+        // The one notice with no line. What it carries is an escape sequence, so
+        // rendering it as one would put its bytes into `--prune`'s collected
+        // report and into every test that asserts on a launch's sentences.
+        // `Saying` writes it instead, which is the only sink that should.
+        LaunchNotice::TerminalTitle(_) => return None,
+
         // --- passed through from the layers below, in those modules' own words
         LaunchNotice::Cache(cache) => return cache_notice(cache),
         LaunchNotice::Lifecycle(notice) => return lifecycle_notice(notice),
@@ -1723,6 +1698,21 @@ pub(crate) struct Saying;
 
 impl Notices<LaunchNotice> for Saying {
     fn say(&mut self, notice: LaunchNotice) {
+        // The terminal title before the line check, because it is the one notice
+        // `launch_notice` has no line for and this is the sink that owes it its
+        // bytes. Written raw: no newline, since an OSC sequence is not a line,
+        // and flushed, because the next thing to touch this terminal is a session
+        // that may hold it for hours -- an unflushed title is a title that
+        // arrives when the work is over.
+        if let LaunchNotice::TerminalTitle(title) = &notice {
+            if let Some(osc) = title.osc() {
+                use std::io::Write as _;
+                let mut stderr = io::stderr();
+                let _ = stderr.write_all(osc.as_bytes());
+                let _ = stderr.flush();
+            }
+            return;
+        }
         if let Some(line) = launch_notice(&notice) {
             eprintln!("{line}");
         }
@@ -2280,6 +2270,7 @@ mod tests {
     use std::path::PathBuf;
 
     use devlaunch_core::flows::disk_usage::DiskUsage;
+    use devlaunch_core::flows::launch::TerminalTitle;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
@@ -2294,6 +2285,69 @@ mod tests {
             size,
             last_used: when,
         }
+    }
+
+    // ---------------------------------------------- the refusal advice line
+
+    /// The one line a person is meant to paste, with paths a shell would
+    /// mis-split if they went in bare.
+    ///
+    /// The expectations are CPython's `shlex.quote` output for the same paths —
+    /// including the embedded single quote, which is exactly where the `shlex`
+    /// crate answers different bytes and where a hand-rolled quoter drifts.
+    #[test]
+    fn the_advice_line_quotes_a_path_a_shell_would_mis_split() {
+        let lines = report_refusals(
+            std::iter::empty::<&Refusal>(),
+            "Removed nothing. These refused:",
+            &[
+                PathBuf::from("/home/u/my cache/devlaunch"),
+                PathBuf::from("/home/u/it's/devlaunch"),
+                PathBuf::from("/home/u/.cache/devlaunch"),
+            ],
+        );
+
+        assert!(
+            lines.contains(
+                &r#"  sudo rm -rf '/home/u/my cache/devlaunch' '/home/u/it'"'"'s/devlaunch' /home/u/.cache/devlaunch"#
+                    .to_owned()
+            ),
+            "the pasteable line, got {lines:#?}"
+        );
+    }
+
+    /// The rest of the classes a pasted line has to survive: the shell
+    /// metacharacters, a newline, and a path that stringifies to nothing.
+    ///
+    /// Single quoting is what makes `$` and a backtick inert rather than a
+    /// substitution the paste would run as root, and an empty word has to survive
+    /// as a word — `sudo rm -rf` with one silently dropped is a command that
+    /// removes the wrong thing. Expectations are CPython's `shlex.join` for the
+    /// same words.
+    #[test]
+    fn the_advice_line_makes_the_shell_metacharacters_inert() {
+        let lines = report_refusals(
+            std::iter::empty::<&Refusal>(),
+            "Removed nothing. These refused:",
+            &[
+                PathBuf::from("/home/u/a\nb/devlaunch"),
+                PathBuf::from("/home/u/$HOME/devlaunch"),
+                PathBuf::from("/home/u/`id`/devlaunch"),
+                PathBuf::from(""),
+                PathBuf::from("/home/u/na\u{ef}ve/devlaunch"),
+            ],
+        );
+
+        assert!(
+            lines.contains(
+                &concat!(
+                    "  sudo rm -rf '/home/u/a\nb/devlaunch' '/home/u/$HOME/devlaunch' ",
+                    "'/home/u/`id`/devlaunch' '' '/home/u/na\u{ef}ve/devlaunch'",
+                )
+                .to_owned()
+            ),
+            "the pasteable line, got {lines:#?}"
+        );
     }
 
     // ------------------------------------------------- the wrong-owner hint
@@ -2648,6 +2702,35 @@ mod tests {
                 exit: Exit::Code(9)
             }),
             None
+        );
+    }
+
+    #[test]
+    fn the_terminal_title_is_the_one_notice_with_no_line() {
+        // Not a debug line -- a notice that is not a sentence at all. Rendering it
+        // as one would put an escape sequence into `launch_notices`, which is what
+        // fills a collected report and what the tests that assert on a launch's
+        // words read. `Saying` is the only sink that may write these bytes.
+        assert_eq!(
+            launch_notice(&LaunchNotice::TerminalTitle(TerminalTitle::Write(
+                "\x1b]2;myws\x07".to_owned()
+            ))),
+            None
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::TerminalTitle(TerminalTitle::Off)),
+            None
+        );
+        assert!(
+            launch_notices(&[
+                LaunchNotice::TerminalTitle(TerminalTitle::Write("\x1b]2;myws\x07".to_owned())),
+                LaunchNotice::WaitingForSiblingLaunch {
+                    workspace_id: "ws".to_owned(),
+                },
+            ])
+            .iter()
+            .all(|line| !line.contains('\x1b')),
+            "no escape reaches a collected report"
         );
     }
 
