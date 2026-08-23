@@ -114,7 +114,7 @@ The verbs open the selector when you leave the workspace out. The full list is i
 you install things · [GitHub auth](#github-authentication) for pushing from inside a container ·
 [Cleaning up](#cleaning-up-purge-prune-reconcile) once workspaces have accumulated
 
-**Start here:** [Quickstart](#quickstart) · [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [Agent state in herdr](#agent-state-in-a-herdr-session) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+**Start here:** [Quickstart](#quickstart) · [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
 
 **Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
 
@@ -504,7 +504,6 @@ are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 | `--rm` | Run the agent, then [delete the workspace when the session ends](#--rm-the-throwaway-workspace). Appendable to a recalled line, prompt and all. To delete one *now* instead, that is `dl <ws> rm` |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
 | `DEVLAUNCH_NO_TTY=1` | No prompt question, no pty: the old one-shot behaviour |
-| `DEVLAUNCH_NO_HERDR=1` | Do not report agent state to a host-side [herdr](#agent-state-in-a-herdr-session) session |
 
 Everything after the workspace is the prompt, flags and all, so it never needs
 quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
@@ -684,8 +683,8 @@ escapes into somebody else's capture.
 A terminal title has exactly one value and the last writer sets it. An interactive
 shell overwrites dl's within a second of arriving: Ubuntu's stock `~/.bashrc` puts
 `\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt renames the pane after
-the container's hostname — which is the workspace id, the name we just went to
-some trouble not to use.
+the container's hostname — which is the workspace id's readable half,
+`devlaunch-main`, and so says nothing about the owner and spells the ref as a slug.
 
 So the setup pass appends one line to the profile a login shell reads:
 
@@ -695,7 +694,7 @@ case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main
 
 Appended, and that is the whole mechanism: two escapes in one prompt are applied in
 order, so the last one sets the title. Nothing is rewritten — the visible
-`vscode@devlaunch-main-zovomobo:~/repo$` still says the hostname, and only the tab
+`vscode@devlaunch-main:~/repo$` still says the hostname, and only the tab
 changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
 `PS1`, so the stock escape would land afterwards and win.) Interactive bash only:
 `bash -lc` reads the same profile on every `dl <ws> -- cmd` one-shot, and `\[`, `\e`
@@ -708,11 +707,11 @@ recognises — and it rides the same round trip as the hostname stage, so it cos
 extra trip.
 
 **Only a spec is installed this way.** `dl myworkspace` teaches the container
-nothing: the id is already its hostname, so the stock prompt writes that anyway. It
-also cannot, safely — the line is recognised by a hash of its own text, so a second,
-different name for one workspace would not replace the first but sit after it, and
-the last one wins. Keying on the spec alone means a workspace has at most one such
-line, ever.
+little: the hostname is the readable half of that same id, so the stock prompt
+already writes everything in it anyone reads. It also cannot, safely — the line is
+recognised by a hash of its own text, so a second, different name for one workspace
+would not replace the first but sit after it, and the last one wins. Keying on the
+spec alone means a workspace has at most one such line, ever.
 
 **It is installed when a workspace enters Running, not on every attach.** A
 workspace that is already up keeps whatever its profile was given, so
@@ -747,109 +746,6 @@ action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
 terminal is `<session> | <pane title>`, so the spec is what shows up in a kitty tab
 bar.
-
-## Agent state in a herdr session
-
-[herdr](https://herdr.dev) is a terminal multiplexer that shows, per pane, whether
-the coding agent in it is **working**, **idle** or **blocked** waiting for you. Run
-`aid` in a herdr pane and it shows none of that, and the reason is structural:
-herdr decides which agent a pane holds from the pane's foreground process, and
-under `aid` the host's process tree is `aid → dl → ssh` with the agent inside the
-container. There is no `claude` on the host to find.
-
-Nothing else about the hop is broken — the pane's screen bytes arrive intact, and
-herdr's own screen rules match against them correctly *once it believes an agent is
-there*. So `dl` supplies the missing fact and herdr does the rest:
-
-```bash
-aid blooop/devlaunch@fix/42 fix the flaky test   # in a herdr pane; the badge appears
-```
-
-Three things make that work, and all three are automatic:
-
-| | |
-|---|---|
-| **The socket** | The host's herdr socket is bind-mounted into the workspace at `/var/tmp/devlaunch-herdr.sock` |
-| **The pane** | `aid` puts `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` on the agent's own command line, with the socket path rewritten to the container's |
-| **The hook** | A setup-pass stage installs `~/.devlaunch/herdr-agent-state.py` and wires it to claude's `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd` hooks |
-
-`Notification` is the event that earns the feature: it is what claude fires when it
-is waiting for a human, which is the one state a fleet of workspaces exists to
-surface.
-
-This pairs with [the terminal title](#naming-the-terminal-after-the-workspace)
-rather than competing with it. herdr can classify state from a title as well as
-from the screen, and `aid` deliberately suppresses claude's own title so the
-workspace id is what stands — so under `aid` the title is never the state signal,
-which is exactly why the state comes from the hook. What you get is both halves
-naming different things: the badge says what the agent is doing, and the pane name
-says which workspace it is doing it in.
-
-### What it costs, and when it does nothing
-
-**On a host not running herdr, nothing happens at all** — no mount, no stage, no
-notice, and every command line byte-identical to what it was. That is decided from
-whether a herdr socket exists rather than from whether the feature is enabled, so it
-is true of the payload and not merely of its effects.
-
-The stage is one more line in the setup pass every entry into Running already pays,
-and it can never fail a launch: a container it cannot satisfy reports the stage and
-opens exactly as it would have. It reports at info level rather than warning,
-because failing is its majority case — three things have to be true:
-
-- **`python3` in the container.** The hook talks to a unix socket and merges a JSON
-  settings file, and neither is something shell can do. herdr's own integration
-  requires `python3` for the same reason, so this asks for nothing extra.
-- **A claude configuration directory of the container's own.** If the settings file
-  or the hook's own path is inside anything bind-mounted from the host, the stage
-  **refuses** rather than merging: writing hooks there would edit your real claude
-  settings from inside every container, on every launch. A mounted *parent* counts,
-  which is the shape that actually occurs — `dl` never mounts `~/.claude` into a
-  workspace, but **this repo's own devcontainer does** (`.devcontainer/claude-code`
-  binds `settings.json` among others), so a workspace on devlaunch itself reports
-  the stage and installs nothing, by design. Arbitrary repos, which is what `dl`
-  launches, have a container-local `~/.claude` and get the badge.
-- **The socket mount**, which only lands at container creation. A workspace created
-  before this feature — or by a `dl` on a machine with no herdr running — needs
-  **`dl <ws> recreate`**, not `restart`. This is the one place it differs from the
-  zellij stage above, which needs only a restart because nothing it installs is a
-  mount.
-
-The hook is written whole and moved into place, and it exits 0 in every state
-including every failure. A herdr that stopped listening, a socket whose session has
-ended, a claude that changed its payload: each is a badge that does not appear, and
-none is a turn that fails.
-
-`--codex` and `--gemini` are unaffected — the hook devlaunch installs is claude's,
-and telling another agent where to report would name a reporter that is not there.
-
-| Variable | Description |
-|----------|-------------|
-| `DEVLAUNCH_NO_HERDR=1` | Do not mount the herdr socket into workspaces and do not install the hook. The rest of tool provisioning is untouched |
-
-**Mounting the socket gives the container control of your herdr session** — it is
-the same socket herdr's own CLI drives, so something in there could open panes or
-read other panes' output. That is the trade, and it is why there is an opt-out; it
-is on by default for the reason the forwarded GitHub token is, namely that a `dl`
-workspace is already where you run an agent with `--dangerously-skip-permissions`.
-`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning, and
-both read the same values as the variables above: anything but empty, `0`, `false`
-or `no` means yes, turn it off.
-
-### Why not herdr's own integration
-
-It does not install herdr in the container, and it does not use herdr's own
-`herdr integration install claude`. That integration's hook sends
-`pane.report_agent_session` — session *identity* for a pane herdr already knows
-holds an agent — which registers nothing by itself, so forwarding it would carry
-session metadata for an agent herdr does not believe exists. The reports here are
-the ones that make the pane appear.
-
-The other way round works too and needs nothing from `dl`: `herdr --remote
-<workspace-id>.devpod` runs a herdr server *inside* the workspace, where the agent
-really is the pane's foreground process. That gives correct badges with no mount and
-no hook, at the price of one view per workspace instead of one spanning them all,
-and a herdr in the container whose version must match the host's exactly.
 
 ## GitHub Authentication
 
@@ -1159,11 +1055,19 @@ Branch names are case-sensitive, because git refs are.
 URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
 hashed over the URL.
 
-The id is also the container hostname. 47 characters is one inside devpod's own hard
-ceiling of 48 — a 49-character id is refused outright, not truncated — and well inside
-the 64-byte hostname limit on its own, but tools that stack their own prefixes onto the
-container name have about 17 characters to work with, so a tool that wants more is the
-one that has to shorten.
+The container hostname is this id **without the suffix** — `devlaunch-main` for the
+workspace devpod addresses as `devlaunch-main-zovomobo`. The suffix is what makes the
+id injective, and nothing addresses a container by the name in its UTS namespace, so
+a prompt carries the half of the name that is read. That is 38 characters at most,
+leaving ~26 of the 64-byte hostname limit for tools that stack their own prefixes onto
+the container name.
+
+47 is held by devpod instead: it is one character inside devpod's own hard ceiling of
+48, and a 49-character id is refused outright rather than truncated.
+
+The cost is that two workspaces differing only in their suffix now show one prompt —
+one repo under two owners, or `feature/auth` beside `feature-auth`. They are still two
+workspaces, and the tab is what tells them apart.
 
 The id is *not* what you read. A tab shows `owner/repo@branch` — see [Naming the
 terminal after the workspace](#naming-the-terminal-after-the-workspace) — and the

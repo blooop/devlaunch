@@ -69,7 +69,6 @@ use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
 use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
-use crate::flows::herdr;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
@@ -171,15 +170,6 @@ pub struct Host {
     /// difference is a case worth serving: `dl <ws> -- make test > log` has
     /// redirected stdout and still has a terminal to name.
     pub(crate) stderr_tty: bool,
-    /// The host's herdr control socket, if it has one listening.
-    ///
-    /// A resolved socket rather than the variable naming it, because whether the
-    /// path is really a socket is the question a mount depends on and answering it
-    /// twice could answer it differently. `None` on every host not running herdr,
-    /// which is what makes [`herdr::up_args`] add nothing there.
-    pub(crate) herdr_socket: Option<herdr::HostSocket>,
-    /// `DEVLAUNCH_NO_HERDR`.
-    pub(crate) herdr: herdr::HerdrSwitch,
     /// `~/.ssh/config`, where devpod publishes its host aliases. `None` on a
     /// machine with no home directory, which reads the same as a config with no
     /// alias in it: fall back to the devpod transport.
@@ -207,8 +197,6 @@ impl Host {
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
-            herdr_socket: herdr::HostSocket::from_env(),
-            herdr: herdr::HerdrSwitch::from_env(),
             ssh_config: ssh::config_path(),
             cache_dir: cache_dir.into(),
             devpod_home: lifecycle::devpod_home(),
@@ -826,7 +814,6 @@ pub(crate) fn up_args(
     options: &ContextOptions,
     pixi: &PixiCache,
     token: &[String],
-    herdr: &HerdrMount,
 ) -> Vec<String> {
     let mut args = vec!["up".to_owned(), request.source.to_owned()];
     if let Some(id) = request.naming.create_as() {
@@ -849,34 +836,7 @@ pub(crate) fn up_args(
     args.extend(options.up_args());
     args.extend(pixi.up_args());
     args.extend(token.iter().cloned());
-    args.extend(herdr.up_args());
     args
-}
-
-/// The herdr socket this launch may bind into the container, if any.
-///
-/// A type of its own rather than a second `&[String]` beside `token`: two slices of
-/// pre-built flags in one signature are two a caller can pass in the wrong order
-/// with nothing to catch it, and these two carry very different things.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct HerdrMount {
-    socket: Option<herdr::HostSocket>,
-    switch: herdr::HerdrSwitch,
-}
-
-impl HerdrMount {
-    /// What this host asks for.
-    pub(crate) fn of(host: &Host) -> Self {
-        Self {
-            socket: host.herdr_socket.clone(),
-            switch: host.herdr,
-        }
-    }
-
-    /// The `devpod up` flags, which are none on a host with no herdr.
-    fn up_args(&self) -> Vec<String> {
-        herdr::up_args(self.socket.as_ref(), self.switch)
-    }
 }
 
 // ===========================================================================
@@ -1181,7 +1141,7 @@ fn up_under_stage(
         .as_ref()
         .map(StagedToken::up_args)
         .unwrap_or_default();
-    let args = up_args(request, &options, &pixi, &token_args, &HerdrMount::of(host));
+    let args = up_args(request, &options, &pixi, &token_args);
 
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
@@ -1807,7 +1767,7 @@ pub(crate) fn dotfiles_update(
 /// arms that did not — a bare name, a path, a URL.
 ///
 /// This used to be the id always, on the grounds that it is the one string every
-/// placement has and that it is already the container's hostname, so the title dl
+/// placement has and that it was then the container's hostname too, so the title dl
 /// writes and the `user@host` an interactive prompt repaints over it agreed instead
 /// of disagreeing. The first half still holds and is why the id is still the answer
 /// wherever there is no triple. The second was worth less than it looked: the prompt
@@ -2979,14 +2939,15 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// The **spec** and only the spec, where [`Self::titled`] falls back to the id.
     /// Two reasons, and the second is the load-bearing one.
     ///
-    /// A container told to title after its own id is told nothing: the id is already
-    /// its hostname, so the stock prompt writes exactly that anyway. And the line is
-    /// deduped by a hash of its own text, so a name that varies for one workspace
-    /// does not replace the line — it adds another, and the last append is the one
-    /// every prompt then obeys. A workspace opened once as `blooop/devlaunch@main`
-    /// and once by its id would end up permanently titled after the id. Keying on the
-    /// spec alone makes the line a pure function of the triple, so a workspace has at
-    /// most one, ever.
+    /// A container told to title after its own id is told almost nothing: the stock
+    /// prompt already writes the id's readable half, which is its hostname, and the
+    /// eight characters of hash this would add are the part nobody reads. And the
+    /// line is deduped by a hash of its own text, so a name that varies for one
+    /// workspace does not replace the line — it adds another, and the last append is
+    /// the one every prompt then obeys. A workspace opened once as
+    /// `blooop/devlaunch@main` and once by its id would end up permanently titled
+    /// after the id. Keying on the spec alone makes the line a pure function of the
+    /// triple, so a workspace has at most one, ever.
     ///
     /// Filtered by [`sanitize_title`], the same way the escape is, because the two
     /// halves must not disagree about what a name may hold. `is_safe_name` accepts
@@ -3811,7 +3772,7 @@ mod tests {
     #[test]
     fn the_pass_after_an_up_is_told_the_container_just_restarted() {
         // The half of the scope that cannot be skipped, pinned at the call site
-        // that decides it. `sudo hostname <ws>` is a stage of the pass and the name
+        // that decides it. `sudo hostname` is a stage of the pass and the name it sets
         // lives in the container's UTS namespace, which docker rebuilds from the
         // container's config on every start -- so the pass following *this* launch's
         // own `devpod up` has work to do whatever the host remembers about the
@@ -3919,13 +3880,7 @@ mod tests {
             },
         );
 
-        let args = up_args(
-            &request,
-            &ContextOptions::default(),
-            &pixi,
-            &[],
-            &HerdrMount::default(),
-        );
+        let args = up_args(&request, &ContextOptions::default(), &pixi, &[]);
 
         assert_eq!(
             args,
@@ -3969,7 +3924,6 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
-            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -3998,7 +3952,6 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
-            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -4036,7 +3989,6 @@ mod tests {
                 &ContextOptions::default(),
                 &nothing,
                 &[],
-                &HerdrMount::default(),
             )
         };
 
@@ -4067,7 +4019,6 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
-            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -4096,7 +4047,6 @@ mod tests {
                 source: PathBuf::from("/nope"),
             },
             &[],
-            &HerdrMount::default(),
         );
 
         assert_eq!(
@@ -5834,8 +5784,9 @@ mod tests {
         // id would have renamed the tab back to the hash for good.
         //
         // So the pass is told the spec or nothing. Nothing is the honest answer for
-        // an id: it is already the container's hostname, so the stock prompt writes
-        // exactly that anyway and the line would buy nothing to lose.
+        // an id: the container's hostname is that id's readable half already, so the
+        // stock prompt writes all of it anyone reads and the line would buy eight
+        // characters of hash to lose.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let scene = Scene::new().with_running(&workspace.value());
         let updater = SelfInvocation::new("dl");

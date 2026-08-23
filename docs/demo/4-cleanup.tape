@@ -6,9 +6,9 @@
 # rebuild in 1-launch.tape's pre-warm.
 #
 # It needs the clones clean, since `dl rm` refuses work that is nowhere else.
-# 3-agent.tape leaves the agent running for four seconds, which is long enough
-# to read files and not to edit one; if you lengthen it, check `git status` in
-# that workspace before blaming this tape.
+# 3-agent.tape leaves the agent running for two or three seconds, which is long
+# enough to read files and not to edit one; if you lengthen it, check
+# `git status` in that workspace before blaming this tape.
 #
 # See 1-launch.tape for how to run these.
 
