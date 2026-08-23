@@ -6,8 +6,11 @@
 //! and — for the same function serving `aid` — one `--flag` per coding agent. The
 //! originals live in three different crates (`dl`'s argument grammar, `aid`'s
 //! rewrite table) with nothing linking them, which is how the script came to be
-//! missing seven flags that had been shipping for releases: a flag added to the
-//! grammar completes nothing, and nothing fails.
+//! missing five flags that had been shipping for releases: a flag added to the
+//! grammar completes nothing, and nothing fails. A flag *retired* from the grammar
+//! is the same drift the other way, and this catches that too — two spellings the
+//! script still offered went hidden while this was in review, and it is what said
+//! so.
 //!
 //! This is the diff that fails instead. It is a **tactical stop-loss**, not a
 //! design: the real fix is a completion script generated from the grammar, which is
@@ -362,9 +365,9 @@ fn a_retired_verb_is_never_offered() {
 
 #[test]
 fn every_flag_offered_beside_a_workspace_is_a_flag_the_grammar_accepts() {
-    // The other half of the diff: the script may not invent a flag either. `--autorm`
-    // is offered here rather than only in first position because it rides beside a
-    // workspace, which is the one place the grammar defines it.
+    // The other half of the diff: the script may not invent a flag either. `--rm` is
+    // offered here as well as in first position because riding beside a workspace is
+    // what it is for — `dl <ws> --rm` deletes the workspace when the session ends.
     let script = completion_script();
     let grammar = argument_grammar();
 
