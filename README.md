@@ -2174,6 +2174,69 @@ an installed release, the wheel's binary:
 DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
 ```
 
+### The public-API snapshots
+
+Three files under `rust/` are the crates' public surface as `cargo public-api` renders it, and
+CI's `public-api` job fails until a change to any of them is committed. They are not one file
+because they are not one promise:
+
+| File | What a diff means |
+| --- | --- |
+| `devlaunch-core/public-api.api.txt` | **A change to the promised contract** — a removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 37 declarations written *at* the `devlaunch_core::api` path, and only those. |
+| `devlaunch-core/public-api.rest.txt` | Mostly routine — the binary surface (`flows::`, `domain::`, `clients::`) is reachable but never promised, so read it for the accidental `pub`. **But** the promised types' methods and impls are in here too (see below), and a diff touching one of those is a contract change. |
+| `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementer writes against. |
+
+**The promise file holds declarations, not behaviour.** `cargo public-api` renders inherent methods
+and trait impls only at a type's *canonical* path, never at the path it is re-exported under, so
+the classifier cannot see them: `api::Launch`'s only constructor and only method are rendered
+`flows::launch::Launch::{new, run}` and land in the rest file, along with `CommandContext::new`,
+`DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on the promised types — 42
+of the 79 rows the generator emits for the `api` section. Measured consequence: renaming
+`api::Launch::run` leaves `public-api.api.txt` byte-identical. The guard is therefore one-way — a
+diff in the promise file is a change to the promise, but not every change to the promise diffs it.
+Widening the classifier is [#352](https://github.com/blooop/devlaunch/issues/352).
+
+The runner had no snapshot of its own until #338: its whole surface entered core's as the single
+unexpanded row `pub use devlaunch_core::runner::<<devlaunch_runner::*>>`, so removing a trait
+method moved nothing and passed. And core's one file mixed the two tiers, which is worse than it
+sounds — a change to the promised declarations arrives as one row inside two thousand of internal
+churn, and reads as routine.
+
+Regenerate all three with one command, from the repository root (or by absolute path from
+anywhere — the script resolves the checkout from its own location):
+
+```bash
+scripts/public-api-snapshots.sh
+```
+
+That script is also what CI runs — into a scratch tree, then diffing the files it names via
+`--print-files` — so the filter that decides which row is a promise, the `-ss` flag, the pinned
+`cargo-public-api` version and the list of snapshots all exist in exactly one place. Two
+prerequisites, and this repository's devcontainer has neither, so it is a host command: a nightly
+toolchain (cargo-public-api's rustdoc-JSON backend is nightly-only; the crates themselves still
+build on the stable pin) and the pinned tool.
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-public-api --locked --version "$(scripts/public-api-snapshots.sh --print-pin)"
+```
+
+Committing a regenerated `public-api.api.txt` is committing a change to the promised contract, so
+say which one in the pull request — and if the change was to a promised type's methods or impls,
+the diff to point at is in `public-api.rest.txt`. `rust/devlaunch-core/tests/public_api_snapshots.rs`
+holds the two core files to the split itself — every promised row is an `api` declaration and none
+of the others is — so a hand-edited snapshot fails in the Rust suite rather than in review.
+
+**What a failed run leaves behind**, precisely, because "nothing" would be a claim rather than a
+fact. The script checks every destination is writable before it generates anything, then writes
+into a staging directory *inside* the destination and moves the files into place only once all
+three exist. So a run that fails while generating — a compile error, a guard firing, a Ctrl-C —
+leaves the checked-in snapshots byte-identical. Staging on the same filesystem makes each move a
+rename rather than a copy, so no file is ever seen half-written. What is *not* atomic is the set of
+three: a crash between renames leaves some files new and some old, each one whole. CI's
+regenerate-and-diff is what catches that, since a mixed set still satisfies every invariant the
+tests over these files can check.
+
 ### Coverage: two numbers, and neither is the other
 
 The crates that ship and the harness that judges them are measured separately, because they are

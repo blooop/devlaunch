@@ -194,3 +194,10 @@ rust/target/
 # `rust-coverage` CI job). The instrumented target directory is already covered by
 # the `target/` rule above.
 rust/lcov.info
+
+# `scripts/public-api-snapshots.sh` stages the regenerated snapshots beside their
+# destination — same filesystem, so the moves into place are renames rather than
+# copy+unlink. The directory is removed on every exit path the script controls;
+# a SIGKILL is the one that can leave it behind, and this keeps that leftover out
+# of a `git add -A`.
+.staging.*

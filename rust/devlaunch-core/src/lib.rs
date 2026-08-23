@@ -39,9 +39,29 @@
 //! So a `pub` item here is not automatically part of the promised API. Only
 //! what [`api`] re-exports is. The distinction is enforced by keeping [`api`]
 //! the single re-export point, by the doc note above on every binary-surface
-//! item, and by the `cargo public-api` snapshot in `public-api.txt`, which CI
-//! diffs on every pull request: any change to the crate's public surface is a
-//! committed, reviewed diff or a red tick.
+//! item, and by two `cargo public-api` snapshots that CI diffs on every pull
+//! request: any change to the crate's public surface is a committed, reviewed
+//! diff or a red tick. The two tiers get a file each — `public-api.api.txt`
+//! for declarations at the [`api`] path, `public-api.rest.txt` for the rest —
+//! so that a change to the promised tier's *declarations* is a diff in a
+//! 37-row file rather than one row inside two thousand.
+//!
+//! **What that file does not cover, and it is not a small gap.**
+//! `cargo public-api` renders inherent methods and trait impls only at a
+//! type's canonical path, never at the path it is re-exported under. So
+//! [`api::Launch`]'s only constructor and only method are rendered
+//! `flows::launch::Launch::{new, run}` and land in `public-api.rest.txt`, as do
+//! `CommandContext::new`, `DevcontainerPath::as_str` and every derived
+//! `Clone`/`Debug`/`PartialEq` on the promised types: 42 of the 79 rows the
+//! generator emits for the `api` section. Renaming `api::Launch::run` — an
+//! unambiguous break — leaves `public-api.api.txt` byte-identical. So the
+//! sound direction is one-way: a diff in the promise file *is* a change to the
+//! promise, but a change to the promise need not diff it, and a diff in the
+//! rest file that touches a promised type is a contract change too. Widening
+//! the classifier is <https://github.com/blooop/devlaunch/issues/352>.
+//!
+//! `scripts/public-api-snapshots.sh` regenerates both; see "The public-API
+//! snapshots" in README.md.
 
 // `runner` is pub so `devlaunch-test-support` can implement the trait; that
 // crate is dev-only and never shipped.

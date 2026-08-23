@@ -385,24 +385,37 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  # The API-freeze tripwire (#251 §7, #262). devlaunch-core's crate docs promise
-  # two tiers of `pub` — the frozen wf API behind `api`, and binary surface that
-  # is reachable but not promised — and this job is what makes that promise
-  # checkable rather than prose: rust/devlaunch-core/public-api.txt is the whole
-  # public surface as `cargo public-api` renders it, and any change to it fails
-  # here until the new snapshot is committed. That turns every surface change
-  # into a reviewed diff: an addition to `api` is a deliberate PR, a removal a
-  # visible breaking change, and an accidental `pub` a red tick instead of a
-  # silent promise.
+  # The API-freeze tripwire (#251 §7, #262, re-scoped by #312). devlaunch-core's
+  # crate docs promise two tiers of `pub` — the frozen wf API behind `api`, and
+  # binary surface that is reachable but not promised — and this job is what
+  # makes that promise checkable rather than prose: any change to a checked-in
+  # `cargo public-api` snapshot fails here until the new one is committed. That
+  # turns every surface change into a reviewed diff: an addition to `api` is a
+  # deliberate PR, a removal a visible breaking change, and an accidental `pub`
+  # a red tick instead of a silent promise.
   #
-  # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crate
-  # itself still builds on the stable pin everywhere else. `-ss` (omit blanket
-  # and auto-trait impls) rather than the full listing, because auto-trait rows
-  # move when *rustdoc* moves — `UnsafeUnpin` appeared with a nightly, not with
-  # a crate change — and a tripwire that fires on toolchain drift teaches people
-  # to update the snapshot unread. Derived impls (Clone, Debug, serde) stay in:
-  # losing one is a real API break. cargo-public-api is pinned for the same
-  # reason; bump it together with a freshly generated snapshot.
+  # Three snapshots, because one file could not tell those tiers apart. It held
+  # both, so a breaking `api` change arrived as one row inside two thousand of
+  # internal churn and read as routine; and `devlaunch-runner` — the trait an
+  # external implementer writes against — entered it as a single unexpanded glob
+  # row, so removing a `Runner` method moved nothing at all. Now:
+  # devlaunch-core/public-api.api.txt is the promise as a path match can see it,
+  # devlaunch-core/public-api.rest.txt the tripwire over the binary surface, and
+  # devlaunch-runner/public-api.txt the process seam.
+  #
+  # "As a path match can see it" is the honest scope, and it is narrower than it
+  # reads: cargo public-api renders methods and impls only at a type's canonical
+  # path, so a promised type's constructors, methods and derived impls are in
+  # the rest file, and renaming `api::Launch::run` leaves the promise file
+  # byte-identical. A diff in the rest file touching a promised type is a
+  # contract change too. Widening the classifier is #352.
+  #
+  # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crates
+  # themselves still build on the stable pin everywhere else. The pinned
+  # version, the `-ss` rationale, the split filter and the list of files to
+  # check all live in the regeneration script, which is also what this job runs
+  # — so what CI checks cannot drift from what a developer regenerates, and a
+  # fourth snapshot needs no workflow edit to be covered.
   public-api:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -413,19 +426,41 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: Install cargo-public-api (pinned)
-        run: cargo install cargo-public-api --locked --version 0.52.0
-      - name: The public surface is the snapshot the repo carries
-        working-directory: rust
+      - name: Install cargo-public-api (the pin the script names)
         run: |
           set -euo pipefail
-          cargo public-api -p devlaunch-core -ss > /tmp/public-api.txt
-          if ! diff -u devlaunch-core/public-api.txt /tmp/public-api.txt; then
-            echo "::error::devlaunch-core's public API changed. If the change is" \
-              "deliberate, regenerate the snapshot and commit it:" \
-              "cd rust && cargo +nightly public-api -p devlaunch-core -ss" \
-              "> devlaunch-core/public-api.txt (needs cargo install" \
-              "cargo-public-api --locked --version 0.52.0 on a nightly toolchain)."
+          cargo install cargo-public-api --locked \
+            --version "$(scripts/public-api-snapshots.sh --print-pin)"
+      - name: The public surface is the snapshots the repo carries
+        run: |
+          set -euo pipefail
+          scripts/public-api-snapshots.sh "$RUNNER_TEMP/public-api"
+          changed=0
+          checked=0
+          while read -r snapshot; do
+            checked=$((checked + 1))
+            diff -u "rust/$snapshot" "$RUNNER_TEMP/public-api/$snapshot" || changed=1
+          done < <(scripts/public-api-snapshots.sh --print-files)
+          # Count what was compared, in the same spirit as the `gate` job's
+          # "this gate covers no jobs" check. `set -e` does not see a process
+          # substitution fail, and a loop that runs zero times leaves changed=0
+          # — so without this, a --print-files that printed nothing (or exited
+          # non-zero) would report success having diffed not one file, which is
+          # the exact shape of tripwire this job exists to stop being.
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::--print-files listed no snapshots, so this job compared" \
+              "nothing. The list lives in scripts/public-api-snapshots.sh; a green" \
+              "tick here would mean the public surface is unchecked, not unchanged."
+            exit 1
+          fi
+          if [ "$changed" -ne 0 ]; then
+            echo "::error::A public surface changed. If the change is deliberate," \
+              "regenerate the snapshots and commit them:" \
+              "scripts/public-api-snapshots.sh (needs a nightly toolchain and the" \
+              "cargo-public-api the script pins; see 'The public-API snapshots' in" \
+              "README.md). A diff in devlaunch-core/public-api.api.txt is a change" \
+              "to the promised API — say which, and note that a promised type's" \
+              "methods and impls diff in the rest file instead (#352)."
             exit 1
           fi
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The public-API freeze is three snapshots instead of one, so its diff means something
+  again.** `devlaunch-core`'s snapshot splits into `public-api.api.txt` — the 37 declarations
+  written at the `devlaunch_core::api` path, where a diff is a change to the promised contract —
+  and `public-api.rest.txt`, the tripwire over the binary surface that a refactor may move
+  freely. That guard is one-way, and the README says so: `cargo public-api` renders methods and
+  impls only at a type's canonical path, so a promised type's constructors, methods and derived
+  impls diff in the *rest* file (renaming `api::Launch::run` leaves the promise file
+  byte-identical). Widening the classifier is #352.
+  `devlaunch-runner` gets one of its own: the trait an external `Runner` implementer
+  writes against used to enter core's snapshot as a single unexpanded glob row, so removing a
+  method from it moved nothing and passed CI. `scripts/public-api-snapshots.sh` regenerates all
+  three and is what CI runs, so the filter deciding which row is a promise, the `-ss` flag and
+  the pinned `cargo-public-api` exist in one place; see "The public-API snapshots" in README.md.
+
 ### Fixed
 
 - **A `kill` or a closed terminal now runs the same cleanup Ctrl-C does.** Only
