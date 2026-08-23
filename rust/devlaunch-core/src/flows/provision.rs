@@ -72,7 +72,6 @@ use sha2::{Digest as _, Sha256};
 
 use crate::clients::devpod::{self, Call, NotRun};
 use crate::domain::workspace_id::hostname_of;
-use crate::flows::herdr::{self, HerdrSwitch};
 use crate::notices::Notices;
 use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
@@ -198,15 +197,8 @@ pub(crate) const HOSTNAME_STAGE: StageName = StageName::new("hostname");
 /// of round trips: it rides the pass every entry into Running already pays.
 pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
 
-/// The stage that wires the agent's lifecycle events to a host-side herdr session
-/// (see [`crate::flows::herdr`]). Free of round trips for the same reason, and
-/// [`Stage::quieter`] because most containers will not satisfy it: it needs a
-/// `python3`, a claude configuration directory of the container's own, and the
-/// socket mount, and the launch is unharmed by any of those being absent.
-pub(crate) const HERDR_STAGE: StageName = StageName::new("herdr");
-
 /// The stage that teaches the shell to keep naming the terminal after this
-/// workspace. Rides the same trip as the three above it.
+/// workspace. Rides the same trip as the two above it.
 pub(crate) const TITLE_STAGE: StageName = StageName::new("title");
 
 // ===========================================================================
@@ -383,26 +375,23 @@ impl ZellijSwitch {
 pub struct Switches {
     pub tools: ToolsSwitch,
     pub zellij: ZellijSwitch,
-    pub herdr: HerdrSwitch,
 }
 
 impl Switches {
-    /// Every switch as the process environment sets it.
+    /// Both switches as the process environment sets them.
     pub fn from_env() -> Self {
         Self {
             tools: ToolsSwitch::from_env(),
             zellij: ZellijSwitch::from_env(),
-            herdr: HerdrSwitch::from_env(),
         }
     }
 
-    /// Every switch on — the default a machine that set no variable gets, and the
-    /// shape most tests want.
+    /// Both switches on — the default a machine that set neither variable gets,
+    /// and the shape most tests want.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const INSTALLING: Self = Self {
         tools: ToolsSwitch::Install,
         zellij: ZellijSwitch::Install,
-        herdr: HerdrSwitch::Report,
     };
 }
 
@@ -980,7 +969,7 @@ impl Stage {
 /// touches the hostname, which is not tools work under either variable.
 /// `title` is the name a shell in this container should keep putting on the terminal,
 /// or `None` for a launch that wants none — which is `DEVLAUNCH_NO_TITLE`, or a spec
-/// that resolved no triple, both decided by the caller. Last of the four because it
+/// that resolved no triple, both decided by the caller. Last of the three because it
 /// is the one that is not a switch, and neither tools switch touches it either:
 /// naming a pane is no more tool provisioning than naming a container is.
 ///
@@ -995,7 +984,6 @@ pub(crate) fn setup_stages(
     workspace: &str,
     tools: ToolsSwitch,
     zellij: ZellijSwitch,
-    herdr: HerdrSwitch,
     title: Option<&str>,
 ) -> Vec<Stage> {
     let mut stages = vec![
@@ -1033,20 +1021,6 @@ pub(crate) fn setup_stages(
             // nothing to show for it.
             format!("bash -c {} >&2", quote(&zellij_script())),
         ));
-    }
-    // Gated the same way and for the same reason: writing a hook into the
-    // container is tool provisioning, so `DEVLAUNCH_NO_TOOLS` covers it, and
-    // `DEVLAUNCH_NO_HERDR` covers only this. A nested `bash -c` for the reason the
-    // zellij stage needs one — a stage is interpolated into `if <command>; then`,
-    // which is one line, and this script is not.
-    if let (ToolsSwitch::Install, HerdrSwitch::Report) = (tools, herdr) {
-        stages.push(
-            Stage::new(
-                HERDR_STAGE,
-                format!("bash -c {} >&2", quote(&herdr::hook_script())),
-            )
-            .quieter(),
-        );
     }
     if let Some(title) = title {
         stages.push(
@@ -1961,13 +1935,7 @@ fn setup_pass(
     title: Option<&str>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<ProbeResult, NotRun> {
-    let stages = setup_stages(
-        workspace,
-        switches.tools,
-        switches.zellij,
-        switches.herdr,
-        title,
-    );
+    let stages = setup_stages(workspace, switches.tools, switches.zellij, title);
     let call = Call::new([
         "ssh",
         workspace,
@@ -2945,13 +2913,7 @@ fi
         // The round trip Python's own tests assert with `shlex.split(runner.script())`:
         // whatever the quoting, the remote shell has to recover exactly `bash`, the
         // flag, and one script.
-        let stages = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Report,
-            None,
-        );
+        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None);
         for (payload, flag, script) in [
             (
                 format!("bash -lc {}", quote(&setup_script(&stages))),
@@ -2978,13 +2940,7 @@ fi
     fn the_zellij_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
         // The stage is interpolated into `if <command>; then`, so the quoting has to
         // survive being read by the *pass's* shell before the nested bash sees it.
-        let stages = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Report,
-            None,
-        );
+        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None);
         let command = &stages[1].command;
         let words = shlex::split(command).expect("a stage a shell can read");
         assert_eq!(
@@ -3031,7 +2987,6 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
         assert_eq!(
@@ -3042,7 +2997,6 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
         assert_eq!(
@@ -3809,7 +3763,6 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
         assert!(script.contains(&probe_script()));
@@ -3820,13 +3773,7 @@ fi
         // Order, and it is not cosmetic: the probe exits early when a tool is
         // missing, which is the commonest cold-path answer, so a stage placed behind
         // it would report "not reached" on the very launches the fold exists for.
-        let stages = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Report,
-            None,
-        );
+        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None);
         let script = setup_script(&stages);
         let probe_at = script.find(&probe_script()).expect("the probe is in there");
         for stage in &stages {
@@ -3849,7 +3796,6 @@ fi
             id,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
 
@@ -3867,7 +3813,6 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
         assert!(!script.contains("set -e"));
@@ -3881,7 +3826,6 @@ fi
             name,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
         assert!(script.contains(&format!("hostname {}", quote(name))));
@@ -3919,7 +3863,6 @@ fi
             workspace,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
         let ran = bash_with(
@@ -3944,13 +3887,7 @@ fi
     fn outcome_of(report: &str, stage: StageName) -> Option<StageOutcome> {
         stage_outcomes(
             report,
-            &setup_stages(
-                "myws",
-                ToolsSwitch::Install,
-                ZellijSwitch::Install,
-                HerdrSwitch::Report,
-                None,
-            ),
+            &setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None),
         )
         .into_iter()
         .find(|outcome| outcome.stage == stage)
@@ -3977,7 +3914,6 @@ fi
             "devlaunch-main-zovomobo",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             None,
         ));
 
@@ -4053,16 +3989,11 @@ fi
     /// the one stage because every assertion below is about how one reported line is
     /// *read*.
     fn hostname_outcome(report: &str) -> Vec<StageOutcome> {
-        let stages: Vec<Stage> = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Report,
-            None,
-        )
-        .into_iter()
-        .filter(|stage| stage.name == HOSTNAME_STAGE)
-        .collect();
+        let stages: Vec<Stage> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
+                .into_iter()
+                .filter(|stage| stage.name == HOSTNAME_STAGE)
+                .collect();
         assert!(!stages.is_empty(), "the pass no longer names the container");
         stage_outcomes(report, &stages)
     }
@@ -4172,7 +4103,6 @@ fi
                 "myws",
                 ToolsSwitch::Install,
                 ZellijSwitch::Install,
-                HerdrSwitch::Report,
                 None,
             ))
         );
@@ -4407,7 +4337,6 @@ fi
             Switches {
                 tools: ToolsSwitch::Skip,
                 zellij: ZellijSwitch::Install,
-                herdr: HerdrSwitch::Skip,
             },
             &nothing_to_lend(),
         );
@@ -4423,7 +4352,6 @@ fi
                 "myws",
                 ToolsSwitch::Skip,
                 ZellijSwitch::Install,
-                HerdrSwitch::Skip,
                 None,
             ))
         );
@@ -4466,36 +4394,6 @@ fi
     }
 
     // =======================================================================
-    // DEVLAUNCH_NO_HERDR: the other narrow opt-out
-    // =======================================================================
-
-    #[test]
-    fn the_herdr_stage_is_carried_only_when_both_switches_ask_for_it() {
-        let names = |tools, herdr| -> Vec<StageName> {
-            setup_stages("myws", tools, ZellijSwitch::Skip, herdr, None)
-                .iter()
-                .map(|stage| stage.name)
-                .collect()
-        };
-
-        // Both on: the stage rides the pass every launch already pays for.
-        let both = names(ToolsSwitch::Install, HerdrSwitch::Report);
-        assert!(both.contains(&HERDR_STAGE), "{both:?}");
-
-        // Either off is enough to drop it, and neither costs the hostname —
-        // installing a hook is tools work, naming a container is not.
-        for (tools, herdr) in [
-            (ToolsSwitch::Install, HerdrSwitch::Skip),
-            (ToolsSwitch::Skip, HerdrSwitch::Report),
-            (ToolsSwitch::Skip, HerdrSwitch::Skip),
-        ] {
-            let names = names(tools, herdr);
-            assert!(!names.contains(&HERDR_STAGE), "{tools:?}/{herdr:?}");
-            assert!(names.contains(&HOSTNAME_STAGE), "{tools:?}/{herdr:?}");
-        }
-    }
-
-    // =======================================================================
     // DEVLAUNCH_NO_ZELLIJ: the narrower opt-out
     // =======================================================================
 
@@ -4510,22 +4408,16 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             Some("blooop/devlaunch@main"),
         )
         .iter()
         .map(|stage| stage.name)
         .collect();
-        let unnamed: Vec<StageName> = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Skip,
-            None,
-        )
-        .iter()
-        .map(|stage| stage.name)
-        .collect();
+        let unnamed: Vec<StageName> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
+                .iter()
+                .map(|stage| stage.name)
+                .collect();
 
         assert!(named.contains(&TITLE_STAGE), "{named:?}");
         assert!(!unnamed.contains(&TITLE_STAGE), "{unnamed:?}");
@@ -4541,16 +4433,11 @@ fi
             (ToolsSwitch::Skip, ZellijSwitch::Install),
             (ToolsSwitch::Install, ZellijSwitch::Skip),
         ] {
-            let names: Vec<StageName> = setup_stages(
-                "myws",
-                tools,
-                zellij,
-                HerdrSwitch::Skip,
-                Some("blooop/devlaunch@main"),
-            )
-            .iter()
-            .map(|stage| stage.name)
-            .collect();
+            let names: Vec<StageName> =
+                setup_stages("myws", tools, zellij, Some("blooop/devlaunch@main"))
+                    .iter()
+                    .map(|stage| stage.name)
+                    .collect();
 
             assert!(
                 names.contains(&TITLE_STAGE),
@@ -4609,7 +4496,6 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            HerdrSwitch::Skip,
             Some("blooop/devlaunch@main"),
         );
         let stage = stages
@@ -4633,7 +4519,6 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Skip,
-            HerdrSwitch::Skip,
             Some("blooop/devlaunch@main"),
         );
         let stage = stages
@@ -4722,16 +4607,11 @@ fi
         // installed keeps everything `DEVLAUNCH_NO_TOOLS` would have cost it —
         // the container is still named, and the pass still probes for the `gh`
         // and `claude` the workspace is guaranteed.
-        let names: Vec<StageName> = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Skip,
-            HerdrSwitch::Skip,
-            None,
-        )
-        .iter()
-        .map(|stage| stage.name)
-        .collect();
+        let names: Vec<StageName> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Skip, None)
+                .iter()
+                .map(|stage| stage.name)
+                .collect();
 
         assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
@@ -4744,7 +4624,6 @@ fi
             Switches {
                 tools: ToolsSwitch::Install,
                 zellij: ZellijSwitch::Skip,
-                herdr: HerdrSwitch::Skip,
             },
             false,
             Some(0),
@@ -4764,18 +4643,11 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Skip,
-            HerdrSwitch::Skip,
             None,
         ));
         for tools in [ToolsSwitch::Install, ToolsSwitch::Skip] {
             assert_eq!(
-                setup_script(&setup_stages(
-                    "myws",
-                    tools,
-                    ZellijSwitch::Skip,
-                    HerdrSwitch::Skip,
-                    None,
-                )),
+                setup_script(&setup_stages("myws", tools, ZellijSwitch::Skip, None)),
                 without,
                 "{tools:?}"
             );
@@ -4785,7 +4657,6 @@ fi
                 "myws",
                 ToolsSwitch::Skip,
                 ZellijSwitch::Install,
-                HerdrSwitch::Skip,
                 None,
             )),
             without
@@ -4795,7 +4666,6 @@ fi
                 "myws",
                 ToolsSwitch::Install,
                 ZellijSwitch::Install,
-                HerdrSwitch::Skip,
                 None,
             )),
             without,
@@ -4818,7 +4688,6 @@ fi
             Switches {
                 tools: ToolsSwitch::Install,
                 zellij: ZellijSwitch::Skip,
-                herdr: HerdrSwitch::Skip,
             },
             &host,
         );
@@ -5236,16 +5105,11 @@ fi
             Stage::new(StageName::new("x"), "true").failure_level,
             FailureLevel::Warning
         );
-        let levels: Vec<(StageName, FailureLevel)> = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Report,
-            None,
-        )
-        .iter()
-        .map(|stage| (stage.name, stage.failure_level))
-        .collect();
+        let levels: Vec<(StageName, FailureLevel)> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
+                .iter()
+                .map(|stage| (stage.name, stage.failure_level))
+                .collect();
         assert_eq!(
             levels,
             vec![
@@ -5254,13 +5118,6 @@ fi
                 // degradation of a container, so it takes the default rather than
                 // declaring an exception.
                 (ZELLIJ_STAGE, FailureLevel::Warning),
-                // The herdr stage is the other direction: most containers cannot
-                // satisfy it — no `python3`, no claude configuration directory of
-                // their own, no socket because the workspace predates the mount —
-                // and none of that degrades the container for anything else. A
-                // warning per launch for a badge that did not appear is noise, so it
-                // declares the exception the hostname does.
-                (HERDR_STAGE, FailureLevel::Info),
             ]
         );
     }
@@ -5710,13 +5567,7 @@ fi
     ) -> (PathBuf, Output, String) {
         let (home, sysbin, log) = zellij_sandbox(scratch, has_zellij, pixi_exit);
         let ran = bash_with(
-            &setup_script(&setup_stages(
-                "myws",
-                switches.tools,
-                switches.zellij,
-                switches.herdr,
-                None,
-            )),
+            &setup_script(&setup_stages("myws", switches.tools, switches.zellij, None)),
             &[
                 ("HOME", &home.to_string_lossy()),
                 ("PATH", &sysbin.to_string_lossy()),
@@ -5747,16 +5598,11 @@ fi
         // The guarantee, stated where it is made: the pass every entry into Running
         // goes through carries a zellij stage. No dotfiles, no devcontainer.json, no
         // repo cooperation — the ask comes from the invocation.
-        let names: Vec<StageName> = setup_stages(
-            "myws",
-            ToolsSwitch::Install,
-            ZellijSwitch::Install,
-            HerdrSwitch::Report,
-            None,
-        )
-        .iter()
-        .map(|stage| stage.name)
-        .collect();
+        let names: Vec<StageName> =
+            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
+                .iter()
+                .map(|stage| stage.name)
+                .collect();
         assert!(names.contains(&ZELLIJ_STAGE), "{names:?}");
     }
 
@@ -5882,16 +5728,11 @@ fi
         // the hostname stage, which is not tools work and is deliberately left
         // outside that switch — a machine that turned tool installs off has not
         // thereby asked for unnamed containers.
-        let names: Vec<StageName> = setup_stages(
-            "myws",
-            ToolsSwitch::Skip,
-            ZellijSwitch::Install,
-            HerdrSwitch::Skip,
-            None,
-        )
-        .iter()
-        .map(|stage| stage.name)
-        .collect();
+        let names: Vec<StageName> =
+            setup_stages("myws", ToolsSwitch::Skip, ZellijSwitch::Install, None)
+                .iter()
+                .map(|stage| stage.name)
+                .collect();
         assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
 
@@ -5901,7 +5742,6 @@ fi
             Switches {
                 tools: ToolsSwitch::Skip,
                 zellij: ZellijSwitch::Install,
-                herdr: HerdrSwitch::Skip,
             },
             false,
             Some(0),
