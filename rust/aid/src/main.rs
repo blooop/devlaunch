@@ -33,7 +33,7 @@ use std::io::Write as _;
 use rewrite::UsageError;
 
 fn main() {
-    dl::install_interrupt_handler();
+    dl::install_signal_handlers();
     // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
     // argument that is not valid UTF-8, which would end `aid $'\xff'` with an exit
     // 101 and a traceback. Python decoded argv lossily and carried on
@@ -102,10 +102,7 @@ fn run(argv: &[String]) -> i32 {
     // a shell. Anything else — an inline prompt, a verb line, a pipe — comes back
     // unchanged with no boot, and takes the path it always took.
     let (parsed, boot) = interactive::collect_prompt(parsed);
-    // Read here rather than in `rewrite`, which is deliberately a pure
-    // string-to-strings module: the pane is a fact about this process.
-    let pane = dl::herdr::Session::from_env();
-    let Some(dl_args) = rewrite::build_dl_args(&parsed, pane.as_ref()) else {
+    let Some(dl_args) = rewrite::build_dl_args(&parsed) else {
         // Unreachable by a command line: the parse only ever answers with an agent
         // from the table, and a line that starts no agent cannot fail to build one.
         // Reported rather than panicked on, in the words the refusal for an invented

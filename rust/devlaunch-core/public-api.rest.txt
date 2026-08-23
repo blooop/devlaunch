@@ -762,48 +762,6 @@ impl core::fmt::Debug for devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::disk_usage::DiskUsage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::disk_usage::describe_usage(&devlaunch_core::flows::disk_usage::DiskUsage) -> alloc::string::String
-pub mod devlaunch_core::flows::herdr
-pub enum devlaunch_core::flows::herdr::HerdrSwitch
-pub devlaunch_core::flows::herdr::HerdrSwitch::Report
-pub devlaunch_core::flows::herdr::HerdrSwitch::Skip
-impl devlaunch_core::flows::herdr::HerdrSwitch
-pub fn devlaunch_core::flows::herdr::HerdrSwitch::from_env() -> Self
-impl core::clone::Clone for devlaunch_core::flows::herdr::HerdrSwitch
-pub fn devlaunch_core::flows::herdr::HerdrSwitch::clone(&self) -> devlaunch_core::flows::herdr::HerdrSwitch
-impl core::cmp::Eq for devlaunch_core::flows::herdr::HerdrSwitch
-impl core::cmp::PartialEq for devlaunch_core::flows::herdr::HerdrSwitch
-pub fn devlaunch_core::flows::herdr::HerdrSwitch::eq(&self, &devlaunch_core::flows::herdr::HerdrSwitch) -> bool
-impl core::default::Default for devlaunch_core::flows::herdr::HerdrSwitch
-pub fn devlaunch_core::flows::herdr::HerdrSwitch::default() -> devlaunch_core::flows::herdr::HerdrSwitch
-impl core::fmt::Debug for devlaunch_core::flows::herdr::HerdrSwitch
-pub fn devlaunch_core::flows::herdr::HerdrSwitch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for devlaunch_core::flows::herdr::HerdrSwitch
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::herdr::HerdrSwitch
-pub struct devlaunch_core::flows::herdr::HostSocket(_)
-impl devlaunch_core::flows::herdr::HostSocket
-pub fn devlaunch_core::flows::herdr::HostSocket::from_env() -> core::option::Option<Self>
-impl core::clone::Clone for devlaunch_core::flows::herdr::HostSocket
-pub fn devlaunch_core::flows::herdr::HostSocket::clone(&self) -> devlaunch_core::flows::herdr::HostSocket
-impl core::cmp::Eq for devlaunch_core::flows::herdr::HostSocket
-impl core::cmp::PartialEq for devlaunch_core::flows::herdr::HostSocket
-pub fn devlaunch_core::flows::herdr::HostSocket::eq(&self, &devlaunch_core::flows::herdr::HostSocket) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::herdr::HostSocket
-pub fn devlaunch_core::flows::herdr::HostSocket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::herdr::HostSocket
-pub struct devlaunch_core::flows::herdr::Session
-impl devlaunch_core::flows::herdr::Session
-pub fn devlaunch_core::flows::herdr::Session::for_pane(impl core::convert::Into<alloc::string::String>) -> Self
-pub fn devlaunch_core::flows::herdr::Session::from_env() -> core::option::Option<Self>
-pub fn devlaunch_core::flows::herdr::Session::pane_id(&self) -> &str
-impl core::clone::Clone for devlaunch_core::flows::herdr::Session
-pub fn devlaunch_core::flows::herdr::Session::clone(&self) -> devlaunch_core::flows::herdr::Session
-impl core::cmp::Eq for devlaunch_core::flows::herdr::Session
-impl core::cmp::PartialEq for devlaunch_core::flows::herdr::Session
-pub fn devlaunch_core::flows::herdr::Session::eq(&self, &devlaunch_core::flows::herdr::Session) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::herdr::Session
-pub fn devlaunch_core::flows::herdr::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::herdr::Session
-pub fn devlaunch_core::flows::herdr::session_env(&devlaunch_core::flows::herdr::Session) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub mod devlaunch_core::flows::launch
 pub enum devlaunch_core::flows::launch::BranchNotNamed
 pub devlaunch_core::flows::launch::BranchNotNamed::Cold(devlaunch_core::flows::launch::ColdRefused)
@@ -1996,7 +1954,6 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::HostLayout
 pub fn devlaunch_core::flows::provision::HostLayout::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::HostLayout
 pub struct devlaunch_core::flows::provision::Switches
-pub devlaunch_core::flows::provision::Switches::herdr: devlaunch_core::flows::herdr::HerdrSwitch
 pub devlaunch_core::flows::provision::Switches::tools: devlaunch_core::flows::provision::ToolsSwitch
 pub devlaunch_core::flows::provision::Switches::zellij: devlaunch_core::flows::provision::ZellijSwitch
 impl devlaunch_core::flows::provision::Switches

@@ -12,14 +12,110 @@ launching one again attaches to what is already there.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.0.9-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.12.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
-**Start here:** [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [Agent state in herdr](#agent-state-in-a-herdr-session) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+## Quickstart
 
-**Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Worktree backend](#worktree-backend) · [Launch timing](#measuring-launch-time) · [Development](#development)
+The whole workflow is one command with a repo in it. `dl owner/repo@branch` gets you a shell inside
+a devcontainer built from that repo, on that branch — and every `repo@branch` you name gets a
+container of its own, so switching branches is switching containers, not rebuilding one.
+
+```bash
+pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
+```
+
+### 1. Name a repo, land in a shell inside it
+
+![Launching a workspace](docs/demo/1-launch.gif)
+
+```bash
+dl blooop/devlaunch
+```
+
+There is no clone step, no `devcontainer.json` to write and no build command. `dl` clones the repo
+if it has to, builds or starts its devcontainer, and leaves you at a prompt inside it, in the
+checkout. The first run of a repo builds an image and takes minutes. Every run after that attaches
+to the container that is already there, in about a second — so the same line you used to create the
+workspace is also the line you use to get back to it tomorrow.
+
+Exit the shell and the container keeps running; nothing is lost between visits.
+
+### 2. A branch is a container, not a checkout
+
+![Two branches, two containers](docs/demo/2-branches.gif)
+
+```bash
+dl blooop/devlaunch@feature/json-flag
+```
+
+That is a *second* container for the same repo, with its own checkout on that branch, running
+beside the first, and the branch does not have to exist yet — `dl` makes one if it cannot find it.
+Two branches never share a working tree, an installed dependency set or a running service, so a
+half-finished experiment on one branch cannot break a review on another and you never stash
+anything to switch.
+
+Run `dl` with no arguments and a fuzzy selector opens over everything you have:
+
+```bash
+dl
+```
+
+Nothing to install for it — no `fzf` on `PATH`, no plugin. Type to filter, Enter to attach.
+
+### 3. An agent instead of a shell
+
+![Starting a coding agent](docs/demo/3-agent.gif)
+
+```bash
+aid blooop/devlaunch@fix/flaky-test
+```
+
+`aid` is `dl` with a coding agent started for you — the same clone and the same container `dl` would
+have given you for that spec. Name the repo and it asks for the prompt *while the container boots*,
+so the minute the container takes and the minute you take writing the prompt are the same minute.
+Press Enter and you are in the container, with the agent working in the checkout. That is a third
+container: the feature branch from step 2 is still running beside it. Put the prompt on the line
+instead, `aid blooop/devlaunch@feature/json-flag add a --json flag`, and it skips the question.
+
+The agent runs inside a disposable container holding only that one repo, which is what makes it
+reasonable to let it work without a permission prompt per tool. See
+[aid](#aid-start-a-coding-agent-in-a-workspace) for the trade that involves.
+
+### 4. Clearing them out
+
+![Deleting workspaces from the selector](docs/demo/4-cleanup.gif)
+
+```bash
+dl rm
+```
+
+Workspaces pile up. A verb with no workspace named opens the same selector, and TAB marks more than
+one row — all three here — so `dl rm` clears them in one pass.
+
+### Managing what you have
+
+Anything else is a verb in that same second position:
+
+```bash
+dl blooop/devlaunch code         # open the container in VS Code
+dl blooop/devlaunch stop         # free its memory, keep its disk
+dl blooop/devlaunch rm           # delete the workspace
+dl blooop/devlaunch --rm         # a shell that deletes the workspace when you leave
+```
+
+The verbs open the selector when you leave the workspace out. The full list is in
+[Workspace Commands](#workspace-commands).
+
+**Next:** [Usage](#usage) for the whole grammar · [Installation](#installation) if pixi is not how
+you install things · [GitHub auth](#github-authentication) for pushing from inside a container ·
+[Cleaning up](#cleaning-up-purge-prune-reconcile) once workspaces have accumulated
+
+**Start here:** [Quickstart](#quickstart) · [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Workspace Commands](#workspace-commands) · [Global Commands](#global-commands) · [aid](#aid-start-a-coding-agent-in-a-workspace) · [A terminal beside the agent](#a-terminal-beside-the-agent) · [GitHub auth](#github-authentication) · [Tools in every workspace](#tools-in-every-workspace) · [Shell completion](#shell-completion)
+
+**Reference:** [Options](#options) · [Workspace IDs](#workspace-ids) · [Cleaning up](#cleaning-up-purge-prune-reconcile) · [pixi cache](#the-shared-pixi-package-cache) · [Launch freshness](#how-fresh-a-launch-is) · [Launch timing](#measuring-launch-time) · [Development](#development)
 
 ## Features
 
@@ -255,7 +351,29 @@ that session, and either fires the removal.
 removal (a signal handler may not allocate or lock, and this one `_exit`s):
 
 - Ctrl-C during the clone or the container build, before any pty exists.
-- Closing the terminal window — SIGHUP, which `dl` does not handle at all.
+- `kill <dl>` from another shell, and a supervisor or CI runner cancelling the job.
+- Closing the terminal window.
+
+What all three *do* run is the cleanup the removal is not: the staged plaintext
+`GH_TOKEN` file is unlinked and the `devpod up` child is killed, so none of these three
+leaves a credential on disk or a build running behind you. The one exception is a run
+whose SIGTERM was disarmed before it started: the drain fells the build with a
+`killpg(…, SIGTERM)`, so disarming that signal disarms its own reach into the child too.
+(Ctrl-\ — SIGQUIT — is not one of them and still does: it means "die now and dump core",
+and tidying up first is not what it asks for.) The workspace is what stays — still there
+under its name, and `dl <ws> rm` is how it goes.
+
+They are told apart by the exit code, which is **128 + the signal number**: 130 for
+Ctrl-C, 143 for a `kill`, 129 for a closed terminal.
+
+Two of the three can be switched off in the ordinary way, and one cannot. If a SIGTERM
+or a SIGHUP was **already set to be ignored** when `dl` started — which is what
+`nohup dl …` does to SIGHUP — that stays ignored and ends nothing, so `nohup` still
+outlives the terminal it was started from. **Ctrl-C is not switchable like that**, and
+that is deliberate rather than an omission: a shell script backgrounding a job (`dl … &`)
+hands its child an ignored SIGINT whether or not anyone wanted one, so honouring it there
+would quietly stop the cleanup for every `dl` run from a script or a CI step. Ctrl-C
+behaves exactly as it always has.
 
 One-line check for your own setup: start `dl <ws> --rm` and press Ctrl-C once. A
 fresh prompt *inside* the container means Ctrl-C is being forwarded and the removal will
@@ -343,7 +461,7 @@ reporting an unknown workspace called `prune` — and a workspace that really is
 
 ```bash
 $ dl --version
-dl 0.1.0
+dl 0.12.0
 ```
 
 The version and nothing else. `aid --version` reports the same version under its
@@ -407,7 +525,6 @@ are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 | `--rm` | Run the agent, then [delete the workspace when the session ends](#--rm-the-throwaway-workspace). Appendable to a recalled line, prompt and all. To delete one *now* instead, that is `dl <ws> rm` |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
 | `DEVLAUNCH_NO_TTY=1` | No prompt question, no pty: the old one-shot behaviour |
-| `DEVLAUNCH_NO_HERDR=1` | Do not report agent state to a host-side [herdr](#agent-state-in-a-herdr-session) session |
 
 Everything after the workspace is the prompt, flags and all, so it never needs
 quoting to survive `aid`'s own parsing. Managing workspaces — listing, stopping,
@@ -587,8 +704,8 @@ escapes into somebody else's capture.
 A terminal title has exactly one value and the last writer sets it. An interactive
 shell overwrites dl's within a second of arriving: Ubuntu's stock `~/.bashrc` puts
 `\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt renames the pane after
-the container's hostname — which is the workspace id, the name we just went to
-some trouble not to use.
+the container's hostname — which is the workspace id's readable half,
+`devlaunch-main`, and so says nothing about the owner and spells the ref as a slug.
 
 So the setup pass appends one line to the profile a login shell reads:
 
@@ -598,7 +715,7 @@ case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main
 
 Appended, and that is the whole mechanism: two escapes in one prompt are applied in
 order, so the last one sets the title. Nothing is rewritten — the visible
-`vscode@devlaunch-main-zovomobo:~/repo$` still says the hostname, and only the tab
+`vscode@devlaunch-main:~/repo$` still says the hostname, and only the tab
 changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
 `PS1`, so the stock escape would land afterwards and win.) Interactive bash only:
 `bash -lc` reads the same profile on every `dl <ws> -- cmd` one-shot, and `\[`, `\e`
@@ -611,11 +728,11 @@ recognises — and it rides the same round trip as the hostname stage, so it cos
 extra trip.
 
 **Only a spec is installed this way.** `dl myworkspace` teaches the container
-nothing: the id is already its hostname, so the stock prompt writes that anyway. It
-also cannot, safely — the line is recognised by a hash of its own text, so a second,
-different name for one workspace would not replace the first but sit after it, and
-the last one wins. Keying on the spec alone means a workspace has at most one such
-line, ever.
+little: the hostname is the readable half of that same id, so the stock prompt
+already writes everything in it anyone reads. It also cannot, safely — the line is
+recognised by a hash of its own text, so a second, different name for one workspace
+would not replace the first but sit after it, and the last one wins. Keying on the
+spec alone means a workspace has at most one such line, ever.
 
 **It is installed when a workspace enters Running, not on every attach.** A
 workspace that is already up keeps whatever its profile was given, so
@@ -650,109 +767,6 @@ action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
 terminal is `<session> | <pane title>`, so the spec is what shows up in a kitty tab
 bar.
-
-## Agent state in a herdr session
-
-[herdr](https://herdr.dev) is a terminal multiplexer that shows, per pane, whether
-the coding agent in it is **working**, **idle** or **blocked** waiting for you. Run
-`aid` in a herdr pane and it shows none of that, and the reason is structural:
-herdr decides which agent a pane holds from the pane's foreground process, and
-under `aid` the host's process tree is `aid → dl → ssh` with the agent inside the
-container. There is no `claude` on the host to find.
-
-Nothing else about the hop is broken — the pane's screen bytes arrive intact, and
-herdr's own screen rules match against them correctly *once it believes an agent is
-there*. So `dl` supplies the missing fact and herdr does the rest:
-
-```bash
-aid blooop/devlaunch@fix/42 fix the flaky test   # in a herdr pane; the badge appears
-```
-
-Three things make that work, and all three are automatic:
-
-| | |
-|---|---|
-| **The socket** | The host's herdr socket is bind-mounted into the workspace at `/var/tmp/devlaunch-herdr.sock` |
-| **The pane** | `aid` puts `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` on the agent's own command line, with the socket path rewritten to the container's |
-| **The hook** | A setup-pass stage installs `~/.devlaunch/herdr-agent-state.py` and wires it to claude's `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` and `SessionEnd` hooks |
-
-`Notification` is the event that earns the feature: it is what claude fires when it
-is waiting for a human, which is the one state a fleet of workspaces exists to
-surface.
-
-This pairs with [the terminal title](#naming-the-terminal-after-the-workspace)
-rather than competing with it. herdr can classify state from a title as well as
-from the screen, and `aid` deliberately suppresses claude's own title so the
-workspace id is what stands — so under `aid` the title is never the state signal,
-which is exactly why the state comes from the hook. What you get is both halves
-naming different things: the badge says what the agent is doing, and the pane name
-says which workspace it is doing it in.
-
-### What it costs, and when it does nothing
-
-**On a host not running herdr, nothing happens at all** — no mount, no stage, no
-notice, and every command line byte-identical to what it was. That is decided from
-whether a herdr socket exists rather than from whether the feature is enabled, so it
-is true of the payload and not merely of its effects.
-
-The stage is one more line in the setup pass every entry into Running already pays,
-and it can never fail a launch: a container it cannot satisfy reports the stage and
-opens exactly as it would have. It reports at info level rather than warning,
-because failing is its majority case — three things have to be true:
-
-- **`python3` in the container.** The hook talks to a unix socket and merges a JSON
-  settings file, and neither is something shell can do. herdr's own integration
-  requires `python3` for the same reason, so this asks for nothing extra.
-- **A claude configuration directory of the container's own.** If the settings file
-  or the hook's own path is inside anything bind-mounted from the host, the stage
-  **refuses** rather than merging: writing hooks there would edit your real claude
-  settings from inside every container, on every launch. A mounted *parent* counts,
-  which is the shape that actually occurs — `dl` never mounts `~/.claude` into a
-  workspace, but **this repo's own devcontainer does** (`.devcontainer/claude-code`
-  binds `settings.json` among others), so a workspace on devlaunch itself reports
-  the stage and installs nothing, by design. Arbitrary repos, which is what `dl`
-  launches, have a container-local `~/.claude` and get the badge.
-- **The socket mount**, which only lands at container creation. A workspace created
-  before this feature — or by a `dl` on a machine with no herdr running — needs
-  **`dl <ws> recreate`**, not `restart`. This is the one place it differs from the
-  zellij stage above, which needs only a restart because nothing it installs is a
-  mount.
-
-The hook is written whole and moved into place, and it exits 0 in every state
-including every failure. A herdr that stopped listening, a socket whose session has
-ended, a claude that changed its payload: each is a badge that does not appear, and
-none is a turn that fails.
-
-`--codex` and `--gemini` are unaffected — the hook devlaunch installs is claude's,
-and telling another agent where to report would name a reporter that is not there.
-
-| Variable | Description |
-|----------|-------------|
-| `DEVLAUNCH_NO_HERDR=1` | Do not mount the herdr socket into workspaces and do not install the hook. The rest of tool provisioning is untouched |
-
-**Mounting the socket gives the container control of your herdr session** — it is
-the same socket herdr's own CLI drives, so something in there could open panes or
-read other panes' output. That is the trade, and it is why there is an opt-out; it
-is on by default for the reason the forwarded GitHub token is, namely that a `dl`
-workspace is already where you run an agent with `--dangerously-skip-permissions`.
-`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning, and
-both read the same values as the variables above: anything but empty, `0`, `false`
-or `no` means yes, turn it off.
-
-### Why not herdr's own integration
-
-It does not install herdr in the container, and it does not use herdr's own
-`herdr integration install claude`. That integration's hook sends
-`pane.report_agent_session` — session *identity* for a pane herdr already knows
-holds an agent — which registers nothing by itself, so forwarding it would carry
-session metadata for an agent herdr does not believe exists. The reports here are
-the ones that make the pane appear.
-
-The other way round works too and needs nothing from `dl`: `herdr --remote
-<workspace-id>.devpod` runs a herdr server *inside* the workspace, where the agent
-really is the pane's foreground process. That gives correct badges with no mount and
-no hook, at the price of one view per workspace instead of one spanning them all,
-and a herdr in the container whose version must match the host's exactly.
 
 ## GitHub Authentication
 
@@ -971,8 +985,9 @@ After running `dl --install`, you get intelligent tab completion:
 
 The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
 building it means a `git ls-remote` per known repo — seconds of work. So it is
-rebuilt in the background at most once an hour (the same interval the worktree
-backend's background fetch sweep uses), and at most once per `dl` invocation. Commands
+rebuilt in the background at most once an hour (the same interval the background
+fetch sweep uses — see [How fresh a launch is](#how-fresh-a-launch-is)), and at
+most once per `dl` invocation. Commands
 that change your workspaces (starting, stopping or deleting one) rebuild it as
 soon as they finish, regardless of when it was last built. Commands with no use
 for it — `dl --help`, `dl --version` — do not touch it at all.
@@ -1062,11 +1077,19 @@ Branch names are case-sensitive, because git refs are.
 URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
 hashed over the URL.
 
-The id is also the container hostname. 47 characters is one inside devpod's own hard
-ceiling of 48 — a 49-character id is refused outright, not truncated — and well inside
-the 64-byte hostname limit on its own, but tools that stack their own prefixes onto the
-container name have about 17 characters to work with, so a tool that wants more is the
-one that has to shorten.
+The container hostname is this id **without the suffix** — `devlaunch-main` for the
+workspace devpod addresses as `devlaunch-main-zovomobo`. The suffix is what makes the
+id injective, and nothing addresses a container by the name in its UTS namespace, so
+a prompt carries the half of the name that is read. That is 38 characters at most,
+leaving ~26 of the 64-byte hostname limit for tools that stack their own prefixes onto
+the container name.
+
+47 is held by devpod instead: it is one character inside devpod's own hard ceiling of
+48, and a 49-character id is refused outright rather than truncated.
+
+The cost is that two workspaces differing only in their suffix now show one prompt —
+one repo under two owners, or `feature/auth` beside `feature-auth`. They are still two
+workspaces, and the tab is what tells them apart.
 
 The id is *not* what you read. A tab shows `owner/repo@branch` — see [Naming the
 terminal after the workspace](#naming-the-terminal-after-the-workspace) — and the
@@ -1856,13 +1879,16 @@ own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
 directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
 user's own again.
 
-## Worktree Backend
+## How fresh a launch is
 
-For git repositories, devlaunch uses an efficient worktree backend by default:
-
-- **Efficient Storage**: Repos are cloned once to `~/.cache/devlaunch/repos/owner/repo/`, then git worktrees are created for each branch
-- **Shared Git Objects**: All branches share git objects, saving disk space
-- **Targeted Fetch**: A launch fetches only the one branch it is launching, so no launch waits on a repo-wide refresh
+`dl` keeps one bare clone per repo at `~/.cache/devlaunch/repos/owner/repo/.bare/`
+and cuts every workspace's checkout from it as a sibling directory named after the
+workspace id — an ordinary clone whose git objects are hardlinks into that cache,
+not a git worktree. [How much disk a workspace costs](#how-much-disk-a-workspace-costs)
+is the accounting for that. What follows is the other half: how fresh the branch
+you land on is, which is what decides whether the tip you just pushed is the tip
+you get. A launch fetches only the one branch it is launching, so no launch waits
+on a repo-wide refresh.
 
 ### What you get when you push and immediately launch
 
@@ -1879,24 +1905,9 @@ For git repositories, devlaunch uses an efficient worktree backend by default:
   background updater within the configured interval (default: 1 hour), which
   never blocks a launch.
 
-### Container Sharing Mode
+### Preparing a workspace without attaching
 
-Use `--shared` to share a single container across multiple branches of the same repo:
-
-```bash
-dl --shared owner/repo@branch1  # Creates container "owner-repo"
-dl --shared owner/repo@branch2  # Reuses "owner-repo" container
-```
-
-### Pre-warming
-
-Use `--warm` to prepare a workspace without attaching a shell:
-
-```bash
-dl --warm owner/repo@branch  # Creates container in background
-```
-
-`dl <workspace> up` is the other way to prepare one, and running it repeatedly is
+`dl <workspace> up` prepares one, and running it repeatedly is
 cheap on purpose: against a container that is already up, a second `up` costs one
 `devpod status` and nothing else. It used to also pay the tools setup pass —
 ~1.7s of `devpod ssh` to be told the tools it was told about last time — and now
@@ -1904,6 +1915,12 @@ reuses the recorded answer instead. See
 [The trip a launch can skip](#the-trip-a-launch-can-skip) for what makes a recorded
 answer stop being believed; the short version is that any completed `devpod up`,
 by anything, does.
+
+There is no flag that shares one container across several branches, and none that
+warms a workspace in the background. An earlier revision of this section
+documented `--shared` and `--warm` with worked examples; neither has ever existed
+in the shipped `dl`, which exits 2 on both, and the guard in
+`test/test_readme_cli_doc.py` is why a third cannot appear here unnoticed.
 
 ## Measuring launch time
 
@@ -2251,14 +2268,31 @@ Leave it out of a new spawn and the test still passes; it just stops counting, s
 whatever it was the only cover for down with it. Measured before that seam existed, one five-test
 suite that runs `dl` end to end reported `render.rs`, `commands.rs` and `cli.rs` at 0.00%.
 
-Two cargo tests are outside the CI measurement on purpose: `dl --test interrupt` and
-`--test lock_wait` kill real process trees, and a SIGKILLed process writes no counters. They run in
+Two cargo tests are outside the CI measurement on purpose: `cargo test -p dl --test interrupt`
+and `--test lock_wait` kill real process trees, and a SIGKILLed process writes no counters. They run in
 the `rust` job like everything else, and `pixi run coverage-rust` includes them locally.
 
 Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
 working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
 [AGENTS.md](AGENTS.md).
+
+### The Quickstart's demo GIFs
+
+The four GIFs in the Quickstart come from VHS tapes in `docs/demo/`:
+
+```bash
+pixi run demo                  # all four, in order
+pixi run demo 2-branches       # one, while you tune it
+```
+
+`scripts/record_demo.sh` records them, optimises them with `gifsicle`, and prints what to check
+before you commit. A GIF that has not been recorded yet keeps its README line commented out, so a
+clone without them shows no broken images; the script uncomments each line as its file appears.
+
+The tapes film the released `dl`, not this working tree. So the GIFs show what someone who installed
+devlaunch sees, and they go stale when the released UI changes. Re-record after a release, not
+before.
 
 Until 0.1.0 this repository held a second, Python implementation of `dl`, and a parity harness that
 ran both against the same fixtures and compared them. Both retired once the binaries shipped; the
@@ -2276,6 +2310,14 @@ rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the con
 `.github/workflows/publish.yml` and `conda-publish.yml` do exactly that on a version bump, in that
 order, off one tag; `ci.yml`'s `packaging` job builds the wheel and renders the recipe on every pull
 request, so a broken release is a red tick rather than a surprise.
+
+Two places in this document restate that number — the `dl --version` transcript under
+[Global Commands](#global-commands) and the conda badge at the top — and both are read back
+against `rust/Cargo.toml` by `test/test_readme_cli_doc.py`, so a bump that forgets them is a
+failing test rather than a README advertising a release from last year. That guard reads the
+same file for the flags: every long flag written on a `dl` command line anywhere here is handed
+to the binary's own parser, which is what makes a documented flag that does not exist a red tick
+too.
 
 The Python half uses [pixi](https://pixi.sh) for environment management.
 

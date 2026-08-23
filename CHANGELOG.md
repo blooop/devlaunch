@@ -25,6 +25,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `kill` or a closed terminal now runs the same cleanup Ctrl-C does.** Only
+  SIGINT had a handler, so `kill <dl>` — a supervisor timing a run out, a CI job
+  being cancelled, a shutdown sweep — and closing the terminal window (SIGHUP)
+  both ended `dl` where it stood, leaving the staged plaintext `GH_TOKEN` file on
+  disk and the `devpod up` child orphaned: the exact pair the SIGINT handler
+  exists to prevent, and in SIGHUP's case unwatched, since the window any
+  complaint would have appeared in is the one that just went away. All three
+  signals now run the one async-signal-safe drain — kill the child's process
+  group, unlink the registered temp files, `_exit` — and the code they exit with
+  is **128 + the signal number**: 130 for Ctrl-C, 143 for a `kill`, 129 for a
+  closed terminal. What still does not run on any of them is the `--rm`
+  removal, which a signal handler may not do (#304).
+
+  **`nohup dl …` still outlives its terminal.** A SIGTERM or SIGHUP that was
+  already set to be ignored when `dl` started stays ignored and ends nothing,
+  which is how `nohup` works and what keeps it working. Ctrl-C is deliberately
+  not switchable the same way, and is unchanged from previous releases: a shell
+  script backgrounding a job hands its child an ignored SIGINT whether anyone
+  wanted one or not, so honouring it would silently stop the cleanup for every
+  `dl` launched from a script or a CI step.
+
+## [0.12.0] - 2026-08-23
+
+### Removed
+
+- **Reporting agent state to a host-side herdr session, added in 0.8.0, is gone** —
+  the mount, the setup stage, the hook, the pane variables on the agent's command
+  line and `DEVLAUNCH_NO_HERDR`. The container half needed a `python3` and most
+  containers do not have one, which made the feature's majority case "installs
+  nothing".
+
+  It is the requirement rather than the code that decides this.
+  `mcr.microsoft.com/devcontainers/base:ubuntu-24.04` — this repo's own base image,
+  and the family a large share of devcontainers start from — carries no python at
+  all: not `/usr/bin/python3`, not a versioned binary without the symlink, nothing
+  on any entry of a login shell's PATH. So the stage's `command -v python3` failed
+  and it exited before writing anything, on a container that had every other piece
+  in place. The hook needs to talk to a unix socket and merge a JSON settings file,
+  and 0.8.0's own history is the argument against doing that in shell: the version
+  that shelled out installed an *empty* hook in a container with no `cat` and
+  reported success. Neither half of that is fixable by writing the payload
+  differently; a hook that runs inside the developer's own agent needs an
+  interpreter that is really there.
+
+  The other half of why it goes is that the failure could not be read. The stage
+  prints its reason to stderr precisely so a developer can act on it — but only the
+  exit status becomes a `ProvisionEvent`, so a launch said
+  `<ws>: the herdr setup stage exited 1.` and nothing else, on every launch, with
+  the sentence naming the cause discarded. A feature whose majority case is a
+  refusal has to be able to say which refusal.
+
+  **What a host running herdr can still do, with nothing from `dl`:**
+  `herdr --remote <workspace-id>.devpod` runs a herdr server *inside* the
+  workspace, where the agent really is the pane's foreground process, so the badges
+  are correct with no mount and no hook. The price is one view per workspace rather
+  than one spanning them all, and a herdr in the container whose version matches
+  the host's.
+
+  Two leftovers, both inert. A container that did get the hook keeps
+  `~/.devlaunch/herdr-agent-state.py` and its entries in that container's own
+  `~/.claude/settings.json` until `dl <ws> recreate`, and the socket mount likewise
+  lands and leaves only at creation. Neither does anything: the hook returns
+  immediately without the variables `aid` no longer sets, and it exits 0 in every
+  state including every failure, which is why it was safe to leave. `DEVLAUNCH_NO_HERDR`
+  is no longer read, so a host that set it needs no change; `DEVLAUNCH_NO_TOOLS` is
+  untouched and still covers the rest of provisioning.
+
+## [0.11.0] - 2026-08-23
+
+### Changed
+
+- **The container hostname is now the workspace id without its identity suffix**, so
+  a prompt reads `vscode@devlaunch-main:~/repo$` where it used to read
+  `vscode@devlaunch-main-zovomobo:~/repo$`. The id is unchanged and still addresses
+  everything it did — the devpod workspace, the clone directory, the verdict cache —
+  and only the name in the container's UTS namespace is shorter.
+
+  The suffix is eight characters of hash. It is in the id to make the id injective,
+  one workspace per `(owner, repo, ref)`, and nothing addresses a container by its
+  hostname: dl reads the id back from devpod, never from the container. So the
+  hostname carried nine characters that no reader of a prompt has any use for, in the
+  one place they were read most often.
+
+  What it costs is one prompt for two workspaces where the suffix was the only thing
+  telling them apart: one repository under two owners, and `feature/auth` beside
+  `feature-auth`, which slug alike. They remain two workspaces with two ids, two
+  containers and two clones, and the tab — which carries the spec whole,
+  `owner/repo@ref` — is what tells them apart. A prompt long enough to be unique was
+  not thereby legible.
+
+  **A workspace that is already running keeps its old hostname.** The stage rides the
+  pass that follows a `devpod up`, so the name is decided when a container starts and
+  nothing re-sets it on attach — `dl <ws> restart` or `dl <ws> recreate` is what
+  re-decides it, and the container this build was compiled in was named by the build
+  that opened it.
+
+  Two things follow that are worth knowing. A name dl did not derive is *mostly* left
+  alone: `dl myworkspace` still gets `myworkspace`, because the suffix is parsed — its
+  fixed width and its consonant-vowel alphabet both — rather than counted off the end.
+  Mostly, because four consonant-vowel pairs is a shape English words have too, so a
+  hand-named workspace ending in one — `foo-motorola` — does lose that word from its
+  prompt. And the 64-byte hostname reserve that held the id at 38 characters until
+  0.3.0 is no longer the binding one: what a downstream tool builds a name onto now
+  tops out at 38 characters rather than 47, leaving ~26 of the 64. devpod's
+  48-character ceiling on the id is what keeps the cap at 47.
+
+### Fixed
+
 - **The launch-latency trend has been publishing nothing since 0.3.0, and the bench
   workflow now puts devpod on the PATH it runs `dl` from.** `dl` shells out to a bare
   `devpod`, devpod is a pixi dependency rather than an install step, and the priming

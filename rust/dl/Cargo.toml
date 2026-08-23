@@ -55,7 +55,6 @@ path = "../aid/src/main.rs"
 required-features = ["wheel"]
 
 [dev-dependencies]
-assert_cmd = { workspace = true }
 devlaunch-test-support = { workspace = true }
 tempfile = { workspace = true }
 # `tests/picker.rs` opens a terminal and reads back what the picker drew on it.

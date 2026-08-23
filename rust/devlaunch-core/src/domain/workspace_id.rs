@@ -74,15 +74,17 @@ use std::fmt;
 /// against the pinned v0.26.1), so an id derived here that overshoots is a
 /// launch that does not happen. 47 keeps one character of margin from that wall.
 ///
-/// This was 38, for the reason it is still not 48: the setup pass's hostname
-/// stage names the container after the workspace id, and downstream tooling
-/// stacks its own prefixes and suffixes onto that against a 64-byte limit
-/// (kinisi-robotics/kinisi_ros#9766 already sat at 62/64 with a 38-char id).
-/// Widening to 47 spends nine characters of that reserve on legibility — branch
-/// names that used to lose their tail now keep it — and leaves ~17 characters
-/// for whatever a downstream caller bolts on, so a caller that wants more is the
-/// one that has to shorten. Nothing here breaks at any value up to 48, and the
-/// id alone is a legal hostname at 47, well inside 64.
+/// This was 38, for the reason it is still not 48: the setup pass names the
+/// container out of this id, and downstream tooling stacks its own prefixes and
+/// suffixes onto that name against a 64-byte limit (kinisi-robotics/kinisi_ros#9766
+/// already sat at 62/64 with a 38-char id). Widening to 47 spent nine characters of
+/// that reserve on legibility — branch names that used to lose their tail now keep
+/// it. That reserve is no longer the tight one: the hostname is the id's readable
+/// half ([`hostname_of`]), so what a downstream caller builds on tops out at
+/// TARGET_LENGTH - SUFFIX_LENGTH - 1 = 38 characters and leaves ~26. What still
+/// holds the cap here is devpod's 48, which the id itself is measured against.
+/// Nothing breaks at any value up to 48, and the id alone is a legal hostname at 47
+/// for the caller that passes one whole.
 pub(crate) const TARGET_LENGTH: usize = 47;
 
 /// The repo slug is cut to this length when the id would otherwise overflow, and
@@ -422,6 +424,41 @@ pub(crate) fn ref_slug_of<'a>(id: &'a str, repo: &str) -> Option<&'a str> {
         (Some(rest), _) | (None, Some(rest)) => non_empty(rest),
         (None, None) => None,
     }
+}
+
+/// The hostname a container launched under *id* should carry: the id's readable
+/// half, without the identity suffix.
+///
+/// The other display-side inverse of [`WorkspaceId::value`], and the shallower of
+/// the two — [`ref_slug_of`] has to find the boundary *between* the two slugs and
+/// needs a repo passed in to do it, where this one only has to find the end of the
+/// readable part, which the suffix's fixed width and alphabet already say. So it
+/// needs nothing but the id and cannot answer the wrong half.
+///
+/// **The suffix is dropped because a hostname is not an address.** It is in the id
+/// to keep the id injective — one devpod workspace and one clone directory per
+/// `(owner, repo, ref)` — and nothing addresses a container by the name in its UTS
+/// namespace, which is this. What that costs is real and small: two owners of one
+/// repo on one branch, and `feature/auth` beside `feature-auth`, now render the
+/// same prompt. The tab is what tells those apart — it carries the whole spec, see
+/// [`setup_stages`](crate::flows::provision) — and a prompt long enough to be
+/// unique was not thereby legible.
+///
+/// *id* whole for anything that does not read as an id this module derived: a bare
+/// devpod name (`dl myworkspace`), and an id whose readable half is empty because
+/// its source slugged to nothing. The fallback is the id rather than a refusal
+/// because every caller wants a hostname and every id is already a legal one.
+///
+/// **The suffix check is a syllable test and not proof of derivation.** Four
+/// consonant-vowel pairs is a shape English words have too, so a hand-named devpod
+/// workspace ending in one — `foo-motorola`, `release-bananana` — loses that word
+/// from its prompt. Accepted rather than fixed: what a false positive costs is a
+/// shorter prompt on a workspace dl did not name, and the fix is to carry the
+/// derived name down from the launch through a trait every caller implements.
+/// [`ref_slug_of`] takes the same bet for a worse prize, since a false positive
+/// there prints a branch label that is not the branch.
+pub(crate) fn hostname_of(id: &str) -> &str {
+    without_suffix(id).and_then(non_empty).unwrap_or(id)
 }
 
 /// *body* with `<part>-` taken off the front, or `None` if it does not start that
@@ -1820,5 +1857,80 @@ mod tests {
         );
         let plain_cut = derived("o", plain, "release/9999999999999999999999999176");
         assert_eq!(ref_slug_of(&plain_cut, plain), Some("release-999999999"));
+    }
+
+    #[test]
+    fn a_hostname_is_the_id_without_its_identity_suffix() {
+        // The prompt reads `vscode@devlaunch-main:~$` for the workspace devpod
+        // addresses as `devlaunch-main-zovomobo`. Nine of those characters are hash,
+        // and a prompt is read rather than resolved.
+        let id = derived("blooop", "devlaunch", "main");
+
+        assert_eq!(id, "devlaunch-main-zovomobo");
+        assert_eq!(hostname_of(&id), "devlaunch-main");
+    }
+
+    #[test]
+    fn two_workspaces_that_differ_only_in_their_suffix_share_a_hostname() {
+        // The cost, pinned rather than left to be met in a terminal. The suffix is
+        // the only part of the id that separates either pair — one repo under two
+        // owners, and the two refs that slug alike — so dropping it makes their
+        // prompts identical. They are still two workspaces: different ids, different
+        // containers, different clones. What tells them apart is the tab, which
+        // carries the spec whole.
+        let mine = derived("blooop", "devlaunch", "main");
+        let theirs = derived("someone-else", "devlaunch", "main");
+        assert_ne!(mine, theirs);
+        assert_eq!(hostname_of(&mine), hostname_of(&theirs));
+
+        let slashed = derived("blooop", "devlaunch", "feature/auth");
+        let dashed = derived("blooop", "devlaunch", "feature-auth");
+        assert_ne!(slashed, dashed);
+        assert_eq!(hostname_of(&slashed), hostname_of(&dashed));
+    }
+
+    #[test]
+    fn a_name_with_no_syllable_suffix_is_its_own_hostname() {
+        // The same parse `ref_slug_of` makes, for the same reason: cutting eight
+        // characters off a name that never carried a suffix would name a container
+        // after a lie. Only the fallback differs — the name whole rather than
+        // `None`, because every workspace gets a hostname and a bare devpod name
+        // (`dl myworkspace`) is already a legal one.
+        for name in [
+            "some-hand-made-ws",
+            "devlaunch-main-qulaquli",
+            "zovomobo",
+            "ws",
+            "",
+            "devlaunch-main-zzzzzzé",
+            "é",
+        ] {
+            assert_eq!(hostname_of(name), name, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_id_that_is_nothing_but_a_suffix_keeps_it_as_its_hostname() {
+        // `value` drops an empty part *and* its separator, so a triple that slugs
+        // away entirely derives an id with no readable half at all — and no
+        // container can be named the empty string. A hash is a poor hostname and a
+        // legal one, which is the right way round.
+        let id = derived("blooop", "_", "_");
+
+        assert_eq!(id, "mifaboje");
+        assert_eq!(hostname_of(&id), id);
+    }
+
+    #[test]
+    fn a_hand_made_name_ending_in_a_syllable_shaped_word_loses_that_word() {
+        // The limit of the parse, pinned so it is known rather than discovered. Four
+        // consonant-vowel pairs over these tables is `motorola` as readily as it is
+        // `zovomobo`, so a workspace dl did not name can be read as though it had a
+        // suffix. The cost is the prompt on somebody's hand-made workspace reading
+        // short, which is why the check is kept as it is.
+        assert_eq!(hostname_of("foo-motorola"), "foo");
+        assert_eq!(hostname_of("release-bananana"), "release");
+        // And nothing about addressing moves with it: the id is untouched.
+        assert!(is_syllables("motorola"));
     }
 }
