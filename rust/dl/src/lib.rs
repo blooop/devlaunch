@@ -164,7 +164,7 @@ const DRAINED: [(libc::c_int, InheritedIgnore); 3] = [
 /// `KeyboardInterrupt` managed to write and which docs/rust-rewrite-plan.md row 5
 /// says is not a parity dimension — it cannot be, as none of what it needs
 /// (allocation, formatting, a lock) is safe here. For the same reason none of
-/// these signals can run an `--autorm` removal; see README's "How you exit decides
+/// these signals can run an `--rm` removal; see README's "How you exit decides
 /// whether it fires".
 ///
 /// **A SIGTERM or SIGHUP already ignored when `dl` started stays ignored; a SIGINT
