@@ -2,13 +2,13 @@
 //!
 //! The command line, the rendering and the flows are [`dl`]'s — the same library
 //! `aid` runs, so the two entry points cannot drift. What is left here is what
-//! belongs to a *process*: the SIGINT disposition, the argv it was started with, and
-//! the exit code it leaves behind.
+//! belongs to a *process*: the signal dispositions, the argv it was started with,
+//! and the exit code it leaves behind.
 
 use std::io::Write as _;
 
 fn main() {
-    dl::install_interrupt_handler();
+    dl::install_signal_handlers();
     // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
     // argument that is not valid UTF-8, which would end `dl $'\xff'` with an exit
     // 101 and a traceback. Python decoded argv lossily and carried on, and

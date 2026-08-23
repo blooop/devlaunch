@@ -1,8 +1,10 @@
 //! Async-signal-safe cleanup for a `dl` that is killed mid-flight.
 //!
-//! `dl`'s SIGINT disposition is `_exit(130)` (see the `dl` binary's `main`): a
-//! signal handler may do almost nothing — not allocate, not lock a mutex, not
-//! call a libc function outside the async-signal-safe list — so it cannot run
+//! `dl`'s disposition for SIGINT, SIGTERM and SIGHUP alike is `_exit(128 +
+//! signo)` — 130, 143, 129 — after the cleanup below (see `dl`'s
+//! `install_signal_handlers`, which both binaries call from `main`). A signal
+//! handler may do almost nothing — not allocate, not lock a mutex, not call a
+//! libc function outside the async-signal-safe list — so it cannot run
 //! destructors. Python got its cleanup for free, because a `KeyboardInterrupt`
 //! *unwinds*: the `with` blocks that staged the GitHub token, wrote the metadata
 //! temp and unpacked the tools bundle all ran their `finally`. `_exit` runs
@@ -168,10 +170,19 @@ unsafe fn drain() {
     // gone, closing the window in which an orphan could still read it.
     let pgid = FOREGROUND_PGID.load(Ordering::SeqCst);
     if pgid > 0 {
-        // SAFETY: `killpg` is async-signal-safe. A stale pgid (the child was
-        // reaped between load and here) at worst signals a recycled group; the
-        // window is closed by `clear_foreground_child` running before the reap
-        // is observable and by SIGINT delivery being to this process.
+        // SAFETY: `killpg` is async-signal-safe. The one hazard is a stale pgid:
+        // the child was reaped, and `clear_foreground_child` — which runs just
+        // after the wait returns, not before it — has not stored the zero yet. In
+        // that window the group is empty, so `killpg` fails ESRCH and nothing
+        // happens; for it to name a *live* group instead, the kernel would have
+        // had to recycle that pid as a new group leader within those few
+        // instructions, which needs the whole pid space to wrap first.
+        //
+        // Deliberately not argued from which signal delivered this: any of the
+        // three handled signals can arrive here, and a group-wide or cgroup-wide
+        // SIGTERM reaches the child as well as `dl`. The bound above holds
+        // whatever woke the handler, which is why it is stated in terms of the
+        // reap rather than the sender.
         unsafe {
             libc::killpg(pgid, libc::SIGTERM);
         }

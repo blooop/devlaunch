@@ -1,7 +1,7 @@
 //! `dl` as a library: the whole of the binary except the process it runs in.
 //!
-//! The binary is [`main.rs`](../main.rs) and holds three things — the SIGINT
-//! disposition, the process's argv, and `exit()`. Everything else is here, because
+//! The binary is [`main.rs`](../main.rs) and holds three things — the signal
+//! dispositions, the process's argv, and `exit()`. Everything else is here, because
 //! `aid` is a second entry point into the *same* command line rather than a second
 //! launcher: Python's `aid.py` rewrites its argv and calls `dl.main(dl_args)`
 //! in-process, and [`run`] is that function. An `aid` that spawned `dl` instead
@@ -71,18 +71,88 @@ pub const BUILD_MARKER: &str = if cfg!(feature = "dev-build") {
     ""
 };
 
-/// The code a `dl` killed by Ctrl-C exits with.
+/// The code a `dl` cut short by signal `signal` exits with: **128 + the signal
+/// number**, the convention a shell reports for a process a signal ended.
 ///
-/// 128 + SIGINT, which is what a shell reports for a process the terminal
-/// interrupted, and what Python's `except KeyboardInterrupt: sys.exit(130)`
-/// produced. Reproduced rather than left to the default disposition because the
+/// One rule for every signal in [`DRAINED`] rather than one constant each, because
+/// the alternative — a code chosen per signal — is a table that has to be
+/// remembered, and this one can be read off `kill -l`. It is also what a Ctrl-C
+/// already exited with: Python's `except KeyboardInterrupt: sys.exit(130)` was
+/// 128 + SIGINT written out long-hand.
+///
+/// The exit is reproduced rather than left to the default disposition because the
 /// difference is observable: a process that dies *by* the signal has no exit code
 /// at all, and a caller reading `Popen.returncode` sees `-2` where it used to see
 /// `130`.
-pub const INTERRUPTED: i32 = 130;
+///
+/// **This is not the same question as a child's status, and the repo answers the
+/// two opposite ways on purpose.** `flows::launch::Session::exit_status` renders a
+/// *remote program* killed by a signal as Python's negative `returncode`, and says
+/// so in as many words — "rather than inventing 128+n". That is about reporting
+/// what happened to somebody else's process, where Python had already fixed the
+/// spelling and parity is the whole point. This is about what code `dl`'s own
+/// death leaves behind, where Python had also already fixed the spelling — and
+/// fixed it at 130. Each follows its own precedent; neither generalises to the
+/// other.
+const fn signalled(signal: i32) -> i32 {
+    128 + signal
+}
 
-/// Install the SIGINT disposition both binaries share: a Ctrl-C exits
-/// [`INTERRUPTED`] after cleaning up, rather than killing the process by signal.
+/// Whether a `SIG_IGN` disposition `dl` inherited at startup survives, for one
+/// signal in [`DRAINED`].
+///
+/// Two named variants rather than a `bool`, because which one a signal gets is a
+/// judgement about what an inherited ignore *means* coming from that signal, and
+/// the two meanings are not two settings of one dial.
+#[derive(Clone, Copy)]
+enum InheritedIgnore {
+    /// The inherited disposition wins: the signal is left ignored, reaches no
+    /// handler, and ends nothing.
+    Wins,
+    /// The handler goes in regardless, so the signal drains even though it
+    /// arrived already ignored.
+    Loses,
+}
+
+/// The signals whose delivery runs the drain instead of ending `dl` where it
+/// stands, and what an inherited `SIG_IGN` means for each. Every one of them says
+/// "this run is over", and leaves `dl` holding a staged plaintext token and a live
+/// `devpod up` child if nothing intervenes.
+///
+/// **SIGINT** is the terminal's Ctrl-C, and the one that was always handled. An
+/// inherited ignore *loses* for it, which is to say Ctrl-C behaves exactly as it
+/// did before SIGTERM and SIGHUP were added. That is not an oversight in the rule
+/// below but the point of stating the rule per signal: a non-interactive shell
+/// backgrounding a job hands its child an ignored SIGINT and SIGQUIT under POSIX
+/// job control (measured: `SigIgn` `0x6`), and nobody typed anything to ask for
+/// that. Honouring it would stop the drain for every `dl` launched as `… &` from a
+/// script or a CI step — leaving the staged credential and the `devpod up` child
+/// to outlive a run that was cancelled, in the case where the abandoned run is
+/// least likely to be noticed.
+///
+/// **SIGTERM** is every orderly kill there is — a supervisor timing a run out, a
+/// cancelled CI job, the shutdown sweep — and was the gap this closes: `kill <dl>`
+/// leaked the exact pair the Ctrl-C handler exists to prevent. **SIGHUP** is the
+/// terminal window closing, which leaked the same pair for the same reason,
+/// unwatched: the window any complaint would have appeared in is the one that just
+/// went away.
+///
+/// An inherited ignore *wins* for both, and there it is a statement rather than an
+/// accident: something disarmed a signal this process had no handler for until
+/// now, and `nohup dl …` disarms SIGHUP for the express purpose of outliving the
+/// terminal. Draining on it would take that away.
+///
+/// SIGQUIT is deliberately absent: it means "die now and dump core", and a
+/// handler that tidies up first is not what someone reaching for it asked for.
+const DRAINED: [(libc::c_int, InheritedIgnore); 3] = [
+    (libc::SIGINT, InheritedIgnore::Loses),
+    (libc::SIGTERM, InheritedIgnore::Wins),
+    (libc::SIGHUP, InheritedIgnore::Wins),
+];
+
+/// Install the signal disposition both binaries share: any of `DRAINED` exits
+/// `signalled` with that signal's code after cleaning up, rather than killing
+/// the process by signal.
 ///
 /// The handler does the little a signal handler safely may:
 /// [`devlaunch_runner::interrupt::cleanup_and_exit`] kills the foreground child's
@@ -93,25 +163,56 @@ pub const INTERRUPTED: i32 = 130;
 /// timing summary of an interrupted run, which Python's unwinding
 /// `KeyboardInterrupt` managed to write and which docs/rust-rewrite-plan.md row 5
 /// says is not a parity dimension — it cannot be, as none of what it needs
-/// (allocation, formatting, a lock) is safe here.
+/// (allocation, formatting, a lock) is safe here. For the same reason none of
+/// these signals can run an `--rm` removal; see README's "How you exit decides
+/// whether it fires".
+///
+/// **A SIGTERM or SIGHUP already ignored when `dl` started stays ignored; a SIGINT
+/// does not.** `nohup dl …` sets SIGHUP to `SIG_IGN` and that disposition survives
+/// the `exec` — it is how `nohup` works, and honouring it is the only way `dl` can
+/// still outlive its terminal. The check is the classic POSIX idiom, applied to
+/// exactly the two signals where an inherited ignore is a statement; `DRAINED`
+/// has the argument for why SIGINT is not one of them, and gets read rather than
+/// guessed at because the answer lives in that table.
+///
+/// Note what the idiom does *not* cover, since it is easy to over-credit: `disown`
+/// and `setsid` set no `SIG_IGN` at all (measured). A disowned job survives its
+/// terminal because the shell does not send it SIGHUP, and a `setsid` one because
+/// it left the session — neither reaches this code, and neither needs to.
 ///
 /// It lives in the library both entry points share rather than in either `main`
 /// because `dl` and `aid` must install the *same* disposition: `aid` runs [`run`]
-/// in-process, so a Ctrl-C during an `aid` launch stages and orphans exactly what a
+/// in-process, so a signal during an `aid` launch stages and orphans exactly what a
 /// `dl` launch does. Two copies in two `main`s drifted once — aid's stayed a bare
 /// `_exit` that left the token file on disk and the `up` child running — which is
 /// the drift a single definition ends.
-pub fn install_interrupt_handler() {
-    extern "C" fn interrupted(_signal: libc::c_int) {
+pub fn install_signal_handlers() {
+    extern "C" fn drain(signal: libc::c_int) {
         // SAFETY: called only as a signal handler; `cleanup_and_exit` is
-        // async-signal-safe and never returns.
-        unsafe { devlaunch_runner::interrupt::cleanup_and_exit(INTERRUPTED) }
+        // async-signal-safe and never returns. The code is derived from the
+        // signal the kernel passed in, so one handler serves every signal in
+        // `DRAINED` and none of them can be given the wrong code.
+        unsafe { devlaunch_runner::interrupt::cleanup_and_exit(signalled(signal)) }
     }
-    // SAFETY: installing a handler for SIGINT before any thread is started. The
-    // handler is `extern "C"` and does nothing but call the async-signal-safe
-    // cleanup, which does not return.
-    unsafe {
-        libc::signal(libc::SIGINT, interrupted as *const () as libc::sighandler_t);
+    for (signal, inherited_ignore) in DRAINED {
+        match inherited_ignore {
+            // SAFETY: installing a handler before any thread is started. The
+            // handler is `extern "C"` and does nothing but call the
+            // async-signal-safe cleanup, which does not return.
+            InheritedIgnore::Loses => unsafe {
+                libc::signal(signal, drain as *const () as libc::sighandler_t);
+            },
+            // SAFETY: as above. The first call reads the inherited disposition —
+            // `signal` returns the one it replaced — and the SIG_IGN it installs
+            // to do so is the safe thing to be holding in the meantime, since the
+            // only window it widens is one in which the signal is ignored.
+            InheritedIgnore::Wins => unsafe {
+                let inherited = libc::signal(signal, libc::SIG_IGN);
+                if inherited != libc::SIG_IGN {
+                    libc::signal(signal, drain as *const () as libc::sighandler_t);
+                }
+            },
+        }
     }
 }
 
@@ -471,6 +572,53 @@ mod build_marker {
         assert!(
             !VERSION.contains("-dev"),
             "the marker is the build's, not the version's; `rust/Cargo.toml` says {VERSION:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod drained_signals {
+    //! A guard on the handled-signal set, and the honest limit of what it buys.
+    //!
+    //! Each signal's *behaviour* is proved at the binary boundary by
+    //! `INHERITED_IGNORE` in `dl/tests/interrupt.rs` — which is a second,
+    //! independent list. It has to be: an integration test is a separate crate, so
+    //! it cannot see [`DRAINED`] at all (measured: `constant DRAINED is private`),
+    //! and giving it sight would mean `pub`-ing an implementation detail of a crate
+    //! whose surface is deliberately small. So nothing can machine-check that the
+    //! two lists *agree*.
+    //!
+    //! What this guard buys instead is that the set cannot be extended in
+    //! **silence**: a fourth signal added to [`DRAINED`] fails the assertion below,
+    //! and the failure names the file whose table has to grow with it. That is the
+    //! whole claim — "cannot be added without being told what else to edit", not
+    //! "cannot disagree".
+    //!
+    //! What still slips through, said plainly so nobody reads more into it: an
+    //! author who edits this expectation *and* [`DRAINED`] together and still leaves
+    //! the boundary table alone. That is a deliberate act rather than an oversight —
+    //! the class of mistake a tripwire cannot catch and review can — and accepting
+    //! it is what keeps this at four lines instead of a `pub`.
+
+    use super::{DRAINED, InheritedIgnore};
+
+    #[test]
+    fn the_handled_set_cannot_grow_without_the_boundary_table_growing_too() {
+        let held: Vec<(libc::c_int, bool)> = DRAINED
+            .iter()
+            .map(|(signal, inherited)| (*signal, matches!(inherited, InheritedIgnore::Wins)))
+            .collect();
+        assert_eq!(
+            held,
+            vec![
+                (libc::SIGINT, false),
+                (libc::SIGTERM, true),
+                (libc::SIGHUP, true),
+            ],
+            "the handled signals changed. Add or remove the matching row in \
+             `INHERITED_IGNORE` in `dl/tests/interrupt.rs`, which proves each \
+             one's behaviour at the binary boundary, and only then update this \
+             expectation."
         );
     }
 }

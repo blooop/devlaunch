@@ -22,7 +22,7 @@
 //! stderr after the prompt is submitted, so the build's progress is seen — just
 //! not interleaved with the typing. The child is deliberately left in aid's
 //! process group: a terminal Ctrl-C mid-editing reaches both processes, and the
-//! child's own interrupt handler (the shared `dl::install_interrupt_handler`
+//! child's own interrupt handler (the shared `dl::install_signal_handlers`
 //! disposition) kills its `devpod up` group and unlinks its staged token file,
 //! so abandoning the editor tears the whole boot down with no new machinery.
 //!
