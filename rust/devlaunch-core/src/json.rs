@@ -4,10 +4,12 @@
 //! the `completions.json` cache, `dl --ls --json`, `dl --completion-data`, the
 //! `SOURCE` column's rendering of a source dl cannot read, and the
 //! `DEVLAUNCH_TIMING=json` line — so the spelling is part of the contract rather
-//! than a style choice. One copy of it, at the bottom of the crate, because a
-//! second copy is how one of those documents drifts: the timing document was
-//! written with `serde_json::to_string` and lost the spacing while its own
-//! docstring promised byte-comparability.
+//! than a style choice. One copy of it in this crate, at the bottom of it,
+//! because a second copy is how one of those documents drifts: the timing
+//! document was written with `serde_json::to_string` and lost the spacing while
+//! its own docstring promised byte-comparability. `dl --ls --json` is spelled by
+//! `dl`'s own formatter and still carries a copy of the escaping; devlaunch#346
+//! collapses it onto this one.
 //!
 //! Below the four layers on purpose: `timing` is the crate root's own module and
 //! `flows` sits at the top, so a shared helper either lives here or gets reached
@@ -125,26 +127,55 @@ impl serde_json::ser::Formatter for PythonFormatter {
 
     /// The run of string bytes serde did not have to escape — which includes every
     /// non-ASCII byte, since serde escapes only the control characters, `"` and
-    /// `\`. Python escapes the rest too, so this is where `ensure_ascii` lives.
+    /// `\`. Python escapes the rest too, which is [`write_ensure_ascii`]'s job.
     fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
     where
         W: ?Sized + io::Write,
     {
-        if fragment.is_ascii() {
-            return writer.write_all(fragment.as_bytes());
-        }
-        let mut buffer = [0u16; 2];
-        for character in fragment.chars() {
-            if character.is_ascii() {
-                writer.write_all(character.encode_utf8(&mut [0u8; 4]).as_bytes())?;
-            } else {
-                for unit in character.encode_utf16(&mut buffer) {
-                    writer.write_all(format!("\\u{unit:04x}").as_bytes())?;
-                }
-            }
-        }
-        Ok(())
+        write_ensure_ascii(writer, fragment)
     }
+}
+
+/// One unescaped run of a JSON string, with Python's `ensure_ascii` applied.
+///
+/// The escaping half of the spelling, and the copy this crate keeps: the pretty
+/// formatter the metadata store writes `metadata.json` with needs exactly this
+/// and differs from [`PythonFormatter`] in layout, so it calls here too. A
+/// second copy is the drift this module's docstring is about, and it had one —
+/// two hand-written loops that had to stay character-for-character equal for the
+/// two documents to keep agreeing with the same Python.
+///
+/// **A third copy is still live**, in `dl`'s own pretty formatter for
+/// `dl --ls --json` (`dl/src/render.rs`). Collapsing it onto this one needs a new
+/// `pub` item on this crate, which moves a public-API snapshot, so it waits on
+/// devlaunch#346 — named here rather than left for the next reader to discover,
+/// because a docstring that claims one copy while a second is live is the very
+/// drift this module's own docstring holds up as the cautionary case.
+///
+/// Non-ASCII becomes `\uXXXX` in lowercase hex, and a character outside the basic
+/// plane becomes the two escapes of its UTF-16 surrogate pair, because that is
+/// what `json.dumps` writes for an emoji.
+pub(crate) fn write_ensure_ascii<W>(writer: &mut W, fragment: &str) -> io::Result<()>
+where
+    W: ?Sized + io::Write,
+{
+    // The overwhelmingly common case, and the one worth not walking per character.
+    if fragment.is_ascii() {
+        return writer.write_all(fragment.as_bytes());
+    }
+    let mut ascii_from = 0;
+    let mut units = [0u16; 2];
+    for (at, character) in fragment.char_indices() {
+        if character.is_ascii() {
+            continue;
+        }
+        writer.write_all(&fragment.as_bytes()[ascii_from..at])?;
+        ascii_from = at + character.len_utf8();
+        for unit in character.encode_utf16(&mut units) {
+            write!(writer, "\\u{unit:04x}")?;
+        }
+    }
+    writer.write_all(&fragment.as_bytes()[ascii_from..])
 }
 
 /// Anything `Serialize`, spelled the same way.
@@ -249,6 +280,78 @@ mod tests {
         assert_eq!(
             as_python_writes_it(&serde_json::json!({ "seconds": 4e-5, "total": 2.0 })),
             r#"{"seconds": 4e-05, "total": 2.0}"#
+        );
+    }
+
+    /// The escaping half on its own, at the seam both formatters now share.
+    ///
+    /// Every expectation is the inside of what `json.dumps` wrote for the same
+    /// text under the frozen Python build (3.14) — the quotes stripped, since a
+    /// fragment is what falls between them.
+    #[test]
+    fn ensure_ascii_writes_what_json_dumps_writes_between_the_quotes() {
+        let cases: &[(&str, &str)] = &[
+            // Nothing to do: the safe path every ASCII document takes.
+            ("plain/path-1_2.3", "plain/path-1_2.3"),
+            ("feature/br\u{fc}nch", "feature/br\\u00fcnch"),
+            // Astral, so Python writes the UTF-16 surrogate pair rather than one
+            // escape.
+            ("\u{1f680}", "\\ud83d\\ude80"),
+            // Mixed, so the ASCII runs on either side have to survive intact.
+            ("a\u{1f680}b\u{e9}c", "a\\ud83d\\ude80b\\u00e9c"),
+            ("", ""),
+        ];
+        for (fragment, expected) in cases {
+            let mut written = Vec::new();
+            write_ensure_ascii(&mut written, fragment).expect("a Vec never fails to write");
+            assert_eq!(
+                String::from_utf8(written).expect("escaping writes ASCII"),
+                *expected,
+                "for {fragment:?}"
+            );
+        }
+    }
+
+    /// The classes serde escapes before the shared escaper is ever reached, at
+    /// the document.
+    ///
+    /// [`write_ensure_ascii`] only ever sees the runs serde left alone, so the
+    /// quotes, the backslash and everything under `0x20` are spelled by serde's
+    /// own table rather than by anything in this module — which is exactly why
+    /// they want pinning here: nothing else in the crate asserts that the table
+    /// happens to agree with Python's, and the escaper extraction is the sort of
+    /// edit that invites a hand-written table beside it. `/` is here because
+    /// Python leaves it bare and a lot of JSON writers do not, and `U+2028`/
+    /// `U+2029` because they are the non-ASCII pair a JavaScript-flavoured
+    /// escaper singles out and Python does not.
+    ///
+    /// Expectation from `json.dumps` under the frozen Python build.
+    #[test]
+    fn the_escapes_serde_writes_are_the_ones_python_writes() {
+        assert_eq!(
+            as_python_writes_it(&serde_json::json!({
+                "branch": "a\"b\\c\nd\te\rf\u{8}g\u{c}h",
+                "tags": ["\u{0}\u{1}\u{1f}", "/slash/", "\u{2028}\u{2029}"],
+            })),
+            concat!(
+                r#"{"branch": "a\"b\\c\nd\te\rf\bg\fh", "#,
+                r#""tags": ["\u0000\u0001\u001f", "/slash/", "\u2028\u2029"]}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn a_compact_document_escapes_the_same_way() {
+        // What `json.dumps({"branch": "feature/brünch"})` printed.
+        assert_eq!(
+            as_python_writes_it(&serde_json::json!({ "branch": "feature/br\u{fc}nch" })),
+            r#"{"branch": "feature/br\u00fcnch"}"#
+        );
+        // And `json.dumps(["\U0001f680"])`, where the rocket is one code point
+        // and two escapes.
+        assert_eq!(
+            as_python_writes_it(&serde_json::json!(["\u{1f680}"])),
+            r#"["\ud83d\ude80"]"#
         );
     }
 

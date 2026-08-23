@@ -56,7 +56,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -418,6 +418,20 @@ impl ProcessRunner {
 
 impl Runner for ProcessRunner {
     fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
+        // The child stays in this process's group, and the timeout kill is a
+        // single-pid kill because of it. A capture pipes stdout and stderr but
+        // not stdin, and `/dev/tty` is reachable whatever stdin is: ssh's
+        // host-key confirmation, ssh's passphrase prompt and git's credential
+        // prompt all read the terminal from inside a capture. A child outside
+        // the terminal's foreground process group takes SIGTTIN on that read and
+        // stops — and `try_wait` never reports a stopped child, so the wait runs
+        // to its deadline, or forever for the three captures that pass no
+        // timeout. Group membership is also the only thing that delivers a
+        // terminal Ctrl-C here, since `capture` (unlike `passthrough`) notes no
+        // foreground child for the interrupt handler to `killpg`. Both measured
+        // under a pty and pinned in `tests/terminal.rs`; a group of its own was
+        // tried for the sake of killing the tree and cost more than it bought
+        // (#301, #302).
         let mut child = match start(spec, Stdio::piped(), Stdio::piped(), OwnGroup::No) {
             Ok(child) => child,
             Err(outcome) => return outcome.retyped(),
@@ -428,12 +442,23 @@ impl Runner for ProcessRunner {
         let stdout = drain(child.stdout.take());
         let stderr = drain(child.stderr.take());
         let ending = wait(&mut child, spec.timeout);
-        let io = CapturedText {
-            stdout: collect(stdout),
-            stderr: collect(stderr),
-        };
         match ending {
-            Ending::Ended(exit) => Outcome::Ran { exit, io },
+            // Bounded, not joined (see [`collect`] and [`DRAIN_GRACE`]): the
+            // child has exited, but a descendant it forked into a session of its
+            // own — git's ssh ControlMaster is the production case — can hold
+            // the pipe open with no EOF ever coming, and this is the path that
+            // reaches that far the more often of the two.
+            Ending::Ended(exit) => Outcome::Ran {
+                exit,
+                io: CapturedText {
+                    stdout: collect(stdout),
+                    stderr: collect(stderr),
+                },
+            },
+            // The same bound, at zero: a timed-out outcome drops whatever was
+            // written (see [`Outcome::TimedOut`]), so there is nothing here to
+            // wait even a moment for. The drains are dropped mid-read and the
+            // threads end when — if — the pipe ever closes.
             Ending::Killed => Outcome::TimedOut,
             Ending::Lost(failure) => Outcome::NotStarted(failure),
         }
@@ -454,8 +479,8 @@ impl Runner for ProcessRunner {
         // child in a group of its own is no longer the controlling terminal's
         // foreground group, so its first read of the PTY earns a SIGTTIN and the
         // session hangs. It stays in this process's group, which is also what
-        // the Python original did. `capture`'s children are short and pipe their
-        // streams, and `session`'s child likewise stays in this process's group.
+        // the Python original did — as do `session`'s and `capture`'s children,
+        // for the same reason.
         if spec.own_group {
             let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
                 Ok(child) => child,
@@ -558,7 +583,15 @@ impl Runner for ProcessRunner {
                 deadline.map(|d| d.saturating_duration_since(Instant::now())),
             )
         };
-        if let Some(reader) = reader {
+        // The reader is joined only when the pipe closed of its own accord (the
+        // loop broke on Closed, so the thread is already on its way out). On a
+        // timeout it is abandoned: a descendant in a session of its own can hold
+        // the stderr pipe past the kill, and `read_until` would block the join
+        // forever (#301). A bound of zero, where `capture`'s success path takes
+        // [`DRAIN_GRACE`], and for the same reason its own timeout path does:
+        // the lines have already been handed over as they arrived, so there is
+        // nothing left here that waiting could collect.
+        if !timed_out && let Some(reader) = reader {
             let _ = reader.join();
         }
         ending.into()
@@ -765,25 +798,112 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A pipe being read to EOF on a thread of its own, and what it has read so far.
+///
+/// The bytes live behind a lock rather than in the thread's return value so that
+/// they can be taken *without* joining it. Joining is what cannot be relied on:
+/// a descendant that inherited the write end — ssh's ControlMaster is the
+/// production case — holds the pipe open long after the child that wrote them
+/// exited, and EOF, the read, and the join with it, then never come at all
+/// (#301, #302).
+struct Drain {
+    read: Arc<(Mutex<Reading>, Condvar)>,
+}
+
+/// What a drain has read so far, and whether the pipe has reached its end.
+///
+/// `ended` is the drain thread's own answer, set under the lock as it leaves, so
+/// that the condvar it then signals cannot lose a wakeup: [`collect`] tests this
+/// flag under the same lock it waits on.
+struct Reading {
+    bytes: Vec<u8>,
+    ended: bool,
+}
+
 /// Read a pipe to the end on a thread of its own. `None` in means `None` out —
 /// a stream that was inherited has nothing to read, which is not an error.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<thread::JoinHandle<Vec<u8>>> {
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
     pipe.map(|mut pipe| {
+        let read = Arc::new((
+            Mutex::new(Reading {
+                bytes: Vec::new(),
+                ended: false,
+            }),
+            Condvar::new(),
+        ));
+        let sink = Arc::clone(&read);
+        // Detached, never joined: see [`Drain`]. What replaces the join is the
+        // `ended` flag below, which says the same thing without the wait being
+        // able to outlast the pipe.
         thread::spawn(move || {
-            let mut buffer = Vec::new();
-            // A read that fails mid-stream leaves what it got: partial output
-            // is what the child wrote, and there is nowhere better to put it.
-            let _ = pipe.read_to_end(&mut buffer);
-            buffer
-        })
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    // Retried, not an ending: `EINTR` means a signal arrived
+                    // mid-read, which says nothing about the pipe. Treating it
+                    // as EOF is silent truncation reported as `Outcome::Ran`
+                    // with a success exit — the one wrong answer worse than an
+                    // error, since callers parse this text. `read_to_end`, which
+                    // this loop replaced, retried it for free; the loop has to
+                    // say so.
+                    Err(again) if again.kind() == std::io::ErrorKind::Interrupted => continue,
+                    // Any other read that fails mid-stream leaves what it got:
+                    // partial output is what the child wrote, and there is
+                    // nowhere better to put it.
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => held(&sink.0).bytes.extend_from_slice(&chunk[..read]),
+                }
+            }
+            held(&sink.0).ended = true;
+            sink.1.notify_all();
+        });
+        Drain { read }
     })
 }
 
-fn collect(reader: Option<thread::JoinHandle<Vec<u8>>>) -> String {
-    let bytes = reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
-    String::from_utf8_lossy(&bytes).into_owned()
+/// What a drain has read, waiting up to [`DRAIN_GRACE`] for it to reach EOF.
+///
+/// Called once the child is gone, so the wait is for the pipe to close rather
+/// than for anything more to be written; when it expires the reading thread is
+/// abandoned with the pipe it will never see the end of, and the bytes it did
+/// read are the answer.
+///
+/// A condvar rather than a poll of `JoinHandle::is_finished`, because this is on
+/// the hot path: every capture ends here, and the drain thread usually reaches
+/// EOF a few microseconds *after* the wait for the child returned. Polling at
+/// [`POLL_INTERVAL`] therefore charged nearly every capture a full sleep — 5ms,
+/// twice, against a `capture` that otherwise costs well under a millisecond —
+/// where waiting to be woken costs the microseconds it actually takes. The bound
+/// is the same; only the waiting is exact.
+fn collect(drain: Option<Drain>) -> String {
+    let Some(drain) = drain else {
+        return String::new();
+    };
+    let (reading, ended) = &*drain.read;
+    let deadline = Instant::now() + DRAIN_GRACE;
+    let mut read = held(reading);
+    while !read.ended {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        read = ended
+            .wait_timeout(read, left)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .0;
+    }
+    String::from_utf8_lossy(&read.bytes).into_owned()
+}
+
+/// The bytes a drain has read, however the last reader left the lock.
+///
+/// A poisoned lock means a panic somewhere else in the process, not a doubt
+/// about the bytes: the drain thread does nothing under this lock but extend a
+/// `Vec`, so what is there is what was read.
+fn held<T>(bytes: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    bytes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Wait for `child`, killing it if `timeout` runs out first.
@@ -815,6 +935,13 @@ fn wait(child: &mut Child, timeout: Option<Duration>) -> Ending {
 /// Kill a child that outstayed its timeout, and reap it — the two halves of
 /// what `subprocess.run(timeout=)` does, and a kill without the wait leaves a
 /// zombie for the life of the process.
+///
+/// Single-pid, never a `killpg`: every child that reaches here is in this
+/// process's own group, so a group kill would fell `dl` and the whole
+/// foreground group with it. What the tool itself forked is therefore left
+/// running — knowingly, and at the price the alternative charged (#301, #302).
+/// Liveness does not rest on this kill: what makes the outcome come back is
+/// that nothing afterwards waits on a pipe a descendant still holds.
 fn kill(child: &mut Child) -> Ending {
     let _ = child.kill();
     match child.wait() {
@@ -824,6 +951,19 @@ fn kill(child: &mut Child) -> Ending {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// How long [`collect`] gives a drained pipe to reach EOF once the child has
+/// exited.
+///
+/// A bound rather than an unbounded join, and this is the whole of #302's fix.
+/// The child is gone by the time it is waited on, so everything it wrote is
+/// already read or sitting in the pipe buffer and a moment covers the rest; what
+/// the wait must not do is outlast a descendant that inherited the write end and
+/// lives on, because EOF then never arrives. An unbounded join there hangs `dl`
+/// for good on the three captures that pass no timeout at all — `git clone
+/// --bare`, `git push -u` and the launch-path fetch — and hangs it for the whole
+/// timeout on the rest.
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 /// A waited-for child either exited with a status or died of a signal, and
 /// `ExitStatus` cannot say which of the two it holds. An answer that is neither
