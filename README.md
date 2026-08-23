@@ -76,10 +76,9 @@ aid blooop/devlaunch@fix/flaky-test
 `aid` is `dl` with a coding agent started for you — the same clone and the same container `dl` would
 have given you for that spec. Name the repo and it asks for the prompt *while the container boots*,
 so the minute the container takes and the minute you take writing the prompt are the same minute.
-Press Enter and you are inside the container with the agent already working in the checkout — a
-third one here, since the feature branch from step 2 is still running beside it. Put the prompt on
-the line instead, `aid blooop/devlaunch@feature/json-flag add a --json flag`, and it skips the
-question, quoting and all.
+Press Enter and you are in the container, with the agent working in the checkout. That is a third
+container: the feature branch from step 2 is still running beside it. Put the prompt on the line
+instead, `aid blooop/devlaunch@feature/json-flag add a --json flag`, and it skips the question.
 
 The agent runs inside a disposable container holding only that one repo, which is what makes it
 reasonable to let it work without a permission prompt per tool. See
@@ -93,9 +92,8 @@ reasonable to let it work without a permission prompt per tool. See
 dl rm
 ```
 
-Workspaces are cheap to make, so you end up with a lot of them. A verb with no workspace named opens
-the same selector, and TAB marks as many rows as you want — all three here — so `dl rm` clears a
-week of them in one visit.
+Workspaces pile up. A verb with no workspace named opens the same selector, and TAB marks more than
+one row — all three here — so `dl rm` clears them in one pass.
 
 ### Managing what you have
 
@@ -2201,18 +2199,20 @@ print a `-dev` version so a working-tree build is never mistaken for a released 
 
 ### The Quickstart's demo GIFs
 
-The four `![...]` lines up in the Quickstart are commented out until someone records them:
+The four GIFs in the Quickstart come from VHS tapes in `docs/demo/`:
 
 ```bash
 pixi run demo                  # all four, in order
 pixi run demo 2-branches       # one, while you tune it
 ```
 
-That is `scripts/record_demo.sh` over the VHS tapes in `docs/demo/`. It records, optimises with
-`gifsicle`, uncomments the README line for each GIF that now exists, and prints what to check before
-committing. The tapes film the *released* `dl`, not this working tree, so they show what someone who
-installed devlaunch would see — which also means the GIFs go stale when the released UI changes, and
-re-recording is one command rather than a project.
+`scripts/record_demo.sh` records them, optimises them with `gifsicle`, and prints what to check
+before you commit. A GIF that has not been recorded yet keeps its README line commented out, so a
+clone without them shows no broken images; the script uncomments each line as its file appears.
+
+The tapes film the released `dl`, not this working tree. So the GIFs show what someone who installed
+devlaunch sees, and they go stale when the released UI changes. Re-record after a release, not
+before.
 
 Until 0.1.0 this repository held a second, Python implementation of `dl`, and a parity harness that
 ran both against the same fixtures and compared them. Both retired once the binaries shipped; the
