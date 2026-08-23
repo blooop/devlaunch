@@ -17,23 +17,25 @@ Set Height 380
 # the selector is worth showing -- a selector with one row in it demonstrates
 # nothing.
 #
-# `fix/42` does not exist on the remote, and that is the point twice over. `dl`
-# creates a branch it cannot find, so the GIF shows that; and a branch that was
-# never pushed cannot be merged and deleted out from under this tape, which is
-# what happened to the real branch it used to name. Short, too -- every line
-# here carries a workspace id built out of it, and the in-container prompt
-# carries it twice.
+# `feature/json-flag` does not exist on the remote, and that is the point twice
+# over. `dl` creates a branch it cannot find, so the GIF shows that; and a
+# branch that was never pushed cannot be merged and deleted out from under this
+# tape, which is what happened to the real branch it used to name.
+#
+# Seventeen characters is the ceiling, not a preference. Every line here carries
+# a workspace id built out of the branch and the prompt carries it twice, so the
+# longest line is 46 + 2x the branch + the command, against 93 columns.
 Hide
 Type "dl blooop/devlaunch -- true" Enter
 Wait@240s
-Type "dl blooop/devlaunch@fix/42 -- true" Enter
+Type "dl blooop/devlaunch@feature/json-flag -- true" Enter
 Wait@240s
 Type "clear" Enter
 Wait
 Show
 
 # Same repo, different branch: a second container, not a checkout in the first.
-Type "dl blooop/devlaunch@fix/42"
+Type "dl blooop/devlaunch@feature/json-flag"
 Sleep 900ms
 Enter
 Sleep 5s
@@ -66,7 +68,7 @@ Sleep 2500ms
 # rows survive the query, Enter takes the cursor's, and the cursor is on the
 # workspace you just left -- devpod lists most-recently-used first. `main`
 # narrows to one here because a row is `owner | repo | ref`, and there is no m
-# in `blooop | devlaunch | fix/42` for the match to start on.
+# in `blooop | devlaunch | feature-json-flag` for the match to start on.
 Type "main"
 Sleep 1800ms
 Enter

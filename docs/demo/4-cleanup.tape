@@ -5,7 +5,7 @@
 # films -- so it runs last, and the next run of `pixi run demo` pays for a cold
 # rebuild in 1-launch.tape's pre-warm.
 #
-# It needs the clones clean, since `dl rm` refuses work that is nowhere else.
+# It needs every clone clean, since `dl rm` refuses work that is nowhere else.
 # 3-agent.tape leaves the agent running for two or three seconds, which is long
 # enough to read files and not to edit one; if you lengthen it, check
 # `git status` in that workspace before blaming this tape.
@@ -16,13 +16,16 @@ Require dl
 Source "_common.tape"
 Output "4-cleanup.gif"
 
-# Two workspaces to delete, and the deletion log is three lines each.
-Set Height 380
+# Three workspaces to delete, and each one is five or six lines of log once the
+# clone paths wrap. This is the tallest of the four for that reason alone.
+Set Height 500
 
 Hide
 Type "dl blooop/devlaunch -- true" Enter
 Wait@240s
-Type "dl blooop/devlaunch@fix/42 -- true" Enter
+Type "dl blooop/devlaunch@feature/json-flag -- true" Enter
+Wait@240s
+Type "dl blooop/devlaunch@fix/flaky-test -- true" Enter
 Wait@240s
 Type "clear" Enter
 Wait
@@ -34,12 +37,14 @@ Sleep 700ms
 Enter
 Sleep 2500ms
 
-# TAB marks and steps down, so two of them mark both rows. The count in the
-# corner goes [1], [2].
+# TAB marks and steps down, so three of them mark every row. The count in the
+# corner goes [1], [2], [3].
 Tab
-Sleep 1000ms
+Sleep 900ms
 Tab
-Sleep 1500ms
+Sleep 900ms
+Tab
+Sleep 1400ms
 Enter
 
 # Wait, not Sleep: deleting two containers took four seconds one run and seven

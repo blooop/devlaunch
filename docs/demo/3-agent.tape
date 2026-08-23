@@ -7,6 +7,10 @@
 # the account's own status line; what teaches the workflow is the handover, not
 # the answer.
 #
+# A third workspace, and a branch of its own: the agent gets the flaky test
+# while the feature branch from 2-branches.tape stays where it was. 4-cleanup
+# then has three rows to mark.
+#
 # See 1-launch.tape for how to run these.
 
 Require aid
@@ -17,19 +21,19 @@ Output "3-agent.gif"
 Set Height 380
 
 Hide
-Type "dl blooop/devlaunch@fix/42 -- true" Enter
+Type "dl blooop/devlaunch@fix/flaky-test -- true" Enter
 Wait@240s
 Type "clear" Enter
 Wait
 Show
 
-Type "aid blooop/devlaunch@fix/42"
+Type "aid blooop/devlaunch@fix/flaky-test"
 Sleep 900ms
 Enter
 
 # The question arrives while the container is still coming up.
 Sleep 3s
-Type "add a --json flag to the timing output"
+Type "fix the flaky test in the launch suite"
 Sleep 2s
 Enter
 

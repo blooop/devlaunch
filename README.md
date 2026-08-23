@@ -48,7 +48,7 @@ Exit the shell and the container keeps running; nothing is lost between visits.
 ![Two branches, two containers](docs/demo/2-branches.gif)
 
 ```bash
-dl blooop/devlaunch@fix/42
+dl blooop/devlaunch@feature/json-flag
 ```
 
 That is a *second* container for the same repo, with its own checkout on that branch, running
@@ -70,15 +70,16 @@ Nothing to install for it — no `fzf` on `PATH`, no plugin. Type to filter, Ent
 ![Starting a coding agent](docs/demo/3-agent.gif)
 
 ```bash
-aid blooop/devlaunch@fix/42
+aid blooop/devlaunch@fix/flaky-test
 ```
 
-`aid` is `dl` with a coding agent started for you — same clone, same container, same workspace. Name
-the repo and it asks for the prompt *while the container boots*, so the minute the container takes
-and the minute you take writing the prompt are the same minute. Press Enter and you are inside that
-container — the one from step 2 — with the agent already working in the checkout. Put the prompt on
-the line instead — `aid blooop/devlaunch@fix/42 fix the flaky test` — and it skips the question,
-quoting and all.
+`aid` is `dl` with a coding agent started for you — the same clone and the same container `dl` would
+have given you for that spec. Name the repo and it asks for the prompt *while the container boots*,
+so the minute the container takes and the minute you take writing the prompt are the same minute.
+Press Enter and you are inside the container with the agent already working in the checkout — a
+third one here, since the feature branch from step 2 is still running beside it. Put the prompt on
+the line instead, `aid blooop/devlaunch@feature/json-flag add a --json flag`, and it skips the
+question, quoting and all.
 
 The agent runs inside a disposable container holding only that one repo, which is what makes it
 reasonable to let it work without a permission prompt per tool. See
@@ -93,8 +94,8 @@ dl rm
 ```
 
 Workspaces are cheap to make, so you end up with a lot of them. A verb with no workspace named opens
-the same selector, and TAB marks as many rows as you want: `dl rm` is how five dead workspaces go in
-one visit.
+the same selector, and TAB marks as many rows as you want — all three here — so `dl rm` clears a
+week of them in one visit.
 
 ### Managing what you have
 
