@@ -1156,6 +1156,24 @@ pub(crate) fn delete_refused(workspace: &str) -> String {
     )
 }
 
+/// The one sentence a target that named too much gets.
+///
+/// Every candidate, whole, one per line: the point of refusing is that the user
+/// picks, and a list that elided some of them would be asking them to pick blind.
+/// The suffix is what separates these ids — it is doing work here, which is
+/// precisely where it belongs on screen.
+pub(crate) fn ambiguous_workspace(target: &str, candidates: &[String]) -> String {
+    let mut message = format!(
+        "'{target}' names {} workspaces. Use the whole id, or a longer prefix:",
+        candidates.len()
+    );
+    for candidate in candidates {
+        message.push_str("\n  ");
+        message.push_str(candidate);
+    }
+    message
+}
+
 /// The one sentence a target no command can address gets.
 pub(crate) fn unknown_workspace(target: &str) -> String {
     format!(
@@ -1615,6 +1633,14 @@ pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
 /// level. The level each arm stands for is named in its comment.
 pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
     Some(match notice {
+        // --- addressing (info: the id every later step will use, said when it is
+        // not the word that was typed)
+        LaunchNotice::AddressedByHandle {
+            typed,
+            workspace_id,
+        } => {
+            format!("'{typed}' is {workspace_id}.")
+        }
         // --- the shared pixi cache (warning; dl.py `_pixi_cache_up_args`, 3533/3554)
         LaunchNotice::PixiCacheNotCreated { source, reason } => format!(
             "Could not create the shared pixi cache at {} ({reason}), so each container downloads \
@@ -1837,6 +1863,9 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
     match refused {
         LaunchRefusal::UnsafeSpec(name) => Some(unsafe_name(name)),
         LaunchRefusal::UnknownWorkspace { name } => Some(unknown_workspace(name)),
+        LaunchRefusal::AmbiguousWorkspace { name, candidates } => {
+            Some(ambiguous_workspace(name, candidates))
+        }
         LaunchRefusal::BranchNotNamed { owner, repo, error } => Some(format!(
             "Repository '{owner}/{repo}': {}",
             branch_not_named(error)

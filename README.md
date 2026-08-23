@@ -1081,6 +1081,27 @@ terminal after the workspace](#naming-the-terminal-after-the-workspace) — and 
 selector shows `owner | repo | branch`. The id addresses the workspace; those name
 it.
 
+Nor is it usually what you **type**. Any prefix that names exactly one workspace
+addresses it, the way `git show a1b2c3d` works:
+
+```
+dl devlaunch-main stop      # devlaunch-main-zovomobo, if it is the only match
+dl devlaunch-mai            # so does any shorter prefix
+dl devlaunch-main           # two workspaces share that half? refused, both named
+```
+
+The readable half is not a special case — it is a prefix, since the id joins it in
+front of the suffix. Three rules and no more: a whole id always wins, so a workspace
+somebody named `devlaunch-main` by hand stays reachable while a longer id begins with
+it; a prefix that names one workspace resolves, and dl prints the id it resolved to
+before acting on it; a prefix that names several is refused with the candidates
+listed, because choosing one for you is how a verb comes to delete the wrong
+checkout.
+
+A handle is a claim about what is on the machine right now, so it stops resolving
+when a second workspace comes to share its prefix. Scripts should name a full id or
+a spec.
+
 Branch names must be safe as both git refs and directory names — a name with a space or
 a leading dash is rejected rather than quietly rewritten.
 

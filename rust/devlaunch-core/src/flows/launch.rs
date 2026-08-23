@@ -73,7 +73,7 @@ use crate::flows::herdr;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
-use crate::flows::listing::CommandContext;
+use crate::flows::listing::{self, CommandContext};
 use crate::flows::provision::{DevpodMissing, PassOccasion};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
@@ -281,6 +281,12 @@ fn switched_on(value: Option<&str>) -> bool {
 /// carrying what that line interpolated and nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchNotice {
+    /// The target word was a handle, and this is the id it named. Said rather than
+    /// kept quiet because every step after this addresses `workspace_id` and not
+    /// what was typed — and one of those steps is `rm`. A user who typed a prefix
+    /// is owed the full name before anything acts on it.
+    AddressedByHandle { typed: String, workspace_id: String },
+
     // --- the shared pixi cache (dl.py `_pixi_cache_up_args`)
     /// The shared pixi cache could not be created, so each container downloads
     /// its own packages. A warning and not a debug line: the launch survives, but
@@ -2463,6 +2469,15 @@ pub enum LaunchRefusal {
     /// still lists and cannot be described — and that is precisely the workspace
     /// somebody is about to run `dl <ws> rm` on.
     UnknownWorkspace { name: String },
+    /// A bare name that begins several workspace ids and is none of them. Its own
+    /// arm rather than [`LaunchRefusal::UnknownWorkspace`], because the answer is
+    /// the opposite one: the word named too much rather than nothing, and the
+    /// candidates are what the caller has to show. Choosing one of them is the
+    /// collapsed-identity mistake this whole scheme exists to refuse.
+    AmbiguousWorkspace {
+        name: String,
+        candidates: Vec<String>,
+    },
     /// A bare `owner/repo` whose default branch could not be named.
     BranchNotNamed {
         owner: String,
@@ -2594,7 +2609,20 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         }
     }
 
-    /// A bare name: it can only be a workspace devpod already has.
+    /// A bare name: devpod's own answer first, then the listing as both a second
+    /// opinion and the place a handle is resolved.
+    ///
+    /// `status` failing is not the same as the workspace not existing, and the
+    /// difference decides whether the user can clean it up — so the listing gets
+    /// the final word. It costs a round trip only on the failure path, where a
+    /// second one is not what is wrong.
+    ///
+    /// **The status call comes first so a full id still resolves in one trip.** A
+    /// word devpod recognises is never a handle, which keeps the warm path exactly
+    /// what it was; a word it does not is put to [`listing::address`], and only a
+    /// word that resolved to a *different* id pays a second `status` to find out
+    /// what state that workspace is really in. Reusing the first call's failure
+    /// would report a healthy workspace as merely listed.
     fn place_existing(
         &mut self,
         name: String,
@@ -2606,18 +2634,38 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 state,
             }));
         }
-        // `status` failing is not the same as the workspace not existing, and the
-        // difference decides whether the user can clean it up — so the listing
-        // gets the final word. It costs a round trip only on the failure path,
-        // where a second one is not what is wrong.
         let listed = self
             .context
             .workspaces()
             .map_err(LaunchAborted::ListingUnreadable)?;
-        if listed.iter().any(|workspace| workspace.id == name) {
+        let resolved = match listing::address(&listed, &name) {
+            listing::Addressing::One(id) => id.to_owned(),
+            listing::Addressing::Several(candidates) => {
+                return Ok(Err(LaunchRefusal::AmbiguousWorkspace {
+                    name,
+                    candidates: candidates.into_iter().map(str::to_owned).collect(),
+                }));
+            }
+            listing::Addressing::Nothing => {
+                return Ok(Err(LaunchRefusal::UnknownWorkspace { name }));
+            }
+        };
+        if resolved == name {
             return Ok(Ok(Placement::Listed { workspace_id: name }));
         }
-        Ok(Err(LaunchRefusal::UnknownWorkspace { name }))
+        self.notices.say(LaunchNotice::AddressedByHandle {
+            typed: name,
+            workspace_id: resolved.clone(),
+        });
+        match lifecycle::workspace_state(self.context.runner(), &resolved) {
+            Ok(state) => Ok(Ok(Placement::Known {
+                workspace_id: resolved,
+                state,
+            })),
+            Err(_) => Ok(Ok(Placement::Listed {
+                workspace_id: resolved,
+            })),
+        }
     }
 
     /// `owner/repo[@branch]`: the arm with a cold path behind it.

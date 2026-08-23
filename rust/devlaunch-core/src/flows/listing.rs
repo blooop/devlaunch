@@ -316,6 +316,74 @@ pub fn ref_slug_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
     workspace_id::ref_slug_of(&workspace.id, &repo).map(str::to_owned)
 }
 
+// ===========================================================================
+// addressing a workspace by a handle
+// ===========================================================================
+
+/// Which workspace a target word names, read against the listing devpod gave us.
+///
+/// Three arms and not an `Option`, because "several" is the answer that must not be
+/// collapsed: acting on one of several is acting on a collapsed identity, which is
+/// the shape of the failure in kinisi-robotics/kinisi_ros#9766. The caller names
+/// the candidates and stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub enum Addressing<'a> {
+    /// Exactly one workspace, and this is its id — the only thing that addresses
+    /// anything downstream.
+    One(&'a str),
+    /// Several, in devpod's own order. Nothing is chosen.
+    Several(Vec<&'a str>),
+    /// No workspace this word could name.
+    Nothing,
+}
+
+/// The one workspace *typed* names, or why it names no single one.
+///
+/// **Git's abbreviated-sha rule, against the live listing.** A word that is not an
+/// id addresses the workspace whose id it uniquely begins — so the readable half
+/// `devlaunch-main` addresses `devlaunch-main-zovomobo`, and so does any prefix of
+/// it, because the readable half *is* a prefix:
+/// [`WorkspaceId::value`](crate::domain::workspace_id::WorkspaceId::value) joins it
+/// in front of the suffix. That is why this needs no second rule for the readable
+/// half, and no knowledge of the suffix at all.
+///
+/// **An exact id wins outright, even when it also begins other ids.** A workspace
+/// somebody named `devlaunch-main` by hand stays addressable while
+/// `devlaunch-main-zovomobo` exists — the string devpod is addressed by can never
+/// be shadowed by the string somebody typed.
+///
+/// **Nothing here derives, persists or renames anything.** It is a lookup over a
+/// population the caller already holds, and what comes back is one of devpod's own
+/// ids, so the derivation in [`workspace_id`](crate::domain::workspace_id) stays
+/// pure and a handle never reaches
+/// [`WorkspaceId::new`](crate::domain::workspace_id::WorkspaceId::new). What it
+/// costs is that a handle is a claim about the *population*: it stops resolving
+/// once a second workspace shares its prefix, which is why the ambiguous arm
+/// carries the candidates, and why a script should name a full id or a spec.
+///
+/// An empty word names nothing, rather than every workspace at once.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+pub fn address<'a>(listed: &'a [Workspace], typed: &str) -> Addressing<'a> {
+    if typed.is_empty() {
+        return Addressing::Nothing;
+    }
+    if let Some(exact) = listed.iter().find(|workspace| workspace.id == typed) {
+        return Addressing::One(&exact.id);
+    }
+    let hits: Vec<&str> = listed
+        .iter()
+        .map(|workspace| workspace.id.as_str())
+        .filter(|id| id.starts_with(typed))
+        .collect();
+    match hits.as_slice() {
+        [] => Addressing::Nothing,
+        [only] => Addressing::One(only),
+        _ => Addressing::Several(hits),
+    }
+}
+
 /// dl's clone layout read backwards: the two directories above a leaf named for
 /// the workspace it holds, as `(owner, repo)`.
 ///
@@ -2822,5 +2890,99 @@ mod tests {
             Source::classify("https://github.com/o/r.git"),
             Source::GitRepository("https://github.com/o/r.git".into())
         );
+    }
+
+    // =======================================================================
+    // addressing by handle
+    // =======================================================================
+
+    /// A listing of ids, parsed the way devpod's own is.
+    fn listing_of(ids: &[&str]) -> Vec<Workspace> {
+        let rows: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| listed(id, serde_json::json!({ "gitRepository": "https://x/y" })))
+            .collect();
+        devpod::parse_workspaces(&serde_json::json!(rows).to_string()).expect("a listing")
+    }
+
+    #[test]
+    fn the_readable_half_addresses_the_workspace_it_belongs_to() {
+        // The point of the whole thing: 0.11.0 put this name in the prompt, and
+        // this is what makes it a name you can hand back.
+        let listed = listing_of(&["devlaunch-main-zovomobo"]);
+
+        assert_eq!(
+            address(&listed, "devlaunch-main"),
+            Addressing::One("devlaunch-main-zovomobo")
+        );
+    }
+
+    #[test]
+    fn any_unique_prefix_addresses_it_and_the_whole_id_still_does() {
+        // Git's rule, so there is nothing to learn beyond it: the readable half is
+        // not a special case, it is the prefix that happens to have a meaning.
+        let listed = listing_of(&["devlaunch-main-zovomobo"]);
+
+        for typed in ["d", "devlaunch", "devlaunch-mai", "devlaunch-main-zovomobo"] {
+            assert_eq!(
+                address(&listed, typed),
+                Addressing::One("devlaunch-main-zovomobo"),
+                "{typed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_two_workspaces_share_names_them_both_and_chooses_neither() {
+        // The refusal that keeps this from being the collapsed identity of #9766:
+        // one repo under two owners derives two ids with one readable half, and a
+        // verb must not pick.
+        let listed = listing_of(&["devlaunch-main-zovomobo", "devlaunch-main-hesirora"]);
+
+        assert_eq!(
+            address(&listed, "devlaunch-main"),
+            Addressing::Several(vec!["devlaunch-main-zovomobo", "devlaunch-main-hesirora"])
+        );
+    }
+
+    #[test]
+    fn an_id_beats_a_prefix_reading_of_itself() {
+        // A workspace somebody named `devlaunch-main` by hand stays addressable
+        // while a derived id begins with it. Without this the exact name devpod is
+        // addressed by becomes unreachable the moment a longer id appears — the one
+        // regression this feature could cause.
+        let listed = listing_of(&["devlaunch-main", "devlaunch-main-zovomobo"]);
+
+        assert_eq!(
+            address(&listed, "devlaunch-main"),
+            Addressing::One("devlaunch-main")
+        );
+    }
+
+    #[test]
+    fn a_word_no_id_begins_with_names_nothing() {
+        let listed = listing_of(&["devlaunch-main-zovomobo"]);
+
+        assert_eq!(address(&listed, "wayfinder"), Addressing::Nothing);
+        assert_eq!(
+            address(&listed, "devlaunch-main-zovomobo-more"),
+            Addressing::Nothing
+        );
+    }
+
+    #[test]
+    fn an_empty_word_names_nothing_rather_than_everything() {
+        // `""` is a prefix of every string, so the natural reading of the rule is
+        // "all of them" — which would make an empty target an ambiguity report over
+        // the whole machine, or worse, a resolution when only one workspace exists.
+        let listed = listing_of(&["devlaunch-main-zovomobo"]);
+
+        assert_eq!(address(&listed, ""), Addressing::Nothing);
+        assert_eq!(address(&[], ""), Addressing::Nothing);
+    }
+
+    #[test]
+    fn nothing_is_addressable_in_an_empty_listing() {
+        assert_eq!(address(&[], "devlaunch-main"), Addressing::Nothing);
     }
 }

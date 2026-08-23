@@ -37,6 +37,8 @@ explain another's world:
   are different launches.
 - `--no-devpod`: no `bin/devpod` at all, for the exit-127 line.
 - `--no-workspaces`: devpod lists nothing, whatever the other fixtures recorded.
+- `--sibling`: a second Running workspace whose id shares `--warm`'s readable half and
+  differs only in its identity suffix, so a handle naming that half is ambiguous.
 - `--fail-up` / `--fail-stop`: the fake devpod refuses that subcommand, with a
   status of its own (7 and 9), which is the number dl has to hand back.
 - `--symlinked-path`: `foreign/link` -> `foreign/real`, the one input that tells
@@ -198,6 +200,14 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         state = "Running" if "warm" in wanted else "Stopped"
         workspaces[MAIN_WS] = _workspace(MAIN_WS, clone, state)
 
+    if "sibling" in wanted:
+        # A second workspace whose id has MAIN's readable half and a different
+        # identity suffix -- the same repository and branch under another owner. The
+        # one input that makes a handle ambiguous, and the only fixture that can
+        # show a verb refusing rather than choosing.
+        sibling = MAIN_WS[: -len("zovomobo")] + "hesirora"
+        workspaces[sibling] = _workspace(sibling, repos / "other" / "devlaunch" / sibling, "Running")
+
     (cache / "metadata.json").write_text(
         json.dumps(
             {"version": 2, "repositories": repositories, "worktrees": worktrees},
@@ -263,6 +273,7 @@ FIXTURES = {
     "gh",
     "no-devpod",
     "no-workspaces",
+    "sibling",
     "fail-up",
     "fail-stop",
     "symlinked-path",

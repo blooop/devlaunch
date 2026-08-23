@@ -918,6 +918,106 @@ fn dotfiles_starts_a_stopped_workspace_first_and_says_so() {
 // ===========================================================================
 
 #[test]
+fn a_handle_addresses_the_workspace_whose_id_it_begins() {
+    // The name 0.11.0 put in the prompt, handed back. `devlaunch-main` is the
+    // readable half of MAIN, so this is the whole feature in one line: devpod
+    // refuses the handle, the listing resolves it, and the session opens on the
+    // full id.
+    let world = World::with(&["--warm"]);
+    let run = world.dl(&["devlaunch-main"]);
+    run.exited(0);
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            &format!("'devlaunch-main' is {MAIN}.") as &str,
+            &format!("Workspace {MAIN} is already running, attaching..."),
+            &format!("SSH command: devpod ssh {MAIN}"),
+        ]
+    );
+    // The extra listing is the resolution's, and the second status is what says
+    // the resolved workspace is running rather than merely listed — the first
+    // status was about a name devpod does not have.
+    assert_eq!(
+        world.calls_including_list().exact(&world.root),
+        [
+            "devpod status devlaunch-main --output json".to_owned(),
+            "devpod list --output json".to_owned(),
+            format!("devpod status {MAIN} --output json"),
+            format!("devpod ssh {MAIN}"),
+        ]
+    );
+}
+
+#[test]
+fn a_full_id_still_costs_one_status_and_never_lists() {
+    // The warm path is unchanged, which is the constraint the resolution was
+    // designed around: a word devpod recognises is never put to the listing.
+    // Pinned here as well as in `a_warm_attach_is_one_status_probe_and_then_the
+    // _session` because it is now a property of the *resolution*, not just of the
+    // attach.
+    let world = World::with(&["--warm"]);
+    let run = world.dl(&[MAIN]);
+    run.exited(0);
+    assert!(
+        !world
+            .calls_including_list()
+            .exact(&world.root)
+            .iter()
+            .any(|call| call.contains("list")),
+        "a full id was resolved through the listing"
+    );
+}
+
+#[test]
+fn a_handle_two_workspaces_share_is_refused_with_both_named() {
+    // The arm that must never resolve. Both ids begin with `devlaunch-main`, so the
+    // word names two workspaces and dl picks neither — acting on one of them is
+    // the collapsed identity of kinisi_ros#9766, arrived at from the other end.
+    let world = World::with(&["--warm", "--sibling"]);
+    let run = world.dl(&["devlaunch-main"]);
+    run.exited(1);
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            "'devlaunch-main' names 2 workspaces. Use the whole id, or a longer prefix:",
+            "  devlaunch-main-zovomobo",
+            "  devlaunch-main-hesirora",
+        ]
+    );
+    // Nothing was reached: no `up`, no ssh, no clone.
+    assert_eq!(
+        world.calls_including_list().exact(&world.root),
+        [
+            "devpod status devlaunch-main --output json",
+            "devpod list --output json",
+        ]
+    );
+}
+
+#[test]
+fn an_ambiguous_handle_is_still_refused_when_the_verb_would_delete() {
+    // The same refusal on the path where choosing wrong costs a checkout. `rm`
+    // resolves through the lifecycle target rather than the launch, so this is the
+    // second call site of the one rule.
+    let world = World::with(&["--warm", "--sibling"]);
+    let run = world.dl(&["devlaunch-main", "rm"]);
+    run.exited(1);
+    assert!(
+        run.err.starts_with("'devlaunch-main' names 2 workspaces."),
+        "{}",
+        run.err
+    );
+    assert!(
+        !world
+            .calls_including_list()
+            .exact(&world.root)
+            .iter()
+            .any(|call| call.contains("delete")),
+        "a delete was attempted for an ambiguous handle"
+    );
+}
+
+#[test]
 fn an_unknown_workspace_is_refused_only_after_both_answers() {
     // `status` failing is not the same as the workspace not existing, and the
     // difference decides whether the user can clean it up — so the listing gets the

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Any prefix that names exactly one workspace now addresses it**, so
+  `dl devlaunch-main stop` reaches `devlaunch-main-zovomobo` and nobody has to type
+  eight characters of hash. Git's abbreviated-sha rule, against the listing devpod
+  already reported.
+
+  The readable half is not a special case: it is a prefix, because
+  `WorkspaceId::value` joins it in front of the suffix. So one rule covers the name
+  0.11.0 put in the prompt, every shorter prefix, and the whole id — and nothing
+  needs to know the suffix is there.
+
+  Three properties are worth stating, because each is a way this could have gone
+  wrong:
+
+  - **A whole id always wins.** A workspace somebody named `devlaunch-main` by hand
+    stays addressable while `devlaunch-main-zovomobo` exists. The string devpod is
+    addressed by can never be shadowed by the string somebody typed.
+  - **A prefix that names several workspaces is refused, with the candidates
+    listed.** Choosing one is acting on a collapsed identity — the shape of the
+    failure in kinisi-robotics/kinisi_ros#9766, arrived at from the other end — so
+    dl names them and stops. The suffix is what tells them apart, which is exactly
+    where it earns its place on screen.
+  - **The id dl resolved to is printed before anything acts on it**, because every
+    step after the resolution addresses that id and not what was typed, and one of
+    those steps is `rm`.
+
+  Nothing about the derivation moved: it stays a pure function of the triple, no
+  registry is read or written, and a handle never reaches `WorkspaceId::new`. What
+  it costs is that a handle is a claim about the current population — it stops
+  resolving once a second workspace shares its prefix, which is why scripts should
+  name a full id or a spec.
+
+  The warm path is unchanged and pinned: a word devpod recognises is never put to
+  the listing, so a full id still costs the one `devpod status` it always did. A
+  handle is resolved on the round trip that failure was already paying for, and only
+  a handle that resolved to a different id spends a second `status` — reusing the
+  first call's failure would report a healthy workspace as merely listed.
+
+  One rule, used by both call sites: `dl <handle>` and `dl <handle> rm` resolve
+  through the same `listing::address`, so the word that opens a workspace and the
+  word that deletes it cannot disagree about which one it means.
+
 ## [0.11.0] - 2026-08-23
 
 ### Changed

@@ -1227,6 +1227,10 @@ fn refuse_target(refused: &Unaddressable) -> Ending {
             eprintln!("{}", render::unknown_workspace(target));
             Ending::Refused
         }
+        Unaddressable::Ambiguous { target, candidates } => {
+            eprintln!("{}", render::ambiguous_workspace(target, candidates));
+            Ending::Refused
+        }
         Unaddressable::Name(name) => {
             eprintln!("{}", render::unsafe_name(name));
             Ending::Refused

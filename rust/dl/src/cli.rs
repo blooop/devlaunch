@@ -498,6 +498,7 @@ const GRAMMAR: &str = "Examples:
   dl blooop/devlaunch -- make test   Run one command inside the workspace
   dl blooop/devlaunch stop           Stop it
   dl stop blooop-devlaunch-main-1a2b Stop it by workspace id
+  dl stop devlaunch-main             Or by any prefix that names just one
   dl blooop/devlaunch --rm           Open it, and delete it when the shell exits
   dl --ls --json                     Every workspace, machine-readable
 

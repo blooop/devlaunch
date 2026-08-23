@@ -35,7 +35,7 @@ use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::domain::workspace_id::{UnsafeName, WorkspaceId};
 use devlaunch_core::flows::launch::{self, LaunchNotice, Plan, Resolution};
 use devlaunch_core::flows::lifecycle;
-use devlaunch_core::flows::listing::CommandContext;
+use devlaunch_core::flows::listing::{self, CommandContext};
 use devlaunch_core::runner::Runner;
 
 use crate::cold::ColdPath;
@@ -61,6 +61,14 @@ pub(crate) enum Unaddressable {
     /// The target names no workspace devpod has and nothing dl could create an id
     /// for.
     Unknown { target: String },
+    /// The target begins several workspace ids and is none of them. The candidates
+    /// travel with it because naming them is the whole of the answer: the word
+    /// addressed too much, and picking one of them for the user is how a verb comes
+    /// to act on a workspace nobody named.
+    Ambiguous {
+        target: String,
+        candidates: Vec<String>,
+    },
     /// An owner, repo or ref that is not a safe git name — refused before anything
     /// builds a path out of it.
     Name(UnsafeName),
@@ -160,7 +168,8 @@ fn triple(
     })
 }
 
-/// A bare word: devpod's own answer, with its listing as the second opinion.
+/// A bare word: devpod's own answer, with its listing as the second opinion and as
+/// the place a handle is resolved.
 ///
 /// `status` failing is not the same as the workspace not existing, and the
 /// difference decides whether the user can clean it up: `status` consults the
@@ -168,20 +177,43 @@ fn triple(
 /// provider is broken or gone still lists and cannot be described — and that is
 /// precisely the workspace somebody is about to run `dl <ws> rm` on. The listing
 /// gets the final word, at the price of one round trip on the failure path.
+///
+/// A word devpod recognises is never put to [`listing::address`], so a full id
+/// still costs the one `status` it always did, and a handle is resolved on the trip
+/// the failure was already paying for. The resolution is core's, shared with
+/// [`launch`]'s own bare-name arm — one rule, so the word that opens a workspace
+/// and the word that stops it cannot disagree about which one it means.
 fn existing(
     runner: &dyn Runner,
     context: &mut CommandContext<'_>,
     name: String,
 ) -> Result<Addressed, Unaddressable> {
-    let described = lifecycle::workspace_state(runner, &name).is_ok();
-    if !described {
-        let listed = context.workspaces().map_err(Unaddressable::Listing)?;
-        if !listed.iter().any(|workspace| workspace.id == name) {
-            return Err(Unaddressable::Unknown { target: name });
-        }
+    if lifecycle::workspace_state(runner, &name).is_ok() {
+        return Ok(Addressed {
+            workspace_id: name,
+            notices: Vec::new(),
+        });
     }
-    Ok(Addressed {
-        workspace_id: name,
-        notices: Vec::new(),
-    })
+    let listed = context.workspaces().map_err(Unaddressable::Listing)?;
+    match listing::address(&listed, &name) {
+        listing::Addressing::One(id) if id == name => Ok(Addressed {
+            workspace_id: name,
+            notices: Vec::new(),
+        }),
+        listing::Addressing::One(id) => {
+            let workspace_id = id.to_owned();
+            Ok(Addressed {
+                notices: vec![LaunchNotice::AddressedByHandle {
+                    typed: name,
+                    workspace_id: workspace_id.clone(),
+                }],
+                workspace_id,
+            })
+        }
+        listing::Addressing::Several(candidates) => Err(Unaddressable::Ambiguous {
+            target: name,
+            candidates: candidates.into_iter().map(str::to_owned).collect(),
+        }),
+        listing::Addressing::Nothing => Err(Unaddressable::Unknown { target: name }),
+    }
 }
