@@ -67,9 +67,11 @@ _dl_completion() {
     fi
 
     # Workspace subcommands
-    # `--autorm` is not a verb: it rides beside `dl <ws>` and `dl <ws> -- <cmd>`,
-    # which is exactly the position this list is offered in.
-    local ws_cmds="up stop rm code restart recreate reset dotfiles --autorm --"
+    # `--rm` is not a verb — the `rm` beside it is: the flag rides on `dl <ws>` and
+    # `dl <ws> -- <cmd>` and deletes the workspace when that session ends, which is
+    # exactly the position this list is offered in. Both are here because they are
+    # two different requests, docker's `rm` and `run --rm`.
+    local ws_cmds="up stop rm code restart recreate reset dotfiles --rm --"
 
     # Options that take a value; a variant name or a path follows them.
     local value_opts="--devcontainer"
