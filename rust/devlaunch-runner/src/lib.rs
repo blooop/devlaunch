@@ -839,9 +839,17 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
             let mut chunk = [0u8; 8192];
             loop {
                 match pipe.read(&mut chunk) {
-                    // A read that fails mid-stream leaves what it got: partial
-                    // output is what the child wrote, and there is nowhere
-                    // better to put it.
+                    // Retried, not an ending: `EINTR` means a signal arrived
+                    // mid-read, which says nothing about the pipe. Treating it
+                    // as EOF is silent truncation reported as `Outcome::Ran`
+                    // with a success exit — the one wrong answer worse than an
+                    // error, since callers parse this text. `read_to_end`, which
+                    // this loop replaced, retried it for free; the loop has to
+                    // say so.
+                    Err(again) if again.kind() == std::io::ErrorKind::Interrupted => continue,
+                    // Any other read that fails mid-stream leaves what it got:
+                    // partial output is what the child wrote, and there is
+                    // nowhere better to put it.
                     Ok(0) | Err(_) => break,
                     Ok(read) => held(&sink.0).bytes.extend_from_slice(&chunk[..read]),
                 }

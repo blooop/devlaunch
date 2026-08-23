@@ -667,3 +667,53 @@ fn passthrough_keeps_the_child_in_our_group_by_default() {
         "the child stays in this process's group"
     );
 }
+
+/// A reader that yields its pieces in order, raising `EINTR` between them.
+///
+/// Not a mock of a pipe — a pipe is what every other test here uses — but the
+/// one condition a real pipe will not produce on demand: a signal landing
+/// mid-read. `read_to_end` retried that; the hand-rolled loop that replaced it
+/// has to as well, or a `capture` reports short output as a clean success.
+struct Interrupting {
+    pieces: std::vec::IntoIter<&'static str>,
+    interrupt_next: bool,
+}
+
+impl Read for Interrupting {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.interrupt_next {
+            self.interrupt_next = false;
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        match self.pieces.next() {
+            None => Ok(0),
+            Some(piece) => {
+                self.interrupt_next = true;
+                buffer[..piece.len()].copy_from_slice(piece.as_bytes());
+                Ok(piece.len())
+            }
+        }
+    }
+}
+
+/// `EINTR` is a retry, not an end of stream. A signal arriving mid-read says
+/// nothing about the pipe, and a drain that breaks on it hands back a prefix of
+/// what the child wrote inside an `Outcome::Ran` with a success exit — silent
+/// truncation, which is the one answer worse than an error for callers that
+/// parse this text.
+///
+/// Unreachable through `dl` today, since the only handler it installs is a
+/// glibc `signal()` and so carries `SA_RESTART` — but `read_to_end`, which this
+/// loop replaced, retried for free, and nothing but this test keeps that.
+#[test]
+fn a_drain_treats_an_interrupted_read_as_a_retry_not_an_ending() {
+    let pieces = vec!["ab", "cd", "ef"];
+    let drained = collect(drain(Some(Interrupting {
+        pieces: pieces.into_iter(),
+        interrupt_next: false,
+    })));
+    assert_eq!(
+        drained, "abcdef",
+        "an interrupted read ended the drain and truncated the output"
+    );
+}
