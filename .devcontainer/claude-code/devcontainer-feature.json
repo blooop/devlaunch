@@ -1,8 +1,8 @@
 {
     "name": "Claude Code CLI",
     "id": "claude-code",
-    "version": "0.4.0",
-    "description": "Installs Claude Code CLI via pixi with persistent configuration",
+    "version": "0.5.0",
+    "description": "Installs Claude Code CLI via pixi and sets up persistent configuration",
     "options": {},
     "documentationURL": "https://github.com/anthropics/devcontainer-features",
     "licenseURL": "https://github.com/anthropics/devcontainer-features/blob/main/LICENSE",
@@ -17,14 +17,11 @@
         "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
     },
     "mounts": [
-        "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/vscode/.claude/CLAUDE.md,type=bind,readonly",
-        "source=${localEnv:HOME}/.claude/settings.json,target=/home/vscode/.claude/settings.json,type=bind,readonly",
+        "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind",
         "source=${localEnv:HOME}/.claude/agents,target=/home/vscode/.claude/agents,type=bind,readonly",
         "source=${localEnv:HOME}/.claude/commands,target=/home/vscode/.claude/commands,type=bind,readonly",
         "source=${localEnv:HOME}/.claude/hooks,target=/home/vscode/.claude/hooks,type=bind,readonly",
         "source=${localEnv:HOME}/.claude/skills,target=/home/vscode/.claude/skills,type=bind,readonly",
-        "source=${localEnv:HOME}/.claude/wf-skills,target=/home/vscode/.claude/wf-skills,type=bind,readonly",
-        "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/vscode/.claude/.credentials.json,type=bind",
-        "source=${localEnv:HOME}/.claude/.claude.json,target=/home/vscode/.claude/.claude.json,type=bind"
+        "source=${localEnv:HOME}/.claude/wf-skills,target=/home/vscode/.claude/wf-skills,type=bind,readonly"
     ]
 }
