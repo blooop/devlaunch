@@ -6,12 +6,38 @@
 //! [`skim`](https://crates.io/crates/skim) linked into the binary, so there is
 //! nothing to install and nothing to find.
 //!
-//! What it offers is Python's list, in Python's order and Python's spelling:
-//! `dl.py::fuzzy_select_workspace` renders one row per workspace devpod lists as
-//! `{id} | {kind} | {detail}`, where the last two come from `describe_source` — the
-//! same reading `dl --ls` shows, so a workspace whose source devlaunch cannot read
-//! is *offered* rather than quietly dropped from the list
+//! What it offers is Python's list and Python's order, with one row per workspace
+//! devpod lists — no filtering of any kind, so a workspace whose source devlaunch
+//! cannot read is *offered* rather than quietly dropped
 //! (`test/unit/test_workspace_source.py::TestTheFuzzyPickerOffersEverySource`).
+//!
+//! **The columns are not Python's.** `dl.py::fuzzy_select_workspace` drew
+//! `{id} | {kind} | {detail}`, where the last two came from `describe_source`; this
+//! draws `{owner} | {repo} | {ref}`. Both of the columns that went were answering
+//! questions nobody standing at this picker is asking: `kind` reads `local` for
+//! every workspace dl makes, since dl always hands devpod a path, and `detail` is
+//! the clone directory dl chose and manages — a long, mechanically derived path
+//! whose own last component is already the id.
+//!
+//! **What replaced the id is the id, read apart.** An id is
+//! `<repo-slug>-<ref-slug>-<suffix>` ([`devlaunch_core::domain::workspace_id`]),
+//! and two of those three parts are what a person at this picker is looking for
+//! while the third is machinery: the suffix is eight characters of hash, there to
+//! keep two branches from sharing a name, and reading it is no part of choosing a
+//! workspace. The owner is missing from the id altogether, so a fork and its
+//! upstream were two rows spelled the same. All three come out of the source
+//! devpod already reported — [`owner_of`], [`repo_of`] and [`ref_slug_of`] read
+//! dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>`, with no records
+//! opened and no config read — and each column but the last is padded to a common
+//! width so the rows line up under each other.
+//!
+//! Two things this deliberately does not do. It does not draw `owner/repo@ref`:
+//! that reads as a spec `dl` would accept, and a ref-slug is not a ref — `slug`
+//! collapses `/` and `-` alike, so the row for `feature/auth` would invite a
+//! retype that addresses `feature-auth` instead. And it never *only* elides: where
+//! a split would leave two rows drawn the same, both go back to their whole ids,
+//! because the row's own text is what [`chosen`] maps back to a workspace (see
+//! [`named`]).
 //!
 //! **One deliberate departure from Python's picker: it can take several rows.**
 //! Python's `iterfzf(..., multi=False)` answered one workspace always. Here the
@@ -20,16 +46,33 @@
 //! any number of rows, so `dl rm` can clear five dead workspaces in one visit,
 //! while the forms that end in a session still take exactly one.
 //!
-//! [`offered`] is that list and nothing else — a pure function of what devpod said,
-//! which is what makes the spec testable without a terminal. [`pick`] is the
-//! interactive half.
+//! **And one departure from skim's defaults: the search bar is at the top.** skim
+//! draws its query line at the bottom and grows the match list upward from it;
+//! [`skim_options`] asks for `reverse`, so the prompt is the first line and the
+//! matches read downward from it. Neither shape is Python's to keep — `iterfzf`
+//! inherited whatever `fzf` was configured to do on the host — and this one puts
+//! the first match next to the cursor instead of furthest from it.
+//!
+//! **The [`invitation`] is drawn inside the picker, as skim's header.** Python
+//! printed it and then spawned fzf, and `dl` copied that — but skim's first act is
+//! to switch to the alternate screen, which replaces the visible one, so a line
+//! printed on the way in cannot be read while the picker it describes is up. For
+//! [`Arity::Several`] that line is TAB's only documentation, so the multi-select
+//! was there and undiscoverable. stdout keeps the sentence only for the run that
+//! has no picker to put it on ([`Pick::NoTerminal`]).
+//!
+//! [`offered`] is that list and nothing else — a pure function of what devpod said
+//! and where dl's cache is, which is what makes the spec testable without a
+//! terminal. [`pick`] is the interactive half.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use devlaunch_core::clients::devpod::Workspace;
 use devlaunch_core::domain::workspace_state::NonEmpty;
-use devlaunch_core::flows::listing::describe_source;
+use devlaunch_core::flows::listing::{owner_of, ref_slug_of, repo_of};
 use skim::prelude::*;
 
 /// One row the picker offers, and the workspace it stands for.
@@ -42,27 +85,204 @@ pub(crate) struct Offer {
     pub(crate) workspace_id: String,
 }
 
+/// What the owner column says for a workspace whose source names no owner: one
+/// opened from a path or a URL that is not GitHub's.
+///
+/// A dash rather than an empty cell, because the column is padded — a blank there
+/// reads as a column that failed to draw, where a dash reads as an answer.
+const NO_OWNER: &str = "-";
+
+/// One row's naming, before padding turns it into a label.
+struct Naming {
+    owner: String,
+    tail: Tail,
+    /// The workspace's own id, kept beside the tail because it is what every
+    /// fallback falls back *to* — and a fallback that had to go looking for it
+    /// again could look in the wrong row.
+    id: String,
+}
+
+/// What a row says after its owner.
+///
+/// A sum and not a repo beside an optional ref, because the two are not
+/// independently absent: dl's own layout names both halves or neither, and a row
+/// holding one of them would be a column with the wrong thing under it.
+enum Tail {
+    /// The id read apart into the repo it was derived for and the ref-slug it
+    /// carries.
+    Split { repo: String, git_ref: String },
+    /// devpod's workspace name, whole — for a workspace dl did not clone, and for
+    /// one whose split would not have been unique (see [`named`]).
+    Whole(String),
+}
+
 /// Every workspace devpod listed, in devpod's order, as the picker shows it.
 ///
 /// No filtering of any kind: the picker is a view of `dl --ls`, so a workspace
 /// devlaunch did not create and one whose source it cannot read are both offered.
-/// The `|` separators and the spacing are the label's bytes, and they are Python's.
-pub(crate) fn offered(workspaces: &[Workspace]) -> Vec<Offer> {
+///
+/// Both columns before the last are padded to the widest entry *in this list*,
+/// which is why the labels are built here in one pass over all of them rather than
+/// one workspace at a time: alignment is a fact about the set of rows, not about
+/// any one of them. The repo column is measured over the rows that have one, so a
+/// listing of nothing but foreign workspaces is not padded out around a column it
+/// has not got.
+///
+/// `cache_dir` is where dl keeps its clones, and it is what [`owner_of`],
+/// [`repo_of`] and [`ref_slug_of`] read a clone's layout with — the same directory
+/// `--purge` decides ownership by, so they cannot disagree about which workspaces
+/// are dl's.
+pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> {
+    let mut namings = named(workspaces, cache_dir);
+    let mut labels = drawn(&namings);
+    if !all_distinct(&labels) {
+        // A collision the key pass could not see, because the two rows that made it
+        // have different key shapes: a whole-name row drawn `<owner> | <name>` can
+        // equal a split row drawn `<owner> | <repo> | <ref>` when the name is those
+        // last two columns. Rare, and not rare enough to argue away — the argument
+        // would have to be about which names devpod permits, and a row this picker
+        // can act on is not the place to borrow another program's validation.
+        //
+        // Every remaining split goes back to its id, which is what this can offer
+        // and not a promise of distinctness: two workspaces of one id in two devpod
+        // contexts draw one row whatever is done here, because an id is unique per
+        // context and nothing in an `Offer` carries the context. That predates the
+        // columns — `<owner> | <id>` collided the same way — and closing it means
+        // addressing a workspace by more than its id.
+        for naming in &mut namings {
+            naming.tail = Tail::Whole(naming.id.clone());
+        }
+        labels = drawn(&namings);
+    }
     workspaces
         .iter()
-        .map(|workspace| {
-            let source = describe_source(workspace.source());
-            Offer {
-                label: format!(
-                    "{} | {} | {}",
-                    workspace.id,
-                    source.kind.word(),
-                    source.detail
-                ),
-                workspace_id: workspace.id.clone(),
-            }
+        .zip(labels)
+        .map(|(workspace, label)| Offer {
+            label,
+            workspace_id: workspace.id.clone(),
         })
         .collect()
+}
+
+/// Every row's label, padded against the widest entry in each column.
+///
+/// Both columns before the last are padded to the widest entry *in this list*,
+/// which is why the labels are drawn from all of them at once rather than one row at
+/// a time: alignment is a fact about the set of rows, not about any one of them. The
+/// repo column is measured over the rows that have one, so a listing of nothing but
+/// foreign workspaces is not padded out around a column it has not got.
+fn drawn(namings: &[Naming]) -> Vec<String> {
+    let owner_width = widest(namings.iter().map(|naming| naming.owner.as_str()));
+    let repo_width = widest(namings.iter().filter_map(|naming| match &naming.tail {
+        Tail::Split { repo, .. } => Some(repo.as_str()),
+        Tail::Whole(_) => None,
+    }));
+    namings
+        .iter()
+        .map(|naming| label(naming, owner_width, repo_width))
+        .collect()
+}
+
+/// Whether no two of *labels* are the same string.
+///
+/// The property [`chosen`] needs and cannot check for itself: it finds a picked row
+/// by matching its text, first match winning, so two rows drawn alike are a row that
+/// acts on the other one's workspace.
+fn all_distinct(labels: &[String]) -> bool {
+    labels.iter().collect::<HashSet<&String>>().len() == labels.len()
+}
+
+/// How every row wants to be named, with any split that would not have been
+/// unique put back together.
+///
+/// **The second pass is not cosmetic.** [`chosen`] maps a picked row back to its
+/// workspace by the row's own text, first match winning, so two rows drawn the same
+/// are a row that selects the other workspace — and `dl rm` is one of the verbs
+/// this picker opens for. A ref-slug is a lossy reading of a ref ([`slug`] collapses
+/// `/` and `-` alike, and a long ref loses whole segments), so one repo really can
+/// hold two branches that read apart identically: `feature/auth` and `feature-auth`
+/// are devlaunch#55's own example, and they are two workspaces.
+///
+/// Falling back to the whole id is what settles it, because that is the string the
+/// ids were given a hashed suffix to make unique in the first place. It also puts
+/// the suffix on screen in exactly the case it is doing work, and nowhere else.
+///
+/// [`slug`]: devlaunch_core::domain::workspace_id
+fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
+    let mut namings: Vec<Naming> = workspaces
+        .iter()
+        .map(|workspace| Naming {
+            owner: owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned()),
+            tail: match (
+                repo_of(workspace, cache_dir),
+                ref_slug_of(workspace, cache_dir),
+            ) {
+                // Both or neither: the two are one reading of one layout, and a repo
+                // with no ref beside it would be a column with the wrong thing under
+                // it. `listing` answers them separately only so that neither has to
+                // return a pair.
+                (Some(repo), Some(git_ref)) => Tail::Split { repo, git_ref },
+                _ => Tail::Whole(workspace.id.clone()),
+            },
+            id: workspace.id.clone(),
+        })
+        .collect();
+    let mut drawn: HashMap<String, usize> = HashMap::new();
+    for naming in &namings {
+        *drawn.entry(shared_key(naming)).or_default() += 1;
+    }
+    for naming in &mut namings {
+        if matches!(naming.tail, Tail::Split { .. }) && drawn[&shared_key(naming)] > 1 {
+            naming.tail = Tail::Whole(naming.id.clone());
+        }
+    }
+    namings
+}
+
+/// What two rows drawn the same have in common, with the field boundaries kept.
+///
+/// NUL-delimited for the reason [`syllable_suffix`] joins on it: without a
+/// delimiter no key could tell the repo `a` with ref `bc` from the repo `ab` with
+/// ref `c`, and the padding a label is drawn with is not in the key at all — a
+/// collision is between what the rows *say*, not how wide they were printed.
+///
+/// [`syllable_suffix`]: devlaunch_core::domain::workspace_id
+fn shared_key(naming: &Naming) -> String {
+    match &naming.tail {
+        Tail::Split { repo, git_ref } => format!("{}\0{repo}\0{git_ref}", naming.owner),
+        // An id is unique within one devpod listing, so a whole-name row can never
+        // share its key — it is counted anyway rather than skipped, so that the one
+        // pass answers for every row and the fallback below has nothing to special-
+        // case.
+        Tail::Whole(name) => format!("{}\0{name}", naming.owner),
+    }
+}
+
+/// One row, padded into the label skim draws and [`chosen`] reads back.
+///
+/// A split row takes three columns and a whole-name row takes two, so the name
+/// runs on through the space a ref would have occupied. That is deliberate rather
+/// than a column left blank: a foreign workspace has no repo, and a dash under a
+/// repo heading would be inventing the same answer twice.
+///
+/// Nothing here keeps two rows apart. Whether the labels are distinct is a fact
+/// about the whole list, and [`offered`] is where it is established.
+fn label(naming: &Naming, owner_width: usize, repo_width: usize) -> String {
+    match &naming.tail {
+        Tail::Split { repo, git_ref } => {
+            format!(
+                "{owner:owner_width$} | {repo:repo_width$} | {git_ref}",
+                owner = naming.owner
+            )
+        }
+        Tail::Whole(name) => format!("{owner:owner_width$} | {name}", owner = naming.owner),
+    }
+}
+
+/// The width of the widest of *texts*, in the characters a terminal draws and
+/// `{:width$}` counts — not the bytes a non-ASCII owner or repo would measure.
+fn widest<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
+    texts.map(|text| text.chars().count()).max().unwrap_or(0)
 }
 
 /// How many rows one picker run may take.
@@ -106,8 +326,8 @@ pub(crate) enum Pick {
 
 /// Offer these workspaces and wait for one — or, under [`Arity::Several`], any
 /// number — to be chosen.
-pub(crate) fn pick(workspaces: &[Workspace], arity: Arity) -> Pick {
-    let offers = offered(workspaces);
+pub(crate) fn pick(workspaces: &[Workspace], arity: Arity, cache_dir: &Path) -> Pick {
+    let offers = offered(workspaces, cache_dir);
     if offers.is_empty() {
         return Pick::NoWorkspaces;
     }
@@ -141,17 +361,63 @@ fn a_terminal_exists() -> bool {
     }
 }
 
-/// The rows skim was left on: empty when the picker was quit without an answer.
-fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
-    let options = SkimOptions {
+/// The sentence that says what the rows are, and what the picker will take.
+///
+/// One function because the text has two destinations and they must not drift: it
+/// is skim's header when there is a picker to draw it on, and stdout when there is
+/// not. The wording is Python's (`dl.py::fuzzy_select_workspace`), plus the TAB
+/// clause the multi-pick needed.
+pub(crate) fn invitation(arity: Arity) -> &'static str {
+    match arity {
+        Arity::One => "Select workspace (type to filter):",
+        Arity::Several => "Select workspaces (type to filter, TAB to mark several):",
+    }
+}
+
+/// How the picker is drawn, and how many rows it will take.
+///
+/// A function rather than a literal inside [`run_skim`] because it is the one part
+/// of the interactive half a test can read without a terminal: these options *are*
+/// the picker's shape, so a lever that quietly does nothing is caught here rather
+/// than by looking at it.
+fn skim_options(arity: Arity) -> SkimOptions {
+    SkimOptions {
         // skim's `--multi` when the verb takes several — TAB toggles a row, as it
         // does in fzf — and `iterfzf(options, multi=False)`'s one pick otherwise.
         // Input order preserved rather than re-sorted either way (Python's
         // `sort=False` -> `--no-sort`).
         multi: matches!(arity, Arity::Several),
         no_sort: true,
+        // The search bar on the first line, with the matches reading downward from
+        // it. skim's default draws the query at the *bottom* and grows the list
+        // upward, which puts the first match furthest from where the eye already
+        // is and moves the rows under it as the query narrows.
+        //
+        // Named as a layout and not as `reverse: true`, though the field beside it
+        // is documented as shorthand for exactly this: the shorthand is expanded by
+        // `SkimOptions::build`, and `dl` hands its options to `Skim::run_with`,
+        // which never calls it. The flag on its own compiles, reads as the fix, and
+        // changes nothing (skim 0.20.5).
+        layout: String::from("reverse"),
+        // The invitation, drawn *inside* the picker rather than printed before it.
+        // skim's first act is `ESC [ ? 1049 h` — the alternate screen, which
+        // replaces the visible screen wholesale — so a line printed on the way in
+        // is gone for exactly as long as it is needed and comes back only once the
+        // picker has exited. Under `reverse` the model splits the window
+        // query_status / query / status / *header* / selection
+        // (`src/model/mod.rs`), so this lands directly above the rows it describes.
+        //
+        // Unlike `reverse` next door, this field is read straight off the options
+        // by `Header::with_options`, so it works without `SkimOptions::build` —
+        // which is why the pty test is still the thing that proves it.
+        header: Some(invitation(arity).to_owned()),
         ..Default::default()
-    };
+    }
+}
+
+/// The rows skim was left on: empty when the picker was quit without an answer.
+fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
+    let options = skim_options(arity);
     let (tx, rx): (SkimItemSender, SkimItemReceiver) = unbounded();
     for row in rows_of(offers) {
         // A send that fails means the reader is gone, which is a picker that is not
@@ -241,7 +507,11 @@ mod tests {
     //! answer through the listing parser — so the label is pinned over the whole
     //! path a source travels rather than over a hand-built value.
     //!
-    //! The interactive half needs a terminal, and is left to manual testing (M9).
+    //! The interactive half needs a terminal, so what these can reach of it is the
+    //! options `dl` asks for and nothing further. `tests/picker.rs` takes it from
+    //! there: it opens a pty, runs the binary on it and reads the screen back, which
+    //! is the only seam that can tell an option that is spelled right from one that
+    //! draws something.
 
     use super::*;
 
@@ -259,6 +529,15 @@ mod tests {
             .expect("a listing")
     }
 
+    /// Where dl keeps its clones in these tests: the owner column is read out of
+    /// the layout under it, and out of nothing under any other directory.
+    const CACHE: &str = "/home/dev/.cache/devlaunch";
+
+    /// That cache as a path, which is what every call here passes.
+    fn cache() -> &'static Path {
+        Path::new(CACHE)
+    }
+
     /// One workspace, with the source object devpod recorded for it.
     fn one(id: &str, source: &str) -> String {
         format!(
@@ -270,9 +549,10 @@ mod tests {
 
     #[test]
     fn a_workspace_devlaunch_cannot_read_is_still_offered_and_selectable() {
-        // Python's own two rows, byte for byte: a local folder, and a source
-        // devlaunch has no reading for — offered as the JSON devpod sent, spelled
-        // the way Python's `json.dumps` spells it, separators included.
+        // Python's own two rows: somebody's project directory, and a source
+        // devlaunch has no reading for. Neither names an owner — one is a path dl
+        // did not clone, the other is an image reference — so both take the dash,
+        // and both are still *offered*, which is the point of the test.
         let workspaces = listed(
             r#"[
                 {"id": "mine", "source": {"localFolder": "/home/dev/myproject"},
@@ -284,14 +564,11 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces);
+        let offers = offered(&workspaces, cache());
 
         assert_eq!(
             offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
-            [
-                "mine | local | /home/dev/myproject",
-                "from-an-image | unknown | {\"image\": \"ubuntu:24.04\"}",
-            ]
+            ["- | mine", "- | from-an-image"]
         );
         // Picking the row maps back to the workspace, which is what makes it an
         // offer rather than a line of text.
@@ -299,6 +576,76 @@ mod tests {
             chosen(&offers, vec![offers[1].label.clone()]),
             Pick::Chose(one_id("from-an-image"))
         );
+    }
+
+    #[test]
+    fn the_search_bar_is_at_the_top_with_the_list_reading_downward() {
+        // skim's default layout draws the query line at the *bottom* of the picker
+        // and grows the list upward from it, so the first match sits furthest from
+        // the cursor and the rows move under the eye as the query is typed. `dl`
+        // asks for `reverse`: prompt on the first line, matches reading downward
+        // from it, first match nearest the prompt — the shape every other fuzzy
+        // finder a user of this has met puts up.
+        //
+        // Both arities, because the layout is not the multi-select's business: a
+        // single-pick `dl stop` is drawn exactly like a multi-pick `dl rm`.
+        assert_eq!(skim_options(Arity::One).layout, "reverse");
+        assert_eq!(skim_options(Arity::Several).layout, "reverse");
+    }
+
+    #[test]
+    fn the_layout_is_asked_for_by_name_because_the_reverse_flag_is_inert() {
+        // `SkimOptions` carries a `reverse: bool` next to `layout`, documented as
+        // "shorthand for reverse layout" — and it is shorthand that only
+        // `SkimOptions::build`/`SkimOptionsBuilder::build` ever expand. `dl` hands
+        // its options straight to `Skim::run_with`, which never calls either, and
+        // the model reads `options.layout` alone (skim 0.20.5,
+        // `src/model/mod.rs`). So a `reverse: true` on its own would compile, read
+        // as the fix, and draw the old picture.
+        //
+        // Pinned so that a later tidy-up cannot "simplify" the layout string into
+        // the flag and silently put the search bar back at the bottom.
+        let asked = skim_options(Arity::One);
+
+        assert_eq!(asked.layout, "reverse");
+        assert!(
+            !asked.reverse,
+            "the flag is not the lever; setting it instead of `layout` is the bug this pins"
+        );
+    }
+
+    #[test]
+    fn the_invitation_is_the_picker_s_own_header_and_names_tab_only_where_tab_works() {
+        // The line that explains the rows travels with the picker rather than ahead
+        // of it. Printing it first put it on the screen skim was about to replace
+        // with the alternate one, so it was unreadable for the whole time the
+        // picker was up — and for the multi-pick verbs that made TAB, the thing the
+        // sentence exists to teach, discoverable nowhere at all.
+        //
+        // `tests/picker.rs` is what proves the header is *drawn*; this pins that
+        // `dl` asks for it, and that the wording still follows the arity. Both
+        // matter: an unspoken TAB clause on a single-pick picker is a lie, and a
+        // missing one on a multi-pick picker is the defect.
+        assert_eq!(
+            skim_options(Arity::Several).header.as_deref(),
+            Some("Select workspaces (type to filter, TAB to mark several):")
+        );
+        // And no TAB clause on the picker that takes one row: a key named in the
+        // header and inert under the cursor is worse than an unmentioned one.
+        assert_eq!(
+            skim_options(Arity::One).header.as_deref(),
+            Some("Select workspace (type to filter):")
+        );
+    }
+
+    #[test]
+    fn what_the_picker_will_take_is_the_arity_and_the_order_is_never_skim_s() {
+        // The two options the layout change sits beside, so a mistyped struct
+        // literal cannot trade one for another unnoticed.
+        assert!(!skim_options(Arity::One).multi);
+        assert!(skim_options(Arity::Several).multi);
+        assert!(skim_options(Arity::One).no_sort);
+        assert!(skim_options(Arity::Several).no_sort);
     }
 
     /// A `Pick::Chose` of exactly these ids, for the assertions below.
@@ -318,8 +665,9 @@ mod tests {
         // instead of adding to it — observed live: mark two workspaces, and only
         // the last one is acted on. Distinct indices are what make marking
         // accumulate, so they are the spec.
-        let offers = offered(&listed(
-            r#"[
+        let offers = offered(
+            &listed(
+                r#"[
                 {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
@@ -330,7 +678,9 @@ mod tests {
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"}
             ]"#,
-        ));
+            ),
+            cache(),
+        );
 
         assert_eq!(
             rows_of(&offers)
@@ -345,8 +695,9 @@ mod tests {
     fn several_rows_map_to_several_workspaces_in_the_order_taken() {
         // The multi pick: every chosen row maps back, in the order the rows came
         // back, so `dl rm` applies to the workspaces in the order they were marked.
-        let offers = offered(&listed(
-            r#"[
+        let offers = offered(
+            &listed(
+                r#"[
                 {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
@@ -357,7 +708,9 @@ mod tests {
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"}
             ]"#,
-        ));
+            ),
+            cache(),
+        );
 
         assert_eq!(
             chosen(
@@ -378,15 +731,307 @@ mod tests {
     }
 
     #[test]
-    fn a_git_source_is_offered_by_its_url() {
+    fn a_git_source_is_offered_under_the_owner_its_url_names() {
         let workspaces = listed(&one(
             "wf",
             r#"{"gitRepository": "https://github.com/blooop/devlaunch.git"}"#,
         ));
 
+        assert_eq!(offered(&workspaces, cache())[0].label, "blooop | wf");
+    }
+
+    #[test]
+    fn a_clone_of_dls_own_is_read_apart_into_owner_repo_and_ref() {
+        // The row a user of `dl` actually sees: every workspace `dl owner/repo`
+        // makes is a clone at `<cache>/repos/<owner>/<repo>/<workspace id>` handed
+        // to devpod as a path, so the owner and the repo are read back out of the
+        // layout and the ref off the id — no records opened, no config read, no disk
+        // touched. The eight-character suffix does not appear: it is what keeps two
+        // branches from sharing an id, and choosing a workspace never involves
+        // reading it.
+        let workspaces = listed(&one(
+            "devlaunch-main-zovomobo",
+            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"}"#,
+        ));
+
         assert_eq!(
-            offered(&workspaces)[0].label,
-            "wf | git | https://github.com/blooop/devlaunch.git"
+            offered(&workspaces, cache())[0].label,
+            "blooop | devlaunch | main"
+        );
+    }
+
+    #[test]
+    fn a_repo_whose_slug_the_id_cut_is_still_read_apart() {
+        // The id's repo part is cut to twenty characters when the id would overflow,
+        // so the prefix in the id is not the repo directory's name. The *directory*
+        // is what the column shows, because that is the repository's actual name and
+        // the cut is an artefact of the id's length budget.
+        let workspaces = listed(&one(
+            "a-very-long-reposito-main-mafedavi",
+            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/a-very-long-repository-name-indeed/a-very-long-reposito-main-mafedavi"}"#,
+        ));
+
+        assert_eq!(
+            offered(&workspaces, cache())[0].label,
+            "blooop | a-very-long-repository-name-indeed | main"
+        );
+    }
+
+    #[test]
+    fn two_rows_that_would_be_drawn_alike_go_back_to_their_whole_ids() {
+        // `feature/auth` and `feature-auth` are two branches, two workspaces and two
+        // ids — and one ref-slug, because `slug` collapses `/` and `-` alike
+        // (devlaunch#55, defect #1). Drawn apart they would be the same row twice,
+        // and `chosen` maps a picked row back by its text with the first match
+        // winning: marking the second would remove the first. `dl rm` is one of the
+        // verbs this picker opens for, so that is a workspace deleted for a
+        // legibility win.
+        //
+        // Both rows go back to the whole id — not just the second — because there is
+        // no first: the collision is between what the two rows say, and neither has a
+        // better claim on the shorter spelling.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-feature-auth-poliseno",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-feature-auth-nesatabe",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-nesatabe"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache());
+
+        assert_eq!(
+            offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
+            [
+                "blooop | devlaunch-feature-auth-poliseno",
+                "blooop | devlaunch-feature-auth-nesatabe",
+            ]
+        );
+        // And the property the fallback exists for: each row still maps back to its
+        // own workspace.
+        assert_eq!(
+            chosen(&offers, vec![offers[1].label.clone()]),
+            Pick::Chose(one_id("devlaunch-feature-auth-nesatabe"))
+        );
+    }
+
+    #[test]
+    fn a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row() {
+        // The cross-shape collision the two-column and three-column rows can make
+        // between them: a workspace dl did not clone keeps whatever name devpod has
+        // for it, and if that name is the middle and right columns of some *other*
+        // row, the two rows are the same text. `chosen` then maps both to whichever
+        // came first, so picking the second one acts on the first -- and `dl rm` is
+        // one of the verbs this picker opens for.
+        //
+        // The collision key cannot see this one: the two rows have different key
+        // shapes, so counting keys finds no duplicate.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache());
+
+        let labels: Vec<&String> = offers.iter().map(|offer| &offer.label).collect();
+        assert_ne!(labels[0], labels[1], "two rows drawn alike: {labels:?}");
+        // And the property that matters: each row still reaches its own workspace.
+        assert_eq!(
+            chosen(&offers, vec![offers[1].label.clone()]),
+            Pick::Chose(one_id("devlaunch | main"))
+        );
+    }
+
+    #[test]
+    fn a_collision_only_pulls_in_the_rows_that_collide() {
+        // The fallback is scoped to the rows drawn alike. A third workspace of the
+        // same repository keeps its split row, because nothing else is drawn like it
+        // — so one ambiguous pair does not put the suffix back on a whole listing.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-feature-auth-poliseno",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-feature-auth-nesatabe",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-nesatabe"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            [
+                "blooop | devlaunch-feature-auth-poliseno",
+                "blooop | devlaunch-feature-auth-nesatabe",
+                "blooop | devlaunch | main",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_repo_name_under_two_owners_is_two_rows_that_read_apart() {
+        // A fork and its upstream: one repository name, one branch, two workspaces.
+        // The ids differ only in the suffix that is no longer drawn, so the owner
+        // column is the whole of what tells the rows apart — and it is enough, so
+        // neither row falls back.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-dedavevi",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/someone/devlaunch/devlaunch-main-dedavevi"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            ["blooop  | devlaunch | main", "someone | devlaunch | main"]
+        );
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_clone_of_dls_names_no_owner() {
+        // `dl ~/dev/myproject`, and it is the case that catches a rule read off the
+        // shape alone: the path is three components deep like any clone *and* its
+        // leaf is the workspace's id, because devpod names a path workspace after
+        // its directory. Read as dl's layout it would say the owner is `dev`, which
+        // is a fabrication — nobody's repository is owned by a path component of
+        // somebody's home directory. Being outside dl's cache is what settles it.
+        let workspaces = listed(&one(
+            "myproject",
+            r#"{"localFolder": "/home/dev/myproject"}"#,
+        ));
+
+        assert_eq!(offered(&workspaces, cache())[0].label, "- | myproject");
+    }
+
+    #[test]
+    fn a_directory_under_the_cache_that_is_not_shaped_like_a_clone_names_no_owner() {
+        // The other half of the rule. Inside the cache, but its leaf is not this
+        // workspace's id — so it is not the `<owner>/<repo>/<workspace id>` layout
+        // dl writes, and there is no owner to be read out of it.
+        let workspaces = listed(&one(
+            "mine",
+            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/somewhere-else"}"#,
+        ));
+
+        assert_eq!(offered(&workspaces, cache())[0].label, "- | mine");
+    }
+
+    #[test]
+    fn a_directory_kept_inside_dls_cache_names_no_owner_either() {
+        // The last way the layout can be read into a path that is not one. This is
+        // inside the cache, so dl already counts it as its own for `--purge`, and
+        // its leaf is the workspace's id — both guards satisfied — yet two
+        // components above the leaf sits the cache directory itself, so the
+        // "owner" would be `devlaunch`, the name of dl's cache. An owner has to be
+        // a directory dl put under the cache, not the cache.
+        let workspaces = listed(&one(
+            "myproject",
+            r#"{"localFolder": "/home/dev/.cache/devlaunch/scratch/myproject"}"#,
+        ));
+
+        assert_eq!(offered(&workspaces, cache())[0].label, "- | myproject");
+    }
+
+    #[test]
+    fn the_repo_column_is_padded_over_the_rows_that_have_one() {
+        // Alignment across the two row shapes. The repo column is measured over the
+        // split rows only, so a foreign workspace's name does not widen a column it
+        // has no entry in — it runs on through the space a ref would have taken,
+        // which is what a row with nothing to put in two columns should do.
+        //
+        // `kinisi_ros` also pins the column on the *directory* rather than the id's
+        // prefix: the id spells it `kinisi-ros`, because `slug` turns `_` into `-`,
+        // and the underscore is the repository's real name.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "kinisi-ros-main-zivefoti",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/kinisi-robotics/kinisi_ros/kinisi-ros-main-zivefoti"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "a-very-long-workspace-name-of-its-own",
+                 "source": {"localFolder": "/home/dev/myproject"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            [
+                "blooop          | devlaunch  | main",
+                "kinisi-robotics | kinisi_ros | main",
+                "-               | a-very-long-workspace-name-of-its-own",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_owner_column_is_padded_so_the_ids_line_up() {
+        // Alignment is a fact about the list, not about one row: every owner is
+        // drawn to the width of the widest, so the ids start in the same column and
+        // the eye can run down them. The dash is padded like any other owner.
+        let workspaces = listed(
+            r#"[
+                {"id": "one", "source": {"gitRepository": "github.com/blooop/devlaunch"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "two", "source": {"gitRepository": "github.com/kinisi-robotics/kinisi_ros"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "three", "source": {"localFolder": "/home/dev/myproject"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            [
+                "blooop          | one",
+                "kinisi-robotics | two",
+                "-               | three",
+            ]
         );
     }
 
@@ -407,7 +1052,7 @@ mod tests {
         );
 
         assert_eq!(
-            offered(&workspaces)
+            offered(&workspaces, cache())
                 .iter()
                 .map(|offer| offer.workspace_id.clone())
                 .collect::<Vec<_>>(),
@@ -419,18 +1064,18 @@ mod tests {
     fn an_empty_listing_offers_nothing_and_is_not_a_picker() {
         let none = listed("[]");
 
-        assert!(offered(&none).is_empty());
+        assert!(offered(&none, cache()).is_empty());
         // And no terminal is opened to say so: nothing to pick from is answered
         // before anything is drawn, whichever arity asked.
-        assert_eq!(pick(&none, Arity::One), Pick::NoWorkspaces);
-        assert_eq!(pick(&none, Arity::Several), Pick::NoWorkspaces);
+        assert_eq!(pick(&none, Arity::One, cache()), Pick::NoWorkspaces);
+        assert_eq!(pick(&none, Arity::Several, cache()), Pick::NoWorkspaces);
     }
 
     #[test]
     fn a_row_that_names_no_workspace_is_no_choice() {
         // Python's `ws_map.get(selected)`: a label the map has not got answers
         // `None`, and `None` is the help and exit 1.
-        let offers = offered(&listed(&one("mine", r#"{"localFolder": "/p"}"#)));
+        let offers = offered(&listed(&one("mine", r#"{"localFolder": "/p"}"#)), cache());
 
         assert_eq!(chosen(&offers, Vec::new()), Pick::Quit);
         assert_eq!(

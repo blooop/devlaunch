@@ -74,6 +74,18 @@ def bench_step(name_fragment: str) -> str:
     return STEP_MARKER + matching[0]
 
 
+def bench_step_commands(name_fragment: str) -> str:
+    """One step of the bench job with its commentary removed.
+
+    The mirror of `bench_settings` at one step's scale: most of what a step of
+    this file contains is prose about why, so a check for "this step actually
+    runs X" has to read the commands rather than the paragraph above them.
+    """
+    return "\n".join(
+        line for line in bench_step(name_fragment).splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def reset_script() -> str:
     """What the cold reset actually does, which is a file rather than a string.
 
@@ -210,6 +222,67 @@ class TestTheColdResetSurvivesAContainerWrittenClone:
             "a second mention is a one-time step doing per-run work"
         )
         assert RESET.name in cold_reset()
+
+
+class TestTheBenchedBinaryCanFindDevpod:
+    """`dl` manages nothing without devpod, and nothing installs devpod here.
+
+    devpod is a pixi dependency rather than a step, which the trigger section
+    says and this job relies on: the steps that bench run `dl` from inside
+    `pixi run`, so they inherit the environment's devpod for free. The priming
+    launch does not -- it runs `dl` straight from the bare PATH, so it gets
+    whatever the build step left there.
+
+    Until this was pinned that was nothing. #267 moved the benched binary from
+    `pixi run dl` to the release build on a bare PATH, correctly, and took
+    devpod off that PATH in the same edit: `devpod not found on PATH: dl cannot
+    manage workspaces without it`, exit 127, in the priming step. Every merge to
+    main from that commit through 0.10.0 died there in 80 seconds having timed
+    nothing -- 23 runs, 32588170961 back to 32355565253 -- while the 11 runs
+    before it published points.
+
+    A symlink into the directory the step already puts on PATH, rather than
+    putting the whole pixi environment's `bin` there: that directory holds a
+    python, a git and a couple of hundred other things, and what the benched
+    launch resolves is part of what is being measured.
+    """
+
+    def test_devpod_is_put_on_the_same_path_dl_is(self):
+        """The one assertion the regression would have failed."""
+        commands = bench_step_commands("Build the release binaries")
+        assert "devpod" in commands, "a `dl` with no devpod manages nothing"
+        exported = [line for line in commands.splitlines() if "GITHUB_PATH" in line]
+        assert len(exported) == 1, "one directory goes on PATH, and both binaries are in it"
+        directory = exported[0].split(">>")[0].split()[-1]
+        for binary in ("dl", "devpod"):
+            assert f"{directory}/{binary}" in commands, f"{binary} is not in the directory on PATH"
+
+    def test_it_is_the_environments_devpod_and_not_a_downloaded_one(self):
+        """The version this tree is pinned against, not whatever a runner image
+        or a release page happens to carry -- the same reason the trigger
+        section gives for having no devpod install step. devpod 0.8 asks for a
+        pty on `ssh --command` where 0.26 never does, so which one this is
+        decides what the launch being timed actually does."""
+        devpod = [
+            line
+            for line in bench_step_commands("Build the release binaries").splitlines()
+            if "devpod" in line
+        ]
+        assert devpod, "the step has to find devpod somewhere"
+        assert any("pixi" in line for line in devpod), "the lockfile is where devpod comes from"
+        for line in devpod:
+            assert "curl" not in line and "install.sh" not in line, line
+
+    def test_the_priming_launch_is_what_needs_it_there(self):
+        """Why the symlink cannot be deleted as redundant with `pixi run`: this
+        step is the one launch in the job that runs outside it. Reverting it to
+        `pixi run dl` is not the alternative fix -- that is the task, i.e. a
+        debug build, and benching a debug build beside a release one is the
+        wrong-build bug #267 came out of."""
+        priming = bench_step_commands("Prime the image")
+        run = [line for line in priming.splitlines() if line.lstrip().startswith("run:")]
+        assert len(run) == 1, "the priming step is one launch"
+        assert run[0].split("run:", 1)[1].strip().startswith("dl "), run[0]
 
 
 class TestTheSharedPixiCacheIsWritableByTheContainer:

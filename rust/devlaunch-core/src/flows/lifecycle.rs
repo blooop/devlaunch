@@ -316,7 +316,7 @@ impl<'a> Refresh<'a> {
     /// The latch it clears is not a rate limit; it is "one command, one child", and
     /// what it protects against is a command that warmed the cache on its way in
     /// spawning a second child on its way out to describe the same world. That is not
-    /// this. `dl <ws> --autorm` is the one command that changes the workspace list
+    /// this. `dl <ws> --rm` is the one command that changes the workspace list
     /// **twice** — the launch may create a workspace and force the refresh that
     /// records it, and the removal then deletes it — so the child already spawned is
     /// indexing a world with a workspace in it that is about to be gone. Leaving the
