@@ -2399,10 +2399,13 @@ it ate the first `wf-review` report posted under this rule, because a review of
 this guard quotes the refusal sentences; anchored to the `Sorry @` those
 sentences open with, it stopped recognising a refusal that had a leading newline
 — strictly weaker than the loose match it replaced. Only the reviewer can refuse
-on its own behalf, so `REFUSING_LOGINS` is the question asked. The cost is that a
-new external reviewer's refusals go unrecognised until its login is added there,
-which is a config change with a test naming it rather than a regex quietly
-deciding what a refusal looks like. A determined author
+on its own behalf, so `REFUSING_LOGINS` is the question asked.
+
+The cost is that a new external reviewer's refusals go unrecognised until its
+login is added there. So an unlisted account posting something that reads like a
+refusal still counts as a review, and the job emits a `::warning::` naming the
+account, because a reviewer rename putting us back at the original incident with
+no signal is the one way this design fails badly. A determined author
 can of course write the provenance line by hand; the guard is against a review
 silently not happening, and skipping one on purpose is what the label is for.
 Merging on a self-review emits a `::notice::` saying so, because it is worth

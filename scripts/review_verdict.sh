@@ -63,14 +63,33 @@ fi
 # a regex quietly deciding what a refusal looks like.
 REFUSING_LOGINS=${REFUSING_LOGINS:-sourcery-ai[bot]}
 
+# `read -ra` rather than an unquoted `for login in $REFUSING_LOGINS`. Every login
+# this will ever hold ends in `[bot]`, and unquoted word-splitting is followed by
+# globbing, where `[bot]` is a bracket expression matching one of b, o or t. A
+# zero-byte file named `sourcery-aib` in the working directory was enough to turn
+# a quota refusal into "reviewed by 1 review(s)" -- silently, which is the exact
+# signature of the twenty-six.
+split_logins() {
+  local -a logins=()
+  read -ra logins <<<"$REFUSING_LOGINS"
+  printf '%s\n' "${logins[@]}"
+}
+
+# Whether this review is the reviewer refusing on its own behalf.
 is_refusal() {
-  local author=$1 body=$2 login
-  local matched=1
-  for login in $REFUSING_LOGINS; do
-    [ "$author" = "$login" ] && matched=0
-  done
-  [ "$matched" -eq 0 ] || return 1
-  case $body in
+  local author=$1 body=$2
+  body_is_refusal "$body" || return 1
+  local login
+  while IFS= read -r login; do
+    [ "$author" = "$login" ] && return 0
+  done < <(split_logins)
+  return 1
+}
+
+# The refusal sentences themselves, asked separately so an unrecognised login
+# posting one can be reported rather than quietly counted as a review.
+body_is_refusal() {
+  case $1 in
     *"you have reached your weekly rate limit"*) return 0 ;;
     *"larger than the review limit"*) return 0 ;;
   esac
@@ -117,6 +136,16 @@ for i in $(seq 0 $((count - 1))); do
   if is_refusal "$author" "$body"; then
     refusals=$((refusals + 1))
     continue
+  fi
+
+  # The documented cost of asking about the reviewer instead of the prose: a
+  # refusal from a login nobody listed reads as a genuine review. A rename or an
+  # App migration would put us back at the original incident with no signal, so
+  # this is the signal.
+  if body_is_refusal "$body"; then
+    echo "::warning::'$author' posted what looks like a reviewer refusal but is"\
+         "not in REFUSING_LOGINS ($REFUSING_LOGINS), so it is being counted as a"\
+         "review. If that account replaced the external reviewer, add it."
   fi
 
   # A second party either said something, or reached a verdict. An APPROVED or
