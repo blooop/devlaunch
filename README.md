@@ -2391,7 +2391,11 @@ teeth. So three things satisfy it:
 - the **`no-external-review` label**, for merging with neither.
 
 An author's plain approval is not enough — "lgtm" from the person who wrote the
-code is the thing being guarded against, not a way past it. A determined author
+code is the thing being guarded against, not a way past it. The author's report
+is identified *before* anything asks whether the text looks like a refusal,
+because a review of this guard quotes those sentences: the first `wf-review`
+report posted under this rule was thrown away as a refusal until the order was
+swapped. A determined author
 can of course write the provenance line by hand; the guard is against a review
 silently not happening, and skipping one on purpose is what the label is for.
 Merging on a self-review emits a `::notice::` saying so, because it is worth

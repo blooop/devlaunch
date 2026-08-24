@@ -642,7 +642,7 @@ jobs:
           reviews='[]'
           for _ in $(seq 1 12); do
             reviews=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-              --jq '[.[] | {author: .user.login, body: .body}]' || echo '[]')
+              --jq '[.[] | {author: .user.login, body: .body, state: .state}]' || echo '[]')
             [ "$(jq 'length' <<<"$reviews")" -gt 0 ] && break
             sleep 10
           done

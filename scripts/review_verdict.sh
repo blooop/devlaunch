@@ -36,14 +36,31 @@ if [ -z "${reviews//[[:space:]]/}" ]; then
   reviews='[]'
 fi
 
+# Without it, every review is somebody else's and the author's own "lgtm" counts
+# as a second party -- the one way this script can be wrong in the direction that
+# lets something through. Unreachable from today's workflow, which is why it is
+# asserted rather than trusted.
+if [ -z "$AUTHOR" ]; then
+  echo "::error::PR_AUTHOR is empty, so this check cannot tell the author's own"\
+       "review from anybody else's and will not guess."
+  exit 1
+fi
+
 # Both refusals are quota refusals, and neither says anything about the code. The
 # second fires on *size*, so it exempts exactly the changes least safe to merge
-# unread. Matched on the stable half of each sentence: the numbers move when the
-# plan does, and the account name is not fixed.
+# unread.
+#
+# Anchored to the `Sorry @` the bot opens both with, not matched loose. Loose was
+# a real defect: a review *about this guard* quotes those sentences, so the first
+# `wf-review` report posted on the pull request that introduced self-reviews was
+# itself classified as a refusal and thrown away. The reviewer had to misspell
+# them to get a report through. Anchoring is not a complete answer -- see the
+# ordering note below, which is -- but it stops a body that merely mentions a
+# refusal from being read as one.
 is_refusal() {
   case $1 in
-    *"you have reached your weekly rate limit"*) return 0 ;;
-    *"larger than the review limit"*) return 0 ;;
+    "Sorry @"*"you have reached your weekly rate limit"*) return 0 ;;
+    "Sorry @"*"larger than the review limit"*) return 0 ;;
   esac
   return 1
 }
@@ -54,21 +71,41 @@ self_review=0
 refusals=0
 
 for i in $(seq 0 $((count - 1))); do
-  [ "$count" -eq 0 ] && break
   author=$(jq -r ".[$i].author // \"\"" <<<"$reviews")
   body=$(jq -r ".[$i].body // \"\"" <<<"$reviews")
+  state=$(jq -r ".[$i].state // \"\"" <<<"$reviews")
+
+  # A review somebody dismissed is a review that was taken back.
+  [ "$state" = DISMISSED ] && continue
+
+  # The author's own report is recognised *before* anything asks whether this
+  # text looks like a refusal, because a review of this guard quotes the refusal
+  # sentences and would otherwise be eaten by them. The author plus the
+  # provenance line is a positive identification; nothing about the rest of the
+  # body can make it stop being one.
+  if [ -n "$AUTHOR" ] && [ "$author" = "$AUTHOR" ]; then
+    case $body in
+      *"$PROVENANCE"*)
+        self_review=$((self_review + 1))
+        continue
+        ;;
+    esac
+    # Any other review by the author is an approval of their own code, which is
+    # the thing being guarded against rather than a way past it.
+    continue
+  fi
 
   if is_refusal "$body"; then
     refusals=$((refusals + 1))
     continue
   fi
-  [ -z "${body//[[:space:]]/}" ] && continue
 
-  if [ -n "$AUTHOR" ] && [ "$author" = "$AUTHOR" ]; then
-    case $body in
-      *"$PROVENANCE"*) self_review=$((self_review + 1)) ;;
-    esac
-  else
+  # A second party either said something, or reached a verdict. An APPROVED or
+  # CHANGES_REQUESTED with no prose is still somebody who read it and pressed a
+  # button; an empty COMMENTED is not distinguishable from a drive-by without
+  # fetching the inline comments, so it does not count on its own.
+  if [ -n "${body//[[:space:]]/}" ] || [ "$state" = APPROVED ] ||
+     [ "$state" = CHANGES_REQUESTED ]; then
     second_party=$((second_party + 1))
   fi
 done
@@ -88,10 +125,10 @@ fi
 if [ "$refusals" -gt 0 ]; then
   echo "::error::The external reviewer refused (quota or diff size) and there is"\
        "no self-review to stand in for it. Post a wf-review report on this pull"\
-       "request, or label '$OVERRIDE' to merge unreviewed."
+       "request and re-run this job, or label '$OVERRIDE' to merge unreviewed."
   exit 1
 fi
 
-echo "::error::Nothing reviewed this pull request. Post a wf-review report, or"\
-     "label '$OVERRIDE' to merge unreviewed."
+echo "::error::Nothing reviewed this pull request. Post a wf-review report and"\
+     "re-run this job, or label '$OVERRIDE' to merge unreviewed."
 exit 1
