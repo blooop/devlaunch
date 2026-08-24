@@ -7,19 +7,26 @@
 //! from the Python `dl` at an input boundary in a way that costs correctness or
 //! a credential:
 //!
+//! Only [`env_str`] is linked below, because only [`env_str`] is `pub`. The
+//! module is binary surface for that one reader; the other three stayed
+//! `pub(crate)` (see the note on `pub mod osext` in `lib.rs`). A link from a
+//! `pub` module's doc to a `pub(crate)` item renders as plain text whatever the
+//! brackets say, and costs a `rustdoc::private_intra_doc_links` warning for the
+//! privilege, so the brackets are off rather than pointing at nothing.
+//!
 //! - [`env_str`] reads a variable the way `os.environ.get` does — a non-UTF-8
 //!   value is *present*, not absent. `std::env::var(..).ok()` reports a non-UTF-8
 //!   value as unset, which turns an opt-out (`DEVLAUNCH_NO_GH_TOKEN`) into an
 //!   opt-in and forwards a credential the user asked to withhold.
-//! - [`strip`] trims the exact set `str.strip()` trims. Rust's `str::trim` uses
+//! - `strip` trims the exact set `str.strip()` trims. Rust's `str::trim` uses
 //!   the Unicode `White_Space` property, which omits U+001C–U+001F; Python's
 //!   `str.isspace()` includes them. Those four codepoints otherwise invert every
 //!   `DEVLAUNCH_*` switch and reject an otherwise-valid `GH_TOKEN`.
-//! - [`home_dir`] matches `posixpath.expanduser("~")`: a present-but-empty `HOME`
+//! - `home_dir` matches `posixpath.expanduser("~")`: a present-but-empty `HOME`
 //!   expands to `/`, and only an *absent* `HOME` consults the password database.
 //!   `std::env::home_dir` treats empty and absent alike (both fall to the passwd
 //!   entry), which reaches the real home when the caller cleared `HOME`.
-//! - [`temp_dir`] validates the directory and honours `TMPDIR`/`TEMP`/`TMP` with
+//! - `temp_dir` validates the directory and honours `TMPDIR`/`TEMP`/`TMP` with
 //!   the `/tmp` family as the fallback, the way `tempfile.gettempdir()` does. A
 //!   non-existent `TMPDIR` otherwise makes the token-staging file fail to create
 //!   and silently costs the workspace its gh login.
