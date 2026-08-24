@@ -588,4 +588,3 @@ name](#the-disk-neither-command-frees) when they finish. Not counting a volume i
 a different thing from not removing it: a workspace's volumes go when the
 workspace does, see [what a delete takes with
 it](#what-a-delete-takes-with-it). What is missing here is only the *figure*.
-

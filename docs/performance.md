@@ -208,4 +208,3 @@ load-bearing:
   convention and turn a noisy wall-clock measurement into a merge gate. A point
   above the threshold leaves a commit comment and a red mark on the chart, and
   the build stays green.
-

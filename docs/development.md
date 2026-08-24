@@ -581,4 +581,3 @@ pip install "devlaunch<0.1"
 Both builds read and write the same `metadata.json` at schema 2 under the same locks, so a downgrade
 keeps every workspace you already have and needs no cleanup. Please open an issue for whatever sent
 you back.
-

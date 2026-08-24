@@ -654,4 +654,3 @@ A branch created on a remote in the last hour may therefore not be offered yet.
 
 *Everything above is what it takes to use `dl`. What follows is reference: flags, ids, disk
 accounting, and the internals worth knowing when something surprises you.*
-

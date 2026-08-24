@@ -152,4 +152,3 @@ warms a workspace in the background. An earlier revision of this section
 documented `--shared` and `--warm` with worked examples; neither has ever existed
 in the shipped `dl`, which exits 2 on both, and the guard in
 `test/test_readme_cli_doc.py` is why a third cannot appear here unnoticed.
-
