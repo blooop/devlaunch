@@ -1616,7 +1616,7 @@ fn rm_on_exit_removes_a_workspace_whose_session_devpod_never_ran() {
 fn rm_on_exit_collects_a_workspace_whose_up_failed() {
     // The case keying the cleanup on the exit code got wrong, and the one that
     // matters most: a `devpod up` that dies leaves the container running, devpod's
-    // record written and the clone cut — see `lifecycle::create_record`, which exists
+    // record written and the clone cut — see `clients::devpod_home::create_record`, which exists
     // because of it. An unattended `dl owner/repo --rm -- <cmd>` against a broken
     // devcontainer would otherwise leak exactly the workspace the flag was reached
     // for, on every run, silently.

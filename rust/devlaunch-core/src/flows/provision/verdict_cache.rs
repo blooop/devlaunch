@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Switches, ToolsSwitch, ZellijSwitch};
 
-use crate::flows::lifecycle;
+use crate::clients::devpod_home::{DevpodHome, sole_workspace_result};
 
 /// The directory the markers live in, under devlaunch's cache directory.
 const MARKERS_DIR: &str = "tool-verdicts";
@@ -84,12 +84,12 @@ const MARKERS_DIR: &str = "tool-verdicts";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerdictCache {
     markers_dir: PathBuf,
-    devpod_home: Option<PathBuf>,
+    devpod_home: Option<DevpodHome>,
 }
 
 impl VerdictCache {
     /// The cache devlaunch keeps under `cache_dir`, checked against `devpod_home`.
-    pub fn under(cache_dir: &Path, devpod_home: Option<PathBuf>) -> Self {
+    pub fn under(cache_dir: &Path, devpod_home: Option<DevpodHome>) -> Self {
         Self {
             markers_dir: cache_dir.join(MARKERS_DIR),
             devpod_home,
@@ -123,9 +123,7 @@ impl VerdictCache {
         if marker.switches != MarkerSwitches::of(switches) {
             return false;
         }
-        let Some(result) =
-            lifecycle::sole_workspace_result(self.devpod_home.as_deref(), workspace_id)
-        else {
+        let Some(result) = sole_workspace_result(self.devpod_home.as_ref(), workspace_id) else {
             return false;
         };
         Stamp::of(&result) == Some(marker.result_mtime)
@@ -143,7 +141,7 @@ impl VerdictCache {
     /// longer matches, so the next launch travels — one redundant round trip, which
     /// is the direction that is allowed to be wrong.
     pub(crate) fn observe(&self, workspace_id: &str) -> Option<Observed> {
-        let result = lifecycle::sole_workspace_result(self.devpod_home.as_deref(), workspace_id)?;
+        let result = sole_workspace_result(self.devpod_home.as_ref(), workspace_id)?;
         Stamp::of(&result).map(Observed)
     }
 
@@ -310,20 +308,19 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::flows::lifecycle::tests::devpod_home_with;
+    use crate::clients::devpod_home::devpod_home_with;
 
     /// A cache directory nothing else writes to.
     fn cache() -> tempfile::TempDir {
         tempfile::tempdir().expect("a scratch cache directory")
     }
 
-    /// The result file `devpod_home_with` wrote for this workspace.
-    fn result_in(home: &Path, workspace_id: &str) -> PathBuf {
-        home.join("contexts")
-            .join("default")
-            .join("workspaces")
-            .join(workspace_id)
-            .join("workspace_result.json")
+    /// The result file `devpod_home_with` wrote for this workspace, asked of the
+    /// home itself rather than rebuilt: devpod's layout is
+    /// `clients::devpod_home`'s to spell, and a fixture that spelled its own copy
+    /// would go on passing after devpod moved it.
+    fn result_in(home: &DevpodHome, workspace_id: &str) -> PathBuf {
+        home.result("default", workspace_id)
     }
 
     /// The pair the flow always calls together: observe the container, then record
@@ -354,7 +351,7 @@ mod tests {
         // failure is permanent for the life of the container and completely silent.
         let home = devpod_home_with(&[("default", "ws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         let no_zellij = Switches {
             tools: ToolsSwitch::Install,
@@ -382,7 +379,7 @@ mod tests {
         // already exists.
         let home = devpod_home_with(&[("default", "ws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         recorded(&verdicts, "ws");
         assert!(verdicts.trusted("ws", Switches::INSTALLING));
 
@@ -423,7 +420,7 @@ mod tests {
     fn a_recorded_verdict_is_trusted_while_the_container_stands() {
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         assert!(
             !verdicts.trusted("myws", Switches::INSTALLING),
@@ -434,7 +431,7 @@ mod tests {
         assert!(verdicts.trusted("myws", Switches::INSTALLING));
         // And it survives being read by a second value over the same directories,
         // which is what "the next `dl` process" is.
-        let later = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let later = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         assert!(later.trusted("myws", Switches::INSTALLING));
     }
 
@@ -445,7 +442,7 @@ mod tests {
         // names and the verdict word are pinned rather than left to serde's whim.
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         recorded(&verdicts, "myws");
 
@@ -464,11 +461,11 @@ mod tests {
         // that no longer matches.
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         recorded(&verdicts, "myws");
         assert!(verdicts.trusted("myws", Switches::INSTALLING));
 
-        rewritten(&result_in(home.path(), "myws"), Duration::from_secs(30));
+        rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
 
         assert!(!verdicts.trusted("myws", Switches::INSTALLING));
     }
@@ -480,12 +477,12 @@ mod tests {
         // and it is still not the container the verdict was about.
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         recorded(&verdicts, "myws");
 
         let file = std::fs::OpenOptions::new()
             .write(true)
-            .open(result_in(home.path(), "myws"))
+            .open(result_in(&home, "myws"))
             .expect("the result file");
         let was = file
             .metadata()
@@ -507,7 +504,7 @@ mod tests {
         // held by two devpod contexts at once.
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         recorded(&verdicts, "myws");
         let marker = cache.path().join(MARKERS_DIR).join("myws.json");
         let good = std::fs::read_to_string(&marker).expect("a marker");
@@ -537,7 +534,7 @@ mod tests {
 
     #[test]
     fn an_ambiguous_or_unfindable_workspace_is_not_trusted() {
-        // The three ways `lifecycle::sole_workspace_result` declines to answer: two
+        // The three ways `sole_workspace_result` declines to answer: two
         // contexts holding one id, a record with no result beside it (an `up` that
         // died in its hooks), and no devpod home to look in at all. Each leaves the
         // host with no file whose mtime it can key on.
@@ -547,8 +544,8 @@ mod tests {
         let cache = cache();
 
         for home in [
-            Some(ambiguous.path().to_path_buf()),
-            Some(unfinished.path().to_path_buf()),
+            Some(DevpodHome::at(ambiguous.path())),
+            Some(DevpodHome::at(unfinished.path())),
             None,
         ] {
             let verdicts = VerdictCache::under(cache.path(), home.clone());
@@ -564,7 +561,7 @@ mod tests {
         // that a result file appearing later would silently validate.
         let home = devpod_home_with(&[("default", "myws", None)]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         recorded(&verdicts, "myws");
 
@@ -578,7 +575,7 @@ mod tests {
             ("default", "other", Some(())),
         ]);
         let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         recorded(&verdicts, "myws");
 
@@ -591,7 +588,7 @@ mod tests {
         // The round trip the equality check depends on: what `Stamp::of` reads back
         // is the instant the file carries, to the nanosecond the filesystem kept.
         let home = devpod_home_with(&[("default", "myws", Some(()))]);
-        let result = result_in(home.path(), "myws");
+        let result = result_in(&home, "myws");
         let stamp = Stamp::of(&result).expect("an mtime");
 
         let modified = std::fs::metadata(&result)

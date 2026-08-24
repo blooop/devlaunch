@@ -23,6 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-review is recorded as a notice on the run, and a review that predates the
   head is warned about rather than failed on.
 
+### Changed
+
+- **devpod's on-disk layout is one module's, and that module now exists.**
+  `clients::devpod` was the seam for devpod-the-command; devpod-the-filesystem
+  had none, so `<devpod home>/contexts/<ctx>/workspaces/<id>/…` was rebuilt
+  wherever it was needed — four times in `devlaunch-core`'s implementation and
+  four more in its test fixtures, under a comment claiming it was spelled "in one
+  place and not three". `clients::devpod_home::DevpodHome` owns it now, including
+  the one write (`--reconcile` re-points a record's `source.localFolder`, which
+  devpod v0.26.1 offers no subcommand for), and `devlaunch-core`'s new
+  `tests/devpod_layout.rs` fails if any other module in the crate spells it
+  again. `lifecycle::devpod_home()` becomes `DevpodHome::locate()`, and
+  `lifecycle::RepointFailure` moves with the write that raises it;
+  `api::workspace_delete`, `lifecycle::purge_all_data` and
+  `lifecycle::apply_reconciliation` take a `DevpodHome` where they took a bare
+  path. It also takes a test module back out of the crate's internal surface:
+  `flows::lifecycle`'s `mod tests` was `pub(crate)` only so two other flows could
+  import a devpod-home fixture from it, and the fixture now lives with the
+  layout it builds.
+
 ## [0.13.0] - 2026-08-24
 
 ### Changed

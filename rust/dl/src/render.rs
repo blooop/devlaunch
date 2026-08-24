@@ -10,6 +10,7 @@ use std::io;
 use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
@@ -26,8 +27,7 @@ use devlaunch_core::flows::launch::{
 };
 use devlaunch_core::flows::lifecycle::{
     KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
-    VolumeRefusal,
+    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, Unlocatable, VolumeRefusal,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};

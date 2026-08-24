@@ -69,6 +69,7 @@ use crate::clients::devpod::{
     self, Call, ContainerState, ListingUnreadable, NotRun, StatusUnreadable, Workspace,
     WorkspaceSource,
 };
+use crate::clients::devpod_home::{DevpodHome, RepointFailure, sole_workspace_result};
 use crate::clients::docker;
 use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
@@ -82,7 +83,7 @@ use crate::flows::listing::{
 };
 use crate::flows::repo_manager::{
     BACKGROUND_FETCH_TIMEOUT, CacheNotice, Fetched, LazyFetchError, Refusal, Removal,
-    RepositoryManager, present, remove_tree_as_far_as_it_goes, system_words,
+    RepositoryManager, present, remove_tree_as_far_as_it_goes,
 };
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
@@ -974,7 +975,7 @@ pub fn workspace_delete(
     refresh: &mut Refresh<'_>,
     clones: &WorkspaceCloneManager<'_>,
     storage: &mut MetadataStorage,
-    devpod_home: Option<&Path>,
+    devpod_home: Option<&DevpodHome>,
     workspace_id: &str,
     insistence: Insistence,
     notices: &mut dyn Notices<LifecycleNotice>,
@@ -1092,7 +1093,7 @@ fn sweep_volumes(runner: &dyn Runner, named: Option<NonEmpty<String>>) -> Volume
 /// as "removed nothing" — an `up` that died in its lifecycle hooks leaves the
 /// workspace record with no result beside it, which is exactly this case.
 fn devcontainer_volumes(
-    devpod_home: Option<&Path>,
+    devpod_home: Option<&DevpodHome>,
     workspace_id: &str,
 ) -> Option<NonEmpty<String>> {
     let result = sole_workspace_result(devpod_home, workspace_id)?;
@@ -1315,7 +1316,7 @@ impl PurgeOutcome {
 pub fn purge_all_data(
     context: &mut CommandContext<'_>,
     plan: &PurgePlan,
-    devpod_home: Option<&Path>,
+    devpod_home: Option<&DevpodHome>,
     on_step: &mut dyn FnMut(PurgeStep),
 ) -> Result<PurgeOutcome, NotRun> {
     for workspace in &plan.ownership.mine {
@@ -2758,231 +2759,6 @@ fn repository_of(source: &Path, root: &Path) -> Option<(String, String)> {
     Some((owner, repo))
 }
 
-/// The directory devpod keeps its own records in.
-///
-/// Honours `DEVPOD_HOME` for the same reason the rest of dl does: it is what scopes
-/// devpod, and the test suite sets it.
-pub fn devpod_home() -> Option<PathBuf> {
-    match std::env::var_os("DEVPOD_HOME") {
-        Some(home) if !home.is_empty() => Some(PathBuf::from(home)),
-        _ => crate::osext::home_dir().map(|home| home.join(".devpod")),
-    }
-}
-
-/// devpod's own record for one workspace.
-pub(crate) fn devpod_workspace_record(
-    devpod_home: &Path,
-    context: &str,
-    workspace_id: &str,
-) -> PathBuf {
-    devpod_home
-        .join("contexts")
-        .join(context)
-        .join("workspaces")
-        .join(workspace_id)
-        .join("workspace.json")
-}
-
-/// devpod's record of a *completed* create for one workspace.
-///
-/// devpod writes this beside [`devpod_workspace_record`] on its way out of a
-/// successful `up`, and it is where the container's remote user lives
-/// (`.MergedConfig.remoteUser`). A create that died in its lifecycle hooks leaves
-/// the record and no result — which is also why `devpod ssh` into one lands as
-/// root: there is no recorded user for it to become.
-pub(crate) fn devpod_workspace_result(
-    devpod_home: &Path,
-    context: &str,
-    workspace_id: &str,
-) -> PathBuf {
-    devpod_home
-        .join("contexts")
-        .join(context)
-        .join("workspaces")
-        .join(workspace_id)
-        .join("workspace_result.json")
-}
-
-/// Whether devpod finished creating a workspace, as far as its own records say.
-///
-/// Three arms rather than a bool, for the reason [`crate::domain::workspace_state`]
-/// needed three: "no evidence it finished" and "no evidence either way" are
-/// different facts, and only the first is a reason to act. A caller that acted on
-/// the second would rebuild every workspace on a host whose devpod home it cannot
-/// read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CreateRecord {
-    /// devpod wrote its create result, so the workspace was set up.
-    Completed,
-    /// devpod holds a record for this workspace and no result beside it: an `up`
-    /// started and did not finish.
-    NeverCompleted,
-    /// Nothing here can answer — no devpod home, no record under any context, a
-    /// directory that would not read, or one id in two contexts.
-    Unknown,
-}
-
-/// What devpod's own records say about whether this workspace's create finished.
-///
-/// Every context is searched rather than `default` being assumed: ids are unique
-/// per context, [`crate::flows::launch::Placement`] carries no context, and asking
-/// devpod for one would put a second round trip on the warm attach path this
-/// exists to guard. Two contexts holding the same id answer [`CreateRecord::Unknown`]
-/// rather than picking one — the ambiguity is the answer.
-pub(crate) fn create_record(devpod_home: Option<&Path>, workspace_id: &str) -> CreateRecord {
-    let Some(home) = devpod_home else {
-        return CreateRecord::Unknown;
-    };
-    let Some(context) = sole_context_holding(home, workspace_id) else {
-        return CreateRecord::Unknown;
-    };
-    if devpod_workspace_result(home, &context, workspace_id).is_file() {
-        CreateRecord::Completed
-    } else {
-        CreateRecord::NeverCompleted
-    }
-}
-
-/// The one context whose records name this workspace, or nothing when the question
-/// has no single answer.
-///
-/// Nothing for all four ways of not having one: a `contexts` directory that would
-/// not read, no context holding the id, two contexts holding it, and a context
-/// whose name is not UTF-8 (skipped, because a path this cannot spell is one
-/// devpod's own id lookup cannot have written).
-///
-/// Split out of [`create_record`] because [`sole_workspace_result`] has to walk the
-/// contexts *the same way* and read the same ambiguity out of them: the two answer
-/// different questions about one workspace, and a second copy of this loop is how
-/// they would come to disagree about which context that workspace is in.
-fn sole_context_holding(devpod_home: &Path, workspace_id: &str) -> Option<String> {
-    let contexts = std::fs::read_dir(devpod_home.join("contexts")).ok()?;
-    let mut sole: Option<String> = None;
-    for context in contexts.flatten() {
-        // The paths are built by the same pair of helpers `--reconcile` uses, so
-        // devpod's on-disk layout is spelled out in one place and not three.
-        let Some(name) = context.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !devpod_workspace_record(devpod_home, &name, workspace_id).is_file() {
-            continue;
-        }
-        if sole.is_some() {
-            return None;
-        }
-        sole = Some(name);
-    }
-    sole
-}
-
-/// The one `workspace_result.json` this workspace has, if it has exactly one.
-///
-/// devpod rewrites that file on its way out of every *completed* `up`, whoever ran
-/// the `up` — `dl`, VS Code, a hand-typed `devpod up` — which is what makes its
-/// mtime a usable "has this container been rebuilt since?" anchor for
-/// [`crate::flows::provision::verdict_cache`]. The record beside it is not: devpod
-/// writes `workspace.json` on the way *in* and leaves it alone afterwards, so a
-/// container recreated ten times still carries the first create's timestamps.
-///
-/// Nothing rather than a guess in every ambiguous case, because the caller's only
-/// use for the answer is to *skip* work: no devpod home, no record, two contexts
-/// holding the id, or a record with no result beside it (an `up` that died in its
-/// hooks) all mean the same thing to it — there is no file whose mtime can be
-/// trusted to move when this container is rebuilt, so trust nothing.
-pub(crate) fn sole_workspace_result(
-    devpod_home: Option<&Path>,
-    workspace_id: &str,
-) -> Option<PathBuf> {
-    let home = devpod_home?;
-    let context = sole_context_holding(home, workspace_id)?;
-    let result = devpod_workspace_result(home, &context, workspace_id);
-    result.is_file().then_some(result)
-}
-
-/// Why one devpod record could not be re-pointed.
-///
-/// Unreadable and not-JSON are two arms where Python's one `except` clause caught
-/// both: an `OSError` and a decode error read the same to its f-string but not to
-/// a caller, and one `reason: String` could not say which had happened. Both
-/// render through the same sentence, so the split changes no output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RepointFailure {
-    /// devpod's record's bytes could not be read; `reason` is the OS's words.
-    Unreadable { path: PathBuf, reason: String },
-    /// The bytes are not JSON; `reason` is the parser's words.
-    NotJson { path: PathBuf, reason: String },
-    /// Not the shape this repair understands. Refusing is the whole of the
-    /// response: a source key dl cannot read is one it cannot safely replace.
-    NotADevpodRecord { path: PathBuf },
-    /// The rewritten record could not be put in place. devpod's own file is left
-    /// whole: the write goes to a sibling temp file and is renamed over it.
-    Unwritable { path: PathBuf, reason: String },
-}
-
-/// Rewrite one devpod workspace record's source folder.
-///
-/// **devpod's own file, written directly, and that is a decision rather than a
-/// convenience.** devpod v0.26.1 has no subcommand that changes an existing
-/// workspace's source: the surface is build, delete, list, logs, ssh, status, stop
-/// and up, and the only one that sets a source is a create, which needs a container
-/// daemon and would destroy the very record being repaired. So the choice is
-/// between one field of one JSON file and not repairing anything.
-///
-/// Only `source.localFolder` is touched, and the file is rewritten from what devpod
-/// itself last wrote, so every key devpod knows about and dl does not — `uid`,
-/// provider options, timestamps — survives untouched. Written through a temporary
-/// file in the same directory and renamed over the original, so a failure partway
-/// leaves devpod's record whole rather than truncated.
-pub(crate) fn repoint_devpod_source(
-    devpod_home: &Path,
-    adoptable: &Adoptable,
-) -> Result<(), RepointFailure> {
-    let path = devpod_workspace_record(devpod_home, &adoptable.context, &adoptable.workspace_id);
-    let text = std::fs::read_to_string(&path).map_err(|error| RepointFailure::Unreadable {
-        path: path.clone(),
-        reason: system_words(&error),
-    })?;
-    let mut record: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| RepointFailure::NotJson {
-            path: path.clone(),
-            reason: error.to_string(),
-        })?;
-    let Some(source) = record
-        .as_object_mut()
-        .and_then(|record| record.get_mut("source"))
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return Err(RepointFailure::NotADevpodRecord { path });
-    };
-    source.insert(
-        "localFolder".to_owned(),
-        serde_json::Value::String(adoptable.clone.display().to_string()),
-    );
-    // Two-space indentation, as devpod and Python's `json.dumps(…, indent=2)` both
-    // write it: a file two tools take turns rewriting should not churn its shape.
-    let rewritten =
-        serde_json::to_string_pretty(&record).map_err(|error| RepointFailure::Unwritable {
-            path: path.clone(),
-            reason: error.to_string(),
-        })?;
-    let temp = path.with_extension("dl-tmp");
-    if let Err(error) = std::fs::write(&temp, rewritten) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(RepointFailure::Unwritable {
-            path,
-            reason: system_words(&error),
-        });
-    }
-    if let Err(error) = std::fs::rename(&temp, &path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(RepointFailure::Unwritable {
-            path,
-            reason: system_words(&error),
-        });
-    }
-    Ok(())
-}
-
 /// What became of one of the plan's adoptions.
 ///
 /// Each carries its own ending, so a caller reads how an adoption went straight
@@ -3049,13 +2825,17 @@ pub fn apply_reconciliation(
     context: &mut CommandContext<'_>,
     refresh: &mut Refresh<'_>,
     storage: &mut MetadataStorage,
-    devpod_home: &Path,
+    devpod_home: &DevpodHome,
     plan: &ReconcilePlan,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> ReconcileReport {
     let mut adoptions = Vec::new();
     for adoptable in &plan.adopting {
-        if let Err(failure) = repoint_devpod_source(devpod_home, adoptable) {
+        if let Err(failure) = devpod_home.repoint(
+            &adoptable.context,
+            &adoptable.workspace_id,
+            &adoptable.clone,
+        ) {
             adoptions.push(Adoption::Refused {
                 workspace_id: adoptable.workspace_id.clone(),
                 failure,
@@ -3084,7 +2864,7 @@ pub fn apply_reconciliation(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     //! What the lifecycle commands do, at three seams.
     //!
     //! **The argv seam.** Every devpod call's whole argv, through the fake runner,
@@ -3134,6 +2914,7 @@ pub(crate) mod tests {
     use devlaunch_test_support::{FakeRunner, Response};
 
     use super::*;
+    use crate::clients::devpod_home::{ScratchHome, devpod_home_with};
     use crate::clients::{devpod, docker};
     use crate::domain::metadata::MetadataStorage;
     use crate::domain::model::{BaseRepository, Timestamp, WorktreeInfo};
@@ -3141,33 +2922,6 @@ pub(crate) mod tests {
     use crate::flows::repo_manager::tests::{refusing_reads, refusing_writes, run_git};
     use crate::flows::repo_manager::{RefusalReason, RemoveTreeError, bare_dir};
     use crate::flows::workspace_clone::GitLfs;
-
-    /// One devpod home holding whatever these workspaces were left holding.
-    /// `Some(())` writes the create result beside the record; `None` leaves the
-    /// record alone, which is what an aborted `up` leaves behind.
-    ///
-    /// Shared with `flows::provision`'s tests rather than copied into them: the
-    /// layout it builds is devpod's, spelled here beside the helpers that read it
-    /// ([`devpod_workspace_record`], [`devpod_workspace_result`]), and a second
-    /// copy under another module is a fixture that can drift out of agreement with
-    /// the code it is a fixture for.
-    pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> tempfile::TempDir {
-        let home = tempfile::tempdir().expect("a scratch devpod home");
-        for (context, workspace_id, result) in entries {
-            let dir = home
-                .path()
-                .join("contexts")
-                .join(context)
-                .join("workspaces")
-                .join(workspace_id);
-            std::fs::create_dir_all(&dir).expect("a record directory");
-            std::fs::write(dir.join("workspace.json"), "{}").expect("a record");
-            if result.is_some() {
-                std::fs::write(dir.join("workspace_result.json"), "{}").expect("a result");
-            }
-        }
-        home
-    }
 
     /// A devpod home whose create result for `workspace_id` records what devpod
     /// substituted into that workspace's devcontainer.
@@ -3181,9 +2935,9 @@ pub(crate) mod tests {
         workspace_id: &str,
         local_workspace_folder: &str,
         devcontainer_id: &str,
-    ) -> tempfile::TempDir {
+    ) -> ScratchHome {
         let home = devpod_home_with(&[("default", workspace_id, Some(()))]);
-        let result = devpod_workspace_result(home.path(), "default", workspace_id);
+        let result = home.result("default", workspace_id);
         std::fs::write(
             &result,
             serde_json::json!({
@@ -3199,77 +2953,6 @@ pub(crate) mod tests {
         )
         .expect("a create result");
         home
-    }
-
-    #[test]
-    fn a_create_result_beside_the_record_reads_as_completed() {
-        let home = devpod_home_with(&[("default", "myws", Some(()))]);
-        assert_eq!(
-            create_record(Some(home.path()), "myws"),
-            CreateRecord::Completed
-        );
-    }
-
-    /// The shape a `postCreateCommand` that exited non-zero leaves behind: devpod
-    /// wrote the workspace record on the way in and never wrote the result on the
-    /// way out. Measured against devpod 0.26.1.
-    #[test]
-    fn a_record_with_no_result_reads_as_never_completed() {
-        let home = devpod_home_with(&[("default", "myws", None)]);
-        assert_eq!(
-            create_record(Some(home.path()), "myws"),
-            CreateRecord::NeverCompleted
-        );
-    }
-
-    /// Three ways to have no answer, and none of them may read as
-    /// `NeverCompleted` -- each would rebuild a workspace that is perfectly fine.
-    #[test]
-    fn nothing_to_read_reads_as_unknown() {
-        let home = devpod_home_with(&[("default", "other", None)]);
-        assert_eq!(create_record(None, "myws"), CreateRecord::Unknown);
-        assert_eq!(
-            create_record(Some(home.path()), "myws"),
-            CreateRecord::Unknown
-        );
-        let empty = tempfile::tempdir().expect("an empty home");
-        assert_eq!(
-            create_record(Some(empty.path()), "myws"),
-            CreateRecord::Unknown
-        );
-    }
-
-    /// A context directory whose name is not text devlaunch can spell holds no
-    /// record it could have read anyway, so the walk steps over it and the context
-    /// that *does* hold one still answers. Losing the answer to it would rebuild a
-    /// healthy workspace — and, since [`devcontainer_volumes`] shares this walk,
-    /// leave that workspace's volumes on disk for a name nothing was going to read.
-    #[test]
-    fn a_context_directory_nobody_can_spell_does_not_cost_the_others_their_answer() {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        let home = devpod_home_with(&[("default", "myws", Some(()))]);
-        let unspellable = std::ffi::OsStr::from_bytes(b"\xff\xfe-not-utf8").to_os_string();
-        std::fs::create_dir_all(home.path().join("contexts").join(unspellable))
-            .expect("a context directory");
-
-        assert_eq!(
-            create_record(Some(home.path()), "myws"),
-            CreateRecord::Completed
-        );
-    }
-
-    /// Ids are unique per context, not globally, so one id in two contexts is an
-    /// ambiguity rather than a finding. Answering from whichever context the
-    /// directory iteration reached first would rebuild a healthy workspace on the
-    /// strength of a different context's abandoned one.
-    #[test]
-    fn one_id_in_two_contexts_reads_as_unknown() {
-        let home = devpod_home_with(&[("default", "myws", Some(())), ("work", "myws", None)]);
-        assert_eq!(
-            create_record(Some(home.path()), "myws"),
-            CreateRecord::Unknown
-        );
     }
 
     #[test]
@@ -4339,7 +4022,7 @@ pub(crate) mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        purge_all_data(&mut context, &plan, Some(home.path()), &mut |_| {}).expect("devpod ran");
+        purge_all_data(&mut context, &plan, Some(&home), &mut |_| {}).expect("devpod ran");
 
         assert_eq!(
             devpod.docker_argvs(),
@@ -4375,7 +4058,7 @@ pub(crate) mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        purge_all_data(&mut context, &plan, Some(home.path()), &mut |_| {}).expect("devpod ran");
+        purge_all_data(&mut context, &plan, Some(&home), &mut |_| {}).expect("devpod ran");
 
         assert_eq!(devpod.docker_argvs(), Vec::<Vec<String>>::new());
     }
@@ -4397,7 +4080,7 @@ pub(crate) mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        purge_all_data(&mut context, &plan, Some(home.path()), &mut |step| {
+        purge_all_data(&mut context, &plan, Some(&home), &mut |step| {
             steps.push(step)
         })
         .expect("devpod ran");
@@ -4436,7 +4119,7 @@ pub(crate) mod tests {
         let mut context = CommandContext::new(&devpod);
         let plan = purge_plan(&mut context, &cache).expect("a plan");
 
-        let outcome = purge_all_data(&mut context, &plan, Some(home.path()), &mut |step| {
+        let outcome = purge_all_data(&mut context, &plan, Some(&home), &mut |step| {
             steps.push(step)
         })
         .expect("devpod ran");
@@ -5059,7 +4742,7 @@ pub(crate) mod tests {
     /// a test that made them the same could not tell the two sources apart.
     struct Deleting {
         world: World,
-        home: tempfile::TempDir,
+        home: ScratchHome,
         updater: SelfInvocation,
         cache_path: PathBuf,
     }
@@ -5091,7 +4774,7 @@ pub(crate) mod tests {
                 &mut refresh,
                 &clones,
                 &mut self.world.storage,
-                Some(self.home.path()),
+                Some(&self.home),
                 "r-main-aa",
                 Insistence::NotInsisted,
                 &mut notices,
@@ -5285,17 +4968,16 @@ pub(crate) mod tests {
     fn one_id_in_two_contexts_names_nothing() {
         for second_up_finished in [false, true] {
             let home = devpod_home_recording("myws", "/host/clones/opened-as", "dc9a8b7c");
-            let record = devpod_workspace_record(home.path(), "work", "myws");
+            let record = home.record("work", "myws");
             std::fs::create_dir_all(record.parent().expect("a parent"))
                 .expect("a record directory");
             std::fs::write(&record, "{}").expect("a record");
             if second_up_finished {
-                std::fs::write(devpod_workspace_result(home.path(), "work", "myws"), "{}")
-                    .expect("a create result");
+                std::fs::write(home.result("work", "myws"), "{}").expect("a create result");
             }
 
             assert!(
-                devcontainer_volumes(Some(home.path()), "myws").is_none(),
+                devcontainer_volumes(Some(&home), "myws").is_none(),
                 "second context finished its up: {second_up_finished}"
             );
         }
@@ -7117,8 +6799,8 @@ pub(crate) mod tests {
     }
 
     /// devpod's own record for a workspace, in devpod's on-disk shape.
-    fn devpod_record(devpod_home: &Path, workspace_id: &str, source: &Path) -> PathBuf {
-        let path = devpod_workspace_record(devpod_home, "default", workspace_id);
+    fn devpod_record(devpod_home: &DevpodHome, workspace_id: &str, source: &Path) -> PathBuf {
+        let path = devpod_home.record("default", workspace_id);
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("the record directory");
         std::fs::write(
             &path,
@@ -7176,7 +6858,7 @@ pub(crate) mod tests {
         // The join is by path and never by id: the id is what the scheme change moved,
         // and the source path devpod kept still names owner, repo and branch.
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let clone = a_bare_clone_directory(&world.repo_dir.join("r-feature-auth-aaa"));
         world.record("r-feature-auth-aaa", "feature/auth", &clone);
         let old = world.repo_dir.join("feature-auth");
@@ -7201,7 +6883,7 @@ pub(crate) mod tests {
     #[test]
     fn applying_a_plan_repoints_devpods_own_record_and_keeps_its_other_keys() {
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let clone = a_bare_clone_directory(&world.repo_dir.join("r-feature-auth-aaa"));
         world.record("r-feature-auth-aaa", "feature/auth", &clone);
         let old = world.repo_dir.join("feature-auth");
@@ -7253,7 +6935,7 @@ pub(crate) mod tests {
         // A wrongly-adopted workspace costs a rebuild; a wrongly-deleted one costs
         // whatever was in it.
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let old = world.repo_dir.join("no-such-clone");
         devpod_record(&devpod_home, "ws-old", &old);
         world.devpod.lists(&[listed("ws-old", &old)]);
@@ -7288,7 +6970,7 @@ pub(crate) mod tests {
         // both the directory `feature-auth`, so one devpod record can name two
         // branches' clones and a map would hand it whichever was written last.
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let slash = a_bare_clone_directory(&world.repo_dir.join("r-feature-auth-aaa"));
         let colon = a_bare_clone_directory(&world.repo_dir.join("r-feature-auth-bbb"));
         world.record("r-feature-auth-aaa", "feature/auth", &slash);
@@ -7311,7 +6993,7 @@ pub(crate) mod tests {
         // Picking one would be a coin flip decided by listing order, and the loser
         // would still be broken with nothing said about why.
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let clone = a_bare_clone_directory(&world.repo_dir.join("r-main-aaa"));
         world.record("r-main-aaa", "main", &clone);
         let old = world.repo_dir.join("main");
@@ -7341,7 +7023,7 @@ pub(crate) mod tests {
         // Adopting it would point two workspaces at one directory and leave the working
         // one sharing its checkout with a dead one.
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let clone = a_bare_clone_directory(&world.repo_dir.join("r-main-aaa"));
         world.record("r-main-aaa", "main", &clone);
         let old = world.repo_dir.join("main");
@@ -7365,7 +7047,7 @@ pub(crate) mod tests {
     #[test]
     fn running_it_twice_changes_nothing() {
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let clone = a_bare_clone_directory(&world.repo_dir.join("r-main-aaa"));
         world.record("r-main-aaa", "main", &clone);
         let old = world.repo_dir.join("main");
@@ -7407,7 +7089,7 @@ pub(crate) mod tests {
         // devpod's record is re-pointed first and metadata's id written second, and the
         // failure of the first must leave the second alone.
         let mut world = World::empty();
-        let devpod_home = world.tmp().join("devpod");
+        let devpod_home = DevpodHome::at(world.tmp().join("devpod"));
         let clone = a_bare_clone_directory(&world.repo_dir.join("r-main-aaa"));
         world.record("r-main-aaa", "main", &clone);
         let old = world.repo_dir.join("main");
@@ -7443,39 +7125,5 @@ pub(crate) mod tests {
             None,
             "the id is written only once devpod's record says the same thing"
         );
-    }
-
-    #[test]
-    fn a_devpod_record_dl_cannot_read_as_one_is_refused_rather_than_replaced() {
-        let dir = temp_dir();
-        let devpod_home = dir.path().join("devpod");
-        let path = devpod_workspace_record(&devpod_home, "default", "ws");
-        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
-        std::fs::write(&path, r#"{"id": "ws", "source": "a string"}"#).expect("a record");
-        let adoptable = Adoptable {
-            workspace_id: "ws".to_owned(),
-            context: "default".to_owned(),
-            sourced_at: "/gone".to_owned(),
-            clone: dir.path().join("clone"),
-            record: WorktreeInfo::new(OWNER, REPO, "main", dir.path().join("clone"), "r-main-aa"),
-        };
-
-        assert_eq!(
-            repoint_devpod_source(&devpod_home, &adoptable),
-            Err(RepointFailure::NotADevpodRecord { path: path.clone() })
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("still there"),
-            r#"{"id": "ws", "source": "a string"}"#,
-            "a source key dl cannot read is one it cannot safely replace"
-        );
-    }
-
-    #[test]
-    fn a_devpod_home_comes_from_the_environment_or_the_home_directory() {
-        // Honoured for the same reason the rest of dl honours it: it is what scopes
-        // devpod, and the suite sets it.
-        let home = devpod_home().expect("this machine has a home directory");
-        assert!(home.is_absolute(), "{home:?}");
     }
 }

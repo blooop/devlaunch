@@ -4735,7 +4735,7 @@ fi
 
     /// A devpod home, a cache, and the verdict cache over the two of them.
     struct Remembering {
-        devpod_home: tempfile::TempDir,
+        devpod_home: crate::clients::devpod_home::ScratchHome,
         cache: tempfile::TempDir,
     }
 
@@ -4743,7 +4743,7 @@ fi
         /// One workspace, created and finished, as devpod's records leave it.
         fn new() -> Self {
             Self {
-                devpod_home: crate::flows::lifecycle::tests::devpod_home_with(&[(
+                devpod_home: crate::clients::devpod_home::devpod_home_with(&[(
                     "default",
                     "myws",
                     Some(()),
@@ -4755,16 +4755,15 @@ fi
         fn verdicts(&self) -> VerdictCache {
             VerdictCache::under(
                 self.cache.path(),
-                Some(self.devpod_home.path().to_path_buf()),
+                Some(crate::clients::devpod_home::DevpodHome::at(
+                    self.devpod_home.path(),
+                )),
             )
         }
 
         /// devpod completing another `up`, which is a rewritten result file.
         fn brought_up_again(&self) {
-            let result = self
-                .devpod_home
-                .path()
-                .join("contexts/default/workspaces/myws/workspace_result.json");
+            let result = self.devpod_home.result("default", "myws");
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&result)
