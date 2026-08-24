@@ -255,6 +255,33 @@ fn the_title_switch_really_silences_it_on_a_real_pty() {
 }
 
 #[test]
+fn a_falsey_no_tty_leaves_the_terminal_alone_on_a_real_pty() {
+    // One variable, one reading. `aid`'s prompt and the ssh transport are both
+    // gated on `DEVLAUNCH_NO_TTY`, and they used to disagree about what it says:
+    // core lowercased and stripped the value before comparing it against the
+    // falsey words, and `dl`'s own copy of that predicate compared the raw bytes
+    // with a bare `matches!`. So `FALSE` — a spelling a person writes without
+    // thinking, and the one `DEVLAUNCH_NO_TITLE=FALSE` would get right — kept the
+    // pty for the transport and took it away from the prompt.
+    //
+    // Cased *and* padded, because those were two separate halves of the divergence
+    // (`to_lowercase` and `osext::strip`) and either one alone still hides the
+    // other. The banner appearing is the whole assertion: no banner means aid
+    // decided there was no terminal to prompt at.
+    // One world for both spellings rather than one each: these tests are timing
+    // sensitive under a loaded `--workspace` run, and a scenario build is the
+    // expensive half of a case that only needs a warm workspace to prompt about.
+    let world = World::with(&["--warm"]);
+    for value in ["FALSE", " no "] {
+        let mut session = PtyAid::spawn(&world, &[MAIN], &[("DEVLAUNCH_NO_TTY", value)]);
+        session.expect(BANNER);
+        session.send_line("fix the bug");
+        session.expect("aid -> dl");
+        assert_eq!(session.wait(), 0, "DEVLAUNCH_NO_TTY={value:?}");
+    }
+}
+
+#[test]
 fn a_typed_prompt_reaches_the_agent_with_no_shell_in_the_way() {
     // The double quotes are the point: they reach the agent literally, because
     // the prompt never passes through a shell on the host — the escaping pain the
