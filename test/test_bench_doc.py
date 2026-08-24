@@ -52,7 +52,11 @@ from fixtures.markdown_sections import section as _section
 from fixtures.bench_harness import a_reset_from_the_absent_state
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-README = REPO_ROOT / "README.md"
+# The launch-time material moved out of the README into docs/ when the README was
+# cut back to an orientation document. What this file guards is that a reader
+# sent to these commands can run them, not which file they are printed in, so the
+# constant follows the prose rather than the prose being held in place by it.
+README = REPO_ROOT / "docs" / "performance.md"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 SCRIPTS = REPO_ROOT / "scripts"
 

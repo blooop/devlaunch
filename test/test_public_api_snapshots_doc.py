@@ -25,7 +25,11 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "public-api-snapshots.sh"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-README = REPO_ROOT / "README.md"
+# The development material moved out of the README into docs/ when the README was
+# cut back to an orientation document. The guard is about a reader having the
+# canonical-path limit written down somewhere they are sent, not about which file
+# carries it.
+README = REPO_ROOT / "docs" / "development.md"
 RUST = REPO_ROOT / "rust"
 
 # The step whose shell the executable checks at the bottom of this file run.

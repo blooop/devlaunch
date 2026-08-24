@@ -10,7 +10,7 @@ than the devcontainer spec provides, and what a project has to do to meet it.
 container exists. Projects use it to prepare bind-mount targets and to generate
 the `.env` that `docker compose` interpolates.
 
-A project that supports several checkouts at once has to name each one — the
+A project that supports several checkouts at once has to name each one. The
 container name, the compose project name and any per-checkout image tag all have
 to differ, or two branches fight over one container. Such projects normally
 derive that name from the checkout's path. That doesn't work here: devlaunch
@@ -47,7 +47,7 @@ Two consequences for a project that arranges its own GitHub auth:
   in Container*, which do not go through devlaunch; `GH_TOKEN` simply wins over the
   mounted config when both are present.
 - A `GH_TOKEN` the project sets for itself in `containerEnv` or `remoteEnv` is
-  overridden — devpod's workspace env is applied after the devcontainer's own. A
+  overridden, because devpod's workspace env is applied after the devcontainer's own. A
   project that needs its own token there has to name the variable something else,
   or the workspace has to be opened with `DEVLAUNCH_NO_GH_TOKEN=1`.
 
@@ -56,8 +56,8 @@ refuse to act inside the container; the environment variable is the login.
 
 ## Choosing between several devcontainer.json files
 
-Repos that build for more than one target — a second architecture, or a GPU/
-simulator mode on a different compose file — keep several variants. The spec
+Repos that build for more than one target keep several variants: a second
+architecture, or a GPU or simulator mode on a different compose file. The spec
 discovers them at `.devcontainer/<name>/devcontainer.json`, one level deep, so a
 bare name is enough:
 
@@ -69,11 +69,11 @@ dl org/repo --devcontainer ./somewhere-else.json
 A bare name expands to the spec's variant location; anything containing `/` or
 ending in `.json` is used as given. Both are handed to devpod as
 `--devcontainer-path`. (devpod's own `--devcontainer-id` takes a bare variant name
-and looks like the same thing, but is silently ignored in devpod 0.26.1 — it parses
+and looks like the same thing, but is silently ignored in devpod 0.26.1: it parses
 the default config and stores no id.)
 
 **This is a one-time argument.** devpod stores the chosen config with the
-workspace, so later `dl org/repo` calls reuse it — including after a `stop`. Only
+workspace, so later `dl org/repo` calls reuse it, including after a `stop`. Only
 switching an existing workspace to a *different* variant needs a rebuild:
 
 ```bash
@@ -81,7 +81,7 @@ dl org/repo recreate --devcontainer robot
 ```
 
 Note that the spec gives exactly one zero-argument config,
-`.devcontainer/devcontainer.json` — every other location needs an explicit path.
+`.devcontainer/devcontainer.json`, and every other location needs an explicit path.
 A project whose primary workflow is one particular variant should put that
 variant in the root file, not in a subfolder.
 
@@ -92,7 +92,7 @@ a time. Use a second branch-workspace if you want both at once.
 
 devpod re-parses a workspace's `devcontainer.json` when *deleting* it, to tear the
 container down. So if a project moves or renames the config an existing workspace
-points at, `dl <ws> rm` fails — the file it recorded is gone. Recover with:
+points at, `dl <ws> rm` fails, because the file it recorded is gone. Recover with:
 
 ```bash
 devpod delete <ws> --force          # drops devpod's record
@@ -105,7 +105,7 @@ restructuring their variants should expect existing workspaces to need this.
 
 ## Compose projects: what devpod owns
 
-devpod names the compose project itself, from the workspace id — it does not
+devpod names the compose project itself, from the workspace id, and does not
 honour `COMPOSE_PROJECT_NAME` from the project's `.env`. Two consequences for
 compose-based devcontainers:
 
@@ -114,9 +114,9 @@ compose-based devcontainers:
   name) lands in a *different* compose project, so it gets a different default
   network and container-to-container discovery silently fails.
 - Without `runServices` a spec-conforming tool starts **all** services. Compose
-  files that carry an abstract template service — one that exists only to be
-  `extends:`-ed, and is visible because another file `include:`s it — bring that
-  template up as a real container. List the services you actually want.
+  files that carry an abstract template service bring that template up as a real
+  container. Such a service exists only to be `extends:`-ed, and is visible
+  because another file `include:`s it. List the services you actually want.
 
 ## Git LFS
 
