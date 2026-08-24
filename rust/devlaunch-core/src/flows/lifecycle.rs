@@ -3065,10 +3065,20 @@ pub fn apply_reconciliation(
         // The second copy of the id, which is what stops this happening again:
         // after this the workspace is reachable from the record, so the next
         // derivation change costs nothing.
-        let mut record = adoptable.record.clone();
-        record.devpod_workspace_id = Some(adoptable.workspace_id.clone());
-        match storage.add_worktree(record) {
-            Ok(store_notices) => extend_with_store(notices, store_notices),
+        //
+        // Written into the record the metadata lock reloaded rather than into a
+        // copy taken while the plan was being confirmed. The confirmation
+        // prompt puts an unbounded wait between the read and the write, and a
+        // whole-record write would carry every other field back across it.
+        // `Absent` is the workspace having been removed while the plan sat
+        // there, and re-inserting the record would undo that removal.
+        match storage.update_worktree(
+            &adoptable.record.owner,
+            &adoptable.record.repo,
+            &adoptable.record.branch,
+            |record| record.devpod_workspace_id = Some(adoptable.workspace_id.clone()),
+        ) {
+            Ok((_, store_notices)) => extend_with_store(notices, store_notices),
             Err(error) => notices.say(LifecycleNotice::RecordNotDropped {
                 path: adoptable.record.local_path.clone(),
                 refusal: error,

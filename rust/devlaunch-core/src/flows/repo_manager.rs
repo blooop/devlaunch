@@ -1241,15 +1241,10 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        let repository = BaseRepository {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            remote_url: remote_url.to_owned(),
-            local_path: bare.clone(),
-            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(&bare)),
-            last_fetched: Some(Timestamp::now()),
-            worktrees: Vec::new(),
-        };
+        let mut repository = BaseRepository::new(owner, repo, remote_url, bare.clone());
+        repository.default_branch =
+            RecordedDefaultBranch::from_stored(self.default_branch_of(&bare));
+        repository.last_fetched = Some(Timestamp::now());
         let recorded = self.record(storage, repository, notices)?;
         // After the record, as Python logs it: what the line reports is a clone
         // that is both on disk and known about.
@@ -1270,18 +1265,13 @@ impl<'r> RepositoryManager<'r> {
         bare: &Path,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneError> {
-        let repository = BaseRepository {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            remote_url: remote_url.to_owned(),
-            local_path: bare.to_path_buf(),
-            // Read off the adopted clone, not defaulted: a repository whose
-            // default branch is `master` and one this could read nothing at all
-            // from would otherwise get the same answer.
-            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(bare)),
-            last_fetched: Some(Timestamp::now()),
-            worktrees: Vec::new(),
-        };
+        let mut repository = BaseRepository::new(owner, repo, remote_url, bare.to_path_buf());
+        // Read off the adopted clone, not defaulted: a repository whose default
+        // branch is `master` and one this could read nothing at all from would
+        // otherwise get the same answer.
+        repository.default_branch =
+            RecordedDefaultBranch::from_stored(self.default_branch_of(bare));
+        repository.last_fetched = Some(Timestamp::now());
         // The record *is* the point of this call, so a write that fails is the
         // call failing: there is nothing else it accomplished.
         self.record(storage, repository, notices)
@@ -1426,14 +1416,19 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        if let Some(mut recorded) = storage.get_repository(owner, repo).cloned() {
+        // The stamp is the only field this touches, so it moves inside the
+        // metadata lock rather than riding back in a copy of the whole record
+        // taken before the lock existed. `Absent` is the "no record, nothing to
+        // stamp" this used to spell as an `if let Some`, and stays silent for
+        // the same reason: the sweeper is bookkeeping behind a fetch that has
+        // already happened.
+        match storage.update_repository(owner, repo, |recorded| {
             recorded.last_fetched = Some(Timestamp::now());
-            match storage.add_repository(recorded) {
-                Ok(store_notices) => {
-                    notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
-                }
-                Err(error) => return Err(FetchRepoError::NotRecorded(error)),
+        }) {
+            Ok((_, store_notices)) => {
+                notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
             }
+            Err(error) => return Err(FetchRepoError::NotRecorded(error)),
         }
         // Last, where Python logs it: past the fetch and past the bookkeeping, so
         // the line means both are done.
@@ -2233,7 +2228,6 @@ pub(crate) mod tests {
             cloned.last_fetched.is_some(),
             "the sweep's clock starts here"
         );
-        assert!(cloned.worktrees.is_empty());
         assert_eq!(
             cache.storage.get_repository("owner", "repo"),
             Some(&cloned),
