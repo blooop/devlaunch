@@ -159,8 +159,8 @@ pub(crate) fn tty_disabled(value: Option<&str>) -> bool {
 /// binary surface — not part of the frozen wf API (#251 §7)
 ///
 /// The one reading of `DEVLAUNCH_NO_TTY`, because there was briefly more than
-/// one. `dl` gates its own terminal behaviour on the same variable and cannot
-/// reach [`crate::osext`] from outside the crate, so it grew a copy built from
+/// one. `dl` gates its own terminal behaviour on the same variable, could not
+/// reach [`crate::osext`] from outside the crate, and so grew a copy built from
 /// `std::env::var(..).ok()` and a bare `matches!` over the falsey words. The copy
 /// disagreed with this module three ways: `FALSE` and ` no ` were read as
 /// opt-outs because it dropped the lowercasing and [`crate::osext::strip`], and a
@@ -171,6 +171,13 @@ pub(crate) fn tty_disabled(value: Option<&str>) -> bool {
 /// That note is about two *different* hatches answering to one constant, which
 /// would make an edit meant for one silently move the other. This is one hatch
 /// with one reading, which is the thing that was broken.
+///
+/// It stays a function here now that [`crate::osext::env_str`] is reachable from
+/// the binaries, and the reason is arithmetic rather than history: what `dl` asks
+/// is the *decision*, not the value. Composing it out there instead would want
+/// [`tty_disabled`] and [`DISABLE_VAR`] public too — three exported items to say
+/// what one says — and it would put the composition back on the side of the wall
+/// that got it wrong.
 ///
 /// Impure and therefore untested, like [`config_path`] beneath it: the predicate
 /// it wraps is where the spellings are pinned.
