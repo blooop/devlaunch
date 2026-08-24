@@ -66,7 +66,7 @@
 //! terminal. [`pick`] is the interactive half.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -133,27 +133,21 @@ enum Tail {
 /// `--purge` decides ownership by, so they cannot disagree about which workspaces
 /// are dl's.
 pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> {
-    let mut namings = named(workspaces, cache_dir);
-    let mut labels = drawn(&namings);
-    if !all_distinct(&labels) {
-        // A collision the key pass could not see, because the two rows that made it
-        // have different key shapes: a whole-name row drawn `<owner> | <name>` can
-        // equal a split row drawn `<owner> | <repo> | <ref>` when the name is those
-        // last two columns. Rare, and not rare enough to argue away — the argument
-        // would have to be about which names devpod permits, and a row this picker
-        // can act on is not the place to borrow another program's validation.
-        //
-        // Every remaining split goes back to its id, which is what this can offer
-        // and not a promise of distinctness: two workspaces of one id in two devpod
-        // contexts draw one row whatever is done here, because an id is unique per
-        // context and nothing in an `Offer` carries the context. That predates the
-        // columns — `<owner> | <id>` collided the same way — and closing it means
-        // addressing a workspace by more than its id.
-        for naming in &mut namings {
-            naming.tail = Tail::Whole(naming.id.clone());
-        }
-        labels = drawn(&namings);
-    }
+    // One pass, and it is [`named`]'s: a key that is the row's own unpadded text
+    // sees every way two rows can be drawn alike, including the cross-shape case a
+    // whole-name row makes with a split one, and de-splits only the rows that
+    // collided. There used to be a second, whole-list pass here for that case; it
+    // put every split row in the listing back to its id over one ambiguous pair,
+    // and it compared padded labels, so whether it fired at all depended on how
+    // wide some unrelated third row was.
+    //
+    // What is still not promised is distinctness: two workspaces of one id in two
+    // devpod contexts draw one row whatever is done here, because an id is unique
+    // per context and nothing in an `Offer` carries the context. That predates the
+    // columns — `<owner> | <id>` collided the same way — and closing it means
+    // addressing a workspace by more than its id.
+    let namings = named(workspaces, cache_dir);
+    let labels = drawn(&namings);
     workspaces
         .iter()
         .zip(labels)
@@ -181,15 +175,6 @@ fn drawn(namings: &[Naming]) -> Vec<String> {
         .iter()
         .map(|naming| label(naming, owner_width, repo_width))
         .collect()
-}
-
-/// Whether no two of *labels* are the same string.
-///
-/// The property [`chosen`] needs and cannot check for itself: it finds a picked row
-/// by matching its text, first match winning, so two rows drawn alike are a row that
-/// acts on the other one's workspace.
-fn all_distinct(labels: &[String]) -> bool {
-    labels.iter().collect::<HashSet<&String>>().len() == labels.len()
 }
 
 /// How every row wants to be named, with any split that would not have been
@@ -239,23 +224,27 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
     namings
 }
 
-/// What two rows drawn the same have in common, with the field boundaries kept.
+/// What two rows drawn the same have in common: the text of the row itself.
 ///
-/// NUL-delimited for the reason [`syllable_suffix`] joins on it: without a
-/// delimiter no key could tell the repo `a` with ref `bc` from the repo `ab` with
-/// ref `c`, and the padding a label is drawn with is not in the key at all — a
-/// collision is between what the rows *say*, not how wide they were printed.
-///
-/// [`syllable_suffix`]: devlaunch_core::domain::workspace_id
+/// The padding a label is drawn with is deliberately not in the key. A collision is
+/// between what two rows *say*, not how wide they happened to be printed — and
+/// padding is a fact about the widest row in the list, so a key that carried it
+/// would make "are these two rows the same?" depend on a third row that has nothing
+/// to do with either of them.
 fn shared_key(naming: &Naming) -> String {
-    match &naming.tail {
-        Tail::Split { repo, git_ref } => format!("{}\0{repo}\0{git_ref}", naming.owner),
-        // An id is unique within one devpod listing, so a whole-name row can never
-        // share its key — it is counted anyway rather than skipped, so that the one
-        // pass answers for every row and the fallback below has nothing to special-
-        // case.
-        Tail::Whole(name) => format!("{}\0{name}", naming.owner),
-    }
+    // The unpadded label, which is to say: the row's own text, with the widths of
+    // its neighbours taken out. Two rows collide when they *say* the same thing, and
+    // a key built from the fields separately cannot see the collision a two-column
+    // row makes with a three-column one — `<owner> | <name>` equals
+    // `<owner> | <repo> | <ref>` when the name is those last two columns, while the
+    // keys `owner\0name` and `owner\0repo\0ref` differ.
+    //
+    // Asking `label` rather than restating its format is the point: the separator,
+    // the column count and which fields are drawn are decided in exactly one place,
+    // so a change to how a row is drawn cannot leave the key describing the old
+    // drawing. It also makes the NUL delimiter unnecessary — ` | ` is the delimiter,
+    // and it is the one on screen.
+    label(naming, 0, 0)
 }
 
 /// One row, padded into the label skim draws and [`chosen`] reads back.
@@ -852,6 +841,97 @@ mod tests {
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
             Pick::Chose(one_id("devlaunch | main"))
+        );
+    }
+
+    #[test]
+    fn a_wider_third_row_cannot_hide_the_cross_shape_collision() {
+        // The regression `a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row`
+        // pins, made invisible to the guard by a row that has nothing to do with
+        // either of them.
+        //
+        // `all_distinct` was asked of the *padded* labels, and padding is a fact
+        // about the widest row in the list. So a third workspace whose repo is one
+        // character wider than `devlaunch` widens the repo column, the split row
+        // gains one trailing space that the two-column whole-name row does not, the
+        // two labels stop being equal *as strings* -- and the guard, which is
+        // looking for equal strings, does not fire.
+        //
+        // What is on screen is then two rows one space apart, which is the
+        // collision the guard exists to prevent: a person cannot tell them apart,
+        // and `dl rm` is one of the verbs that opens this picker.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "wayfinderx-main-hagilado",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/wayfinderx/wayfinderx-main-hagilado"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache());
+        let labels: Vec<String> = offers.iter().map(|offer| offer.label.clone()).collect();
+
+        // Not `assert_ne!` on the raw strings: they differ by the padding, which is
+        // exactly the difference a person cannot see. Two rows that are the same
+        // once the padding is taken out are two rows drawn alike.
+        let squashed: Vec<String> = labels
+            .iter()
+            .map(|label| label.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_ne!(
+            squashed[0], squashed[1],
+            "two rows a person cannot tell apart: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn a_cross_shape_collision_also_only_pulls_in_the_rows_that_collide() {
+        // The scoping `a_collision_only_pulls_in_the_rows_that_collide` pins for two
+        // split rows, held across the shape boundary too. The whole-name row and the
+        // `main` split row are drawn alike; the `feature/auth` row of the same
+        // repository is not, and keeps its columns.
+        //
+        // The pass this replaced could not do this: it de-split every row in the
+        // listing, so one ambiguous pair put the suffix back on rows that were never
+        // ambiguous.
+        let workspaces = listed(
+            r#"[
+                {"id": "devlaunch-main-zovomobo",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-feature-auth-poliseno",
+                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        assert_eq!(
+            offered(&workspaces, cache())
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            [
+                // Collided with the whole-name row, so it is back to its id.
+                "blooop | devlaunch-main-zovomobo",
+                "blooop | devlaunch | main",
+                // Did not collide with anything, so it keeps its columns.
+                "blooop | devlaunch | feature-auth",
+            ]
         );
     }
 
