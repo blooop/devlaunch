@@ -7,20 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **A workspace brought up with `DEVLAUNCH_NO_ZELLIJ=1` no longer stays without
-  zellij forever.** The verdict cache's marker recorded which container a pass was
-  about and not which switches it ran under, so a pass that skipped the zellij
-  stage still probed *provisioned* — rightly, since the probe is about the tools —
-  and wrote a marker that the next launch, with no variable set, trusted. The trip
-  was skipped, zellij was never installed, and no later top-up could notice,
-  because every one of them read the same marker and skipped the same trip: silent
-  for the life of the container. The marker now carries the switches, and one
-  written under different switches reads as no verdict. A marker from an earlier
-  build has no such field, fails to parse and is therefore untrusted — one
-  redundant round trip on the first launch after upgrading, which is the direction
-  this cache is allowed to be wrong in.
+## [0.13.0] - 2026-08-24
 
 ### Changed
 
@@ -39,6 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pinned `cargo-public-api` exist in one place; see "The public-API snapshots" in README.md.
 
 ### Fixed
+
+- **A workspace brought up with `DEVLAUNCH_NO_ZELLIJ=1` no longer stays without
+  zellij forever.** The verdict cache's marker recorded which container a pass was
+  about and not which switches it ran under, so a pass that skipped the zellij
+  stage still probed *provisioned* — rightly, since the probe is about the tools —
+  and wrote a marker that the next launch, with no variable set, trusted. The trip
+  was skipped, zellij was never installed, and no later top-up could notice,
+  because every one of them read the same marker and skipped the same trip: silent
+  for the life of the container. The marker now carries the switches, and one
+  written under different switches reads as no verdict. A marker from an earlier
+  build has no such field, fails to parse and is therefore untrusted — one
+  redundant round trip on the first launch after upgrading, which is the direction
+  this cache is allowed to be wrong in.
 
 - **The dotfiles refresh's recovery can no longer make a workspace permanently
   unrecoverable.** When `chezmoi update` failed, the retry ran `chezmoi init`
