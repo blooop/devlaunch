@@ -83,14 +83,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than one spanning them all, and a herdr in the container whose version matches
   the host's.
 
-  Two leftovers, both inert. A container that did get the hook keeps
-  `~/.devlaunch/herdr-agent-state.py` and its entries in that container's own
-  `~/.claude/settings.json` until `dl <ws> recreate`, and the socket mount likewise
-  lands and leaves only at creation. Neither does anything: the hook returns
+  **Two leftovers in a workspace created by 0.8.0-0.11.0, and neither is removed by
+  upgrading.** Both land only at creation, so both go on `dl <ws> recreate` and on
+  nothing else. Run that on any workspace you created while 0.8.0-0.11.0 was
+  installed.
+
+  The **hook** — `~/.devlaunch/herdr-agent-state.py` plus its entries in that
+  container's own `~/.claude/settings.json` — is inert *as `dl` now runs*: it returns
   immediately without the variables `aid` no longer sets, and it exits 0 in every
-  state including every failure, which is why it was safe to leave. `DEVLAUNCH_NO_HERDR`
-  is no longer read, so a host that set it needs no change; `DEVLAUNCH_NO_TOOLS` is
-  untouched and still covers the rest of provisioning.
+  state including every failure. It is not inert unconditionally, and the
+  replacement recommended above is what wakes it. `HERDR_ENV`, `HERDR_PANE_ID` and
+  `HERDR_SOCKET_PATH` are herdr's own variables, not `dl`'s, so a
+  `herdr --remote <workspace-id>.devpod` session sets all three itself — and the
+  leftover hook reads them and resumes reporting agent state, from a `dl` that no
+  longer has anything to say about it. Because a reported state overrides herdr's
+  native detection and does not decay, a stale report can pin a badge that the
+  remote server would otherwise have got right.
+
+  The **socket mount** is not inert at all: it is a capability the container still
+  holds. 0.8.0's README said what it grants, and that sentence went out with the
+  feature —
+
+  > Mounting the socket gives the container control of your herdr session — it is
+  > the same socket herdr's own CLI drives, so something in there could open panes
+  > or read other panes' output.
+
+  — which is unchanged for a container that already has the mount. `DEVLAUNCH_NO_HERDR`
+  was the opt-out and is no longer read, so it cannot be turned off after the fact
+  either; `dl <ws> recreate` is the only thing that removes it. `DEVLAUNCH_NO_TOOLS`
+  is untouched and still covers the rest of provisioning.
 
 ## [0.11.0] - 2026-08-23
 

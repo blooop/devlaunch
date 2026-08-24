@@ -832,9 +832,10 @@ On `devpod up`, at most three round trips, each one earning the next.
 
 **1. The setup pass — the only trip a ready workspace ever pays.** One trip
 carries everything the host wants done on the way into a running container: the
-stages first, then the probe. Naming the container — the hostname your shell
-prompt shows — is the one stage today, and it costs nothing extra because the
-probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
+stages first, then the probe. Three stages exist today: naming the container —
+the hostname your shell prompt shows — which always runs, plus zellij's config
+and the terminal title, each of which runs only when its switch is on. They cost
+nothing extra because the probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
 exit status, or *not reached*; one that fails stops neither the stages behind it
 nor the probe, and `dl` says which one it was.
 
