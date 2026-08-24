@@ -649,4 +649,3 @@ for it, `dl --help` and `dl --version`, do not touch it at all.
 
 A branch created on a remote in the last hour may therefore not be offered yet.
 `dl --refresh` rebuilds the cache immediately and ignores the interval.
-
