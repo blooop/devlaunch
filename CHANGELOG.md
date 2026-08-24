@@ -25,10 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to be able to type `zellij attach -c devlaunch` now needs the variable set, once
   in a shell profile, or gets `command not found`.
 
-  Setting it on a workspace that is already up lands the stage on its next
-  `dl <ws> restart`, with no extra machinery: the verdict cache already records
-  which switches a pass ran under, so a launch that wants the stage does not trust
-  a marker written by one that skipped it.
+  Setting it on a workspace that is already up lands the stage on the next
+  `dl <ws> up`, with no restart and no extra machinery: the verdict cache already
+  records which switches a pass ran under, so a launch that wants the stage does
+  not trust a marker written by one that skipped it and the top-up pass travels
+  carrying the stage. A bare `dl <ws>` against a running workspace attaches
+  without a pass, which is the one case that picks nothing up.
 
 - **`DEVLAUNCH_NO_ZELLIJ` is retired.** With skip as the default it had no
   remaining job. A stale `DEVLAUNCH_NO_ZELLIJ=1` in a shell profile is read by

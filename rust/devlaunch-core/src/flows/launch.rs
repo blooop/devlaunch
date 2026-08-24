@@ -4312,18 +4312,18 @@ mod tests {
         // shell that mentions it, and `=0` is what someone who once turned it on
         // writes to turn it back off.
         //
-        // The values walked here are the ones
-        // `provision::tests::the_wrap_and_the_stage_read_one_signal` asks the setup
-        // pass about, so the list is the shared one: this pins what the wrap reads,
-        // that pins that the stage reads the same.
-        for denial in ["", "0", "false", "no", "FALSE", " no "] {
+        // The values are the literal
+        // `provision::tests::the_wrap_and_the_stage_read_one_signal` walks, imported
+        // rather than repeated so the two tests cannot come to walk different lists:
+        // this pins what the wrap reads, that pins that the stage reads the same.
+        for denial in crate::flows::provision::ZELLIJ_DENIALS {
             let host = Host {
                 zellij: Some(denial.to_owned()),
                 ..Host::default()
             };
             assert_eq!(ZellijWrap::from_host(&host), ZellijWrap::Off, "{denial:?}");
         }
-        for consent in ["1", "yes", "true", "beside"] {
+        for consent in crate::flows::provision::ZELLIJ_CONSENTS {
             let host = Host {
                 zellij: Some(consent.to_owned()),
                 ..Host::default()

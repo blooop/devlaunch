@@ -124,6 +124,26 @@ pub(crate) const ZELLIJ_VAR: &str = "DEVLAUNCH_ZELLIJ";
 /// from becoming one escape hatch.
 const FALSEY: [&str; 4] = ["", "0", "false", "no"];
 
+/// The `DEVLAUNCH_ZELLIJ` spellings the wrap and the stage are both asked about.
+///
+/// One literal and not two on purpose. [`tests::the_wrap_and_the_stage_read_one_signal`]
+/// and [`crate::flows::launch::tests::the_zellij_switch_reads_the_same_denials_as_the_others`]
+/// each claim to walk "the same values" as the other, and a claim like that written
+/// as two lists in two files is true on the day it is written and unenforced
+/// afterwards: a value added to one is added to nothing else. Sharing the literal is
+/// what makes the sentence a fact rather than a hope.
+///
+/// Denials and consents apart because the two tests assert different outcomes for
+/// them. `FALSE` and ` no ` are here rather than in [`FALSEY`] itself because they
+/// are what the parse's `to_lowercase` and [`crate::osext::strip`] exist for, and
+/// `beside` because an arbitrary word has to read as a consent.
+#[cfg(test)]
+pub(crate) const ZELLIJ_DENIALS: [&str; 6] = ["", "0", "false", "no", "FALSE", " no "];
+
+/// The counterpart to [`ZELLIJ_DENIALS`]: values that ask for zellij.
+#[cfg(test)]
+pub(crate) const ZELLIJ_CONSENTS: [&str; 4] = ["1", "yes", "true", "beside"];
+
 /// The claude package lives in a personal channel rather than conda-forge.
 pub(crate) const BLOOOP_CHANNEL: &str = "https://prefix.dev/blooop";
 
@@ -4775,20 +4795,22 @@ fi
         // removing, and what it would buy here is the incoherent pair #391 deleted:
         // a session setup that fails and a command that runs anyway. So every value
         // the wrap's own denial/consent list walks is asked of both readers, and
-        // they have to agree.
-        for value in [
-            None,
-            Some(""),
-            Some("0"),
-            Some("false"),
-            Some("no"),
-            Some("FALSE"),
-            Some(" no "),
-            Some("1"),
-            Some("yes"),
-            Some("true"),
-            Some("beside"),
-        ] {
+        // they have to agree. That list is [`ZELLIJ_DENIALS`] and
+        // [`ZELLIJ_CONSENTS`], shared with the wrap's own test rather than written
+        // out again, plus the unset case that no list of strings can hold.
+        //
+        // `ToolsSwitch::Install` throughout, deliberately: this is about one
+        // variable having one reader. `DEVLAUNCH_NO_TOOLS=1` drops the stage while
+        // the wrap still says `Beside`, which is the one remaining way for the two
+        // to disagree and is pinned where it belongs, in
+        // [`the_tools_opt_out_asks_for_no_zellij`].
+        for value in std::iter::once(None).chain(
+            ZELLIJ_DENIALS
+                .iter()
+                .chain(ZELLIJ_CONSENTS.iter())
+                .copied()
+                .map(Some),
+        ) {
             let host = launch::Host {
                 zellij: value.map(str::to_owned),
                 ..launch::Host::default()
@@ -5914,5 +5936,24 @@ fi
             Some(0),
         );
         assert!(!calls.contains("pixi"), "{calls}");
+
+        // What the opt-out does *not* cover, pinned because the page now says so.
+        // `ZellijWrap::from_host` reads `DEVLAUNCH_ZELLIJ` and nothing else, so this
+        // pair still asks for a session in a container that was given no zellij --
+        // the one route left to the incoherent state #391 otherwise deleted. It is
+        // deliberately not fixed here: the attach is `|| true` and the command runs
+        // regardless, and making the wrap read the tools switch too would put a
+        // second reader on the signal `the_wrap_and_the_stage_read_one_signal`
+        // exists to keep single.
+        let host = launch::Host {
+            zellij: Some("1".to_owned()),
+            ..launch::Host::default()
+        };
+        assert_eq!(
+            launch::ZellijWrap::from_host(&host),
+            launch::ZellijWrap::Beside,
+            "the wrap now reads the tools switch; docs/workspace-tools.md's switch subsection \
+             says the residue is still reachable"
+        );
     }
 }

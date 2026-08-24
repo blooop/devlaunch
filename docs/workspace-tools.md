@@ -266,7 +266,11 @@ a stale `DEVLAUNCH_NO_ZELLIJ=1` left in a profile does nothing at all, and in
 particular never turns provisioning back on. Two switches made four combinations of
 which two were incoherent, the worse being "install nothing, then start a session in
 it", which the old page described honestly as a session setup that fails and a
-command that runs anyway. Asking for the capability now gets you all of it.
+command that runs anyway. Asking for the capability now gets you all of it, with one
+residue: `DEVLAUNCH_NO_TOOLS=1` still overrides the install while the session setup
+still runs, so that pair reaches the same incoherent state by the one route left.
+It fails soft the way it always did, and it is a state you have to ask for in two
+variables rather than the default shape of one.
 
 **The command runs beside the session, not inside a pane of it.** That is deliberate.
 Putting the command in a pane would hand its stdin, stdout and exit status to zellij,
@@ -292,11 +296,14 @@ any other and the session is already there when the shell arrives.
 
 ### Existing workspaces
 
-zellij arrives on the setup pass, which runs on every `devpod up`. So setting the
-variable on a workspace that is already up does nothing until its next
-**`dl <workspace> restart`**, and then the stage lands. A full
-`dl <workspace> recreate` also works but is not needed, because nothing here is a
-bind mount and mounts are the thing that only lands at container creation.
+zellij arrives on the setup pass, and **`dl <workspace> up`** runs one against a
+workspace that is already up. So that is all it takes: set the variable, run the
+prewarm verb, and the stage lands on a container that never stopped. A
+`dl <workspace> restart` works too and is the more expensive way to get there,
+because it stops the container and kills whatever was running in it; a full
+`dl <workspace> recreate` is more expensive again and buys nothing here, since
+nothing on this page is a bind mount and mounts are the thing that only lands at
+container creation.
 
 That is not a special case for zellij. dl remembers that a container was found
 provisioned so the next top-up can skip the round trip that found out, and what it
@@ -305,8 +312,9 @@ with what every previous launch recorded, so the remembered answer stops being
 trusted and the pass travels again. Turning it back off costs the same redundant trip
 once, on a pass that then carries no stage at all.
 
-Attaching to a workspace that is *already running* skips `devpod up` and so skips
-this too, which is what makes the restart necessary rather than automatic.
+A bare `dl <workspace>` against a workspace that is *already running* attaches
+straight away and runs no setup pass at all, which is what makes the `up` necessary
+rather than automatic.
 
 ### What it costs
 
@@ -343,7 +351,7 @@ so neither switch touches the hostname stage: a host that wants no zellij has no
 thereby asked for unnamed containers.
 
 Both variables read the same values: anything but empty, `0`, `false` or `no` counts
-as unset. `DEVLAUNCH_ZELLIJ` is a consent and `DEVLAUNCH_NO_TOOLS` a denial, so `=0`
+as set. `DEVLAUNCH_ZELLIJ` is a consent and `DEVLAUNCH_NO_TOOLS` a denial, so `=0`
 means "no zellij" in the first and "install normally" in the second, which is what
 each of them reads as unset.
 

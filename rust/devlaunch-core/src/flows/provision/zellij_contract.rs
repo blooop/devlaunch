@@ -125,14 +125,60 @@ fn the_switch_subsection_says_the_variable_installs_as_well_as_wraps() {
          \"{SWITCH_HEADING}\", found {} -- it was reworded, split or deleted",
         rows.len()
     );
-    let row = rows[0];
-    for half in ["Install", "session"] {
+    let row = rows[0].to_lowercase();
+    // Case-insensitively, because the row's wording is prose and "Install zellij
+    // into the workspace" reworded to open "install `zellij` into the workspace" is
+    // the same claim. A guard whose message says the row does not mention installing
+    // must not fire on a row that does.
+    for half in ["install", "session"] {
         assert!(
             row.contains(half),
             "{CONTRACT_DOC}'s {ZELLIJ_VAR} row does not mention {half:?}; the variable does \
              both, and a reader who believes it does one is surprised by the other"
         );
     }
+}
+
+#[test]
+fn the_value_grammar_calls_a_bare_1_a_consent() {
+    // The one sentence that tells a reader how to switch this on, held against the
+    // switch that decides. It read "anything but empty, `0`, `false` or `no` counts
+    // as *unset*" for a commit, which is the page saying that the only documented
+    // way to ask for the capability reads as not asking for it -- and README says
+    // the same thing in the same words with the opposite ending, so the two pages
+    // disagreed about the grammar they both claim to share.
+    //
+    // Asserted against `requested`, not against README: what makes the sentence
+    // wrong is the code, and a guard that compared the two pages would pass with
+    // both of them wrong.
+    assert_eq!(
+        ZellijSwitch::requested(Some("1")),
+        ZellijSwitch::Install,
+        "{ZELLIJ_VAR}=1 no longer asks for zellij; {CONTRACT_DOC} says a value that is not a \
+         denial counts as set"
+    );
+
+    // The parent section rather than the subsection the paragraph sits in today: it
+    // is a claim about the variable, not about the price, and moving it one heading
+    // up or down does not change what it claims.
+    let whole = reflowed(&section(&contract_doc(), ZELLIJ_HEADING));
+    // Anchored on the denial list itself, which is the durable half of the sentence,
+    // rather than on the phrasing around it.
+    let grammar = whole
+        .split(". ")
+        .find(|sentence| sentence.contains("`0`") && sentence.contains("`false`"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{CONTRACT_DOC}'s \"{ZELLIJ_HEADING}\" no longer states which values read as a \
+                 denial, which is the whole of how a reader turns {ZELLIJ_VAR} on"
+            )
+        });
+    assert!(
+        grammar.contains("as set") && !grammar.contains("as unset"),
+        "{CONTRACT_DOC} states the value grammar with the polarity reversed: a value that is \
+         not a denial counts as *set*, and {ZELLIJ_VAR}=1 is how the feature is asked for. \
+         The sentence read: {grammar:?}"
+    );
 }
 
 #[test]
