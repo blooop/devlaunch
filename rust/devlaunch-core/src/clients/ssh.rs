@@ -172,12 +172,12 @@ pub(crate) fn tty_disabled(value: Option<&str>) -> bool {
 /// would make an edit meant for one silently move the other. This is one hatch
 /// with one reading, which is the thing that was broken.
 ///
-/// It stays a function here now that [`crate::osext::env_str`] is reachable from
-/// the binaries, and the reason is arithmetic rather than history: what `dl` asks
-/// is the *decision*, not the value. Composing it out there instead would want
-/// [`tty_disabled`] and [`DISABLE_VAR`] public too — three exported items to say
-/// what one says — and it would put the composition back on the side of the wall
-/// that got it wrong.
+/// It would stay a function here even if [`crate::osext::env_str`] were reachable
+/// from the binaries, and the reason is arithmetic rather than the crate wall:
+/// what `dl` asks for is the *decision*, not the value. Composing it out there
+/// instead would want [`tty_disabled`] and [`DISABLE_VAR`] exported too — three
+/// items to say what one says — and it would put the composition back on the side
+/// of the wall that got it wrong.
 ///
 /// Impure and therefore untested, like [`config_path`] beneath it: the predicate
 /// it wraps is where the spellings are pinned.
