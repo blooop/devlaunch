@@ -260,7 +260,7 @@ fn a_typed_prompt_reaches_the_agent_with_no_shell_in_the_way() {
     // the prompt never passes through a shell on the host — the escaping pain the
     // editor exists to end.
     let world = World::with(&["--warm"]);
-    let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
+    let mut session = PtyAid::spawn(&world, &["--no-tabs", MAIN], &[]);
     session.expect(BANNER);
     session.send_line("fix the \"flaky\" test");
     session.expect("aid -> dl");
@@ -282,7 +282,7 @@ fn a_pasted_multi_line_prompt_arrives_whole_rather_than_leaking() {
     // the rest queued in the terminal, to land inside the agent's session as
     // keystrokes.
     let world = World::with(&["--warm"]);
-    let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
+    let mut session = PtyAid::spawn(&world, &["--no-tabs", MAIN], &[]);
     session.expect(BANNER);
     // One write, as a terminal delivers a paste: both lines arrive together, so
     // the second is already queued when the first's Enter is read.
@@ -300,7 +300,7 @@ fn a_pasted_multi_line_prompt_arrives_whole_rather_than_leaking() {
 #[test]
 fn an_empty_enter_is_the_plain_session_it_always_was() {
     let world = World::with(&["--warm"]);
-    let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
+    let mut session = PtyAid::spawn(&world, &["--no-tabs", MAIN], &[]);
     session.expect(BANNER);
     session.send_line("");
     assert_eq!(session.wait(), 0);
@@ -319,7 +319,7 @@ fn the_boot_runs_while_the_prompt_is_still_being_typed() {
     // while the editor is still open — nothing has been typed yet — and the
     // attach that follows the Enter finds it running.
     let world = World::with(&["--stopped"]);
-    let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
+    let mut session = PtyAid::spawn(&world, &["--no-tabs", MAIN], &[]);
     session.expect(BANNER);
     assert!(
         wait_for(|| {

@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`aid` runs the agent inside a zellij session, so a second terminal in that
+  container is a keystroke.** Wanting a shell beside a working agent used to mean
+  stopping the agent, or launching the workspace a second time from the host and
+  coming back. Neither is necessary now: the agent runs in a tab and `Alt+t` opens
+  another in the same container, on the same checkout. `--no-tabs` turns it off for a
+  line and `DEVLAUNCH_AID_NO_TABS=1` for every line, both appendable to a recalled
+  one.
+
+  **You still leave the way you always did.** The session is one tab and it closes
+  when the agent does, so quitting the agent ends the session and hands the terminal
+  back. No second tab is opened for you: one would advertise `Alt+t` nicely and would
+  also mean the session outliving the agent on every launch, which is too much to
+  charge for a hint. The agent's exit status survives too — zellij exits `0` whether
+  the agent quit clean or failing, so the session records the real status and `aid`
+  exits with that, keeping the promise `dl <ws> -- cmd` already makes.
+
+  **Every binding is `Alt`, and the config clears zellij's defaults.** This session
+  almost always opens inside a multiplexer that is already running, and the outer one
+  reads every key first, so a session holding `Ctrl t` is a session whose new-tab key
+  never arrives; `Alt` is taken by neither zellij's defaults nor tmux's prefix, so
+  nesting stops being modal and no pass-through mode is needed first. Everything not
+  bound belongs to the agent. `ZELLIJ_CONFIG_FILE` replaces the written config for a
+  container whose zellij is already set up.
+
+  **`--rm` stands the default down rather than colliding with it.** `--rm` deletes the
+  workspace when the session ends and tabs make `Alt+d` one of the ways to end it, so
+  an `aid <ws> <prompt> --rm` runs with no session around it, exactly as it did
+  before. Spelling `--tabs` *and* `--rm` asks for both and is refused by name, since
+  deleting a workspace out from under a working agent is not a tie to break.
+
+  **It costs the feature and not the launch.** No terminal, no `zellij`, or nowhere to
+  write its three files, and the agent runs exactly as it would have before this
+  existed. The session itself is built from a layout (`zellij -s devlaunch -n
+  <layout>`, the only spelling that creates one) rather than from actions against a
+  detached session, and the agent command travels as a file the layout names. Two
+  things follow. Nothing depends on what is focused, where `rename-tab` refuses
+  outright with no client attached. And the prompt is quoted by `shell::quote` and
+  nothing else, where naming the command inside the layout would have put it in a KDL
+  string whose escapes differ between KDL 1 and 2.
+
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota
   refusal *as a review*, so `Sorry @blooop, you have reached your weekly rate
   limit…` arrives in the same shape as a review that found nothing. Twenty-six

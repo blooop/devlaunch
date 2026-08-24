@@ -84,6 +84,11 @@ The agent runs inside a disposable container holding only that one repo, which i
 reasonable to let it work without a permission prompt per tool. See
 [aid](#aid-start-a-coding-agent-in-a-workspace) for the trade that involves.
 
+The agent runs inside a zellij session, so `Alt+t` opens another terminal in that same
+container whenever you want one, without a second launch from the host. Quitting the agent
+still hands the terminal straight back. See
+[a terminal beside the agent](#a-terminal-beside-the-agent), and `--no-tabs` to turn it off.
+
 ### 4. Clearing them out
 
 ![Deleting workspaces from the selector](docs/demo/4-cleanup.gif)
@@ -521,9 +526,13 @@ are unaffected, and `dl <ws> -- claude` still runs exactly what you typed.
 | Option | Description |
 |--------|-------------|
 | `--claude`, `--codex`, `--gemini` | Pick the agent (default: `claude`) |
+| `--tabs` | Run the agent [inside a zellij session in the container](#tabs-a-shell-in-the-same-container-one-keystroke-away), which is the default. `Alt+t` opens another terminal in that container. Saying it explicitly only changes what happens beside `--rm` |
+| `--no-tabs` | Run the agent on its own, with no session around it. Appendable to a recalled line, prompt and all |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
 | `--rm` | Run the agent, then [delete the workspace when the session ends](#--rm-the-throwaway-workspace). Appendable to a recalled line, prompt and all. To delete one *now* instead, that is `dl <ws> rm` |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change the default agent |
+| `DEVLAUNCH_AID_NO_TABS=1` | Turn tabs off for every line |
+| `ZELLIJ_CONFIG_FILE=<path>` | The zellij config the session uses, instead of the one `aid` writes |
 | `DEVLAUNCH_NO_TTY=1` | No prompt question, no pty: the old one-shot behaviour |
 
 Everything after the workspace is the prompt, flags and all, so it never needs
@@ -534,6 +543,82 @@ The agent's CLI has to be installed in the container; `aid` runs it there, it do
 not install it.
 
 ## A terminal beside the agent
+
+Two different wants live under that heading, answered by two different mechanisms.
+Tabs are for **you**: the agent runs in a zellij tab and `Alt+t` gets you a shell in
+the same container. `DEVLAUNCH_ZELLIJ=1` is for the **agent**: it makes sure a session
+exists so a command running unattended can open a pane into it. Both use one session
+named `devlaunch`, so with the second switched on the agent's panes land among your
+own tabs.
+
+### Tabs: a shell in the same container, one keystroke away
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test
+```
+
+That is the whole of it. The agent runs in a tab, and `Alt+t` opens another in the
+same container on the same checkout. Nothing goes back to the host.
+
+| Key | |
+|-----|---|
+| `Alt+t` | New tab |
+| `Alt+n` / `Alt+p` | Next tab, previous tab |
+| `Alt+1` … `Alt+5` | Go to that tab |
+| `Alt+d` | Detach, leaving the agent working |
+
+**Every binding is `Alt`, and that is the point.** This session usually opens inside a
+multiplexer you are already running, and the outer one reads every key first, so a
+session keeping zellij's `Ctrl t` would be a session whose new-tab key never arrives.
+Neither zellij's defaults (`Ctrl p/t/n/h/s/o/g/q`) nor tmux's prefix take `Alt`. The
+config also clears zellij's other bindings outright, so every key that is not in the
+table above belongs to the agent, and you never have to put your outer session into a
+pass-through mode first.
+
+**You leave the way you always did.** The session is one tab, and it closes when the
+agent does, so quitting the agent ends the session and hands the terminal straight
+back. The agent's exit status comes back with it: zellij exits `0` whether the agent
+quit clean or failing, so the session records the real status and `aid` reports that
+instead. Press `Alt+t` and you have opted into a session that outlives the agent,
+which is the point of pressing it.
+
+No second tab is opened for you. One would advertise `Alt+t` nicely and would also
+mean quitting the agent no longer ends the session, which is too much to charge every
+launch for a hint.
+
+**Detaching keeps the agent.** `Alt+d` drops you back on the host with the agent still
+working, and the same `aid` line brings the session back. A dropped connection detaches
+rather than killing the session, so an `aid` that lost its ssh is an `aid` you re-run.
+Running it again while the session is up attaches to it instead of starting a second
+agent beside the first.
+
+**`--no-tabs` turns it off** for one line, appendable to a recalled one the way `--rm`
+is. `DEVLAUNCH_AID_NO_TABS=1` turns it off for every line.
+
+**`--rm` stands the default down rather than colliding with it.** `--rm` deletes the
+workspace when the session ends and tabs make `Alt+d` one of the ways to end it, so the
+two cannot both happen: an `aid <ws> <prompt> --rm` runs with no session around it,
+exactly as it did before tabs existed. Spelling `--tabs` *and* `--rm` on one line asks
+for both and is refused by name, because deleting a workspace out from under a working
+agent is not something to resolve by picking a winner.
+
+**Read the config, or replace it.** It is written to
+`$XDG_CACHE_HOME/devlaunch/tabs.kdl` on each launch. Set `ZELLIJ_CONFIG_FILE` in the
+container and `aid` uses that instead, untouched, which is the way out for a container
+whose zellij is already configured the way its owner wants.
+
+**It never costs you the launch.** Three things are checked before a session is built,
+and failing any of them starts the agent exactly as it would have started before this
+existed: there is a terminal to attach (so a piped run or `DEVLAUNCH_NO_TTY=1` skips
+it), `zellij` is on `PATH`, and the cache directory can be written. Past those checks
+zellij's exit status is the launch's, deliberately, since an installed zellij that
+cannot open a session is a broken container and hiding that helps nobody.
+
+**A workspace with no zellij in it needs one restart first**, for the reason and by the
+route ["Existing workspaces"](#existing-workspaces) below gives. Until then it launches
+the way it always did.
+
+### `DEVLAUNCH_ZELLIJ`: a pane the agent opens for itself
 
 Every workspace `dl` opens also has [zellij](https://zellij.dev) on `PATH`, which
 buys one thing the other tools do not: an agent running in a container can open a

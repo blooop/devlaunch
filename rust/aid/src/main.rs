@@ -90,6 +90,7 @@ fn run(argv: &[String]) -> i32 {
     let parsed = match rewrite::parse_aid_args(
         argv,
         std::env::var(rewrite::AGENT_ENV_VAR).ok().as_deref(),
+        std::env::var(rewrite::NO_TABS_ENV_VAR).ok().as_deref(),
     ) {
         Ok(parsed) => parsed,
         Err(refused) => {
@@ -150,6 +151,11 @@ fn refusal(refused: &UsageError) -> String {
             dl::python_repr(name),
             rewrite::agent_names().join(", ")
         ),
+        UsageError::TabsWithRemoval => "--tabs and --rm ask for opposite things: --rm deletes the \
+             workspace when the session ends, and --tabs makes detaching one of the ways to end \
+             it. Drop the --tabs and the --rm line runs with no session around it, as it always \
+             did; or keep the tabs and delete the workspace afterwards with: dl <workspace> rm."
+            .to_owned(),
     }
 }
 
@@ -169,6 +175,7 @@ fn help() -> String {
         .join(", ");
     let default = rewrite::DEFAULT_AGENT;
     let variable = rewrite::AGENT_ENV_VAR;
+    let tabs = rewrite::NO_TABS_ENV_VAR;
     format!(
         "\
 aid - AI Develop: start a coding agent in a devlaunch workspace
@@ -191,6 +198,21 @@ one-shot, as a prompt on the command line always has.
 Options:
     {agents}
                                      Pick the agent (default: {default})
+    --tabs                           Run the agent inside a zellij session in the
+                                     container, which is the default. Alt+t opens
+                                     another terminal in that same container, Alt+n
+                                     and Alt+p move between them, Alt+d detaches and
+                                     leaves the agent working. Every binding is Alt,
+                                     so a zellij or tmux you are already running on
+                                     the host keeps its own keys. Quitting the agent
+                                     ends the session and hands the terminal back,
+                                     the way it always did. Saying it explicitly only
+                                     changes what happens beside --rm, which the two
+                                     of them cannot both have. Does nothing in a
+                                     container with no zellij, or off a terminal.
+    --no-tabs                        Run the agent on its own, with no session around
+                                     it. Appendable to a recalled line, prompt and
+                                     all.
     --devcontainer <variant|path>    Passed through to dl
     --rm                             Delete the workspace once the agent's session
                                      ends, the way docker run --rm does. Appendable:
@@ -205,11 +227,15 @@ Options:
 
 Environment:
     {variable}=<agent>       Change the default agent
+    {tabs}=1           Turn tabs off for every line
+    ZELLIJ_CONFIG_FILE=<path>         Use this zellij config for --tabs instead of
+                                      the Alt-key one aid writes
 
 Examples:
     aid blooop/devlaunch                       # Start {default} in the workspace
     aid blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
     aid --gemini ./my-project explain this     # Pick a different agent
+    aid --no-tabs blooop/devlaunch fix the bug # No session around the agent
     aid blooop/devlaunch@fix/42 fix the bug --rm
                                                # The line above, recalled, with the
                                                # workspace deleted once the agent is
@@ -246,6 +272,28 @@ mod tests {
         );
         assert!(help.contains("empty Enter"), "{help}");
         assert!(help.contains("DEVLAUNCH_NO_TTY=1"), "{help}");
+    }
+
+    #[test]
+    fn the_help_names_the_tabs_flag_and_the_keys_it_binds() {
+        let help = help();
+
+        assert!(help.contains("--tabs"), "{help}");
+        // The keys are the feature. A flag whose help does not say which key opens
+        // the terminal is a flag nobody opens a terminal with.
+        assert!(help.contains("Alt+t"), "{help}");
+        assert!(help.contains(rewrite::NO_TABS_ENV_VAR), "{help}");
+        assert!(help.contains("ZELLIJ_CONFIG_FILE"), "{help}");
+    }
+
+    #[test]
+    fn the_pair_that_would_delete_a_working_workspace_is_refused_by_name() {
+        let refusal = refusal(&UsageError::TabsWithRemoval);
+
+        assert!(refusal.contains("--tabs"), "{refusal}");
+        assert!(refusal.contains("--rm"), "{refusal}");
+        // And says what to do instead, rather than only what not to do.
+        assert!(refusal.contains("dl <workspace> rm"), "{refusal}");
     }
 
     #[test]

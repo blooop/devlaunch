@@ -239,7 +239,7 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     // dl's own launch of the workspace, and one `devpod ssh --command` carrying the
     // agent. Byte for byte Python's, quoting included — the payload travels in argv.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&[MAIN, "fix", "the", "bug"]);
+    let run = world.aid(&["--no-tabs", MAIN, "fix", "the", "bug"]);
     run.exited(0);
     assert_eq!(
         run.err.lines().collect::<Vec<&str>>(),
@@ -272,7 +272,7 @@ fn no_prompt_starts_the_agents_plain_session() {
     // <ws>` uses, which is what makes aid a rewrite rather than a launcher. (The
     // OpenSSH pty half of that class needs a published ssh alias and is M9's.)
     let world = World::with(&["--warm"]);
-    let run = world.aid(&[MAIN]);
+    let run = world.aid(&["--no-tabs", MAIN]);
     run.exited(0);
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
@@ -310,11 +310,32 @@ fn the_detached_cache_refresh_reaches_dl_through_aids_own_name() {
 }
 
 #[test]
+fn the_default_line_carries_the_whole_session_into_one_devpod_command() {
+    // The other tests in this file say `--no-tabs` so that what they assert is the
+    // agent command rather than the session around it. This one is the session: what
+    // an ordinary `aid <ws> <prompt>` actually hands devpod now.
+    let world = World::with(&["--warm"]);
+    world.aid(&[MAIN, "fix", "the", "bug"]).exited(0);
+    let call = world.devpod_calls().last().expect("a session").clone();
+
+    // One `--command`, whatever newlines the wrapped command carries. dl joins
+    // everything after `--` with spaces, so a command that arrived as several words
+    // would have its heredocs cut apart between them.
+    assert_eq!(call.matches("--command").count(), 1, "{call}");
+    assert!(call.contains("zellij"), "{call}");
+    assert!(call.contains("tabs-layout.kdl"), "{call}");
+    // …and the prompt still reaches the agent as the words that were typed.
+    assert!(call.contains("fix the bug"), "{call}");
+}
+
+#[test]
 fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
     // gemini's initial prompt is a flag that is a syntax error without one, so the
     // flag only appears beside a prompt; codex takes neither a flag nor a variable.
     let world = World::with(&["--warm"]);
-    world.aid(&["--gemini", MAIN, "explain", "this"]).exited(0);
+    world
+        .aid(&["--gemini", "--no-tabs", MAIN, "explain", "this"])
+        .exited(0);
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
@@ -323,14 +344,14 @@ fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
     );
 
     let bare = World::with(&["--warm"]);
-    bare.aid(&["--gemini", MAIN]).exited(0);
+    bare.aid(&["--gemini", "--no-tabs", MAIN]).exited(0);
     assert_eq!(
         bare.devpod_calls().last().expect("a session"),
         &format!("devpod ssh {MAIN} --command bash -lc gemini")
     );
 
     let codex = World::with(&["--warm"]);
-    codex.aid(&["--codex", MAIN, "hi"]).exited(0);
+    codex.aid(&["--codex", "--no-tabs", MAIN, "hi"]).exited(0);
     assert_eq!(
         codex.devpod_calls().last().expect("a session"),
         &format!("devpod ssh {MAIN} --command bash -lc 'codex hi'")
@@ -346,6 +367,7 @@ fn a_dl_option_is_passed_through_and_a_flag_after_the_spec_is_prompt() {
     let run = world.aid(&[
         "--devcontainer",
         "robot",
+        "--no-tabs",
         MAIN,
         "explain",
         "--verbose",
