@@ -1938,6 +1938,20 @@ Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
 naming each subprocess round trip and the total. Unset (or `0`) records nothing
 and prints nothing.
 
+**Every second quoted in this section is one host's session on 2026-08-14, and
+that host was running the Python build `0.1.0` replaced.** The formats are
+current — the stage names are frozen in `rust/devlaunch-core/src/timing.rs` and
+pinned by its tests — but the seconds describe an implementation that no longer
+ships, and no host has measured the Rust binary into this prose. That is
+deliberate rather than a gap to fill by hand: the numbers to trust are the ones
+[the trend on main](#the-trend-on-main) publishes per commit, and it has
+published nothing since the cutover
+([#292](https://github.com/blooop/devlaunch/issues/292)). The Rust build's own
+per-stage decomposition was re-measured nested inside this repo's devcontainer
+([#388](https://github.com/blooop/devlaunch/issues/388)) — docker-in-docker, so
+not a host either: what it carries across is the per-stage arithmetic, not
+anyone's wall clock.
+
 Captured from a real warm launch (the launch's own output elided):
 
 ```bash
@@ -2053,8 +2067,9 @@ build the image pays more, by an amount this recipe does not measure — but the
 gap is large: an earlier 3-run median on this same host, reported as its first
 real launch, was 33.204s.
 
-Every number in the two paragraphs above was copied into this prose by hand.
-`--record` is how that stops: it writes the same invocation as one JSON object
+Every number in the two paragraphs above was copied into this prose by hand,
+which is how they came to outlive the build that produced them. `--record` is
+how that stops: it writes the same invocation as one JSON object
 a trend job can upload without anyone reading it.
 
 ```bash
