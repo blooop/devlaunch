@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use crate::clients::git::{self, Failure, Git, GitRefused};
 use crate::domain::locks::{self, Contention, LockError, LockGuard};
-use crate::domain::metadata::{self, MetadataError, MetadataStorage};
+use crate::domain::metadata::{self, MetadataError, MetadataStorage, RecordUpdate};
 use crate::domain::model::{BaseRepository, RecordedDefaultBranch, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
@@ -1418,17 +1418,24 @@ impl<'r> RepositoryManager<'r> {
 
         // The stamp is the only field this touches, so it moves inside the
         // metadata lock rather than riding back in a copy of the whole record
-        // taken before the lock existed. `Absent` is the "no record, nothing to
-        // stamp" this used to spell as an `if let Some`, and stays silent for
-        // the same reason: the sweeper is bookkeeping behind a fetch that has
-        // already happened.
-        match storage.update_repository(owner, repo, |recorded| {
-            recorded.last_fetched = Some(Timestamp::now());
-        }) {
-            Ok((_, store_notices)) => {
-                notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
-            }
-            Err(error) => return Err(FetchRepoError::NotRecorded(error)),
+        // taken before the lock existed.
+        let (stamped, store_notices) = storage
+            .update_repository(owner, repo, |recorded| {
+                recorded.last_fetched = Some(Timestamp::now());
+            })
+            .map_err(FetchRepoError::NotRecorded)?;
+        notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
+        match stamped {
+            RecordUpdate::Applied => {}
+            // The "no record, nothing to stamp" this used to spell as an `if
+            // let Some`, and silent for the same reason it was silent then: the
+            // sweeper is bookkeeping behind a fetch that has already happened,
+            // and a repository dropped from the store while that fetch ran is
+            // not news about the fetch. Spelled as an arm rather than dropped
+            // with `_`, because a caller that cannot say what it does with an
+            // answer is the shape that turned a no-op into a reported success
+            // in `apply_reconciliation`.
+            RecordUpdate::Absent => {}
         }
         // Last, where Python logs it: past the fetch and past the bookkeeping, so
         // the line means both are done.

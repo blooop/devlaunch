@@ -297,6 +297,13 @@ pub(crate) enum MigrationCommit {
 /// edit, and inserting the record back would turn that run's delete into a row
 /// naming a clone directory that no longer exists. Saying so is what lets a
 /// caller tell "changed" from "there was nothing there".
+///
+/// `#[must_use]` because the first caller written against this dropped the
+/// answer and reported a write that never happened. It is not a guarantee: the
+/// lint fires on a value thrown away whole, and a `_` in the tuple destructure
+/// that actually did it is still silent. What stops that is the two call sites
+/// naming both arms, which is why they do.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecordUpdate {
     /// The edit ran on the reloaded record and the store was saved.
@@ -503,7 +510,13 @@ impl MetadataStorage {
     ///
     /// Nothing is written when the key is absent (#412): a store that inserted
     /// would undo a delete another run had just committed. Like every mutator
-    /// here it is not reentrant — `edit` must not call one.
+    /// here it is not reentrant — `edit` must not call one. Calling one on
+    /// *this* store is a borrow error, so the rule the compiler does not keep
+    /// is the other shape: `edit` capturing a second [`MetadataStorage`] over
+    /// the same file compiles, and then blocks forever, because the lock is one
+    /// flock per open file description and [`super::locks`] waits without a
+    /// timeout. Inherited from [`MetadataStorage::exclusive`] rather than new
+    /// here, and worth naming because this is the first closure `flows` writes.
     pub(crate) fn update_repository(
         &mut self,
         owner: &str,
@@ -2603,6 +2616,70 @@ mod tests {
                 .get_worktree("owner1", "repo1", "branch1")
                 .is_none(),
             "the update found no record and wrote nothing"
+        );
+    }
+
+    #[test]
+    fn an_update_reaches_a_repository_registered_since_this_store_loaded() {
+        // What the sweeper's dropped `if let Some(get_repository(..))` used to
+        // decide off a map loaded minutes and one `git fetch --all` ago: a
+        // repository another run registered in that window read as "not there,
+        // nothing to stamp". The lookup happens under the lock now, on the
+        // reload, so the record it has to find is the one on disk.
+        let dir = temp_dir();
+        let mut updating = quiet_storage(dir.path());
+        let mut other = quiet_storage(dir.path());
+        other
+            .add_repository(repository("owner1", "repo1"))
+            .expect("saved");
+
+        let fetched = Timestamp::from_civil(civil::datetime(2026, 8, 24, 9, 0, 0, 0));
+        let (update, _) = updating
+            .update_repository("owner1", "repo1", |recorded| {
+                recorded.last_fetched = Some(fetched.clone());
+            })
+            .expect("saved");
+
+        assert_eq!(update, RecordUpdate::Applied);
+        let reloaded = quiet_storage(dir.path());
+        assert_eq!(
+            reloaded
+                .get_repository("owner1", "repo1")
+                .expect("the record")
+                .last_fetched
+                .as_ref(),
+            Some(&fetched),
+            "stamped, where the pre-lock lookup would have skipped it"
+        );
+    }
+
+    #[test]
+    fn an_update_does_not_resurrect_a_repository_another_writer_removed() {
+        // The worktree half of this is above; a repository is the other half of
+        // the same rule, and it is the arm the sweeper newly reaches now that
+        // nothing guards the call. A row put back names a bare clone `dl rm`
+        // has already deleted.
+        let dir = temp_dir();
+        let mut seeded = quiet_storage(dir.path());
+        seeded
+            .add_repository(repository("owner1", "repo1"))
+            .expect("saved");
+
+        let mut updating = quiet_storage(dir.path());
+        let mut other = quiet_storage(dir.path());
+        other.remove_repository("owner1", "repo1").expect("saved");
+
+        let (update, _) = updating
+            .update_repository("owner1", "repo1", |recorded| {
+                recorded.last_fetched = Some(Timestamp::now());
+            })
+            .expect("nothing to write and nothing to refuse");
+
+        assert_eq!(update, RecordUpdate::Absent);
+        let reloaded = quiet_storage(dir.path());
+        assert!(
+            reloaded.get_repository("owner1", "repo1").is_none(),
+            "the other run's delete stands"
         );
     }
 
