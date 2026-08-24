@@ -30,6 +30,15 @@ use std::path::PathBuf;
 /// Read an environment variable as a string, lossily, the way `os.environ.get`
 /// does: a value that is present but not valid UTF-8 is `Some` (with U+FFFD for
 /// the undecodable bytes), never `None`.
+///
+/// binary surface -- not part of the frozen wf API (#251 section 7)
+///
+/// The one item of this module the binaries can see, because they have
+/// `DEVLAUNCH_*` variables of their own and no way to spell this reading
+/// correctly for themselves: `aid` read `DEVLAUNCH_AID_AGENT` with
+/// `std::env::var(..).ok()` and so started the default agent for a value it
+/// should have refused by name. It reaches this through `dl`, which re-exports
+/// it beside `shell` and `python_repr`.
 pub fn env_str(name: &str) -> Option<String> {
     from_os(std::env::var_os(name))
 }
@@ -46,7 +55,7 @@ fn from_os(value: Option<OsString>) -> Option<String> {
 /// The set is `char::is_whitespace()` plus U+001C–U+001F (file/group/record/unit
 /// separators), which Python's `str.isspace()` counts and the Unicode
 /// `White_Space` property that backs `str::trim` does not.
-pub fn strip(value: &str) -> &str {
+pub(crate) fn strip(value: &str) -> &str {
     value.trim_matches(is_python_space)
 }
 
@@ -60,7 +69,7 @@ fn is_python_space(c: char) -> bool {
 /// A present `HOME` — even empty — wins: its trailing slashes are stripped and an
 /// empty result becomes `/`, exactly as `expanduser` does. Only an absent `HOME`
 /// consults the password database.
-pub fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     home_from(std::env::var_os("HOME"), std::env::home_dir)
 }
 
@@ -92,7 +101,7 @@ fn home_from(
 /// accepts a file. A directory that does not exist or cannot be written is
 /// skipped rather than returned, so a stale `TMPDIR` cannot cost the caller its
 /// write.
-pub fn temp_dir() -> PathBuf {
+pub(crate) fn temp_dir() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
     for name in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(value) = env_str(name)

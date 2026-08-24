@@ -49,6 +49,16 @@ pub use devlaunch_core::shell;
 /// `dl` quotes what a tool or an environment said.
 pub use render::python_repr;
 
+/// `os.environ.get`, for the entry point that has environment variables of its
+/// own: `aid` reads `DEVLAUNCH_AID_AGENT` through here rather than through
+/// `std::env::var(..).ok()`, which reports a value that is not valid UTF-8 as
+/// *unset* — so an undecodable agent name silently started the default agent
+/// instead of being refused by name. The reading is core's, reached the same way
+/// `shell` and `python_repr` are, because neither half of what makes it right —
+/// the lossy decode, and treating present-but-undecodable as present — can be
+/// spelled correctly outside `devlaunch_core::osext`.
+pub use devlaunch_core::osext::env_str;
+
 /// The version both binaries print, single-sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

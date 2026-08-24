@@ -2277,6 +2277,8 @@ pub trait devlaunch_core::notices::Notices<T>
 pub fn devlaunch_core::notices::Notices::say(&mut self, T)
 impl<T> devlaunch_core::notices::Notices<T> for alloc::vec::Vec<T>
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
+pub mod devlaunch_core::osext
+pub fn devlaunch_core::osext::env_str(&str) -> core::option::Option<alloc::string::String>
 pub mod devlaunch_core::runner
 pub use devlaunch_core::runner::<<devlaunch_runner::*>>
 pub mod devlaunch_core::shell
