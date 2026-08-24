@@ -208,10 +208,10 @@ commit-format = "git commit -a -m'autoformat code' || true"
 #   DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
 build-release = "cargo build --release --locked --manifest-path rust/Cargo.toml -p dl -p aid"
 test = { cmd = "pytest", depends-on = ["build-release"] }
-# Median wall time of a command over N runs; see "Measuring launch time" in README.md.
+# Median wall time of a command over N runs; see "Measuring launch time" in docs/performance.md.
 bench = "python scripts/bench_launch.py"
 # The step between a bench record and the published trend: see "The trend on
-# main" in README.md. The bench workflow runs it; it is a task so that the same
+# main" in docs/performance.md. The bench workflow runs it; it is a task so that the same
 # command can be run by hand against records a developer benched themselves.
 bench-points = "python scripts/bench_points.py"
 # Needs a real Docker daemon and a real devpod. Inside this repo's devcontainer

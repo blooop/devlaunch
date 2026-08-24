@@ -555,7 +555,7 @@ def test_the_feature_and_the_shipping_provisioner_state_one_claude_spec():
     no `claude` binary, the binary is downloaded on first run, so a pin would
     freeze the fetcher and not the thing fetched, and leaving it unpinned is what
     lets every republish refresh it. The argument, with the measurements, is under
-    "What the prebuild tag does not promise" in README.md.
+    "What the prebuild tag does not promise" in docs/development.md.
 
     What this guards is the *asymmetry*, which is why it lives in this file rather
     than beside either half. The installer sits inside the prebuild's hash and the
