@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-review is recorded as a notice on the run, and a review that predates the
   head is warned about rather than failed on.
 
+### Fixed
+
+- **`aid` no longer starts the default agent when `DEVLAUNCH_AID_AGENT` holds a
+  value it cannot decode.** The variable was read through
+  `std::env::var(..).ok()`, which reports a value that is not valid UTF-8 as
+  *unset* — so `DEVLAUNCH_AID_AGENT=$'\xff'` was not a broken agent name, it was
+  no agent name at all. The default agent was chosen, the workspace was opened,
+  and nothing anywhere mentioned the variable that had asked for something else.
+  The `is not a known agent` refusal that `DEVLAUNCH_AID_AGENT=nope` already got
+  was unreachable for exactly the values that cannot be written as a string. The
+  read is a lossy decode now, so the undecodable byte arrives present under
+  U+FFFD: a name to refuse rather than a variable to ignore, refused by name
+  with no devpod call made.
+
 ## [0.13.0] - 2026-08-24
 
 ### Changed
