@@ -2391,11 +2391,18 @@ teeth. So three things satisfy it:
 - the **`no-external-review` label**, for merging with neither.
 
 An author's plain approval is not enough — "lgtm" from the person who wrote the
-code is the thing being guarded against, not a way past it. The author's report
-is identified *before* anything asks whether the text looks like a refusal,
-because a review of this guard quotes those sentences: the first `wf-review`
-report posted under this rule was thrown away as a refusal until the order was
-swapped. A determined author
+code is the thing being guarded against, not a way past it.
+
+Whether a review is a refusal is decided by **who wrote it**, not by what it
+says. Sniffing the prose was wrong twice in opposite directions: matched loosely
+it ate the first `wf-review` report posted under this rule, because a review of
+this guard quotes the refusal sentences; anchored to the `Sorry @` those
+sentences open with, it stopped recognising a refusal that had a leading newline
+— strictly weaker than the loose match it replaced. Only the reviewer can refuse
+on its own behalf, so `REFUSING_LOGINS` is the question asked. The cost is that a
+new external reviewer's refusals go unrecognised until its login is added there,
+which is a config change with a test naming it rather than a regex quietly
+deciding what a refusal looks like. A determined author
 can of course write the provenance line by hand; the guard is against a review
 silently not happening, and skipping one on purpose is what the label is for.
 Merging on a self-review emits a `::notice::` saying so, because it is worth

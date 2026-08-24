@@ -51,17 +51,28 @@ fi
 # second fires on *size*, so it exempts exactly the changes least safe to merge
 # unread.
 #
-# Anchored to the `Sorry @` the bot opens both with, not matched loose. Loose was
-# a real defect: a review *about this guard* quotes those sentences, so the first
-# `wf-review` report posted on the pull request that introduced self-reviews was
-# itself classified as a refusal and thrown away. The reviewer had to misspell
-# them to get a report through. Anchoring is not a complete answer -- see the
-# ordering note below, which is -- but it stops a body that merely mentions a
-# refusal from being read as one.
+# Asked of the *reviewer*, not of the prose. Sniffing the body for those
+# sentences has now been wrong twice in opposite directions: matched loosely it
+# ate a `wf-review` report that quoted them (the report had to misspell them to
+# get through), and anchored to `Sorry @` it stopped recognising a refusal with a
+# leading newline -- strictly weaker than the loose match it replaced. Only the
+# reviewer can refuse on its own behalf, so that is the question asked.
+#
+# The cost is that a *new* external reviewer's refusals go unrecognised until its
+# login is added here. That is a config change with a test naming it, rather than
+# a regex quietly deciding what a refusal looks like.
+REFUSING_LOGINS=${REFUSING_LOGINS:-sourcery-ai[bot]}
+
 is_refusal() {
-  case $1 in
-    "Sorry @"*"you have reached your weekly rate limit"*) return 0 ;;
-    "Sorry @"*"larger than the review limit"*) return 0 ;;
+  local author=$1 body=$2 login
+  local matched=1
+  for login in $REFUSING_LOGINS; do
+    [ "$author" = "$login" ] && matched=0
+  done
+  [ "$matched" -eq 0 ] || return 1
+  case $body in
+    *"you have reached your weekly rate limit"*) return 0 ;;
+    *"larger than the review limit"*) return 0 ;;
   esac
   return 1
 }
@@ -79,14 +90,18 @@ for i in $(seq 0 $((count - 1))); do
   commit=$(jq -r ".[$i].commit // \"\"" <<<"$reviews")
 
   # A review somebody dismissed is a review that was taken back.
+  # A review taken back, and a draft only its author can see. Neither is
+  # somebody having reviewed this pull request.
   [ "$state" = DISMISSED ] && continue
+  [ "$state" = PENDING ] && continue
 
-  # The author's own report is recognised *before* anything asks whether this
-  # text looks like a refusal, because a review of this guard quotes the refusal
-  # sentences and would otherwise be eaten by them. The author plus the
-  # provenance line is a positive identification; nothing about the rest of the
-  # body can make it stop being one.
-  if [ -n "$AUTHOR" ] && [ "$author" = "$AUTHOR" ]; then
+  # The author's own report is recognised first. That ordering was once what
+  # kept a report quoting the refusal sentences from being eaten by them; since
+  # `is_refusal` became a question about the reviewer rather than about prose, it
+  # no longer carries that weight, and reverting it alone breaks no test. It is
+  # kept because "is this the author's own report" is the clearer thing to ask
+  # first, not because anything now depends on the order.
+  if [ "$author" = "$AUTHOR" ]; then
     case $body in
       *"$PROVENANCE"*)
         self_review=$((self_review + 1))
@@ -99,7 +114,7 @@ for i in $(seq 0 $((count - 1))); do
     continue
   fi
 
-  if is_refusal "$body"; then
+  if is_refusal "$author" "$body"; then
     refusals=$((refusals + 1))
     continue
   fi
