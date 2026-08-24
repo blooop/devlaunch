@@ -189,7 +189,7 @@ Four rules follow from that, and all of them are about the hash:
   and the shipping implementation installs the same package unversioned into
   every workspace `dl` opens (`rust/devlaunch-core/src/flows/provision.rs`),
   which a unit test holds this spec against. The whole argument, with the
-  measurements, is under "What the prebuild tag does not promise" in README.md.
+  measurements, is under "What the prebuild tag does not promise" in docs/development.md.
 
 `pixi run devcontainer-prebuild` publishes by hand after `docker login ghcr.io`,
 for the architecture of the machine it runs on; the alias is its one argument and
@@ -199,8 +199,27 @@ The package must be public or the lookup returns DENIED and every launch silentl
 builds locally. It came up public on its own — GHCR gave it the visibility of the
 public repository that published it — so there is nothing to do, but it is worth
 checking rather than trusting, because a private package fails at nothing. See
-"The prebuilt dev container image" in README.md for the check.
+"The prebuilt dev container image" in docs/development.md for the check.
 
 ## Documentation Maintenance
 
 - **Keep README up to date**: When modifying CLI commands, flags, or usage patterns, update the README.md to reflect the current tool behavior. Run `pixi run dl --help` to see the current help output and ensure the README matches.
+
+- **README orients, `docs/` explains.** The README is deliberately short: what
+  `dl` is, the quickstart, the command tables, and one environment-variable
+  table. Depth lives in `docs/` (`cli.md`, `workspaces.md`, `workspace-tools.md`,
+  `cleanup.md`, `performance.md`, `development.md`) and is linked from the README's
+  Docs table. A new paragraph of design rationale belongs in the docs page for its
+  topic, not in the README. Adding a flag still means naming it in the README,
+  because `test/test_readme_cli_doc.py` requires every flag `dl --help` offers to
+  appear there.
+
+- **Some guards read a specific document.** `test_readme_cli_doc.py` reads the
+  README; `test_bench_doc.py` reads `docs/performance.md`;
+  `test_public_api_snapshots_doc.py` reads `docs/development.md`; and the Rust
+  `flows::provision::lending_contract` module reads `docs/workspace-tools.md`,
+  matching on headings. Moving one of those sections between files means moving
+  the path in its guard, in the same change.
+
+- **No em dashes in the README or in `docs/`.** They read as machine-written. Use
+  a full stop or a comma, or end the sentence.

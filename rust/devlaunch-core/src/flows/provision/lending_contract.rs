@@ -1,6 +1,7 @@
-//! The lending contract README publishes, checked against the code that keeps it.
+//! The lending contract the docs publish, checked against the code that keeps it.
 //!
-//! README's "Tools in every workspace" section tells an image author what to bake
+//! `docs/workspace-tools.md`'s "Tools in every workspace" section tells an image
+//! author what to bake
 //! so that a launch does no provisioning work at all. That is the rare piece of
 //! prose in this repository somebody *acts* on — they put it in a Dockerfile — and
 //! the tree can silently invalidate it: rename the constant that spells the
@@ -61,8 +62,15 @@ fn repo_root() -> PathBuf {
         .expect("the repository root")
 }
 
+/// The document carrying the lending contract.
+///
+/// It was README.md until the README was cut back to an orientation document and
+/// the provisioning sections moved to `docs/workspace-tools.md` under the same
+/// three headings. What this file guards is that an image author acting on the
+/// bake recipe is acting on paths `dl` really looks for, which is a property of
+/// the prose wherever it is published, not of the filename.
 fn readme() -> String {
-    read(&repo_root().join("README.md"))
+    read(&repo_root().join("docs/workspace-tools.md"))
 }
 
 fn changelog() -> String {

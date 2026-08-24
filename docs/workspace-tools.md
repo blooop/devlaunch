@@ -82,11 +82,11 @@ resolves to, and where `~/.local/share/claude/versions` in its own home resolves
 to. It reports those and names no verdict; the host reads them, so "a real
 `claude`" is defined in exactly one place. The reading is one of three:
 
-- **provisioned.** `gh` answers on the login PATH and `claude` resolves to a
+- **provisioned**, when `gh` answers on the login PATH and `claude` resolves to a
   binary the official installer put in the versions directory. Nothing else
   happens.
-- **lendable.** Both names answer, but that `claude` is a shim or a wrapper.
-- **absent.** A tool is genuinely missing.
+- **lendable**, when both names answer but that `claude` is a shim or a wrapper.
+- **absent**, when a tool is genuinely missing.
 
 **2. A lend, for *lendable* and *absent*.** `dl` streams its own `gh` and `claude`
 into the container as a tar over the `devpod ssh` channel it already holds: a
