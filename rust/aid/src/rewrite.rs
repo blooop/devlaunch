@@ -732,6 +732,23 @@ const TABS_CONFIG: &[&str] = &[
 /// session that outlives it.
 const TABS_AGENT_TAB: &str = "agent";
 
+/// What a container with no zellij is told, once per launch.
+///
+/// **Silence is the wrong answer here, and finding that out cost a round trip.**
+/// The three pre-checks exist so the flag never costs a launch, and two of them
+/// explain themselves: a piped run has no terminal to say anything to, and a
+/// `--no-tabs` line asked for this. The third does not. zellij arrives on the setup
+/// pass, which runs on `devpod up` and is therefore skipped by every attach to a
+/// workspace that is already running -- so a container that has never been up since
+/// the stage landed has no zellij, and nothing about the launch looks different.
+/// Somebody presses `Alt+t`, nothing happens, and there is no thread to pull.
+///
+/// One line, on stderr, only when a terminal is there to read it, naming the command
+/// that fixes it. It repeats until the workspace is restarted, which is the point:
+/// it is not a warning about a risk, it is a thing to go and do.
+const TABS_NO_ZELLIJ_NOTICE: &str = "devlaunch: no zellij in this workspace, so the agent \
+     has no tabs beside it -- 'dl <workspace> restart' installs it";
+
 /// The word that ends the heredoc carrying the agent command.
 ///
 /// Named rather than written twice, because [`tabs_command`] has to *check* it: the
@@ -816,6 +833,7 @@ pub(crate) fn tabs_command(agent_command: &str) -> String {
     let agent_tab = TABS_AGENT_TAB;
     let status_var = TABS_STATUS_VAR;
     let delimiter = TABS_AGENT_DELIMITER;
+    let notice = shell::quote(TABS_NO_ZELLIJ_NOTICE);
     let config = TABS_CONFIG.join("\n");
     // Newlines and quoted heredocs, not `;` and a `printf` per line, and the reason
     // is the *echo*. dl quotes this whole command back at the terminal on every
@@ -834,6 +852,7 @@ zj() {{ if [ -n \"$dlcfg\" ]; then zellij --config \"$dlcfg\" \"$@\"; else zelli
 dlcfg=\"${{ZELLIJ_CONFIG_FILE:-}}\"
 dldir=\"${{XDG_CACHE_HOME:-$HOME/.cache}}/devlaunch\"
 dltabs=\"\"
+if [ -t 1 ] && ! command -v zellij >/dev/null 2>&1; then echo {notice} >&2; fi
 {status_var}=\"$dldir/tabs-status\"
 export {status_var}
 if [ -t 1 ] && command -v zellij >/dev/null 2>&1 && mkdir -p \"$dldir\" 2>/dev/null; then
@@ -1220,6 +1239,26 @@ mod tests {
         assert!(
             wrapped.contains(&format!("\n{agent}\necho $? > ")),
             "{wrapped}"
+        );
+    }
+
+    #[test]
+    fn a_container_with_no_zellij_is_told_so_rather_than_quietly_doing_nothing() {
+        let wrapped = tabs_command("AGENT");
+
+        // Guarded on *both* halves: a terminal to read it, and zellij actually
+        // missing. A piped run has nobody to tell, and a container that has zellij
+        // has nothing to say.
+        assert!(
+            wrapped.contains("if [ -t 1 ] && ! command -v zellij >/dev/null 2>&1; then echo "),
+            "{wrapped}"
+        );
+        assert!(wrapped.contains(">&2; fi"), "{wrapped}");
+        // …and it names the command that fixes it, because the fix is a thing to go
+        // and do rather than a risk to be aware of.
+        assert!(
+            TABS_NO_ZELLIJ_NOTICE.contains("restart"),
+            "{TABS_NO_ZELLIJ_NOTICE}"
         );
     }
 

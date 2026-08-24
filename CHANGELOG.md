@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before. Spelling `--tabs` *and* `--rm` asks for both and is refused by name, since
   deleting a workspace out from under a working agent is not a tie to break.
 
+  **A container with no zellij says so.** The stage that installs it runs on
+  `devpod up`, and attaching to a workspace that is already running skips both — so
+  a container that has not been up since that stage landed has no zellij, `Alt+t`
+  does nothing, and nothing about the launch looks different. One line on stderr
+  when a terminal is there to read it, naming the `dl <workspace> restart` that
+  fixes it. The other two ways out stay silent, because a piped run has nobody to
+  tell and a `--no-tabs` line asked for this.
+
   **It costs the feature and not the launch.** No terminal, no `zellij`, or nowhere to
   write its three files, and the agent runs exactly as it would have before this
   existed. The session itself is built from a layout (`zellij -s devlaunch -n

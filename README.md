@@ -614,9 +614,16 @@ it), `zellij` is on `PATH`, and the cache directory can be written. Past those c
 zellij's exit status is the launch's, deliberately, since an installed zellij that
 cannot open a session is a broken container and hiding that helps nobody.
 
-**A workspace with no zellij in it needs one restart first**, for the reason and by the
-route ["Existing workspaces"](#existing-workspaces) below gives. Until then it launches
-the way it always did.
+**A workspace with no zellij in it needs one restart first.** zellij arrives on the
+setup pass, which runs on `devpod up`, and attaching to a workspace that is already
+running skips both — so a container that has not been up since the stage landed has
+no zellij, and `Alt+t` does nothing. `dl <workspace> restart` installs it; see
+["Existing workspaces"](#existing-workspaces) below. Until then the launch says so, in
+one line on stderr, and runs the agent the way it always did:
+
+```
+devlaunch: no zellij in this workspace, so the agent has no tabs beside it -- 'dl <workspace> restart' installs it
+```
 
 ### `DEVLAUNCH_ZELLIJ`: a pane the agent opens for itself
 
