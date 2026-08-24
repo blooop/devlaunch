@@ -148,19 +148,6 @@ impl core::fmt::Debug for devlaunch_core::clients::devpod::Workspace
 pub fn devlaunch_core::clients::devpod::Workspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Workspace
 pub mod devlaunch_core::clients::devpod_home
-pub struct devlaunch_core::clients::devpod_home::DevpodHome
-impl devlaunch_core::clients::devpod_home::DevpodHome
-pub fn devlaunch_core::clients::devpod_home::DevpodHome::at(impl core::convert::Into<std::path::PathBuf>) -> Self
-pub fn devlaunch_core::clients::devpod_home::DevpodHome::locate() -> core::option::Option<Self>
-pub fn devlaunch_core::clients::devpod_home::DevpodHome::path(&self) -> &std::path::Path
-impl core::clone::Clone for devlaunch_core::clients::devpod_home::DevpodHome
-pub fn devlaunch_core::clients::devpod_home::DevpodHome::clone(&self) -> devlaunch_core::clients::devpod_home::DevpodHome
-impl core::cmp::Eq for devlaunch_core::clients::devpod_home::DevpodHome
-impl core::cmp::PartialEq for devlaunch_core::clients::devpod_home::DevpodHome
-pub fn devlaunch_core::clients::devpod_home::DevpodHome::eq(&self, &devlaunch_core::clients::devpod_home::DevpodHome) -> bool
-impl core::fmt::Debug for devlaunch_core::clients::devpod_home::DevpodHome
-pub fn devlaunch_core::clients::devpod_home::DevpodHome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::DevpodHome
 pub enum devlaunch_core::clients::devpod_home::RepointFailure
 pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord
 pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord::path: std::path::PathBuf
@@ -181,6 +168,19 @@ pub fn devlaunch_core::clients::devpod_home::RepointFailure::eq(&self, &devlaunc
 impl core::fmt::Debug for devlaunch_core::clients::devpod_home::RepointFailure
 pub fn devlaunch_core::clients::devpod_home::RepointFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::RepointFailure
+pub struct devlaunch_core::clients::devpod_home::DevpodHome
+impl devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::at(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::locate() -> core::option::Option<Self>
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::path(&self) -> &std::path::Path
+impl core::clone::Clone for devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::clone(&self) -> devlaunch_core::clients::devpod_home::DevpodHome
+impl core::cmp::Eq for devlaunch_core::clients::devpod_home::DevpodHome
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::eq(&self, &devlaunch_core::clients::devpod_home::DevpodHome) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::DevpodHome
 pub mod devlaunch_core::clients::gh
 pub enum devlaunch_core::clients::gh::GhEvent
 pub devlaunch_core::clients::gh::GhEvent::CouldNotRun(devlaunch_core::clients::gh::GhUnavailable)

@@ -23,6 +23,9 @@
 //!   the `/tmp` family as the fallback, the way `tempfile.gettempdir()` does. A
 //!   non-existent `TMPDIR` otherwise makes the token-staging file fail to create
 //!   and silently costs the workspace its gh login.
+//! - [`system_words`] reads a failure the way `OSError.strerror` gives it.
+//!   `std::io::Error`'s `Display` appends `" (os error {errno})"`, which is the
+//!   errno repeated at a person who is being shown the path it happened to.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -124,6 +127,31 @@ fn usable(dir: &std::path::Path) -> bool {
             .prefix(".devlaunch-probe-")
             .tempfile_in(dir)
             .is_ok()
+}
+
+/// The system's own words for a failure, as Python's `OSError.strerror` gives
+/// them.
+///
+/// [`std::io::Error`]'s `Display` is `"{strerror} (os error {errno})"` for an OS
+/// error, and the errno is already carried by the arm that holds this string —
+/// where it is carried at all. So the suffix is dropped: the reason is printed to
+/// a person beside the path it is about, and `Permission denied` is the whole of
+/// what they need from it.
+///
+/// It lives here rather than beside its first caller because it is a reading of
+/// the host, like everything else in this module, and because a leaf is the only
+/// place both a flow (`flows::repo_manager`) and a client
+/// (`clients::devpod_home`) may name: the crate's layers run strictly downward,
+/// and a client never names a flow.
+pub fn system_words(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match error.raw_os_error() {
+        Some(errno) => text
+            .strip_suffix(&format!(" (os error {errno})"))
+            .unwrap_or(&text)
+            .to_owned(),
+        None => text,
+    }
 }
 
 #[cfg(test)]

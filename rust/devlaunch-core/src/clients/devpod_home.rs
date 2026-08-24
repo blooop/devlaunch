@@ -17,7 +17,7 @@
 //!
 //! # Reading it is the point; one write is the exception
 //!
-//! Everything here but [`DevpodHome::repoint`] reads. That write is argued for at
+//! Everything here but `DevpodHome::repoint` reads. That write is argued for at
 //! the method, and it is what makes this an adapter rather than a path helper: the
 //! module owns devpod's file format on the way out as well as the way in, so the
 //! flows above it never open one.
@@ -33,7 +33,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::flows::repo_manager::system_words;
+use crate::osext::system_words;
 
 /// The directory devpod keeps its own records in.
 ///
@@ -56,7 +56,7 @@ impl DevpodHome {
     ///
     /// Honours `DEVPOD_HOME` for the same reason the rest of dl does: it is what
     /// scopes devpod, and the test suite sets it. The thin half of the pair — it
-    /// reads the process environment and nothing else, so [`Self::located`] is
+    /// reads the process environment and nothing else, so `Self::located` is
     /// where the cases are pinned.
     pub fn locate() -> Option<Self> {
         Self::located(std::env::var_os("DEVPOD_HOME"), crate::osext::home_dir)
