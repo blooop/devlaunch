@@ -25,13 +25,17 @@
 //! fixed for it. A behaviour change in here belongs in a corpus row first; see
 //! the `conformance` module below.
 //!
-//! Those two are the whole population the corpus has to cover: one per language,
-//! and nothing else in the tree decides a devpod outcome from argv. The
-//! `Runner` wrappers the unit tests define reach *this* machine through
-//! [`FakeRunner`](crate::FakeRunner) rather than faking devpod themselves, and
-//! the ones that answer without consulting argv at all — `flows::provision`'s
-//! `Trips` — are recorders, which is why they are absent here rather than
-//! missing.
+//! Those two are the whole population the corpus has to cover, one per language,
+//! and the reason is what each of the other argv readers is. The `Runner`
+//! wrappers the unit tests define reach *this* machine through
+//! [`FakeRunner`](crate::FakeRunner) rather than faking devpod themselves; the
+//! ones that answer without consulting argv at all — `flows::provision`'s
+//! `Trips` — are recorders, absent here rather than missing. The response table
+//! above is the third argv reader, and it is deliberately outside the corpus: a
+//! scripted entry is one test saying what it wants back from one call, not a
+//! claim about what real devpod does, and pinning it against a fixture would
+//! freeze the exception rather than the behaviour. What the corpus holds is
+//! everything that answers *as devpod*.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
