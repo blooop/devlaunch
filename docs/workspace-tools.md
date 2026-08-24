@@ -320,7 +320,7 @@ It exists because the two questions are different ones. A host whose containers 
 zellij another way, through their own dotfiles, a base image or a devcontainer feature,
 or which wants none in there at all, is asking for one stage to stop running.
 `DEVLAUNCH_NO_TOOLS=1` would do that and also surrender the `gh` and `claude`
-guarantee that the rest of this README is about, which is a large price for one
+guarantee the rest of this page is about, which is a large price for one
 `command -v`.
 
 Both variables read the same values: anything but empty, `0`, `false` or `no` means
@@ -650,7 +650,3 @@ for it, `dl --help` and `dl --version`, do not touch it at all.
 A branch created on a remote in the last hour may therefore not be offered yet.
 `dl --refresh` rebuilds the cache immediately and ignores the interval.
 
----
-
-*Everything above is what it takes to use `dl`. What follows is reference: flags, ids, disk
-accounting, and the internals worth knowing when something surprises you.*

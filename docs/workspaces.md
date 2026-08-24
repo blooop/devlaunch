@@ -150,5 +150,7 @@ by anything, does.
 There is no flag that shares one container across several branches, and none that
 warms a workspace in the background. An earlier revision of this section
 documented `--shared` and `--warm` with worked examples; neither has ever existed
-in the shipped `dl`, which exits 2 on both, and the guard in
-`test/test_readme_cli_doc.py` is why a third cannot appear here unnoticed.
+in the shipped `dl`, which exits 2 on both. `test/test_readme_cli_doc.py` is what
+caught that, by handing every flag the README writes on a `dl` line to the
+binary's own parser. It reads the README and not this page, so the protection
+comes from documenting flags there rather than here.

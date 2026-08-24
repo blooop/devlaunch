@@ -277,7 +277,7 @@ volumes it could be taking.
 
 **It is a sentence, not a measurement.** `dl` runs no `docker` command to print
 it, so there is nothing to be slow and nothing to fail where Docker is absent,
-stopped, or reachable only as another user. The figures above are this README's,
+stopped, or reachable only as another user. The figures above are this page's,
 from the host it was measured on, not from your machine. `docker system df` is
 where yours are.
 

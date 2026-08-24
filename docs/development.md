@@ -178,13 +178,14 @@ rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the con
 order, off one tag; `ci.yml`'s `packaging` job builds the wheel and renders the recipe on every pull
 request, so a broken release is a red tick rather than a surprise.
 
-Two places in this document restate that number, the `dl --version` transcript under
+Two places in the README restate that number, the `dl --version` transcript under
 [Global commands](../README.md#global-commands) and the conda badge at the top, and both are read back
 against `rust/Cargo.toml` by `test/test_readme_cli_doc.py`, so a bump that forgets them is a
 failing test rather than a README advertising a release from last year. That guard reads the
-same file for the flags: every long flag written on a `dl` command line anywhere here is handed
+README for the flags too: every long flag written on a `dl` command line **there** is handed
 to the binary's own parser, which is what makes a documented flag that does not exist a red tick
-too.
+too. It does not read this page, so a `dl` line written here is unguarded prose. Flags belong in
+the README.
 
 The Python half uses [pixi](https://pixi.sh) for environment management.
 
@@ -489,9 +490,9 @@ rejected on four grounds:
   would freeze the fetcher and nothing it fetches.
 - **On the launch path this container is opened by, the baked shim never runs.**
   `dl`'s probe reads a shim-provided `claude` as *lendable* and the lend puts the
-  host's real binary in front of it on the PATH, per "What to bake so a launch does
-  no work at all" above. The shim is baked so that `command -v claude` answers
-  at all.
+  host's real binary in front of it on the PATH, per [What to bake so a launch
+  does no work at all](workspace-tools.md#what-to-bake-so-a-launch-does-no-work-at-all).
+  The shim is baked so that `command -v claude` answers at all.
 - **A pin freezes it harder than no pin does.** Unversioned, the shim is
   refreshed by every republish, which is every commit to `.devcontainer/**`.
   Pinned, it stops at whatever was current the day the pin was written.
