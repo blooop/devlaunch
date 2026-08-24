@@ -291,7 +291,7 @@ fn a_falsey_no_tty_leaves_the_terminal_alone_on_a_real_pty() {
     // agent line straight to dl, so `aid -> dl` arriving with nothing typed is
     // the opt-out working. Waiting for the banner's absence would cost the
     // 60-second deadline on the passing path.
-    let mut opted_out = PtyAid::spawn(&world, &[MAIN], &[("DEVLAUNCH_NO_TTY", "1")]);
+    let opted_out = PtyAid::spawn(&world, &[MAIN], &[("DEVLAUNCH_NO_TTY", "1")]);
     opted_out.expect("aid -> dl");
     assert!(
         !opted_out.text().contains(BANNER),
