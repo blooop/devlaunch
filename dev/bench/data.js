@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787575724770,
+  "lastUpdate": 1787575914459,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -4340,6 +4340,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.154691",
             "unit": "s",
             "extra": "runs=5/5 wall=8.807958s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "943ec2d9fb6a8ac4a08e5886ea081c2d06d0cdd6",
+          "message": "Merge pull request #382 from blooop/fix/verdict-cache-remembers-its-switches\n\nThe verdict cache remembers which switches the pass ran under",
+          "timestamp": "2026-08-24T13:47:49+01:00",
+          "tree_id": "a7063fa6f69961109eaa87c4fffb003d14ef1b1e",
+          "url": "https://github.com/blooop/devlaunch/commit/943ec2d9fb6a8ac4a08e5886ea081c2d06d0cdd6"
+        },
+        "date": 1787575913380,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.358819,
+            "range": "± 0.138535",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.326747,
+            "range": "± 0.002438",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.00004,
+            "range": "± 0.000017",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.687763,
+            "range": "± 0.137797",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.689819s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.246835,
+            "range": "± 0.086128",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 4.089709,
+            "range": "± 0.579951",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.359993,
+            "range": "± 0.015223",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 5.27946,
+            "range": "± 0.113224",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 10.774055,
+            "range": "± 0.47114",
+            "unit": "s",
+            "extra": "runs=5/5 wall=10.776282s v0.26.1, Linux-X64"
           }
         ]
       }
