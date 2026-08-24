@@ -24,7 +24,6 @@ one argument instead of a clone, a config file and a build command.
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 
-
 ## Contents
 
 [Quickstart](#quickstart) · [Install](#install) · [Usage](#usage) · [Commands](#commands) ·
@@ -167,17 +166,25 @@ kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-su
 -               | myproject
 ```
 
-A workspace `dl` did not clone has no owner or repo to read, so it keeps devpod's name for it and
-a dash where the owner would go. The branch column is the branch as the workspace id spells it,
-which is slugged and shortened, so it is not always retypeable. Pick the row rather than copying
-it; the row carries the real id underneath.
+The search bar is the top line and the matches read downward from it, so the first match is the
+row nearest what you are typing. A workspace `dl` did not clone has no owner or repo to read, so
+it keeps devpod's name for it and a dash where the owner would go. The branch column is the
+branch as the workspace id spells it, which is slugged and shortened, so it is not always
+retypeable. Pick the row rather than copying it; the row carries the real id underneath. Where
+two rows would read alike, both fall back to their full ids so that picking one cannot delete the
+other.
 
 For the verbs that finish on their own (`up`, `stop`, `rm`, `code`, `dotfiles`) TAB marks any
-number of rows and Enter applies the verb to each. The forms that end in a session (`dl`,
-`-- <command>`, `restart`, `recreate`, `reset`) take exactly one.
+number of rows and Enter applies the verb to each, and the line above the matches says so. The
+forms that end in a session (`dl`, `-- <command>`, `restart`, `recreate`, `reset`) take exactly
+one.
 
 A reserved verb wins over a workspace of the same name: `dl stop` opens the selector to stop
 something rather than looking for a workspace called `stop`.
+
+The selector needs a terminal. Redirect `dl`'s input away from one and it declines to open a
+selector rather than hanging or picking for you, so a script never blocks on a prompt nobody is
+there to answer. [docs/cli.md](docs/cli.md) has the rest.
 
 ## Commands
 
@@ -221,7 +228,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --install` | Install shell completions |
 | `dl --refresh` | Rebuild the completion cache now |
 | `dl --version` | Print the version |
-| `dl --help` | Print help |
+| `dl --help`, `-h` | Print help |
 
 `--prune`, `--reconcile` and `--purge` print their plan and ask first. `-y` skips the question,
 and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere else.
@@ -261,7 +268,8 @@ included, so it never needs quoting.
 
 With no prompt on the line, `aid` starts the container booting and asks for the prompt while it
 does. Type it free of shell quoting, with no escaping and no history expansion eating a `!`. An
-empty Enter starts the agent's plain session.
+empty Enter starts the agent's plain session. Piping stdin or setting `DEVLAUNCH_NO_TTY=1` skips
+the question and launches one-shot, so scripts behave as they always have.
 
 | Option | What it does |
 |---|---|
@@ -272,10 +280,14 @@ empty Enter starts the agent's plain session.
 **The trade, stated plainly.** `claude` starts with `--dangerously-skip-permissions`, because the
 agent is already inside a disposable container holding only this repo, and the per-tool prompts
 would stall an unattended run. `IS_SANDBOX=1` rides along because `claude` otherwise refuses that
-flag under `uid 0`, and devcontainers that run as root are ordinary.
+flag under `uid 0`, and devcontainers that run as root are ordinary. That variable is scoped to
+the agent process and is not exported into your shell.
 
 The agent cannot reach your host, but it can rewrite the checkout it is in. Review an `aid`
 workspace before pushing rather than treating it as a sandbox that will stop the agent for you.
+
+This applies to `aid` starting `claude` and nothing else. `--codex` and `--gemini` are unaffected,
+and `dl <ws> -- claude` runs exactly what you typed.
 
 The agent's CLI has to be in the container already. `aid` runs it; it does not install it.
 
@@ -350,7 +362,7 @@ re-decides a mount.
 
 | Page | What is in it |
 |---|---|
-| [docs/cli.md](docs/cli.md) | The `--rm` contract, which exits fire it, and the retired spellings |
+| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, retired spellings, devpod exit codes |
 | [docs/workspaces.md](docs/workspaces.md) | How workspace ids are derived, and how fresh a launch is |
 | [docs/workspace-tools.md](docs/workspace-tools.md) | GitHub auth, `gh` and `claude`, zellij, terminal titles, the pixi cache |
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |

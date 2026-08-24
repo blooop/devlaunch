@@ -1,8 +1,31 @@
 # The command line, in full
 
-[README](../README.md) has the commands you need. This page is the rest: what
-`--rm` promises and where it stops, which exits fire it, and the spellings that
-were retired and what they say now.
+[README](../README.md) has the commands you need. This page is the rest: how the
+selector decides what you picked, which commands get a terminal, what `--rm`
+promises and where it stops, which exits fire it, the spellings that were retired
+and what they say now, and what happens when devpod is missing or will not answer.
+
+## The selector
+
+The selector is built in. There is no `fzf` on `PATH` and no `iterfzf`, which is
+why there is nothing to install for it, and why `dl` with its input redirected
+away from a terminal simply declines to open one.
+
+Each row is the [workspace id](workspaces.md#workspace-ids) read apart, with the
+hashed suffix left off. The suffix is there to keep two branches from sharing an
+id, and reading it is no part of choosing a workspace.
+
+**The right-hand column is the branch as the id spells it, which is not always the
+branch.** It is slugged, so `feature/auth` reads as `feature-auth`, and a long one
+is shortened. That is why the row is three columns and not `owner/repo@branch`:
+the latter reads like something you could retype, and retyping a slugged branch
+name can address a different workspace. To act on what you picked, pick it.
+
+Two branches can therefore share the middle and right columns: `feature/auth` and
+`feature-auth` read alike. When that happens **both** rows go back to their full
+ids, suffix and all, because the row's own text is how `dl` knows which workspace
+you picked, and two rows reading the same would be one workspace deleted in place
+of another. The suffix appears exactly where it is doing work.
 
 ## Commands that need a terminal
 
