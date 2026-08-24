@@ -16,6 +16,15 @@
 //! mode, window size, SIGWINCH) rather than a pty proxy devlaunch would have to
 //! reimplement.
 //!
+//! Which file that alias is *in* travels with the invocation rather than being
+//! looked up twice. devpod publishes into one of four places ([`config_path`]) and
+//! OpenSSH reads none of the environment that names them — it resolves the default
+//! user config through `getpwuid(getuid())` — so the file [`config_path`] chose is
+//! handed to ssh as `-F`, and [`command_args`] cannot be called without it.
+//! Deciding the alias exists and being able to use it are then one fact again,
+//! which they stopped being the moment `config_path` grew past `~/.ssh/config`
+//! (devlaunch#421).
+//!
 //! # What this module decides
 //!
 //! Only whether the transport is available and what the argv is. Which transport
@@ -77,8 +86,8 @@ pub enum UnsafeRequest {
     /// beginning with a dash is read as a flag — and `-o ProxyCommand=…` is
     /// arbitrary command execution on the host. devpod's own ids cannot look like
     /// that (a workspace id starts with a word character) and neither can the
-    /// `~/.ssh/config` entry this is gated on, so reaching here means something
-    /// upstream is already wrong.
+    /// config entry this is gated on, so reaching here means something upstream is
+    /// already wrong.
     OptionLikeWorkspaceId { workspace_id: String },
     /// The working directory cannot be made into a shell word, because it holds a
     /// NUL. Python has no such refusal — `shlex.quote` wraps it and the remote
@@ -94,6 +103,26 @@ pub(crate) fn host_alias(workspace_id: &str) -> String {
 
 /// Build the OpenSSH invocation that runs `command` under a pty.
 ///
+/// `config` is required, and it is the whole reason this function takes a path at
+/// all. OpenSSH reads **neither** [`CONFIG_VAR`] nor `$HOME`: it resolves the
+/// default user config through `getpwuid(getuid())`, so the file dl decided the
+/// alias existed in is not the file ssh would look in — a bare `ssh <alias>` on a
+/// host that sets `DEVPOD_SSH_CONFIG` fails with `Could not resolve hostname` at
+/// exit 255. `-F` is the only thing that closes that, so the config travels here
+/// from the state that found the alias and there is no invocation to build
+/// without it. Measured on OpenSSH_9.6p1; the same fact is why the e2e suite no
+/// longer needs an `ssh` shim.
+///
+/// The trade `-F` makes, stated because it is a real one: OpenSSH reads the named
+/// file *instead of* `~/.ssh/config` **and** skips `/etc/ssh/ssh_config`, so a
+/// `Host *` block of the user's own does not apply to this session. Taken
+/// deliberately. dl cannot tell whether ssh would have read the file it read —
+/// `$HOME` and `getpwuid`'s home are allowed to differ, which is exactly the case
+/// the e2e suite creates — so a conditional `-F` would be a guess, and guessing
+/// wrong costs the command rather than a config option. devpod's own block is
+/// self-contained (`ProxyCommand`, `User`, `StrictHostKeyChecking`), so a session
+/// built from it alone is a complete one.
+///
 /// `send_env` names variables only. OpenSSH reads their values from its own
 /// environment, so a forwarded token never appears in argv where `ps` would show
 /// it to every other user on the host — the same discipline
@@ -104,6 +133,7 @@ pub(crate) fn host_alias(workspace_id: &str) -> String {
 /// devcontainer.json is the right default, and `cd '' &&` would fail for no
 /// reason.
 pub(crate) fn command_args(
+    config: &Path,
     workspace_id: &str,
     command: &str,
     send_env: &[String],
@@ -114,7 +144,12 @@ pub(crate) fn command_args(
             workspace_id: workspace_id.to_owned(),
         });
     }
-    let mut args = vec![PROGRAM.to_owned(), "-t".to_owned()];
+    let mut args = vec![
+        PROGRAM.to_owned(),
+        "-F".to_owned(),
+        config.display().to_string(),
+        "-t".to_owned(),
+    ];
     for name in send_env {
         args.push("-o".to_owned());
         args.push(format!("SendEnv={name}"));
@@ -327,17 +362,23 @@ mod tests {
             .collect()
     }
 
+    /// The config every argv test names, so `-F` is visible in each of them.
+    const A_CONFIG: &str = "/scratch/ssh_config";
+
     fn args_for(workspace_id: &str, command: &str) -> Vec<String> {
-        command_args(workspace_id, command, &[], None).expect("a well-formed request")
+        command_args(Path::new(A_CONFIG), workspace_id, command, &[], None)
+            .expect("a well-formed request")
     }
 
     // ------------------------------------------------- the OpenSSH invocation
 
     #[test]
     fn the_whole_argv_is_what_dl_hands_to_openssh() {
-        // The argv *is* the contract: `-t` before the alias, the alias
-        // positionally, one payload argument last.
+        // The argv *is* the contract: `-F` naming the config the alias was found
+        // in, `-t` before the alias, the alias positionally, one payload argument
+        // last.
         let args = command_args(
+            Path::new("/scratch/ssh_config"),
             "devlaunch-main-abcdefgh",
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
@@ -349,6 +390,8 @@ mod tests {
             args,
             vec![
                 "ssh".to_owned(),
+                "-F".to_owned(),
+                "/scratch/ssh_config".to_owned(),
                 "-t".to_owned(),
                 "-o".to_owned(),
                 "SendEnv=GH_TOKEN".to_owned(),
@@ -356,6 +399,36 @@ mod tests {
                 "cd /workspaces/devlaunch && bash -lc claude".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn openssh_is_pointed_at_the_config_the_alias_was_found_in() {
+        // The defect this signature exists to make unrepresentable. dl decides
+        // `Usable` by reading one file; OpenSSH resolves the alias through
+        // `getpwuid`'s `~/.ssh/config` and reads neither `$DEVPOD_SSH_CONFIG` nor
+        // `$HOME`. Reproduced on OpenSSH_9.6p1 with the alias only in
+        // `$DEVPOD_SSH_CONFIG`: bare `ssh -t <alias> true` is `Could not resolve
+        // hostname`, exit 255, while `-F <that file>` resolves it -- so before the
+        // `-F`, `dl <ws> -- <cmd>` at a terminal did not run at all on the hosts
+        // devlaunch#421 was about. `config` is a parameter rather than something
+        // this function looks up, because a second lookup is a second chance to
+        // disagree with the first.
+        for config in ["/scratch/ssh_config", "/home/dev/.ssh/config"] {
+            let args = command_args(Path::new(config), "myws", "true", &[], None)
+                .expect("a well-formed request");
+
+            let flag = args
+                .iter()
+                .position(|arg| arg == "-F")
+                .unwrap_or_else(|| panic!("no -F in {args:?}"));
+            assert_eq!(args.get(flag + 1).map(String::as_str), Some(config));
+            // Before the alias, or ssh reads it as part of the remote command.
+            let host = args
+                .iter()
+                .position(|arg| arg == "myws.devpod")
+                .expect("the alias is there");
+            assert!(flag + 1 < host, "{args:?}");
+        }
     }
 
     #[test]
@@ -401,8 +474,14 @@ mod tests {
     #[test]
     fn send_env_names_variables_without_their_values() {
         // The token must reach the container through the environment, not argv.
-        let args = command_args("myws", "bash -lc claude", &["GH_TOKEN".to_owned()], None)
-            .expect("a well-formed request");
+        let args = command_args(
+            Path::new(A_CONFIG),
+            "myws",
+            "bash -lc claude",
+            &["GH_TOKEN".to_owned()],
+            None,
+        )
+        .expect("a well-formed request");
 
         assert!(args.contains(&"SendEnv=GH_TOKEN".to_owned()), "{args:?}");
         assert!(!args.iter().any(|arg| arg.contains("secret")));
@@ -421,8 +500,14 @@ mod tests {
     #[test]
     fn a_workdir_becomes_a_cd_inside_the_payload() {
         // ssh has no --workdir, so a directory has to travel in the command.
-        let args = command_args("myws", "bash -lc make", &[], Some("/workspaces/myws"))
-            .expect("a well-formed request");
+        let args = command_args(
+            Path::new(A_CONFIG),
+            "myws",
+            "bash -lc make",
+            &[],
+            Some("/workspaces/myws"),
+        )
+        .expect("a well-formed request");
 
         let payload = args.last().expect("a payload");
         assert!(
@@ -434,8 +519,14 @@ mod tests {
 
     #[test]
     fn a_workdir_with_spaces_is_quoted_for_the_remote_shell() {
-        let args = command_args("myws", "bash -lc make", &[], Some("/a dir/with space"))
-            .expect("a well-formed request");
+        let args = command_args(
+            Path::new(A_CONFIG),
+            "myws",
+            "bash -lc make",
+            &[],
+            Some("/a dir/with space"),
+        )
+        .expect("a well-formed request");
 
         assert!(
             args.last()
@@ -457,8 +548,14 @@ mod tests {
             ),
             ("/srv/a@b%c", "cd /srv/a@b%c && bash -lc make"),
         ] {
-            let args = command_args("myws", "bash -lc make", &[], Some(workdir))
-                .expect("a well-formed request");
+            let args = command_args(
+                Path::new(A_CONFIG),
+                "myws",
+                "bash -lc make",
+                &[],
+                Some(workdir),
+            )
+            .expect("a well-formed request");
 
             assert_eq!(args.last().expect("a payload"), expected);
         }
@@ -469,7 +566,8 @@ mod tests {
         // Python's `if workdir:` reads an empty flag value as no workdir; landing
         // in the workspaceFolder from devcontainer.json is the right default, and
         // `cd '' &&` would be a payload that fails for no reason.
-        let args = command_args("myws", "bash -lc make", &[], Some("")).expect("well-formed");
+        let args = command_args(Path::new(A_CONFIG), "myws", "bash -lc make", &[], Some(""))
+            .expect("well-formed");
 
         assert_eq!(args.last().map(String::as_str), Some("bash -lc make"));
     }
@@ -483,7 +581,13 @@ mod tests {
         // something is already wrong.
         for workspace_id in ["-oProxyCommand=touch /tmp/pwned", "-t", "--rubbish", "-"] {
             assert_eq!(
-                command_args(workspace_id, "bash -lc claude", &[], None),
+                command_args(
+                    Path::new(A_CONFIG),
+                    workspace_id,
+                    "bash -lc claude",
+                    &[],
+                    None
+                ),
                 Err(UnsafeRequest::OptionLikeWorkspaceId {
                     workspace_id: workspace_id.to_owned()
                 }),
@@ -496,7 +600,7 @@ mod tests {
     fn an_ordinary_workspace_id_is_not_refused() {
         for workspace_id in ["devlaunch-main-abcdefgh", "my_ws.2", "ws-1"] {
             assert!(
-                command_args(workspace_id, "true", &[], None).is_ok(),
+                command_args(Path::new(A_CONFIG), workspace_id, "true", &[], None).is_ok(),
                 "{workspace_id:?}"
             );
         }
@@ -509,7 +613,7 @@ mod tests {
         // shell mangles it — and an argument that cannot mean what it says is
         // better refused than sent.
         assert_eq!(
-            command_args("myws", "true", &[], Some("/a\0dir")),
+            command_args(Path::new(A_CONFIG), "myws", "true", &[], Some("/a\0dir")),
             Err(UnsafeRequest::UnquotableWorkdir {
                 workdir: "/a\0dir".to_owned()
             })
@@ -760,8 +864,14 @@ mod tests {
         // The whole argv, `ssh` included, because this transport composes a
         // complete command rather than a tail of flags.
         let fake = ScriptedRunner::new();
-        let args = command_args("myws", "bash -lc claude", &["GH_TOKEN".to_owned()], None)
-            .expect("well-formed");
+        let args = command_args(
+            Path::new(A_CONFIG),
+            "myws",
+            "bash -lc claude",
+            &["GH_TOKEN".to_owned()],
+            None,
+        )
+        .expect("well-formed");
         let env = EnvSpec::inherited().and("GH_TOKEN", "gho_secret");
 
         let exit = run(&fake, &args, env.clone()).expect("ssh ran");

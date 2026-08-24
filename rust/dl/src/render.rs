@@ -1646,13 +1646,20 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              interactive programs may exit immediately. `dl {workspace_id} restart` republishes it.",
             config.display()
         ),
+        // The advice here is deliberately *qualified* where NoTerminalAlias's is
+        // flat, and that difference is the whole reason these are two arms. A
+        // restart republishes an entry into a config that exists; against a config
+        // that is not there it only helps if devpod publishes into the same file dl
+        // read, and when it does not, the same notice comes back.
         LaunchNotice::NoDevpodSshConfig {
             workspace_id,
             looked_in,
         } => format!(
-            "No ssh config at {}, which is where `devpod up` publishes its host aliases on this \
-             machine, so {workspace_id} has none and this command gets no terminal; interactive \
-             programs may exit immediately. `dl {workspace_id} restart` writes it.",
+            "No ssh config at {}, which is where dl expects `devpod up` to publish its host \
+             aliases, so {workspace_id} has no alias and this command gets no terminal; \
+             interactive programs may exit immediately. `dl {workspace_id} restart` publishes \
+             there if that is the file devpod writes; if this comes back, DEVPOD_SSH_CONFIG or \
+             devpod's ssh-config context options name a different one.",
             looked_in.display()
         ),
         LaunchNotice::SshConfigUnlocatable => {
@@ -2869,33 +2876,32 @@ mod tests {
         );
     }
 
+    /// The three sentences devlaunch#421 split `NoAlias` into, rendered.
+    fn the_three_pty_notices() -> (String, String, String) {
+        let path = std::path::PathBuf::from("/scratch/ssh_config");
+        (
+            launch_notice(&LaunchNotice::NoTerminalAlias {
+                workspace_id: "myws".to_owned(),
+                config: path.clone(),
+            })
+            .expect("a sentence"),
+            launch_notice(&LaunchNotice::NoDevpodSshConfig {
+                workspace_id: "myws".to_owned(),
+                looked_in: path,
+            })
+            .expect("a sentence"),
+            launch_notice(&LaunchNotice::SshConfigUnlocatable).expect("a sentence"),
+        )
+    }
+
     #[test]
     fn each_way_of_losing_the_pty_transport_names_the_file_dl_read() {
-        // The three arms devlaunch#421 split apart, and the reason the split is
-        // worth a type: the advice differs. A restart republishes an alias into a
-        // config that exists; it does nothing at all when dl is reading a file
-        // devpod never writes, which is the case that shipped, silently, on every
-        // host exporting DEVPOD_SSH_CONFIG. So each sentence has to say which of
-        // the three happened, and every one of them names a path or says why there
-        // is none.
-        let alias_absent = launch_notice(&LaunchNotice::NoTerminalAlias {
-            workspace_id: "myws".to_owned(),
-            config: std::path::PathBuf::from("/scratch/ssh_config"),
-        })
-        .expect("a sentence");
-        let no_config = launch_notice(&LaunchNotice::NoDevpodSshConfig {
-            workspace_id: "myws".to_owned(),
-            looked_in: std::path::PathBuf::from("/scratch/ssh_config"),
-        })
-        .expect("a sentence");
-        let nowhere = launch_notice(&LaunchNotice::SshConfigUnlocatable).expect("a sentence");
+        // Each sentence has to say which of the three happened, and every one of
+        // them names a path or says why there is none.
+        let (alias_absent, no_config, nowhere) = the_three_pty_notices();
 
         assert!(
             alias_absent.contains("/scratch/ssh_config"),
-            "{alias_absent}"
-        );
-        assert!(
-            alias_absent.contains("`dl myws restart` republishes it"),
             "{alias_absent}"
         );
         assert!(no_config.contains("/scratch/ssh_config"), "{no_config}");
@@ -2907,6 +2913,49 @@ mod tests {
         for line in [&alias_absent, &no_config, &nowhere] {
             assert!(line.contains("no terminal"), "{line}");
         }
+    }
+
+    #[test]
+    fn the_advice_each_pty_notice_gives_is_the_advice_that_arm_can_honour() {
+        // The reason the split is worth a type is that the *advice* differs, so
+        // "the three strings differ" is not the assertion the split needs -- three
+        // wrong-but-different sentences pass it, and that is how a
+        // `NoDevpodSshConfig` reading "`dl myws restart` writes it" got past a
+        // green test while the enum doc, docs/cli.md and the CHANGELOG all said a
+        // restart is not the fix for this arm. So the claim is pinned instead of
+        // its distinctness.
+        let (alias_absent, no_config, nowhere) = the_three_pty_notices();
+
+        // Read the config, alias missing from it: a restart puts it back, flatly.
+        assert!(
+            alias_absent.contains("`dl myws restart` republishes it"),
+            "{alias_absent}"
+        );
+
+        // Nothing readable where dl looked: a restart writes *that file* only if
+        // that is where devpod publishes, so the advice is offered conditionally
+        // and names what to check when it is not. Nothing here may promise a
+        // restart outright.
+        assert!(
+            no_config
+                .contains("`dl myws restart` publishes there if that is the file devpod writes"),
+            "{no_config}"
+        );
+        assert!(
+            no_config.contains("DEVPOD_SSH_CONFIG"),
+            "the arm that may be dl reading the wrong file has to name the variable that decides it: {no_config}"
+        );
+        assert!(
+            !no_config.contains("restart` writes it"),
+            "an unconditional restart is the claim three other places in this repo deny: {no_config}"
+        );
+
+        // Nowhere to look at all: there is no workspace-level fix, so no restart
+        // is offered.
+        assert!(
+            !nowhere.contains("restart"),
+            "a machine with no home directory has nothing a restart would change: {nowhere}"
+        );
     }
 
     #[test]

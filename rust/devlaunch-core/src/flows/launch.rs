@@ -337,12 +337,17 @@ pub enum LaunchNotice {
         workspace_id: String,
         config: PathBuf,
     },
-    /// There is no ssh config where devpod publishes its host aliases on this
-    /// host, so no workspace has an alias and no command can get a pty. Named
-    /// apart from [`Self::NoTerminalAlias`] because restarting the workspace is
-    /// the fix for that one and no fix at all for this one: until devlaunch#421
-    /// the two were the same sentence, and this is the half that shipped —
-    /// silently, on every host that sets `DEVPOD_SSH_CONFIG`.
+    /// There is no ssh config where dl expects devpod to publish its host
+    /// aliases, so no workspace has an alias and no command can get a pty. Named
+    /// apart from [`Self::NoTerminalAlias`] because the advice differs, and
+    /// differs by being *conditional*: a restart republishes an entry into a
+    /// config that exists, and against a config that is not there it helps only
+    /// if devpod writes to the same file dl read. When it does not — the
+    /// variable differs from the one `devpod up` ran under, or a context option
+    /// names a file dl's cache had not seen — a restart publishes somewhere dl
+    /// is not looking and the notice comes back. Until devlaunch#421 the two
+    /// were the same sentence, and this is the half that shipped — silently, on
+    /// every host that sets `DEVPOD_SSH_CONFIG`.
     NoDevpodSshConfig {
         workspace_id: String,
         looked_in: PathBuf,
@@ -1408,10 +1413,22 @@ fn with_zellij_session(command: &str, zellij: ZellijWrap) -> String {
 /// file devpod never writes" arrived as one sentence about restarting the
 /// workspace, which fixes the first and is useless against the second. A state
 /// that cannot be told apart cannot be reported, so it is split in the type.
+///
+/// **Every arm carries the config, including the one that works.** That is not
+/// symmetry for its own sake: OpenSSH resolves an alias through `getpwuid`'s
+/// `~/.ssh/config` and reads no environment variable, so the file dl found the
+/// alias in has to reach the invocation as `-F` or the invocation names a host
+/// that does not resolve. `Usable` was the one arm with no path, and the value was
+/// therefore dropped at exactly the point it was needed and kept only where it was
+/// printed — a `dl <ws> -- <cmd>` that stopped running at all, on the same hosts
+/// this split was written for. The path travels with the state instead, so
+/// `ssh::command_args` can require it and an invocation with no `-F` is not
+/// something this flow can express.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Terminal {
-    /// dl is on a terminal and devpod published this workspace's ssh alias.
-    Usable,
+    /// dl is on a terminal and devpod published this workspace's ssh alias in that
+    /// config, which is the file OpenSSH has to be told to read.
+    Usable { config: PathBuf },
     /// dl read the config devpod publishes into and this workspace has no alias
     /// in it, so there is no way to ask for a pty. The command still runs.
     NoAlias { config: PathBuf },
@@ -1440,7 +1457,7 @@ pub(crate) fn terminal_for(host: &Host, options: &ContextOptions, workspace_id: 
         return Terminal::ConfigUnlocatable;
     };
     match ssh::alias_in(&config, workspace_id) {
-        ssh::Alias::Published => Terminal::Usable,
+        ssh::Alias::Published => Terminal::Usable { config },
         ssh::Alias::WorkspaceAbsent => Terminal::NoAlias { config },
         ssh::Alias::NoConfig => Terminal::ConfigMissing { looked_in: config },
     }
@@ -1458,13 +1475,21 @@ pub(crate) fn terminal_for(host: &Host, options: &ContextOptions, workspace_id: 
 /// payload-free tag, a `DevpodCommand` paired with no payload dispatched an
 /// interactive attach that ran nothing and reported nothing, and a `Terminal`
 /// paired with no payload panicked an `expect`.
+///
+/// [`Self::Terminal`] carries the config for the same reason it carries the
+/// payload: the invocation needs both, and re-deriving either at the call site is
+/// a second lookup that can disagree with the one that made the decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Route<'p> {
     /// A bare attach. It stays on devpod whatever the terminal says: devpod
     /// requests a pty for exactly this case, so there is nothing to escape.
     DevpodAttach,
-    /// A command under a pty, through the ssh alias `devpod up` published.
-    Terminal(&'p RemotePayload),
+    /// A command under a pty, through the ssh alias `devpod up` published, in the
+    /// config the alias was read out of.
+    Terminal {
+        payload: &'p RemotePayload,
+        config: &'p Path,
+    },
     /// A command through `devpod ssh --command`, which never asks for a pty.
     DevpodCommand(&'p RemotePayload),
 }
@@ -1472,7 +1497,7 @@ pub(crate) enum Route<'p> {
 /// Route this session, reporting a terminal dl had and could not use.
 pub(crate) fn route<'p>(
     command: Option<&'p RemotePayload>,
-    terminal: &Terminal,
+    terminal: &'p Terminal,
     workspace_id: &str,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Route<'p> {
@@ -1480,7 +1505,10 @@ pub(crate) fn route<'p>(
         return Route::DevpodAttach;
     };
     match terminal {
-        Terminal::Usable => Route::Terminal(command),
+        Terminal::Usable { config } => Route::Terminal {
+            payload: command,
+            config,
+        },
         Terminal::NoAlias { config } => {
             notices.say(LaunchNotice::NoTerminalAlias {
                 workspace_id: workspace_id.to_owned(),
@@ -1625,8 +1653,8 @@ pub(crate) fn workspace_ssh(
     let options = already_cached_options(session.host, SystemTime::now());
     let terminal = terminal_for(session.host, &options, workspace_id);
     match route(payload.as_ref(), &terminal, workspace_id, notices) {
-        Route::Terminal(payload) => {
-            ssh_with_terminal(session, workspace_id, payload, workdir, notices)
+        Route::Terminal { payload, config } => {
+            ssh_with_terminal(session, workspace_id, payload, config, workdir, notices)
         }
         Route::DevpodAttach => {
             devpod_session(session, workspace_id, None, workdir, forward, notices)
@@ -1689,16 +1717,28 @@ fn devpod_session(
 }
 
 /// The OpenSSH transport: an already-wrapped payload under a pty.
+///
+/// `config` is the file the alias was found in, and it arrives from
+/// [`Route::Terminal`] rather than from a lookup here — the transport must not get
+/// a second opinion about which config it is talking about. It reaches ssh as
+/// `-F`, because ssh reads neither `$DEVPOD_SSH_CONFIG` nor `$HOME`.
 fn ssh_with_terminal(
     session: &SessionContext<'_>,
     workspace_id: &str,
     payload: &RemotePayload,
+    config: &Path,
     workdir: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     let forwarding = gh::openssh_forwarding(session.forwarded_token(notices));
-    let args = ssh::command_args(workspace_id, payload.as_str(), &forwarding.args, workdir)
-        .map_err(SessionRefused::UnsafeRequest)?;
+    let args = ssh::command_args(
+        config,
+        workspace_id,
+        payload.as_str(),
+        &forwarding.args,
+        workdir,
+    )
+    .map_err(SessionRefused::UnsafeRequest)?;
     notices.say(LaunchNotice::SshCommand { argv: args.clone() });
     let exit = {
         let _span = timing::span("ssh");
@@ -4564,6 +4604,15 @@ mod tests {
         terminal_for(host, &ContextOptions::default(), workspace_id)
     }
 
+    /// The file `on_a_terminal` published the aliases into.
+    fn published_config(host: &Host) -> PathBuf {
+        PathBuf::from(
+            host.devpod_ssh_config
+                .clone()
+                .expect("on_a_terminal named one"),
+        )
+    }
+
     #[test]
     fn the_config_devpod_ssh_config_names_is_where_dl_looks_for_the_alias() {
         // The shipped bug (devlaunch#421), stated where a user would meet it:
@@ -4578,7 +4627,33 @@ mod tests {
             "the point of the test is that there is no ~/.ssh/config to find"
         );
 
-        assert_eq!(terminal_here(&scene.host, "myws"), Terminal::Usable);
+        assert_eq!(
+            terminal_here(&scene.host, "myws"),
+            Terminal::Usable {
+                config: published_config(&scene.host)
+            }
+        );
+    }
+
+    #[test]
+    fn the_usable_state_carries_the_config_the_alias_was_found_in() {
+        // The second half of devlaunch#421, and the reason `Usable` has a field.
+        // Finding the alias and being able to *use* it stopped being one fact the
+        // moment dl looked anywhere but `~/.ssh/config`: OpenSSH resolves an alias
+        // through `getpwuid`'s config and reads no environment, so the path has to
+        // reach the invocation. It reached nothing, because `Usable` was the one
+        // arm that dropped it -- and `dl <ws> -- <cmd>` at a terminal exited 255
+        // with `Could not resolve hostname` instead of running.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        let published = published_config(&scene.host);
+
+        let Terminal::Usable { config } = terminal_here(&scene.host, "myws") else {
+            panic!("the alias is published, so this is Usable");
+        };
+
+        assert_eq!(config, published);
+        // And it is the file the alias is actually in, not merely a path.
+        assert_eq!(ssh::alias_in(&config, "myws"), ssh::Alias::Published);
     }
 
     #[test]
@@ -4587,7 +4662,12 @@ mod tests {
         let scene = Scene::new().on_a_terminal_with_a_home_config(&["myws"]);
 
         assert_eq!(scene.host.devpod_ssh_config, None);
-        assert_eq!(terminal_here(&scene.host, "myws"), Terminal::Usable);
+        assert_eq!(
+            terminal_here(&scene.host, "myws"),
+            Terminal::Usable {
+                config: scene.dir.path().join("home").join(".ssh").join("config")
+            }
+        );
     }
 
     #[test]
@@ -4616,7 +4696,9 @@ mod tests {
 
         assert_eq!(
             terminal_for(&by_option, &options, "myws"),
-            Terminal::Usable,
+            Terminal::Usable {
+                config: PathBuf::from(&named)
+            },
             "the SSH_CONFIG_PATH context option is a place devpod publishes"
         );
         assert_eq!(
@@ -4624,11 +4706,13 @@ mod tests {
                 &by_option,
                 &ContextOptions::from_map(BTreeMap::from([(
                     "SSH_CONFIG_INCLUDE_PATH".to_owned(),
-                    named
+                    named.clone()
                 )])),
                 "myws"
             ),
-            Terminal::Usable,
+            Terminal::Usable {
+                config: PathBuf::from(&named)
+            },
             "and so is SSH_CONFIG_INCLUDE_PATH"
         );
     }
@@ -4651,25 +4735,43 @@ mod tests {
         };
         write_options_cache(
             &host.context_options_cache(),
-            &BTreeMap::from([("SSH_CONFIG_PATH".to_owned(), named)]),
+            &BTreeMap::from([("SSH_CONFIG_PATH".to_owned(), named.clone())]),
         );
 
         let options = already_cached_options(&host, SystemTime::now());
 
         assert!(options.ssh_config_path().is_some());
-        assert_eq!(terminal_for(&host, &options, "myws"), Terminal::Usable);
+        assert_eq!(
+            terminal_for(&host, &options, "myws"),
+            Terminal::Usable {
+                config: PathBuf::from(&named)
+            }
+        );
     }
 
     #[test]
     fn a_terminal_and_an_alias_route_a_command_through_openssh() {
         // The regression: an interactive payload must not go through `--command`.
+        // And the route carries the config with the payload, because the argv it
+        // becomes needs both: re-deriving the path on the far side of `route` is
+        // a second lookup that can disagree with the one that chose the transport.
         let scene = Scene::new().on_a_terminal(&["myws"]);
+        let published = published_config(&scene.host);
 
-        assert_eq!(terminal_here(&scene.host, "myws"), Terminal::Usable);
+        let terminal = terminal_here(&scene.host, "myws");
+        assert_eq!(
+            terminal,
+            Terminal::Usable {
+                config: published.clone()
+            }
+        );
         let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
         assert_eq!(
-            route(Some(&payload), &Terminal::Usable, "myws", &mut no_notices()),
-            Route::Terminal(&payload)
+            route(Some(&payload), &terminal, "myws", &mut no_notices()),
+            Route::Terminal {
+                payload: &payload,
+                config: &published
+            }
         );
     }
 
@@ -4790,7 +4892,9 @@ mod tests {
         let mut notices = no_notices();
 
         for terminal in [
-            Terminal::Usable,
+            Terminal::Usable {
+                config: PathBuf::from("/scratch/ssh_config"),
+            },
             Terminal::NoAlias {
                 config: PathBuf::from("/scratch/ssh_config"),
             },
@@ -4906,7 +5010,17 @@ mod tests {
     #[test]
     fn the_openssh_transport_carries_the_same_payload_under_a_pty() {
         // Both transports must deliver the same command to the same shell.
+        //
+        // And the argv names the config the alias was read out of. This is the
+        // whole of `workspace_ssh` measured at once, and it is the assertion that
+        // was missing: devlaunch#421's first half taught dl to *read* devpod's real
+        // config, and the argv still said `ssh -t myws.devpod` with no `-F` -- so on
+        // a host publishing anywhere but `~/.ssh/config`, dl decided it had a
+        // terminal and then handed OpenSSH an alias OpenSSH could not resolve.
+        // `on_a_terminal` publishes into `$DEVPOD_SSH_CONFIG` and leaves no
+        // `~/.ssh/config`, which is exactly that host.
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+        let published = published_config(&scene.host);
 
         let (session, _, _) = a_session(&scene, Some("claude"));
 
@@ -4920,10 +5034,19 @@ mod tests {
             scene.runner.argvs(),
             vec![vec![
                 "ssh".to_owned(),
+                "-F".to_owned(),
+                published.display().to_string(),
                 "-t".to_owned(),
                 "myws.devpod".to_owned(),
                 "bash -lc claude".to_owned(),
             ]]
+        );
+        // Not merely "a -F": the file named is the one holding the alias, and it
+        // is not the home default OpenSSH would have gone to on its own.
+        assert_eq!(ssh::alias_in(&published, "myws"), ssh::Alias::Published);
+        assert_ne!(
+            published,
+            scene.dir.path().join("home").join(".ssh").join("config")
         );
     }
 

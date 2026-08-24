@@ -148,16 +148,19 @@ def workspace(tmp_path_factory) -> Iterator[InteractiveWorkspace]:
     than adopted: a workspace this run did not create is not in this run's
     `DEVPOD_HOME` and so cannot be reached at all -- see the module docstring.
 
-    One thing beyond `devpod up` is needed before dl's *pty* transport can be
-    exercised, and it comes from `route_ssh_through`: OpenSSH has to be handed
-    this run's ssh config with `-F`, since it resolves `~` through `getpwuid` and
-    no environment variable reaches it. Without it dl would find no alias, warn,
-    and silently fall back to the transport that has no terminal -- which is the
-    transport every assertion in this file exists to distinguish itself from. dl's
-    own "is there a host alias" check needs no help: it resolves
-    `DEVPOD_SSH_CONFIG`, which this suite already scopes, and the scratch home
-    holds no `.ssh/config` for it to fall back to -- so these tests passing is
-    also what says dl still looks where devpod writes (devlaunch#421).
+    Nothing beyond `devpod up` is needed before dl's *pty* transport can be
+    exercised, and that is a change worth naming. `route_ssh_through` supplies one
+    thing and it is a negative: a scratch `HOME` with no `.ssh/config` in it, so
+    neither lookup can succeed by accident against the developer's machine. Both
+    of them are dl's own work. dl resolves `DEVPOD_SSH_CONFIG` to decide the alias
+    exists, and dl passes that same file to OpenSSH as `-F` because OpenSSH reads
+    neither that variable nor `$HOME`. So every pty assertion below is also an
+    assertion about devlaunch#421: reaching a container at all means dl looked
+    where devpod writes *and* told ssh to look there too.
+
+    This used to be propped up by an `ssh` shim on `PATH` that prepended the `-F`
+    itself, which is why the second half of #421 shipped to review with a green
+    e2e run. It is gone.
 
     The tracker is this module's own, and `cleanup()` runs whether the tests
     passed, failed, or never got that far. `devpod_cleanup` is function-scoped
@@ -210,6 +213,41 @@ class TestCommandGetsATerminal:
             "devpod wrote no ssh host alias for this workspace, so dl will fall "
             "back to the transport that has no terminal"
         )
+
+    def test_openssh_is_told_to_read_the_config_devpod_published_into(self, workspace):
+        """The second half of devlaunch#421, and the only test here that pins it.
+
+        The first half taught dl to *read* `DEVPOD_SSH_CONFIG`. OpenSSH reads
+        neither that variable nor `$HOME` -- it resolves the default user config
+        through `getpwuid(getuid())` -- so a dl that decided it had a terminal and
+        then ran a bare `ssh -t <alias>` sent OpenSSH after a host it could not
+        resolve. Measured against this very workspace, with the shim that used to
+        hide it removed: `ssh: Could not resolve hostname
+        e2e-test-interactive.devpod`, exit 255, and `dl <ws> -- <cmd>` did not run
+        at all. Not "ran without a terminal" -- did not run.
+
+        Two assertions, and both halves are needed. The invocation dl logs has to
+        name the config (a fact about argv, which is cheap and could be wrong
+        about reality), and the command has to come back with output from inside
+        the container (a fact about reality, which is what says the argv works).
+        The environment is what makes the pair meaningful: the alias exists only
+        in `DEVPOD_SSH_CONFIG`, and `HOME` holds no `.ssh/config`, so there is no
+        second path by which OpenSSH could have resolved it.
+        """
+        config = str(workspace.ssh_config)
+        assert not (workspace.routing.home / ".ssh" / "config").exists(), (
+            "the assertion below only means something while the run's config is "
+            "the sole place the alias can be found"
+        )
+
+        with workspace.dl("--", "echo reached-through-$(hostname)") as s:
+            s.expect(r"reached-through-\S+")
+            assert f"-F {config}" in s.text, (
+                "dl must hand OpenSSH the config it read the alias out of; "
+                f"invocation was:\n{s.text}"
+            )
+            assert "Could not resolve hostname" not in s.text
+            assert s.wait(timeout=30) == 0
 
     def test_one_shot_command_still_runs_and_reports_its_output(self, workspace):
         with workspace.dl("--", "echo one-shot-worked") as s:
