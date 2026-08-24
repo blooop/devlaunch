@@ -1812,7 +1812,7 @@ fn provision(
     // is nothing for the stages to do either: the container never stopped, so the
     // hostname the `up` that started it set is still the one it has.
     if let (PassOccasion::TopUp, Some(verdicts)) = (occasion, verdicts)
-        && verdicts.trusted(workspace)
+        && verdicts.trusted(workspace, switches)
     {
         return Ok(Provisioning::CachedProvisioned);
     }
@@ -1836,7 +1836,7 @@ fn provision(
         // The one outcome worth remembering, and the reasons the others are not are
         // in [`verdict_cache`]'s own note.
         if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
-            verdicts.record(workspace, observed);
+            verdicts.record(workspace, observed, switches);
         }
         return Ok(Provisioning::AlreadyProvisioned);
     }
