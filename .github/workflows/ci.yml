@@ -585,32 +585,36 @@ jobs:
   # on an empty list. Both of those are the same point, which is the point of the
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
-  # The external reviewer is a check like any other, and it failed the way this
-  # gate's own comment warns about: silently. Sourcery answers every pull request
-  # with a *review*, and a review is what a reader looking for one finds -- so
+  # A check nobody ran reads exactly like a check that passed -- `gate`'s own
+  # comment says so, and the external reviewer is where it happened. Sourcery
+  # answers a quota refusal *as a review*, so
   #
   #     Sorry @blooop, you have reached your weekly rate limit of 500000 diff
   #     characters.
   #
-  # arrives in the same shape as a review that found nothing, and reads as one to
-  # everything downstream. Twenty-six consecutive pull requests merged behind that
-  # sentence, among them the largest changes in the repo, and nothing said so.
+  # arrives in the same shape as a review that found nothing. Twenty-six
+  # consecutive pull requests merged behind that sentence, among them the largest
+  # changes in the repo, and nothing said so.
   #
-  # The classification is in `scripts/external_review_verdict.sh` rather than in
-  # this block, for the reason the public-api script is: a `case` statement that
-  # exists only inside a `run:` can be tested only by copying it, and the copy is
-  # what goes stale. What is here is the fetch, the polling and the label.
-  external-review:
+  # What this asks is "was this reviewed", not "did Sourcery answer". A quota
+  # outage lasts a week, and a guard that stops all merges for a week is a guard
+  # that gets deleted -- so a `wf-review` report by the author satisfies it, which
+  # is the review this repo actually runs when the bot is out. The classification
+  # is in `scripts/review_verdict.sh` rather than in this block, for the reason
+  # the public-api script is a script: a `case` that exists only inside a `run:`
+  # is testable only by copying it, and the copy goes stale.
+  review:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
     steps:
       - uses: actions/checkout@v4
-      - name: An external reviewer that refused is not an external reviewer
+      - name: A pull request nothing reviewed is a pull request nobody read
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           REPO: ${{ github.repository }}
           OVERRIDE_LABEL: no-external-review
         run: |
@@ -624,28 +628,29 @@ jobs:
           if gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name' \
               | grep -qxF "$OVERRIDE_LABEL"; then
             echo "::notice::'$OVERRIDE_LABEL' is set, so this pull request merges"\
-                 "without an external review. That is the label's whole purpose;"\
-                 "it is recorded here so the choice is visible afterwards."
+                 "unreviewed. That is the label's whole purpose; it is recorded"\
+                 "here so the choice is visible afterwards."
             exit 0
           fi
 
-          # Sourcery posts within a minute of the pull request opening, well
-          # inside the shortest job in this workflow -- but "well inside" is not
-          # "before", and a race lost here fails a pull request for the
-          # reviewer's latency rather than for anything about the change. So
-          # poll, and let the remaining ~2 minutes of CI absorb the wait.
-          reviews=
+          # Sourcery answers within a minute of the pull request opening, well
+          # inside the shortest job here -- but "well inside" is not "before", and
+          # a race lost would fail a pull request for the reviewer's latency
+          # rather than for anything about the change. Poll, and let the remaining
+          # ~2 minutes of CI absorb the wait. A self-review that is already posted
+          # short-circuits the wait on the first pass.
+          reviews='[]'
           for _ in $(seq 1 12); do
             reviews=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-              --jq '.[] | select(.user.login == "sourcery-ai[bot]") | .body' || true)
-            [ -n "$reviews" ] && break
+              --jq '[.[] | {author: .user.login, body: .body}]' || echo '[]')
+            [ "$(jq 'length' <<<"$reviews")" -gt 0 ] && break
             sleep 10
           done
 
-          printf '%s' "$reviews" | ./scripts/external_review_verdict.sh
+          printf '%s' "$reviews" | ./scripts/review_verdict.sh
 
   gate:
-    needs: [ci, e2e, rust, rust-coverage, public-api, packaging, external-review]
+    needs: [ci, e2e, rust, rust-coverage, public-api, packaging, review]
     if: always()
     runs-on: ubuntu-latest
     steps:

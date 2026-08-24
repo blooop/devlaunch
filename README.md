@@ -2362,10 +2362,10 @@ means adding it to `gate`'s `needs`, in the same pull request, where it can be
 seen. It reaches only as far as its own workflow file, so the `prek` lint job is
 not behind it and has to be required alongside it.
 
-One of `gate`'s jobs is not a test. `external-review` reads the pull request's
-reviews and fails unless the external reviewer actually reviewed the code. It is
-there because that reviewer failed silently once and nobody noticed for a day and
-a half: Sourcery answers a quota refusal *as a review*, so
+One of `gate`'s jobs is not a test. `review` reads the pull request's reviews and
+fails unless *something* reviewed the code. It is there because the external
+reviewer failed silently once and nobody noticed for a day and a half: Sourcery
+answers a quota refusal *as a review*, so
 
 ```
 Sorry @blooop, you have reached your weekly rate limit of 500000 diff characters.
@@ -2377,18 +2377,31 @@ sentence, among them the largest changes in the repo. The other refusal is worse
 targeted still — a per-pull-request diff cap, which fires on exactly the changes
 least safe to merge unread.
 
-So the job refuses three things: a refusal on quota, a refusal on size, and no
-review at all after two minutes of polling. It is a failure rather than a warning
-because a warning is precisely what already did not work, and the way past it is
-the `no-external-review` label — a decision recorded on a named pull request,
-rather than a default that quietly stops applying. Labelling a change is fine;
-not knowing the reviewer stopped reading is not.
+The question it asks is **"was this reviewed"**, not "did Sourcery answer", and
+the difference is what makes it survivable. A weekly quota lasts a week; a job
+that stopped every merge for a week would be a job somebody deletes, which is the
+same way the flag guard in `test_readme_cli_doc.py` describes losing its own
+teeth. So three things satisfy it:
 
-The classification itself is `scripts/external_review_verdict.sh`, which the
-workflow calls and `test/test_external_review_guard.py` executes, for the reason
-the public-API script is a script: a `case` statement inside a `run:` block can
-be tested only by copying it, and the copy is the half that goes stale. Its tests
-run against the refusal bodies those twenty-six pull requests actually received.
+- a review by **anyone other than the author** — a person, or the bot when it is
+  answering;
+- a **`wf-review` report by the author**, recognised by the provenance line those
+  reports open with. That is the review this repo actually runs when the bot is
+  out: two axes, in fresh context that did not see the code written;
+- the **`no-external-review` label**, for merging with neither.
+
+An author's plain approval is not enough — "lgtm" from the person who wrote the
+code is the thing being guarded against, not a way past it. A determined author
+can of course write the provenance line by hand; the guard is against a review
+silently not happening, and skipping one on purpose is what the label is for.
+Merging on a self-review emits a `::notice::` saying so, because it is worth
+seeing in the log afterwards.
+
+The classification itself is `scripts/review_verdict.sh`, which the workflow
+calls and `test/test_review_guard.py` executes, for the reason the public-API
+script is a script: a `case` statement inside a `run:` block can be tested only
+by copying it, and the copy is the half that goes stale. Its tests run against
+the refusal bodies those twenty-six pull requests actually received.
 
 Running it yourself is a different proposition. This repo's devcontainer carries
 a Docker daemon of its own, through the `docker-in-docker` feature, and pins the
