@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   label, so skipping external review is a decision on a named pull request rather
   than a default that quietly stopped applying.
 
+## [0.13.0] - 2026-08-24
+
 ### Changed
 
 - **The public-API freeze is three snapshots instead of one, so its diff means something
@@ -37,6 +39,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pinned `cargo-public-api` exist in one place; see "The public-API snapshots" in README.md.
 
 ### Fixed
+
+- **A workspace brought up with `DEVLAUNCH_NO_ZELLIJ=1` no longer stays without
+  zellij forever.** The verdict cache's marker recorded which container a pass was
+  about and not which switches it ran under, so a pass that skipped the zellij
+  stage still probed *provisioned* — rightly, since the probe is about the tools —
+  and wrote a marker that the next launch, with no variable set, trusted. The trip
+  was skipped, zellij was never installed, and no later top-up could notice,
+  because every one of them read the same marker and skipped the same trip: silent
+  for the life of the container. The marker now carries the switches, and one
+  written under different switches reads as no verdict. A marker from an earlier
+  build has no such field, fails to parse and is therefore untrusted — one
+  redundant round trip on the first launch after upgrading, which is the direction
+  this cache is allowed to be wrong in.
+
+- **The dotfiles refresh's recovery can no longer make a workspace permanently
+  unrecoverable.** When `chezmoi update` failed, the retry ran `chezmoi init`
+  unconditionally — and `chezmoi init` with no repo argument `git init`s the
+  source directory when it is not already a repository. The repo it makes has no
+  upstream, so `update` then fails with `no tracking information` on that refresh
+  and on every one after it, because each later attempt finds a repository and
+  `init` is a no-op. One actionable error was converted into a permanent one with
+  its own diagnosis destroyed. The retry now asks first, so a failure it cannot
+  fix fails with the error that mattered.
+- **The same retry can now fix the case it was written for.** chezmoi's `--force`
+  is "make all changes without prompting", which is about changes and not about
+  the `prompt*` functions a config template calls — so a dotfiles repo that added
+  a `promptString` variable made `init` ask for it, and a refresh nobody is
+  watching either died on `could not open a new TTY` or blocked on the question.
+  `init` now carries `--promptDefaults`, and `--no-tty` so that a prompt with no
+  default is a fast error rather than a hang inside the refresh's bound.
 
 - **A `kill` or a closed terminal now runs the same cleanup Ctrl-C does.** Only
   SIGINT had a handler, so `kill <dl>` — a supervisor timing a run out, a CI job
@@ -96,14 +128,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than one spanning them all, and a herdr in the container whose version matches
   the host's.
 
-  Two leftovers, both inert. A container that did get the hook keeps
-  `~/.devlaunch/herdr-agent-state.py` and its entries in that container's own
-  `~/.claude/settings.json` until `dl <ws> recreate`, and the socket mount likewise
-  lands and leaves only at creation. Neither does anything: the hook returns
+  **Two leftovers in a workspace created by 0.8.0-0.11.0, and neither is removed by
+  upgrading.** Both land only at creation, so both go on `dl <ws> recreate` and on
+  nothing else. Run that on any workspace you created while 0.8.0-0.11.0 was
+  installed.
+
+  The **hook** — `~/.devlaunch/herdr-agent-state.py` plus its entries in that
+  container's own `~/.claude/settings.json` — is inert *as `dl` now runs*: it returns
   immediately without the variables `aid` no longer sets, and it exits 0 in every
-  state including every failure, which is why it was safe to leave. `DEVLAUNCH_NO_HERDR`
-  is no longer read, so a host that set it needs no change; `DEVLAUNCH_NO_TOOLS` is
-  untouched and still covers the rest of provisioning.
+  state including every failure. It is not inert unconditionally, and the
+  replacement recommended above is what wakes it. `HERDR_ENV`, `HERDR_PANE_ID` and
+  `HERDR_SOCKET_PATH` are herdr's own variables, not `dl`'s, so a
+  `herdr --remote <workspace-id>.devpod` session sets all three itself — and the
+  leftover hook reads them and resumes reporting agent state, from a `dl` that no
+  longer has anything to say about it. Because a reported state overrides herdr's
+  native detection and does not decay, a stale report can pin a badge that the
+  remote server would otherwise have got right.
+
+  The **socket mount** is not inert at all: it is a capability the container still
+  holds. 0.8.0's README said what it grants, and that sentence went out with the
+  feature —
+
+  > Mounting the socket gives the container control of your herdr session — it is
+  > the same socket herdr's own CLI drives, so something in there could open panes
+  > or read other panes' output.
+
+  — which is unchanged for a container that already has the mount. `DEVLAUNCH_NO_HERDR`
+  was the opt-out and is no longer read, so it cannot be turned off after the fact
+  either; `dl <ws> recreate` is the only thing that removes it. `DEVLAUNCH_NO_TOOLS`
+  is untouched and still covers the rest of provisioning.
 
 ## [0.11.0] - 2026-08-23
 

@@ -63,6 +63,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use super::{Switches, ToolsSwitch, ZellijSwitch};
+
 use crate::flows::lifecycle;
 
 /// The directory the markers live in, under devlaunch's cache directory.
@@ -110,10 +112,17 @@ impl VerdictCache {
     ///
     /// Total, and false for every doubt — see the module note on why absent is the
     /// only harmless misreading.
-    pub(crate) fn trusted(&self, workspace_id: &str) -> bool {
+    pub(crate) fn trusted(&self, workspace_id: &str, switches: Switches) -> bool {
         let Some(marker) = read_marker(&self.marker(workspace_id)) else {
             return false;
         };
+        // Before the anchor, because it is the cheaper of the two and because it is
+        // the one that is wrong about a container that really is standing: the
+        // mtime can match perfectly while the marker describes a pass that skipped
+        // the very stage this launch is asking for.
+        if marker.switches != MarkerSwitches::of(switches) {
+            return false;
+        }
         let Some(result) =
             lifecycle::sole_workspace_result(self.devpod_home.as_deref(), workspace_id)
         else {
@@ -144,11 +153,12 @@ impl VerdictCache {
     /// Silent about every way of not working — a cache directory that will not be
     /// created, a write that fails. A verdict cache that could not write is a launch
     /// that pays what it pays today, and a launch is not worth failing over that.
-    pub(crate) fn record(&self, workspace_id: &str, observed: Observed) {
+    pub(crate) fn record(&self, workspace_id: &str, observed: Observed, switches: Switches) {
         let Observed(result_mtime) = observed;
         let marker = Marker {
             verdict: Verdict::Provisioned,
             result_mtime,
+            switches: MarkerSwitches::of(switches),
         };
         let Ok(text) = serde_json::to_string(&marker) else {
             return;
@@ -169,6 +179,40 @@ pub(crate) struct Observed(Stamp);
 struct Marker {
     verdict: Verdict,
     result_mtime: Stamp,
+    /// The switches the pass ran under. Without this the marker answers "was this
+    /// container provisioned?" when the question the flow asks it is "was it
+    /// provisioned *the way this launch wants*?" — and those differ exactly when
+    /// somebody used an opt-out. A pass run with `DEVLAUNCH_NO_ZELLIJ=1` probes
+    /// provisioned, because zellij is not what the probe is about, so it wrote a
+    /// marker that a later full launch trusted: zellij was never installed, and no
+    /// top-up would ever notice, because the marker said there was nothing to do.
+    ///
+    /// A marker written before this field existed has no `switches` key, fails to
+    /// deserialize, and is therefore untrusted — one redundant round trip on the
+    /// first launch after upgrading, which is the direction [`Verdict`] argues is
+    /// the only harmless one.
+    switches: MarkerSwitches,
+}
+
+/// The switches a marker was written under, in the marker's own spelling.
+///
+/// Deliberately not [`Switches`] itself. That type is `pub`, and giving it serde
+/// derives would put the on-disk format of a cache file into the frozen surface,
+/// where a rename becomes a breaking change to something no consumer ever asked
+/// for. Two bools in a private struct say the same thing and belong to this module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct MarkerSwitches {
+    tools: bool,
+    zellij: bool,
+}
+
+impl MarkerSwitches {
+    fn of(switches: Switches) -> Self {
+        Self {
+            tools: matches!(switches.tools, ToolsSwitch::Install),
+            zellij: matches!(switches.zellij, ZellijSwitch::Install),
+        }
+    }
 }
 
 /// The one verdict worth remembering.
@@ -286,9 +330,77 @@ mod tests {
     /// the verdict about it. Nothing to observe is nothing to record, which is the
     /// same silence the flow's own `if let` makes.
     fn recorded(verdicts: &VerdictCache, workspace_id: &str) {
+        recorded_under(verdicts, workspace_id, Switches::INSTALLING);
+    }
+
+    /// The same pair, for the tests that are about *which* pass wrote the marker.
+    fn recorded_under(verdicts: &VerdictCache, workspace_id: &str, switches: Switches) {
         if let Some(observed) = verdicts.observe(workspace_id) {
-            verdicts.record(workspace_id, observed);
+            verdicts.record(workspace_id, observed, switches);
         }
+    }
+
+    #[test]
+    fn a_marker_written_by_an_opted_out_pass_is_not_trusted_by_a_full_launch() {
+        // The defect this field exists for. `DEVLAUNCH_NO_ZELLIJ=1` runs a pass
+        // that carries no zellij stage, and that pass *probes provisioned* --
+        // rightly, because the probe is about the tools, not about zellij. So it
+        // wrote a marker, and the marker said only "this container, provisioned".
+        //
+        // The next launch, with no variable set, wants the zellij stage. It found a
+        // trusted marker for a container that had never stopped, skipped the trip,
+        // and zellij was never installed. Nothing later notices, because every
+        // subsequent top-up reads the same marker and skips the same trip: the
+        // failure is permanent for the life of the container and completely silent.
+        let home = devpod_home_with(&[("default", "ws", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+
+        let no_zellij = Switches {
+            tools: ToolsSwitch::Install,
+            zellij: ZellijSwitch::Skip,
+        };
+        recorded_under(&verdicts, "ws", no_zellij);
+
+        assert!(
+            verdicts.trusted("ws", no_zellij),
+            "the pass that wrote it asks the same question and must still be answered"
+        );
+        assert!(
+            !verdicts.trusted("ws", Switches::INSTALLING),
+            "a launch that wants the zellij stage was told a pass that skipped it had already run"
+        );
+    }
+
+    #[test]
+    fn a_marker_from_a_build_that_did_not_record_switches_is_not_trusted() {
+        // Forward compatibility in the only direction that is safe. A marker on
+        // disk from 0.12.0 or earlier has no `switches` key, so it fails to parse
+        // and reads as absent -- one redundant round trip on the first launch after
+        // upgrading. The other direction, treating a keyless marker as a full
+        // install, would silently re-open the defect above for every container that
+        // already exists.
+        let home = devpod_home_with(&[("default", "ws", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
+        recorded(&verdicts, "ws");
+        assert!(verdicts.trusted("ws", Switches::INSTALLING));
+
+        let marker = cache.path().join(MARKERS_DIR).join("ws.json");
+        let text = std::fs::read_to_string(&marker).expect("the marker just written");
+        let old: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        let mut old = old.as_object().expect("an object").clone();
+        old.remove("switches");
+        std::fs::write(
+            &marker,
+            serde_json::to_string(&old).expect("re-serialisable"),
+        )
+        .expect("a writable cache");
+
+        assert!(
+            !verdicts.trusted("ws", Switches::INSTALLING),
+            "a marker this build cannot read in full is a marker it must not act on"
+        );
     }
 
     /// Move `path`'s mtime forward, the way a completed `devpod up` moves the
@@ -313,14 +425,17 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
 
-        assert!(!verdicts.trusted("myws"), "nothing is recorded yet");
+        assert!(
+            !verdicts.trusted("myws", Switches::INSTALLING),
+            "nothing is recorded yet"
+        );
         recorded(&verdicts, "myws");
 
-        assert!(verdicts.trusted("myws"));
+        assert!(verdicts.trusted("myws", Switches::INSTALLING));
         // And it survives being read by a second value over the same directories,
         // which is what "the next `dl` process" is.
         let later = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
-        assert!(later.trusted("myws"));
+        assert!(later.trusted("myws", Switches::INSTALLING));
     }
 
     #[test]
@@ -351,11 +466,11 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(home.path().to_path_buf()));
         recorded(&verdicts, "myws");
-        assert!(verdicts.trusted("myws"));
+        assert!(verdicts.trusted("myws", Switches::INSTALLING));
 
         rewritten(&result_in(home.path(), "myws"), Duration::from_secs(30));
 
-        assert!(!verdicts.trusted("myws"));
+        assert!(!verdicts.trusted("myws", Switches::INSTALLING));
     }
 
     #[test]
@@ -380,7 +495,7 @@ mod tests {
         file.set_modified(was - Duration::from_secs(30))
             .expect("a backdated mtime");
 
-        assert!(!verdicts.trusted("myws"));
+        assert!(!verdicts.trusted("myws", Switches::INSTALLING));
     }
 
     #[test]
@@ -405,13 +520,19 @@ mod tests {
             r#"{"verdict":"lent","result_mtime":{"secs":1,"nanos":0}}"#,
         ] {
             std::fs::write(&marker, garbled).expect("a garbled marker");
-            assert!(!verdicts.trusted("myws"), "{garbled:?}");
+            assert!(
+                !verdicts.trusted("myws", Switches::INSTALLING),
+                "{garbled:?}"
+            );
         }
 
         std::fs::write(&marker, &good).expect("the good marker back");
-        assert!(verdicts.trusted("myws"), "the fixture itself still holds");
+        assert!(
+            verdicts.trusted("myws", Switches::INSTALLING),
+            "the fixture itself still holds"
+        );
         std::fs::remove_file(&marker).expect("the marker removed");
-        assert!(!verdicts.trusted("myws"));
+        assert!(!verdicts.trusted("myws", Switches::INSTALLING));
     }
 
     #[test]
@@ -432,7 +553,7 @@ mod tests {
         ] {
             let verdicts = VerdictCache::under(cache.path(), home.clone());
             recorded(&verdicts, "myws");
-            assert!(!verdicts.trusted("myws"), "{home:?}");
+            assert!(!verdicts.trusted("myws", Switches::INSTALLING), "{home:?}");
         }
     }
 
@@ -461,8 +582,8 @@ mod tests {
 
         recorded(&verdicts, "myws");
 
-        assert!(verdicts.trusted("myws"));
-        assert!(!verdicts.trusted("other"));
+        assert!(verdicts.trusted("myws", Switches::INSTALLING));
+        assert!(!verdicts.trusted("other", Switches::INSTALLING));
     }
 
     #[test]

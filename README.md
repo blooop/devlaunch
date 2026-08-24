@@ -12,7 +12,7 @@ launching one again attaches to what is already there.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.12.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.13.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -461,7 +461,7 @@ reporting an unknown workspace called `prune` — and a workspace that really is
 
 ```bash
 $ dl --version
-dl 0.12.0
+dl 0.13.0
 ```
 
 The version and nothing else. `aid --version` reports the same version under its
@@ -832,9 +832,10 @@ On `devpod up`, at most three round trips, each one earning the next.
 
 **1. The setup pass — the only trip a ready workspace ever pays.** One trip
 carries everything the host wants done on the way into a running container: the
-stages first, then the probe. Naming the container — the hostname your shell
-prompt shows — is the one stage today, and it costs nothing extra because the
-probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
+stages first, then the probe. Three stages exist today: naming the container —
+the hostname your shell prompt shows — which always runs, plus zellij's config
+and the terminal title, each of which runs only when its switch is on. They cost
+nothing extra because the probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
 exit status, or *not reached*; one that fails stops neither the stages behind it
 nor the probe, and `dl` says which one it was.
 
@@ -1014,6 +1015,15 @@ host-side `initializeCommand` that has to tell branch workspaces apart — are
 covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
 
 ### Refreshing dotfiles on attach
+
+Under chezmoi, the refresh is `chezmoi update` — and if that fails **and** the
+chezmoi source directory is a git repository, it regenerates the workspace's
+`chezmoi.toml` with `chezmoi init` and tries once more. That second attempt is
+for one failure in particular: the dotfiles repo grew a template variable the
+workspace's config predates, so every apply dies rendering a config that has no
+entry for it. It is guarded on the source directory already being a repository
+because `chezmoi init` with no repo argument would otherwise create an empty one,
+which has no upstream and can never update again.
 
 devpod applies dotfiles when it *provisions* a workspace, so a workspace that has
 been up for a fortnight still has the dotfiles it was born with. `dl <ws>
