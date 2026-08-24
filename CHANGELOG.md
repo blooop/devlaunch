@@ -23,6 +23,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-review is recorded as a notice on the run, and a review that predates the
   head is warned about rather than failed on.
 
+### Fixed
+
+- **On git 2.20 and older, a launch that asks for a new branch no longer fails
+  outright.** Up to v2.20.0 git wrote `Couldn't find remote ref %s` through a
+  bare `die()` (`remote.c:1785`) — capital C, and never routed through gettext,
+  so the `LC_ALL=C` the fetch is pinned under could not normalise it; it is
+  lowercase and translatable from v2.21.0. The reader that recognises "the
+  remote has not got this ref" is the one that falls back to the default branch,
+  and it matched only the later wording. On a host still running that git the
+  ref-missing *answer* therefore read as a failure, the fallback never ran, and
+  an ordinary "start a new branch" launch died on a message about a ref nobody
+  had asked to exist yet. The refusal is classified from the verb that produced
+  it now, and case does not decide it.
+
+- **A repository that is not there on Codeberg or Forgejo now gets the
+  wrong-owner hint.** Those hosts answer a 404 with `remote: Not found.`, and
+  none of the three phrases the renderer sniffed for appear anywhere in that
+  output — all three were GitHub's and GitLab's wordings. The only other line is
+  git's own `fatal: repository '<url>' not found`, which does not contain the
+  substring `repository not found` the renderer was looking for, so a mistyped
+  owner on those hosts got the bare clone failure and no suggestion of what to
+  try. The reader matches git's line as a whole line ending in `' not found`
+  now, which is the host's wording out of the decision entirely, and still keeps
+  out `branch '%s' not found`, `tag '%s' not found` and `repository '%s' does
+  not exist`.
+
 ## [0.13.0] - 2026-08-24
 
 ### Changed
