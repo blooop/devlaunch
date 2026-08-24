@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787529175266,
+  "lastUpdate": 1787575724770,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -4253,6 +4253,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.454984",
             "unit": "s",
             "extra": "runs=5/5 wall=9.738888s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "217f253b02ee16ef564662985f54268ef431f3fb",
+          "message": "Merge pull request #380 from blooop/fix/picker-distinctness-ignores-padding\n\nWhether two picker rows collide cannot depend on a third row's width",
+          "timestamp": "2026-08-24T13:45:38+01:00",
+          "tree_id": "4bb95b10a05f0e26cb3e5eb02aec230e3aa4bd9a",
+          "url": "https://github.com/blooop/devlaunch/commit/217f253b02ee16ef564662985f54268ef431f3fb"
+        },
+        "date": 1787575724098,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 0.890921,
+            "range": "± 0.03846",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.256266,
+            "range": "± 0.029044",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000029,
+            "range": "± 0.000001",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.152189,
+            "range": "± 0.066",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.154154s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 0.96419,
+            "range": "± 0.046161",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.10476,
+            "range": "± 0.114201",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.25444,
+            "range": "± 0.017758",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 4.409074,
+            "range": "± 0.068799",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.805602,
+            "range": "± 0.154691",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.807958s v0.26.1, Linux-X64"
           }
         ]
       }
