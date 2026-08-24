@@ -1669,6 +1669,37 @@ impl DotfilesRefresh {
 /// interruptible, and sometimes a legitimately slow first `pixi global sync`. A
 /// deadline is worth having on the refresh nobody asked for, and is a way to lose
 /// work on the one somebody did.
+/// ## Why the retry is guarded, and why `init` carries three flags
+///
+/// The retry exists for one failure: the dotfiles repo grew a template variable
+/// that the workspace's `chezmoi.toml` predates, so `update` dies rendering a
+/// config that has no entry for it. Re-running `init` regenerates the config and
+/// the update goes through.
+///
+/// It is guarded on the source directory already being a git repository because
+/// **`chezmoi init` with no repo argument `git init`s one when it is not**, and
+/// that is unrecoverable rather than merely useless: the empty repo has no
+/// upstream, so `update` fails with `no tracking information` — forever, because
+/// every later refresh now finds a repository and `init` is a no-op. One
+/// actionable error (`not a git repository`) is converted into a permanent one,
+/// and the diagnosis that would have explained it is destroyed. Reproduced
+/// against chezmoi 2.72.
+///
+/// The guard also restores what the docstring above claims: a failure this retry
+/// cannot fix now fails with *the error that mattered*, rather than with whatever
+/// the second `chezmoi update` said. And the notice is printed after the guard,
+/// so a network failure or a dirty source tree is no longer announced as a config
+/// problem.
+///
+/// `--force` is not "non-interactive" — chezmoi spells it "make all changes
+/// without prompting", which is about changes, not about the `prompt*` functions
+/// a config template calls. Those need `--promptDefaults`, and its absence is why
+/// the retry could not fix its own motivating case: a repo that adds a
+/// `promptString` variable makes `init` ask for it, and a refresh with no
+/// terminal dies on `could not open a new TTY` while one with a terminal blocks
+/// on a question nobody is watching for. `--no-tty` turns the remaining case — a
+/// prompt with no default for `--promptDefaults` to return — into a fast error
+/// rather than a hang inside the bound.
 pub(crate) fn dotfiles_command(dotfiles_url: Option<&str>, bound: Option<Duration>) -> String {
     let fallback = match dotfiles_url {
         Some(url) => {
@@ -1690,8 +1721,10 @@ pub(crate) fn dotfiles_command(dotfiles_url: Option<&str>, bound: Option<Duratio
         "if command -v chezmoi >/dev/null 2>&1; then \
          echo \"Updating dotfiles...\" && \
          {{ chezmoi update --force || \
-            {{ echo \"Re-initialising the chezmoi config and retrying...\" && \
-               chezmoi init --force && chezmoi update --force; }} }} && \
+            {{ git -C \"$(chezmoi source-path 2>/dev/null)\" rev-parse --git-dir >/dev/null 2>&1 && \
+               echo \"Re-initialising the chezmoi config and retrying...\" && \
+               chezmoi init --force --promptDefaults --no-tty && \
+               chezmoi update --force; }} }} && \
          echo \"Syncing pixi global packages...\" && \
          pixi global sync && \
          echo \"Dotfiles updated successfully\"; \
@@ -4946,6 +4979,73 @@ mod tests {
         assert!(
             command.contains("git clone https://example/dots \"$DOTFILES_DIR\""),
             "the fallback clones the configured remote: {command}"
+        );
+    }
+
+    #[test]
+    fn the_retry_cannot_turn_a_source_dir_that_is_not_a_repo_into_an_empty_one() {
+        // `chezmoi init` with no repo argument `git init`s the source directory
+        // when it is not already a repository, and the repo it makes has no
+        // upstream -- so `update` fails with `no tracking information`, forever,
+        // because every later refresh finds a repository and `init` is a no-op.
+        // An actionable `not a git repository` becomes a permanent failure with
+        // its own diagnosis destroyed. Verified against chezmoi 2.72.
+        //
+        // So the retry asks first, and the question is asked of the source
+        // directory chezmoi itself names rather than a path spelled here.
+        let command = dotfiles_command(None, None);
+
+        let guard = command
+            .find("rev-parse --git-dir")
+            .expect("the retry is guarded on the source dir being a repository");
+        let reinit = command
+            .find("chezmoi init")
+            .expect("the retry still re-initialises");
+        assert!(
+            guard < reinit,
+            "the guard has to run before `init`, or `init` has already made the repo"
+        );
+        assert!(
+            command.contains("chezmoi source-path"),
+            "asking chezmoi where its source is, rather than hardcoding a path -- \
+             CLAUDE.md's rule that no /home/<user> path is written down"
+        );
+
+        // And the notice is inside the guard, so a network failure or a dirty
+        // source tree is no longer announced as a config problem.
+        let notice = command
+            .find("Re-initialising")
+            .expect("the retry still says what it is doing");
+        assert!(
+            guard < notice,
+            "the notice claims a diagnosis the guard makes"
+        );
+    }
+
+    #[test]
+    fn the_re_init_answers_its_own_config_prompts() {
+        // `--force` is chezmoi's "make all changes without prompting", which is
+        // about changes and not about the `prompt*` functions a config template
+        // calls. Without `--promptDefaults` the retry cannot fix its own
+        // motivating case: a dotfiles repo that adds a `promptString` variable
+        // makes `init` ask for it, and this runs with nobody watching -- dying on
+        // `could not open a new TTY` where there is no terminal, and blocking
+        // where there is one.
+        let command = dotfiles_command(None, None);
+        let init = command
+            .split("chezmoi init")
+            .nth(1)
+            .expect("the retry re-initialises");
+        let init = init.split("&&").next().expect("the init call's own words");
+
+        assert!(
+            init.contains("--promptDefaults"),
+            "a prompt function must return its default: {init}"
+        );
+        assert!(
+            init.contains("--no-tty"),
+            "a prompt with no default must be a fast error, not a hang inside the \
+             bound: {init}"
         );
     }
 

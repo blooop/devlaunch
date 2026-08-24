@@ -1016,6 +1016,15 @@ covered in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
 
 ### Refreshing dotfiles on attach
 
+Under chezmoi, the refresh is `chezmoi update` — and if that fails **and** the
+chezmoi source directory is a git repository, it regenerates the workspace's
+`chezmoi.toml` with `chezmoi init` and tries once more. That second attempt is
+for one failure in particular: the dotfiles repo grew a template variable the
+workspace's config predates, so every apply dies rendering a config that has no
+entry for it. It is guarded on the source directory already being a repository
+because `chezmoi init` with no repo argument would otherwise create an empty one,
+which has no upstream and can never update again.
+
 devpod applies dotfiles when it *provisions* a workspace, so a workspace that has
 been up for a fortnight still has the dotfiles it was born with. `dl <ws>
 dotfiles` fixes that when you think of it; `DEVLAUNCH_DOTFILES_ON_ATTACH=1` makes

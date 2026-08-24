@@ -40,6 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dotfiles refresh's recovery can no longer make a workspace permanently
+  unrecoverable.** When `chezmoi update` failed, the retry ran `chezmoi init`
+  unconditionally — and `chezmoi init` with no repo argument `git init`s the
+  source directory when it is not already a repository. The repo it makes has no
+  upstream, so `update` then fails with `no tracking information` on that refresh
+  and on every one after it, because each later attempt finds a repository and
+  `init` is a no-op. One actionable error was converted into a permanent one with
+  its own diagnosis destroyed. The retry now asks first, so a failure it cannot
+  fix fails with the error that mattered.
+- **The same retry can now fix the case it was written for.** chezmoi's `--force`
+  is "make all changes without prompting", which is about changes and not about
+  the `prompt*` functions a config template calls — so a dotfiles repo that added
+  a `promptString` variable made `init` ask for it, and a refresh nobody is
+  watching either died on `could not open a new TTY` or blocked on the question.
+  `init` now carries `--promptDefaults`, and `--no-tty` so that a prompt with no
+  default is a fast error rather than a hang inside the refresh's bound.
+
 - **A `kill` or a closed terminal now runs the same cleanup Ctrl-C does.** Only
   SIGINT had a handler, so `kill <dl>` — a supervisor timing a run out, a CI job
   being cancelled, a shutdown sweep — and closing the terminal window (SIGHUP)
