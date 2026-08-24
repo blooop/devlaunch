@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787575914459,
+  "lastUpdate": 1787576105083,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -4427,6 +4427,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.47114",
             "unit": "s",
             "extra": "runs=5/5 wall=10.776282s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1d3f7d894ba6609634c6cc3c21dcd5b3a0b4daa",
+          "message": "Merge pull request #383 from blooop/fix/chezmoi-recovery-cannot-destroy-recovery\n\nThe chezmoi recovery can no longer destroy what it recovers",
+          "timestamp": "2026-08-24T13:49:00+01:00",
+          "tree_id": "fa5a96c9f6108a554f2d84c12d497b9b67deacb3",
+          "url": "https://github.com/blooop/devlaunch/commit/d1d3f7d894ba6609634c6cc3c21dcd5b3a0b4daa"
+        },
+        "date": 1787576104118,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.261645,
+            "range": "± 0.109423",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.335855,
+            "range": "± 0.010642",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000042,
+            "range": "± 0.000003",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.615717,
+            "range": "± 0.10835",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.61775s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.352331,
+            "range": "± 0.080063",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.238841,
+            "range": "± 0.684005",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.334583,
+            "range": "± 0.005231",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 5.290793,
+            "range": "± 0.089921",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 10.081518,
+            "range": "± 0.677624",
+            "unit": "s",
+            "extra": "runs=5/5 wall=10.083996s v0.26.1, Linux-X64"
           }
         ]
       }
