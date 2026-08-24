@@ -342,3 +342,60 @@ def test_the_pre_create_hook_leaves_a_configuration_that_already_exists_alone(mo
     assert result.returncode == 0, result.stderr
     for path in existing:
         assert path.stat().st_mtime_ns == 0, f"the hook rewrote {path.name}"
+
+
+# The two files that are writable and that a reader would most reasonably assume
+# are not: `settings.json` can name a hook command inline, so a container writing
+# one runs a command on the host, and `CLAUDE.md` is the instruction file a prompt
+# injection would target. Both were mounted read-only under the old file-mount
+# layout, and #362 moved to a directory mount without rewriting every section that
+# said so.
+WRITABLE_BUT_LOOKS_PROTECTED = ("CLAUDE.md", "settings.json")
+
+# A heading is making a protection claim if it says so. `### What's Protected
+# (Read-Only Mounts)` is the one that went stale: it sat 450 lines below the
+# heading the mount-agreement test binds, kept claiming `CLAUDE.md` and
+# `settings.json` were read-only for two releases after they stopped being, and
+# was contradicted by this same file's own "What Is Not Mounted Read-Only".
+PROTECTION_WORDS = ("read-only", "protected")
+
+
+def _protection_headings(readme: str) -> list:
+    return [
+        line
+        for line in readme.splitlines()
+        if line.startswith("#") and any(word in line.lower() for word in PROTECTION_WORDS)
+    ]
+
+
+def test_no_heading_claims_protection_for_a_writable_file():
+    """No section listing protected paths may name a file that is writable.
+
+    The mount-agreement test binds one heading by its exact text, so a *second*
+    list of protected paths — which is what this README grew — is checked by
+    nothing. This asks the question of every heading that claims protection
+    instead of one, because the failure was a heading nobody had registered.
+
+    Only bullets count, for `documented_paths`'s reason: the prose under these
+    headings discusses `settings.json` precisely to say it is *not* protected,
+    and a substring match anywhere in the section would fail on the sentence
+    that fixes the problem.
+    """
+    readme = FEATURE_README.read_text()
+    headings = _protection_headings(readme)
+    assert headings, "no heading in the README claims protection; the guard is guarding nothing"
+
+    offences = []
+    for heading in headings:
+        for line in _section(FEATURE_README, heading).splitlines():
+            stripped = line.lstrip()
+            if not stripped.startswith(("-", "*")):
+                continue
+            for name in WRITABLE_BUT_LOOKS_PROTECTED:
+                if name in stripped:
+                    offences.append(f"{heading!r} lists {name}: {stripped.strip()}")
+
+    assert not offences, (
+        "a section claiming protection names a file that is writable from the "
+        "container:\n  " + "\n  ".join(offences)
+    )

@@ -111,7 +111,9 @@ This is the part of the layout to weigh before using it. The read-only list is
 an allow-list of *protection*, not of visibility: a directory Claude starts
 writing to next month is visible and writable from the container the day it
 appears, and only the five named directories are proof against a prompt
-injection that tries to edit its own instructions.
+injection that tries to edit its own instructions — and that only in an
+unprivileged container; see "The read-only mounts are not a container-escape
+boundary".
 
 What you get for that is a container whose Claude is the same Claude as the
 host's — same account, same login, same settings, updated in place when you
@@ -377,7 +379,7 @@ devpod up . --recreate
 
 ## Modifying Configuration
 
-The five instruction directories — `agents/`, `commands/`, `hooks/`, `skills/`, `wf-skills/` — are read-only, so you **cannot** add or change an agent, command, hook or skill from within the container. Everything else under `~/.claude` is writable and reaches the host, `settings.json` and `CLAUDE.md` included; see "Why only directories are mounted" for why those two could not be protected.
+The five instruction directories — `agents/`, `commands/`, `hooks/`, `skills/`, `wf-skills/` — are read-only, so an ordinary container process cannot add or change an agent, command, hook or skill. (A *privileged* container can remount them; see "The read-only mounts are not a container-escape boundary".) Everything else under `~/.claude` is writable and reaches the host, `settings.json` and `CLAUDE.md` included; see "Why only directories are mounted" for why those two could not be protected.
 
 To change configuration:
 
@@ -560,25 +562,64 @@ echo '{}' > ~/.claude/settings.json
 This implementation makes conscious security trade-offs to enable OAuth authentication and persistent setup state:
 
 ### What's Protected (Read-Only Mounts)
-- **CLAUDE.md**: Prevents prompt injection attacks that could modify your global instructions
-- **settings.json**: Prevents config tampering
-- **agents/**, **commands/**, **hooks/**: Prevents malicious code execution through modified hooks
 
-### What's Writable (Necessary Trade-off)
-- **`.credentials.json`**: OAuth tokens must be writable for token refresh to work
-- **`.claude.json`**: Workspace state must be writable to persist `projectOnboardingSeenCount` and other setup tracking
+Five directories, and only these five: **`agents/`**, **`commands/`**, **`hooks/`**,
+**`skills/`**, **`wf-skills/`**. They carry the code and instructions Claude
+executes, which is why they are the ones singled out.
+
+`CLAUDE.md` and `settings.json` are **not** among them. They are files, and a
+file cannot be individually protected here — see "Why only directories are
+mounted". `settings.json` can name hook commands inline, so a container that
+writes one has arranged for a command to run **on the host**. That is the cost of
+the layout, stated where it can be read rather than left for someone to discover.
+
+### What's Writable
+
+Everything else under `~/.claude`, because the whole directory is a read-write
+bind mount. That includes:
+
+- **`.credentials.json`** — the host's OAuth tokens, readable *and* writable
+- **`.claude.json`** — workspace state
+- **`CLAUDE.md`** and **`settings.json`** — see above
+- **`projects/`**, **`history.jsonl`**, **`shell-snapshots/`**, **`plugins/`** —
+  the transcripts of every session on the host, from every project, not just this
+  one
 
 ### Security Mitigations
-- Files have `600` permissions (user-only access)
-- Only use this feature in **trusted repositories**
-- Container user isolation provides some protection
-- Writable files are limited to authentication/state only
-- All configuration and code execution files remain read-only
+
+- Only use this feature in **trusted repositories**, and treat the container as
+  having the same access to your Claude account that you do
+- The five read-only directories hold against an ordinary container process
+
+That is the honest list. In particular it is *not* true that "writable files are
+limited to authentication/state only", and it is *not* true that "all
+configuration and code execution files remain read-only" — both were written for
+the file-mount layout that this feature no longer uses.
+
+### The read-only mounts are not a container-escape boundary
+
+They hold against an unprivileged container. They do not hold against one with
+`CAP_SYS_ADMIN`, which can `mount -o remount,rw` its own read-only bind mounts —
+and **the devcontainer in this repository is privileged**, because the
+`docker-in-docker` feature it enables brings `"privileged": true` with it
+(`.devcontainer/devcontainer.json:76`).
+
+So for this repo's own container, read the five directories as protection against
+a prompt injection that tries to edit its own instructions — a mistake, in other
+words — and not as protection against code that is actively trying to get out.
 
 ### Known Risks
-- A malicious process in the container could exfiltrate OAuth tokens from `.credentials.json`
-- A malicious process could modify workspace state in `.claude.json`
-- **Recommendation**: Only use in repositories you trust, as you would with any dev container configuration
+
+- A process in the container can read the host's OAuth tokens from
+  `.credentials.json`, and the host's session transcripts for **every** project
+  under `projects/`
+- A process in the container can write a hook command into the host's
+  `settings.json`, which is host command execution
+- A *privileged* container can additionally remount the five read-only
+  directories read-write and rewrite the host's agents, commands, hooks and
+  skills
+- **Recommendation**: Only use in repositories you trust, as you would with any
+  dev container configuration
 
 See related security discussions:
 - [anthropics/claude-code#4478](https://github.com/anthropics/claude-code/issues/4478)
