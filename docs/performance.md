@@ -6,10 +6,16 @@ Where a launch's seconds go, how to get that as JSON, and how the trend on
 ## One round trip per question
 
 Every `devpod` call costs about 0.45s, far more than `dl` itself spends on
-anything. That one figure sets the shape of the whole program: a command reads
-the workspace list at most once, and everything a container needs on the way in,
-naming it and then the tools probe, rides a single setup pass. So an interactive
-`dl <ws>` and a one-shot `dl <ws> -- <cmd>` cost the same trips.
+anything. That figure was measured on the Python build on 2026-08-07
+(`22afd52`) and no host has re-measured it since, but it is still the right
+order: `devpod status` on `dl 0.13.0`, nested inside this repo's devcontainer,
+measures 0.43s to 0.67s
+([#388](https://github.com/blooop/devlaunch/issues/388)). Read it as a floor
+rather than as a stopwatch reading. That one figure sets the shape of the whole
+program: a command reads the workspace list at most once, and everything a
+container needs on the way in, naming it and then the tools probe, rides a
+single setup pass. So an interactive `dl <ws>` and a one-shot
+`dl <ws> -- <cmd>` cost the same trips.
 
 ## Measuring launch time
 
@@ -17,19 +23,24 @@ Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
 naming each subprocess round trip and the total. Unset (or `0`) records nothing
 and prints nothing.
 
-**Every second quoted in this section is one host's session on 2026-08-14, and
-that host was running the Python build `0.1.0` replaced.** The formats are
-current: the stage names are frozen in `rust/devlaunch-core/src/timing.rs` and
-pinned by its tests. The seconds are not. They describe an implementation that
-no longer ships, and no host has measured the Rust binary into this prose, which
-is deliberate rather than a gap to fill by hand. The numbers to trust are the
-ones [the trend on main](#the-trend-on-main) publishes per commit, and it has
-published nothing since the cutover
-([#292](https://github.com/blooop/devlaunch/issues/292)). The Rust build's own
-per-stage decomposition was re-measured nested inside this repo's devcontainer
+**Every second quoted in this section came off one host on 2026-08-14, over
+three sessions that day (`d3b8ffb`, `5510b1e`, `461f740`), and that host was
+running the Python build `0.1.0` replaced.** The `dl-next` in these captures is
+that Python install, not the compiled Rust working tree the name means now. The
+formats are current: the stage names are frozen in
+`rust/devlaunch-core/src/timing.rs` and pinned by its tests. The seconds are
+not. They describe an implementation that no longer ships, and no host has
+measured the Rust binary into this prose, which is deliberate rather than a gap
+to fill by hand. The Rust build's own per-stage decomposition was re-measured
+nested inside this repo's devcontainer
 ([#388](https://github.com/blooop/devlaunch/issues/388)), which is
 docker-in-docker rather than a host, so what it carries across is the per-stage
 arithmetic and not anyone's wall clock.
+
+Current per-commit numbers come from [the trend on main](#the-trend-on-main),
+which has published a Rust point on every push since 2026-08-22. Read it forward
+from `03b7de2`, the first of them, and not across it: every point before that
+measures the Python build, and nothing on the chart says which is which.
 
 Captured from a real warm launch (the launch's own output elided):
 
@@ -181,7 +192,23 @@ things about it are load-bearing:
 Every push to `main` runs `.github/workflows/bench.yml`, which benches both
 shapes on the runner and publishes one point per stage to
 <https://blooop.github.io/devlaunch/dev/bench/>. It can also be dispatched by
-hand. Reading it needs nothing but the chart; what follows is for changing it.
+hand.
+
+**The port is in that series and nothing on the chart marks it**, which is the
+one thing worth knowing before reading it. The first 35 points end at `1566c86`
+and measure the Python build, because until `1654daf` these steps ran the
+console script an editable Python install left in the environment. Publishing
+then stopped for two days, the retirement having put a bare `dl` on `PATH` with
+no `devpod` beside it, until
+[#373](https://github.com/blooop/devlaunch/pull/373) fixed it. The Rust series
+starts at `03b7de2` on 2026-08-22 and has a point per push since. A comparison
+within either run of points is therefore sound, and one that straddles the gap
+is not: it reads a whole change of implementation as a regression.
+[#292](https://github.com/blooop/devlaunch/issues/292) is open on that, and on
+its record-keeping instruction rather than on a red workflow: the commit of the
+first Rust point has to be written into the map's decisions so nobody later
+reads that step as something `dl` did. Past that, reading the chart needs
+nothing but the chart; what follows is for changing it.
 
 `scripts/bench_points.py` is the step between the two formats, bench records
 in and one flat array of trend cases out:
