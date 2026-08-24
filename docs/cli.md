@@ -34,9 +34,19 @@ so interactive programs start and stay up instead of exiting immediately. A codi
 agent, `htop`, `git rebase -i`, a REPL. Redirect the output and the terminal
 goes away again, so `dl <ws> -- ls > files.txt` stays free of escape sequences.
 
-This needs the ssh host alias `devpod up` writes to `~/.ssh/config`. If a
-workspace has none, `dl` says so and falls back to the plain `devpod ssh`
-transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
+This needs the ssh host alias `devpod up` writes. Where it writes it is devpod's
+choice and `dl` follows it: `SSH_CONFIG_INCLUDE_PATH` from devpod's context
+options, else `$DEVPOD_SSH_CONFIG`, else the `SSH_CONFIG_PATH` context option,
+else `~/.ssh/config`. devpod writes to whichever of those it picks and to no
+other, so a host that exports `DEVPOD_SSH_CONFIG` has no `~/.ssh/config` for `dl`
+to read. The context options are read from the copy `dl` has already cached, never
+by asking devpod again, because that question costs more than the terminal it
+decides.
+
+If a workspace has no alias, `dl` says so and falls back to the plain `devpod ssh`
+transport, which has no terminal; `dl <ws> restart` republishes the alias. If
+there is no ssh config at all, `dl` says that instead and names the file it looked
+in, because a restart cannot fix a `dl` that is reading the wrong file. Set
 `DEVLAUNCH_NO_TTY=1` to force the fallback everywhere.
 
 ### `--rm`: the throwaway workspace

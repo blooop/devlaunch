@@ -148,13 +148,16 @@ def workspace(tmp_path_factory) -> Iterator[InteractiveWorkspace]:
     than adopted: a workspace this run did not create is not in this run's
     `DEVPOD_HOME` and so cannot be reached at all -- see the module docstring.
 
-    Two things beyond `devpod up` are needed before dl's *pty* transport can be
-    exercised, and both come from `route_ssh_through`: dl's own "is there a
-    host alias" check has to look at this run's ssh config, and OpenSSH has to be
-    given it with `-F`, since it resolves `~` through `getpwuid` and no
-    environment variable reaches it. Without them dl would find no alias, warn,
+    One thing beyond `devpod up` is needed before dl's *pty* transport can be
+    exercised, and it comes from `route_ssh_through`: OpenSSH has to be handed
+    this run's ssh config with `-F`, since it resolves `~` through `getpwuid` and
+    no environment variable reaches it. Without it dl would find no alias, warn,
     and silently fall back to the transport that has no terminal -- which is the
-    transport every assertion in this file exists to distinguish itself from.
+    transport every assertion in this file exists to distinguish itself from. dl's
+    own "is there a host alias" check needs no help: it resolves
+    `DEVPOD_SSH_CONFIG`, which this suite already scopes, and the scratch home
+    holds no `.ssh/config` for it to fall back to -- so these tests passing is
+    also what says dl still looks where devpod writes (devlaunch#421).
 
     The tracker is this module's own, and `cleanup()` runs whether the tests
     passed, failed, or never got that far. `devpod_cleanup` is function-scoped
@@ -199,9 +202,9 @@ class TestCommandGetsATerminal:
         """The pty transport reads devpod's own alias; without it dl falls back.
 
         Asked of the config this run's `devpod up` writes to, which is the file
-        dl reads in this environment -- `HOME` points at a directory whose
-        `.ssh/config` is that file. Asking about the developer's real config
-        instead would be a question about their machine.
+        dl reads in this environment -- `DEVPOD_SSH_CONFIG` names it, and dl
+        resolves that ahead of `~/.ssh/config`. Asking about the developer's real
+        config instead would be a question about their machine.
         """
         assert devpod_host_configured(workspace.workspace_id, config_path=workspace.ssh_config), (
             "devpod wrote no ssh host alias for this workspace, so dl will fall "

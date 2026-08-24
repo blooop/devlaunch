@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dl` looks for devpod's ssh host aliases where devpod writes them, so the pty
+  transport stops disappearing in silence.** `dl <ws> -- <cmd>` runs over OpenSSH
+  through the alias `devpod up` publishes, and `dl` decided whether that alias
+  existed by reading a hardcoded `~/.ssh/config`. devpod does not necessarily
+  write there: it targets the `SSH_CONFIG_INCLUDE_PATH` context option, else
+  `--ssh-config` (whose default it fills in from `$DEVPOD_SSH_CONFIG`), else the
+  `SSH_CONFIG_PATH` context option, else `~/.ssh/config` — and it writes to
+  whichever it picks and to *no other*. So on any host that exports
+  `DEVPOD_SSH_CONFIG` there was no `~/.ssh/config` to find, `dl` concluded the
+  workspace had no alias, dropped every command to `devpod ssh --command` (no
+  pty, `TERM=dumb`, interactive programs exiting on sight), and the only thing it
+  said was that the *workspace* needed restarting. This repo's own scratch
+  convention, `test/conftest.py` and `scripts/bench_launch.py` all export that
+  variable, so the transport was unreachable on exactly the hosts we measure on:
+  **before/after numbers from a run that set `DEVPOD_SSH_CONFIG` are not
+  comparable across this change**, because the earlier side of them was silently
+  on the other transport.
+  The two context-option paths are read from the copy `dl` has already cached and
+  never by a fresh `devpod context options`: that trip costs 0.4-0.7s (#393) on a
+  path where the whole decision is worth less, and a cache miss falls back to
+  devpod's own defaults, which is what `dl` assumed unconditionally before.
+  And the silence is gone from the type rather than from a log line. `Terminal`'s
+  one `NoAlias` arm was two facts wearing one name; it is now `NoAlias` (this
+  config has no entry for this workspace, and `dl <ws> restart` republishes it),
+  `ConfigMissing` (there is no ssh config where devpod publishes, named in the
+  notice, which a restart cannot fix) and `ConfigUnlocatable` (no home directory
+  and nothing naming a config, so there is nowhere to look). Each has its own
+  sentence, and each names the path `dl` read. (#421)
+
 ### Added
 
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota

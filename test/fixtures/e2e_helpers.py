@@ -359,23 +359,24 @@ def create_e2e_workspace(
 # through OpenSSH: `ssh -t <workspace>.devpod <payload>`, using the host alias
 # `devpod up` publishes. The suite scopes that publication away from the developer
 # with `DEVPOD_SSH_CONFIG` (see `test/devpod_scoping.py`), which leaves the alias
-# somewhere nothing looks for it by default. Two separate lookups have to be
-# pointed at it, and they need two different mechanisms because they disagree about
-# what a home directory is.
+# somewhere nothing looks for it by default. Two separate lookups have to reach
+# it, and only one of them needs help from here.
 #
 # **dl's own check** -- "did devpod publish an alias for this workspace, or should
-# this command fall back to the transport with no terminal?" -- reads
-# `$HOME/.ssh/config`. Both implementations resolve that through the environment
-# (Python's `Path.home()`, Rust's `std::env::home_dir()`), so a scratch `HOME`
-# whose `.ssh/config` *is* the run's config redirects it. A symlink rather than a
-# copy, so a later `devpod up` in the same run is visible through it.
+# this command fall back to the transport with no terminal?" -- resolves
+# `DEVPOD_SSH_CONFIG` itself, ahead of `~/.ssh/config`, because that is where
+# devpod wrote the alias and the only place it wrote it (devlaunch#421). So the
+# variable the suite already exports is the whole of it, and the scratch `HOME`
+# below deliberately holds **no** `.ssh/config` at all: dl finding the alias
+# anyway is what proves the resolution order, and a symlink standing in for it
+# would hide a regression back to the hardcoded path.
 #
-# **OpenSSH itself** does not read `$HOME`. It expands `~` for the default user
-# config through `getpwuid(getuid())`, so the scratch home above is invisible to
-# it and `ssh <alias>` fails with "Could not resolve hostname" -- measured on this
-# suite's own ssh, and the reason this needs a shim rather than a one-line
-# `monkeypatch.setenv`. What does work is `-F <path>`, so an `ssh` shim first on
-# `PATH` supplies it.
+# **OpenSSH itself** does not read `DEVPOD_SSH_CONFIG` or `$HOME`. It expands `~`
+# for the default user config through `getpwuid(getuid())`, so the scratch home is
+# invisible to it and `ssh <alias>` fails with "Could not resolve hostname" --
+# measured on this suite's own ssh, and the reason this needs a shim rather than a
+# one-line `monkeypatch.setenv`. What does work is `-F <path>`, so an `ssh` shim
+# first on `PATH` supplies it.
 #
 # The shim passes `-F` *before* the caller's arguments, which makes it a default
 # and not an override: OpenSSH takes the last `-F` on the command line, so a
@@ -430,9 +431,14 @@ class ScopedSsh:
 
 
 def route_ssh_through(config: Path, root: Path) -> ScopedSsh:
-    """Materialize a scratch home and an `ssh` shim that both resolve `config`.
+    """Materialize a scratch home and an `ssh` shim that resolves `config`.
 
     `root` is a directory this run owns; two subdirectories are created under it.
+
+    The home is deliberately bare of a `.ssh/config`: dl resolves
+    `DEVPOD_SSH_CONFIG` for itself, so putting one there would only hide a
+    regression to the hardcoded `~/.ssh/config` (devlaunch#421). It stays scoped
+    so nothing under test reads the developer's home.
     """
     real_ssh = shutil.which("ssh")
     if real_ssh is None:
@@ -442,13 +448,7 @@ def route_ssh_through(config: Path, root: Path) -> ScopedSsh:
         )
 
     home = root / "home"
-    (home / ".ssh").mkdir(parents=True, exist_ok=True)
-    alias_config = home / ".ssh" / "config"
-    if not alias_config.exists():
-        # A symlink, so the file devpod rewrites on the next `up` is the file dl
-        # reads. `devpod up` replaces the path rather than editing in place, and
-        # a copy taken now would answer for the workspaces of a moment ago.
-        alias_config.symlink_to(config)
+    home.mkdir(parents=True, exist_ok=True)
 
     bin_dir = root / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)

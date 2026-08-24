@@ -1638,10 +1638,30 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         ),
 
         // --- the session (warning at 3845, info at 3864/3891, debug at 3875)
-        LaunchNotice::NoTerminalAlias { workspace_id } => format!(
-            "No devpod ssh host entry for {workspace_id}, so this command gets no terminal; \
-             interactive programs may exit immediately. `dl {workspace_id} restart` republishes it."
+        LaunchNotice::NoTerminalAlias {
+            workspace_id,
+            config,
+        } => format!(
+            "No devpod ssh host entry for {workspace_id} in {}, so this command gets no terminal; \
+             interactive programs may exit immediately. `dl {workspace_id} restart` republishes it.",
+            config.display()
         ),
+        LaunchNotice::NoDevpodSshConfig {
+            workspace_id,
+            looked_in,
+        } => format!(
+            "No ssh config at {}, which is where `devpod up` publishes its host aliases on this \
+             machine, so {workspace_id} has none and this command gets no terminal; interactive \
+             programs may exit immediately. `dl {workspace_id} restart` writes it.",
+            looked_in.display()
+        ),
+        LaunchNotice::SshConfigUnlocatable => {
+            "This machine has no home directory and nothing names an ssh config \
+             (DEVPOD_SSH_CONFIG, or devpod's SSH_CONFIG_PATH context option), so dl cannot tell \
+             where `devpod up` publishes its host aliases. This command gets no terminal; \
+             interactive programs may exit immediately."
+                .to_owned()
+        }
         LaunchNotice::SshCommand { argv } => format!("SSH command: {}", argv.join(" ")),
         // debug: devpod's own diagnostics are already on the user's stderr, and the
         // status is the exit code this command ends with.
@@ -2847,6 +2867,46 @@ mod tests {
                     .to_owned()
             )
         );
+    }
+
+    #[test]
+    fn each_way_of_losing_the_pty_transport_names_the_file_dl_read() {
+        // The three arms devlaunch#421 split apart, and the reason the split is
+        // worth a type: the advice differs. A restart republishes an alias into a
+        // config that exists; it does nothing at all when dl is reading a file
+        // devpod never writes, which is the case that shipped, silently, on every
+        // host exporting DEVPOD_SSH_CONFIG. So each sentence has to say which of
+        // the three happened, and every one of them names a path or says why there
+        // is none.
+        let alias_absent = launch_notice(&LaunchNotice::NoTerminalAlias {
+            workspace_id: "myws".to_owned(),
+            config: std::path::PathBuf::from("/scratch/ssh_config"),
+        })
+        .expect("a sentence");
+        let no_config = launch_notice(&LaunchNotice::NoDevpodSshConfig {
+            workspace_id: "myws".to_owned(),
+            looked_in: std::path::PathBuf::from("/scratch/ssh_config"),
+        })
+        .expect("a sentence");
+        let nowhere = launch_notice(&LaunchNotice::SshConfigUnlocatable).expect("a sentence");
+
+        assert!(
+            alias_absent.contains("/scratch/ssh_config"),
+            "{alias_absent}"
+        );
+        assert!(
+            alias_absent.contains("`dl myws restart` republishes it"),
+            "{alias_absent}"
+        );
+        assert!(no_config.contains("/scratch/ssh_config"), "{no_config}");
+        assert_ne!(
+            alias_absent, no_config,
+            "one sentence for both is what let the bug ship"
+        );
+        assert!(nowhere.contains("DEVPOD_SSH_CONFIG"), "{nowhere}");
+        for line in [&alias_absent, &no_config, &nowhere] {
+            assert!(line.contains("no terminal"), "{line}");
+        }
     }
 
     #[test]

@@ -350,6 +350,7 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
+| `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 
 Every "no" variable reads the same values: anything but empty, `0`, `false` or `no` means yes,
 turn it off.
