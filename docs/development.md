@@ -142,7 +142,7 @@ the `rust` job like everything else, and `pixi run coverage-rust` includes them 
 Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
 working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
-[AGENTS.md](AGENTS.md).
+[AGENTS.md](../AGENTS.md).
 
 ### The Quickstart's demo GIFs
 
@@ -163,7 +163,7 @@ before.
 
 Until 0.1.0 this repository held a second, Python implementation of `dl`, and a parity harness that
 ran both against the same fixtures and compared them. Both retired once the binaries shipped; the
-history is in [docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md), whose divergence table still
+history is in [rust-rewrite-plan.md](rust-rewrite-plan.md), whose divergence table still
 records every deliberate behavioural difference from that build.
 
 The two published artifacts are built from the same cargo package, both taking their version from
@@ -569,7 +569,7 @@ a volume belonging to a live workspace shows `LINKS 1`.
 ## Going back to the Python build
 
 `0.1.0` is the Rust rewrite: same commands, same cache, same `metadata.json`, different
-implementation (the whole of it is in [docs/rust-rewrite-plan.md](docs/rust-rewrite-plan.md), whose
+implementation (the whole of it is in [rust-rewrite-plan.md](rust-rewrite-plan.md), whose
 divergence table is the complete list of what changed on purpose). The last Python release is
 `0.0.29`, and nothing in the cache stops you going back to it:
 
