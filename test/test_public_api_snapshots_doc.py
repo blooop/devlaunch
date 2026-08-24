@@ -29,7 +29,11 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 # cut back to an orientation document. The guard is about a reader having the
 # canonical-path limit written down somewhere they are sent, not about which file
 # carries it.
-README = REPO_ROOT / "docs" / "development.md"
+DEV_DOC = REPO_ROOT / "docs" / "development.md"
+
+# What the failure messages call it, so a renamed target renames itself in all of
+# them rather than in none.
+DOC = DEV_DOC.relative_to(REPO_ROOT).as_posix()
 RUST = REPO_ROOT / "rust"
 
 # The step whose shell the executable checks at the bottom of this file run.
@@ -141,13 +145,13 @@ def test_ci_installs_the_version_the_script_pins():
 
 @pytest.mark.unit
 def test_regenerating_is_documented_outside_the_ci_error_string():
-    readme = README.read_text(encoding="utf-8")
-    assert "### The public-API snapshots" in readme, (
-        "README has no section on the snapshots; a red tick that only explains "
+    document = DEV_DOC.read_text(encoding="utf-8")
+    assert "### The public-API snapshots" in document, (
+        f"{DOC} has no section on the snapshots; a red tick that only explains "
         "itself in a workflow's error string is a thing people learn by breaking"
     )
-    assert "scripts/public-api-snapshots.sh" in readme, (
-        "the README section does not name the command that regenerates them"
+    assert "scripts/public-api-snapshots.sh" in document, (
+        f"the {DOC} section does not name the command that regenerates them"
     )
 
 
@@ -166,10 +170,9 @@ def test_the_ci_error_string_sends_a_reader_to_the_document_that_has_the_section
         "the public-api job no longer quotes the section name, so this check "
         "cannot tell which document it is sending a reader to"
     )
-    document = README.relative_to(REPO_ROOT).as_posix()
-    assert document in job, (
+    assert DOC in job, (
         f"the public-api job quotes 'The public-API snapshots' but does not name "
-        f"{document}, which is the document that carries it; a reader following the "
+        f"{DOC}, which is the document that carries it; a reader following the "
         "error string is sent somewhere the section is not"
     )
 
@@ -184,7 +187,7 @@ def test_the_docs_say_what_the_promise_file_does_not_cover():
     fire is worse than no guard, so the limit is documented where the guard is,
     and the ticket that closes it is named.
     """
-    for path in (README, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
+    for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
         text = path.read_text(encoding="utf-8")
         assert "canonical" in text, (
             f"{path.name} describes the promise file without the canonical-path limit "

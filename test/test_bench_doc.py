@@ -1,15 +1,15 @@
-"""The benchmarking commands README publishes, run rather than read (#192).
+"""The benchmarking commands the launch-time docs publish, run rather than read (#192).
 
 There is already a guard of this shape, and it reads the wrong document. It
 extracts the cold recipe from `bench_launch.py`'s own epilog and drives it
 through `main()`, built after that recipe shipped twice with a `delete`
-subcommand `dl` does not have. It works -- and the README carries its *own*
+subcommand `dl` does not have. It works -- and the launch-time section carries its *own*
 copies of these commands, which is where the third defect in the same lineage
 actually shipped: a `python scripts/bench_launch.py` published to readers whose
 host has no `python` outside pixi.
 
 So the same recipe is pointed at the second document. Every fenced invocation of
-a bench script under the launch-time section is read out of the README and then
+a bench script under the launch-time section is read out of that document and then
 handed to the things that would have caught each defect:
 
 - the *interpreter* to a list of the two this repo can vouch for, because that
@@ -23,7 +23,7 @@ handed to the things that would have caught each defect:
 
 Two things this file deliberately does not do. It does not check the numbers the
 section quotes: those are a measurement of one host, not a command anything can
-run. And it does not require the README to keep documenting these commands --
+run. And it does not require the section to keep documenting these commands --
 but if it stops, it has to stop *loudly*, which is why the extraction is
 asserted non-empty before anything is parametrized over it. A guard whose
 document was rewritten out from under it reads exactly like a guard that passed.
@@ -56,7 +56,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # cut back to an orientation document. What this file guards is that a reader
 # sent to these commands can run them, not which file they are printed in, so the
 # constant follows the prose rather than the prose being held in place by it.
-README = REPO_ROOT / "docs" / "performance.md"
+BENCH_DOC = REPO_ROOT / "docs" / "performance.md"
+
+# What the failure messages call the document, so a renamed target renames itself
+# in every one of them rather than in none.
+DOC = BENCH_DOC.relative_to(REPO_ROOT).as_posix()
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 SCRIPTS = REPO_ROOT / "scripts"
 
@@ -69,7 +73,7 @@ BENCH_SECTION = "## Measuring launch time"
 # name; a bare `python` is the defect that shipped, on a machine where it exists
 # only inside pixi. `pixi run` is the other vouched-for route because the task
 # it names brings its own interpreter -- which is why the task's own definition
-# is allowed to say `python`, and why this list is about the README rather than
+# is allowed to say `python`, and why this list is about the documented command rather than
 # about the project manifest.
 VOUCHED_INTERPRETERS = ("python3", "pixi")
 
@@ -78,21 +82,21 @@ INVOKES_A_SCRIPT = re.compile(r"scripts/(\w+\.py)")
 
 
 def has_bench_section() -> bool:
-    """Whether the README still carries the heading everything here hangs off."""
-    text = README.read_text(encoding="utf-8")
+    """Whether the document still carries the heading everything here hangs off."""
+    text = BENCH_DOC.read_text(encoding="utf-8")
     return re.search(rf"^{re.escape(BENCH_SECTION)}$", text, re.MULTILINE) is not None
 
 
 def bench_section() -> str:
-    """The launch-time section of the README, or "" when the heading is gone.
+    """The launch-time section, or "" when the heading is gone.
 
     Tolerant of a missing heading, and only because this runs while pytest is
     *collecting* the module: an assertion raised here aborts the whole session
-    rather than failing one test, so a README edit would take the unrelated
+    rather than failing one test, so an edit to it would take the unrelated
     suite down with it. The heading's absence is asserted below instead, where
     it reads as the single failure it is.
     """
-    return _section(README, BENCH_SECTION) if has_bench_section() else ""
+    return _section(BENCH_DOC, BENCH_SECTION) if has_bench_section() else ""
 
 
 def documented_commands() -> list:
@@ -165,7 +169,7 @@ DOCUMENTED = documented_commands()
 # fences, because these are written inline, in the sentence that recommends them.
 DOCUMENTED_SHORTCUTS = sorted(set(re.findall(r"pixi run ([a-z0-9][a-z0-9-]*)", bench_section())))
 
-# One case per long flag the README spells out, for the abbreviation guard
+# One case per long flag the section spells out, for the abbreviation guard
 # below: the flag, and the command it was documented in.
 DOCUMENTED_FLAGS = [
     (command, word)
@@ -196,14 +200,14 @@ def test_this_guard_still_has_a_document_to_read():
     """The extraction itself, asserted before anything is parametrized over it.
 
     Every other test in this file is one case per thing found here, and pytest
-    *skips* a parametrization with no cases. So a README section that was
+    *skips* a parametrization with no cases. So a section that was
     renamed, or whose fences stopped holding invocations, would empty all of
     them at once and leave a run that reads exactly like a pass. This is the
     test that makes the emptying the failure, and it is one test rather than
     three because they all fail for the same reason.
     """
     assert has_bench_section(), (
-        f"README no longer has the heading {BENCH_SECTION!r}; it was renamed or removed, and "
+        f"{DOC} no longer has the heading {BENCH_SECTION!r}; it was renamed or removed, and "
         "every guard in this file now reads an empty document"
     )
     assert {script_named_in(command) for command in DOCUMENTED} == {
@@ -233,7 +237,7 @@ def test_every_documented_command_names_an_interpreter_this_repo_can_vouch_for(c
     """
     interpreter = shlex.split(command, comments=True)[0]
     assert interpreter in VOUCHED_INTERPRETERS, (
-        f"README runs a bench script with {interpreter!r}; only {VOUCHED_INTERPRETERS} are "
+        f"{DOC} runs a bench script with {interpreter!r}; only {VOUCHED_INTERPRETERS} are "
         "vouched for here -- a bare `python` does not exist on a host whose python is pixi's"
     )
 
@@ -243,13 +247,13 @@ def test_every_documented_command_names_an_interpreter_this_repo_can_vouch_for(c
 def test_every_documented_command_names_a_script_that_is_in_the_tree(command):
     """The path is part of the command: a moved script is a broken recipe."""
     name = script_named_in(command)
-    assert (SCRIPTS / name).is_file(), f"README documents scripts/{name}, which is not in the tree"
+    assert (SCRIPTS / name).is_file(), f"{DOC} documents scripts/{name}, which is not in the tree"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("command", DOCUMENTED, ids=a_command)
 def test_every_documented_command_asks_its_script_for_flags_the_script_has(command):
-    """The epilog guard's seam, pointed at the README.
+    """The epilog guard's seam, pointed at the documented commands.
 
     Handed to the real parser, so a flag renamed, spelled wrong, or documented
     before it existed fails here instead of in the reader's terminal. Parsing is
@@ -270,7 +274,7 @@ def test_every_documented_shortcut_names_a_task_this_project_defines(task):
     defect as the interpreter, one line further down the page.
     """
     assert task in pixi_tasks(), (
-        f"README tells a reader to run `pixi run {task}`, which this project does not define"
+        f"{DOC} tells a reader to run `pixi run {task}`, which this project does not define"
     )
 
 
@@ -289,7 +293,7 @@ def test_no_documented_flag_would_be_accepted_one_letter_short(command, flag):
     The rename ships and the page is wrong about the one thing this file exists
     to check.
 
-    Asserted by taking a flag the README really documents, cutting its last
+    Asserted by taking a flag the section really documents, cutting its last
     letter off, and requiring the refusal: a parser that accepts *that* is a
     parser these guards cannot be trusted with. Both bench scripts are covered,
     since both have a document pointed at them.
@@ -325,7 +329,7 @@ def test_the_cold_recipes_reset_is_either_run_from_the_absent_state_or_left_to_t
         return
     for reset in resets:
         assert a_reset_from_the_absent_state(devpod_shim, reset) == 0, (
-            f"README documents the reset {reset!r}, which dl refuses from the state every "
+            f"{DOC} documents the reset {reset!r}, which dl refuses from the state every "
             "cold bench's first reset meets"
         )
 
@@ -338,15 +342,15 @@ def test_the_cold_recipes_reset_is_either_run_from_the_absent_state_or_left_to_t
 def test_the_epilogs_cold_reset_is_a_command_dl_actually_accepts(devpod_shim):
     """The cold recipe in `bench_launch.py --help` names a reset dl accepts.
 
-    This exact defect shipped twice: a README recipe whose reset was a subcommand
+    This exact defect shipped twice: a documented recipe whose reset was a subcommand
     dl does not have, then the same recipe moved into `--help` unfixed. So the
     documented reset is exercised rather than read -- extracted from the epilog and
     run against a devpod that has nothing to delete, the state every cold bench's
     first reset meets.
 
     Lived in `test_timing.py` until the Python implementation was retired (#267),
-    and moved here rather than being dropped: this file already guards the README's
-    copies of the same commands, and while the README currently points at this
+    and moved here rather than being dropped: this file already guards the document's
+    copies of the same commands, and while the document currently points at this
     epilog instead of publishing a reset of its own, the epilog's is the only one
     of the two being run.
     """

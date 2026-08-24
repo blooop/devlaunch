@@ -83,12 +83,19 @@ def _links(document: Path) -> list[tuple[int, str]]:
     return found
 
 
+# Anything with a URI scheme in front of it is somebody else's to resolve. Matched
+# as a scheme rather than as a list of the ones used today, so adding a `mailto:`
+# or an `ftp:` link needs no edit here -- enumerating them would be guessing at
+# which schemes the documentation will grow.
+HAS_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
+
+
 def relative_links() -> list[tuple[Path, int, str]]:
     """Every link in every document that names a path rather than a URL."""
     collected = []
     for document in DOCUMENTS:
         for number, target in _links(document):
-            if re.match(r"^(https?:|mailto:)", target):
+            if HAS_SCHEME.match(target):
                 continue
             collected.append((document, number, target))
     return collected

@@ -221,12 +221,14 @@ checking rather than trusting, because a private package fails at nothing. See
   matching on headings. Moving one of those sections between files means moving
   the path in its guard, in the same change.
 
-- **No em dashes in the pages the README's Docs table links.** They read as
-  machine-written. Use a full stop or a comma, or end the sentence.
-  `test/test_docs_prose.py` asserts it, and lists the pages in scope. The two
-  archival planning documents under `docs/` (`rust-rewrite-plan.md`,
-  `rust-port-scope.md`) are deliberately outside it: they record a port that has
-  already happened, and rewriting them to a style rule would edit a record.
+- **No em or en dashes in the README or the `docs/` pages it links.** They read
+  as machine-written. Use a full stop or a comma, or end the sentence, and write
+  a numeric range as "18s to 28s". `test/test_docs_prose.py` asserts it and
+  derives the scope by globbing `docs/`, so a new page is covered as soon as it
+  exists. The two archival planning documents (`rust-rewrite-plan.md`,
+  `rust-port-scope.md`) are the one hand-written exclusion: they record a port
+  that has already happened, and rewriting them to a style rule would edit a
+  record.
 
 - **A page under `docs/` is not the README.** Six sentences survived the split
   still saying "the rest of this README" or "the figures above are this README's"
