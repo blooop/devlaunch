@@ -9,16 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **CI fails when the external reviewer did not actually review.** Sourcery
-  answers a quota refusal *as a review*, so `Sorry @blooop, you have reached your
-  weekly rate limit…` arrives in the same shape as a review that found nothing.
-  Twenty-six consecutive pull requests merged behind that sentence — the largest
-  changes in this repo among them — and nothing anywhere said so. The new
-  `external-review` job, inside `gate`'s `needs`, refuses a quota refusal, a
-  refusal on diff size (which fires on exactly the changes least safe to merge
-  unread), and no review at all. The way past it is the `no-external-review`
-  label, so skipping external review is a decision on a named pull request rather
-  than a default that quietly stopped applying.
+- **CI fails when nothing reviewed a pull request.** Sourcery answers a quota
+  refusal *as a review*, so `Sorry @blooop, you have reached your weekly rate
+  limit…` arrives in the same shape as a review that found nothing. Twenty-six
+  consecutive pull requests merged behind that sentence — the largest changes in
+  this repo among them — and nothing anywhere said so. The `review` job, inside
+  `gate`'s `needs`, asks whether the code was reviewed rather than whether
+  Sourcery answered: a review by anyone but the author satisfies it, so does a
+  `wf-review` report by the author (recognised by the provenance line those
+  reports open with), and so does the `no-external-review` label. A quota outage
+  lasts a week, and a gate that stopped a week of merges would be one somebody
+  deletes. An author's plain "lgtm" does not satisfy it, and merging on a
+  self-review is recorded as a notice on the run, and a review that predates the
+  head is warned about rather than failed on.
 
 ## [0.13.0] - 2026-08-24
 
