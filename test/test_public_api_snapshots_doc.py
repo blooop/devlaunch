@@ -152,6 +152,29 @@ def test_regenerating_is_documented_outside_the_ci_error_string():
 
 
 @pytest.mark.unit
+def test_the_ci_error_string_sends_a_reader_to_the_document_that_has_the_section():
+    """The other half of the test above, and the half that was missing.
+
+    That one asserts the section exists somewhere; this one asserts the failing
+    job points at the file it is in. Both passed while the error string still
+    said README.md and the section had moved to docs/ -- so the guard against "a
+    red tick that only explains itself in a workflow's error string" was
+    satisfied by a red tick that explained itself by naming the wrong document.
+    """
+    job = ci_job("public-api")
+    assert "The public-API snapshots" in job, (
+        "the public-api job no longer quotes the section name, so this check "
+        "cannot tell which document it is sending a reader to"
+    )
+    document = README.relative_to(REPO_ROOT).as_posix()
+    assert document in job, (
+        f"the public-api job quotes 'The public-API snapshots' but does not name "
+        f"{document}, which is the document that carries it; a reader following the "
+        "error string is sent somewhere the section is not"
+    )
+
+
+@pytest.mark.unit
 def test_the_docs_say_what_the_promise_file_does_not_cover():
     """The overclaim this section is one edit away from becoming again.
 
