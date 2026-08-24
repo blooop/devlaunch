@@ -914,6 +914,138 @@ fn dotfiles_starts_a_stopped_workspace_first_and_says_so() {
 }
 
 // ===========================================================================
+// the liveness pins
+// ===========================================================================
+//
+// How many times one launch asks devpod whether a container is running, per
+// launch shape. devlaunch#393 built this table and stated its rule as *0 status
+// calls is a failure for every warm shape*; devlaunch#408 falsified that by
+// measuring a warm shape whose 0 is correct, so the rule is restated here to be
+// total over `Placement`'s arms:
+//
+// > A launch that attaches without an `up` has made exactly one liveness
+// > observation. A launch that has made none must `up`.
+//
+// So 0 is a failure for a shape that skips the `up`, and correct for a shape
+// that does not — and the two halves of `a_path_spec_attach_asks_nothing_and_ups`
+// can only move together. Read that way the table has no exception in it, which
+// is what a future cache, or a future substitution of `Placement::is_running()`
+// for a live ask, has to trip over.
+//
+// These three rows are the ones whose absence hid #408's defect: every pin above
+// addresses the workspace by *name*, and the shapes below address it by **path**,
+// where nothing has asked devpod anything (`Plan::Creatable`). The named-spec
+// dotfiles pin passes on the broken code, which is why the defect was invisible.
+
+/// The `--warm` workspace's own clone, as a path.
+///
+/// Its *leaf* is the id devpod knows (`launch_scenario.py`'s `MAIN_LEAF`), so a
+/// path spec reaches devpod's running workspace with no new fixture — and reaches
+/// it through the arm that asked devpod nothing on the way.
+fn main_clone() -> String {
+    format!("{{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{MAIN}")
+}
+
+#[test]
+fn a_path_spec_dotfiles_asks_once_and_brings_nothing_up() {
+    // One status call, and it is `run_dotfiles`'s own: a path spec is placed
+    // without asking devpod anything, so this is the command's *only* liveness
+    // observation rather than a second one. Substituting the placement for it
+    // takes this row to 0 and buys a full `devpod up` against a container that is
+    // already running — which is what #408 measured and this row now catches.
+    let world = World::with(&["--warm"]);
+    let run = world.dl(&[&main_clone(), "dotfiles"]);
+    run.exited(0);
+    let calls = world.calls().summarised(&world.root);
+    assert_eq!(
+        calls,
+        [
+            format!("devpod status {MAIN} --output json"),
+            "devpod context options --output json".to_owned(),
+            format!("devpod ssh {MAIN} --command bash -lc 'if command -v …"),
+        ]
+    );
+    assert!(
+        !calls.iter().any(|call| call.starts_with("devpod up ")),
+        "a running workspace was brought up anyway: {calls:?}"
+    );
+}
+
+#[test]
+fn a_path_spec_attach_asks_nothing_and_ups() {
+    // The one warm shape in the table with 0 status calls, and it is correct
+    // *because* of the `up` beneath it: nothing asked devpod about this id, so
+    // nothing knows it is running, and the idempotent `up` is what settles it.
+    // The `up` is fully identified, unlike the dotfiles verb's, and both setup
+    // trips follow it because a start rebuilds the container's UTS namespace.
+    //
+    // This is the before-picture of the shape this map is named after: ~5.7s to
+    // ~6.4s of avoidable work. Whoever removes it takes the 0 to 1 and the `up`
+    // away in the same change — the rule above is what says those two moves are
+    // one move.
+    let world = World::with(&["--warm"]);
+    let run = world.dl(&[&main_clone(), "--", "true"]);
+    run.exited(0);
+    let calls = world.calls().summarised(&world.root);
+    assert_eq!(
+        calls,
+        [
+            "devpod context options --output json".to_owned(),
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-zovomobo --ide none \
+             --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
+             --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
+             PIXI_CACHE_DIR=/var/tmp/…"
+                .to_owned(),
+            format!("devpod ssh {MAIN} --command bash -lc 'if sudo hostna…"),
+            format!("devpod ssh {MAIN} --command bash -lc 'set -u…"),
+            format!("devpod ssh {MAIN} --command bash -lc true"),
+        ]
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.starts_with(&format!("devpod status {MAIN}"))),
+        "this shape is supposed to ask nothing: {calls:?}"
+    );
+    assert_eq!(
+        up_argv(&world),
+        format!(
+            "devpod up {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{MAIN} --id {MAIN} \
+             --ide none --init-env DEVLAUNCH_WORKSPACE_ID={MAIN} {PIXI}"
+        ),
+        "the attach's up carries the launch's identity"
+    );
+}
+
+#[test]
+fn a_cold_triple_dotfiles_denies_the_same_id_twice() {
+    // Two status calls, both denials of an id devpod does not have: the placement
+    // asked and was refused, and `run_dotfiles` asks the same question again. The
+    // second is bought and thrown away, so this row is the one that legitimately
+    // goes to 1 — unlike the path-spec row above, whose 1 is load-bearing.
+    let world = World::with(&[]);
+    let run = world.dl(&["blooop/devlaunch@cold", "dotfiles"]);
+    run.exited(0);
+    let calls = world.calls().summarised(&world.root);
+    assert_eq!(
+        calls,
+        [
+            format!("devpod status {COLD} --output json"),
+            format!("devpod status {COLD} --output json"),
+            "devpod context options --output json".to_owned(),
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-sadetohe --ide none \
+             --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
+             --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
+             PIXI_CACHE_DIR=/var/tmp/…"
+                .to_owned(),
+            format!("devpod ssh {COLD} --command bash -lc 'if sudo hostna…"),
+            format!("devpod ssh {COLD} --command bash -lc 'set -u…"),
+            format!("devpod ssh {COLD} --command bash -lc 'if command -v …"),
+        ]
+    );
+}
+
+// ===========================================================================
 // the refusals and the exit codes
 // ===========================================================================
 
