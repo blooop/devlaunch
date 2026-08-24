@@ -70,8 +70,8 @@ On `devpod up`, at most three round trips, each one earning the next.
 **1. The setup pass, the only trip a ready workspace ever pays.** One trip
 carries everything the host wants done on the way into a running container: the
 stages first, then the probe. Three stages exist today. Naming the container,
-which is the hostname your shell prompt shows, always runs; zellij's config
-and the terminal title each run only when its switch is on. They cost
+which is the hostname your shell prompt shows, always runs; installing zellij
+and naming the terminal each run only when its own switch asks for it. They cost
 nothing extra because the probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
 exit status, or *not reached*; one that fails stops neither the stages behind it
 nor the probe, and `dl` says which one it was.
@@ -202,9 +202,10 @@ DEVLAUNCH_NO_TOOLS=1 dl someone/repo
 |----------|-------------|
 | `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude` into workspaces. The setup pass still runs, one trip per `up`, which still names the container; only the installing is skipped |
 
-`DEVLAUNCH_NO_ZELLIJ=1` is the narrower one: it drops the zellij stage and leaves
-`gh` and `claude` provisioning alone. See
-[What it costs](#what-it-costs).
+There is no narrower variable for zellij, because there is nothing to turn off:
+installing it is opt-in, under [A terminal beside the agent](#a-terminal-beside-the-agent).
+`DEVLAUNCH_NO_TOOLS=1` also overrides a launch that did ask for it, since
+installing zellij is tool provisioning too.
 
 Attaching to a workspace that is *already running* skips `devpod up`, and so skips
 this too. A workspace started by something other than `dl`, or created before this
@@ -212,15 +213,27 @@ existed, picks the tools up on its next `dl <workspace> restart`.
 
 ## A terminal beside the agent
 
-Every workspace `dl` opens also has [zellij](https://zellij.dev) on `PATH`, which
-buys one thing the other tools do not: an agent running in a container can open a
+Ask for it and a workspace gets [zellij](https://zellij.dev) on `PATH`, which buys
+one thing the other tools do not: an agent running in a container can open a
 **second terminal next to itself**, in the same container, and you can attach to it
 from anywhere to watch or to type.
 
-Nothing has to cooperate for this. It does not come from your dotfiles, it does not
-need an edit to any repo's `devcontainer.json`, and it works in images `dl` has never
-seen. That is the same argument the rest of "Tools in every workspace" makes, for the
-same reason: `dl` launches arbitrary repos.
+```bash
+DEVLAUNCH_ZELLIJ=1 dl someone/repo -- claude -p "do the thing"
+```
+
+**Asking is what this needs, and asking is all it needs.** One variable, and then
+nothing has to cooperate: it does not come from your dotfiles, it does not need an
+edit to any repo's `devcontainer.json`, and it works in images `dl` has never seen.
+That is the same argument the rest of "Tools in every workspace" makes, for the same
+reason: `dl` launches arbitrary repos. Set it once in a shell profile and it is there
+in everything you open.
+
+Unlike `gh` and `claude`, it is not on by default, and the reason is that until you
+ask, nothing would use it. Creating the session an agent opens panes into has always
+been opt-in, so an install that was opt-*out* spent [what it costs](#what-it-costs)
+on every cold launch to provision a capability the same defaults guaranteed nothing
+would touch. One variable now answers both halves.
 
 ### Opening a pane from inside a session
 
@@ -237,28 +250,23 @@ session, which stops being a single session the moment there are two of them.
 
 `devlaunch` is the session name `dl` creates and the one to name here.
 
-### Switching the wrap on
-
-The session an agent opens panes into has to exist first, and creating it is
-**off by default**:
-
-```bash
-DEVLAUNCH_ZELLIJ=1 dl someone/repo -- claude -p "do the thing"
-```
+### The one switch, and both things it does
 
 | Variable | Description |
 |----------|-------------|
-| `DEVLAUNCH_ZELLIJ=1` | Before running `dl <spec> -- <command>`, make sure a zellij session named `devlaunch` exists in the container, so the command can open panes into it |
+| `DEVLAUNCH_ZELLIJ=1` | Install `zellij` into the workspace on the setup pass, and, before running `dl <spec> -- <command>`, make sure a session named `devlaunch` exists in the container for the command to open panes into |
 
-With it off, no invocation changes meaning at all. That is what off means here, and
-it is why the switch exists rather than the behaviour simply being on.
+With it off, no invocation changes meaning at all and no launch pays for a zellij.
+That is what off means here, and it is why the switch exists rather than the
+behaviour simply being on.
 
-**This is not the switch that decides whether zellij gets installed.** That one is
-`DEVLAUNCH_NO_ZELLIJ`, under [What it costs](#what-it-costs) below, and the two are
-orthogonal on purpose: this one starts a session, that one puts the binary there.
-With `DEVLAUNCH_NO_ZELLIJ=1` set and no zellij in the container, `DEVLAUNCH_ZELLIJ=1`
-is simply a session setup that fails and a command that runs anyway, which is what
-it already does in any container that ended up without zellij for its own reasons.
+**One variable and not two, and that is a deliberate retirement.** The install used
+to have an opt-out of its own, `DEVLAUNCH_NO_ZELLIJ`, which is now read by nothing:
+a stale `DEVLAUNCH_NO_ZELLIJ=1` left in a profile does nothing at all, and in
+particular never turns provisioning back on. Two switches made four combinations of
+which two were incoherent, the worse being "install nothing, then start a session in
+it", which the old page described honestly as a session setup that fails and a
+command that runs anyway. Asking for the capability now gets you all of it.
 
 **The command runs beside the session, not inside a pane of it.** That is deliberate.
 Putting the command in a pane would hand its stdin, stdout and exit status to zellij,
@@ -271,9 +279,12 @@ delivers the same pane.
 **The interactive session of a bare `dl <workspace>` is untouched, switched on or
 off.** An interactive attach sends no command for the wrap to attach to, which is
 exactly what gets it a terminal from devpod, and giving it one would cost either the
-terminal or a round trip in front of every shell. You land in an ordinary login shell
+terminal or a round trip in front of every shell. What the variable still buys an
+interactive attach is the binary: with it set you land in an ordinary login shell
 with `zellij` on `PATH`, so `zellij attach -c devlaunch` gets you the session, and any
-panes an agent has opened in it, whenever you want them.
+panes an agent has opened in it, whenever you want them. Without it set, that command
+is a `command not found`, which is the one place this default costs a human something
+rather than saving them something.
 
 There is one exception, and it is a pleasant one: if you also run with
 `DEVLAUNCH_DOTFILES_ON_ATTACH=1`, that refresh is a command, so it gets wrapped like
@@ -281,51 +292,60 @@ any other and the session is already there when the shell arrives.
 
 ### Existing workspaces
 
-zellij arrives on the setup pass, which runs on every `devpod up`. So a workspace
-that predates this picks it up on its next **`dl <workspace> restart`**. A full
+zellij arrives on the setup pass, which runs on every `devpod up`. So setting the
+variable on a workspace that is already up does nothing until its next
+**`dl <workspace> restart`**, and then the stage lands. A full
 `dl <workspace> recreate` also works but is not needed, because nothing here is a
 bind mount and mounts are the thing that only lands at container creation.
+
+That is not a special case for zellij. dl remembers that a container was found
+provisioned so the next top-up can skip the round trip that found out, and what it
+remembers includes which switches the pass ran under. Turning this one on disagrees
+with what every previous launch recorded, so the remembered answer stops being
+trusted and the pass travels again. Turning it back off costs the same redundant trip
+once, on a pass that then carries no stage at all.
 
 Attaching to a workspace that is *already running* skips `devpod up` and so skips
 this too, which is what makes the restart necessary rather than automatic.
 
 ### What it costs
 
-Almost nothing, and that was measured rather than assumed. zellij is a conda-forge
-package installed by pixi into the container, so it lands in the shared package cache
-above and every container after the first extracts rather than downloads:
+The reason this is opt-in, and it was measured rather than assumed. A/B'd on cold
+launches of one repo on one box, reading the setup pass's own round trip, the stage
+is **2.2s warm to 3.5s cold**. Splitting it by hand over three fresh containers off a
+stock base image, with the shared cache bound in the way a launch binds it:
 
 | | |
 |---|---|
-| **Warm install** (shared cache populated) | 0.56s / 0.23s / 0.23s over three fresh containers |
-| **Cold install** (empty cache) | 3.0s, filling 167MB of shared cache |
-| **Every launch after the first** | one `command -v`; the whole setup pass measured at 50ms |
+| **Bootstrapping pixi** (`curl \| bash`, no pixi in the image) | 1.70s / 1.79s / 1.70s |
+| **Installing zellij** (shared cache populated) | 0.48s / 0.49s / 0.51s |
+| **The whole stage** | 2.19s / 2.27s / 2.21s |
+| **On an empty shared cache** | the stage reaches 3.5s and fills 168MB of it |
+| **Every launch after the first** | one `command -v`, and nothing else runs |
+
+The bootstrap is the dominant term and the one the shared package cache cannot help
+with, because it is pixi's own installer over the network rather than a conda package.
+It is also, on the common cold launch, the only thing that puts pixi in a container at
+all: a container that already has `gh` and a real `claude` is never sent the tools
+install, so this stage is where pixi arrives. An image that ships pixi pays only the
+install half, which is very likely how the older figures on this page came to be
+measured.
 
 **It can never fail a launch.** Provisioning zellij is a stage of the setup pass, so a
 container with no network, no pixi and no way to get either reports the stage as
 failed, by name, and then opens exactly as it would have. A container that ends up
-without zellij still works; with the wrap on, the command still runs, because the
-session setup is allowed to fail and the command runs regardless.
+without zellij still works, and the command still runs, because the session setup is
+allowed to fail and the command runs regardless.
 
-`DEVLAUNCH_NO_TOOLS=1` turns this off along with the rest of tool provisioning.
-Installing zellij is tool provisioning, where naming a container is not.
+`DEVLAUNCH_NO_TOOLS=1` overrides a launch that did ask, along with the rest of tool
+provisioning. Installing zellij is tool provisioning, where naming a container is not,
+so neither switch touches the hostname stage: a host that wants no zellij has not
+thereby asked for unnamed containers.
 
-`DEVLAUNCH_NO_ZELLIJ=1` turns off **only** this:
-
-| Variable | Description |
-|----------|-------------|
-| `DEVLAUNCH_NO_ZELLIJ=1` | Do not install `zellij` into workspaces. The setup pass still runs and still names the container, and `gh` and `claude` are still provisioned exactly as they were |
-
-It exists because the two questions are different ones. A host whose containers get
-zellij another way, through their own dotfiles, a base image or a devcontainer feature,
-or which wants none in there at all, is asking for one stage to stop running.
-`DEVLAUNCH_NO_TOOLS=1` would do that and also surrender the `gh` and `claude`
-guarantee the rest of this page is about, which is a large price for one
-`command -v`.
-
-Both variables read the same values: anything but empty, `0`, `false` or `no` means
-yes, turn it off. And neither touches the hostname stage. A host that wants no
-zellij has not thereby asked for unnamed containers.
+Both variables read the same values: anything but empty, `0`, `false` or `no` counts
+as unset. `DEVLAUNCH_ZELLIJ` is a consent and `DEVLAUNCH_NO_TOOLS` a denial, so `=0`
+means "no zellij" in the first and "install normally" in the second, which is what
+each of them reads as unset.
 
 ## Naming the terminal after the workspace
 
@@ -349,8 +369,8 @@ It is on unless you turn it off:
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal: neither the escape below nor the profile edit under [What keeps it named](#what-keeps-it-named). Everything else about the launch is unchanged |
 
 A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are not
-the same size of decision. That one installs a session into a container; this one
-writes an escape sequence and one line into a profile.
+the same size of decision. That one installs a package into a container and starts a
+session; this one writes an escape sequence and one line into a profile.
 
 **It is the spec you typed, resolved, not the workspace id.** `dl blooop/devlaunch`
 names the pane `blooop/devlaunch@main`, with the branch filled in as the launch

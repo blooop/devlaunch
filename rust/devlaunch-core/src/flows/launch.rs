@@ -73,7 +73,7 @@ use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
 use crate::flows::listing::CommandContext;
-use crate::flows::provision::{DevpodMissing, PassOccasion};
+use crate::flows::provision::{DevpodMissing, PassOccasion, ZellijSwitch};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
 use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
@@ -90,8 +90,14 @@ use crate::timing;
 /// interactive shell.
 pub(crate) const DOTFILES_ON_ATTACH_VAR: &str = "DEVLAUNCH_DOTFILES_ON_ATTACH";
 
-/// `DEVLAUNCH_ZELLIJ`: put `dl <spec> -- <cmd>` beside a zellij session (#242).
-pub(crate) const ZELLIJ_WRAP_VAR: &str = "DEVLAUNCH_ZELLIJ";
+/// `DEVLAUNCH_ZELLIJ`: put `dl <spec> -- <cmd>` beside a zellij session (#242),
+/// and — since #391 — put a zellij in the container for it to be beside.
+///
+/// Defined in [`provision`][crate::flows::provision] rather than here, because one
+/// signal read in two places is one place too many: the same constant gates the
+/// setup pass's zellij stage. This module is the reader that starts a session; that
+/// one is the reader that makes sure there is something to start.
+pub(crate) use crate::flows::provision::ZELLIJ_VAR;
 
 /// The one session name every workspace uses.
 ///
@@ -104,10 +110,11 @@ pub(crate) const ZELLIJ_SESSION: &str = "devlaunch";
 
 /// `DEVLAUNCH_NO_TITLE`: do not name the terminal after the workspace.
 ///
-/// A "no" variable rather than an opt-in one, unlike [`ZELLIJ_WRAP_VAR`], and the
-/// asymmetry is the cost of being wrong. `DEVLAUNCH_ZELLIJ` installs a session
-/// into a container; this writes one escape sequence to a stream that the next
-/// shell prompt overwrites anyway. Defaulting it on costs a title nobody asked
+/// A "no" variable rather than an opt-in one, unlike [`ZELLIJ_VAR`], and the
+/// asymmetry is the cost of being wrong. `DEVLAUNCH_ZELLIJ` installs a package into
+/// a container and starts a session in it; this writes one escape sequence to a
+/// stream that the next shell prompt overwrites anyway. Defaulting it on costs a
+/// title nobody asked
 /// for; defaulting it off costs everybody the feature.
 pub(crate) const TITLE_DISABLE_VAR: &str = "DEVLAUNCH_NO_TITLE";
 
@@ -191,7 +198,7 @@ impl Host {
         Self {
             gh: gh::HostEnv::from_process(),
             dotfiles_on_attach: crate::osext::env_str(DOTFILES_ON_ATTACH_VAR),
-            zellij: crate::osext::env_str(ZELLIJ_WRAP_VAR),
+            zellij: crate::osext::env_str(ZELLIJ_VAR),
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
@@ -1224,12 +1231,20 @@ pub(crate) enum ZellijWrap {
 }
 
 impl ZellijWrap {
-    /// What `DEVLAUNCH_ZELLIJ` asks for.
+    /// What [`ZELLIJ_VAR`] asks for.
+    ///
+    /// Read through [`ZellijSwitch::requested`] rather than through this module's
+    /// own [`switched_on`], and that is the one place the shape of #151 matters
+    /// here: since #391 the same variable also decides whether the container gets a
+    /// zellij at all, and a second parse of one signal is how "wrap the command"
+    /// and "install the thing being wrapped to" come to disagree — which is exactly
+    /// the state that decision deleted, a session setup that fails and a command
+    /// that runs anyway. `switched_on` stays for the variables it is the only
+    /// reader of.
     pub(crate) fn from_host(host: &Host) -> Self {
-        if switched_on(host.zellij.as_deref()) {
-            Self::Beside
-        } else {
-            Self::Off
+        match ZellijSwitch::requested(host.zellij.as_deref()) {
+            ZellijSwitch::Install => Self::Beside,
+            ZellijSwitch::Skip => Self::Off,
         }
     }
 }
@@ -4296,6 +4311,11 @@ mod tests {
         // A variable exported empty is what an unset variable looks like to a
         // shell that mentions it, and `=0` is what someone who once turned it on
         // writes to turn it back off.
+        //
+        // The values walked here are the ones
+        // `provision::tests::the_wrap_and_the_stage_read_one_signal` asks the setup
+        // pass about, so the list is the shared one: this pins what the wrap reads,
+        // that pins that the stage reads the same.
         for denial in ["", "0", "false", "no", "FALSE", " no "] {
             let host = Host {
                 zellij: Some(denial.to_owned()),
