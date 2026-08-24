@@ -2401,6 +2401,13 @@ silently not happening, and skipping one on purpose is what the label is for.
 Merging on a self-review emits a `::notice::` saying so, because it is worth
 seeing in the log afterwards.
 
+Staleness is warned about, not failed on. A review of an earlier commit *did*
+happen, which is a different thing from the absence this job exists to catch, and
+failing it would mean re-reviewing after every typo fix — how a guard earns being
+deleted. So when every review predates the head, the job passes and says the code
+that merges is not the code that was reviewed. That case is not hypothetical: it
+is how the change introducing this rule reached its own merge.
+
 The classification itself is `scripts/review_verdict.sh`, which the workflow
 calls and `test/test_review_guard.py` executes, for the reason the public-API
 script is a script: a `case` statement inside a `run:` block can be tested only

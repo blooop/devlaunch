@@ -62,15 +62,26 @@ SELF_REVIEW = (
 )
 
 
-def verdict(reviews, author=AUTHOR):
-    """Run the real script. `reviews` is (author, body) or (author, body, state)."""
+def verdict(reviews, author=AUTHOR, head=None):
+    """Run the real script.
+
+    `reviews` is (author, body), (author, body, state) or
+    (author, body, state, commit).
+    """
     payload = [
-        {"author": r[0], "body": r[1], "state": r[2] if len(r) > 2 else "COMMENTED"}
+        {
+            "author": r[0],
+            "body": r[1],
+            "state": r[2] if len(r) > 2 else "COMMENTED",
+            "commit": r[3] if len(r) > 3 else "",
+        }
         for r in reviews
     ]
     env = {"PATH": os.environ["PATH"]}
     if author is not None:
         env["PR_AUTHOR"] = author
+    if head is not None:
+        env["PR_HEAD_SHA"] = head
     return subprocess.run(
         ["bash", str(VERDICT)],
         input=json.dumps(payload),
@@ -270,3 +281,46 @@ def test_an_empty_commented_review_from_a_second_party_does_not_count():
     """
     assert verdict([(HUMAN, "", "COMMENTED")]).returncode == 1
     assert verdict([(HUMAN, "   \n ", "COMMENTED")]).returncode == 1
+
+
+# --- staleness: warned, never failed -----------------------------------------
+
+
+HEAD = "0d0e59a"
+OLDER = "a1c6fe8"
+
+
+def test_a_review_of_an_earlier_commit_still_passes_but_says_so():
+    """A review of superseded code *did happen*, which is a different thing from
+    the absence this guard catches. Failing it would mean re-reviewing after
+    every typo fix — how a guard earns being deleted. It must not pass silently
+    though: this exact case is how the change that added it reached its own
+    merge."""
+    result = verdict([(AUTHOR, SELF_REVIEW, "COMMENTED", OLDER)], head=HEAD)
+    assert result.returncode == 0, result.stdout
+    assert "::warning::" in result.stdout
+    assert HEAD in result.stdout
+
+
+def test_a_review_of_the_current_head_warns_about_nothing():
+    result = verdict([(AUTHOR, SELF_REVIEW, "COMMENTED", HEAD)], head=HEAD)
+    assert result.returncode == 0, result.stdout
+    assert "::warning::" not in result.stdout
+
+
+def test_one_review_at_head_is_enough_to_clear_the_warning():
+    result = verdict(
+        [
+            (AUTHOR, SELF_REVIEW, "COMMENTED", OLDER),
+            (HUMAN, "Re-checked at the new head.", "COMMENTED", HEAD),
+        ],
+        head=HEAD,
+    )
+    assert result.returncode == 0
+    assert "::warning::" not in result.stdout
+
+
+def test_without_a_head_sha_nothing_is_claimed_about_staleness():
+    result = verdict([(AUTHOR, SELF_REVIEW, "COMMENTED", OLDER)])
+    assert result.returncode == 0
+    assert "::warning::" not in result.stdout

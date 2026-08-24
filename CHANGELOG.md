@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports open with), and so does the `no-external-review` label. A quota outage
   lasts a week, and a gate that stopped a week of merges would be one somebody
   deletes. An author's plain "lgtm" does not satisfy it, and merging on a
-  self-review is recorded as a notice on the run.
+  self-review is recorded as a notice on the run, and a review that predates the
+  head is warned about rather than failed on.
 
 ## [0.13.0] - 2026-08-24
 

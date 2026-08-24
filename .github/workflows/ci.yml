@@ -615,6 +615,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
           OVERRIDE_LABEL: no-external-review
         run: |
@@ -642,7 +643,7 @@ jobs:
           reviews='[]'
           for _ in $(seq 1 12); do
             reviews=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-              --jq '[.[] | {author: .user.login, body: .body, state: .state}]' || echo '[]')
+              --jq '[.[] | {author: .user.login, body: .body, state: .state, commit: .commit_id}]' || echo '[]')
             [ "$(jq 'length' <<<"$reviews")" -gt 0 ] && break
             sleep 10
           done
