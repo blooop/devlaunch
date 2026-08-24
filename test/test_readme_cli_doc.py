@@ -16,7 +16,7 @@ So the two facts are asked of their owners instead:
   reader, not the flags that work -- and the README does document one of the
   hidden completion flags;
 - *which version ships* of `rust/Cargo.toml`, which is where the version is
-  written down and nowhere else (see "The two published artifacts" in README.md).
+  written down and nowhere else (see "The two published artifacts" in docs/development.md).
 
 Two things this file deliberately does not do. It does not read every `--word` in
 the document: the README also explains git's `--shared`/`--reference` and runs

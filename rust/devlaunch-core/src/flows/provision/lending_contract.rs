@@ -1,17 +1,17 @@
-//! The lending contract README publishes, checked against the code that keeps it.
+//! The lending contract the docs publish, checked against the code that keeps it.
 //!
-//! README's "Tools in every workspace" section tells an image author what to bake
-//! so that a launch does no provisioning work at all. That is the rare piece of
-//! prose in this repository somebody *acts* on — they put it in a Dockerfile — and
-//! the tree can silently invalidate it: rename the constant that spells the
-//! official claude layout, move the symlink the transfer writes, or stop baking
-//! the shim the section warns about, and the instructions become confidently wrong
-//! with nothing failing.
+//! `docs/workspace-tools.md`'s "Tools in every workspace" section tells an image
+//! author what to bake so that a launch does no provisioning work at all. That is
+//! the rare piece of prose in this repository somebody *acts* on — they put it in
+//! a Dockerfile — and the tree can silently invalidate it: rename the constant
+//! that spells the official claude layout, move the symlink the transfer writes,
+//! or stop baking the shim the section warns about, and the instructions become
+//! confidently wrong with nothing failing.
 //!
 //! Two rules follow from that, and this file exists to obey both.
 //!
 //! **Assert against the code, not against the prose.** A path that merely
-//! *appears* in the README would pass just as happily against a path nothing
+//! *appears* in the document would pass just as happily against a path nothing
 //! checks for; asserting the path the module compares against is what makes the
 //! two move together. So the layout comes from the module constant, and the
 //! symlink and the PATH directory are parsed out of a script this module
@@ -61,8 +61,19 @@ fn repo_root() -> PathBuf {
         .expect("the repository root")
 }
 
-fn readme() -> String {
-    read(&repo_root().join("README.md"))
+/// The path the messages name, so a retargeted guard renames itself in all of
+/// them rather than in none.
+const CONTRACT_DOC: &str = "docs/workspace-tools.md";
+
+/// The document carrying the lending contract.
+///
+/// It was README.md until the README was cut back to an orientation document and
+/// the provisioning sections moved to `docs/workspace-tools.md` under the same
+/// three headings. What this file guards is that an image author acting on the
+/// bake recipe is acting on paths `dl` really looks for, which is a property of
+/// the prose wherever it is published, not of the filename.
+fn contract_doc() -> String {
+    read(&repo_root().join(CONTRACT_DOC))
 }
 
 fn changelog() -> String {
@@ -73,7 +84,7 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// This repo's own devcontainer feature installer, as README's warning names it.
+/// This repo's own devcontainer feature installer, as the bake recipe's warning names it.
 const CLAUDE_FEATURE_INSTALLER: &str = ".devcontainer/claude-code/install.sh";
 
 // Matched on the heading rather than on any phrase under it, so the prose is free
@@ -163,7 +174,7 @@ fn bullet_naming(text: &str, term: &str) -> String {
 }
 
 fn bake_recipe() -> String {
-    section(&readme(), BAKE_HEADING)
+    section(&contract_doc(), BAKE_HEADING)
 }
 
 // ===========================================================================
@@ -275,12 +286,12 @@ fn the_narrative_explains_every_reading_a_probe_can_produce() {
     // of readings is not prose, it is `ProbeResult`, and a fourth state added to
     // that enum without a paragraph saying what it costs a reader leaves the
     // section describing a flow that no longer exists.
-    let narrative = section(&readme(), NARRATIVE_HEADING);
+    let narrative = section(&contract_doc(), NARRATIVE_HEADING);
     for state in ProbeResult::ALL {
         let word = state.word();
         assert!(
             narrative.contains(&format!("**{word}**")),
-            "README no longer explains the {word:?} reading a probe can produce"
+            "{CONTRACT_DOC} no longer explains the {word:?} reading a probe can produce"
         );
     }
 }
@@ -306,13 +317,13 @@ fn the_recipe_gives_every_tool_a_workspace_is_promised_its_own_instruction() {
         let command = tool.command;
         assert!(
             probe.contains(&format!("command -v {command}")),
-            "the probe no longer resolves {command} by name, so README's recipe may be \
+            "the probe no longer resolves {command} by name, so {CONTRACT_DOC}'s recipe may be \
              describing the wrong precondition"
         );
         let bullet = bullet_naming(&recipe, &format!("`{command}`"));
         assert!(
             bullet.contains("login PATH") || bullet.contains("~/"),
-            "README's bake recipe names `{command}` without saying where a login shell \
+            "{CONTRACT_DOC}'s bake recipe names `{command}` without saying where a login shell \
              will find it"
         );
     }
@@ -331,7 +342,8 @@ fn the_recipe_names_the_claude_layout_dl_actually_looks_for() {
     let expected = format!("`~/{CLAUDE_VERSIONS_RELPATH}/<version>`");
     assert!(
         bullet_naming(&bake_recipe(), "`claude`").contains(&expected),
-        "README's bake recipe no longer tells an image author to bake claude into {expected}"
+        "{CONTRACT_DOC}'s bake recipe no longer tells an image author to bake \
+         claude into {expected}"
     );
 }
 
@@ -348,7 +360,7 @@ fn the_recipe_says_the_binary_is_a_direct_child_and_the_host_agrees() {
     let versions = format!("{home}/{CLAUDE_VERSIONS_RELPATH}");
     assert!(
         is_official_claude(&versions, &format!("{versions}/1.2.3")),
-        "the layout README tells image authors to bake is no longer recognised"
+        "the layout {CONTRACT_DOC} tells image authors to bake is no longer recognised"
     );
     assert!(
         !is_official_claude(&versions, &format!("{versions}/1.2.3/bin/claude")),
@@ -356,7 +368,7 @@ fn the_recipe_says_the_binary_is_a_direct_child_and_the_host_agrees() {
     );
     assert!(
         bullet_naming(&bake_recipe(), "`claude`").contains("direct child"),
-        "README's bake recipe no longer says the binary must be a direct child of the \
+        "{CONTRACT_DOC}'s bake recipe no longer says the binary must be a direct child of the \
          versions directory, which is what dl requires"
     );
 }
@@ -367,7 +379,7 @@ fn the_recipe_names_the_symlink_a_lend_creates() {
     let expected = format!("`{}`", lent_claude_symlink());
     assert!(
         bullet_naming(&bake_recipe(), "`claude`").contains(&expected),
-        "README's bake recipe no longer names {expected}, the symlink a lend writes"
+        "{CONTRACT_DOC}'s bake recipe no longer names {expected}, the symlink a lend writes"
     );
 }
 
@@ -406,7 +418,8 @@ fn the_recipe_says_a_lend_puts_that_directory_in_front_of_the_login_path() {
     let expected = format!("lend prepends `{prepended}`");
     assert!(
         reflowed(&bake_recipe()).contains(&expected),
-        "README's bake recipe no longer says a lend prepends `{prepended}` to the login PATH"
+        "{CONTRACT_DOC}'s bake recipe no longer says a lend prepends `{prepended}` \
+         to the login PATH"
     );
 }
 
@@ -424,27 +437,29 @@ fn the_recipe_warns_that_this_repos_own_feature_does_not_satisfy_it() {
     let installer = repo_root().join(CLAUDE_FEATURE_INSTALLER);
     assert!(
         installer.is_file(),
-        "README's bake recipe points at {CLAUDE_FEATURE_INSTALLER}"
+        "{CONTRACT_DOC}'s bake recipe points at {CLAUDE_FEATURE_INSTALLER}"
     );
     assert!(
         read(&installer).contains("claude-shim"),
-        "{CLAUDE_FEATURE_INSTALLER} no longer installs a shim; README's warning about it is stale"
+        "{CLAUDE_FEATURE_INSTALLER} no longer installs a shim; \
+         {CONTRACT_DOC}'s warning about it is stale"
     );
 
     let recipe = bake_recipe();
     assert!(
         recipe.contains(CLAUDE_FEATURE_INSTALLER),
-        "README's bake recipe no longer warns that this repo's own feature bakes a shim"
+        "{CONTRACT_DOC}'s bake recipe no longer warns that this repo's own feature bakes a shim"
     );
     assert!(
         bolded_spans(&recipe)
             .iter()
             .any(|span| contains_word(span, "bakes a shim")),
-        "README's bake recipe no longer states in bold that this repo's own feature bakes a shim"
+        "{CONTRACT_DOC}'s bake recipe no longer states in bold that this repo's \
+         own feature bakes a shim"
     );
     assert!(
         reflowed(&recipe).contains("does *not* meet the contract"),
-        "README's bake recipe no longer denies that an image built from this repo's own \
+        "{CONTRACT_DOC}'s bake recipe no longer denies that an image built from this repo's own \
          feature meets the contract"
     );
 }
@@ -480,7 +495,7 @@ fn the_shim_the_recipe_warns_about_is_not_the_official_layout() {
     let shim = format!("{home}/.pixi/envs/claude-shim/bin/claude");
     assert!(
         !is_official_claude(&versions, &shim),
-        "a pixi shim now counts as the official layout; README's contract says it does not"
+        "a pixi shim now counts as the official layout; {CONTRACT_DOC}'s contract says it does not"
     );
 }
 
@@ -501,7 +516,7 @@ fn the_section_keeps_stating_the_non_goals_it_committed_to() {
     // image is sent both tools, and that a `claude` already there is never upgraded.
     // Deleting them costs nothing anywhere else in the tree, which is the only
     // reason this test exists.
-    let non_goals = section(&readme(), NON_GOALS_HEADING);
+    let non_goals = section(&contract_doc(), NON_GOALS_HEADING);
     for non_goal in DOCUMENTED_NON_GOALS {
         // `bullet_naming` asserts there is exactly one such bullet, so the call is
         // the assertion: it panics naming the bullet it could not find.
