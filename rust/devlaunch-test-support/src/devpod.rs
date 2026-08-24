@@ -24,6 +24,14 @@
 //! --ignore-not-found` that refused survived here for months after the shim was
 //! fixed for it. A behaviour change in here belongs in a corpus row first; see
 //! the `conformance` module below.
+//!
+//! Those two are the whole population the corpus has to cover: one per language,
+//! and nothing else in the tree decides a devpod outcome from argv. The
+//! `Runner` wrappers the unit tests define reach *this* machine through
+//! [`FakeRunner`](crate::FakeRunner) rather than faking devpod themselves, and
+//! the ones that answer without consulting argv at all — `flows::provision`'s
+//! `Trips` — are recorders, which is why they are absent here rather than
+//! missing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
