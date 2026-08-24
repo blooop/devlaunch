@@ -585,8 +585,67 @@ jobs:
   # on an empty list. Both of those are the same point, which is the point of the
   # whole workflow: a check nobody ran reads exactly like a check that passed,
   # and a gate that covers nothing is the purest form of that.
+  # The external reviewer is a check like any other, and it failed the way this
+  # gate's own comment warns about: silently. Sourcery answers every pull request
+  # with a *review*, and a review is what a reader looking for one finds -- so
+  #
+  #     Sorry @blooop, you have reached your weekly rate limit of 500000 diff
+  #     characters.
+  #
+  # arrives in the same shape as a review that found nothing, and reads as one to
+  # everything downstream. Twenty-six consecutive pull requests merged behind that
+  # sentence, among them the largest changes in the repo, and nothing said so.
+  #
+  # The classification is in `scripts/external_review_verdict.sh` rather than in
+  # this block, for the reason the public-api script is: a `case` statement that
+  # exists only inside a `run:` can be tested only by copying it, and the copy is
+  # what goes stale. What is here is the fetch, the polling and the label.
+  external-review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: An external reviewer that refused is not an external reviewer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          OVERRIDE_LABEL: no-external-review
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" != pull_request ]; then
+            echo "not a pull request, so there is nothing to have been reviewed"
+            exit 0
+          fi
+
+          if gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name' \
+              | grep -qxF "$OVERRIDE_LABEL"; then
+            echo "::notice::'$OVERRIDE_LABEL' is set, so this pull request merges"\
+                 "without an external review. That is the label's whole purpose;"\
+                 "it is recorded here so the choice is visible afterwards."
+            exit 0
+          fi
+
+          # Sourcery posts within a minute of the pull request opening, well
+          # inside the shortest job in this workflow -- but "well inside" is not
+          # "before", and a race lost here fails a pull request for the
+          # reviewer's latency rather than for anything about the change. So
+          # poll, and let the remaining ~2 minutes of CI absorb the wait.
+          reviews=
+          for _ in $(seq 1 12); do
+            reviews=$(gh api "repos/$REPO/pulls/$PR/reviews" \
+              --jq '.[] | select(.user.login == "sourcery-ai[bot]") | .body' || true)
+            [ -n "$reviews" ] && break
+            sleep 10
+          done
+
+          printf '%s' "$reviews" | ./scripts/external_review_verdict.sh
+
   gate:
-    needs: [ci, e2e, rust, rust-coverage, public-api, packaging]
+    needs: [ci, e2e, rust, rust-coverage, public-api, packaging, external-review]
     if: always()
     runs-on: ubuntu-latest
     steps:

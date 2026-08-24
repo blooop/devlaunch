@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CI fails when the external reviewer did not actually review.** Sourcery
+  answers a quota refusal *as a review*, so `Sorry @blooop, you have reached your
+  weekly rate limit…` arrives in the same shape as a review that found nothing.
+  Twenty-six consecutive pull requests merged behind that sentence — the largest
+  changes in this repo among them — and nothing anywhere said so. The new
+  `external-review` job, inside `gate`'s `needs`, refuses a quota refusal, a
+  refusal on diff size (which fires on exactly the changes least safe to merge
+  unread), and no review at all. The way past it is the `no-external-review`
+  label, so skipping external review is a decision on a named pull request rather
+  than a default that quietly stopped applying.
+
 ## [0.13.0] - 2026-08-24
 
 ### Changed
