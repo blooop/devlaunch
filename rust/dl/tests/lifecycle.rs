@@ -466,14 +466,19 @@ fn a_clean_clone_is_deleted_with_its_workspace() {
         run.out,
         "Successfully deleted workspace devlaunch-main-legacy\n"
     );
-    // Both lines, in Python's order: `worktree/workspace_clone.py` logs the
-    // directory from inside the removal, and `dl.py` logs the workspace after it
-    // returns. The first one is why the notice channel is a sink — a storage flow's
-    // line has to land where the storage flow said it.
+    // The workspace named before the round trip and again once it has gone, with the
+    // clone's two lines between them in Python's order: `worktree/workspace_clone.py`
+    // logs the directory from inside the removal, and `dl.py` logs the workspace
+    // after it returns. That middle pair is why the notice channel is a sink — a
+    // storage flow's line has to land where the storage flow said it. The outer two
+    // are dl's own, and they are the only lines that name what was deleted on a
+    // workspace with no clone recorded under it, where devpod's stdout is all there
+    // used to be.
     assert_eq!(
         run.err,
-        "Removed workspace clone: {ROOT}/cache/devlaunch/repos/blooop/devlaunch/\
-         devlaunch-main-legacy\nRemoved local clone for devlaunch-main-legacy\n"
+        "Removing workspace devlaunch-main-legacy...\nRemoved workspace clone: \
+         {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy\nRemoved local clone \
+         for devlaunch-main-legacy\nRemoved workspace devlaunch-main-legacy.\n"
     );
     assert!(!world.exists(clone), "the clone was left behind");
     assert!(
@@ -522,6 +527,28 @@ fn a_purge_takes_the_devcontainer_volumes_of_the_workspaces_it_deleted() {
     assert_eq!(
         world.docker_calls(),
         ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
+    );
+}
+
+/// The workspace dl has no clone for is the case the two new lines exist for: none
+/// of the clone notices fire, so before them the only thing on any stream naming
+/// what had been deleted was `devpod delete`'s own stdout — devpod's wording to
+/// change, and gone entirely if it ever stops printing it.
+///
+/// It is also what `dl rm` reads like from the picker, which hands an id back and
+/// then draws its screen away: the id was never on screen while the row was being
+/// chosen, and these are the lines that put it there.
+#[test]
+fn a_workspace_with_no_clone_is_still_named_going_in_and_coming_out() {
+    let world = World::base();
+
+    let run = world.dl(&["someones-project", "rm"]);
+
+    run.exited(0);
+    // A foreign workspace has no clone lines, so these two are all there is.
+    assert_eq!(
+        run.err,
+        "Removing workspace someones-project...\nRemoved workspace someones-project.\n"
     );
 }
 
@@ -623,9 +650,13 @@ fn a_delete_devpod_refuses_keeps_the_clone_and_hands_the_status_back() {
     run.exited(3);
     assert_eq!(
         run.err,
-        "devpod: cannot read devcontainer.json\ndevpod could not delete devlaunch-main-legacy; \
-         keeping the local clone so it stays retryable. If its devcontainer.json moved, restore \
-         the path or run: devpod delete devlaunch-main-legacy --force\n"
+        // The announcement stands even though the delete then failed: it says what
+        // was attempted, and the refusal under it says what came of it. No
+        // `Removed workspace` line, which is the whole point of that one being last.
+        "Removing workspace devlaunch-main-legacy...\ndevpod: cannot read \
+         devcontainer.json\ndevpod could not delete devlaunch-main-legacy; keeping the local clone \
+         so it stays retryable. If its devcontainer.json moved, restore the path or run: devpod \
+         delete devlaunch-main-legacy --force\n"
     );
     assert!(
         world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),

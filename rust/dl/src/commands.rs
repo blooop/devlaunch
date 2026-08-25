@@ -707,6 +707,12 @@ fn render_remove<'r>(
         }
     }
 
+    // Which workspace this is, named before devpod is asked and after the guard has
+    // had its say. Everything below names the resolved id, and a target that was a
+    // branch, a path, or a row in the picker is not that word — see
+    // [`render::removing`].
+    eprintln!("{}", render::removing(&workspace_id));
+
     let Records {
         storage, clones, ..
     } = records;
@@ -736,6 +742,10 @@ fn render_remove<'r>(
         }
         Ok(DeleteOutcome::Deleted { .. }) => {
             say(&notices);
+            // After the clone's own lines, because it closes the delete: what a
+            // reader wants from the end of one workspace's block is which workspace
+            // it was.
+            eprintln!("{}", render::removed(&workspace_id));
             Ending::Done
         }
     }
@@ -1095,6 +1105,16 @@ fn render_select<'r>(
     };
     match select::pick(&workspaces, arity, cache) {
         select::Pick::Chose(workspace_ids) => {
+            // A batch, listed before the first workspace is touched: the picker's
+            // screen is gone by now and TAB-marking five rows is the one way of
+            // asking for something whose extent nothing else says. One row needs no
+            // heading — the verb names it on its own first line.
+            let chosen: Vec<&str> = workspace_ids.iter().map(String::as_str).collect();
+            if chosen.len() > 1 {
+                for line in render::picked(verb.word(), &chosen) {
+                    eprintln!("{line}");
+                }
+            }
             let mut ending = Ending::Done;
             for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
                 // Each workspace after the first is one more state change after

@@ -55,6 +55,41 @@ be made worse by it:
   frees](#the-disk-neither-command-frees). That boundary is about images now, and
   deliberately stays there.
 
+### What a delete says while it does it
+
+`dl <ws> rm` names the workspace going in and again once it has gone, both on
+stderr, with whatever happened to the clone in between:
+
+```
+Removing workspace devlaunch-main-a1b2c3d4...
+Removed workspace clone: ~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-a1b2c3d4
+Removed local clone for devlaunch-main-a1b2c3d4
+Removed workspace devlaunch-main-a1b2c3d4.
+```
+
+The first line comes after the unsaved-work guard has had its say and before devpod
+is asked, so a teardown that takes a while has a name attached to it and a refusal is
+never announced as a removal. The last line closes the block, which is what makes a
+batch legible: one block per workspace, each ending in the name of the workspace it
+was.
+
+The two middle lines belong to the clone, and a workspace with no clone recorded
+under it prints neither of them. That is the case the outer two exist for: before
+them, the only thing on any stream naming what had been deleted was `devpod
+delete`'s own line on stdout, which is devpod's wording rather than dl's.
+
+It matters most for `dl rm` with no workspace named. The picker draws its rows as
+`<owner> | <repo> | <ref>`, hands back a workspace id, and then takes its screen
+away, so the id was never on screen while the row was being chosen. A pick of more
+than one row is listed before the first workspace is touched:
+
+```
+Selected 3 workspaces for rm:
+  devlaunch-main-a1b2c3d4
+  devlaunch-fix-9e8d7c6b
+  someones-project
+```
+
 ### What purge deletes
 
 devpod's workspace list is shared. A workspace you made with `devpod up`, or that

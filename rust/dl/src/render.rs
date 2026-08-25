@@ -1150,6 +1150,54 @@ pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
     format!("--rm: the session has ended, removing {spec}.")
 }
 
+/// The workspace a removal is about to ask devpod for, said before the round trip.
+///
+/// The delete is the one place where "which workspace" was a question dl's own
+/// output did not answer until it was over. `dl <ws> rm` can be handed a branch, a
+/// path or a bare `owner/repo`, and `dl rm` is handed nothing at all: the picker
+/// takes a row reading `<owner> | <repo> | <ref>`, hands an id back and then draws
+/// its own screen away, so the name devpod is addressed by was never on screen at
+/// the moment it was chosen. Everything the delete says afterwards names that id,
+/// and this is the line they are answers to.
+///
+/// Before the round trip rather than after, for [`rm_on_exit_removing`]'s reason: a
+/// `devpod delete` is seconds of container teardown, and a name that arrives once
+/// the container is gone is a receipt rather than a warning. Said only once the
+/// unsaved-work guard has passed, so it never announces a removal that is about to
+/// be refused.
+pub(crate) fn removing(workspace_id: &str) -> String {
+    format!("Removing workspace {workspace_id}...")
+}
+
+/// devpod let go of the workspace: the receipt a delete that worked used to leave
+/// entirely to devpod.
+///
+/// The clone lines beside this one name the *clone*, and a workspace with no clone
+/// recorded prints none of them, so the only thing naming what had gone was `devpod
+/// delete`'s own stdout: devpod's wording to change, on the other stream from every
+/// line dl says about the same delete, and absent from exactly the case that has
+/// nothing else. Last of the delete's lines because it is the one that closes it,
+/// which is what makes a batch of picked rows readable by its ends.
+pub(crate) fn removed(workspace_id: &str) -> String {
+    format!("Removed workspace {workspace_id}.")
+}
+
+/// What a picker that took more than one row is about to do, listed before the
+/// first workspace is touched.
+///
+/// One line per workspace rather than a comma run, because these are ids carrying a
+/// hashed suffix and the point of the list is that a batch which stops halfway can
+/// be read against what was asked for. Nothing for a single row: the verb's own
+/// first line names that one, and a list of one is a heading with nothing under it.
+pub(crate) fn picked(verb: &str, workspace_ids: &[&str]) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Selected {} workspaces for {verb}:",
+        workspace_ids.len()
+    )];
+    lines.extend(workspace_ids.iter().map(|id| format!("  {id}")));
+    lines
+}
+
 /// devpod would not let go of the workspace, and the clone was kept.
 pub(crate) fn delete_refused(workspace: &str) -> String {
     format!(
@@ -2917,6 +2965,50 @@ mod tests {
                 remote: "origin".to_owned(),
             }),
             "Pushed branch fix/42 to origin"
+        );
+    }
+
+    /// The delete's own two lines, which are the only ones a workspace with no
+    /// clone recorded under it has: the clone notices beside them do not fire, and
+    /// what named it before was `devpod delete`'s stdout and nothing else.
+    #[test]
+    fn a_delete_names_the_workspace_going_in_and_names_it_again_once_it_is_gone() {
+        assert_eq!(
+            removing("devlaunch-main-abc12345"),
+            "Removing workspace devlaunch-main-abc12345..."
+        );
+        assert_eq!(
+            removed("devlaunch-main-abc12345"),
+            "Removed workspace devlaunch-main-abc12345."
+        );
+    }
+
+    /// A picker cannot be driven from a test — it wants a tty — so the list it
+    /// prints is pinned here, where the words are.
+    #[test]
+    fn a_batch_of_picked_rows_is_listed_under_a_count_and_the_verb_that_asked() {
+        assert_eq!(
+            picked(
+                "rm",
+                &[
+                    "devlaunch-main-abc12345",
+                    "devlaunch-fix-def67890",
+                    "someones-project"
+                ]
+            ),
+            [
+                "Selected 3 workspaces for rm:",
+                "  devlaunch-main-abc12345",
+                "  devlaunch-fix-def67890",
+                "  someones-project",
+            ]
+        );
+        // The order is the picker's, which is the order the rows were marked in and
+        // the order the batch is applied in. Re-sorting the heading would describe a
+        // run that did not happen.
+        assert_eq!(
+            picked("stop", &["b", "a"]),
+            ["Selected 2 workspaces for stop:", "  b", "  a"]
         );
     }
 
