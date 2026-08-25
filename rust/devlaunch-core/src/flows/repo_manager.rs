@@ -2458,7 +2458,7 @@ pub(crate) mod tests {
                 "fetch",
                 "origin",
                 "+refs/heads/*:refs/heads/*",
-                "--tags",
+                "+refs/tags/*:refs/tags/*",
                 "--prune"
             ]
         );
@@ -3501,6 +3501,84 @@ pub(crate) mod tests {
             run_git(&bare, &["rev-parse", "refs/heads/main"]).trim(),
             pushed,
             "the sweep's refspec moves the local head, not just a tracking ref"
+        );
+    }
+
+    #[test]
+    fn real_git_updates_a_tag_the_remote_moved_rather_than_refusing_the_whole_fetch() {
+        // The live production bug: a non-forced tag refspec makes git reject a
+        // moved tag with `would clobber existing tag` and exit 1, so every later
+        // freshness fetch for that repository fails too, until a human deletes the
+        // local tag by hand. The head that moved in the same push is the collateral
+        // damage: a rejected tag fails the whole fetch, so the branch does not
+        // arrive either.
+        let cache = a_cache();
+        let remote = a_fixture_remote(cache.dir.path());
+        let runner = real_git();
+        let manager = a_manager(&cache, Git::new(&runner));
+        let mut storage = cache.storage;
+        run_git(&remote.work, &["tag", "release"]);
+        run_git(&remote.work, &["push", "origin", "release"]);
+        manager
+            .clone_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
+            .expect("cloned");
+        let bare = manager.bare_dir("test", "repo");
+
+        let moved = commit_on(&remote.work, "main", "moved.txt", "Move the tag");
+        run_git(&remote.work, &["tag", "-f", "release"]);
+        run_git(&remote.work, &["push", "--force", "origin", "release"]);
+
+        manager
+            .fetch_repo(&mut storage, "test", "repo", None, &mut ignoring())
+            .expect("a moved tag is an update, not a refusal");
+
+        assert_eq!(
+            run_git(&bare, &["rev-parse", "refs/tags/release"]).trim(),
+            moved,
+            "the tag follows the remote"
+        );
+        assert_eq!(
+            run_git(&bare, &["rev-parse", "refs/heads/main"]).trim(),
+            moved,
+            "and the head in the same push arrives with it"
+        );
+    }
+
+    #[test]
+    fn real_git_prunes_a_tag_the_remote_deleted() {
+        // `--prune` prunes per refspec, so a tag the remote has retracted survives
+        // for the life of the cache under a refspec `--tags` supplies implicitly,
+        // pinning every object it reaches. Pruning it is licensed by principle 1
+        // reading a bare's tag as a copy of an upstream ref holding no work that
+        // exists nowhere else, which is the argument that already licenses pruning
+        // heads.
+        let cache = a_cache();
+        let remote = a_fixture_remote(cache.dir.path());
+        let runner = real_git();
+        let manager = a_manager(&cache, Git::new(&runner));
+        let mut storage = cache.storage;
+        run_git(&remote.work, &["tag", "retracted"]);
+        run_git(&remote.work, &["push", "origin", "retracted"]);
+        manager
+            .clone_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
+            .expect("cloned");
+        let bare = manager.bare_dir("test", "repo");
+        assert!(
+            refs_of(&bare).contains(&"refs/tags/retracted".to_owned()),
+            "the premise: the cache holds the tag before the remote drops it"
+        );
+
+        run_git(&remote.work, &["push", "origin", ":refs/tags/retracted"]);
+        run_git(&remote.work, &["tag", "-d", "retracted"]);
+
+        manager
+            .fetch_repo(&mut storage, "test", "repo", None, &mut ignoring())
+            .expect("fetched");
+
+        assert!(
+            !refs_of(&bare).contains(&"refs/tags/retracted".to_owned()),
+            "a tag the remote dropped is pruned like a head: {:?}",
+            refs_of(&bare)
         );
     }
 

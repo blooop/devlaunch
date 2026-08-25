@@ -465,7 +465,11 @@ fn cloning_the_cache_is_bare_and_runs_nowhere_in_particular() {
 }
 
 #[test]
-fn the_broad_sweep_fetches_every_head_and_tag_and_prunes() {
+fn the_broad_sweep_forces_every_head_and_tag_refspec_and_prunes() {
+    // The tags refspec is spelled out rather than left to `--tags`, which is the
+    // same refspec unforced, and `--prune` prunes per refspec. Unforced, a tag the
+    // remote retracted was never pruned and a tag it moved refused the whole
+    // fetch, permanently.
     let fake = ScriptedRunner::new();
 
     Git::new(&fake).fetch_all(Path::new("/cache/o/r/.bare"), None);
@@ -477,7 +481,7 @@ fn the_broad_sweep_fetches_every_head_and_tag_and_prunes() {
             "fetch",
             "origin",
             "+refs/heads/*:refs/heads/*",
-            "--tags",
+            "+refs/tags/*:refs/tags/*",
             "--prune"
         ]
     );
