@@ -78,7 +78,17 @@ pub mod runner {
 // ported to Python's `os`/`posixpath` semantics rather than std's defaults. It
 // depends on nothing in the crate and every layer above reads the host through
 // it.
-pub(crate) mod osext;
+//
+// `pub` only for [`osext::env_str`], the way `json` below is `pub` only for
+// `JsonKind`: the binaries have environment variables of their own, and one of
+// them -- `aid`'s `DEVLAUNCH_AID_AGENT` -- was read with the `std::env::var(..)
+// .ok()` this module exists to replace. Everything else here stays
+// `pub(crate)`, so this is one reader promoted rather than the module opened;
+// whether the rest should follow is #406's open question and wants a second
+// caller before it is answered.
+//
+// binary surface -- not part of the frozen wf API (#251 section 7)
+pub mod osext;
 
 // Leaf like `runner`: the env-gated span registry everything above may use
 // (even `locks` spans a contended wait), depending on nothing itself.
