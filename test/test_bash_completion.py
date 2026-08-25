@@ -66,8 +66,30 @@ class TestBashCompletion:
         Returns:
             List of completion suggestions
         """
+        return self.run_completion_with_options(comp_line, comp_point)[0]
+
+    def run_completion_with_options(self, comp_line, comp_point=None):
+        """
+        As `run_completion`, and also the options the function asked bash for.
+
+        `compopt` is how the script says whether a candidate is a whole word or a
+        prefix to keep typing, and it is a real difference to the user: a trailing
+        space after a workspace id, none after an `owner/`. It cannot be observed
+        from COMPREPLY, and the real builtin refuses to run at all outside a live
+        completion ("not currently executing completion function"), which is also
+        what puts an error on stderr every time this harness runs. Shadowing it
+        with a function records the request and silences that. A shell function
+        beats a builtin of the same name, so the script needs no seam of its own.
+
+        Returns:
+            (completions, options) -- options is the list of words passed to each
+            `compopt` call, in order.
+        """
         if comp_point is None:
             comp_point = len(comp_line)
+
+        options_file = pathlib.Path(self.test_dir) / "compopt.log"
+        options_file.unlink(missing_ok=True)
 
         # Create a bash script that sources the completion and runs it
         # Use shlex.quote to properly escape shell arguments
@@ -75,6 +97,8 @@ class TestBashCompletion:
 #!/bin/bash
 export XDG_CACHE_HOME={shlex.quote(str(self.cache_base))}
 source {shlex.quote(str(self.completion_script))}
+
+compopt() {{ printf '%s\\n' "$*" >> {shlex.quote(str(options_file))}; }}
 
 # Set completion environment variables
 export COMP_LINE={shlex.quote(comp_line)}
@@ -94,7 +118,9 @@ done
 
         # Parse output
         completions = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
-        return completions
+        recorded = options_file.read_text(encoding="utf-8") if options_file.exists() else ""
+        options = [line.strip() for line in recorded.strip().split("\n") if line.strip()]
+        return completions, options
 
     def test_completion_with_dashed_workspace(self):
         """Test completion works with names containing dashes, in both namespaces."""
@@ -264,6 +290,16 @@ done
         # No longer prefix leaves the owner behind, so without this the workspace
         # can never be completed and TAB appends a `/` to an already-whole word.
         assert sorted(self.run_completion("dl blooop")) == ["blooop", "blooop/"]
+
+    def test_an_owner_keeps_the_cursor_against_the_slash_and_an_id_does_not(self):
+        """An owner is a prefix to keep typing; an id is a whole word."""
+        self.write_colliding_cache()
+
+        _, after_owner = self.run_completion_with_options("dl kin")
+        _, after_id = self.run_completion_with_options("dl kinisi-ros-nb")
+
+        assert after_owner == ["-o nospace"]
+        assert after_id == []
 
     def test_ids_complete_when_the_cache_knows_no_owners(self):
         """A cache with workspaces and no repos of dl's own is still completable."""
