@@ -982,6 +982,11 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
              refreshed ({}); it may be behind the remote.",
             not_refreshed(reason)
         ),
+        CacheNotice::RefsNotPacked {
+            owner,
+            repo,
+            reason,
+        } => format!("Could not pack the refs of {owner}/{repo}: {reason}"),
         CacheNotice::LfsCacheNotFilled { reason } => {
             format!("Could not fill the cache's git-lfs store: {reason}")
         }
@@ -3076,6 +3081,25 @@ mod tests {
                 path: PathBuf::from("/c/repos/o/r/ws"),
             }),
             "No workspace clone to remove at /c/repos/o/r/ws"
+        );
+    }
+
+    #[test]
+    fn a_pack_the_sweep_could_not_do_names_the_repository_and_gits_own_words() {
+        // The sweep walks every repository in one detached process, so a line that
+        // did not name one would be unactionable. It is a notice and not an error
+        // because the fetch beside it succeeded: the cost of the refusal is a
+        // filesystem block per ref until the next sweep, and nothing else.
+        let said = |notice: CacheNotice| cache_notice(&notice).expect("a line");
+
+        assert_eq!(
+            said(CacheNotice::RefsNotPacked {
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+                reason: "fatal: unable to create 'packed-refs.lock': Permission denied".to_owned(),
+            }),
+            "Could not pack the refs of blooop/devlaunch: fatal: unable to create \
+             'packed-refs.lock': Permission denied"
         );
     }
 

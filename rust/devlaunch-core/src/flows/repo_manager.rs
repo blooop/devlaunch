@@ -246,6 +246,18 @@ pub enum CacheNotice {
         base: String,
         reason: NotRefreshed,
     },
+    /// The loose refs the sweep's own fetch wrote could not be collapsed into
+    /// `packed-refs`. The fetch itself succeeded, so this is a notice and never a
+    /// [`FetchRepoError`]: the cache is fresh either way and the only cost is that
+    /// the bare keeps a block per ref until the next sweep tries again.
+    ///
+    /// Names the repository because the sweep walks every repository in one
+    /// detached process, so a line that did not say which one would be unactionable.
+    RefsNotPacked {
+        owner: String,
+        repo: String,
+        reason: String,
+    },
     /// The cache's git-lfs store could not be filled. Best-effort: the workspace
     /// falls through to the network phase.
     LfsCacheNotFilled { reason: String },
@@ -1398,6 +1410,31 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
+        // Where the loose refs the fetch just wrote get collapsed into
+        // `packed-refs`. Here rather than anywhere else because `fetch_all` has
+        // exactly one production caller, so "after the fetch" *is* the detached
+        // background sweep by construction, in the repo-lock scope it already
+        // holds; and because packing pays a second time in probe latency, since
+        // the reachability question asked of the bare walks every ref and today
+        // reads one file per ref to do it (measured on git 2.51.1, 5.3 ms against
+        // 2.8 ms over 551 refs, 301 of them loose).
+        //
+        // **A refusal here is not a failed fetch.** The fetch happened, the cache
+        // is fresh, and the stamp below has to land or the sweep re-fetches this
+        // repository every interval forever on account of a representation change
+        // that did not come off. Packing is the optional half of this function and
+        // the fetch is the point of it. Its own arm rather than `let _ =`, for the
+        // reason [`RecordUpdate::Absent`] gets one below: a caller that cannot say
+        // what it does with an answer is the shape that turns a no-op into a
+        // reported success.
+        if let Some(refused) = self.git.pack_refs(&bare).refusal() {
+            notices.say(CacheNotice::RefsNotPacked {
+                owner: owner.to_owned(),
+                repo: repo.to_owned(),
+                reason: refused.reason().to_owned(),
+            });
+        }
+
         // The stamp is the only field this touches, so it moves inside the
         // metadata lock rather than riding back in a copy of the whole record
         // taken before the lock existed.
@@ -2039,6 +2076,32 @@ pub(crate) mod tests {
         refs
     }
 
+    /// Every loose ref file under a repository's `refs/`, sorted.
+    ///
+    /// A ref git has packed is a line in `packed-refs` and no file here, so an
+    /// empty answer beside a non-empty [`refs_of`] is what "packed" looks like
+    /// from the filesystem. Directories are walked rather than listed, because a
+    /// ref name carries slashes and `refs/heads/feature/test` is two levels down.
+    pub(crate) fn loose_refs_of(repo: &Path) -> Vec<PathBuf> {
+        fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
+            let Ok(listing) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in listing.filter_map(Result::ok) {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else {
+                    found.push(path);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&repo.join("refs"), &mut found);
+        found.sort();
+        found
+    }
+
     /// A real git client over this process's `git`.
     pub(crate) fn real_git() -> ProcessRunner {
         ProcessRunner::new()
@@ -2450,7 +2513,7 @@ pub(crate) mod tests {
             .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut ignoring())
             .expect("fetched");
 
-        let call = fake.only_call();
+        let call = fake.calls().swap_remove(0);
         assert_eq!(
             as_strs(&[call.argv()])[0],
             [
@@ -2471,6 +2534,96 @@ pub(crate) mod tests {
                 .last_fetched
                 .is_some(),
             "the sweep's clock is what the interval is measured from"
+        );
+    }
+
+    #[test]
+    fn the_sweep_packs_the_refs_after_the_fetch_and_before_it_stamps_the_record() {
+        // Order is the whole of the placement argument. Packing after the fetch is
+        // what makes it the loose refs *this* pass wrote; packing before the stamp
+        // is what keeps a repository whose pack refused from being stamped as
+        // though nothing happened -- the stamp lands either way, and the arm below
+        // is what says so.
+        let mut cache = a_cache();
+        let bare = cache.given_bare_clone("owner", "repo");
+        cache.given_record("owner", "repo");
+        let fake = FakeGit::new();
+        let manager = a_manager(&cache, Git::new(&fake));
+
+        manager
+            .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut ignoring())
+            .expect("fetched");
+
+        let argvs = fake.argvs();
+        assert_eq!(
+            as_strs(&argvs),
+            [
+                vec![
+                    "git",
+                    "fetch",
+                    "origin",
+                    "+refs/heads/*:refs/heads/*",
+                    "+refs/tags/*:refs/tags/*",
+                    "--prune",
+                ],
+                vec!["git", "pack-refs", "--all"],
+            ]
+        );
+        assert_eq!(
+            fake.calls()[1].invocation().cwd.as_deref(),
+            Some(bare.as_path()),
+            "the pack is about the bare the fetch just wrote into"
+        );
+    }
+
+    #[test]
+    fn a_pack_that_refused_is_reported_and_the_fetch_still_counts_as_done() {
+        // Principle 1 decides this and it is not close: the fetch happened, so the
+        // cache is fresh and nothing is at risk. Reporting a failed fetch here
+        // would be a lie about the network, and withholding the stamp would make
+        // every later sweep re-fetch the whole repository forever on account of a
+        // representation change that did not come off. Packing is the optional
+        // half of this function; the fetch is the point of it.
+        let mut cache = a_cache();
+        cache.given_bare_clone("owner", "repo");
+        cache.given_record("owner", "repo");
+        let fake = FakeGit::new().with_script(
+            ["git", "pack-refs"],
+            Response::failed(
+                1,
+                "fatal: unable to create 'packed-refs.lock': Permission denied\n",
+            ),
+        );
+        let manager = a_manager(&cache, Git::new(&fake));
+        let mut notices = ignoring();
+
+        manager
+            .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut notices)
+            .expect("a pack that refused is not a fetch that failed");
+
+        assert!(
+            notices.contains(&CacheNotice::RefsNotPacked {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                reason: "fatal: unable to create 'packed-refs.lock': Permission denied".to_owned(),
+            }),
+            "the refusal has to reach a reader, and say which repository: {notices:?}"
+        );
+        assert!(
+            cache
+                .storage
+                .get_repository("owner", "repo")
+                .expect("the record")
+                .last_fetched
+                .is_some(),
+            "the stamp is about the fetch, and the fetch happened"
+        );
+        assert!(
+            notices.contains(&CacheNotice::FetchedUpdates {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+            }),
+            "the sweep finished: {notices:?}"
         );
     }
 
@@ -2567,7 +2720,9 @@ pub(crate) mod tests {
             .expect("fetched");
 
         assert_eq!(BACKGROUND_FETCH_TIMEOUT, Duration::from_secs(300));
-        match fake.only_call() {
+        // The fetch, which is the call the bound is about. The pack beside it
+        // carries its own thirty seconds and never the network's budget.
+        match fake.calls().swap_remove(0) {
             devlaunch_test_support::Call::Capture(spec) => {
                 assert_eq!(spec.timeout, Some(BACKGROUND_FETCH_TIMEOUT));
             }
@@ -2873,7 +3028,10 @@ pub(crate) mod tests {
                 .expect("fetched"),
             Fetched::Fetched
         );
-        assert_eq!(fake.call_count(), 1);
+        // The fetch and the pack that follows it. A skipped pass below spawns
+        // neither, which is what makes the pack cost nothing on a pass that did
+        // not fetch.
+        assert_eq!(fake.call_count(), 2);
 
         // The fetch above wrote `last_fetched`, so the next pass is inside the
         // interval.
@@ -3579,6 +3737,60 @@ pub(crate) mod tests {
             !refs_of(&bare).contains(&"refs/tags/retracted".to_owned()),
             "a tag the remote dropped is pruned like a head: {:?}",
             refs_of(&bare)
+        );
+    }
+
+    #[test]
+    fn real_git_the_sweep_packs_the_loose_refs_its_own_fetch_just_wrote() {
+        // Every ref a fetch updates is written as a loose file costing a whole
+        // filesystem block, and nothing in production ever packed them: `pack-refs
+        // --auto` is a no-op on the `files` backend and no `gc` runs on the bare.
+        // The packing belongs on the sweep because the sweep is what makes them --
+        // `fetch_all` has exactly one production caller, so "after the fetch" is
+        // the detached background sweep by construction, inside a lock scope it
+        // already holds.
+        let cache = a_cache();
+        let remote = a_fixture_remote(cache.dir.path());
+        let runner = real_git();
+        let manager = a_manager(&cache, Git::new(&runner));
+        let mut storage = cache.storage;
+        manager
+            .clone_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
+            .expect("cloned");
+        let bare = manager.bare_dir("test", "repo");
+        // A fresh clone arrives packed, so the loose refs have to be *made* rather
+        // than assumed: every ref this fetch updates is a file git writes under
+        // `refs/`, shadowing the stale line still sitting in `packed-refs`.
+        let moved = commit_on(&remote.work, "main", "one.txt", "Move main");
+        run_git(&remote.work, &["tag", "v1"]);
+        run_git(&remote.work, &["push", "origin", "v1"]);
+
+        manager
+            .fetch_repo(&mut storage, "test", "repo", None, &mut ignoring())
+            .expect("fetched");
+
+        assert_eq!(
+            loose_refs_of(&bare),
+            Vec::<PathBuf>::new(),
+            "the sweep left its own loose refs behind"
+        );
+        // Not decoration: it is what says the assertion above is about a ref the
+        // fetch really did write loose. `main` moved and `v1` is new, so a fetch
+        // that packed nothing would leave both as files and `packed-refs` holding
+        // the sha from clone time.
+        let packed = std::fs::read_to_string(bare.join("packed-refs")).expect("a packed-refs");
+        assert!(
+            packed.contains(&format!("{moved} refs/heads/main")),
+            "packed-refs still holds the pre-fetch main: {packed}"
+        );
+        assert!(
+            packed.contains("refs/tags/v1"),
+            "the tag the fetch created is not in packed-refs: {packed}"
+        );
+        assert_eq!(
+            refs_of(&bare),
+            ["refs/heads/feature/test", "refs/heads/main", "refs/tags/v1"],
+            "packing changes the representation and must lose no ref"
         );
     }
 
