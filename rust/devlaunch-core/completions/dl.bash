@@ -147,40 +147,28 @@ _dl_completion() {
 
         # Default: owners first, workspace ids only when no owner matches.
         #
-        # These are two namespaces for the same repository, and offering them as
-        # one list is what used to make `kin<TAB>` stall. The owner
-        # `kinisi-robotics/` and every id derived from `kinisi_ros` share the
-        # prefix `kinisi-ro`, because `slug` turns the `_` into a `-` and an id is
-        # `<repo-slug>-<ref-slug>-<suffix>`. bash completes to the longest common
-        # prefix of its candidates, so it stopped at `kinisi-ro` and offered a
-        # screen of ids. One repository is enough to do that: the colliding pair is
-        # an owner and the ids of its own repo, so no fork and no second owner is
-        # needed, and no amount of typing helps until the two spellings diverge.
+        # The two namespaces collide for a single repository. An id is
+        # `<repo-slug>-<ref-slug>-<suffix>` and `slug` turns `_` into `-`, so
+        # `kinisi-robotics/kinisi_ros` derives ids that all begin `kinisi-ros`,
+        # against an owner named `kinisi-robotics`. In one list bash completes to
+        # the nine characters they share and stops. No fork and no second owner
+        # is needed, which is why this is a precedence rule and not a filter.
         #
-        # The owner wins the tie because it continues. `/` is the next keystroke,
-        # and the `*/*` branch above completes the repo from there, so `kin` now
-        # reaches `kinisi-robotics/kinisi_ros` in two tabs.
-        #
-        # An id is a whole word with nothing after it, and it stays reachable
-        # rather than being dropped: keep typing and either the prefix stops
-        # matching any owner or the id is typed out in full, and both bring it
-        # back. That is the case the fallback exists for -- an id pasted or
-        # half-typed out of `dl --ls` still completes, and `dl <id>` is a launch
-        # arm the grammar keeps (`WorkspaceSpec::ExistingIdOrName`).
-        #
-        # Nothing here changes what the cache holds, so a `completions.bash`
-        # written by an older build works unchanged and vice versa.
+        # The owner wins because it continues: `/` is the next keystroke and the
+        # `*/*` branch above completes the repo from there. An id is a finished
+        # word, so it is held back rather than dropped -- `dl <id>` is a launch
+        # arm (`WorkspaceSpec::ExistingIdOrName`), and the two guards below are
+        # what keep an id copied out of `dl --ls` completable.
         local owners=""
         local owner
         for owner in $DL_OWNERS; do
             owners="$owners ${owner}/"
         done
 
-        # Nothing typed is nothing to disambiguate. Every owner matches the empty
-        # prefix, so without this the hold-back below swallows the whole workspace
-        # list on the one gesture that means "show me what I have" -- and with a
-        # single owner it is worse than a short list, because one candidate under
-        # `nospace` is bash rewriting the line to `dl owner/`.
+        # Every owner matches the empty prefix, so without this the hold-back
+        # swallows the workspace list on the one gesture that means "show me what
+        # I have" -- and under `nospace` a lone owner is not a short list, it is
+        # bash rewriting the line to `dl owner/`.
         if [[ -z "$cur" ]]; then
             compopt -o nospace
             COMPREPLY=( $(compgen -W "${owners} ${DL_WORKSPACES}" -- "") )
@@ -194,13 +182,10 @@ _dl_completion() {
         if (( ${#COMPREPLY[@]} > 0 )); then
             # No trailing space: the `/` is a continuation, not the end of a word.
             compopt -o nospace
-            # An id typed out in full is offered beside the owner rather than held
-            # back, because holding it back is not a delay for it -- no longer
-            # prefix ever leaves the owner behind, so the word would never complete
-            # at all, and the lone owner candidate would append a `/` to a word
-            # that was already whole. `DL_WORKSPACES` is every devpod workspace,
-            # not only the ones dl derived a suffixed id for, so a hand-made
-            # workspace named after an owner is a name that can really be there.
+            # Holding an id back is only defensible while it is a delay, and for an
+            # id typed out in full there is no longer prefix to reach. Reachable
+            # because `DL_WORKSPACES` is every devpod workspace, hand-made names
+            # included, so one really can be called after an owner.
             local workspace
             for workspace in $DL_WORKSPACES; do
                 if [[ "$workspace" == "$cur" ]]; then
@@ -209,9 +194,8 @@ _dl_completion() {
                 fi
             done
         elif [[ -n "$DL_WORKSPACES" ]]; then
-            # A space, unlike the old shared branch, which suppressed it for every
-            # candidate because some of them were owners. An id is finished when it
-            # matches, and the space is what lets a verb be typed straight after.
+            # A space here, where the old shared branch suppressed it for every
+            # candidate because some of them were owners.
             COMPREPLY=( $(compgen -W "${DL_WORKSPACES}" -- ${cur}) )
         fi
         return 0
