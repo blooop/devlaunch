@@ -97,17 +97,18 @@ done
         return completions
 
     def test_completion_with_dashed_workspace(self):
-        """Test completion works with names containing dashes."""
-        # Complete after typing "dl my-". The owner matches, so the ids that also
-        # start "my-" are held back; see the namespace tests below for why.
-        completions = self.run_completion("dl my-")
-        assert "my-org/" in completions
-        # A prefix no owner matches falls through to the workspace ids.
-        assert "my-workspace" in self.run_completion("dl my-w")
-        # Negative assertions: dashes are not treated as word breaks
-        # (These would appear if dashes were splitting the words)
-        assert "workspace" not in completions
-        assert "org/" not in completions
+        """Test completion works with names containing dashes, in both namespaces."""
+        # "dl my-" matches an owner, so the ids that also start "my-" are held
+        # back; "dl my-w" matches none, so it falls through to them. Both halves
+        # are here because a dash treated as a word break would show up in one
+        # list or the other, and the tail is what it would leave behind.
+        owners = self.run_completion("dl my-")
+        ids = self.run_completion("dl my-w")
+
+        assert owners == ["my-org/"]
+        assert ids == ["my-workspace"]
+        assert "org/" not in owners
+        assert "workspace" not in ids
 
     def test_completion_with_dashed_org_name(self):
         """Test completion works with organization names containing dashes."""
