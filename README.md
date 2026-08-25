@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.14.1-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.15.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -235,7 +235,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.14.1
+dl 0.15.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -303,8 +303,10 @@ anything to its `devcontainer.json`.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
   its own copies in over the ssh channel it already holds, with no download. A failed install
   costs the workspace its tools, never its launch.
-- **[zellij](https://zellij.dev) on `PATH`**, so an agent can open a second terminal beside
-  itself in the same container, and you can attach to it from anywhere.
+- **[zellij](https://zellij.dev) on `PATH` when you ask for it**, so an agent can open a second
+  terminal beside itself in the same container, and you can attach to it from anywhere.
+  `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
+  of a cold launch, which is why it waits to be asked.
 - **A terminal named after the workspace.** `dl blooop/devlaunch` names the pane
   `blooop/devlaunch@main` in zellij, tmux, or a plain terminal window.
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
@@ -343,16 +345,19 @@ Images are yours: `docker system df` is what shows those.
 |---|---|
 | `DEVLAUNCH_NO_GH_TOKEN=1` | Do not forward the host's GitHub login into workspaces |
 | `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude`. The setup pass still names the container |
-| `DEVLAUNCH_NO_ZELLIJ=1` | Do not install zellij. Leaves `gh` and `claude` provisioning alone |
-| `DEVLAUNCH_ZELLIJ=1` | Create the zellij session a command can open panes into. Off by default |
+| `DEVLAUNCH_ZELLIJ=1` | Install zellij, and create the session a command can open panes into. Off by default |
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace |
 | `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before every interactive attach. Off by default |
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
+| `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 
-Every "no" variable reads the same values: anything but empty, `0`, `false` or `no` means yes,
-turn it off.
+Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Three
+rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SSH_CONFIG`
+take a value, and `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+turn it on.
 
 Changes to what a container gets land on `devpod up`, so a workspace that is already running
 keeps what it was given. `dl <ws> restart` is what re-decides it, and `dl <ws> recreate` is what

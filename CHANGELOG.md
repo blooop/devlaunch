@@ -7,9 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.1] - 2026-08-25
+## [0.15.0] - 2026-08-25
 
 ### Changed
+
+- **zellij is installed only into workspaces that asked for it, and
+  `DEVLAUNCH_ZELLIJ=1` is the ask.** It used to go into every container `dl`
+  opened. The seconds are real — the stage costs 2.2s warm to 3.5s cold of a
+  setup pass, and **1.70s of that is bootstrapping pixi**, not installing zellij
+  — but they are not what decided it. What decided it is that the install was
+  opt-out while every use of it was opt-in, so the default combination paid for a
+  capability the same defaults guaranteed nothing would touch. `DEVLAUNCH_ZELLIJ`
+  now means "I want zellij in my containers" rather than "wrap this command", and
+  one variable answers both halves: the setup pass carries the stage, and a
+  `dl <spec> -- <cmd>` still makes sure the session exists first.
+
+  Two costs, said plainly. A documented guarantee shrinks: workspaces no longer
+  all have zellij, only the ones that asked. And an interactive attach that used
+  to be able to type `zellij attach -c devlaunch` now needs the variable set, once
+  in a shell profile, or gets `command not found`.
+
+  Setting it on a workspace that is already up lands the stage on the next
+  `dl <ws> up`, with no restart and no extra machinery: the verdict cache already
+  records which switches a pass ran under, so a launch that wants the stage does
+  not trust a marker written by one that skipped it and the top-up pass travels
+  carrying the stage. An attach against a running workspace picks nothing up
+  whatever shape it takes: `dl <ws>` and `dl <ws> -- <cmd>` both go straight to the
+  attach, so opting in and immediately running a command against a container that
+  is already up wraps it in a zellij that is not there yet.
+
+- **`DEVLAUNCH_NO_ZELLIJ` is retired.** With skip as the default it had no
+  remaining job. A stale `DEVLAUNCH_NO_ZELLIJ=1` in a shell profile is read by
+  nothing and, in particular, can never turn provisioning back on for somebody who
+  had asked for it off. `DEVLAUNCH_NO_TOOLS=1` still overrides a launch that did
+  ask, because installing zellij is still tool provisioning.
 
 - **A delete now says which workspace it deleted.** `dl rm` from the picker said
   nothing that named its own work: skim hands back a workspace id and takes its
@@ -37,7 +68,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dl ./wrong-directory rm --force` reaches the delete and comes back successful.
   Saying `Removed` there would be dl affirming a delete that never happened.
 
+### Fixed
+
+- **`dl` looks for devpod's ssh host aliases where devpod writes them, so the pty
+  transport stops disappearing in silence.** `dl <ws> -- <cmd>` runs over OpenSSH
+  through the alias `devpod up` publishes, and `dl` decided whether that alias
+  existed by reading a hardcoded `~/.ssh/config`. devpod does not necessarily
+  write there: it targets the `SSH_CONFIG_INCLUDE_PATH` context option, else
+  `--ssh-config` (whose default it fills in from `$DEVPOD_SSH_CONFIG`), else the
+  `SSH_CONFIG_PATH` context option, else `~/.ssh/config` — and it writes to
+  whichever it picks and to *no other*. So on any host that exports
+  `DEVPOD_SSH_CONFIG` there was no `~/.ssh/config` to find, `dl` concluded the
+  workspace had no alias, dropped every command to `devpod ssh --command` (no
+  pty, `TERM=dumb`, interactive programs exiting on sight), and the only thing it
+  said was that the *workspace* needed restarting. This repo's own scratch
+  convention, `test/conftest.py` and `scripts/bench_launch.py` all export that
+  variable, so the transport was unreachable on exactly the hosts we measure on:
+  **before/after numbers from a run that set `DEVPOD_SSH_CONFIG` are not
+  comparable across this change**, because the earlier side of them was silently
+  on the other transport.
+  The two context-option paths are read from the copy `dl` has already cached and
+  never by a fresh `devpod context options`: that trip costs 0.4-0.7s (#393) on a
+  path where the whole decision is worth less, and a cache miss falls back to
+  devpod's own defaults, which is what `dl` assumed unconditionally before.
+  And the silence is gone from the type rather than from a log line. `Terminal`'s
+  one `NoAlias` arm was two facts wearing one name; it is now `NoAlias` (this
+  config has no entry for this workspace, and `dl <ws> restart` republishes it),
+  `ConfigMissing` (there is no ssh config where `dl` expects devpod to publish,
+  named in the notice, and a restart helps only if devpod writes to that same
+  file) and `ConfigUnlocatable` (no home directory and nothing naming a config,
+  so there is nowhere to look). Each has its own sentence, and each names the
+  path `dl` read. (#421)
+- **`dl` hands OpenSSH the ssh config it read the alias out of, as `-F <path>`.**
+  The other half of the same bug, and the half that made it worse rather than
+  quieter. OpenSSH reads neither `$DEVPOD_SSH_CONFIG` nor `$HOME`; it resolves the
+  default user config through `getpwuid(getuid())`. So once `dl` started deciding
+  the alias existed by reading devpod's real config, the invocation it built still
+  pointed OpenSSH at `~/.ssh/config`, and on a host where devpod publishes
+  elsewhere `ssh -t <ws>.devpod <cmd>` failed with `Could not resolve hostname` at
+  exit 255: the command did not run at all, where before it had merely run without
+  a terminal. The config now travels inside `Terminal::Usable` and
+  `ssh::command_args` takes it as a parameter, so an invocation with no `-F` is not
+  expressible. **The trade:** `-F` makes OpenSSH read that file *instead of*
+  `~/.ssh/config`, and it skips `/etc/ssh/ssh_config` unconditionally, including
+  when the file named *is* your own user config. So a system-wide `Host *` block
+  never applies to a devlaunch session, and one of your own stops applying as soon
+  as devpod publishes somewhere other than your user config. Taken deliberately: `dl` cannot know whether `ssh` would have
+  read the file `dl` read, since `$HOME` and `getpwuid`'s home are allowed to
+  differ, and devpod's own block is self-contained. The e2e suite's `ssh` shim,
+  which had been supplying exactly this `-F` and hiding the defect from a green
+  run, is deleted. (#421)
+
 ## [0.14.0] - 2026-08-25
+
+### Fixed
+
+- **`dl --reconcile` no longer reports an adoption as landed when it wrote no
+  record.** Re-pointing devpod at the clone and recording the worktree are two
+  steps, and the second can find nothing to update — another run removed the
+  record while the plan sat there waiting to be applied. That case was reported
+  as `Repointed` like any other, with the run finishing successfully, so the one
+  outcome worth knowing about looked identical to the ordinary one. It is now its
+  own `Unrecorded` arm: devpod re-pointed, dl's record not written, said on
+  stderr, and the run does not report itself finished. A store that refused the
+  write lands in the same arm for the same reason — it is the same half-done
+  adoption — and the refusal is named beside it.
 
 ### Added
 
@@ -122,6 +217,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now, which is the host's wording out of the decision entirely, and still keeps
   out `branch '%s' not found`, `tag '%s' not found` and `repository '%s' does
   not exist`.
+
+### Changed
+
+- **devpod's on-disk layout is one module's, and that module now exists.**
+  `clients::devpod` was the seam for devpod-the-command; devpod-the-filesystem
+  had none, so `<devpod home>/contexts/<ctx>/workspaces/<id>/…` was rebuilt
+  wherever it was needed — four times in `devlaunch-core`'s implementation and
+  four more in its test fixtures, under a comment claiming it was spelled "in one
+  place and not three". `clients::devpod_home::DevpodHome` owns it now, including
+  the one write (`--reconcile` re-points a record's `source.localFolder`, which
+  devpod v0.26.1 offers no subcommand for), and `devlaunch-core`'s new
+  `tests/devpod_layout.rs` fails if any other module in the crate spells it
+  again. `lifecycle::devpod_home()` becomes `DevpodHome::locate()`, and
+  `lifecycle::RepointFailure` moves with the write that raises it;
+  `api::workspace_delete`, `lifecycle::purge_all_data` and
+  `lifecycle::apply_reconciliation` take a `DevpodHome` where they took a bare
+  path. It also takes a test module back out of the crate's internal surface:
+  `flows::lifecycle`'s `mod tests` was `pub(crate)` only so two other flows could
+  import a devpod-home fixture from it, and the fixture now lives with the
+  layout it builds.
 
 ## [0.13.0] - 2026-08-24
 
