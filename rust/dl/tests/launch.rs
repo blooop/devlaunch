@@ -594,10 +594,14 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
     // devpod's own line, on stdout because the `up` inherits this process's streams.
     assert_eq!(run.out, format!("Workspace {COLD} is ready\n"));
     // The host's own work first, said as it happens: the one targeted fetch, what the
-    // branch step found, and the clone about to be cut. Then the two setup stages,
+    // branch step found, and the clone about to be cut. Then the setup stages,
     // which report nothing because the fake devpod's `ssh` runs no remote command —
     // the same answer a real container with no `readlink` gives, named rather than
     // passed over.
+    //
+    // Two stages and not three: this launch set no `DEVLAUNCH_ZELLIJ`, so it never
+    // asked for zellij and pays nothing for it (#391). `dl <spec> --` with the
+    // variable set is the case that carries the third, below.
     assert_eq!(
         run.stderr_lines(),
         [
@@ -607,7 +611,6 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
                 "Creating workspace clone at {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD}"
             ),
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
-            &format!("{COLD}: the zellij setup stage did not report; it may not have run."),
             &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("SSH command: devpod ssh {COLD}"),
         ]
@@ -715,7 +718,6 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             // pass that tops its tools up runs, because that is when it was found.
             &format!("Workspace {MAIN} is already running.") as &str,
             &format!("{MAIN}: the hostname setup stage did not report; it may not have run."),
-            &format!("{MAIN}: the zellij setup stage did not report; it may not have run."),
         ]
     );
     assert_eq!(
@@ -725,6 +727,42 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             format!("devpod ssh {MAIN} --command bash -lc 'if sudo hostna…"),
             format!("devpod ssh {MAIN} --command bash -lc 'set -u…"),
         ]
+    );
+}
+
+#[test]
+fn a_launch_that_asks_for_zellij_carries_the_stage_and_one_that_does_not_pays_nothing() {
+    // The default change of #391, end to end and from the outside: the same verb on
+    // the same workspace, told apart only by the variable. A launch that asked
+    // reports a zellij stage; a launch that did not never mentions one, and the
+    // ~2.2s of pixi bootstrap plus install behind that stage is the seconds the
+    // default no longer spends.
+    //
+    // The stages report *nothing* here, because the fake devpod's `ssh` runs no
+    // remote command; which stages the pass carried is exactly what those "did not
+    // report" lines name, which is what makes them the assertion.
+    let world = World::with(&["--warm"]);
+
+    let asked = world.dl_with(&[MAIN, "up"], &[("DEVLAUNCH_ZELLIJ", "1")]);
+    asked.exited(0);
+    assert!(
+        asked
+            .stderr_lines()
+            .iter()
+            .any(|line| line.contains("the zellij setup stage")),
+        "{:?}",
+        asked.stderr_lines()
+    );
+
+    let unasked = world.dl(&[MAIN, "up"]);
+    unasked.exited(0);
+    assert!(
+        !unasked
+            .stderr_lines()
+            .iter()
+            .any(|line| line.contains("zellij")),
+        "{:?}",
+        unasked.stderr_lines()
     );
 }
 

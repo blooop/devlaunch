@@ -63,7 +63,7 @@ fn repo_root() -> PathBuf {
 
 /// The path the messages name, so a retargeted guard renames itself in all of
 /// them rather than in none.
-const CONTRACT_DOC: &str = "docs/workspace-tools.md";
+pub(super) const CONTRACT_DOC: &str = "docs/workspace-tools.md";
 
 /// The document carrying the lending contract.
 ///
@@ -72,11 +72,11 @@ const CONTRACT_DOC: &str = "docs/workspace-tools.md";
 /// three headings. What this file guards is that an image author acting on the
 /// bake recipe is acting on paths `dl` really looks for, which is a property of
 /// the prose wherever it is published, not of the filename.
-fn contract_doc() -> String {
+pub(super) fn contract_doc() -> String {
     read(&repo_root().join(CONTRACT_DOC))
 }
 
-fn changelog() -> String {
+pub(super) fn changelog() -> String {
     read(&repo_root().join("CHANGELOG.md"))
 }
 
@@ -105,7 +105,7 @@ const NON_GOALS_HEADING: &str = "### What this deliberately does not do";
 /// heading is the likeliest way these tests break and has to say so rather than
 /// surface as an empty string, and a substring search would just as happily match
 /// the same words quoted inside a code fence.
-fn section(document: &str, heading: &str) -> String {
+pub(super) fn section(document: &str, heading: &str) -> String {
     let level = heading.len() - heading.trim_start_matches('#').len();
     let starts: Vec<usize> = document
         .lines()
@@ -139,7 +139,7 @@ fn is_heading_at_most(line: &str, level: usize) -> bool {
 /// subsection-wide assertion is satisfied by any sentence in it — including a
 /// parenthetical listing the guarded spans next to a recipe that says something
 /// else entirely.
-fn bullets(text: &str) -> Vec<String> {
+pub(super) fn bullets(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     let mut in_bullet = false;
     for line in text.lines() {
@@ -158,7 +158,7 @@ fn bullets(text: &str) -> Vec<String> {
 }
 
 /// The one bullet of `text` whose bolded lead is `term`.
-fn bullet_naming(text: &str, term: &str) -> String {
+pub(super) fn bullet_naming(text: &str, term: &str) -> String {
     let lead = format!("- **{term}**");
     let matching: Vec<String> = bullets(text)
         .into_iter()
@@ -254,7 +254,7 @@ fn transfer_gates_on_execution() -> bool {
 ///
 /// The documents are hard-wrapped, so a span and the verb that governs it are one
 /// reflow away from being on separate lines — and that is not a change of meaning.
-fn reflowed(text: &str) -> String {
+pub(super) fn reflowed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -465,7 +465,7 @@ fn the_recipe_warns_that_this_repos_own_feature_does_not_satisfy_it() {
 }
 
 /// Every `**bold**` span in `text`, reflowed so a hard-wrapped span reads as one.
-fn bolded_spans(text: &str) -> Vec<String> {
+pub(super) fn bolded_spans(text: &str) -> Vec<String> {
     let flat = reflowed(text);
     let mut spans = Vec::new();
     let mut rest = flat.as_str();

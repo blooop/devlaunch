@@ -303,8 +303,10 @@ anything to its `devcontainer.json`.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
   its own copies in over the ssh channel it already holds, with no download. A failed install
   costs the workspace its tools, never its launch.
-- **[zellij](https://zellij.dev) on `PATH`**, so an agent can open a second terminal beside
-  itself in the same container, and you can attach to it from anywhere.
+- **[zellij](https://zellij.dev) on `PATH` when you ask for it**, so an agent can open a second
+  terminal beside itself in the same container, and you can attach to it from anywhere.
+  `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
+  of a cold launch, which is why it waits to be asked.
 - **A terminal named after the workspace.** `dl blooop/devlaunch` names the pane
   `blooop/devlaunch@main` in zellij, tmux, or a plain terminal window.
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
@@ -343,8 +345,7 @@ Images are yours: `docker system df` is what shows those.
 |---|---|
 | `DEVLAUNCH_NO_GH_TOKEN=1` | Do not forward the host's GitHub login into workspaces |
 | `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude`. The setup pass still names the container |
-| `DEVLAUNCH_NO_ZELLIJ=1` | Do not install zellij. Leaves `gh` and `claude` provisioning alone |
-| `DEVLAUNCH_ZELLIJ=1` | Create the zellij session a command can open panes into. Off by default |
+| `DEVLAUNCH_ZELLIJ=1` | Install zellij, and create the session a command can open panes into. Off by default |
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace |
 | `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before every interactive attach. Off by default |
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
@@ -352,8 +353,11 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 
-Every "no" variable reads the same values: anything but empty, `0`, `false` or `no` means yes,
-turn it off.
+Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Three
+rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SSH_CONFIG`
+take a value, and `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+turn it on.
 
 Changes to what a container gets land on `devpod up`, so a workspace that is already running
 keeps what it was given. `dl <ws> restart` is what re-decides it, and `dl <ws> recreate` is what

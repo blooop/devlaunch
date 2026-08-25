@@ -179,11 +179,17 @@ struct Marker {
     result_mtime: Stamp,
     /// The switches the pass ran under. Without this the marker answers "was this
     /// container provisioned?" when the question the flow asks it is "was it
-    /// provisioned *the way this launch wants*?" — and those differ exactly when
-    /// somebody used an opt-out. A pass run with `DEVLAUNCH_NO_ZELLIJ=1` probes
-    /// provisioned, because zellij is not what the probe is about, so it wrote a
-    /// marker that a later full launch trusted: zellij was never installed, and no
-    /// top-up would ever notice, because the marker said there was nothing to do.
+    /// provisioned *the way this launch wants*?" — and those differ exactly when the
+    /// two launches asked for different things. A pass that carried no zellij stage
+    /// probes provisioned, because zellij is not what the probe is about, so it
+    /// wrote a marker that a later launch asking for zellij trusted: zellij was
+    /// never installed, and no top-up would ever notice, because the marker said
+    /// there was nothing to do.
+    ///
+    /// Since #391 that is the *common* case rather than an opt-out's, and it is what
+    /// makes `DEVLAUNCH_ZELLIJ=1` work on a workspace that is already up: the
+    /// marker written by every launch before it disagrees with the one this launch
+    /// wants, so the pass travels again and the stage lands.
     ///
     /// A marker written before this field existed has no `switches` key, fails to
     /// deserialize, and is therefore untrusted — one redundant round trip on the
@@ -338,29 +344,31 @@ mod tests {
     }
 
     #[test]
-    fn a_marker_written_by_an_opted_out_pass_is_not_trusted_by_a_full_launch() {
-        // The defect this field exists for. `DEVLAUNCH_NO_ZELLIJ=1` runs a pass
-        // that carries no zellij stage, and that pass *probes provisioned* --
-        // rightly, because the probe is about the tools, not about zellij. So it
-        // wrote a marker, and the marker said only "this container, provisioned".
+    fn a_marker_written_by_a_pass_without_zellij_is_not_trusted_by_one_that_wants_it() {
+        // The defect this field exists for, and since #391 the mechanism the opt-in
+        // rests on. A launch that did not ask for zellij runs a pass carrying no
+        // zellij stage, and that pass *probes provisioned* -- rightly, because the
+        // probe is about the tools, not about zellij. So it wrote a marker, and the
+        // marker said only "this container, provisioned".
         //
-        // The next launch, with no variable set, wants the zellij stage. It found a
-        // trusted marker for a container that had never stopped, skipped the trip,
-        // and zellij was never installed. Nothing later notices, because every
-        // subsequent top-up reads the same marker and skips the same trip: the
-        // failure is permanent for the life of the container and completely silent.
+        // The next launch sets `DEVLAUNCH_ZELLIJ=1` and wants the stage. Without
+        // this field it would find a trusted marker for a container that had never
+        // stopped, skip the trip, and never get zellij -- and nothing later would
+        // notice, because every subsequent top-up reads the same marker and skips
+        // the same trip: the failure is permanent for the life of the container and
+        // completely silent.
         let home = devpod_home_with(&[("default", "ws", Some(()))]);
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
-        let no_zellij = Switches {
+        let unasked = Switches {
             tools: ToolsSwitch::Install,
             zellij: ZellijSwitch::Skip,
         };
-        recorded_under(&verdicts, "ws", no_zellij);
+        recorded_under(&verdicts, "ws", unasked);
 
         assert!(
-            verdicts.trusted("ws", no_zellij),
+            verdicts.trusted("ws", unasked),
             "the pass that wrote it asks the same question and must still be answered"
         );
         assert!(
