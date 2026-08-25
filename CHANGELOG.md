@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`DEVLAUNCH_NO_TTY=FALSE` no longer means one thing to the prompt and another
+  to the transport.** `dl` gates its own terminal behaviour on the same variable
+  the ssh transport is gated on, and the two read it differently: core lowercases
+  the value and strips it the way Python's `str.strip()` does before comparing it
+  against the falsey words, while `dl` kept a copy that compared the raw bytes
+  with a bare `matches!`. So `FALSE` and `" no "` opted out of the prompt and not
+  out of the pty, and a non-UTF-8 value opted out of the *pty* and not the prompt
+  — `std::env::var(..).ok()` reports such a value as unset, which is the
+  opt-out-into-opt-in inversion `osext` exists to prevent and names in as many
+  words. The copy existed because `osext` was `pub(crate)` and neither half of
+  what makes the reading right — the lossy read or Python's strip — can be
+  spelled without it, so the fix is a seam rather than a third copy:
+  `clients::ssh::tty_disabled_by_environment` is binary surface, and `dl` asks it.
+  The deleted tests only ever covered the spellings where the two agreed, which is
+  why the divergence was invisible.
+
 ### Added
 
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota
@@ -24,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   head is warned about rather than failed on.
 
 ### Fixed
+
+- **`aid` no longer starts the default agent when `DEVLAUNCH_AID_AGENT` holds a
+  value it cannot decode.** The variable was read through
+  `std::env::var(..).ok()`, which reports a value that is not valid UTF-8 as
+  *unset* — so `DEVLAUNCH_AID_AGENT=$'\xff'` was not a broken agent name, it was
+  no agent name at all. The default agent was chosen, the workspace was opened,
+  and nothing anywhere mentioned the variable that had asked for something else.
+  The `is not a known agent` refusal that `DEVLAUNCH_AID_AGENT=nope` already got
+  was unreachable for exactly the values that cannot be written as a string. The
+  read is a lossy decode now, so the undecodable byte arrives present under
+  U+FFFD: a name to refuse rather than a variable to ignore, refused by name
+  with no devpod call made.
 
 - **On git 2.20 and older, a launch that asks for a new branch no longer fails
   outright.** Up to v2.20.0 git wrote `Couldn't find remote ref %s` through a
