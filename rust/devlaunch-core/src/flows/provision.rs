@@ -612,6 +612,30 @@ const CLAUDE_SHIM_BIN_LINE: &str = r#"[ -d "$HOME/.devlaunch/pixi/envs/claude-sh
 /// reads provisioned — because `~/.local/bin` goes in front of it.
 const LOCAL_BIN_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
 
+/// The export that keeps claude from renaming a pane dl just named.
+///
+/// claude writes the terminal title continuously, from its own read of what the
+/// session is doing. A multiplexer takes the last writer's word for it, so claude
+/// and dl are not two signals but one contest, and claude wins every round after
+/// the first: dl's name is gone within about a second. The `PS1` line above cannot
+/// close that hole, because it only repaints at a prompt and claude overwrites
+/// between prompts.
+///
+/// `aid` has set this variable for years, but only as an env prefix on the claude
+/// *it* decided to start -- correctly, since a `dl <ws> -- claude ...` somebody
+/// typed themselves is their command and not aid's to rewrite. That left every
+/// claude a person started for themselves losing the pane name, which is most of
+/// them. Writing it to the login profile keeps that rule and reaches those
+/// sessions anyway: it is not a rewrite of anyone's command, it is the environment
+/// their command inherits.
+///
+/// Unguarded, where [`profile_title_line`] tests `$-` and `$BASH_VERSION`. Those
+/// guards exist because a `PS1` assignment is meaningless to a shell that renders
+/// no prompt and actively wrong in one that is not bash; an `export` is neither. It
+/// has to reach the non-interactive login shells especially, because `bash -lc` is
+/// what every `dl <ws> -- claude ...` runs under.
+const CLAUDE_TITLE_EXPORT: &str = "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1";
+
 // ===========================================================================
 // the scripts
 // ===========================================================================
@@ -1026,17 +1050,25 @@ pub(crate) fn setup_stages(
         stages.push(
             Stage::new(
                 TITLE_STAGE,
-                // Two statements, so a nested `bash -c` for the reason the zellij
-                // stage has one: a stage is interpolated into `if <command>; then`,
-                // which is one line. The profile is resolved and appended to exactly
-                // as the PATH writers do it, so every edit finds the others' dedupe
-                // marks in the one file bash will actually read.
+                // Several statements, so a nested `bash -c` for the reason the
+                // zellij stage has one: a stage is interpolated into
+                // `if <command>; then`, which is one line. The profile is resolved
+                // and appended to exactly as the PATH writers do it, so every edit
+                // finds the others' dedupe marks in the one file bash will actually
+                // read.
+                //
+                // Two lines, and [`CLAUDE_TITLE_EXPORT`] belongs on this stage
+                // rather than on its own: it is the third piece of one feature, and
+                // `DEVLAUNCH_NO_TITLE` is the honest owner of all three. Somebody
+                // who turned dl's naming off did not ask for claude's to go with
+                // it, and nothing in a container would tell them why it had.
                 format!(
                     "bash -c {}",
                     quote(
                         &[
                             profile_resolution("$HOME"),
                             profile_prepend(&profile_title_line(title), None),
+                            profile_prepend(CLAUDE_TITLE_EXPORT, None),
                         ]
                         .join("\n")
                     )
@@ -3071,6 +3103,12 @@ fi
         assert_eq!(mark_digest(PIXI_BIN_LINE), "87ccd356540b");
         assert_eq!(mark_digest(CLAUDE_SHIM_BIN_LINE), "190e825e206b");
         assert_eq!(mark_digest(LOCAL_BIN_LINE), "63c662ba0560");
+        // Not a PATH line, but under the same mark scheme and so the same hazard:
+        // two different lines sharing one mark means whichever is appended second
+        // is silently dropped, and every script involved still exits 0. Pinned from
+        // `sha256sum` rather than from this function, which is the whole point of a
+        // golden here.
+        assert_eq!(mark_digest(CLAUDE_TITLE_EXPORT), "168a8cd14fe9");
         // The feature installer's own two, which are the marks actually pasted
         // into `.devcontainer/claude-code/install.sh`. Different lines from the
         // runtime writers' since those moved to `~/.devlaunch/pixi`, and so
@@ -4591,6 +4629,96 @@ fi
         assert!(again.status.success(), "{again:?}");
         let profile = std::fs::read_to_string(home.join(".profile")).expect("the profile");
         assert_eq!(profile.matches(r"\e]2;").count(), 1, "{profile:?}");
+    }
+
+    #[test]
+    fn a_real_bash_over_the_title_stage_also_silences_claudes_own_titling() {
+        // The half `aid` could never cover. aid sets
+        // `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` as an env prefix on the claude *it*
+        // decided to start, and deliberately does not rewrite a `dl <ws> -- claude`
+        // somebody typed themselves -- so that session, and every `claude` typed at
+        // an interactive prompt, still lost the pane name within a second. A profile
+        // export is the route that is not a rewrite: it reaches whoever starts
+        // claude, because it was already in the environment before they did.
+        //
+        // Read back through a real login shell rather than grepped out of the file,
+        // because a line in a profile bash does not source is exactly the failure
+        // that looks like success.
+        let scratch = scratch();
+        let home = scratch.path();
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            Some("blooop/devlaunch@main"),
+        );
+        let stage = stages
+            .iter()
+            .find(|stage| stage.name == TITLE_STAGE)
+            .expect("the title stage");
+
+        let install = std::process::Command::new("bash")
+            .args(["-c", &stage.command])
+            .env("HOME", home)
+            .output()
+            .expect("bash to run the stage");
+        assert!(install.status.success(), "{install:?}");
+
+        // `-lc` and not `-i`: this is the shape a `dl <ws> -- claude ...` runs under,
+        // and it renders no prompt at all -- so the `PS1` line cannot help it and an
+        // export is the only thing that can.
+        let read_back = std::process::Command::new("bash")
+            .args([
+                "-lc",
+                r#"printf '%s' "$CLAUDE_CODE_DISABLE_TERMINAL_TITLE""#,
+            ])
+            .env("HOME", home)
+            .env_remove("CLAUDE_CODE_DISABLE_TERMINAL_TITLE")
+            .output()
+            .expect("bash to read the profile back");
+        assert_eq!(
+            String::from_utf8_lossy(&read_back.stdout),
+            "1",
+            "{read_back:?}"
+        );
+
+        // Appended once, however many times the pass runs, for the reason the title
+        // escape is: a profile that grows a line per launch is the dedupe failing.
+        let again = std::process::Command::new("bash")
+            .args(["-c", &stage.command])
+            .env("HOME", home)
+            .output()
+            .expect("bash to run the stage again");
+        assert!(again.status.success(), "{again:?}");
+        let profile = std::fs::read_to_string(home.join(".profile")).expect("the profile");
+        assert_eq!(
+            profile
+                .matches("export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1")
+                .count(),
+            1,
+            "{profile:?}"
+        );
+    }
+
+    #[test]
+    fn the_title_switch_takes_claudes_suppression_with_it() {
+        // Three pieces under one variable now: dl's own escape, the `PS1` line, and
+        // claude's titling. Somebody who turned dl's naming off did not ask for
+        // claude's to go too, and would have no way to see why it had -- nothing
+        // names the variable in a container's environment. So the export rides the
+        // title stage rather than being unconditional, and a pass composed without a
+        // name must not mention it anywhere.
+        let quiet = setup_script(&setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            None,
+        ));
+
+        assert!(
+            !quiet.contains("CLAUDE_CODE_DISABLE_TERMINAL_TITLE"),
+            "{quiet}"
+        );
     }
 
     #[test]

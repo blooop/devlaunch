@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **claude no longer takes the terminal title back in a `dl` session it started
+  itself.** dl names a pane after the workspace and claude renames it continuously
+  from its own read of what the session is doing, so the two are one contest and
+  claude wins every round after the first: dl's name was gone within about a
+  second. `aid` had set `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` for a long time, but
+  only as a prefix on the claude it launched, which left every `claude` typed at a
+  workspace's own prompt losing the name. The title stage now writes the variable
+  into the container's login profile, so it reaches whoever starts claude without
+  rewriting anybody's command — the one rule aid was right to keep. `DEVLAUNCH_NO_TITLE`
+  governs all three pieces of the feature, and since a profile is read by shells that
+  start after it is written, a workspace that was already up wants a re-login or a
+  `dl <ws> recreate`.
+
 ### Added
 
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota

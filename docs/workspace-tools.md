@@ -421,14 +421,30 @@ stage makes, and for the same reason: the alternative is a round trip per attach
 
 **claude** writes the title continuously from its own read of what the session is
 doing, which would leave a `dl <ws> -- claude` pane named after the task rather than
-the workspace within a second. `aid` therefore starts claude with
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, so the workspace name is what stands. What
-claude is doing is on screen inside the pane; which workspace the pane *is* is not
-otherwise anywhere.
+the workspace within a second. The `PS1` line above cannot help there, because it
+only repaints at a prompt and claude overwrites between prompts. So the title stage
+appends one more line to the same profile:
 
-This is `aid`'s doing and not `dl`'s: a `dl <ws> -- claude ...` you typed yourself
-is your command, and dl does not rewrite it. Set the variable yourself if you want
-the same result from the long form.
+```sh
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+```
+
+and the workspace name is what stands, whoever started claude. What claude is doing
+is on screen inside the pane; which workspace the pane *is* is not otherwise
+anywhere.
+
+**It used to be `aid`'s doing alone,** and that only ever covered the sessions aid
+launched. A `claude` you type at the prompt yourself, or a `dl <ws> -- claude ...`
+you wrote out in full, is your command, and dl does not rewrite it. That rule has
+not changed: an export in the profile is the environment your command inherits, not
+an edit to your command. aid still sets the variable on the claude it starts, since
+a prefix and an inherited value of the same variable agree, and the prefix works on
+a container that has not been re-entered yet.
+
+`DEVLAUNCH_NO_TITLE` turns this off with the rest of it, because it is one feature
+and not three. And it reaches login shells that start after it was written, so a
+workspace that was already running when this arrived wants a re-login or a
+`dl <ws> recreate`. Same bargain the `PS1` line makes.
 
 Two multiplexer limits are worth stating, because neither is dl's to fix:
 

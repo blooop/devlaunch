@@ -61,6 +61,16 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// no new machinery: this table is already an env prefix on a payload that runs
 /// under `bash -lc`.
 ///
+/// dl now writes the same variable into the container's login profile from its
+/// title stage, which is what covers the sessions this table cannot reach -- a
+/// claude somebody starts for themselves. That rule is unchanged rather than
+/// abandoned: an export is the environment a command inherits, not a rewrite of
+/// anyone's command. This entry stays because the two do not reach the same
+/// sessions. The profile export lands when a workspace enters Running and is read
+/// by shells that start after it, so a container that was already up when dl
+/// learned this needs a re-login; the prefix here works on the next `aid` either
+/// way, and a prefix and an inherited value of the same variable agree.
+///
 /// In the order Python's dict is written, which is the order `--help` lists the
 /// flags in after sorting.
 const AGENTS: &[(&str, Agent)] = &[
