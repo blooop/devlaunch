@@ -360,14 +360,49 @@ Error response from daemon: conflict: unable to delete … (must be forced)
   - container 7469308e6b6a is using its referenced image 144b1b97cc30
 ```
 
-That refusal is a live-container check only. It says nothing about a stopped
-workspace that would need the image again, or about another tag on the same id.
+The refusal is not limited to running containers. Stopping the container first
+and asking again gets the same answer:
+
+```
+$ docker stop 0a9d6ff2ffab
+$ docker rmi twinb-3005e:devpod-0e1e79534ab8bce48e7918f1262ac427
+Error response from daemon: conflict: unable to delete … (must be forced)
+  - container 0a9d6ff2ffab is using its referenced image 2d05b4e9c6da
+```
+
+So an unforced `docker rmi` can only ever take an image that no container refers
+to at all, which is the same set as "superseded by a rebuild, orphaned by a
+failed create, or left by a deleted workspace". It says nothing about another tag
+on the same id, and nothing about whether somebody wanted the image.
 
 **And the cost of being wrong is a rebuild, not data.** An image is derived from
 a Dockerfile and a base, both of which still exist; a volume holds the only copy
 of whatever is in it. Removing an image that turns out to be wanted costs the
 time to build or pull it again, which is the asymmetry that makes this a
 different question from the volume sweep even though it reads the same file.
+
+That was measured too, along with one wrinkle. The tag is a cache key: devpod
+skips the build entirely when the tag already exists. A workspace over
+`FROM dl447base:latest` was brought up, then the base tag was moved to a
+different image and `up --recreate` run again, and devpod reused the existing tag
+without rebuilding, same image id. Delete the tag and the same `up --recreate`
+builds again under the same tag:
+
+```
+Untagged: base-2e2f3:devpod-788136251098c455a5ed06c67aca0fe3
+Deleted:  sha256:0a8103a32e8d5bdfbf82b8db48bab35fc1bff5e5ec03885ccb98967735787fbf
+…
+info #6 exporting to image
+info #6 naming to docker.io/library/base-2e2f3:devpod-788136251098c455a5ed06c67aca0fe3 done
+new id: sha256:cc5c70a8e3a89e81b7189c1ae4479038f789279cb9d28271081957a6aba372c5
+```
+
+The wrinkle is the new id. The rebuild resolved `dl447base:latest` afresh and
+picked up the image the tag had been moved to in between, so a removal is
+recoverable but not necessarily byte-identical: the recipe is pinned by the hash,
+what the recipe pulls is not. That is the same "the hash covers the recipe, not
+what the recipe pulls" argument `CLAUDE.md` makes about the prebuild tag, seen
+from the other end.
 
 ## Answers, in one place
 
@@ -389,7 +424,10 @@ different question from the volume sweep even though it reads the same file.
 5. **What does sharing do?** One reference can be two workspaces' live image; a
    rebuild can leave one workspace pointing at a tag another still runs;
    identical content in two folders yields two ids sharing their layers; and
-   deleting a wanted image costs a rebuild or a pull, never data.
+   deleting a wanted image costs a rebuild or a pull, never data. An unforced
+   `docker rmi` refuses while any container refers to the image, running or
+   stopped, and the tag doubles as devpod's build cache key, so a deleted image
+   is rebuilt on the next `up` from whatever its base resolves to then.
 
 Two further gaps beyond the failed create, for completeness: `devpod delete`
 destroys the record and keeps the image, so the reference has to be read before
