@@ -245,6 +245,97 @@ It also drops the `metadata.json` records of directories that are already gone.
 That file was append-only in practice, 49 records for 17 live workspaces on the
 same host, and this is the first thing that prunes it.
 
+#### The agent worktrees inside a clone it keeps
+
+An agent harness working inside a workspace makes its own git worktrees under
+`<clone>/.claude/worktrees/<name>/`, one per task, and nothing ever collected
+them. Measured on one host: **72 of them, 104.5 GB, 18 carrying a whole
+`.pixi/envs/default`, about 82% of everything under `repos/`.** One clone held 55
+GB on its own. Every one of them was inside a clone belonging to a **live**
+workspace, so the rule above not only missed them, it must never fire on them:
+firing would delete a live workspace's checkout. So this is a second rule, and it
+runs only on the clones the first one is keeping. A clone that is going already
+accounts for everything inside it.
+
+The word "worktree" is git's here, not `dl`'s. These are real registered
+worktrees, made from inside the container, so the path git holds for one is
+`/workspaces/<id>/.claude/worktrees/<name>`, which does not resolve on the host
+at all. That is why `git worktree remove` is no use from outside: `dl` removes
+the directory and then runs `git worktree prune` in the clone, in that order, so
+a run interrupted between the two leaves git holding a registration whose
+directory is gone, which is precisely the state the next run already handles.
+
+A directory found there is one of four things:
+
+- **git has already forgotten it.** No registration names it and the directory is
+  all that is left. Removed.
+- **git says the registration can go.** Which on a host is what a
+  container-registered worktree looks like, because the path it names is not
+  there. Removed, unless it holds something.
+- **git is holding it locked.** Reported and left alone. `--force-worktrees` is
+  what removes one.
+- **git still holds it and does not offer it up.** Kept, always. This is the arm
+  that stops a run *inside* a container, where the registered paths do resolve,
+  from collecting its own live worktrees.
+
+Removing one is refused for the same two things a clone's removal is refused
+for, asked of the worktree rather than of the clone: uncommitted or untracked
+work in it, and commits nothing else reaches. Both matter. A worktree on a
+fully-merged branch with an afternoon of unstaged edits in it reads as finished
+if you only ask about commits, and a worktree on no branch at all has no branch
+for a branch-keyed question to find. `--force-worktrees` is the one flag that
+carries a worktree past any of this, and it is deliberately not `--force`:
+`--force` is a word people already type at `--prune`, and widening it would turn
+it into permission to remove a worktree somebody may be working in.
+
+Two things the report is careful about. **It never claims a worktree is idle**,
+because nothing on a host can establish that: a lock is the harness's courtesy,
+a killed session leaves one behind, and a live session that never took one looks
+exactly like an abandoned directory. Each line says the fact it rests on and
+nothing more. And **whether commits are anywhere else is as of the last fetch**.
+The question is asked of the sibling `.bare` cache first, because that is the
+repository `dl` actually fetches into: a workspace clone is cut from the bare and
+then has its remote repointed at the forge with no fetch of its own, so its
+`refs/remotes/origin/*` is as of clone time and asking it alone reports
+pushed-and-merged branches as unpushed. `--prune` does not fetch, and the report
+says so rather than implying a live answer.
+
+```
+$ dl --prune
+Clone directories under /home/you/.cache/devlaunch/repos:
+
+Leaving 1:
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo: workspace devlaunch-main-zovomobo still opens it
+
+Agent git worktrees inside the clones above -- 6.0 GiB:
+
+  /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo:
+    - removing .../.claude/worktrees/agent-a49a (5.8 GiB): git says the registration for it can go
+    - removing .../.claude/worktrees/agent-a8da (204.0 MiB): git has already forgotten it
+    - leaving .../.claude/worktrees/agent-b120: git is holding it locked -- add --force-worktrees to remove it anyway
+
+Whether a worktree's commits are anywhere else is as of the last fetch into the repository cache; --prune does not fetch.
+
+Are you sure? [y/N]
+```
+
+`git worktree prune` is held back in a clone where a worktree is being kept for
+what it holds, and the report says so. That is not tidiness: the prune is
+all-or-nothing across a clone, so running it would drop the registration of the
+kept worktree too, turning it into a forgotten directory, which the next run
+removes outright. Held back, the guard keeps working.
+
+The bytes are also attributed in `dl --ls --size`, as a part of the clone's
+figure and never an addition, because the worktrees are inside it. They were
+invisible there on the host above, which is how it reached 100%.
+
+The 18 duplicated `.pixi/envs/default` copies are the reason the figure is 104 GB
+rather than about 10, and they cannot be pointed at the shared package cache:
+only the pixi *download* cache is shared, because installed environments bake
+absolute paths (see "The shared pixi package cache" in
+[workspace-tools.md](workspace-tools.md)). Removing the worktree is the way those
+bytes come back, which is what this does.
+
 #### The disk neither command frees
 
 Both commands end on the same line, in the same words:
