@@ -63,6 +63,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one the workspace was created for. Nothing reconstructs a triple from an id
   any more.
 
+- **zellij is installed only into workspaces that asked for it, and
+  `DEVLAUNCH_ZELLIJ=1` is the ask.** It used to go into every container `dl`
+  opened. The seconds are real — the stage costs 2.2s warm to 3.5s cold of a
+  setup pass, and **1.70s of that is bootstrapping pixi**, not installing zellij
+  — but they are not what decided it. What decided it is that the install was
+  opt-out while every use of it was opt-in, so the default combination paid for a
+  capability the same defaults guaranteed nothing would touch. `DEVLAUNCH_ZELLIJ`
+  now means "I want zellij in my containers" rather than "wrap this command", and
+  one variable answers both halves: the setup pass carries the stage, and a
+  `dl <spec> -- <cmd>` still makes sure the session exists first.
+
+  Two costs, said plainly. A documented guarantee shrinks: workspaces no longer
+  all have zellij, only the ones that asked. And an interactive attach that used
+  to be able to type `zellij attach -c devlaunch` now needs the variable set, once
+  in a shell profile, or gets `command not found`.
+
+  Setting it on a workspace that is already up lands the stage on the next
+  `dl <ws> up`, with no restart and no extra machinery: the verdict cache already
+  records which switches a pass ran under, so a launch that wants the stage does
+  not trust a marker written by one that skipped it and the top-up pass travels
+  carrying the stage. An attach against a running workspace picks nothing up
+  whatever shape it takes: `dl <ws>` and `dl <ws> -- <cmd>` both go straight to the
+  attach, so opting in and immediately running a command against a container that
+  is already up wraps it in a zellij that is not there yet.
+
+- **`DEVLAUNCH_NO_ZELLIJ` is retired.** With skip as the default it had no
+  remaining job. A stale `DEVLAUNCH_NO_ZELLIJ=1` in a shell profile is read by
+  nothing and, in particular, can never turn provisioning back on for somebody who
+  had asked for it off. `DEVLAUNCH_NO_TOOLS=1` still overrides a launch that did
+  ask, because installing zellij is still tool provisioning.
+
 ### Fixed
 
 - **`dl` looks for devpod's ssh host aliases where devpod writes them, so the pty

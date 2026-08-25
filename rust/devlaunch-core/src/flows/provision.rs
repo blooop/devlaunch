@@ -87,31 +87,61 @@ use verdict_cache::VerdictCache;
 /// Set this to opt a machine out of installing tools into workspaces.
 pub(crate) const DISABLE_VAR: &str = "DEVLAUNCH_NO_TOOLS";
 
-/// Set this to opt a machine out of the zellij stage alone.
+/// `DEVLAUNCH_ZELLIJ`: the one signal that says a launch wants zellij (#391).
 ///
-/// A second variable rather than a value of [`DISABLE_VAR`], because the two
-/// answer different questions and a host that wants one wants the other left on.
-/// `DEVLAUNCH_NO_TOOLS` is "do not install anything", which costs the workspace
-/// `gh` and `claude` — the pair [`REQUIRED_TOOLS`] exists to guarantee, and the
-/// reason `dl` forwards a GitHub token at all. A host whose containers get zellij
-/// some other way (their own dotfiles, a base image, a devcontainer feature), or
-/// which wants no zellij in there at all, is asking only for the stage to stop
-/// running; asking for that with `DEVLAUNCH_NO_TOOLS` would surrender the
-/// guarantee to save one `command -v`.
+/// It answers two questions, and that is the point rather than an economy. It
+/// decides whether the setup pass carries the zellij stage ([`setup_stages`]) and
+/// whether a `dl <ws> -- <cmd>` first makes sure a zellij *session* exists to open
+/// panes into ([`crate::flows::launch::ZellijWrap`]) — one place the container gets
+/// a zellij, one place something starts using it.
 ///
-/// Deliberately **not** [`crate::flows::launch::ZELLIJ_WRAP_VAR`]'s opposite
-/// number either. That switch decides whether a `dl <ws> -- <cmd>` first makes
-/// sure a zellij *session* exists to open panes into, and it already tolerates a
-/// container with no zellij — its setup is allowed to fail and the command runs
-/// regardless. The two are orthogonal on purpose: this one is about what gets
-/// installed, that one about what gets started.
-pub(crate) const ZELLIJ_DISABLE_VAR: &str = "DEVLAUNCH_NO_ZELLIJ";
+/// **Two variables was the mistake this replaced.** The install used to be
+/// opt-*out* (`DEVLAUNCH_NO_ZELLIJ`) while every use of it was opt-*in*, and the
+/// product of those defaults has four states of which only two are coherent: the
+/// default installed zellij on every cold launch and then never used it, and
+/// setting both asked for the capability while guaranteeing it could not arrive.
+/// One signal collapses the table to "want neither" and "want both". The seconds
+/// were what made it worth doing rather than what decided it: the stage costs
+/// ~2.2s warm to ~3.5s cold, of which 1.70s is bootstrapping pixi, and on the lend
+/// path this stage is the only thing that puts pixi in the container at all.
+///
+/// A consent and not a denial, unlike [`DISABLE_VAR`], so the two read the same
+/// values with opposite senses. That is safe here because both go through
+/// [`provisioning_disabled`]: the *parse* is shared even though the polarity is
+/// not, so a value a user spells the same way cannot answer differently in one
+/// than in the other.
+///
+/// A retired `DEVLAUNCH_NO_ZELLIJ=1` left in somebody's profile is read by
+/// nothing, which is what a test in this module's `tests` module pins by reading
+/// the source: the one failure mode worth guarding is a stale opt-out turning
+/// provisioning *on*.
+pub(crate) const ZELLIJ_VAR: &str = "DEVLAUNCH_ZELLIJ";
 
 /// The values that mean "no" rather than "set, therefore yes". The same list
 /// [`crate::clients::gh`] reads, and kept separately for the reason that module
 /// gives: two escape hatches answering to one shared constant are one edit away
 /// from becoming one escape hatch.
 const FALSEY: [&str; 4] = ["", "0", "false", "no"];
+
+/// The `DEVLAUNCH_ZELLIJ` spellings the wrap and the stage are both asked about.
+///
+/// One literal and not two on purpose. [`tests::the_wrap_and_the_stage_read_one_signal`]
+/// and [`crate::flows::launch::tests::the_zellij_switch_reads_the_same_denials_as_the_others`]
+/// each claim to walk "the same values" as the other, and a claim like that written
+/// as two lists in two files is true on the day it is written and unenforced
+/// afterwards: a value added to one is added to nothing else. Sharing the literal is
+/// what makes the sentence a fact rather than a hope.
+///
+/// Denials and consents apart because the two tests assert different outcomes for
+/// them. `FALSE` and ` no ` are here rather than in [`FALSEY`] itself because they
+/// are what the parse's `to_lowercase` and [`crate::osext::strip`] exist for, and
+/// `beside` because an arbitrary word has to read as a consent.
+#[cfg(test)]
+pub(crate) const ZELLIJ_DENIALS: [&str; 6] = ["", "0", "false", "no", "FALSE", " no "];
+
+/// The counterpart to [`ZELLIJ_DENIALS`]: values that ask for zellij.
+#[cfg(test)]
+pub(crate) const ZELLIJ_CONSENTS: [&str; 4] = ["1", "yes", "true", "beside"];
 
 /// The claude package lives in a personal channel rather than conda-forge.
 pub(crate) const BLOOOP_CHANNEL: &str = "https://prefix.dev/blooop";
@@ -286,7 +316,13 @@ pub(crate) const REQUIRED_TOOLS: [Tool; 2] = [
 /// and named by construction.
 pub(crate) const ZELLIJ_TOOL: Tool = Tool::new("zellij", "zellij");
 
-/// Whether the user opted this machine out of installing tools.
+/// Whether `value` is a `DEVLAUNCH_*` switch set to something other than a denial.
+///
+/// Named for [`DISABLE_VAR`], which is the switch it was written for and where
+/// *set* means "opted out". [`ZellijSwitch::requested`] reads the same answer with
+/// the opposite polarity, because [`ZELLIJ_VAR`] is a consent — the shared piece is
+/// the [`FALSEY`] parse, so `=0` cannot mean one thing in one variable and
+/// something else in the other.
 ///
 /// A parameter rather than a read of the process environment, so the decision is a
 /// function of its inputs — and so [`crate::clients::gh::forwarding_disabled`] and
@@ -329,11 +365,11 @@ impl ToolsSwitch {
 
 /// Whether this pass carries the zellij stage.
 ///
-/// A type of its own rather than a second [`ToolsSwitch`], for the reason the two
-/// variables are separate ([`ZELLIJ_DISABLE_VAR`]): they are read from different
-/// places and mean different things, and two values of one type sitting next to
-/// each other in a signature are two values a caller can swap without the compiler
-/// noticing. Distinct types make [`setup_stages`]'s pair unswappable.
+/// A type of its own rather than a second [`ToolsSwitch`], because the two answer
+/// different questions from opposite polarities ([`ZELLIJ_VAR`] is a consent,
+/// [`DISABLE_VAR`] a denial), and two values of one type sitting next to each other
+/// in a signature are two values a caller can swap without the compiler noticing.
+/// Distinct types make [`setup_stages`]'s pair unswappable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZellijSwitch {
     Install,
@@ -341,24 +377,29 @@ pub enum ZellijSwitch {
 }
 
 impl ZellijSwitch {
-    /// What `DEVLAUNCH_NO_ZELLIJ` set to `value` asks for.
+    /// What [`ZELLIJ_VAR`] set to `value` asks for.
     ///
-    /// The same [`FALSEY`] list [`ToolsSwitch::requested`] reads, through the same
-    /// [`provisioning_disabled`]: two opt-outs a user spells the same way must
-    /// answer the same way, and `DEVLAUNCH_NO_ZELLIJ=0` reading as *yes, skip it*
-    /// where `DEVLAUNCH_NO_TOOLS=0` reads as *no* is exactly the surprise a shared
-    /// parse exists to prevent.
+    /// **Skip unless asked**, which is the inverse of [`ToolsSwitch::requested`]
+    /// and reads the same values through the same [`provisioning_disabled`]: the
+    /// polarity differs because the variables do, and sharing the parse is what
+    /// stops `DEVLAUNCH_ZELLIJ=0` from meaning anything other than what
+    /// `DEVLAUNCH_NO_TOOLS=0` means.
+    ///
+    /// The one function that turns a value into this switch, and
+    /// [`crate::flows::launch::ZellijWrap::from_host`] is derived from it, so the
+    /// stage and the session wrap cannot come to disagree about one variable
+    /// (#151).
     pub(crate) fn requested(value: Option<&str>) -> Self {
         if provisioning_disabled(value) {
-            Self::Skip
-        } else {
             Self::Install
+        } else {
+            Self::Skip
         }
     }
 
     /// What the process environment asks for.
     pub fn from_env() -> Self {
-        Self::requested(crate::osext::env_str(ZELLIJ_DISABLE_VAR).as_deref())
+        Self::requested(crate::osext::env_str(ZELLIJ_VAR).as_deref())
     }
 }
 
@@ -385,8 +426,9 @@ impl Switches {
         }
     }
 
-    /// Both switches on — the default a machine that set neither variable gets,
-    /// and the shape most tests want.
+    /// Both switches on, which is a machine with `DEVLAUNCH_ZELLIJ=1` set and
+    /// `DEVLAUNCH_NO_TOOLS` unset — no longer the default (#391), and still the
+    /// shape most tests want.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const INSTALLING: Self = Self {
         tools: ToolsSwitch::Install,
@@ -978,8 +1020,8 @@ impl Stage {
 ///
 /// Built per pass rather than declared as a constant because a stage's command
 /// names the workspace, and a workspace id is not known until there is one — and
-/// because whether the zellij stage is asked for at all depends on the opt-out,
-/// which the process may see differently between passes.
+/// because whether the zellij stage is asked for at all depends on a switch the
+/// process may see differently between passes.
 ///
 /// The zellij stage is gated on the tools opt-out, unlike the hostname above it:
 /// installing zellij *is* tool provisioning, where naming a container is not, and a
@@ -987,10 +1029,11 @@ impl Stage {
 /// containers. [`provision_tools`] draws the same line for the same reason.
 ///
 /// It is gated on `zellij` as well, and the two are an **and**: the stage runs only
-/// when both switches say install. `DEVLAUNCH_NO_TOOLS` covers zellij because
-/// installing it is tool provisioning; `DEVLAUNCH_NO_ZELLIJ` covers only zellij, so
-/// a host can keep the `gh`/`claude` guarantee and still stop the stage. Neither
-/// touches the hostname, which is not tools work under either variable.
+/// when both switches say install. So there are two ways to be without it, and they
+/// are different questions. `DEVLAUNCH_ZELLIJ` unset is the default and means the
+/// launch never asked ([`ZELLIJ_VAR`]); `DEVLAUNCH_NO_TOOLS=1` overrides a launch
+/// that *did* ask, because installing zellij is tool provisioning. Neither touches
+/// the hostname, which is not tools work under either variable.
 /// `title` is the name a shell in this container should keep putting on the terminal,
 /// or `None` for a launch that wants none, which is `DEVLAUNCH_NO_TITLE` and is the
 /// caller's decision. Last of the three because it is the one that is not a switch,
@@ -2088,6 +2131,13 @@ fn transfer(
 #[cfg(test)]
 mod lending_contract;
 
+/// The default and the price `docs/workspace-tools.md` publishes about zellij, held
+/// against the switch and the script (#391). Beside `lending_contract` rather than
+/// inside it because the two guard different claims in the same document, and reads
+/// that file's section splitter rather than writing a second one.
+#[cfg(test)]
+mod zellij_contract;
+
 #[cfg(test)]
 mod tests {
     //! # What this pins, and how
@@ -2117,6 +2167,8 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    // The other reader of the one zellij signal, so the drift test can ask both.
+    use crate::flows::launch;
     use crate::runner::{CapturedText, DetachOutcome, Invocation, Outcome, SpawnSpec, StdinPlan};
 
     // =======================================================================
@@ -4468,7 +4520,7 @@ fi
     }
 
     // =======================================================================
-    // DEVLAUNCH_NO_ZELLIJ: the narrower opt-out
+    // DEVLAUNCH_ZELLIJ: the stage a launch has to ask for
     // =======================================================================
 
     // ------------------------------------------------------- the title stage
@@ -4767,19 +4819,24 @@ fi
         }
     }
     #[test]
-    fn the_zellij_opt_out_drops_only_the_zellij_stage() {
-        // The whole reason for a second variable: a host that wants no zellij
-        // installed keeps everything `DEVLAUNCH_NO_TOOLS` would have cost it —
-        // the container is still named, and the pass still probes for the `gh`
-        // and `claude` the workspace is guaranteed.
-        let names: Vec<StageName> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Skip, None)
-                .iter()
-                .map(|stage| stage.name)
-                .collect();
+    fn a_launch_that_did_not_ask_for_zellij_carries_no_zellij_stage() {
+        // The default after #391, and what it deliberately does *not* cost: the
+        // container is still named, the pane is still titled, and the pass still
+        // probes for the `gh` and `claude` the workspace is guaranteed. Only the
+        // stage that drags pixi into the container is gone.
+        let names: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Skip,
+            Some("blooop/devlaunch@main"),
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
 
         assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
+        assert!(names.contains(&TITLE_STAGE), "{names:?}");
 
         // And really nothing is installed: a real bash over the composed script
         // never reaches pixi.
@@ -4797,9 +4854,9 @@ fi
     }
 
     #[test]
-    fn either_opt_out_composes_the_same_pass() {
+    fn every_way_of_being_without_the_stage_composes_the_same_pass() {
         // The two switches are an `and`, so the three ways to be without the stage
-        // have to be one script and not three: whichever variable a host set, the
+        // have to be one script and not three: however a host arrived there, the
         // container is asked for exactly the same bytes. A golden of the *pair*
         // rather than of a rendering, because what is at stake is that these agree
         // rather than what they say — the bytes themselves are pinned against
@@ -4834,12 +4891,12 @@ fi
                 None,
             )),
             without,
-            "the stage is there when nothing asked for it to go"
+            "the stage is there when a launch asked for it"
         );
     }
 
     #[test]
-    fn the_zellij_opt_out_still_probes_and_lends() {
+    fn a_launch_without_zellij_still_probes_and_lends() {
         // The switch is about one stage, not about the flow: the pass travels, the
         // probe answers, and a lendable container is still lent the host's own
         // binaries. `DEVLAUNCH_NO_TOOLS` is the switch that stops that, and this is
@@ -4867,26 +4924,156 @@ fi
     }
 
     #[test]
-    fn falsey_zellij_opt_out_values_leave_the_stage_on() {
-        // The same list `DEVLAUNCH_NO_TOOLS` reads, through the same parse: two
-        // opt-outs a user spells the same way have to answer the same way, and
-        // `DEVLAUNCH_NO_ZELLIJ=0` meaning *skip it* where `DEVLAUNCH_NO_TOOLS=0`
-        // means *no* is exactly the surprise sharing the parse prevents.
+    fn the_zellij_stage_is_off_unless_the_launch_asks_for_it() {
+        // The default, and the whole of what #391 changed: a machine that set
+        // nothing gets no zellij stage, so the ~2.2s of pixi bootstrap plus install
+        // is paid by the launches that wanted the capability and by no others.
+        assert_eq!(ZellijSwitch::requested(None), ZellijSwitch::Skip);
+
+        // The same [`FALSEY`] list `DEVLAUNCH_NO_TOOLS` reads, through the same
+        // parse, so a value a user spells the same way answers the same way in
+        // both. Only the *sense* differs, because this variable is a consent where
+        // that one is a denial.
         for value in ["", "0", "false", "no", "NO", " no "] {
-            assert_eq!(
-                ZellijSwitch::requested(Some(value)),
-                ZellijSwitch::Install,
-                "{value:?}"
-            );
-        }
-        assert_eq!(ZellijSwitch::requested(None), ZellijSwitch::Install);
-        for value in ["1", "true", "yes", "anything"] {
             assert_eq!(
                 ZellijSwitch::requested(Some(value)),
                 ZellijSwitch::Skip,
                 "{value:?}"
             );
         }
+        for value in ["1", "true", "yes", "anything"] {
+            assert_eq!(
+                ZellijSwitch::requested(Some(value)),
+                ZellijSwitch::Install,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wrap_and_the_stage_read_one_signal() {
+        // #151's shape, applied to the variable that now answers two questions.
+        //
+        // `DEVLAUNCH_ZELLIJ` used to mean "wrap the command" alone; it now also
+        // decides whether the container gets a zellij to wrap to. Two readers of
+        // one variable is exactly the drift that ticket spent three review rounds
+        // removing, and what it would buy here is the incoherent pair #391 deleted:
+        // a session setup that fails and a command that runs anyway. So every value
+        // the wrap's own denial/consent list walks is asked of both readers, and
+        // they have to agree. That list is [`ZELLIJ_DENIALS`] and
+        // [`ZELLIJ_CONSENTS`], shared with the wrap's own test rather than written
+        // out again, plus the unset case that no list of strings can hold.
+        //
+        // `ToolsSwitch::Install` throughout, deliberately: this is about one
+        // variable having one reader. `DEVLAUNCH_NO_TOOLS=1` drops the stage while
+        // the wrap still says `Beside`, which is the one remaining way for the two
+        // to disagree and is pinned where it belongs, in
+        // [`the_tools_opt_out_asks_for_no_zellij`].
+        for value in std::iter::once(None).chain(
+            ZELLIJ_DENIALS
+                .iter()
+                .chain(ZELLIJ_CONSENTS.iter())
+                .copied()
+                .map(Some),
+        ) {
+            let host = launch::Host {
+                zellij: value.map(str::to_owned),
+                ..launch::Host::default()
+            };
+            let wrapped = launch::ZellijWrap::from_host(&host) == launch::ZellijWrap::Beside;
+            let installed = setup_stages(
+                "myws",
+                ToolsSwitch::Install,
+                ZellijSwitch::requested(value),
+                None,
+            )
+            .iter()
+            .any(|stage| stage.name == ZELLIJ_STAGE);
+
+            assert_eq!(
+                installed, wrapped,
+                "{value:?}: the wrap and the stage disagree about one variable"
+            );
+        }
+    }
+
+    #[test]
+    fn the_retired_opt_out_is_read_nowhere_at_all() {
+        // `DEVLAUNCH_NO_ZELLIJ=1` is still exported in shell profiles written while
+        // it existed, and the one way retiring it could bite silently is for that
+        // stale line to be read as a *consent* -- turning provisioning on for
+        // exactly the people who asked for it off.
+        //
+        // Both switches take their value as a parameter, deliberately, so no test
+        // can hand a process environment to a reader. What makes the stale export
+        // inert is that nothing in the tree names it, and that is a property of the
+        // source, so the source is what is read: every environment-variable name
+        // mentioning zellij, as a string literal, and there may be exactly one.
+        let mut found: Vec<String> = Vec::new();
+        for file in rust_sources() {
+            let source = std::fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+            for name in devlaunch_var_literals(&source) {
+                if name.contains("ZELLIJ") && !found.contains(&name) {
+                    found.push(name);
+                }
+            }
+        }
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec![ZELLIJ_VAR.to_owned()],
+            "the tree reads more than one zellij environment variable; a stale \
+             DEVLAUNCH_NO_ZELLIJ=1 has to be inert, never an enable"
+        );
+    }
+
+    /// Every `.rs` file in this repository's own crates.
+    fn rust_sources() -> Vec<PathBuf> {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut found = Vec::new();
+        let mut pending = vec![workspace];
+        while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Build output holds generated copies of nothing this owns.
+                    if path.file_name().is_some_and(|name| name == "target") {
+                        continue;
+                    }
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    found.push(path);
+                }
+            }
+        }
+        assert!(!found.is_empty(), "no Rust sources found to read");
+        found
+    }
+
+    /// Every `"DEVLAUNCH_*"` string literal in `source`.
+    ///
+    /// Quoted literals and not bare mentions, because a quoted literal is what an
+    /// environment read needs. Prose about a retired variable is free to name it,
+    /// and has to be, or the changelog entry announcing the retirement could not be
+    /// written.
+    fn devlaunch_var_literals(source: &str) -> Vec<String> {
+        let opener = "\"DEVLAUNCH_";
+        let mut found = Vec::new();
+        let mut rest = source;
+        while let Some(at) = rest.find(opener) {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find('"') else {
+                break;
+            };
+            found.push(rest[..end].to_owned());
+            rest = &rest[end + 1..];
+        }
+        found
     }
 
     // =======================================================================
@@ -5758,10 +5945,12 @@ fi
     }
 
     #[test]
-    fn every_container_devlaunch_launches_is_asked_for_zellij() {
-        // The guarantee, stated where it is made: the pass every entry into Running
-        // goes through carries a zellij stage. No dotfiles, no devcontainer.json, no
-        // repo cooperation — the ask comes from the invocation.
+    fn a_container_a_launch_asked_zellij_for_gets_the_stage() {
+        // What survives of the guarantee, stated where it is made: a launch that
+        // asked for zellij gets it out of the pass every entry into Running goes
+        // through. No dotfiles, no devcontainer.json, no repo cooperation — the ask
+        // comes from the invocation, and it works in images `dl` has never seen.
+        // What changed in #391 is only who asks, not how it arrives.
         let names: Vec<StageName> =
             setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
                 .iter()
@@ -5911,5 +6100,24 @@ fi
             Some(0),
         );
         assert!(!calls.contains("pixi"), "{calls}");
+
+        // What the opt-out does *not* cover, pinned because the page now says so.
+        // `ZellijWrap::from_host` reads `DEVLAUNCH_ZELLIJ` and nothing else, so this
+        // pair still asks for a session in a container that was given no zellij --
+        // the one route left to the incoherent state #391 otherwise deleted. It is
+        // deliberately not fixed here: the attach is `|| true` and the command runs
+        // regardless, and making the wrap read the tools switch too would put a
+        // second reader on the signal `the_wrap_and_the_stage_read_one_signal`
+        // exists to keep single.
+        let host = launch::Host {
+            zellij: Some("1".to_owned()),
+            ..launch::Host::default()
+        };
+        assert_eq!(
+            launch::ZellijWrap::from_host(&host),
+            launch::ZellijWrap::Beside,
+            "the wrap now reads the tools switch; docs/workspace-tools.md's switch subsection \
+             says the residue is still reachable"
+        );
     }
 }
