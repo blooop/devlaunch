@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787656809388,
+  "lastUpdate": 1787657334135,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -5036,6 +5036,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.960211",
             "unit": "s",
             "extra": "runs=5/5 wall=9.877345s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c978b937a62a44e70e5a12b716589a4df0d7b3e1",
+          "message": "Merge pull request #415 from blooop/docs/runner-seam-and-trips\n\nSay what Trips is, replace the Runner impl count with the shape, and guard the count",
+          "timestamp": "2026-08-25T12:25:55+01:00",
+          "tree_id": "fbfee37a8f5012588319f2b6ad2a229a8e6db88c",
+          "url": "https://github.com/blooop/devlaunch/commit/c978b937a62a44e70e5a12b716589a4df0d7b3e1"
+        },
+        "date": 1787657333609,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.235621,
+            "range": "± 0.074737",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.274457,
+            "range": "± 0.098336",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000042,
+            "range": "± 0.000006",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.547207,
+            "range": "± 0.151296",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.549469s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.116446,
+            "range": "± 0.202843",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.145231,
+            "range": "± 0.837693",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.175381,
+            "range": "± 0.007679",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 4.995922,
+            "range": "± 0.048867",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 9.631189,
+            "range": "± 0.741985",
+            "unit": "s",
+            "extra": "runs=5/5 wall=9.633474s v0.26.1, Linux-X64"
           }
         ]
       }
