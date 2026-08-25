@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787592520947,
+  "lastUpdate": 1787656271848,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -4862,6 +4862,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.456844",
             "unit": "s",
             "extra": "runs=5/5 wall=10.636864s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "738918b2d4fa6c22fd4ec60317d2515fdabf9524",
+          "message": "Merge pull request #414 from blooop/fix/aid-pty-flake\n\nA paste the test delivers in two writes is not a paste",
+          "timestamp": "2026-08-25T12:07:57+01:00",
+          "tree_id": "c276654ed05157010bf1d6fa5fb1eeebf6aee878",
+          "url": "https://github.com/blooop/devlaunch/commit/738918b2d4fa6c22fd4ec60317d2515fdabf9524"
+        },
+        "date": 1787656271108,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.339195,
+            "range": "± 0.079497",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.347564,
+            "range": "± 0.005564",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000041,
+            "range": "± 0.000003",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.682475,
+            "range": "± 0.082554",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.68483s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.409129,
+            "range": "± 0.10188",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.370125,
+            "range": "± 0.567316",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.250727,
+            "range": "± 0.047278",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 5.393702,
+            "range": "± 0.168251",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 10.659688,
+            "range": "± 0.597768",
+            "unit": "s",
+            "extra": "runs=5/5 wall=10.661998s v0.26.1, Linux-X64"
           }
         ]
       }
