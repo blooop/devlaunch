@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use crate::clients::git::{self, Failure, Git, GitRefused};
 use crate::domain::locks::{self, Contention, LockError, LockGuard};
-use crate::domain::metadata::{self, MetadataError, MetadataStorage};
+use crate::domain::metadata::{self, MetadataError, MetadataStorage, RecordUpdate};
 use crate::domain::model::{BaseRepository, RecordedDefaultBranch, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
@@ -1241,15 +1241,10 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        let repository = BaseRepository {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            remote_url: remote_url.to_owned(),
-            local_path: bare.clone(),
-            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(&bare)),
-            last_fetched: Some(Timestamp::now()),
-            worktrees: Vec::new(),
-        };
+        let mut repository = BaseRepository::new(owner, repo, remote_url, bare.clone());
+        repository.default_branch =
+            RecordedDefaultBranch::from_stored(self.default_branch_of(&bare));
+        repository.last_fetched = Some(Timestamp::now());
         let recorded = self.record(storage, repository, notices)?;
         // After the record, as Python logs it: what the line reports is a clone
         // that is both on disk and known about.
@@ -1270,18 +1265,13 @@ impl<'r> RepositoryManager<'r> {
         bare: &Path,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneError> {
-        let repository = BaseRepository {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            remote_url: remote_url.to_owned(),
-            local_path: bare.to_path_buf(),
-            // Read off the adopted clone, not defaulted: a repository whose
-            // default branch is `master` and one this could read nothing at all
-            // from would otherwise get the same answer.
-            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(bare)),
-            last_fetched: Some(Timestamp::now()),
-            worktrees: Vec::new(),
-        };
+        let mut repository = BaseRepository::new(owner, repo, remote_url, bare.to_path_buf());
+        // Read off the adopted clone, not defaulted: a repository whose default
+        // branch is `master` and one this could read nothing at all from would
+        // otherwise get the same answer.
+        repository.default_branch =
+            RecordedDefaultBranch::from_stored(self.default_branch_of(bare));
+        repository.last_fetched = Some(Timestamp::now());
         // The record *is* the point of this call, so a write that fails is the
         // call failing: there is nothing else it accomplished.
         self.record(storage, repository, notices)
@@ -1426,14 +1416,26 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        if let Some(mut recorded) = storage.get_repository(owner, repo).cloned() {
-            recorded.last_fetched = Some(Timestamp::now());
-            match storage.add_repository(recorded) {
-                Ok(store_notices) => {
-                    notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
-                }
-                Err(error) => return Err(FetchRepoError::NotRecorded(error)),
-            }
+        // The stamp is the only field this touches, so it moves inside the
+        // metadata lock rather than riding back in a copy of the whole record
+        // taken before the lock existed.
+        let (stamped, store_notices) = storage
+            .update_repository(owner, repo, |recorded| {
+                recorded.last_fetched = Some(Timestamp::now());
+            })
+            .map_err(FetchRepoError::NotRecorded)?;
+        notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
+        match stamped {
+            RecordUpdate::Applied => {}
+            // The "no record, nothing to stamp" this used to spell as an `if
+            // let Some`, and silent for the same reason it was silent then: the
+            // sweeper is bookkeeping behind a fetch that has already happened,
+            // and a repository dropped from the store while that fetch ran is
+            // not news about the fetch. Spelled as an arm rather than dropped
+            // with `_`, because a caller that cannot say what it does with an
+            // answer is the shape that turned a no-op into a reported success
+            // in `apply_reconciliation`.
+            RecordUpdate::Absent => {}
         }
         // Last, where Python logs it: past the fetch and past the bookkeeping, so
         // the line means both are done.
@@ -2230,7 +2232,6 @@ pub(crate) mod tests {
             cloned.last_fetched.is_some(),
             "the sweep's clock starts here"
         );
-        assert!(cloned.worktrees.is_empty());
         assert_eq!(
             cache.storage.get_repository("owner", "repo"),
             Some(&cloned),

@@ -72,7 +72,7 @@ use crate::clients::devpod::{
 use crate::clients::docker;
 use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
-use crate::domain::metadata::{self, MetadataStorage, WorktreeFilter};
+use crate::domain::metadata::{self, MetadataStorage, RecordUpdate, WorktreeFilter};
 use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_state::{self, CouldNotTell, Losses, NonEmpty, Unsaved};
 use crate::flows::completion_cache;
@@ -3002,6 +3002,15 @@ pub enum Adoption {
         workspace_id: String,
         failure: RepointFailure,
     },
+    /// devpod's record was re-pointed and metadata was not, so the id has the
+    /// one copy a finished adoption leaves two of. Either the row was gone when
+    /// the metadata lock was taken — another run removed the workspace while
+    /// the plan sat at its prompt, and writing would have put the row back — or
+    /// the store refused the write, and then a notice names the refusal. Half
+    /// an adoption, reported as one: [`ReconcileReport::finished`] is false
+    /// here, because the alternative is a line reading "Re-pointed" about a
+    /// record dl never touched.
+    Unrecorded { workspace_id: String },
 }
 
 /// What applying a reconcile plan did: one [`Adoption`] per adoption the plan
@@ -3025,16 +3034,21 @@ impl ReconcileReport {
     pub(crate) fn repointed(&self) -> impl Iterator<Item = &Adoptable> {
         self.adoptions.iter().filter_map(|adoption| match adoption {
             Adoption::Repointed(adoptable) => Some(adoptable.as_ref()),
-            Adoption::Refused { .. } => None,
+            Adoption::Refused { .. } | Adoption::Unrecorded { .. } => None,
         })
     }
 
     /// Whether every adoption landed. The one distinction an exit code carries.
+    ///
+    /// A `match` rather than the `matches!` this used to be, so an arm added to
+    /// [`Adoption`] has to say which side of that distinction it falls on
+    /// instead of defaulting to "landed" — which is how a re-point that wrote
+    /// no metadata came to leave this true.
     pub fn finished(&self) -> bool {
-        !self
-            .adoptions
-            .iter()
-            .any(|adoption| matches!(adoption, Adoption::Refused { .. }))
+        self.adoptions.iter().all(|adoption| match adoption {
+            Adoption::Repointed(_) => true,
+            Adoption::Refused { .. } | Adoption::Unrecorded { .. } => false,
+        })
     }
 }
 
@@ -3065,16 +3079,46 @@ pub fn apply_reconciliation(
         // The second copy of the id, which is what stops this happening again:
         // after this the workspace is reachable from the record, so the next
         // derivation change costs nothing.
-        let mut record = adoptable.record.clone();
-        record.devpod_workspace_id = Some(adoptable.workspace_id.clone());
-        match storage.add_worktree(record) {
-            Ok(store_notices) => extend_with_store(notices, store_notices),
-            Err(error) => notices.say(LifecycleNotice::RecordNotDropped {
-                path: adoptable.record.local_path.clone(),
-                refusal: error,
-            }),
-        }
-        adoptions.push(Adoption::Repointed(Box::new(adoptable.clone())));
+        //
+        // Written into the record the metadata lock reloaded rather than into a
+        // copy taken while the plan was being confirmed. The confirmation
+        // prompt puts an unbounded wait between the read and the write, and a
+        // whole-record write would carry every other field back across it.
+        // `Absent` is the workspace having been removed while the plan sat
+        // there, and re-inserting the record would undo that removal.
+        //
+        // Which arm comes back is what the report says, and that is the point
+        // of there being arms: an adoption is "re-pointed" when both writes
+        // happened, and the two endings where the second one did not are
+        // `Unrecorded`. Reporting them as `Repointed` — which discarding the
+        // answer amounts to — prints a line about a record dl never touched.
+        let ending = match storage.update_worktree(
+            &adoptable.record.owner,
+            &adoptable.record.repo,
+            &adoptable.record.branch,
+            |record| record.devpod_workspace_id = Some(adoptable.workspace_id.clone()),
+        ) {
+            Ok((RecordUpdate::Applied, store_notices)) => {
+                extend_with_store(notices, store_notices);
+                Adoption::Repointed(Box::new(adoptable.clone()))
+            }
+            Ok((RecordUpdate::Absent, store_notices)) => {
+                extend_with_store(notices, store_notices);
+                Adoption::Unrecorded {
+                    workspace_id: adoptable.workspace_id.clone(),
+                }
+            }
+            Err(error) => {
+                notices.say(LifecycleNotice::RecordNotDropped {
+                    path: adoptable.record.local_path.clone(),
+                    refusal: error,
+                });
+                Adoption::Unrecorded {
+                    workspace_id: adoptable.workspace_id.clone(),
+                }
+            }
+        };
+        adoptions.push(ending);
     }
     // devpod's records just changed, so any listing dl is holding describes the
     // world before the repair.
@@ -7245,6 +7289,69 @@ pub(crate) mod tests {
         assert!(
             !record.with_extension("dl-tmp").exists(),
             "the temp file is renamed, not left behind"
+        );
+    }
+
+    #[test]
+    fn a_record_removed_while_the_plan_sat_there_is_not_reported_as_re_pointed() {
+        // The confirmation prompt is an unbounded wait, and `dl <ws> rm` in
+        // another terminal is what walks through it. devpod's record is
+        // re-pointed either way — that write is done before metadata is
+        // reloaded — but the id is not written, because writing it would put
+        // back a row the other run deleted. What must not happen is the run
+        // reporting an adoption that landed anyway.
+        let mut world = World::empty();
+        let devpod_home = world.tmp().join("devpod");
+        let clone = a_bare_clone_directory(&world.repo_dir.join("r-feature-auth-aaa"));
+        world.record("r-feature-auth-aaa", "feature/auth", &clone);
+        let old = world.repo_dir.join("feature-auth");
+        let record = devpod_record(&devpod_home, "ws-old", &old);
+        world.devpod.lists(&[listed("ws-old", &old)]);
+        let plan = reconcile_for(&world);
+        world
+            .storage
+            .remove_worktree(OWNER, REPO, "feature/auth")
+            .expect("the other run's delete");
+        let updater = SelfInvocation::new("dl");
+        let cache_path = fresh_cache(world.tmp());
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&updater, &cache_path);
+
+        let report = apply_reconciliation(
+            &mut context,
+            &mut refresh,
+            &mut world.storage,
+            &devpod_home,
+            &plan,
+            &mut ignoring(),
+        );
+
+        assert_eq!(
+            report.adoptions(),
+            [Adoption::Unrecorded {
+                workspace_id: "ws-old".to_owned()
+            }],
+            "the ending the report carries is the one that happened"
+        );
+        assert_eq!(report.repointed().count(), 0, "nothing was recorded");
+        assert!(
+            !report.finished(),
+            "an adoption that wrote nothing is not an adoption that landed"
+        );
+        assert!(
+            world
+                .storage
+                .get_worktree(OWNER, REPO, "feature/auth")
+                .is_none(),
+            "the other run's delete stands"
+        );
+        assert_eq!(
+            sourced_at(&record),
+            canonical(&clone.to_string_lossy())
+                .expect("the clone")
+                .display()
+                .to_string(),
+            "devpod's record was re-pointed before the reload found the row gone"
         );
     }
 

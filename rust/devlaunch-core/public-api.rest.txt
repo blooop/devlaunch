@@ -1064,6 +1064,8 @@ pub devlaunch_core::flows::lifecycle::Adoption::Refused
 pub devlaunch_core::flows::lifecycle::Adoption::Refused::failure: devlaunch_core::flows::lifecycle::RepointFailure
 pub devlaunch_core::flows::lifecycle::Adoption::Refused::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::Adoption::Repointed(alloc::boxed::Box<devlaunch_core::flows::lifecycle::Adoptable>)
+pub devlaunch_core::flows::lifecycle::Adoption::Unrecorded
+pub devlaunch_core::flows::lifecycle::Adoption::Unrecorded::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::Adoption
 pub fn devlaunch_core::flows::lifecycle::Adoption::clone(&self) -> devlaunch_core::flows::lifecycle::Adoption
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::Adoption

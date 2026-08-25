@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.14.0] - 2026-08-25
 
+### Fixed
+
+- **`dl --reconcile` no longer reports an adoption as landed when it wrote no
+  record.** Re-pointing devpod at the clone and recording the worktree are two
+  steps, and the second can find nothing to update — another run removed the
+  record while the plan sat there waiting to be applied. That case was reported
+  as `Repointed` like any other, with the run finishing successfully, so the one
+  outcome worth knowing about looked identical to the ordinary one. It is now its
+  own `Unrecorded` arm: devpod re-pointed, dl's record not written, said on
+  stderr, and the run does not report itself finished. A store that refused the
+  write lands in the same arm for the same reason — it is the same half-done
+  adoption — and the refusal is named beside it.
+
 ### Added
 
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota
