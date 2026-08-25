@@ -174,8 +174,11 @@ the host is on.
 Docker fills the pools in order, taking the first free block of the first pool
 that has one. A host with the config above still hands out 172.18, 172.19,
 172.20 and so on exactly as it did before, and only reaches the 10.128 pool once
-the /12 in front of it is used up. Nothing about the first fifteen networks
-changes.
+the /12 in front of it has nothing free. How many networks that is depends on the
+host, because the collision skipping above applies to the /12 pool as much as to
+the one it replaces. A host whose ZeroTier interface sits on `172.29.0.0/16` gets
+thirteen out of that pool rather than fifteen, with 172.17 held by the default
+bridge and 172.29 skipped.
 
 That ordering is also what keeps the default bridge where it is. `docker0` is the
 exception to everything else here, because its subnet is re-derived at daemon
