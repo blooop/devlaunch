@@ -290,6 +290,28 @@ pub(crate) enum MigrationCommit {
     AlreadyCurrent,
 }
 
+/// Whether an update found the record it names, once the lock was held.
+///
+/// The reload under the lock can show the record gone, because another dl run
+/// removed it while this one was holding its copy. There is then nothing to
+/// edit, and inserting the record back would turn that run's delete into a row
+/// naming a clone directory that no longer exists. Saying so is what lets a
+/// caller tell "changed" from "there was nothing there".
+///
+/// `#[must_use]` because the first caller written against this dropped the
+/// answer and reported a write that never happened. It is not a guarantee: the
+/// lint fires on a value thrown away whole, and a `_` in the tuple destructure
+/// that actually did it is still silent. What stops that is the two call sites
+/// naming both arms, which is why they do.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordUpdate {
+    /// The edit ran on the reloaded record and the store was saved.
+    Applied,
+    /// No such record when the lock was taken; nothing was written.
+    Absent,
+}
+
 /// Which worktrees a listing asks for.
 ///
 /// A sum type rather than Python's two optional arguments, where "a repo with no
@@ -470,6 +492,48 @@ impl MetadataStorage {
         .map(|((), notices)| notices)
     }
 
+    /// Change a repository in place, editing the record loaded under the lock.
+    ///
+    /// The counterpart to [`MetadataStorage::add_repository`], and the one to
+    /// reach for when a caller has a field to move rather than a whole record
+    /// to register. `add_*` takes the record by value, so a caller with one
+    /// field to change had to read it, clone it and hand the clone back — and
+    /// that clone was taken before the lock existed, so it carried this
+    /// process's copy of every *other* field over whatever a concurrent dl run
+    /// had written to them. The edit crossed the seam; this keeps it inside,
+    /// where the reload has already happened.
+    ///
+    /// Shaped after [`MetadataStorage::commit_migration`], which has reloaded
+    /// under the lock and handed the reloaded records to an edit closure since
+    /// the v1 to v2 migration was written. Same mechanism, one record instead
+    /// of all of them.
+    ///
+    /// Nothing is written when the key is absent (#412): a store that inserted
+    /// would undo a delete another run had just committed. Like every mutator
+    /// here it is not reentrant — `edit` must not call one. Calling one on
+    /// *this* store is a borrow error, so the rule the compiler does not keep
+    /// is the other shape: `edit` capturing a second [`MetadataStorage`] over
+    /// the same file compiles, and then blocks forever, because the lock is one
+    /// flock per open file description and [`super::locks`] waits without a
+    /// timeout. Inherited from [`MetadataStorage::exclusive`] rather than new
+    /// here, and worth naming because this is the first closure `flows` writes.
+    pub(crate) fn update_repository(
+        &mut self,
+        owner: &str,
+        repo: &str,
+        edit: impl FnOnce(&mut BaseRepository),
+    ) -> Result<(RecordUpdate, Vec<Notice>), MetadataError> {
+        let key = repository_key(owner, repo);
+        self.exclusive(move |storage| {
+            let Some(recorded) = storage.repositories.get_mut(&key) else {
+                return Ok(RecordUpdate::Absent);
+            };
+            edit(recorded);
+            storage.save()?;
+            Ok(RecordUpdate::Applied)
+        })
+    }
+
     /// Remove a repository, writing only if it was there.
     ///
     /// Held for the #251 §7 public-API freeze — what the `remove` verb writes.
@@ -512,6 +576,29 @@ impl MetadataStorage {
             storage.save()
         })
         .map(|((), notices)| notices)
+    }
+
+    /// Change a worktree in place, editing the record loaded under the lock.
+    ///
+    /// [`MetadataStorage::update_repository`] carries the argument for both.
+    /// The branch list on the repository is not touched, because an edit that
+    /// cannot move the key cannot put the two out of step.
+    pub(crate) fn update_worktree(
+        &mut self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        edit: impl FnOnce(&mut WorktreeInfo),
+    ) -> Result<(RecordUpdate, Vec<Notice>), MetadataError> {
+        let key = worktree_key(owner, repo, branch);
+        self.exclusive(move |storage| {
+            let Some(recorded) = storage.worktrees.get_mut(&key) else {
+                return Ok(RecordUpdate::Absent);
+            };
+            edit(recorded);
+            storage.save()?;
+            Ok(RecordUpdate::Applied)
+        })
     }
 
     /// Remove a worktree and its entry in the repository's branch list.
@@ -1115,7 +1202,7 @@ mod tests {
     //! makes "byte-compatible with Python" an assertion rather than a claim.
 
     use super::*;
-    use crate::domain::model::Timestamp;
+    use crate::domain::model::{RecordedDefaultBranch, Timestamp};
     use jiff::civil;
     use serde_json::json;
 
@@ -2459,6 +2546,141 @@ mod tests {
         let mut keys: Vec<&String> = reloaded.repositories().keys().collect();
         keys.sort();
         assert_eq!(keys, vec!["owner1/first", "owner2/second"]);
+    }
+
+    #[test]
+    fn an_update_keeps_the_field_another_writer_moved_since_this_store_loaded() {
+        // The staleness is the load-to-write distance and not the read-to-write
+        // one: this store's copy of the record dates from whenever it opened,
+        // and another dl run has moved a different field of that record since.
+        // flock is per open file description (see [`super::locks`]), so a
+        // second store over the same file is a genuine second writer.
+        let dir = temp_dir();
+        let mut seeded = quiet_storage(dir.path());
+        seeded
+            .add_repository(repository("owner1", "repo1"))
+            .expect("saved");
+
+        let mut updating = quiet_storage(dir.path());
+        let mut other = quiet_storage(dir.path());
+        let mut moved = repository("owner1", "repo1");
+        moved.default_branch = RecordedDefaultBranch::Named("develop".to_owned());
+        other.add_repository(moved).expect("saved");
+
+        let fetched = Timestamp::from_civil(civil::datetime(2026, 8, 24, 9, 0, 0, 0));
+        let (update, _) = updating
+            .update_repository("owner1", "repo1", |recorded| {
+                recorded.last_fetched = Some(fetched.clone());
+            })
+            .expect("saved");
+
+        assert_eq!(update, RecordUpdate::Applied);
+        let reloaded = quiet_storage(dir.path());
+        let recorded = reloaded
+            .get_repository("owner1", "repo1")
+            .expect("the record");
+        assert_eq!(recorded.last_fetched.as_ref(), Some(&fetched));
+        assert_eq!(
+            recorded.default_branch.named(),
+            Some("develop"),
+            "the other run's field, which this update never named"
+        );
+    }
+
+    #[test]
+    fn an_update_does_not_resurrect_a_record_another_writer_removed() {
+        // The other run's delete has to win: a record put back names a clone
+        // directory that is gone.
+        let dir = temp_dir();
+        let mut seeded = quiet_storage(dir.path());
+        seeded
+            .add_worktree(worktree("owner1", "repo1", "branch1"))
+            .expect("saved");
+
+        let mut updating = quiet_storage(dir.path());
+        let mut other = quiet_storage(dir.path());
+        other
+            .remove_worktree("owner1", "repo1", "branch1")
+            .expect("saved");
+
+        let (update, _) = updating
+            .update_worktree("owner1", "repo1", "branch1", |recorded| {
+                recorded.devpod_workspace_id = Some("adopted".to_owned());
+            })
+            .expect("nothing to write and nothing to refuse");
+
+        assert_eq!(update, RecordUpdate::Absent);
+        let reloaded = quiet_storage(dir.path());
+        assert!(
+            reloaded
+                .get_worktree("owner1", "repo1", "branch1")
+                .is_none(),
+            "the update found no record and wrote nothing"
+        );
+    }
+
+    #[test]
+    fn an_update_reaches_a_repository_registered_since_this_store_loaded() {
+        // What the sweeper's dropped `if let Some(get_repository(..))` used to
+        // decide off a map loaded minutes and one `git fetch --all` ago: a
+        // repository another run registered in that window read as "not there,
+        // nothing to stamp". The lookup happens under the lock now, on the
+        // reload, so the record it has to find is the one on disk.
+        let dir = temp_dir();
+        let mut updating = quiet_storage(dir.path());
+        let mut other = quiet_storage(dir.path());
+        other
+            .add_repository(repository("owner1", "repo1"))
+            .expect("saved");
+
+        let fetched = Timestamp::from_civil(civil::datetime(2026, 8, 24, 9, 0, 0, 0));
+        let (update, _) = updating
+            .update_repository("owner1", "repo1", |recorded| {
+                recorded.last_fetched = Some(fetched.clone());
+            })
+            .expect("saved");
+
+        assert_eq!(update, RecordUpdate::Applied);
+        let reloaded = quiet_storage(dir.path());
+        assert_eq!(
+            reloaded
+                .get_repository("owner1", "repo1")
+                .expect("the record")
+                .last_fetched
+                .as_ref(),
+            Some(&fetched),
+            "stamped, where the pre-lock lookup would have skipped it"
+        );
+    }
+
+    #[test]
+    fn an_update_does_not_resurrect_a_repository_another_writer_removed() {
+        // The worktree half of this is above; a repository is the other half of
+        // the same rule, and it is the arm the sweeper newly reaches now that
+        // nothing guards the call. A row put back names a bare clone `dl rm`
+        // has already deleted.
+        let dir = temp_dir();
+        let mut seeded = quiet_storage(dir.path());
+        seeded
+            .add_repository(repository("owner1", "repo1"))
+            .expect("saved");
+
+        let mut updating = quiet_storage(dir.path());
+        let mut other = quiet_storage(dir.path());
+        other.remove_repository("owner1", "repo1").expect("saved");
+
+        let (update, _) = updating
+            .update_repository("owner1", "repo1", |recorded| {
+                recorded.last_fetched = Some(Timestamp::now());
+            })
+            .expect("nothing to write and nothing to refuse");
+
+        assert_eq!(update, RecordUpdate::Absent);
+        let reloaded = quiet_storage(dir.path());
+        assert!(
+            reloaded.get_repository("owner1", "repo1").is_none(),
+            "the other run's delete stands"
+        );
     }
 
     #[test]

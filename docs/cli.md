@@ -47,8 +47,11 @@ That same file is then handed to OpenSSH as `-F <path>`, because OpenSSH reads
 none of the above: it resolves `~` through `getpwuid`, so the config `dl` decided
 from has to be named on the command line or the alias does not resolve at all.
 One consequence worth knowing: a session over this transport is built from that
-file alone, so a `Host *` block in your own `~/.ssh/config`, or in
-`/etc/ssh/ssh_config`, does not apply to it when devpod publishes elsewhere.
+file alone. `/etc/ssh/ssh_config` never applies, because naming any file with `-F`
+makes OpenSSH skip the system config, and that holds even when the file named is
+your own `~/.ssh/config`. A `Host *` block of your own applies only while devpod
+publishes into the file `dl` names, so it drops out as soon as devpod publishes
+elsewhere.
 
 If a workspace has no alias, `dl` says so and falls back to the plain `devpod ssh`
 transport, which has no terminal; `dl <ws> restart` republishes the alias. If

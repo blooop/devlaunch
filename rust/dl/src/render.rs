@@ -10,7 +10,9 @@ use std::io;
 use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
+use devlaunch_core::clients::git::Failure as GitFailure;
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
@@ -26,8 +28,7 @@ use devlaunch_core::flows::launch::{
 };
 use devlaunch_core::flows::lifecycle::{
     KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
-    VolumeRefusal,
+    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, Unlocatable, VolumeRefusal,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
@@ -1886,7 +1887,11 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
 /// Only a not-found refusal gets the line, and only from a clone step. A clone
 /// that failed on the network, on credentials or on the disk names a repository
 /// that may well exist under the owner given, and a "did you mean" would send the
-/// reader after a problem they do not have.
+/// reader after a problem they do not have. Which refusal is which is not decided
+/// here: [`GitFailure::RepositoryNotFound`] is read off git's stderr in
+/// `clients::git`, where git's words are already being read, and this asks for
+/// the arm. A renderer that classified would be a second place git's wordings
+/// live.
 ///
 /// **Divergence row 29**: Python printed git's stderr and stopped. Additive —
 /// nothing above this line changes, and a machine whose cache holds no candidate
@@ -1911,7 +1916,7 @@ pub(crate) fn wrong_owner_hint(refused: &LaunchRefusal, known: &CompletionData) 
     let CloneError::GitRefused { refused: git, .. } = clone else {
         return None;
     };
-    if !reads_as_repository_not_found(git.reason()) {
+    if git.how() != GitFailure::RepositoryNotFound {
         return None;
     }
     let typed = format!("{owner}/{repo}");
@@ -1997,46 +2002,6 @@ fn same_repo_other_owners(known: &CompletionData, owner: &str, repo: &str) -> Ve
         })
         .cloned()
         .collect()
-}
-
-/// Whether git's stderr is the host saying the repository is not there.
-///
-/// Matched on the text because that is the only place the distinction exists: git
-/// exits 128 for this, for a refused key and for a DNS failure alike, so the exit
-/// status cannot tell them apart. The three phrases are the three hosts' own
-/// wordings — GitHub's `Repository not found` (ssh and https both), GitLab's `The
-/// project you were looking for could not be found`, and Bitbucket's `conq:
-/// repository does not exist`.
-///
-/// Each is matched whole, and each shorter form was tried and rejected. `not
-/// exist` alone also catches git's *local* complaint, `repository '/some/path'
-/// does not exist`, which is a missing directory rather than a host's answer.
-/// `could not be found` alone is generic English rather than anything GitLab
-/// specifically said. And `and the repository exists` rides along with every ssh
-/// failure git reports, refused keys included, one word from the wording above.
-///
-/// # Why no `LC_ALL=C`, when the other substring-classified verbs pin it
-///
-/// `Git::fetch_ref` and `ensure_branch` force `LC_ALL=C`/`LANGUAGE=C` precisely
-/// because their callers match on `couldn't find remote ref` and `already exists`,
-/// which git *translates*. `clone_bare` inherits the environment instead, and may:
-/// all three phrases here are the **remote's** bytes, relayed over the wire by the
-/// host's own git-upload-pack and never passed through git's gettext catalogue, so
-/// a French locale does not move them. What a non-English locale can lose is the
-/// hint from git's own translatable `repository '%s' not found` wording — a
-/// candidate not offered, never a wrong one offered.
-///
-/// A host that words it some fourth way loses the hint and keeps git's own
-/// message, which is the safe direction for this to be wrong in.
-fn reads_as_repository_not_found(reason: &str) -> bool {
-    let reason = reason.to_lowercase();
-    [
-        "repository not found",
-        "project you were looking for could not be found",
-        "repository does not exist",
-    ]
-    .iter()
-    .any(|phrase| reason.contains(phrase))
 }
 
 /// `a`, `a or b`, `a, b or c` — the list joined the way a sentence wants it.
@@ -2435,45 +2400,6 @@ mod tests {
             same_repo_other_owners(&known, "KINISI-ROBOTICS", "kinisi_ros").is_empty(),
             "the owner given was offered back to itself under different capitals"
         );
-    }
-
-    #[test]
-    fn the_hosts_not_found_wordings_are_told_from_its_other_refusals() {
-        // The three hosts' own wordings.
-        assert!(reads_as_repository_not_found(
-            "ERROR: Repository not found."
-        ));
-        assert!(reads_as_repository_not_found(
-            "remote: Repository not found.\nfatal: repository 'https://x/y.git' not found"
-        ));
-        assert!(reads_as_repository_not_found(
-            "GitLab: The project you were looking for could not be found or you don't have \
-             permission to view it."
-        ));
-        // The whole phrase, not the tail of it: `could not be found` on its own is
-        // generic English rather than anything a host said.
-        assert!(!reads_as_repository_not_found(
-            "error: object file .git/objects/ab/cdef could not be found"
-        ));
-        assert!(reads_as_repository_not_found(
-            "conq: repository does not exist."
-        ));
-
-        // And the near misses. The last line of git's stock ssh advice — "and the
-        // repository exists" — rides along with *every* ssh failure, refused keys
-        // included, and is one word from the wording above; git's own complaint
-        // about a missing local directory is not a host's answer at all.
-        assert!(!reads_as_repository_not_found(
-            "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote \
-             repository.\n\nPlease make sure you have the correct access rights\nand the \
-             repository exists."
-        ));
-        assert!(!reads_as_repository_not_found(
-            "ssh: Could not resolve hostname github.com: Temporary failure in name resolution"
-        ));
-        assert!(!reads_as_repository_not_found(
-            "fatal: repository '/home/someone/not-there' does not exist"
-        ));
     }
 
     #[test]

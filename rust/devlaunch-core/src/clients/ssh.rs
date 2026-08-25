@@ -189,6 +189,37 @@ pub(crate) fn tty_disabled(value: Option<&str>) -> bool {
     }
 }
 
+/// [`tty_disabled`], asked of this process's environment.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+///
+/// The one reading of `DEVLAUNCH_NO_TTY`, because there was briefly more than
+/// one. `dl` gates its own terminal behaviour on the same variable, could not
+/// reach [`crate::osext`] from outside the crate, and so grew a copy built from
+/// `std::env::var(..).ok()` and a bare `matches!` over the falsey words. The copy
+/// disagreed with this module three ways: `FALSE` and ` no ` were read as
+/// opt-outs because it dropped the lowercasing and [`crate::osext::strip`], and a
+/// non-UTF-8 value read as *unset* — the opt-out-into-opt-in inversion `osext`
+/// exists to prevent, and the one this hatch shares with `DEVLAUNCH_NO_GH_TOKEN`.
+///
+/// So this is deliberately not the sharing [`FALSEY`]'s own note argues against.
+/// That note is about two *different* hatches answering to one constant, which
+/// would make an edit meant for one silently move the other. This is one hatch
+/// with one reading, which is the thing that was broken.
+///
+/// It would stay a function here even if [`crate::osext::env_str`] were reachable
+/// from the binaries, and the reason is arithmetic rather than the crate wall:
+/// what `dl` asks for is the *decision*, not the value. Composing it out there
+/// instead would want [`tty_disabled`] and [`DISABLE_VAR`] exported too — three
+/// items to say what one says — and it would put the composition back on the side
+/// of the wall that got it wrong.
+///
+/// Impure and therefore untested, like [`config_path`] beneath it: the predicate
+/// it wraps is where the spellings are pinned.
+pub fn tty_disabled_by_environment() -> bool {
+    tty_disabled(crate::osext::env_str(DISABLE_VAR).as_deref())
+}
+
 /// Whether dl was run from a terminal it can hand to the workspace.
 ///
 /// Both directions have to be a terminal. Python also has to defend against a
@@ -648,6 +679,24 @@ mod tests {
             assert!(!tty_disabled(Some(value)), "{value:?}");
         }
         assert!(!tty_disabled(None));
+    }
+
+    #[test]
+    fn a_falsey_word_is_falsey_however_it_is_cased_and_padded() {
+        // The three spellings `dl`'s own copy of this predicate got wrong before
+        // it was deleted for [`tty_disabled_by_environment`]. It compared the raw
+        // value against the four words with a bare `matches!`, so each of these
+        // was "set, therefore yes" to the prompt and "no" to the ssh transport —
+        // one variable, two answers.
+        //
+        // The third spelling `dl` got wrong is not here because it is not this
+        // function's: a non-UTF-8 value read through `std::env::var(..).ok()`
+        // arrives as `None`. That inversion is pinned on the reader instead, at
+        // `osext::a_non_utf8_value_is_present_not_absent`.
+        for value in ["FALSE", " no ", "No", "\tfalse\n", "0 "] {
+            assert!(!tty_disabled(Some(value)), "{value:?}");
+            assert!(terminal_usable(Some(value), true, true), "{value:?}");
+        }
     }
 
     // ------------------------------------------ has devpod published an alias

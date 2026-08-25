@@ -87,10 +87,13 @@ fn run(argv: &[String]) -> i32 {
         return 0;
     }
 
-    let parsed = match rewrite::parse_aid_args(
-        argv,
-        std::env::var(rewrite::AGENT_ENV_VAR).ok().as_deref(),
-    ) {
+    // `dl::env_str`, not `std::env::var(..).ok()`: that call reports a value which
+    // is not valid UTF-8 as *unset*, so `DEVLAUNCH_AID_AGENT=$'\xff'` used to name
+    // no agent at all and quietly start the default one instead of being refused
+    // by name. Core's reading is reached through dl, like `shell` and
+    // `python_repr`, so aid still sees nothing of devlaunch but dl.
+    let parsed = match rewrite::parse_aid_args(argv, dl::env_str(rewrite::AGENT_ENV_VAR).as_deref())
+    {
         Ok(parsed) => parsed,
         Err(refused) => {
             eprintln!("{}", refusal(&refused));

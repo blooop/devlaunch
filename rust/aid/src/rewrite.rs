@@ -46,7 +46,7 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// at all. The variable is claude's own way of being told the refusal is answering
 /// for a machine that isn't there, which is exactly a dl workspace.
 ///
-/// `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` is the other half of dl naming the
+/// `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` is one of the pieces of dl naming the
 /// terminal after the workspace, and without it that name lasts about a second.
 /// claude writes the terminal title continuously, from its own read of what the
 /// session is doing; a multiplexer takes the last writer's word for it, so the two
@@ -60,6 +60,16 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// somebody typed themselves is their command, not aid's to rewrite. It also costs
 /// no new machinery: this table is already an env prefix on a payload that runs
 /// under `bash -lc`.
+///
+/// dl now writes the same variable into the container's login profile from its
+/// title stage, which is what covers the sessions this table cannot reach -- a
+/// claude somebody starts for themselves. That rule is unchanged rather than
+/// abandoned: an export is the environment a command inherits, not a rewrite of
+/// anyone's command. This entry stays because the two do not reach the same
+/// sessions. The profile export lands when a workspace enters Running and is read
+/// by shells that start after it, so a container that was already up when dl
+/// learned this needs a re-login; the prefix here works on the next `aid` either
+/// way, and a prefix and an inherited value of the same variable agree.
 ///
 /// In the order Python's dict is written, which is the order `--help` lists the
 /// flags in after sorting.
