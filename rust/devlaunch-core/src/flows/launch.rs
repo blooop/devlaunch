@@ -2007,22 +2007,34 @@ impl TerminalTitle {
     }
 }
 
-/// A name with everything a terminal would read as an instruction taken out, or
+/// A name with everything either sink would read as an instruction taken out, or
 /// `None` if that leaves nothing worth writing.
 ///
-/// Defence at the boundary the bytes are formed at, and deliberately not sold as
-/// more than that: no reachable name is known to get an escape this far. A spec
-/// cannot, because [`WorkspaceId::new`] refused every part that is not a word
-/// character, dot, slash or dash before this launch had an id at all. Two arms hand
-/// over a string this crate never validated -- `Plan::Existing`'s raw spec and
-/// `Plan::Creatable`'s path leaf -- but both are gated on devpod agreeing the
-/// workspace exists or can be created, and devpod's own name rules refuse anything
-/// with a control in it. The filter is what makes that a local guarantee rather than
-/// one borrowed from two other programs' validation, which is the difference between
-/// a safe title and a title that is safe until devpod loosens a rule. Dropping
-/// controls rather than escaping them keeps the sink with nothing to decide.
+/// Two sinks, and they do not fear the same characters. The escape this process
+/// writes is ended by a control, so controls come out. The container half is
+/// assigned into `PS1`, and bash expands `PS1` *again* at every prompt
+/// (`promptvars`, on by default), so `$`, a backtick and a backslash come out too:
+/// quoting the assignment makes the name text only until the first prompt renders
+/// it, and a `$(...)` that survived into the value runs then, in the workspace, at
+/// every prompt. One filter for both because the two halves have to be the one
+/// string, or the tab changes the moment the first prompt paints.
+///
+/// A *derived* id holds none of the five, since
+/// [`slug`](crate::domain::workspace_id::slug) leaves only lowercase alphanumerics
+/// and dashes, so nothing legitimate is lost. The filter is for the two arms that
+/// title without deriving an id -- `Plan::Existing`'s raw spec and
+/// `Plan::Creatable`'s path leaf -- which this crate never validated. devpod's own
+/// name rules would refuse most of what is dangerous here, but that is a guarantee
+/// borrowed from another program's validation, which is the difference between a
+/// safe title and a title that is safe until devpod loosens a rule. Dropping rather
+/// than escaping keeps both sinks with nothing to decide, and there is no escaping
+/// that would work for `PS1` anyway: it is re-expanded, not re-parsed, and `\$`
+/// renders as `#` for root.
 fn sanitize_title(name: &str) -> Option<String> {
-    let text: String = name.chars().filter(|ch| !ch.is_control()).collect();
+    let text: String = name
+        .chars()
+        .filter(|ch| !ch.is_control() && !matches!(ch, '$' | '`' | '\\'))
+        .collect();
     let text = text.trim();
     if text.is_empty() {
         None
@@ -4558,6 +4570,21 @@ mod tests {
             TerminalTitle::from_host(&titling(), "ws\x7fx\u{9c}y").osc(),
             Some("\x1b]2;wsxy\x07")
         );
+    }
+
+    #[test]
+    fn a_name_cannot_smuggle_a_command_into_the_prompt_that_repaints_it() {
+        // The container half of the title is assigned into `PS1`, and bash expands
+        // `PS1` again at every prompt -- `promptvars`, on by default -- so quoting
+        // the assignment makes the name text only until the first prompt renders it.
+        // `$`, a backtick and a backslash are what that render acts on, and the two
+        // arms that title after a bare devpod name or a path leaf never had them
+        // refused. A derived id holds none of the three, so nothing legitimate is
+        // lost by dropping them at the same boundary the controls go.
+        assert_eq!(sanitize_title("ws$(id)`id`\\u"), Some("ws(id)idu".to_owned()));
+        // The whole point: what survives cannot be re-read as an instruction.
+        let filtered = sanitize_title("$(touch /tmp/pwned)").expect("a title");
+        assert!(!filtered.contains(['$', '`', '\\']), "{filtered}");
     }
 
     #[test]

@@ -539,11 +539,12 @@ pub(crate) fn profile_prepend(line: &str, on_failure: Option<&str>) -> String {
 /// `~/.bashrc`.
 ///
 /// *title* is interpolated as its own quoted word rather than into the double-quoted
-/// assignment, so a name holding a `$` or a backtick is text and not shell. A
-/// *derived* id cannot hold either, since
-/// [`slug`](crate::domain::workspace_id::slug) leaves only lowercase alphanumerics
-/// and dashes — but two of the placements title after a bare devpod name or a path
-/// leaf, which this crate never validated.
+/// assignment, which is what makes the *write* text rather than shell. That is all
+/// the quoting buys: `PS1` is expanded again at every prompt, so a `$` or a backtick
+/// that reached the value would run at each one, and no quoting here could stop it.
+/// What stops it is that the caller's filter drops both before a title gets this
+/// far; `the_prompt_that_repaints_the_title_renders_it_as_text` is the render, not
+/// the write.
 fn profile_title_line(title: &str) -> String {
     format!(
         r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"{}"\a\]" ;; esac"#,
@@ -4598,18 +4599,44 @@ fi
     }
 
     #[test]
-    fn a_title_holding_shell_metacharacters_is_text_and_not_shell() {
-        // A spec cannot hold these -- `WorkspaceId` refused every character but word
-        // ones, dots, slashes and dashes -- but the other three placements title
-        // after a bare devpod name or a path leaf, which this crate never validated.
-        // So the name is its own quoted word rather than interpolated into the
-        // double-quoted assignment.
+    fn a_title_is_its_own_quoted_word_in_the_assignment() {
+        // The name is its own quoted word rather than interpolated into the
+        // double-quoted assignment, so the line that gets *written* holds it as text
+        // however it was spelled. That is the whole of what this asserts: the write.
+        // It is not what makes the title safe, because `PS1` is read again at every
+        // prompt -- see `the_prompt_that_repaints_the_title_renders_it_as_text`.
         let line = profile_title_line("$(touch /tmp/pwned)`id`'x");
 
         assert!(
             line.contains(r#"'$(touch /tmp/pwned)`id`'"'"'x'"#),
             "{line}"
         );
+    }
+
+    #[test]
+    fn the_prompt_that_repaints_the_title_renders_it_as_text() {
+        // The assertion above is about the assignment. This one is about the render,
+        // which is the half that matters: `PS1` is expanded again at every prompt, so
+        // what the quoting settles at write time gets a second reading later.
+        // `${PS1@P}` is that same expansion, which is what lets a test see it without
+        // a terminal.
+        //
+        // The name here is one the caller's filter would pass -- `!`, `*` and `[` all
+        // survive it, and all three are inert in a prompt. The characters that are
+        // not inert never reach this function; `sanitize_title` is where they go, and
+        // `a_name_cannot_smuggle_a_command_into_the_prompt_that_repaints_it` is where
+        // that is asserted.
+        let title = "ws-feature!auth*x[1]";
+        let line = profile_title_line(title);
+        let rendered = std::process::Command::new("bash")
+            .arg("-ic")
+            .arg(format!("PS1=; {line}; printf '%s' \"${{PS1@P}}\""))
+            .output()
+            .expect("bash");
+        let rendered = String::from_utf8_lossy(&rendered.stdout);
+
+        // Verbatim: the prompt paints the name it was handed, not an expansion of it.
+        assert_eq!(rendered, format!("\x01\x1b]2;{title}\x07\x02"), "{rendered}");
     }
 
     #[test]
