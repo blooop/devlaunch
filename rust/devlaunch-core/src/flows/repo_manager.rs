@@ -3548,10 +3548,10 @@ pub(crate) mod tests {
     fn real_git_prunes_a_tag_the_remote_deleted() {
         // `--prune` prunes per refspec, so a tag the remote has retracted survives
         // for the life of the cache under a refspec `--tags` supplies implicitly,
-        // pinning every object it reaches. Pruning it is licensed by principle 1
-        // reading a bare's tag as a copy of an upstream ref holding no work that
-        // exists nowhere else, which is the argument that already licenses pruning
-        // heads.
+        // pinning every object it reaches. Pruning it deletes a ref, so it is
+        // worth saying what licenses that: a bare's tag is a copy of an upstream
+        // ref and holds no work that exists nowhere else, which is the argument
+        // that already licenses pruning heads. Nothing here authors a tag.
         let cache = a_cache();
         let remote = a_fixture_remote(cache.dir.path());
         let runner = real_git();

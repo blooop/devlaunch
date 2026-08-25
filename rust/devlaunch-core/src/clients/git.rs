@@ -563,9 +563,13 @@ impl<'r> Git<'r> {
     /// than handled: when the remote's own default branch disappears, `--prune`
     /// takes `refs/heads/main` with it and the bare's `HEAD` symref is left
     /// dangling. `symbolic-ref HEAD` still answers `refs/heads/main`, so
-    /// default-branch detection still returns a name; `rev-parse HEAD` is what
-    /// fails. The symptom is a launch aimed at a branch the cache no longer has,
-    /// on a repository whose default branch was deleted upstream.
+    /// default-branch detection still returns a name and does not notice. Nor
+    /// does a bare `rev-parse HEAD`, which exits 0 printing the literal `HEAD`;
+    /// it takes `rev-parse --verify HEAD` to get a failure out of it, which is
+    /// why nothing here reports one. What an eye actually meets is `git clone`
+    /// warning `remote HEAD refers to nonexistent ref, unable to checkout`. The
+    /// symptom is a launch aimed at a branch the cache no longer has, on a
+    /// repository whose default branch was deleted upstream.
     pub(crate) fn fetch_all(&self, bare: &Path, limit: Option<Duration>) -> GitAnswer<String> {
         let mut spec = SpawnSpec::new(
             Invocation::new(PROGRAM)
