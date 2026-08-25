@@ -145,17 +145,49 @@ _dl_completion() {
             return 0
         fi
 
-        # Default: complete workspace names and offer owner/ completion
-        compopt -o nospace  # For owner/ completions
-        local completions="$DL_WORKSPACES"
-
-        # Add owners with trailing slash
+        # Default: owners first, workspace ids only when no owner matches.
+        #
+        # These are two namespaces for the same repository, and offering them as
+        # one list is what used to make `kin<TAB>` stall. The owner
+        # `kinisi-robotics/` and every id derived from `kinisi_ros` share the
+        # prefix `kinisi-ro`, because `slug` turns the `_` into a `-` and an id is
+        # `<repo-slug>-<ref-slug>-<suffix>`. bash completes to the longest common
+        # prefix of its candidates, so it stopped at `kinisi-ro` and offered a
+        # screen of ids. One repository is enough to do that: the colliding pair is
+        # an owner and the ids of its own repo, so no fork and no second owner is
+        # needed, and no amount of typing helps until the two spellings diverge.
+        #
+        # The owner wins the tie because it continues. `/` is the next keystroke,
+        # and the `*/*` branch above completes the repo from there, so `kin` now
+        # reaches `kinisi-robotics/kinisi_ros` in two tabs.
+        #
+        # An id is a whole word with nothing after it, and it stays reachable
+        # rather than being dropped: keep typing and the prefix stops matching any
+        # owner, which is exactly when this offers the ids instead. That is the
+        # case the fallback exists for -- an id pasted or half-typed out of
+        # `dl --ls` still completes, and `dl <id>` is a launch arm the grammar
+        # keeps (`WorkspaceSpec::ExistingIdOrName`).
+        #
+        # Nothing here changes what the cache holds, so a `completions.bash`
+        # written by an older build works unchanged and vice versa.
+        local owners=""
+        local owner
         for owner in $DL_OWNERS; do
-            completions="$completions ${owner}/"
+            owners="$owners ${owner}/"
         done
 
-        if [[ -n "$completions" ]]; then
-            COMPREPLY=( $(compgen -W "${completions}" -- ${cur}) )
+        if [[ -n "$owners" ]]; then
+            COMPREPLY=( $(compgen -W "${owners}" -- ${cur}) )
+        fi
+
+        if (( ${#COMPREPLY[@]} > 0 )); then
+            # No trailing space: the `/` is a continuation, not the end of a word.
+            compopt -o nospace
+        elif [[ -n "$DL_WORKSPACES" ]]; then
+            # A space, unlike the old shared branch, which suppressed it for every
+            # candidate because some of them were owners. An id is finished when it
+            # matches, and the space is what lets a verb be typed straight after.
+            COMPREPLY=( $(compgen -W "${DL_WORKSPACES}" -- ${cur}) )
         fi
         return 0
     fi

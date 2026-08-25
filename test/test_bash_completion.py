@@ -97,12 +97,13 @@ done
         return completions
 
     def test_completion_with_dashed_workspace(self):
-        """Test completion works with workspace names containing dashes."""
-        # Complete after typing "dl my-"
+        """Test completion works with names containing dashes."""
+        # Complete after typing "dl my-". The owner matches, so the ids that also
+        # start "my-" are held back; see the namespace tests below for why.
         completions = self.run_completion("dl my-")
-        # Positive assertions: dashed names are suggested
-        assert "my-workspace" in completions
         assert "my-org/" in completions
+        # A prefix no owner matches falls through to the workspace ids.
+        assert "my-workspace" in self.run_completion("dl my-w")
         # Negative assertions: dashes are not treated as word breaks
         # (These would appear if dashes were splitting the words)
         assert "workspace" not in completions
@@ -192,6 +193,65 @@ done
         # Complete after typing "dl another-org/ano"
         completions = self.run_completion("dl another-org/ano")
         assert "another-org/another-repo" in completions
+
+    # --- the two namespaces in the first word -------------------------------
+    #
+    # An owner and the workspace ids of its own repo share a prefix whenever the
+    # repo slug is a prefix-neighbour of the owner name, which needs no fork and
+    # no second owner: `kinisi-robotics` against ids derived from `kinisi_ros`,
+    # whose slug is `kinisi-ros`. Offering both as one list stalled bash at the
+    # longest common prefix, `kinisi-ro`. These pin the rule that replaced it.
+
+    def write_colliding_cache(self):
+        """The real-world shape: one owner whose name collides with its own ids."""
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            f.write(
+                'DL_WORKSPACES="kinisi-ros-nb2-lobi kinisi-ros-remove-pins-tiha '
+                'kinisi-ros-update-bencher-jegi"\n'
+            )
+            f.write('DL_REPOS="kinisi-robotics/kinisi_ros"\n')
+            f.write('DL_OWNERS="kinisi-robotics"\n')
+            f.write('DL_BRANCHES="kinisi-robotics/kinisi_ros@main"\n')
+
+    def test_an_owner_completes_past_the_ids_of_its_own_repo(self):
+        """`dl kin<TAB>` reaches the owner instead of stalling on shared prefix."""
+        self.write_colliding_cache()
+
+        assert self.run_completion("dl kin") == ["kinisi-robotics/"]
+
+    def test_the_owner_and_then_the_repo_is_two_tabs(self):
+        """The second tab continues through the `/` branch to the whole spec."""
+        self.write_colliding_cache()
+
+        assert self.run_completion("dl kinisi-robotics/") == ["kinisi-robotics/kinisi_ros"]
+
+    def test_workspace_ids_are_offered_when_no_owner_matches(self):
+        """An id half-typed out of `dl --ls` still completes: `dl <id>` is a spec."""
+        self.write_colliding_cache()
+
+        # `kinisi-ros-` matches no owner -- `kinisi-robotics` diverges at the `b`.
+        assert self.run_completion("dl kinisi-ros-nb") == ["kinisi-ros-nb2-lobi"]
+
+    def test_ids_are_held_back_only_while_an_owner_matches(self):
+        """The fallback is per-prefix, not a mode: one keystroke swaps the list."""
+        self.write_colliding_cache()
+
+        assert self.run_completion("dl kinisi-ro") == ["kinisi-robotics/"]
+        assert self.run_completion("dl kinisi-ros") == [
+            "kinisi-ros-nb2-lobi",
+            "kinisi-ros-remove-pins-tiha",
+            "kinisi-ros-update-bencher-jegi",
+        ]
+
+    def test_ids_complete_when_the_cache_knows_no_owners(self):
+        """A cache with workspaces and no repos of dl's own is still completable."""
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            f.write('DL_WORKSPACES="handmade-workspace"\n')
+            f.write('DL_REPOS=""\n')
+            f.write('DL_OWNERS=""\n')
+            f.write('DL_BRANCHES=""\n')
+
+        assert self.run_completion("dl hand") == ["handmade-workspace"]
 
     def test_completion_branch_at_symbol(self):
         """Test completion triggers after @ symbol for branches."""
