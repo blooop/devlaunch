@@ -364,24 +364,35 @@ repository is. Measured across ten real remotes with `git ls-remote`,
 repositories holds something like 30 MB to 60 MB of loose refs, a couple of
 percent of one bare's own size. **Disk is not the reason this is here.**
 
-The reasons it is here are placement and a second payment. The broad sweep is the
-only thing in `dl` that fetches every head and tag, so it is the only thing that
-makes loose refs in quantity, and it already holds the repository's lock while it
-does. Packing there costs one more bounded `git` call in a scope that just spent
-its whole network budget, and it happens only on a pass that actually fetched. And
-the guards that decide whether a clone is safe to remove ask the bare a
-reachability question that walks every ref; with the refs packed that walk reads
-one file instead of thousands. Measured on git 2.51.1 over a bare of 551 refs with
-301 of them loose, the probe fell from 5.3 ms to 2.8 ms, the loose files held
-1204 KiB of blocks against a 30 KiB `packed-refs` for all 551, and the pack itself
-took 23 ms.
+What carries it is placement. The broad sweep is the only thing in `dl` that
+fetches every head and tag, so it is the only thing that makes loose refs in
+quantity, and it already holds the repository's lock while it does. Packing there
+costs one more bounded `git` call in a scope that just spent its whole network
+budget, and it happens only on a pass that actually fetched. Measured on git
+2.51.1 over a bare of 551 refs, 301 of them loose, those files held 1204 KiB of
+blocks against a 30 KiB `packed-refs` for all 551, and the pack itself took 23 ms.
+
+There is a second payment, and it is banked rather than collected. A guard that
+walks every ref on the bare to decide whether a clone is safe to remove reads one
+file instead of thousands once the refs are packed, and such a probe measured
+2.8 ms against 5.3 ms on that same bare. **No shipped code collects that yet.**
+The bare-side reachability guard is decided and not built, and what ships today
+asks the clone instead. So the saving is a reason to keep this once that guard
+arrives, and it is not a reason this is here now.
 
 **A pack that refuses is not a fetch that failed.** The fetch is the point of the
-sweep and the packing is the optional half, so a refusal is a line on stderr
-naming the repository and git's own words, the record's freshness stamp still
+sweep and the packing is the optional half, so a refusal becomes a notice
+carrying the repository and git's own words, the record's freshness stamp still
 lands, and the next sweep tries again. Withholding the stamp would make every
 later pass re-fetch the whole repository forever on account of a representation
 change that did not come off.
+
+That notice reaches nobody today, and the honest reading of why is that the sweep
+runs detached with its output discarded, so every notice it raises goes to a null
+descriptor and this is simply the first one that anybody would want to read. What
+a refusal costs while it stays unread is bounded: loose refs are one file per ref
+rewritten in place rather than appended, so a pack that keeps failing holds the
+ref count flat at what one sweep writes instead of growing it.
 
 **Packing does not change what a later prune may delete.** A ref the remote
 retracts is removed whether it was loose or packed: git rewrites `packed-refs`

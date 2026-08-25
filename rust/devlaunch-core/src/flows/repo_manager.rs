@@ -1414,10 +1414,14 @@ impl<'r> RepositoryManager<'r> {
         // `packed-refs`. Here rather than anywhere else because `fetch_all` has
         // exactly one production caller, so "after the fetch" *is* the detached
         // background sweep by construction, in the repo-lock scope it already
-        // holds; and because packing pays a second time in probe latency, since
-        // the reachability question asked of the bare walks every ref and today
-        // reads one file per ref to do it (measured on git 2.51.1, 5.3 ms against
-        // 2.8 ms over 551 refs, 301 of them loose).
+        // holds.
+        //
+        // A second payment is banked here rather than collected: a guard that
+        // walks every ref on the bare reads one file instead of thousands once
+        // they are packed (measured on git 2.51.1, 2.8 ms against 5.3 ms over
+        // 551 refs, 301 of them loose). Nothing collects it yet. That guard is
+        // decided and unbuilt, and the probe that ships asks the *clone*, not
+        // the bare. Placement is what carries this call today.
         //
         // **A refusal here is not a failed fetch.** The fetch happened, the cache
         // is fresh, and the stamp below has to land or the sweep re-fetches this
