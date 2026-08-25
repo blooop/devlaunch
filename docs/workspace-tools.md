@@ -346,11 +346,11 @@ It is on unless you turn it off:
 
 | Variable | Description |
 |----------|-------------|
-| `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal: neither the escape below nor the profile edit under [What keeps it named](#what-keeps-it-named). Everything else about the launch is unchanged |
+| `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal: neither the escape below nor either of the profile lines under [What keeps it named](#what-keeps-it-named). Everything else about the launch is unchanged |
 
 A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are not
 the same size of decision. That one installs a session into a container; this one
-writes an escape sequence and one line into a profile.
+writes an escape sequence and two lines into a profile.
 
 **It is the spec you typed, resolved, not the workspace id.** `dl blooop/devlaunch`
 names the pane `blooop/devlaunch@main`, with the branch filled in as the launch

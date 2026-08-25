@@ -46,7 +46,7 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// at all. The variable is claude's own way of being told the refusal is answering
 /// for a machine that isn't there, which is exactly a dl workspace.
 ///
-/// `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` is the other half of dl naming the
+/// `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` is one of the pieces of dl naming the
 /// terminal after the workspace, and without it that name lasts about a second.
 /// claude writes the terminal title continuously, from its own read of what the
 /// session is doing; a multiplexer takes the last writer's word for it, so the two

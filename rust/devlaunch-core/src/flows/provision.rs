@@ -621,11 +621,12 @@ const LOCAL_BIN_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
 /// close that hole, because it only repaints at a prompt and claude overwrites
 /// between prompts.
 ///
-/// `aid` has set this variable for years, but only as an env prefix on the claude
-/// *it* decided to start -- correctly, since a `dl <ws> -- claude ...` somebody
-/// typed themselves is their command and not aid's to rewrite. That left every
-/// claude a person started for themselves losing the pane name, which is most of
-/// them. Writing it to the login profile keeps that rule and reaches those
+/// `aid` set this variable in the same commit that first named a pane, so the
+/// contest was answered the day it was created -- but only as an env prefix on the
+/// claude *it* decided to start, correctly, since a `dl <ws> -- claude ...`
+/// somebody typed themselves is their command and not aid's to rewrite. That left
+/// every claude a person started for themselves losing the pane name, which is
+/// most of them. Writing it to the login profile keeps that rule and reaches those
 /// sessions anyway: it is not a rewrite of anyone's command, it is the environment
 /// their command inherits.
 ///
