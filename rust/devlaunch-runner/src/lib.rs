@@ -381,8 +381,38 @@ pub enum DetachOutcome {
     NotStarted(OsFailure),
 }
 
-/// The one seam. Implemented once for real processes ([`ProcessRunner`]) and
-/// once for tests (`devlaunch_test_support::FakeRunner`).
+/// The one seam: every process devlaunch starts is started through here.
+///
+/// One implementation does real work, [`ProcessRunner`], and it is the only impl
+/// outside test code — which is what makes this a seam rather than a habit, and
+/// is asserted in `tests/one_seam.rs` rather than left to this sentence. One
+/// implementation stands in for it across the suite:
+/// `devlaunch_test_support::FakeRunner`, a call recorder, an argv-prefix response
+/// table, and the fake devpod behind them (`DevpodMachine`, the one the
+/// conformance corpus pins).
+///
+/// Tests wrap those two rather than implementing the trait afresh, and the
+/// wrappers come and go, so the enumeration is the scan in `tests/one_seam.rs`,
+/// which lists every impl in the workspace with its file and its verdict, rather
+/// than a number written here. (`grep -rn "impl Runner for"` is the eyeball
+/// version and over-reports: this sentence matches it, and so do that test's own
+/// fixtures.) Two shapes are worth recognising before reading one:
+///
+/// - **Part real.** A wrapper holding a [`ProcessRunner`] beside a fake answers
+///   for the programs a unit test must not really run — devpod above all, and
+///   docker, whose real daemon would be the developer's own — and hands it
+///   whatever they do not fake, git above all. That is how a test drives a real
+///   repository against a workspace that never existed. Three do this today, and
+///   they are worth naming because a reader otherwise finds them by grepping:
+///   `flows::listing`'s `FakeDevpodRealGit`, which is named after the pattern,
+///   `flows::lifecycle`'s `Devpod`, and `flows::workspace_clone`'s `StubbedLfs`.
+///   The last is the one to read carefully rather than by analogy: it routes on
+///   the `git lfs` subcommand rather than on the program, and only its `capture`
+///   reaches `ProcessRunner` at all.
+/// - **A recorder.** A wrapper that answers by call index rather than from argv
+///   is not a fake devpod at all: it plays back a list the test handed it and
+///   keeps the argv for the assertions to read. `flows::provision`'s `Trips` is
+///   the example, and its doc says why a recorder cannot join the corpus.
 pub trait Runner {
     /// Run to completion, reading both streams as text.
     fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText>;

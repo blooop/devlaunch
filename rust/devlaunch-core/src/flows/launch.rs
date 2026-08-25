@@ -63,6 +63,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun};
+use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
@@ -178,7 +179,7 @@ pub struct Host {
     /// the context-options cache all hang off this.
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
-    pub(crate) devpod_home: Option<PathBuf>,
+    pub(crate) devpod_home: Option<DevpodHome>,
 }
 
 impl Host {
@@ -199,7 +200,7 @@ impl Host {
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
             ssh_config: ssh::config_path(),
             cache_dir: cache_dir.into(),
-            devpod_home: lifecycle::devpod_home(),
+            devpod_home: DevpodHome::locate(),
         }
     }
 
@@ -227,9 +228,7 @@ impl Host {
 
     /// devpod's own config file, which holds every context and its options.
     pub(crate) fn devpod_config(&self) -> Option<PathBuf> {
-        self.devpod_home
-            .as_ref()
-            .map(|home| home.join("config.yaml"))
+        self.devpod_home.as_ref().map(DevpodHome::config)
     }
 }
 
@@ -1099,8 +1098,7 @@ fn up_under_stage(
         && serialization.waited()
         && !request.wants_more_than_a_running_workspace()
         && is_running(context.runner(), identity)
-        && lifecycle::create_record(host.devpod_home.as_deref(), identity)
-            != lifecycle::CreateRecord::NeverCompleted
+        && create_record(host.devpod_home.as_ref(), identity) != CreateRecord::NeverCompleted
     {
         notices.say(LaunchNotice::BroughtUpBySibling {
             workspace_id: identity.to_owned(),
@@ -2706,16 +2704,13 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // unfinished, since `up` is what it was doing, and a host whose devpod
         // records will not read attaches exactly as it did before.
         if placement.is_running() {
-            match lifecycle::create_record(
-                self.host.devpod_home.as_deref(),
-                placement.workspace_id(),
-            ) {
-                lifecycle::CreateRecord::NeverCompleted => {
+            match create_record(self.host.devpod_home.as_ref(), placement.workspace_id()) {
+                CreateRecord::NeverCompleted => {
                     self.notices.say(LaunchNotice::CreateNeverFinished {
                         workspace_id: placement.workspace_id().to_owned(),
                     });
                 }
-                lifecycle::CreateRecord::Completed | lifecycle::CreateRecord::Unknown => {
+                CreateRecord::Completed | CreateRecord::Unknown => {
                     // Whatever brought this workspace up finished before this launch
                     // asked: nothing to build and nothing to wait for. If a prewarm was
                     // fired for it, this is what a prewarm that paid off looks like.
@@ -2800,8 +2795,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // for to fix a workspace, and the documented recovery would be the one path
         // that declines to run.
         if placement.is_running()
-            && lifecycle::create_record(self.host.devpod_home.as_deref(), placement.workspace_id())
-                != lifecycle::CreateRecord::NeverCompleted
+            && create_record(self.host.devpod_home.as_ref(), placement.workspace_id())
+                != CreateRecord::NeverCompleted
         {
             self.notices.say(LaunchNotice::AlreadyRunning {
                 workspace_id: placement.workspace_id().to_owned(),
@@ -2987,8 +2982,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// one trailing newline, so `main\n` is a ref — and a newline reaching the
     /// profile line lands inside the quoted word, splitting one `PS1` assignment
     /// across two physical lines of a file every login sources.
-    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
-    /// the feature rather than half of it.
+    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs the whole
+    /// feature rather than part of it. Three pieces now, not two: the escape this
+    /// process writes, the `PS1` line every prompt repaints, and the export that
+    /// stops claude renaming the pane between prompts. Somebody who turned dl's
+    /// naming off did not ask for claude's titling to go too, and nothing in a
+    /// container would tell them why it had.
     ///
     /// `stderr_tty` is deliberately *not* consulted, where
     /// [`TerminalTitle::from_host`] does consult it. That flag answers "is there a
@@ -3087,7 +3086,7 @@ mod tests {
                     ..gh::HostEnv::default()
                 },
                 cache_dir: dir.path().to_path_buf(),
-                devpod_home: Some(dir.path().join("devpod")),
+                devpod_home: Some(DevpodHome::at(dir.path().join("devpod"))),
                 ..Host::default()
             };
             Self {
@@ -3128,10 +3127,9 @@ mod tests {
         /// the result beside it, which is what devpod writes on its way out of a
         /// successful `up`.
         fn with_create_completed(self, workspace_id: &str) -> Self {
-            let dir = self.devpod_record_dir(workspace_id);
-            std::fs::create_dir_all(&dir).expect("a devpod record directory");
-            std::fs::write(dir.join("workspace.json"), "{}").expect("a workspace record");
-            std::fs::write(dir.join("workspace_result.json"), "{}").expect("a create result");
+            let home = self.devpod_home();
+            self.write_record(workspace_id);
+            std::fs::write(home.result("default", workspace_id), "{}").expect("a create result");
             self
         }
 
@@ -3139,21 +3137,25 @@ mod tests {
         /// no result beside it. A `postCreateCommand` that exits non-zero leaves
         /// exactly this, with the container still up.
         fn with_create_aborted(self, workspace_id: &str) -> Self {
-            let dir = self.devpod_record_dir(workspace_id);
-            std::fs::create_dir_all(&dir).expect("a devpod record directory");
-            std::fs::write(dir.join("workspace.json"), "{}").expect("a workspace record");
+            self.write_record(workspace_id);
             self
         }
 
-        fn devpod_record_dir(&self, workspace_id: &str) -> PathBuf {
+        fn devpod_home(&self) -> &DevpodHome {
             self.host
                 .devpod_home
                 .as_ref()
                 .expect("a scratch devpod home")
-                .join("contexts")
-                .join("default")
-                .join("workspaces")
-                .join(workspace_id)
+        }
+
+        /// The `workspace.json` devpod writes on its way *in*, at whatever path
+        /// `clients::devpod_home` says it goes — asked rather than rebuilt, so this
+        /// fixture cannot go on passing after devpod moves its layout.
+        fn write_record(&self, workspace_id: &str) {
+            let record = self.devpod_home().record("default", workspace_id);
+            std::fs::create_dir_all(record.parent().expect("a devpod record directory"))
+                .expect("a devpod record directory");
+            std::fs::write(record, "{}").expect("a workspace record");
         }
 
         fn cache_dir(&self) -> &Path {
@@ -5997,9 +5999,11 @@ mod tests {
 
     #[test]
     fn the_title_switch_reaches_the_container_and_not_just_dls_own_escape() {
-        // `DEVLAUNCH_NO_TITLE` has to govern both halves or it governs neither: a
-        // host that silenced the escape and still had its profile edited would find
-        // the variable did nothing it could see.
+        // `DEVLAUNCH_NO_TITLE` has to govern every piece or it governs none: a host
+        // that silenced the escape and still had its profile edited would find the
+        // variable did nothing it could see. Three pieces now -- the escape, the
+        // `PS1` line, and claude's suppression -- and refusing a container title
+        // here is what takes all of them with it, since they share one stage.
         let mut scene = Scene::new().with_running("myws");
         scene.host.no_title = Some("1".to_owned());
         let updater = SelfInvocation::new("dl");

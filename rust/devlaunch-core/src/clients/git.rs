@@ -13,10 +13,13 @@
 //! # What this layer decides, and what it leaves alone
 //!
 //! It decides argv, cwd, environment, per-call timeout, and how a spawn outcome
-//! becomes a [`GitAnswer`]. It decides nothing about *sequence*: clone-if-missing,
-//! the fetch-then-create-branch dance, the recovery of a half-removed cache and
-//! the LFS two-phase materialization are flows (M4b), and what they get from here
-//! is verbs. A verb here never falls back to another verb, never retries, and
+//! becomes a [`GitAnswer`] — including what git's stderr *means*, which is the
+//! one place devlaunch reads git's English. Three of [`Failure`]'s arms are that
+//! reading; every caller matches an arm, so a reworded git message moves one
+//! function in this file and nothing else. It decides nothing about *sequence*:
+//! clone-if-missing, the fetch-then-create-branch dance, the recovery of a
+//! half-removed cache and the LFS two-phase materialization are flows (M4b), and
+//! what they get from here is verbs. A verb here never falls back to another verb, never retries, and
 //! never logs.
 //!
 //! # Two families, and the difference is load-bearing
@@ -130,39 +133,50 @@ impl<T> GitAnswer<T> {
 
 /// Why git could not answer, and what it said about that.
 ///
-/// Two things, because they answer different questions and Python needed both:
+/// Two things, because they answer different questions:
 ///
+/// - [`GitRefused::how`] is the fact, and it is what every decision is made on:
+///   a non-zero exit, a branch that is already there, a ref the remote has not
+///   got, a repository the host says it has not got, a git that is not
+///   installed, a bound that elapsed, an OS refusal. The three of those that git
+///   only ever says in words are read into [`Failure`] *here*, in the one module
+///   that already reads git's stderr — see [`Failure`] for why the words are the
+///   only signal available, and what was tried instead.
 /// - [`GitRefused::reason`] is the text — git's own stderr, or, when git was
 ///   silent, the command and its exit status. It is `git_errors.py`'s
-///   `git_failure_reason`, and it is *data*: `workspace_state` puts it in front
-///   of a person deciding whether to force a delete, `--ls --json` puts it on
-///   the wire under `couldNotTell`, and two flows classify it by substring
-///   (`"couldn't find remote ref"` for a ref the remote has not got,
-///   `"already exists"` for a branch that is already there — both of which is
-///   why the C locale is pinned on those two verbs).
-/// - [`GitRefused::how`] is the fact the text cannot be classified from: a
-///   non-zero exit, a git that is not installed, a bound that elapsed, an OS
-///   refusal. `repo_manager.fetch_repo` reports a timeout differently from a
-///   failure, and "git is not installed" is a diagnostic of its own; recovering
-///   either by looking for words in a message would be reading tea leaves.
+///   `git_failure_reason`, and it is for *reading*: `workspace_state` puts it in
+///   front of a person deciding whether to force a delete, and `--ls --json`
+///   puts it on the wire under `couldNotTell`. Nothing branches on it. That is
+///   the invariant worth keeping: git may reword a message, and the only thing
+///   that has to move is a reader below.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitRefused {
     /// Never empty: every constructor falls back to naming the command.
     reason: String,
-    pub(crate) how: Failure,
+    how: Failure,
 }
 
 impl GitRefused {
-    /// What a caller prints, classifies or carries. Never empty.
+    /// What a caller prints or carries. Never empty, and never branched on —
+    /// [`GitRefused::how`] is what a decision reads.
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    /// What a caller decides on.
+    pub fn how(&self) -> Failure {
+        self.how
     }
 
     /// git ran and refused. `git_failure_reason`, exactly: stderr, trimmed; and
     /// when git said nothing, the command and its status — because "…: " with
     /// nothing after the colon tells the reader only that something went wrong,
     /// which they already knew.
-    fn exited(named: &str, exit: Exit, stderr: &str) -> Self {
+    ///
+    /// `reading` is the verb's own reader — the single place git's wording is
+    /// turned into a fact. A verb nothing branches on passes [`reads_nothing`]
+    /// and lands on [`Failure::Exited`].
+    fn exited(named: &str, exit: Exit, stderr: &str, reading: Reading) -> Self {
         let said = stderr.trim();
         let reason = if said.is_empty() {
             format!("git {named} exited {}", returncode(exit))
@@ -170,8 +184,8 @@ impl GitRefused {
             said.to_owned()
         };
         Self {
+            how: reading(said).unwrap_or(Failure::Exited(exit)),
             reason,
-            how: Failure::Exited(exit),
         }
     }
 
@@ -220,17 +234,133 @@ impl GitRefused {
     }
 }
 
-/// The four ways a verb does not answer.
+/// The ways a verb does not answer.
+///
+/// Four of them are how the process ended. The other three are what git *said*,
+/// read here rather than by a caller: they are all exits, and git exits 128 for
+/// a missing ref, a refused key, a DNS failure and a branch that is already
+/// there alike, so the status cannot tell them apart and the words are the only
+/// signal there is. Each reader below records what was tried instead of the
+/// words, and why it does not work.
+///
+/// Reading them here is the point of the arms. A caller matches one, so git can
+/// reword a message and the only thing that moves is a reader in this file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Failure {
-    /// git ran to completion and refused.
+pub enum Failure {
+    /// git ran to completion and refused, and devlaunch has no name for why.
     Exited(Exit),
+    /// `git branch` refused because the branch is already there. Not a failure
+    /// to its caller: two dl runs racing to start the same branch both succeed.
+    BranchAlreadyExists,
+    /// `git fetch` reached the remote and was told it has not got the ref. The
+    /// one non-zero exit that is an *answer*, and its caller does something
+    /// different with it: it bases the new branch on the default branch.
+    RefMissingOnRemote,
+    /// The host answered a clone by saying it has no such repository — as
+    /// against refusing the key, failing to resolve the name, or any other
+    /// reason a clone does not happen.
+    RepositoryNotFound,
     /// git is not installed.
     GitNotInstalled,
     /// The per-call bound elapsed and the child was killed.
     TimedOut,
     /// The OS would not start it at all.
     NotStarted(OsFailure),
+}
+
+/// What one verb's stderr is read for. `None` leaves the refusal as
+/// [`Failure::Exited`], which is what all but three of the verbs get.
+type Reading = fn(&str) -> Option<Failure>;
+
+/// The default: this verb's words are for a person, not for a decision.
+fn reads_nothing(_stderr: &str) -> Option<Failure> {
+    None
+}
+
+/// `fatal: a branch named 'x' already exists`.
+///
+/// The tail of the sentence, so git's capitalisation does not move it: up to
+/// v2.34.0 git wrote `A branch named '%s' already exists.` (`branch.c:208`), and
+/// from v2.35.0 it writes the same sentence lowercase and unstopped
+/// (`branch.c:307`). [`c_locale`] is pinned on the verb because the sentence goes
+/// through `die(_())` and is translated.
+///
+/// Not `exists` alone: git's other refusal here reads `cannot lock ref
+/// 'refs/heads/a': 'refs/heads/a/b' exists; cannot create 'refs/heads/a'`, which
+/// is a name colliding with a ref namespace rather than the branch being there,
+/// and is a failure its caller must not swallow.
+///
+/// Asking `show-ref` afterwards instead of reading this would cost a second
+/// spawn on the launch path and answer a different question — whether the branch
+/// is there *now*, which a concurrent dl could have made true in between.
+fn branch_already_exists(stderr: &str) -> Option<Failure> {
+    stderr
+        .contains("already exists")
+        .then_some(Failure::BranchAlreadyExists)
+}
+
+/// `fatal: couldn't find remote ref refs/heads/x`.
+///
+/// Case-insensitive, because [`c_locale`] does not cover this one on an old git:
+/// up to v2.20.0 git wrote it `Couldn't find remote ref %s` through a bare
+/// `die()` rather than `die(_())` (`remote.c:1785`), so it was neither lowercase
+/// nor translatable and the pinned locale could not reach it. From v2.21.0 it is
+/// `die(_("couldn't find remote ref %s"))` (`remote.c:1840`) — lowercase and
+/// translated, which is what the pinned locale is for.
+fn ref_missing_on_remote(stderr: &str) -> Option<Failure> {
+    stderr
+        .to_lowercase()
+        .contains("couldn't find remote ref")
+        .then_some(Failure::RefMissingOnRemote)
+}
+
+/// A host saying it has not got the repository, told from every other way a
+/// clone fails.
+///
+/// Four wordings — three hosts' own, and one of git's. GitHub's `Repository not
+/// found` (ssh and https both), GitLab's `The project you were looking for could
+/// not be found`, Bitbucket's `conq: repository does not exist`, and git's own
+/// `repository '<url>' not found`, which `git-remote-http` writes for an HTTP 404
+/// and is all a host whose 404 body says something else gets — Codeberg
+/// (Forgejo) answers `remote: Not found.`, which carries none of the other three.
+///
+/// Each host phrase is matched whole, and each shorter form was tried and
+/// rejected. `not exist` alone also catches git's *local* complaint, `repository
+/// '/some/path' does not exist`, which is a missing directory rather than a
+/// host's answer. `could not be found` alone is generic English rather than
+/// anything GitLab specifically said. And `and the repository exists` rides along
+/// with every ssh failure git reports, refused keys included, one word from the
+/// wording above.
+///
+/// git's own line is matched as a whole line ending in `' not found`, for the
+/// same reason: it keeps `repository '/some/path' does not exist` out, and it
+/// keeps out every other `'%s' not found` git has — `branch '%s' not found`,
+/// `tag '%s' not found` — that could otherwise ride along on a line of its own.
+///
+/// # Why [`Git::clone_bare`] pins no locale, when the other two reading verbs do
+///
+/// Three of the four phrases are the **remote's** bytes, relayed over the wire by
+/// the host's own git-upload-pack and never passed through git's gettext
+/// catalogue, so a French locale does not move them. The fourth is git's own and
+/// is translated — but pinning C to catch it would put the whole clone failure in
+/// front of a French reader in English, to gain a hint. A non-English locale
+/// loses that one wording instead: a candidate not offered, never a wrong one
+/// offered, which is the safe direction for this to be wrong in. A host that
+/// words it some fifth way loses the hint the same way, and keeps git's own
+/// message.
+fn repository_not_found(stderr: &str) -> Option<Failure> {
+    let said = stderr.to_lowercase();
+    let host_said = [
+        "repository not found",
+        "project you were looking for could not be found",
+        "repository does not exist",
+    ]
+    .iter()
+    .any(|phrase| said.contains(phrase));
+    let git_said = said
+        .lines()
+        .any(|line| line.contains("repository '") && line.trim_end().ends_with("' not found"));
+    (host_said || git_said).then_some(Failure::RepositoryNotFound)
 }
 
 /// Python's `returncode`: the exit status, or the negated signal number.
@@ -460,8 +590,9 @@ impl<'r> Git<'r> {
     /// without conflict. No cwd: the destination is absolute, and Python passed
     /// none.
     pub(crate) fn clone_bare(&self, remote_url: &str, bare: &Path) -> GitAnswer<String> {
-        self.captured(
+        self.captured_reading(
             "clone",
+            repository_not_found,
             &SpawnSpec::new(Invocation::new(PROGRAM).with_args([
                 "clone".to_owned(),
                 "--bare".to_owned(),
@@ -500,15 +631,16 @@ impl<'r> Git<'r> {
     /// lock is bounded by one branch's objects rather than by the repository's
     /// whole history of branches.
     ///
-    /// The C locale is pinned because the caller classifies the failure from
-    /// git's stderr text (`"couldn't find remote ref"` is the one non-zero exit
-    /// that is an *answer*), and git translates that text — so a German host
-    /// would collapse a three-way outcome to two. `LANGUAGE` is pinned as well:
-    /// under gettext it outranks a non-C `LC_ALL`, and the guarantee should not
-    /// hang on the one glibc rule that exempts C.
+    /// The C locale is pinned because [`ref_missing_on_remote`] reads git's stderr
+    /// here — `couldn't find remote ref` is the one non-zero exit that is an
+    /// *answer* — and git translates that text, so a German host would collapse a
+    /// three-way outcome to two. `LANGUAGE` is pinned as well: under gettext it
+    /// outranks a non-C `LC_ALL`, and the guarantee should not hang on the one
+    /// glibc rule that exempts C.
     pub(crate) fn fetch_ref(&self, bare: &Path, branch: &str) -> GitAnswer<String> {
-        self.captured(
+        self.captured_reading(
             "fetch",
+            ref_missing_on_remote,
             &SpawnSpec::new(
                 Invocation::new(PROGRAM)
                     .with_args([
@@ -592,18 +724,19 @@ impl<'r> Git<'r> {
 
     /// `git branch <branch> <start_point>` — create a local branch.
     ///
-    /// The C locale is pinned for the same reason as [`Git::fetch_ref`]'s: the
-    /// caller swallows this failure when the reason says `"already exists"`, and
-    /// on a translated host an ordinary re-launch of a branch that is already
-    /// there would raise instead.
+    /// The C locale is pinned for the same reason as [`Git::fetch_ref`]'s:
+    /// [`branch_already_exists`] reads git's stderr here and the caller swallows
+    /// that arm, so on a translated host an ordinary re-launch of a branch that
+    /// is already there would raise instead.
     pub(crate) fn create_branch(
         &self,
         repo: &Path,
         branch: &str,
         start_point: &str,
     ) -> GitAnswer<String> {
-        self.captured(
+        self.captured_reading(
             "branch",
+            branch_already_exists,
             &SpawnSpec::new(
                 Invocation::new(PROGRAM)
                     .with_args(["branch", branch, start_point])
@@ -974,9 +1107,24 @@ impl<'r> Git<'r> {
 
     // ------------------------------------------------------------ spawning
 
-    /// Run a verb whose output is the answer.
+    /// Run a verb whose output is the answer, and whose words nothing decides on.
     fn captured(&self, named: &str, spec: &SpawnSpec) -> GitAnswer<String> {
-        answered(named, spec.timeout, self.runner.capture(spec))
+        self.captured_reading(named, reads_nothing, spec)
+    }
+
+    /// Run a verb whose stderr carries a fact devlaunch acts on, and read it.
+    ///
+    /// The three callers are the three verbs a decision hangs off. Naming the
+    /// reader at the call site is what keeps a phrase scoped to the verb that
+    /// says it: `already exists` means the branch to `git branch`, and the
+    /// destination directory to `git clone`.
+    fn captured_reading(
+        &self,
+        named: &str,
+        reading: Reading,
+        spec: &SpawnSpec,
+    ) -> GitAnswer<String> {
+        answered(named, spec.timeout, reading, self.runner.capture(spec))
     }
 
     /// Run a verb whose output belongs on the user's terminal.
@@ -998,12 +1146,13 @@ impl<'r> Git<'r> {
 fn answered(
     named: &str,
     limit: Option<Duration>,
+    reading: Reading,
     outcome: Outcome<CapturedText>,
 ) -> GitAnswer<String> {
     match outcome {
         Outcome::Ran { exit, io } if exit.is_success() => GitAnswer::Said(io.stdout),
         Outcome::Ran { exit, io } => {
-            GitAnswer::Refused(GitRefused::exited(named, exit, &io.stderr))
+            GitAnswer::Refused(GitRefused::exited(named, exit, &io.stderr, reading))
         }
         Outcome::ProgramNotFound => GitAnswer::Refused(GitRefused::not_installed()),
         Outcome::TimedOut => {
@@ -1054,8 +1203,9 @@ fn pinned_root(repo: &Path) -> PathBuf {
         .unwrap_or_else(|_| repo.to_path_buf())
 }
 
-/// The environment for the two verbs whose failure is classified from git's own
-/// words. See [`Git::fetch_ref`].
+/// The environment for the two verbs whose failure is read from words git
+/// *translates*. See [`Git::fetch_ref`], and [`repository_not_found`] for why the
+/// third reading verb inherits the environment instead.
 fn c_locale() -> EnvSpec {
     EnvSpec::inherited().and("LC_ALL", "C").and("LANGUAGE", "C")
 }

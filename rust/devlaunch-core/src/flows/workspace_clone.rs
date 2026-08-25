@@ -1350,7 +1350,7 @@ mod tests {
 
     use super::*;
     use crate::domain::locks;
-    use crate::domain::model::{RecordedDefaultBranch, Timestamp};
+    use crate::domain::model::RecordedDefaultBranch;
     use crate::flows::repo_manager::{
         Cleanup, RemoveTreeError, bare_dir, clone_dir, repo_dir, repo_lock_path,
         tests::{
@@ -3083,10 +3083,9 @@ mod tests {
 
     /// A record pointing at `local_path`, as `metadata.json` holds one.
     fn a_record(branch: &str, local_path: PathBuf) -> WorktreeInfo {
-        let mut recorded = WorktreeInfo::new("owner", "repo", branch, local_path, &leaf(branch));
-        recorded.created_at = Timestamp::from_civil(jiff::civil::datetime(2024, 1, 1, 10, 0, 0, 0));
-        recorded.last_used = recorded.created_at.clone();
-        recorded
+        // The stamps are whatever the constructor writes: nothing below reads
+        // them, and they are out of this module's reach now (#412).
+        WorktreeInfo::new("owner", "repo", branch, local_path, &leaf(branch))
     }
 
     #[test]
