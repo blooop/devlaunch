@@ -1465,3 +1465,57 @@ fn plain_force_does_not_reach_the_agent_worktrees() {
         without_sizes(&run.out)
     );
 }
+
+#[test]
+fn the_listing_attributes_the_bytes_that_are_agent_worktrees() {
+    // The ask this one is on a different surface for: it was invisible in
+    // `--ls --size` on the host that filled up, which is why it got to 100%.
+    let world = World::with(&["--agent-worktrees"]);
+
+    let table = world.dl(&["--ls", "--size"]);
+    table.exited(0);
+    assert!(
+        table.out.contains(" in worktrees)"),
+        "no row named the worktree bytes: {}",
+        table.out
+    );
+
+    let json = world.dl(&["--ls", "--size", "--json"]);
+    json.exited(0);
+    let rows: serde_json::Value =
+        serde_json::from_str(&json.out).expect("--ls --json prints one document");
+    let clone_row = rows
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|row| row["id"] == "devlaunch-main-legacy")
+        .expect("the clone the worktrees are inside")
+        .clone();
+    assert!(
+        clone_row["disk"]["worktrees"]["exclusiveBytes"]
+            .as_u64()
+            .expect("worktree bytes")
+            > 0,
+        "{clone_row}"
+    );
+    // Attribution and never an addition: they are inside the clone, so they are
+    // already part of what deleting it would free.
+    assert!(
+        clone_row["disk"]["exclusiveBytes"].as_u64().expect("bytes")
+            >= clone_row["disk"]["worktrees"]["exclusiveBytes"]
+                .as_u64()
+                .expect("worktree bytes"),
+        "{clone_row}"
+    );
+    // A clone that has never had one says nothing about worktrees at all: `disk`
+    // is already absent unless `--size` was asked for, so an absent key here has
+    // been measured and found none.
+    let plain = rows
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|row| row["id"] == "devlaunch-dirty-dofaraji")
+        .expect("the other clone")
+        .clone();
+    assert!(plain["disk"].get("worktrees").is_none(), "{plain}");
+}

@@ -65,6 +65,7 @@ use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_id;
 use crate::domain::workspace_state::{self, CloneState, CouldNotTell, NonEmpty, Unsaved};
+use crate::flows::agent_worktrees;
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
 use crate::timing;
@@ -784,7 +785,7 @@ pub(crate) struct DevlaunchClone {
 pub(crate) enum DiskField {
     NotAsked,
     NothingOfOurs,
-    Freed(DiskUsage),
+    Freed(CloneDisk),
 }
 
 impl DiskField {
@@ -792,7 +793,71 @@ impl DiskField {
         match (sizes, measurable) {
             (Sizes::Skip, _) => Self::NotAsked,
             (Sizes::Measure, None) => Self::NothingOfOurs,
-            (Sizes::Measure, Some(clone)) => Self::Freed(disk_usage::exclusive_usage(clone)),
+            (Sizes::Measure, Some(clone)) => Self::Freed(CloneDisk::of(clone)),
+        }
+    }
+}
+
+/// What deleting one clone would free, and how much of that is agent git
+/// worktrees (devlaunch#426).
+///
+/// The second figure is a **part of** the first and never an addition: the
+/// worktrees are inside the clone, so their bytes are already in what deleting it
+/// would free. It is here because on the reference host they were 82% of a whole
+/// cache while being invisible in `--ls --size`, which is how the disk filled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloneDisk {
+    freed: DiskUsage,
+    /// `None` when the clone has no `.claude/worktrees/` at all, which is nearly
+    /// every clone — and a different fact from "it has some and they cost
+    /// nothing", which is a `Some` of zero.
+    ///
+    /// Boxed because this value rides inside `WorkspaceTable`, which is one
+    /// variant against an empty one and is measured for exactly that: a second
+    /// inline `DiskUsage` here pushes the whole table enum past the size a
+    /// `Nothing` arm should have to carry. The allocation happens only on a clone
+    /// that has agent worktrees in it, which is where there is something to say.
+    in_worktrees: Option<Box<DiskUsage>>,
+}
+
+impl CloneDisk {
+    fn of(clone: &Path) -> Self {
+        Self {
+            freed: disk_usage::exclusive_usage(clone),
+            in_worktrees: agent_worktrees::bytes_in(clone).map(Box::new),
+        }
+    }
+
+    /// What deleting the whole clone would free.
+    pub fn freed(&self) -> &DiskUsage {
+        &self.freed
+    }
+
+    /// How much of that is agent git worktrees, or nothing when there are none.
+    pub fn in_worktrees(&self) -> Option<&DiskUsage> {
+        self.in_worktrees.as_deref()
+    }
+
+    /// The same figure, but only when it is worth a person's attention: a clone
+    /// with an empty `.claude/worktrees/` has a measurement and nothing to say,
+    /// and a table cell that said "0 B in worktrees" would be noise in every row
+    /// on a host that has ever run one agent.
+    ///
+    /// Here rather than in the binary because the comparison needs the bytes,
+    /// which a usage does not hand out: printing them stripped of which arm they
+    /// are is what turns a floor into a total.
+    pub fn worktrees_worth_naming(&self) -> Option<&DiskUsage> {
+        self.in_worktrees
+            .as_deref()
+            .filter(|usage| usage.known_bytes() > 0)
+    }
+
+    /// `pub` for the binary's rendering tests, which have no reachable
+    /// measurement to borrow. Binary surface, not part of the frozen `wf` API.
+    pub fn measured(freed: u64, in_worktrees: Option<u64>) -> Self {
+        Self {
+            freed: DiskUsage::measured(freed),
+            in_worktrees: in_worktrees.map(|bytes| Box::new(DiskUsage::measured(bytes))),
         }
     }
 }
@@ -1018,7 +1083,27 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
         // Null where there is no clone of dl's own, the same way `repo` and
         // `branch` already say "not mine".
         DiskField::NothingOfOurs => insert(&mut value, "disk", serde_json::Value::Null),
-        DiskField::Freed(usage) => insert(&mut value, "disk", disk_usage::usage_as_json(usage)),
+        DiskField::Freed(disk) => insert(&mut value, "disk", disk_as_json(disk)),
+    }
+    value
+}
+
+/// The `disk` object: what the clone would free, plus a `worktrees` key when any
+/// of it is agent git worktrees.
+///
+/// The key is **absent when there are none**, and that is unambiguous here in a
+/// way it would not be one level up: `disk` itself is already absent unless
+/// `--size` was asked for, so a `disk` object that has no `worktrees` key has
+/// been measured and found none. Present-and-zero stays available for the clone
+/// that has an empty `.claude/worktrees/`.
+fn disk_as_json(disk: &CloneDisk) -> serde_json::Value {
+    let mut value = disk_usage::usage_as_json(disk.freed());
+    if let Some(in_worktrees) = disk.in_worktrees() {
+        insert(
+            &mut value,
+            "worktrees",
+            disk_usage::usage_as_json(in_worktrees),
+        );
     }
     value
 }
@@ -1044,7 +1129,7 @@ fn insert(object: &mut serde_json::Value, key: &str, field: serde_json::Value) {
 pub enum SizeCell {
     NoColumn,
     NotOurs,
-    Measured(DiskUsage),
+    Measured(CloneDisk),
 }
 
 /// The `LAST USED` cell: devpod's stamp, cut to its date and time, or that there
@@ -1123,7 +1208,7 @@ fn size_cell(workspace: &Workspace, cache_dir: &Path, sizes: Sizes) -> SizeCell 
     match DiskField::of(sizes, measurable_clone(workspace, cache_dir).as_deref()) {
         DiskField::NotAsked => SizeCell::NoColumn,
         DiskField::NothingOfOurs => SizeCell::NotOurs,
-        DiskField::Freed(usage) => SizeCell::Measured(usage),
+        DiskField::Freed(disk) => SizeCell::Measured(disk),
     }
 }
 

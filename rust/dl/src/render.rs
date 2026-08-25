@@ -32,7 +32,9 @@ use devlaunch_core::flows::lifecycle::{
     PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
     VolumeRefusal,
 };
-use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
+use devlaunch_core::flows::listing::{
+    CloneDisk, LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable,
+};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::repo_manager::{
@@ -147,8 +149,26 @@ fn size_cell(row: &TableRow, sizes: Sizes) -> String {
             // Not `0 B`: nothing was measured here, and a zero would say the
             // opposite of that.
             SizeCell::NotOurs => "-".to_owned(),
-            SizeCell::Measured(usage) => describe_usage(usage),
+            SizeCell::Measured(disk) => size_of(disk),
         },
+    }
+}
+
+/// One clone's size, with the part of it that is agent git worktrees named.
+///
+/// The parenthetical appears only where there is something to say, so the column
+/// reads as it always did on a machine that has never run an agent in a
+/// workspace. Where there is, it is the number that would otherwise be invisible:
+/// on the host devlaunch#426 was found on, the worktrees were 82% of the cache and
+/// no `--ls --size` row said so.
+///
+/// A part of the figure beside it and never an addition — the worktrees are inside
+/// the clone.
+fn size_of(disk: &CloneDisk) -> String {
+    let total = describe_usage(disk.freed());
+    match disk.worktrees_worth_naming() {
+        Some(worktrees) => format!("{total} ({} in worktrees)", describe_usage(worktrees)),
+        None => total,
     }
 }
 
@@ -2443,7 +2463,6 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use devlaunch_core::flows::disk_usage::DiskUsage;
     use devlaunch_core::flows::launch::TerminalTitle;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
@@ -2719,7 +2738,7 @@ mod tests {
                     "a",
                     SourceKind::Local,
                     "/x",
-                    SizeCell::Measured(DiskUsage::measured(2048)),
+                    SizeCell::Measured(CloneDisk::measured(2048, None)),
                     LastUsed::Never,
                 ),
                 row(
@@ -2734,6 +2753,40 @@ mod tests {
         );
         assert!(lines[2].contains("2.0 KiB"), "{:?}", lines[2]);
         assert!(lines[3].contains(" -  never"), "{:?}", lines[3]);
+    }
+
+    #[test]
+    fn a_size_cell_names_the_part_of_it_that_is_agent_worktrees() {
+        // On the host devlaunch#426 was found on, the worktrees were 82% of the
+        // whole cache and no row said so, which is how it reached 100%.
+        let lines = table_lines(
+            &table(vec![
+                row(
+                    "a",
+                    SourceKind::Local,
+                    "/x",
+                    SizeCell::Measured(CloneDisk::measured(4096, Some(3072))),
+                    LastUsed::Never,
+                ),
+                row(
+                    "b",
+                    SourceKind::Local,
+                    "/y",
+                    SizeCell::Measured(CloneDisk::measured(2048, Some(0))),
+                    LastUsed::Never,
+                ),
+            ]),
+            Sizes::Measure,
+        );
+
+        assert!(
+            lines[2].contains("4.0 KiB (3.0 KiB in worktrees)"),
+            "{:?}",
+            lines[2]
+        );
+        // A clone with an empty `.claude/worktrees/` has a measurement and nothing
+        // to say, and a "0 B in worktrees" in every row would be noise.
+        assert!(lines[3].contains("2.0 KiB  never"), "{:?}", lines[3]);
     }
 
     #[test]

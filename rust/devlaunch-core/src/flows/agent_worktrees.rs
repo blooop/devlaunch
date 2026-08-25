@@ -867,6 +867,31 @@ pub(crate) fn sweep_clone(
     })
 }
 
+/// How much of a clone's bytes are agent git worktrees, or nothing when it has
+/// none.
+///
+/// **Attribution, not an addition.** These bytes are inside the clone, so they are
+/// already in what `dl --ls --size` says the clone would free; this says how much
+/// of that figure is worktrees. It reached 82% of a whole cache on the reference
+/// host while being invisible in `--ls --size`, which is how it got to a full disk
+/// (devlaunch#426).
+///
+/// One walk of the whole `.claude/worktrees/` tree rather than one per worktree,
+/// which also means nesting is counted once and counted right. The object store is
+/// not in it: a linked worktree shares the clone's, and the clone's objects are
+/// hardlinked out of the `.bare` next door, so billing them here would count them
+/// two or three times — which [`disk_usage::exclusive_usage`] already refuses to
+/// do, because a file's bytes are a tree's only when every link to it is inside
+/// that tree.
+///
+/// `None` rather than a zero, because "this clone has never had an agent worktree
+/// in it" and "it has some and they cost nothing" are different facts, and the
+/// first is what nearly every clone is.
+pub fn bytes_in(clone: &Path) -> Option<DiskUsage> {
+    let root = worktrees_dir(clone);
+    root.is_dir().then(|| disk_usage::exclusive_usage(&root))
+}
+
 /// The `.claude/worktrees/` inside one directory.
 fn worktrees_dir(directory: &Path) -> PathBuf {
     directory.join(WORKTREES_DIR[0]).join(WORKTREES_DIR[1])
