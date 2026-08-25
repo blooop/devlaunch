@@ -182,9 +182,8 @@ bridge and 172.29 skipped.
 
 That ordering is also what keeps the default bridge where it is. `docker0` is the
 exception to everything else here, because its subnet is re-derived at daemon
-start rather than stored, and it is the first allocation the daemon makes, so it
-takes the first block of the first pool. With the config above that is
-`172.17.0.0/16`, unchanged. With a single 10.128 pool it is `10.128.0.0/24`,
+start rather than stored, so it comes back on the first free block of the first
+pool. With the config above that is `172.17.0.0/16`, unchanged. With a single 10.128 pool it is `10.128.0.0/24`,
 which both moves `docker0` and resizes it to that pool's `size`. A /24 leaves
 about 253 addresses for containers started with no network of their own, which is
 ample on a devlaunch host where every workspace has a network of its own, but
