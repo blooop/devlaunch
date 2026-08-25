@@ -9,25 +9,34 @@ type: the id `dl` derives for it, and how recent the branch you land on is.
 see in `dl --ls`) and the clone directory under `~/.cache/devlaunch/repos/`:
 
 ```
-<repo-slug>-<branch-slug>-<syllables>      at most 47 characters
+<repo-slug>-<branch-slug>-<hash>           at most 47 characters
 
-blooop/devlaunch@main                             -> devlaunch-main-zovomobo
-blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-poliseno
-blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-nesatabe
-blooop/test_renv@nb4                              -> test-renv-nb4-polenita
+blooop/devlaunch@main                             -> devlaunch-main-3j1t
+blooop/devlaunch@feature/auth                     -> devlaunch-feature-auth-np10
+blooop/devlaunch@feature-auth                     -> devlaunch-feature-auth-lsi0
+blooop/test_renv@nb4                              -> test-renv-nb4-n95z
 kinisi-robotics/kinisi_ros@ags-devcontainer-tooling-support
-                                                  -> kinisi-ros-ags-devcontainer-tooling-su-lenevere
+                                                  -> kinisi-ros-ags-devcontainer-tooling-suppor-17uu
 blooop/devlaunch@dependabot/github_actions/codecov/codecov-action-6
-                                                  -> devlaunch-dependabot-codecov-action-6-sifivasa
+                                                  -> devlaunch-dependabot-codecov-action-6-amlt
 ```
 
-The eight-character syllable suffix is a hash of the full `(owner, repo, branch)` triple.
-It is what makes the id unique: the readable part is shortened to fit the length limit,
-and shortening it does not affect whether two branches share an id. Long branch names
-drop whole `/`-separated middle segments before losing characters, so the part that
-identifies the branch survives. Note the third and fourth lines above: `feature/auth` and
-`feature-auth` read the same once slugged but are different branches, and they get
-different ids.
+The four-character suffix is a hash of the full `(owner, repo, branch)` triple, written
+in base 36. It is what makes the id unique: the readable part is shortened to fit the
+length limit, and shortening it does not affect whether two branches share an id. Long
+branch names drop whole `/`-separated middle segments before losing characters, so the
+part that identifies the branch survives. Note the third and fourth lines above:
+`feature/auth` and `feature-auth` read the same once slugged but are different branches,
+and they get different ids.
+
+The suffix was eight characters and spelled in pronounceable syllables (`zovomobo`,
+`hesirora`). Base 36 carries the same identity in half the space, and the four
+characters it gives back go to the branch, which is the part anyone reads. What it
+costs is collision headroom: 20.7 bits against the old 24, or roughly one chance in
+37000 that ten near-identical long branches in one repository collide. Only branches
+whose readable half truncates to the same string can contend at all, so the number that
+matters is a repository's crop of `release/999...176`-shaped names rather than the count
+of workspaces on the machine.
 
 Owner and repo are matched case-insensitively, the way GitHub treats them, so
 `dl NVIDIA/cuda-samples@main` and `dl nvidia/cuda-samples@main` are the same workspace.
@@ -36,38 +45,48 @@ Branch names are case-sensitive, because git refs are.
 URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
 hashed over the URL.
 
-The container hostname is this id **without the suffix**: `devlaunch-main` for the
-workspace devpod addresses as `devlaunch-main-zovomobo`. The suffix is what makes the
-id injective, and nothing addresses a container by the name in its UTS namespace, so
-a prompt carries the half of the name that is read. That is 38 characters at most,
-leaving ~26 of the 64-byte hostname limit for tools that stack their own prefixes onto
-the container name.
+One workspace has one name. The id is what devpod is addressed by, what `dl --ls`
+prints, what the container's hostname is set to, and what dl writes on the terminal
+tab, so a tab and a listing row can be matched by eye. The hostname used to drop the
+suffix and the tab used to carry `owner/repo@branch` instead, which meant three
+spellings for one workspace and a tab whose shape depended on how the workspace had
+been reached. A bare devpod name, a path and a URL never had an `owner/repo@branch` to
+show. What the change costs is that the tab no longer names the owner, so a fork and
+its upstream read alike, and it spells the branch as a slug.
+
+At 47 characters the id leaves 17 of the 64-byte hostname limit for tools that stack
+their own prefixes onto the container name. That was about 26 when the hostname was the
+id without its suffix.
 
 47 is held by devpod instead: it is one character inside devpod's own hard ceiling of
 48, and a 49-character id is refused outright rather than truncated.
 
-The cost is that two workspaces differing only in their suffix now show one prompt,
-whether that is one repo under two owners or `feature/auth` beside `feature-auth`. They
-are still two workspaces, and the tab is what tells them apart.
-
-The id is *not* what you read. A tab shows `owner/repo@branch` (see [Naming the
-terminal after the workspace](workspace-tools.md#naming-the-terminal-after-the-workspace)) and the
-selector shows `owner | repo | branch`. The id addresses the workspace; those name
-it.
+Where the id is *not* what you read is the selector: it draws `owner | repo | branch`
+(see [The selector](cli.md#the-selector)), because picking a row off a list is the one
+job the suffix is no help with. Everywhere else it is the id, including
+[the terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace).
 
 Branch names must be safe as both git refs and directory names, so a name with a space or
 a leading dash is rejected rather than quietly rewritten.
 
 ### Upgrading from an older devlaunch
 
-This id format is new, and the directories and containers on your machine were named by
-the previous scheme. The first `dl user/repo…` command after upgrading migrates the cache
-once, and leaves what it did behind in the cache directory (the two listings named below).
-`dl --help`, `dl --version`, `dl --ls` and opening an existing workspace by name do not trigger it.
+The ids on your machine were derived by an older rule, so the directories and containers
+already there are named by it. The first `dl user/repo…` command after upgrading migrates
+the cache once, and leaves what it did behind in the cache directory (the two listings
+named below). `dl --help`, `dl --version`, `dl --ls` and opening an existing workspace by
+name do not trigger it.
+
+This has happened twice. Clone directories were once named after the flattened branch
+alone (`main`), and the suffix was once eight characters of pronounceable syllables
+(`devlaunch-main-zovomobo`). Both reach today's names through the same pass, which
+re-derives every id from the `(owner, repo, branch)` its record already stores, so there
+is nothing to do differently depending on which one your cache is on.
 
 **Your clone directories are renamed.** What was
-`~/.cache/devlaunch/repos/blooop/devlaunch/main` becomes
-`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo`. A workspace is a git
+`~/.cache/devlaunch/repos/blooop/devlaunch/main`, or
+`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo`, becomes
+`~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t`. A workspace is a git
 clone whose `origin` points at the `.bare` cache next to it, and `.bare` does not move, so
 this is a plain rename: branches, history and **uncommitted changes all survive**, and only
 the folder name changes. `metadata.json` is updated in the same pass, so nothing is left

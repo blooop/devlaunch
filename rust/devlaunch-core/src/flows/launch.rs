@@ -1793,32 +1793,27 @@ pub(crate) fn dotfiles_update(
 ///   recent tmux), and the outer title needs `set-titles on`. The *pane* title
 ///   always takes it. Both are the user's config, not a call dl can make.
 ///
-/// # What the title says, and why it is not the id
+/// # What the title says
 ///
-/// The name is the caller's to choose ([`Launch::titled`]): the **resolved spec**,
-/// `owner/repo@ref`, for a launch that had one, and the workspace id for the three
-/// arms that did not — a bare name, a path, a URL.
+/// The name is the caller's to choose ([`Launch::titled`]), and every arm chooses the
+/// **workspace id** — the same string devpod is addressed by, the container's
+/// hostname, and the `WORKSPACE` column of `dl --ls`. One workspace, one name, in
+/// every place a person reads one.
 ///
-/// This used to be the id always, on the grounds that it is the one string every
-/// placement has and that it was then the container's hostname too, so the title dl
-/// writes and the `user@host` an interactive prompt repaints over it agreed instead
-/// of disagreeing. The first half still holds and is why the id is still the answer
-/// wherever there is no triple. The second was worth less than it looked: the prompt
-/// overwrites this title within a second of the session starting either way, so the
-/// agreement bought a moment of consistency at the price of every tab being named
-/// after a hash. An id carries no owner at all, so a fork and its upstream are two
-/// tabs spelled the same; and it spells the ref as a slug, so `feature/auth` reads
-/// as `feature-auth` and a long ref loses whole segments.
+/// It has been the spec, `owner/repo@ref`, and the argument for that was sound as far
+/// as it went: an id carries no owner, so a fork and its upstream are two tabs spelled
+/// alike, and it spells the ref as a slug, so `feature/auth` reads as `feature-auth`.
+/// What that argument left out is that only one of the four launch arms *has* a spec.
+/// A bare devpod name, a path and a URL never formed a triple, so three arms were
+/// titled by id anyway and the tab's shape depended on how the workspace had been
+/// reached. Paying a real loss of legibility for a name three quarters of the arms
+/// could not use was the wrong trade. [`Launch::titled`] carries the whole of it.
 ///
-/// The bound is worth being exact about, because no arm gets it from [`WorkspaceId`]'s
-/// own 47-character cap any more. A spec is bounded by the id it derived — a triple
-/// with an unsafe or overlong part is refused before a session exists — and a bare
-/// name or path leaf reaches here as the raw spec and the directory's basename,
-/// neither of which this crate shortens. What bounds *those* is devpod: it refuses to
-/// create or report a workspace whose name exceeds 48 characters, so a longer one
-/// fails its `up` or is never found, and either way the launch ends before the
-/// handover. So the title is short because a workspace with a long name cannot
-/// exist, not because anything here truncates.
+/// The bound comes with the choice rather than needing an argument of its own: an id
+/// is [`TARGET_LENGTH`](crate::domain::workspace_id) characters at most, because
+/// devpod refuses to create or report a workspace whose name exceeds 48. A spec had
+/// no such bound — [`WorkspaceId::new`] validates characters and not length, so a
+/// 200-character ref made a 200-character tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalTitle {
     /// Write this, exactly.
@@ -1880,21 +1875,6 @@ fn sanitize_title(name: &str) -> Option<String> {
 // ===========================================================================
 // the attach
 // ===========================================================================
-
-/// `owner/repo@ref`, the three parts of a triple as the user's own spec spelled
-/// them.
-///
-/// One rendering, for the two places a launch names a workspace to a person: the
-/// escape dl writes and the line the pass installs. Two spellings of it would be two
-/// names for one workspace, and the tab would change when the prompt repainted.
-fn spec_of(workspace: &WorkspaceId) -> String {
-    format!(
-        "{}/{}@{}",
-        workspace.owner(),
-        workspace.repo(),
-        workspace.git_ref()
-    )
-}
 
 /// Hand the workspace to the user: ssh in, and nothing else.
 ///
@@ -2512,18 +2492,6 @@ pub struct Launch<'a, 'r, 'l> {
     /// Where this launch's notices go, as they happen. A `Vec` in a test that wants
     /// the sequence, the binary's printer in production.
     notices: &'a mut dyn Notices<LaunchNotice>,
-    /// The triple this launch resolved, when the spec was one.
-    ///
-    /// Set by [`Self::place_triple`] and read only by [`Self::titled`]: it is the
-    /// only place a launch holds the `owner`, `repo` and `ref` after they have been
-    /// collapsed into a [`Placement`]'s id, and the terminal title is the one thing
-    /// that wants them back. `None` for a bare name, a path and a URL, which have
-    /// no triple to remember.
-    ///
-    /// A field rather than a third value threaded out of `place`, because it is a
-    /// fact about this launch and not a step's answer: five arms reach a session and
-    /// every one of them goes through [`Self::attach`] carrying nothing but an id.
-    resolved: Option<WorkspaceId>,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -2545,7 +2513,6 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             forward,
             token: HostToken::new(),
             notices,
-            resolved: None,
         }
     }
 
@@ -2641,11 +2608,6 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Ok(workspace) => workspace,
             Err(unsafe_name) => return Ok(Err(LaunchRefusal::UnsafeSpec(unsafe_name))),
         };
-        // Remembered for the terminal title, which is the one later step that wants
-        // the triple rather than the id it derives: an id carries no owner and
-        // spells the ref as a slug, so `blooop/devlaunch@feature/auth` is a name
-        // this launch can put on a tab and nothing downstream could reconstruct.
-        self.resolved = Some(workspace.clone());
         // A devpod that could not be run ends the launch here, before the clone:
         // it is the probe Python raises `DevpodNotInstalled` out of.
         let resolved = resolve_triple(self.context, self.cold, &workspace, &mut *self.notices)
@@ -2819,7 +2781,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                     self.context.runner(),
                     placement.workspace_id(),
                     PassOccasion::TopUp,
-                    self.container_title().as_deref(),
+                    self.container_title(placement.workspace_id()).as_deref(),
                 )
                 .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
             return Ok(Launched::AlreadyRunning);
@@ -2852,7 +2814,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
             let request = UpRequest::new(placement.source(), naming);
-            let title = self.container_title();
+            let title = self.container_title(placement.workspace_id());
             let outcome = workspace_up(
                 self.context,
                 self.host,
@@ -2889,7 +2851,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
             .with_devcontainer(devcontainer);
-        let title = self.container_title();
+        let title = self.container_title(placement.workspace_id());
         let outcome = workspace_up(
             self.context,
             self.host,
@@ -2939,54 +2901,59 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         }
     }
 
-    /// What to call this workspace where a person reads it, rather than where devpod
-    /// is addressed.
+    /// What to call this workspace where a person reads it.
     ///
-    /// The spec when this launch resolved one — `owner/repo@ref`, the three parts
-    /// exactly as the user's own spec spelled them — and the workspace id otherwise.
+    /// The workspace id, for every arm, which is the same string devpod is addressed
+    /// by and the same string `dl --ls` prints in its `WORKSPACE` column.
     ///
-    /// The spec is the better name for the two reasons an id is a worse one. It
-    /// carries the **owner**, which an id
-    /// ([`devlaunch_core::domain::workspace_id`](crate::domain::workspace_id)) does
-    /// not hold at all, so a fork and its upstream are two tabs named the same. And
-    /// it spells the **ref**, where an id holds a slug of one: `feature/auth` is
-    /// `feature-auth` in an id, indistinguishable from the branch of that name, and a
-    /// long ref loses whole segments. Neither is recoverable from the id afterwards,
-    /// which is why the triple is remembered rather than read back.
+    /// **It used to be the resolved spec, `owner/repo@ref`, and that was the better
+    /// name read on its own.** A spec carries the owner, which an id does not hold at
+    /// all, so a fork and its upstream are now two tabs spelled alike; and it spells
+    /// the ref where an id holds a slug of one, so `feature/auth` reads as
+    /// `feature-auth` and cannot be told from the branch of that name. Neither is
+    /// recoverable from the id afterwards. That is a real loss, and it is the price
+    /// of what replaces it.
     ///
-    /// The id for the other three arms, and not as a fallback so much as the only
-    /// name they have: a bare workspace name *is* the id, and a path or URL spec
-    /// never had a ref for an `@` to precede. Bounded for the same reasons as before
-    /// — see [`TerminalTitle`] — and a spec is bounded by the id it derived, since a
-    /// triple whose parts overflow 47 characters is refused before this.
+    /// What replaces it is that a workspace has **one** name. The tab, the container
+    /// hostname the prompt renders, and the `dl --ls` row used to be three different
+    /// strings for one workspace: the spec, the id's readable half, and the id. Three
+    /// spellings is what makes a tab hard to match against a listing by eye, and the
+    /// spec was never available to two of the three placements anyway — a bare devpod
+    /// name, a path and a URL never had a triple, so those were titled by id already
+    /// and the tab changed shape depending on how the workspace had been reached.
+    ///
+    /// The bound comes free with the choice. A spec is bounded by nothing here:
+    /// [`WorkspaceId::new`] validates characters and not length, so a 200-character
+    /// ref made a 200-character tab. An id is bounded at
+    /// [`TARGET_LENGTH`](crate::domain::workspace_id) by devpod's own ceiling.
     fn titled(&self, workspace_id: &str) -> String {
-        match &self.resolved {
-            Some(workspace) => spec_of(workspace),
-            None => workspace_id.to_owned(),
-        }
+        workspace_id.to_owned()
     }
 
     /// The name a shell in this container should keep putting on the terminal, or
     /// `None` when there is none worth installing.
     ///
-    /// The **spec** and only the spec, where [`Self::titled`] falls back to the id.
-    /// Two reasons, and the second is the load-bearing one.
+    /// The workspace id, which is what [`Self::titled`] answers too. Both have to be
+    /// the one string or the tab changes the moment the first prompt paints: dl
+    /// writes its escape at the handover, and this line repaints at every prompt
+    /// after it.
     ///
-    /// A container told to title after its own id is told almost nothing: the stock
-    /// prompt already writes the id's readable half, which is its hostname, and the
-    /// eight characters of hash this would add are the part nobody reads. And the
-    /// line is deduped by a hash of its own text, so a name that varies for one
-    /// workspace does not replace the line — it adds another, and the last append is
-    /// the one every prompt then obeys. A workspace opened once as
-    /// `blooop/devlaunch@main` and once by its id would end up permanently titled
-    /// after the id. Keying on the spec alone makes the line a pure function of the
-    /// triple, so a workspace has at most one, ever.
+    /// **The dedupe is what makes an id the right key here rather than merely an
+    /// acceptable one.** The line is written under a mark hashed from its own text
+    /// ([`profile_prepend`](crate::flows::provision)), so a name that varies for one
+    /// workspace does not replace the line, it appends a second one, and the last
+    /// append is what every prompt then obeys. The spec this used to carry was only a
+    /// pure function of the workspace for launches that resolved a triple: the same
+    /// workspace reached once as `blooop/devlaunch@main` and once by its id wrote two
+    /// lines and ended up permanently titled by whichever came last. An id is the one
+    /// name every arm has and every arm agrees on, so a workspace has at most one
+    /// line, ever, however it was reached.
     ///
     /// Filtered by [`sanitize_title`], the same way the escape is, because the two
-    /// halves must not disagree about what a name may hold. `is_safe_name` accepts
-    /// one trailing newline, so `main\n` is a ref — and a newline reaching the
-    /// profile line lands inside the quoted word, splitting one `PS1` assignment
-    /// across two physical lines of a file every login sources.
+    /// halves must not disagree about what a name may hold. A *derived* id cannot
+    /// hold anything to filter, whether it came from a triple or from
+    /// [`source_workspace_id`](crate::domain::workspace_id), but two arms reach here
+    /// with a string this crate never validated: a bare devpod name and a path leaf.
     /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
     /// the feature rather than half of it.
     ///
@@ -2996,14 +2963,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// this process is about to emit and the wrong one for a line installed in a
     /// profile: `dl <ws> up` is a prewarm with its output redirected, and the
     /// interactive session that arrives later is the one the line is for.
-    fn container_title(&self) -> Option<String> {
+    fn container_title(&self, workspace_id: &str) -> Option<String> {
         if switched_on(self.host.no_title.as_deref()) {
             return None;
         }
-        self.resolved
-            .as_ref()
-            .map(spec_of)
-            .and_then(|spec| sanitize_title(&spec))
+        sanitize_title(workspace_id)
     }
 
     /// A session outcome, with the two never-ran arms lifted to [`LaunchAborted`].
@@ -4333,9 +4297,9 @@ mod tests {
         // reads: zellij and tmux take it as the pane title, a bare terminal as the
         // window title. The id and nothing else -- no `dl ` prefix, because a tab
         // bar's columns are the scarce thing being spent here.
-        let title = TerminalTitle::from_host(&titling(), "devlaunch-main-zovomobo");
+        let title = TerminalTitle::from_host(&titling(), "devlaunch-main-3j1t");
 
-        assert_eq!(title.osc(), Some("\x1b]2;devlaunch-main-zovomobo\x07"));
+        assert_eq!(title.osc(), Some("\x1b]2;devlaunch-main-3j1t\x07"));
     }
 
     #[test]
@@ -4350,7 +4314,7 @@ mod tests {
         };
 
         assert_eq!(
-            TerminalTitle::from_host(&piped, "devlaunch-main-zovomobo"),
+            TerminalTitle::from_host(&piped, "devlaunch-main-3j1t"),
             TerminalTitle::Off
         );
     }
@@ -4380,7 +4344,7 @@ mod tests {
 
     /// Whether this host would write a title at all.
     fn host_titles(host: &Host) -> bool {
-        TerminalTitle::from_host(host, "devlaunch-main-zovomobo")
+        TerminalTitle::from_host(host, "devlaunch-main-3j1t")
             .osc()
             .is_some()
     }
@@ -5472,15 +5436,18 @@ mod tests {
     }
 
     #[test]
-    fn a_triple_names_the_terminal_after_the_spec_and_not_after_the_id() {
-        // What a person reads on the tab is the spec they typed, resolved. The id is
-        // still what devpod is addressed by in the same launch -- the `status` and
-        // `ssh` below -- so this is the one place the two names part company.
+    fn a_triple_names_the_terminal_after_the_id_devpod_is_addressed_by() {
+        // One workspace, one name. What a person reads on the tab is the string
+        // devpod is addressed by in the same launch (the `status` and `ssh` below),
+        // which is also the container hostname and the `dl --ls` row.
         //
-        // `feature/auth` is the ref that makes the difference matter rather than
-        // merely look nicer: the id spells it `feature-auth`, which is also the name
-        // of a different branch this repository could have, so the id is a tab name
-        // that cannot say which of the two the session is in.
+        // `feature/auth` is the ref that shows what that costs rather than merely
+        // what it buys: the id spells it `feature-auth`, which is also the name of a
+        // different branch this repository could have, so the tab cannot say which
+        // of the two the session is in. The spec could, and used to. It was dropped
+        // because three of the four launch arms never had one -- see
+        // `Launch::titled` -- so the tab changed shape with how a workspace had been
+        // reached.
         let workspace =
             WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
         let mut scene = Scene::new().with_running(&workspace.value());
@@ -5513,14 +5480,15 @@ mod tests {
         );
         assert!(
             parts.said.iter().any(|notice| notice
-                == &LaunchNotice::TerminalTitle(TerminalTitle::Write(
-                    "\x1b]2;blooop/devlaunch@feature/auth\x07".to_owned()
-                ))),
+                == &LaunchNotice::TerminalTitle(TerminalTitle::Write(format!(
+                    "\x1b]2;{}\x07",
+                    workspace.value()
+                )))),
             "{:?}",
             parts.said
         );
         // And the id is what devpod was given, unchanged by any of this.
-        assert_eq!(workspace.value(), "devlaunch-feature-auth-poliseno");
+        assert_eq!(workspace.value(), "devlaunch-feature-auth-np10");
         assert!(
             scene
                 .devpod_commands()
@@ -5876,17 +5844,16 @@ mod tests {
     }
 
     #[test]
-    fn only_a_spec_is_installed_in_the_container_so_a_name_cannot_pile_up() {
+    fn one_name_per_workspace_is_what_keeps_the_profile_line_from_piling_up() {
         // One workspace, opened both ways: by spec, and later by the id it derived.
         // The profile line is deduped by a hash of its own text, so a second,
-        // different name for one workspace would not replace the first -- it would
-        // append, and the last append is what every prompt obeys. A single launch by
-        // id would have renamed the tab back to the hash for good.
+        // different name for one workspace would not replace the first, it would
+        // append, and the last append is what every prompt obeys.
         //
-        // So the pass is told the spec or nothing. Nothing is the honest answer for
-        // an id: the container's hostname is that id's readable half already, so the
-        // stock prompt writes all of it anyone reads and the line would buy eight
-        // characters of hash to lose.
+        // The id is the same string both times, which is the whole reason it is the
+        // name. The spec this used to install was only a pure function of the
+        // workspace for the launches that resolved a triple: opening by id installed
+        // nothing, and opening by spec afterwards appended a second line.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let scene = Scene::new().with_running(&workspace.value());
         let updater = SelfInvocation::new("dl");
@@ -5918,23 +5885,26 @@ mod tests {
             let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
         }
 
-        assert_eq!(
-            parts.provision.titles(),
-            vec![Some("blooop/devlaunch@main".to_owned()), None]
-        );
+        let name = Some(workspace.value());
+        assert_eq!(parts.provision.titles(), vec![name.clone(), name]);
     }
 
     #[test]
-    fn a_name_holding_a_control_is_filtered_before_it_reaches_the_container() {
+    fn a_ref_holding_a_control_cannot_reach_the_container_at_all() {
         // `is_safe_name` accepts one trailing newline -- Python's `$` anchor did, and
-        // the quirk is ported deliberately -- so `main\n` is a ref and
-        // `blooop/devlaunch@main\n` is a name. dl's own escape drops controls at the
-        // boundary it forms bytes at; the profile line is written by a different
-        // path, and an unfiltered newline lands in a file every login sources, inside
-        // the quoted word, splitting one PS1 assignment over two physical lines.
+        // the quirk is ported deliberately -- so `main\n` is a ref. It used to be a
+        // *name* too, because the container was told the spec, and an unfiltered
+        // newline lands in a file every login sources, inside the quoted word,
+        // splitting one PS1 assignment over two physical lines.
         //
-        // One filtered name for both halves, so a title cannot be safe in the escape
-        // and not in the profile.
+        // Naming after the id closed that by construction rather than by filtering:
+        // `slug` erases the newline before an id exists, so there is no control left
+        // to carry. So this asserts the id arrives whole -- had `sanitize_title`
+        // found anything to drop, the name installed would not be `value()`.
+        // `sanitize_title` still earns its keep on the two arms that reach a title
+        // without deriving one, a bare devpod name and a path leaf, and
+        // `a_spec_cannot_smuggle_a_second_escape_into_the_title` is where the raw
+        // spec is pushed through it.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main\n").expect("a safe triple");
         let scene = Scene::new().with_running(&workspace.value());
         let updater = SelfInvocation::new("dl");
@@ -5955,14 +5925,11 @@ mod tests {
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(
-            parts.provision.titles(),
-            vec![Some("blooop/devlaunch@main".to_owned())]
-        );
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
     }
 
     #[test]
-    fn the_pass_is_told_to_have_the_container_keep_titling_after_the_spec() {
+    fn the_pass_is_told_to_have_the_container_keep_titling_after_the_id() {
         // The other half of the title, and the half that lasts. dl's own escape is
         // overwritten by the first interactive prompt; this is the name the pass
         // installs in the container's profile so every prompt after that writes it
@@ -5989,10 +5956,7 @@ mod tests {
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(
-            parts.provision.titles(),
-            vec![Some("blooop/devlaunch@feature/auth".to_owned())]
-        );
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
     }
 
     #[test]
@@ -6051,10 +6015,7 @@ mod tests {
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(
-            parts.provision.titles(),
-            vec![Some("blooop/devlaunch@main".to_owned())]
-        );
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
         // And nothing was written to the terminal that is not there.
         assert!(
             !parts.said.iter().any(|notice| matches!(

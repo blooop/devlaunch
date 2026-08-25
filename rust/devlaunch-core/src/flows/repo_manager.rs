@@ -2154,8 +2154,8 @@ pub(crate) mod tests {
             repos.join("owner/repo/.lock")
         );
         assert_eq!(
-            clone_dir(repos, "owner", "repo", "repo-main-zovomobo"),
-            repos.join("owner/repo/repo-main-zovomobo"),
+            clone_dir(repos, "owner", "repo", "repo-main-dkjd"),
+            repos.join("owner/repo/repo-main-dkjd"),
             "a clone is a sibling of the cache it was cut from, on one filesystem"
         );
     }

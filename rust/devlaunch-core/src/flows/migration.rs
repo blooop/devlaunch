@@ -9,8 +9,16 @@
 //! Before blooop/devlaunch#64 a clone directory's leaf was the flattened branch
 //! name (`<cache>/repos/blooop/devlaunch/main`) and the devpod workspace id was a
 //! second, separately derived string. Now [`WorkspaceId`] derives one id that
-//! names both (`devlaunch-main-zovomobo`). Every clone directory written by an
+//! names both (`devlaunch-main-3j1t`). Every clone directory written by an
 //! older build therefore sits under a name nothing looks for any more.
+//!
+//! **The same pass covers a change to the id *values*, not only to the scheme.**
+//! Schema 3 is schema 2 with a four-character base-36 suffix where an eight-character
+//! syllable one used to be, so a schema-2 cache holds directories named
+//! `devlaunch-main-zovomobo` that this build derives `devlaunch-main-3j1t` for. There
+//! is nothing here to branch on: the rename is "the record's triple, re-derived",
+//! which is the same work whichever older shape the leaf had, so one pass takes 1 and
+//! 2 alike to 3.
 //!
 //! **Renaming is the right answer, not orphaning.** A workspace is a `git clone`
 //! whose `origin` points at the `.bare` path, and `.bare` does not move, so a
@@ -28,21 +36,21 @@
 //! **Write ordering.** All renames happen first; then a single save writes the new
 //! paths, and the new version header *only if every rename succeeded*, in one
 //! atomic replace ([`MetadataStorage::commit_migration`]). Nothing writes the
-//! header early, so "header says 2" always means "every rename this migration
-//! could ever perform is done". The two outcomes it can never perform — a
+//! header early, so "the header is current" always means "every rename this
+//! migration could ever perform is done". The two outcomes it can never perform — a
 //! collision with a directory another record owns, and a branch no legal id
 //! derives from — are reported and deliberately left behind, because retrying
 //! those would never end differently. A crash anywhere in the renames leaves the
-//! header at 1, so the next run migrates again and finds each already-renamed
+//! header where it was, so the next run migrates again and finds each already-renamed
 //! directory as "destination present, source gone" — which it treats as a resumed
 //! rename and simply catches metadata up to. The reverse ordering has no safe
-//! resume: saving first would bump the header to 2 while directories were still
+//! resume: saving first would promote the header while directories were still
 //! under their old names, and the next run would skip them for good.
 //!
 //! **A refusal is held to the crash standard** (#180). A rename the filesystem
 //! declines — read-only mount, tightened permissions, full disk — is not a crash,
-//! but stranding its records would be just as permanent, so the header stays at 1
-//! and the next run retries exactly the refused directories. The save still
+//! but stranding its records would be just as permanent, so the header stays where
+//! it was and the next run retries exactly the refused directories. The save still
 //! happens: the renames that did work are recorded immediately, and the resume path
 //! above is what stops them being redone. That is why every other save writes the
 //! store's own version rather than the constant — the migration is not the only
@@ -1052,12 +1060,167 @@ mod tests {
         }
     }
 
+    // ================================================ a cache one schema behind
+
+    /// The ids a schema-2 build derived, transcribed from that build's golden
+    /// vectors rather than re-derived. A fixture that computed them would move with
+    /// the derivation and could not tell a change in the code from a change in the
+    /// world, which is the whole of what these two tests are for.
+    const SCHEMA_2_IDS: [(&str, &str); 2] = [
+        ("main", "devlaunch-main-zovomobo"),
+        ("feature/auth", "devlaunch-feature-auth-poliseno"),
+    ];
+
+    /// A cache in the *shape* of the current schema, holding the ids of the previous
+    /// one, which is the only difference between 2 and 3.
+    fn build_schema_2_cache() -> LegacyCache {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let devlaunch = dir.path().join("devlaunch");
+        let repos_dir = devlaunch.join("repos");
+        let repo_root = repos_dir.join("blooop").join("devlaunch");
+        std::fs::create_dir_all(repo_root.join(BARE_DIR_NAME)).expect("the bare directory");
+
+        let mut worktrees = BTreeMap::new();
+        for (branch, old_id) in SCHEMA_2_IDS {
+            let clone = repo_root.join(old_id);
+            std::fs::create_dir_all(clone.join(".git")).expect("the clone");
+            worktrees.insert(
+                format!("blooop/devlaunch/{branch}"),
+                json!({
+                    "owner": "blooop",
+                    "repo": "devlaunch",
+                    "branch": branch,
+                    "local_path": clone.display().to_string(),
+                    "workspace_id": old_id,
+                    "created_at": "2024-01-01T10:00:00",
+                    "last_used": "2024-01-01T12:00:00",
+                    "devpod_workspace_id": null,
+                }),
+            );
+        }
+        let document = json!({
+            "version": 2,
+            "repositories": {
+                "blooop/devlaunch": {
+                    "owner": "blooop",
+                    "repo": "devlaunch",
+                    "remote_url": "git@github.com:blooop/devlaunch.git",
+                    "local_path": repo_root.join(BARE_DIR_NAME).display().to_string(),
+                    "default_branch": "main",
+                    "last_fetched": null,
+                    "worktrees": ["main", "feature/auth"],
+                }
+            },
+            "worktrees": worktrees,
+        });
+        std::fs::create_dir_all(&devlaunch).expect("the cache directory");
+        let metadata = devlaunch.join("metadata.json");
+        std::fs::write(
+            &metadata,
+            serde_json::to_string_pretty(&document).expect("JSON"),
+        )
+        .expect("the fixture");
+        LegacyCache {
+            dir,
+            metadata,
+            repos_dir,
+        }
+    }
+
+    #[test]
+    fn a_schema_2_cache_is_renamed_onto_the_shorter_suffix() {
+        // The migration every machine that already runs dl will actually perform, and
+        // the one the SCHEMA_VERSION bump exists for. Nothing about the *shape* of a
+        // record changed between 2 and 3, so there is no format edit to observe: what
+        // proves the pass ran is the leaves on disk and the records that follow them.
+        let cache = build_schema_2_cache();
+        let repo_root = cache.repo_root("blooop", "devlaunch");
+
+        let report = cache.migrate().expect("a migration ran");
+
+        assert_eq!(report.renamed.len(), 2);
+        assert_eq!(report.unmigrated, Vec::<PathBuf>::new());
+        assert_eq!(report.missing, Vec::<PathBuf>::new());
+        assert_eq!(report.blocked, Vec::new());
+        assert_eq!(report.unusable, Vec::new());
+        assert_eq!(cache.version(), SCHEMA_VERSION);
+
+        let mut expected = vec![BARE_DIR_NAME.to_owned()];
+        for (branch, _) in SCHEMA_2_IDS {
+            expected.push(new_leaf("blooop", "devlaunch", branch));
+        }
+        expected.sort();
+        assert_eq!(cache.leaves("blooop", "devlaunch"), expected);
+
+        for (branch, old_id) in SCHEMA_2_IDS {
+            let derived = new_leaf("blooop", "devlaunch", branch);
+            assert_ne!(
+                derived, old_id,
+                "the fixture pinned an id that did not move"
+            );
+            let record = cache.worktree(&format!("blooop/devlaunch/{branch}"));
+            assert_eq!(record["workspace_id"], json!(derived));
+            assert_eq!(
+                record["local_path"].as_str(),
+                Some(repo_root.join(&derived).display().to_string().as_str())
+            );
+        }
+        // The container each record used to name is reported rather than silently
+        // forgotten: it still exists, and nothing here deletes one.
+        let mut orphaned = report.orphaned_ids.clone();
+        orphaned.sort();
+        let mut old: Vec<String> = SCHEMA_2_IDS
+            .iter()
+            .map(|(_, id)| (*id).to_owned())
+            .collect();
+        old.sort();
+        assert_eq!(orphaned, old);
+    }
+
+    #[test]
+    fn a_schema_2_migration_interrupted_between_the_renames_resumes() {
+        // The same crash the 1-to-2 pass is proved resumable against, from 2: one
+        // directory already under its derived name, the header still at 2 because
+        // nothing saved. The next run has to read that as a rename it already did,
+        // not as a directory nobody claims -- reporting it under `unmigrated` is how
+        // a user gets told to deal by hand with a clone that is already fine.
+        let cache = build_schema_2_cache();
+        let repo_root = cache.repo_root("blooop", "devlaunch");
+        std::fs::rename(
+            repo_root.join("devlaunch-main-zovomobo"),
+            repo_root.join(new_leaf("blooop", "devlaunch", "main")),
+        )
+        .expect("the interrupted rename");
+        assert_eq!(cache.version(), 2);
+
+        let report = cache.migrate().expect("a migration ran");
+
+        assert_eq!(
+            report.renamed,
+            [Renamed {
+                from: repo_root.join("devlaunch-feature-auth-poliseno"),
+                to: repo_root.join(new_leaf("blooop", "devlaunch", "feature/auth")),
+            }]
+        );
+        assert_eq!(report.unmigrated, Vec::<PathBuf>::new());
+        assert_eq!(report.missing, Vec::<PathBuf>::new());
+        assert_eq!(cache.version(), SCHEMA_VERSION);
+        for (branch, _) in SCHEMA_2_IDS {
+            let expected = repo_root.join(new_leaf("blooop", "devlaunch", branch));
+            assert_eq!(
+                cache.worktree(&format!("blooop/devlaunch/{branch}"))["local_path"].as_str(),
+                Some(expected.display().to_string().as_str())
+            );
+            assert!(expected.is_dir());
+        }
+    }
+
     #[test]
     fn the_header_and_the_paths_reach_disk_in_one_save() {
         // No intermediate write may claim the migration finished. Observed from inside
         // the edit, which is the only place the question can be asked: the file on
-        // disk still says 1 while the records are being rewritten, and says 2 the
-        // moment the single save lands.
+        // disk still says 1 while the records are being rewritten, and carries the
+        // current version the moment the single save lands.
         let cache = a_simple_cache();
         let mut storage = cache.store();
         let path = cache.metadata.clone();

@@ -102,7 +102,7 @@ It removes everything else anyway, and names what is left:
 ```
 $ dl --purge -y
 Removed what was permitted under /home/you/.cache/devlaunch. These refused:
-  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-main-kivagede: Permission denied
+  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-main-ii41: Permission denied
 
 Usually this means a container wrote them as a different user, and:
   sudo rm -rf '/home/you/.cache/devlaunch'
@@ -199,13 +199,13 @@ $ dl --prune
 Clone directories under /home/you/.cache/devlaunch/repos:
 
 Removing 2 that nothing references -- 1.4 GiB:
-  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-test1-pipagito (1.1 GiB)
-  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-t1-vebilote (317.0 MiB)
+  - /home/you/.cache/devlaunch/repos/blooop/bencher/bencher-test1-mxvm (1.1 GiB)
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-t1-d7bw (317.0 MiB)
 
 Leaving 3:
-  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo: workspace devlaunch-main-zovomobo still opens it
-  - /home/you/.cache/devlaunch/repos/blooop/wayfinder/wayfinder-devlaunch-kilarabo: holds 2 unpushed commit(s) -- add --force to remove it anyway
-  - /home/you/.cache/devlaunch/repos/blooop/rockerc/rockerc-main-ludomane: devpod lists workspace rockerc-main-ludomane and sources it at /home/you/.cache/devlaunch/repos/blooop/rockerc/main; see devlaunch#88
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t: workspace devlaunch-main-3j1t still opens it
+  - /home/you/.cache/devlaunch/repos/blooop/wayfinder/wayfinder-devlaunch-6pl5: holds 2 unpushed commit(s) -- add --force to remove it anyway
+  - /home/you/.cache/devlaunch/repos/blooop/rockerc/rockerc-main-brdr: devpod lists workspace rockerc-main-brdr and sources it at /home/you/.cache/devlaunch/repos/blooop/rockerc/main; see devlaunch#88
 
 Dropping 12 record(s) of directories already gone.
 
@@ -293,10 +293,11 @@ you what it costs.
 ### Reconciling records that disagree
 
 `dl` keeps its own record of every workspace, and devpod keeps one too. They
-agree until the naming that connects them moves, and it did move once, when
-workspace ids and clone-directory names gained a hashed suffix. `dl`'s records
-were migrated to the new naming; devpod's were not, because nothing knew to
-touch them. On the host that reported it, **36 of 39 devpod workspaces recorded
+agree until the naming that connects them moves, and it has moved twice: first when
+workspace ids and clone-directory names gained a hashed suffix, and again when that
+suffix was cut from eight characters to four. Both times `dl`'s records were migrated
+to the new naming and devpod's were not, because nothing knew to
+touch them. On the host that reported the first, **36 of 39 devpod workspaces recorded
 a source folder that was missing, or was a stub with no `.git` in it**, while the
 real checkout sat next to it under the new name. Nothing was deleted and nothing
 was corrupted: `dl` was simply asking devpod about workspaces devpod had never
@@ -313,8 +314,8 @@ $ dl --reconcile
 devpod workspaces sourced under /home/you/.cache/devlaunch/repos at something that is not a clone:
 
 Re-pointing 2:
-  - devlaunch-main: .../blooop/devlaunch/main -> .../blooop/devlaunch/devlaunch-main-zovomobo
-  - bencher-test1: .../blooop/bencher/test1 -> .../blooop/bencher/bencher-test1-pipagito
+  - devlaunch-main: .../blooop/devlaunch/main -> .../blooop/devlaunch/devlaunch-main-3j1t
+  - bencher-test1: .../blooop/bencher/test1 -> .../blooop/bencher/bencher-test1-mxvm
 
 Each of these needs `dl <workspace> recreate` afterwards: the container
 still has the old source bind-mounted, and no record change moves a mount.
@@ -384,7 +385,7 @@ cleanup tool must not ignore, `unsaved`:
 
 ```json
 {
-  "id": "devlaunch-wayfinder-devlaunch-80-ladepomi",
+  "id": "devlaunch-wayfinder-devlaunch-80-myzf",
   "devlaunch": true,
   "repo": "blooop/devlaunch",
   "branch": "wayfinder/devlaunch-80",

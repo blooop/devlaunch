@@ -35,10 +35,10 @@ use devlaunch_test_support::KeepingCoverage;
 
 /// The workspace id this build derives for `blooop/devlaunch@main`, and the one
 /// `launch_scenario.py` records and devpod knows.
-const MAIN: &str = "devlaunch-main-zovomobo";
+const MAIN: &str = "devlaunch-main-3j1t";
 
 /// The same for `blooop/devlaunch@cold`, which nothing has ever launched.
-const COLD: &str = "devlaunch-cold-sadetohe";
+const COLD: &str = "devlaunch-cold-8iyb";
 
 /// The repository root, from the crate this test is compiled into.
 fn repo_root() -> PathBuf {
@@ -618,7 +618,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             // The derived id first: cold is what devpod *denying* it means.
             format!("devpod status {COLD} --output json"),
             "devpod context options --output json".to_owned(),
-            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-sadetohe --ide none \
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
              PIXI_CACHE_DIR=/var/tmp/…"
@@ -716,6 +716,10 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             &format!("Workspace {MAIN} is already running.") as &str,
             &format!("{MAIN}: the hostname setup stage did not report; it may not have run."),
             &format!("{MAIN}: the zellij setup stage did not report; it may not have run."),
+            // The title stage runs for every arm now, where it used to run only for
+            // a launch that resolved a triple: the name it installs is the workspace
+            // id, which every arm has. See `Launch::titled`.
+            &format!("{MAIN}: the title setup stage did not report; it may not have run."),
         ]
     );
     assert_eq!(
@@ -1179,8 +1183,8 @@ fn a_session_devpod_could_not_start_ends_with_devpods_own_status() {
     assert_eq!(
         run.stderr_lines(),
         [
-            "Workspace devlaunch-main-zovomobo is already running, attaching...",
-            "SSH command: devpod ssh devlaunch-main-zovomobo",
+            "Workspace devlaunch-main-3j1t is already running, attaching...",
+            "SSH command: devpod ssh devlaunch-main-3j1t",
             "devpod: connection refused",
         ]
     );
@@ -1426,7 +1430,7 @@ fn rm_on_exit_removes_the_workspace_once_the_session_has_ended() {
     // `devpod status` a `dl <ws> rm` resolves through, so the two cannot disagree
     // about which workspace they are addressing.
     let world = World::with(&["--warm"]);
-    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo";
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t";
     assert!(world.path(clone).exists(), "the fixture's clean clone");
 
     let run = world.dl(&[MAIN, "--rm"]);
@@ -1443,7 +1447,7 @@ fn rm_on_exit_removes_the_workspace_once_the_session_has_ended() {
             // gone is a receipt rather than a warning.
             &format!("--rm: the session has ended, removing {MAIN}."),
             "Removed workspace clone: {ROOT}/cache/devlaunch/repos/blooop/devlaunch/\
-             devlaunch-main-zovomobo",
+             devlaunch-main-3j1t",
             &format!("Removed local clone for {MAIN}"),
         ]
     );
@@ -1487,7 +1491,7 @@ fn rm_on_exit_stops_at_work_that_is_nowhere_else_and_leaves_the_workspace_standi
     // the same sentence `dl <ws> rm` refuses it with, and the workspace survives the
     // session it was opened for.
     let world = World::with(&["--warm"]);
-    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo";
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t";
     std::fs::write(world.path(clone).join("scratch.txt"), "unsaved\n")
         .expect("the clone is dirtied");
 
@@ -1621,7 +1625,7 @@ fn rm_on_exit_collects_a_workspace_whose_up_failed() {
     // devcontainer would otherwise leak exactly the workspace the flag was reached
     // for, on every run, silently.
     let world = World::with(&["--stopped", "--fail-up"]);
-    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo";
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t";
 
     let run = world.dl(&[MAIN, "--rm"]);
     // devpod's own status, unchanged: the removal is not the `up` failing.

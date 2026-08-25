@@ -17,7 +17,7 @@ use devlaunch_test_support::KeepingCoverage;
 
 /// The workspace id this build derives for `blooop/devlaunch@main`, which the
 /// scenario records and devpod knows.
-const MAIN: &str = "devlaunch-main-zovomobo";
+const MAIN: &str = "devlaunch-main-3j1t";
 
 /// The version both binaries print. Read from the manifest, because that is where
 /// the release reads it from too.
@@ -244,10 +244,10 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     assert_eq!(
         run.err.lines().collect::<Vec<&str>>(),
         [
-            "aid -> dl devlaunch-main-zovomobo -- 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 \
+            "aid -> dl devlaunch-main-3j1t -- 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 \
              IS_SANDBOX=1 claude --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
-            "Workspace devlaunch-main-zovomobo is already running, attaching...",
-            "SSH command: devpod ssh devlaunch-main-zovomobo --command bash -lc \
+            "Workspace devlaunch-main-3j1t is already running, attaching...",
+            "SSH command: devpod ssh devlaunch-main-3j1t --command bash -lc \
              'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
         ]

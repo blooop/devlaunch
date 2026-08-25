@@ -3726,7 +3726,7 @@ pub(crate) mod tests {
             .join("repos")
             .join("blooop")
             .join("bencher")
-            .join("bencher-main-kivagede");
+            .join("bencher-main-ii41");
         let stuck = root
             .join("repos")
             .join("blooop")
@@ -3946,7 +3946,7 @@ pub(crate) mod tests {
             .join("repos")
             .join("blooop")
             .join("bencher")
-            .join("bencher-main-kivagede");
+            .join("bencher-main-ii41");
         std::fs::create_dir_all(&clone).expect("a clone");
         std::fs::write(clone.join("README.md"), "a clone that will go\n").expect("a README");
         let Some(_sealed) = refusing_writes(&root) else {
@@ -4280,21 +4280,21 @@ pub(crate) mod tests {
         let repos = cache_dir.join("repos").join("blooop");
         vec![
             listed(
-                "bencher-test1-pipagito",
-                &repos.join("bencher").join("bencher-test1-pipagito"),
+                "bencher-test1-mxvm",
+                &repos.join("bencher").join("bencher-test1-mxvm"),
             ),
             listed(
-                "bencher-main-kivagede",
-                &repos.join("bencher").join("bencher-main-kivagede"),
+                "bencher-main-ii41",
+                &repos.join("bencher").join("bencher-main-ii41"),
             ),
             listed("devlaunch", Path::new("/home/dev/projects/devlaunch")),
             listed(
-                "devlaunch-main-zovomobo",
-                &repos.join("devlaunch").join("devlaunch-main-zovomobo"),
+                "devlaunch-main-3j1t",
+                &repos.join("devlaunch").join("devlaunch-main-3j1t"),
             ),
             listed(
-                "devlaunch-t1-vebilote",
-                &repos.join("devlaunch").join("devlaunch-t1-vebilote"),
+                "devlaunch-t1-d7bw",
+                &repos.join("devlaunch").join("devlaunch-t1-d7bw"),
             ),
             listed(
                 "pythontemplate",
@@ -4304,10 +4304,10 @@ pub(crate) mod tests {
     }
 
     const CLONED_BY_DEVLAUNCH: [&str; 4] = [
-        "bencher-test1-pipagito",
-        "bencher-main-kivagede",
-        "devlaunch-main-zovomobo",
-        "devlaunch-t1-vebilote",
+        "bencher-test1-mxvm",
+        "bencher-main-ii41",
+        "devlaunch-main-3j1t",
+        "devlaunch-t1-d7bw",
     ];
 
     /// A cache directory with something in it worth removing.

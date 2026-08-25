@@ -61,8 +61,8 @@ NEVER = ""
 # derivation, still addressable only through its record.
 CLEAN_LEAF = "devlaunch-main-legacy"
 CLEAN_WS = "devlaunch-main-legacy"
-DIRTY_LEAF = "devlaunch-dirty-dofaraji"
-DIRTY_WS = "devlaunch-dirty-dofaraji"
+DIRTY_LEAF = "devlaunch-dirty-fqta"
+DIRTY_WS = "devlaunch-dirty-fqta"
 FOREIGN_WS = "someones-project"
 
 # --prunable: two clone directories no workspace opens and no record names.
@@ -77,7 +77,7 @@ STALE_LEAF = "devlaunch-ancient-forgotten"
 # legacy spelling of its branch); the second cannot, because nothing answers.
 ORPHAN_WS = "other-feature-x-legacy"
 ORPHAN_LEAF = "feature-x"
-ORPHAN_CLONE_LEAF = "other-feature-x-repezebi"
+ORPHAN_CLONE_LEAF = "other-feature-x-t0h1"
 UNADOPTABLE_WS = "other-nothing-here"
 UNADOPTABLE_LEAF = "nothing-answers"
 
@@ -388,7 +388,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
 
     (cache / "metadata.json").write_text(
         json.dumps(
-            {"version": 2, "repositories": repositories, "worktrees": worktrees},
+            {"version": 3, "repositories": repositories, "worktrees": worktrees},
             indent=2,
         )
         + "\n",
