@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dl` looks for devpod's ssh host aliases where devpod writes them, so the pty
+  transport stops disappearing in silence.** `dl <ws> -- <cmd>` runs over OpenSSH
+  through the alias `devpod up` publishes, and `dl` decided whether that alias
+  existed by reading a hardcoded `~/.ssh/config`. devpod does not necessarily
+  write there: it targets the `SSH_CONFIG_INCLUDE_PATH` context option, else
+  `--ssh-config` (whose default it fills in from `$DEVPOD_SSH_CONFIG`), else the
+  `SSH_CONFIG_PATH` context option, else `~/.ssh/config` — and it writes to
+  whichever it picks and to *no other*. So on any host that exports
+  `DEVPOD_SSH_CONFIG` there was no `~/.ssh/config` to find, `dl` concluded the
+  workspace had no alias, dropped every command to `devpod ssh --command` (no
+  pty, `TERM=dumb`, interactive programs exiting on sight), and the only thing it
+  said was that the *workspace* needed restarting. This repo's own scratch
+  convention, `test/conftest.py` and `scripts/bench_launch.py` all export that
+  variable, so the transport was unreachable on exactly the hosts we measure on:
+  **before/after numbers from a run that set `DEVPOD_SSH_CONFIG` are not
+  comparable across this change**, because the earlier side of them was silently
+  on the other transport.
+  The two context-option paths are read from the copy `dl` has already cached and
+  never by a fresh `devpod context options`: that trip costs 0.4-0.7s (#393) on a
+  path where the whole decision is worth less, and a cache miss falls back to
+  devpod's own defaults, which is what `dl` assumed unconditionally before.
+  And the silence is gone from the type rather than from a log line. `Terminal`'s
+  one `NoAlias` arm was two facts wearing one name; it is now `NoAlias` (this
+  config has no entry for this workspace, and `dl <ws> restart` republishes it),
+  `ConfigMissing` (there is no ssh config where `dl` expects devpod to publish,
+  named in the notice, and a restart helps only if devpod writes to that same
+  file) and `ConfigUnlocatable` (no home directory and nothing naming a config,
+  so there is nowhere to look). Each has its own sentence, and each names the
+  path `dl` read. (#421)
+- **`dl` hands OpenSSH the ssh config it read the alias out of, as `-F <path>`.**
+  The other half of the same bug, and the half that made it worse rather than
+  quieter. OpenSSH reads neither `$DEVPOD_SSH_CONFIG` nor `$HOME`; it resolves the
+  default user config through `getpwuid(getuid())`. So once `dl` started deciding
+  the alias existed by reading devpod's real config, the invocation it built still
+  pointed OpenSSH at `~/.ssh/config`, and on a host where devpod publishes
+  elsewhere `ssh -t <ws>.devpod <cmd>` failed with `Could not resolve hostname` at
+  exit 255: the command did not run at all, where before it had merely run without
+  a terminal. The config now travels inside `Terminal::Usable` and
+  `ssh::command_args` takes it as a parameter, so an invocation with no `-F` is not
+  expressible. **The trade:** `-F` makes OpenSSH read that file *instead of*
+  `~/.ssh/config`, and it skips `/etc/ssh/ssh_config` unconditionally, including
+  when the file named *is* your own user config. So a system-wide `Host *` block
+  never applies to a devlaunch session, and one of your own stops applying as soon
+  as devpod publishes somewhere other than your user config. Taken deliberately: `dl` cannot know whether `ssh` would have
+  read the file `dl` read, since `$HOME` and `getpwuid`'s home are allowed to
+  differ, and devpod's own block is self-contained. The e2e suite's `ssh` shim,
+  which had been supplying exactly this `-F` and hiding the defect from a green
+  run, is deleted. (#421)
+
 ## [0.14.0] - 2026-08-25
 
 ### Fixed

@@ -5,14 +5,14 @@ or other IDEs, which would break automated testing.
 
 They also own the two other things an e2e test needs before it can reach a
 workspace at all: the argv prefix of the implementation under test (the
-`DEVLAUNCH_DL_CMD` seam), and -- for the pty transport -- an environment in
-which both ssh lookups resolve this run's own ssh config. See `route_ssh_through`.
+`DEVLAUNCH_DL_CMD` seam), and -- for the pty transport -- a home directory scoped
+away from the developer's, which is the *only* prop the transport gets from here.
+See `route_ssh_through`.
 """
 
 import os
 import shlex
 import shutil
-import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -353,36 +353,39 @@ def create_e2e_workspace(
 # --------------------------------------------------------------------------
 # Reaching a workspace over the pty transport
 #
-# Let dl's pty transport find the run's own ssh config instead of the developer's.
+# Scope the home directory away from the developer's, and supply nothing else.
 #
 # `dl <ws> -- <cmd>` reaches a workspace two ways, and the interesting one goes
-# through OpenSSH: `ssh -t <workspace>.devpod <payload>`, using the host alias
-# `devpod up` publishes. The suite scopes that publication away from the developer
-# with `DEVPOD_SSH_CONFIG` (see `test/devpod_scoping.py`), which leaves the alias
-# somewhere nothing looks for it by default. Two separate lookups have to be
-# pointed at it, and they need two different mechanisms because they disagree about
-# what a home directory is.
+# through OpenSSH: `ssh -t -F <config> <workspace>.devpod <payload>`, using the
+# host alias `devpod up` publishes. The suite scopes that publication away from
+# the developer with `DEVPOD_SSH_CONFIG` (see `test/devpod_scoping.py`), which
+# leaves the alias somewhere nothing looks for it by default. Two separate
+# lookups have to reach it, and **neither of them takes any help from here.**
 #
 # **dl's own check** -- "did devpod publish an alias for this workspace, or should
-# this command fall back to the transport with no terminal?" -- reads
-# `$HOME/.ssh/config`. Both implementations resolve that through the environment
-# (Python's `Path.home()`, Rust's `std::env::home_dir()`), so a scratch `HOME`
-# whose `.ssh/config` *is* the run's config redirects it. A symlink rather than a
-# copy, so a later `devpod up` in the same run is visible through it.
+# this command fall back to the transport with no terminal?" -- resolves
+# `DEVPOD_SSH_CONFIG` itself, ahead of `~/.ssh/config`, because that is where
+# devpod wrote the alias and the only place it wrote it (devlaunch#421).
 #
-# **OpenSSH itself** does not read `$HOME`. It expands `~` for the default user
-# config through `getpwuid(getuid())`, so the scratch home above is invisible to
-# it and `ssh <alias>` fails with "Could not resolve hostname" -- measured on this
-# suite's own ssh, and the reason this needs a shim rather than a one-line
-# `monkeypatch.setenv`. What does work is `-F <path>`, so an `ssh` shim first on
-# `PATH` supplies it.
+# **OpenSSH itself** reads neither `DEVPOD_SSH_CONFIG` nor `$HOME`: it expands `~`
+# for the default user config through `getpwuid(getuid())`, so a scratch `HOME` is
+# invisible to it and a bare `ssh <alias>` fails with "Could not resolve hostname"
+# at exit 255 -- measured on this suite's own ssh. dl therefore passes the config
+# it read as `-F <path>` on the invocation it builds, so the file it *decided*
+# from is the file OpenSSH *resolves* in.
 #
-# The shim passes `-F` *before* the caller's arguments, which makes it a default
-# and not an override: OpenSSH takes the last `-F` on the command line, so a
-# command that names its own config still gets it. Nothing else about the
-# invocation is touched -- the argv dl composed, `-t` included, is what reaches
-# ssh, so what the tests measure is still dl's transport and a real tunnel into a
-# real container.
+# There used to be two props here for exactly those two lookups: a scratch
+# `~/.ssh/config` symlinked onto the run's config, and an `ssh` shim first on
+# `PATH` that prepended `-F`. Both are gone, and the second one is why this
+# comment is long. **The shim was supplying the product's own fix.** It made
+# every pty assertion in `test/e2e/test_interactive_session.py` pass against a dl
+# that emitted no `-F` at all, which is how devlaunch#421's second half reached
+# review: a green e2e run said the transport worked when what worked was the
+# harness. A harness must not stand in for the code under test, so the only thing
+# left is a scratch `HOME` -- which holds no `.ssh/config`, points ssh's `~` at
+# nothing, and is therefore a *negative* prop. With it in place, these tests
+# reaching a container at all is the assertion that dl found devpod's config and
+# handed it to OpenSSH.
 # --------------------------------------------------------------------------
 
 
@@ -406,18 +409,18 @@ def scoped_ssh_config() -> Path:
 
 @dataclass(frozen=True)
 class ScopedSsh:
-    """Where the redirected home and the `ssh` shim live, and the env that uses them."""
+    """The scratch home ssh's `~` resolves to nothing through, and the run's config."""
 
     home: Path
-    bin_dir: Path
     config: Path
 
     def env(self, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        """An environment in which both ssh lookups find this run's config.
+        """An environment in which nothing but dl can find this run's config.
 
         Built on the caller's (or the current) environment, so everything the
         suite already scopes -- `DEVPOD_HOME`, `DEVPOD_SSH_CONFIG`,
-        `XDG_CACHE_HOME` -- rides along untouched.
+        `XDG_CACHE_HOME` -- rides along untouched. `PATH` is *not* touched: the
+        `ssh` these tests run is the one a developer's `dl` runs.
 
         Only ever handed to a subprocess. Putting `HOME` into this process's own
         environment would move it under the feet of the tests that read the
@@ -425,35 +428,27 @@ class ScopedSsh:
         """
         env = dict(os.environ if base is None else base)
         env["HOME"] = str(self.home)
-        env["PATH"] = f"{self.bin_dir}{os.pathsep}{env.get('PATH', '')}"
         return env
 
 
 def route_ssh_through(config: Path, root: Path) -> ScopedSsh:
-    """Materialize a scratch home and an `ssh` shim that both resolve `config`.
+    """Materialize the scratch home dl and OpenSSH run under.
 
-    `root` is a directory this run owns; two subdirectories are created under it.
+    `root` is a directory this run owns; one subdirectory is created under it.
+
+    The home is deliberately bare of a `.ssh/config`, and that emptiness is the
+    whole prop: dl resolves `DEVPOD_SSH_CONFIG` for itself and passes what it
+    found to OpenSSH as `-F`, so anything put here -- a symlinked config, an
+    `ssh` shim on `PATH` -- would hide a regression rather than enable a test
+    (devlaunch#421).
     """
-    real_ssh = shutil.which("ssh")
-    if real_ssh is None:
+    if shutil.which("ssh") is None:
         pytest.fail(
             "no `ssh` on PATH, so dl's pty transport cannot run at all -- it is "
             "OpenSSH that carries the terminal into the workspace"
         )
 
     home = root / "home"
-    (home / ".ssh").mkdir(parents=True, exist_ok=True)
-    alias_config = home / ".ssh" / "config"
-    if not alias_config.exists():
-        # A symlink, so the file devpod rewrites on the next `up` is the file dl
-        # reads. `devpod up` replaces the path rather than editing in place, and
-        # a copy taken now would answer for the workspaces of a moment ago.
-        alias_config.symlink_to(config)
+    home.mkdir(parents=True, exist_ok=True)
 
-    bin_dir = root / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "ssh"
-    shim.write_text(f'#!/bin/sh\nexec {shlex.quote(real_ssh)} -F {shlex.quote(str(config))} "$@"\n')
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-    return ScopedSsh(home=home, bin_dir=bin_dir, config=config)
+    return ScopedSsh(home=home, config=config)
