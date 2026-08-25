@@ -606,6 +606,65 @@ fn a_directory_whose_admin_directory_is_here_is_asked_what_it_holds() {
 }
 
 #[test]
+fn a_registration_whose_admin_directory_vanished_is_still_asked_about_its_commits() {
+    // The window is a concurrent `git worktree prune` between the listing and the
+    // look. No index and no HEAD, so nothing can be asked of the working tree --
+    // but the registration still names a head, and this is the arm that deletes,
+    // so the commits get asked about.
+    let world = Clone::new();
+    let unpushed = worktrees_dir(&world.clone).join("agent-unpushed");
+    std::fs::create_dir_all(worktrees_dir(&world.clone)).expect("the worktrees directory");
+    run_git(
+        &world.clone,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "agent-unpushed",
+            &unpushed.display().to_string(),
+        ],
+    );
+    // A commit that was never pushed anywhere, so nothing else reaches it.
+    std::fs::write(unpushed.join("work.md"), "nowhere else\n").expect("a file");
+    commit(&unpushed, "work nothing else has");
+    world.containerise();
+    // The listing still names it; the admin directory it named does not exist.
+    let listing = run_git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(listing.contains("agent-unpushed"), "{listing}");
+    let picture = {
+        let runner = ProcessRunner::new();
+        let git = Git::new(&runner);
+        ClonePicture::of(&git, &world.clone).expect("git listed the clone")
+    };
+    std::fs::remove_dir_all(
+        world
+            .clone
+            .join(".git")
+            .join("worktrees")
+            .join("agent-unpushed"),
+    )
+    .expect("the admin directory, as a concurrent prune leaves it");
+
+    let runner = ProcessRunner::new();
+    let git = Git::new(&runner);
+    let status = picture
+        .status_of(&git, &world.clone, Some(&world.bare), &unpushed)
+        .expect("a linked worktree of this clone");
+
+    let WorktreeStatus::Forgotten { holds, .. } = &status else {
+        panic!("expected the forgotten arm, got {status:?}");
+    };
+    assert!(
+        matches!(holds, Unsaved::WouldLose(_)),
+        "the commit is nowhere else and the registration could say so: {holds:?}"
+    );
+    assert!(matches!(
+        decide(status, Insistence::NotInsisted),
+        WorktreeDecision::Keep(_)
+    ));
+}
+
+#[test]
 fn a_gitfile_naming_the_clones_own_admin_directory_is_not_a_worktree() {
     // The tail of a gitfile is file content, and file content is not trusted to
     // be a name: `..` would name the clone's own `.git` and have this module

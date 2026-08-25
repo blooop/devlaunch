@@ -413,30 +413,69 @@ fn unsaved_in(
         Ok(None) => {}
         Ok(Some(changed)) => losses.push(changed),
     }
-    match in_the_cache(git, bare, head.commit()) {
-        InTheCache::Reached => {}
-        InTheCache::Beyond | InTheCache::CouldNotSay => {
-            match git.unpushed_commits(clone, head.revision()).said() {
-                None => {
-                    return Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
-                        clone: directory.to_path_buf(),
-                        branch: head.named(),
-                        reason: "neither the repository cache nor the clone could say whether \
-                                 these commits are anywhere else"
-                            .to_owned(),
-                    });
-                }
-                Some(unpushed) => {
-                    if let Some(commits) = NonEmpty::of(unpushed.lines().map(str::to_owned)) {
-                        losses.push(Loss::Unpushed(commits));
-                    }
-                }
-            }
-        }
+    match unreachable_commits_in(git, clone, bare, directory, head) {
+        Err(could_not_tell) => return could_not_tell,
+        Ok(None) => {}
+        Ok(Some(commits)) => losses.push(commits),
     }
     match Losses::of(losses) {
         Some(losses) => Unsaved::WouldLose(losses),
         None => Unsaved::NothingToLose,
+    }
+}
+
+/// The commits `head` holds that neither the sibling bare cache nor the clone can
+/// reach, or that neither could be asked.
+///
+/// The cache goes first, for the stale-ref reason [`InTheCache`] carries.
+fn unreachable_commits_in(
+    git: &Git<'_>,
+    clone: &Path,
+    bare: Option<&Path>,
+    directory: &Path,
+    head: &WorktreeHead,
+) -> Result<Option<Loss>, Unsaved> {
+    match in_the_cache(git, bare, head.commit()) {
+        InTheCache::Reached => Ok(None),
+        InTheCache::Beyond | InTheCache::CouldNotSay => {
+            match git.unpushed_commits(clone, head.revision()).said() {
+                None => Err(Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
+                    clone: directory.to_path_buf(),
+                    branch: head.named(),
+                    reason: "neither the repository cache nor the clone could say whether these \
+                             commits are anywhere else"
+                        .to_owned(),
+                })),
+                Some(unpushed) => {
+                    Ok(NonEmpty::of(unpushed.lines().map(str::to_owned)).map(Loss::Unpushed))
+                }
+            }
+        }
+    }
+}
+
+/// What a registration can still be asked when its admin directory has gone.
+///
+/// A narrow window -- `git worktree list` reads the admin directories, so a
+/// registration means one was there a moment ago, and only a concurrent prune
+/// takes it away between the listing and the look. But the arm this lands on is
+/// the arm that deletes, and the registration still names a head, so the commits
+/// can be asked about even though the working tree cannot. Fails towards keeping,
+/// like everything else here.
+fn unsaved_without_an_admin_dir(
+    git: &Git<'_>,
+    clone: &Path,
+    bare: Option<&Path>,
+    directory: &Path,
+    head: &WorktreeHead,
+) -> Unsaved {
+    match unreachable_commits_in(git, clone, bare, directory, head) {
+        Err(could_not_tell) => could_not_tell,
+        Ok(None) => Unsaved::NothingToLose,
+        Ok(Some(commits)) => match Losses::of([commits]) {
+            Some(losses) => Unsaved::WouldLose(losses),
+            None => Unsaved::NothingToLose,
+        },
     }
 }
 
@@ -571,7 +610,26 @@ fn worktree_status(
                 usage: disk_usage::exclusive_usage(directory),
             };
         }
-        _ => {
+        // A registration whose admin directory has gone: a concurrent prune, in
+        // the window between the listing and this look. No index and no HEAD, so
+        // the working tree cannot be asked -- but the registration still names a
+        // head, and the commits can be.
+        (Some(registration), None) => {
+            return WorktreeStatus::Forgotten {
+                holds: unsaved_without_an_admin_dir(
+                    git,
+                    clone,
+                    bare,
+                    directory,
+                    &registration.head,
+                ),
+                usage: disk_usage::exclusive_usage(directory),
+            };
+        }
+        // Neither. Nothing can be asked at all, and that is devlaunch#426's
+        // category 1: git has let go and the directory is the whole of what is
+        // left.
+        (None, None) => {
             return WorktreeStatus::Forgotten {
                 holds: Unsaved::NothingToLose,
                 usage: disk_usage::exclusive_usage(directory),
