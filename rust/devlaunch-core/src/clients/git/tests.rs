@@ -99,7 +99,7 @@ fn every_pinned_verb_names_its_repository_twice_and_keeps_the_clone_as_cwd() {
     let verbs: [&dyn Fn() -> GitAnswer<String>; 3] = [
         &|| git.head_branch(dir.path()),
         &|| git.status_porcelain(dir.path()),
-        &|| git.unpushed_commits(dir.path(), "feature"),
+        &|| git.unpushed_commits(dir.path()),
     ];
     for verb in verbs {
         fake.forget_calls();
@@ -133,13 +133,13 @@ fn the_pinned_verbs_ask_exactly_what_python_asked() {
     assert_eq!(strs(&argv(&fake))[3..], ["status", "--porcelain"]);
 
     fake.forget_calls();
-    git.unpushed_commits(dir.path(), "feature");
-    // Order is load-bearing: `--not` flips every ref after it, so the branch
-    // comes first. `log --oneline --not --remotes feature` is silently always
-    // empty, which would report every clone as safe to delete.
+    git.unpushed_commits(dir.path());
+    // Order is load-bearing: `--not` flips every ref after it, so `--all` comes
+    // first. `log --oneline --not --remotes --all` is silently always empty,
+    // which would report every clone as safe to delete.
     assert_eq!(
         strs(&argv(&fake))[3..],
-        ["log", "--oneline", "feature", "--not", "--remotes"]
+        ["log", "--oneline", "--all", "--not", "--remotes"]
     );
 }
 
@@ -987,7 +987,7 @@ fn nothing_here_spawns_more_than_once_per_verb() {
     git.ls_remote("url", &[]);
     git.head_branch(Path::new("/ws"));
     git.status_porcelain(Path::new("/ws"));
-    git.unpushed_commits(Path::new("/ws"), "feature");
+    git.unpushed_commits(Path::new("/ws"));
 
     assert_eq!(fake.call_count(), 27, "one spawn per verb, 27 verbs");
     assert!(

@@ -459,6 +459,20 @@ answers it is:
 | `{"wouldLose": "<what>"}` | Uncommitted changes (untracked files included), commits no remote has, or both. |
 | `{"couldNotTell": "<why>"}` | `git` could not read the clone as a repository: a half-removed `.git`, an interrupted delete. The files are still there and nothing has established that they exist anywhere else. |
 
+The commits half of that answer is asked of **every ref in the clone**, not of the
+branch it happens to have checked out. Commit on `wip`, switch back to `main`, and
+the work on `wip` is still the only copy of itself; a question scoped to the
+checked-out branch could not see it, and reported the clone as free to delete. So
+the answer covers every local branch, every worktree's HEAD including detached
+ones, and the stash, which is one ref per clone and holds work that exists nowhere
+else either.
+
+It reaches local tags too, and that has a consequence worth knowing about: a tag
+your remote carries, but which no remote *branch* reaches any more, reads as
+unpushed. A repository that tags releases on branches it later deletes will see
+that. It is a clone kept when it could have gone, which costs disk; the other
+direction costs the work.
+
 The changed paths are named, not just counted, and that matters more than it
 looks: a devcontainer that runs a package install in its `postCreateCommand` can
 leave a tracked lockfile modified in *every* workspace it builds. This repo's

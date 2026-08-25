@@ -5193,6 +5193,23 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_on_a_branch_the_clone_is_not_on_would_be_lost_too() {
+        // The reader half of #471: the widened probe has to reach the guard that
+        // actually destroys things, not only the function that answers. An agent
+        // that committed on a side branch and checked the main one back out leaves
+        // exactly this clone, and `rm` used to take it without asking.
+        let mut world = World::empty();
+        let clone = world.clone_at("r-main-aa", "main");
+        world.record("r-main-aa", "main", &clone);
+        run_git(&clone, &["checkout", "-b", "wip"]);
+        std::fs::write(clone.join("wip.txt"), "an hour of work\n").expect("a file");
+        commit(&clone, "wip");
+        run_git(&clone, &["checkout", "main"]);
+
+        assert!(losses_of(&guard_reads(&world, "r-main-aa")).contains("unpushed commit"));
+    }
+
+    #[test]
     fn a_clone_dl_has_no_record_for_answers_nothing_to_lose() {
         // What the guard does *not* cover, pinned so no README can overstate it. A
         // clone under dl's cache with no metadata record: `--ls --json` reports what
@@ -6308,6 +6325,31 @@ mod tests {
         assert!(matches!(
             kept_because(&plan, &four.disputed),
             KeptBecause::RecordsDisagree { .. }
+        ));
+    }
+
+    #[test]
+    fn an_orphan_whose_only_work_is_on_a_branch_it_is_not_on_is_kept() {
+        // #471 at the reader that removes clones by the dozen rather than one at a
+        // time, which is where the blindness cost the most: `orphan-clean` is the
+        // arm this plan removes, and a commit sitting on a branch the clone is not
+        // checked out on has to move it off that arm on its own.
+        let four = four_clones();
+        run_git(&four.orphan_clean, &["checkout", "-b", "wip"]);
+        std::fs::write(four.orphan_clean.join("wip.txt"), "an hour of work\n").expect("a file");
+        commit(&four.orphan_clean, "wip");
+        run_git(&four.orphan_clean, &["checkout", "clean"]);
+
+        let plan = plan_for(&four.world, Insistence::NotInsisted);
+
+        assert_eq!(
+            removing(&plan),
+            [] as [&Path; 0],
+            "nothing is safe to remove"
+        );
+        assert!(matches!(
+            kept_because(&plan, &four.orphan_clean),
+            KeptBecause::Objected(Objection::WouldLose(_))
         ));
     }
 

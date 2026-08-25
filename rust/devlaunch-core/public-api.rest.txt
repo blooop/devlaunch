@@ -610,7 +610,6 @@ pub devlaunch_core::domain::workspace_state::CouldNotTell::GitCouldNotRead
 pub devlaunch_core::domain::workspace_state::CouldNotTell::GitCouldNotRead::clone: std::path::PathBuf
 pub devlaunch_core::domain::workspace_state::CouldNotTell::GitCouldNotRead::reason: alloc::string::String
 pub devlaunch_core::domain::workspace_state::CouldNotTell::UnpushedNotListed
-pub devlaunch_core::domain::workspace_state::CouldNotTell::UnpushedNotListed::branch: alloc::string::String
 pub devlaunch_core::domain::workspace_state::CouldNotTell::UnpushedNotListed::clone: std::path::PathBuf
 pub devlaunch_core::domain::workspace_state::CouldNotTell::UnpushedNotListed::reason: alloc::string::String
 impl devlaunch_core::domain::workspace_state::CouldNotTell
