@@ -7,36 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **claude no longer takes the terminal title back in a `dl` session it started
-  itself.** dl names a pane after the workspace and claude renames it continuously
-  from its own read of what the session is doing, so the two are one contest and
-  claude wins every round after the first: dl's name was gone within about a
-  second. The feature shipped with `aid` setting
-  `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, but only as a prefix on the claude it
-  launched, which left every `claude` typed at a workspace's own prompt losing the
-  name. The title stage now writes the variable into the container's login
-  profile, so it reaches whoever starts claude without
-  rewriting anybody's command — the one rule aid was right to keep. `DEVLAUNCH_NO_TITLE`
-  governs all three pieces of the feature, and since a profile is read by shells that
-  start after it is written, a workspace that was already up wants a re-login or a
-  `dl <ws> recreate`.
-- **`DEVLAUNCH_NO_TTY=FALSE` no longer means one thing to the prompt and another
-  to the transport.** `dl` gates its own terminal behaviour on the same variable
-  the ssh transport is gated on, and the two read it differently: core lowercases
-  the value and strips it the way Python's `str.strip()` does before comparing it
-  against the falsey words, while `dl` kept a copy that compared the raw bytes
-  with a bare `matches!`. So `FALSE` and `" no "` opted out of the prompt and not
-  out of the pty, and a non-UTF-8 value opted out of the *pty* and not the prompt
-  — `std::env::var(..).ok()` reports such a value as unset, which is the
-  opt-out-into-opt-in inversion `osext` exists to prevent and names in as many
-  words. The copy existed because `osext` was `pub(crate)` and neither half of
-  what makes the reading right — the lossy read or Python's strip — can be
-  spelled without it, so the fix is a seam rather than a third copy:
-  `clients::ssh::tty_disabled_by_environment` is binary surface, and `dl` asks it.
-  The deleted tests only ever covered the spellings where the two agreed, which is
-  why the divergence was invisible.
+## [0.14.0] - 2026-08-25
 
 ### Added
 
@@ -55,6 +26,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   head is warned about rather than failed on.
 
 ### Fixed
+
+- **claude no longer takes the terminal title back in a `dl` session it started
+  itself.** dl names a pane after the workspace and claude renames it continuously
+  from its own read of what the session is doing, so the two are one contest and
+  claude wins every round after the first: dl's name was gone within about a
+  second. The feature shipped with `aid` setting
+  `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, but only as a prefix on the claude it
+  launched, which left every `claude` typed at a workspace's own prompt losing the
+  name. The title stage now writes the variable into the container's login
+  profile, so it reaches whoever starts claude without
+  rewriting anybody's command — the one rule aid was right to keep. `DEVLAUNCH_NO_TITLE`
+  governs all three pieces of the feature, and since a profile is read by shells that
+  start after it is written, a workspace that was already up wants a re-login or a
+  `dl <ws> recreate`.
+
+- **`DEVLAUNCH_NO_TTY=FALSE` no longer means one thing to the prompt and another
+  to the transport.** `dl` gates its own terminal behaviour on the same variable
+  the ssh transport is gated on, and the two read it differently: core lowercases
+  the value and strips it the way Python's `str.strip()` does before comparing it
+  against the falsey words, while `dl` kept a copy that compared the raw bytes
+  with a bare `matches!`. So `FALSE` and `" no "` opted out of the prompt and not
+  out of the pty, and a non-UTF-8 value opted out of the *pty* and not the prompt
+  — `std::env::var(..).ok()` reports such a value as unset, which is the
+  opt-out-into-opt-in inversion `osext` exists to prevent and names in as many
+  words. The copy existed because `osext` was `pub(crate)` and neither half of
+  what makes the reading right — the lossy read or Python's strip — can be
+  spelled without it, so the fix is a seam rather than a third copy:
+  `clients::ssh::tty_disabled_by_environment` is binary surface, and `dl` asks it.
+  The deleted tests only ever covered the spellings where the two agreed, which is
+  why the divergence was invisible.
 
 - **`aid` no longer starts the default agent when `DEVLAUNCH_AID_AGENT` holds a
   value it cannot decode.** The variable was read through
