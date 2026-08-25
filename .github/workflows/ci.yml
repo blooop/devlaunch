@@ -458,7 +458,7 @@ jobs:
               "regenerate the snapshots and commit them:" \
               "scripts/public-api-snapshots.sh (needs a nightly toolchain and the" \
               "cargo-public-api the script pins; see 'The public-API snapshots' in" \
-              "README.md). A diff in devlaunch-core/public-api.api.txt is a change" \
+              "docs/development.md). A diff in devlaunch-core/public-api.api.txt is a change" \
               "to the promised API — say which, and note that a promised type's" \
               "methods and impls diff in the rest file instead (#352)."
             exit 1

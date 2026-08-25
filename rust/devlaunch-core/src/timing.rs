@@ -87,10 +87,10 @@ pub const PREWARM_VAR: &str = "DEVLAUNCH_PREWARM_FIRED_AT";
 /// the same command: process startup happens before it. The two get quoted side
 /// by side, so each line carries its epoch.
 ///
-/// The words are Python's, byte for byte, because they are quoted in the README
+/// The words are Python's, byte for byte, because they are quoted in docs/performance.md
 /// and in every bench point recorded so far. "interpreter startup" is the one
 /// phrase in them that stops being literally true once the Rust binary is the
-/// released `dl`; changing it is a one-line change paired with the README, and
+/// released `dl`; changing it is a one-line change paired with that document, and
 /// it belongs to the cutover rather than to the port.
 pub(crate) const TOTAL_EPOCH: &str = "in-process, excluding interpreter startup";
 

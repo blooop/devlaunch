@@ -61,7 +61,7 @@
 //! the classifier is <https://github.com/blooop/devlaunch/issues/352>.
 //!
 //! `scripts/public-api-snapshots.sh` regenerates both; see "The public-API
-//! snapshots" in README.md.
+//! snapshots" in docs/development.md.
 
 // `runner` is pub so `devlaunch-test-support` can implement the trait; that
 // crate is dev-only and never shipped.

@@ -177,10 +177,20 @@ impl PtyAid {
     }
 
     /// Type a line and press Enter, the way a person at the terminal would.
+    ///
+    /// The line and its Enter go out in **one** `write_all`, and that is
+    /// load-bearing rather than tidy. A pty master write is copied into the line
+    /// discipline in one go, so a single write makes every completed line of a
+    /// paste readable at the same instant. Two writes are two of those, and the
+    /// gap between them is a window: the first one completes `fix this`, wakes
+    /// the read in `aid`, and `read_terminal_submission` drains what the terminal
+    /// holds *right now* — which, if the Enter completing `and then that` has not
+    /// been written yet, is line one alone. That is the flake in #401, and it is
+    /// the test lying about its own premise rather than a defect in what it
+    /// tests: a terminal delivering a paste writes it whole.
     fn send_line(&mut self, line: &str) {
         self.writer
-            .write_all(line.as_bytes())
-            .and_then(|()| self.writer.write_all(b"\n"))
+            .write_all(format!("{line}\n").as_bytes())
             .and_then(|()| self.writer.flush())
             .expect("typing into the pty");
     }
@@ -332,7 +342,8 @@ fn a_pasted_multi_line_prompt_arrives_whole_rather_than_leaking() {
     let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
     session.expect(BANNER);
     // One write, as a terminal delivers a paste: both lines arrive together, so
-    // the second is already queued when the first's Enter is read.
+    // the second is already queued when the first's Enter is read. `send_line`
+    // issuing exactly one write is what keeps that sentence true.
     session.send_line("fix this\nand then that");
     assert_eq!(session.wait(), 0);
     assert_eq!(

@@ -2345,17 +2345,44 @@ fi
 
     impl Trip {
         /// The payload of this trip's `ssh --command`.
+        ///
+        /// Re-parses the argv [`setup_pass`] builds, `ssh <workspace> --command
+        /// <payload>`, and the two expects are the guard on that coupling: rename
+        /// the flag or move the payload and this fails at the read, saying which of
+        /// the two assumptions broke, rather than handing the test a neighbouring
+        /// element to assert against. The shape is not this fixture's invention —
+        /// `--command` is in `SSH_VALUE_FLAGS`
+        /// (`devlaunch-test-support/src/devpod.rs`), and
+        /// `test/fixtures/devpod/conformance.json` carries an `ssh ... --command`
+        /// row measured against real devpod v0.26.1.
         fn script(&self) -> &str {
             let at = self
                 .argv
                 .iter()
                 .position(|arg| arg == "--command")
                 .expect("a trip with a --command");
-            &self.argv[at + 1]
+            self.argv.get(at + 1).expect("a --command with a payload")
         }
     }
 
     /// Stands in for the one devpod spawn point, recording what was asked of it.
+    ///
+    /// A recorder, not a third fake devpod, and that is why nothing here belongs in
+    /// `test/fixtures/devpod/conformance.json`. A fake devpod decides an outcome
+    /// *from argv*; `record` never reads argv to decide anything — it returns the
+    /// `call`-th entry of a list the test handed the constructor, and stores the
+    /// argv only so the assertions can read it back afterwards. It holds no
+    /// workspaces and has no `Running`/`Stopped` to move between.
+    ///
+    /// A corpus row is `given` state → argv → exit + `then` state, so a row written
+    /// against this has nothing to bind to at either end: there is no state to seed
+    /// and none to read back, and the exit is whatever the test wrote in the
+    /// constructor. Driving it over the corpus would assert a fixture against
+    /// itself, which is the failure the corpus was built to end.
+    ///
+    /// The fake devpod the rest of the suite meets is
+    /// `devlaunch_test_support::devpod::DevpodMachine`, reached through
+    /// `FakeRunner`, and that one *is* corpus-covered — no third fake escaped it.
     ///
     /// `answers` is consumed one per trip, the last repeating — the three-trip flow
     /// (probe, transfer, install) needs different answers to different trips, and a

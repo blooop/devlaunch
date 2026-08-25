@@ -106,7 +106,7 @@ install_claude_code() {
     # also the one devlaunch/tools.py installs into every workspace `dl` opens
     # (REQUIRED_TOOLS), the copy that reaches users rather than us; a unit test
     # asserts the two still match, so pinning one side alone fails there. See
-    # "What the prebuild tag does not promise" in README.md.
+    # "What the prebuild tag does not promise" in docs/development.md.
     if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
         su - "$TARGET_USER" -c "pixi global install --channel https://prefix.dev/blooop claude-shim"
     else
