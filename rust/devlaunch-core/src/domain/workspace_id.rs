@@ -1313,21 +1313,32 @@ mod tests {
 
     #[test]
     fn a_label_is_the_id_with_the_suffix_off_and_an_at_where_the_dash_was() {
-        // The whole claim, as one assertion over one triple: the two strings differ
-        // in exactly the five characters the tab has no use for. Nothing derives the
-        // label from the triple a second time, so a change to how the id is cut
-        // cannot move one without moving the other.
+        // The whole claim: the two strings differ in exactly the five characters the
+        // tab has no use for. Nothing derives the label from the triple a second
+        // time, so a change to how the id is cut cannot move one without moving the
+        // other.
         let parsed = id("blooop", "devlaunch", "feature/auth");
         assert_eq!(parsed.value(), "devlaunch-feature-auth-np10");
         assert_eq!(parsed.label(), "devlaunch@feature-auth");
-        assert_eq!(
-            parsed.label(),
-            parsed
-                .value()
-                .strip_suffix(&format!("-{}", parsed.suffix()))
-                .expect("an id ends with its suffix")
-                .replacen('-', "@", 1)
-        );
+
+        // Stated as a *difference*, not as a reconstruction, because which dash the
+        // `@` replaces cannot be read off the id: a repo slug holds dashes of its
+        // own, so `my-repo@main` and `my@repo-main` are the same id read two ways.
+        // That is exactly why a placement carries the name beside the id instead of
+        // recovering one from the other (`flows::launch::Placement::title`).
+        for (repo, git_ref, label) in [
+            ("devlaunch", "feature/auth", "devlaunch@feature-auth"),
+            ("my-repo", "main", "my-repo@main"),
+            ("my_repo.v2", "release/1.2", "my-repo-v2@release-1-2"),
+        ] {
+            let parsed = id("owner", repo, git_ref);
+            assert_eq!(parsed.label(), label, "{repo}@{git_ref}");
+            assert_eq!(
+                parsed.value(),
+                format!("{}-{}", parsed.label().replace('@', "-"), parsed.suffix()),
+                "the label and the id differ by the suffix and one separator"
+            );
+        }
     }
 
     #[test]
