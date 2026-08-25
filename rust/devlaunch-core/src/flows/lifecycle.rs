@@ -778,7 +778,11 @@ pub struct Insisted {
 
 impl Insisted {
     /// Nothing insisted on: what a plain `dl --prune` means.
-    pub fn nothing() -> Self {
+    ///
+    /// The command builds its pair from the flags it was given, so this spelling
+    /// of it is the tests' convenience and nothing else's.
+    #[cfg(test)]
+    pub(crate) fn nothing() -> Self {
         Self {
             clones: Insistence::NotInsisted,
             worktrees: Insistence::NotInsisted,
@@ -2064,14 +2068,16 @@ impl PrunePlan {
         self.removing.is_empty() && self.stale_records.is_empty() && self.worktrees.nothing_to_do()
     }
 
-    /// What the whole run would free.
-    pub fn freed(&self) -> DiskUsage {
-        disk_usage::total_usage(
-            self.removing
-                .iter()
-                .map(|it| it.usage.clone())
-                .chain(std::iter::once(self.worktrees.freed())),
-        )
+    /// What removing the *clone directories* would free.
+    ///
+    /// **The agent worktrees are deliberately not in it** (devlaunch#442 review,
+    /// S2). Their bytes have their own sentence, because they are a different
+    /// claim: every one of them is inside a clone this run has just said it is
+    /// keeping, so folding them in here made the headline number describe
+    /// directories that are not going, and then said the same bytes twice. Ask
+    /// [`Self::worktrees`] for that figure.
+    pub fn clones_freed(&self) -> DiskUsage {
+        disk_usage::total_usage(self.removing.iter().map(|it| it.usage.clone()))
     }
 
     /// The directory the plan's candidates were scanned under.
@@ -2375,16 +2381,15 @@ pub struct PruneReport {
 }
 
 impl PruneReport {
-    /// What this run actually freed — a total over the things it removed, with the
+    /// What the *clone directories* this run removed actually freed — with the
     /// figures the plan measured, so what a person is told they got back is what
     /// they said yes to.
-    pub fn freed(&self) -> DiskUsage {
-        disk_usage::total_usage(
-            self.removed
-                .iter()
-                .map(|it| it.usage.clone())
-                .chain(std::iter::once(self.worktrees.freed())),
-        )
+    ///
+    /// The agent worktrees are not in it, for the reason
+    /// [`PrunePlan::clones_freed`] gives: they are inside clones this run kept,
+    /// and [`WorktreeReport::freed`] is where their bytes are stated.
+    pub fn clones_freed(&self) -> DiskUsage {
+        disk_usage::total_usage(self.removed.iter().map(|it| it.usage.clone()))
     }
 
     pub fn finished(&self) -> bool {
@@ -6925,7 +6930,7 @@ pub(crate) mod tests {
         let plan = plan_for(&world, Insistence::NotInsisted);
 
         assert_eq!(removing(&plan), [big, small]);
-        assert!(plan.freed().known_bytes() > 2 * 1024 * 1024);
+        assert!(plan.clones_freed().known_bytes() > 2 * 1024 * 1024);
     }
 
     #[test]
@@ -7371,6 +7376,124 @@ pub(crate) mod tests {
         assert!(report.worktrees.removed.is_empty());
         assert_eq!(report.worktrees.withheld.len(), 1);
         assert!(worktree.exists(), "it is registered and live again");
+    }
+
+    #[test]
+    fn a_worktree_that_went_dirty_while_the_question_was_open_keeps_its_registration() {
+        // devlaunch#442 review, S1. The window is the `[y/N]` question, and a
+        // container writing into a worktree is not a participant in devlaunch's
+        // repository lock. The re-check withholds the worktree, which is the easy
+        // half. The hard half is `git worktree prune`: it is all-or-nothing across
+        // a clone, so running it drops the withheld worktree's registration too --
+        // and that registration is the only thing telling the next run this is not
+        // a directory git has forgotten. Forgotten is the arm that deletes.
+        let mut world = World::empty();
+        let clone = world.clone_at("r-live-aa", "live");
+        world.record("r-live-aa", "live", &clone);
+        let finished = an_agent_worktree(&clone, "agent-finished");
+        let unsaved = an_agent_worktree(&clone, "agent-unsaved");
+        as_a_host_sees_them(&clone);
+        world.devpod.lists(&[listed("live", &clone)]);
+
+        let plan = plan_for(&world, Insistence::NotInsisted);
+        assert_eq!(
+            plan.worktrees().removing(),
+            2,
+            "both read collectable when the question is asked: {:?}",
+            plan.worktrees()
+        );
+
+        // The write the plan on screen could not have known about.
+        std::fs::write(unsaved.join("notes.md"), "an afternoon\n").expect("a note");
+
+        let clones = clones_for(&world.repos_dir, &world.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let outcome = prune_clones(
+            &mut context,
+            &clones,
+            &mut world.storage,
+            &plan,
+            &mut ignoring(),
+        )
+        .expect("the pass ran");
+
+        let PruneOutcome::Acted(report) = &outcome else {
+            panic!("expected the pass to act, got {outcome:?}");
+        };
+        assert_eq!(report.worktrees.removed.len(), 1);
+        assert_eq!(report.worktrees.withheld.len(), 1);
+        assert!(!finished.exists(), "nothing objected to that one");
+        assert!(unsaved.exists(), "it holds a note nowhere else");
+        assert_eq!(
+            report.worktrees.metadata_held_back,
+            std::slice::from_ref(&clone),
+            "the prune has to answer to what this pass withheld, not to what the plan predicted"
+        );
+        let listing = run_git(&clone, &["worktree", "list", "--porcelain"]);
+        assert!(
+            listing.contains("agent-unsaved"),
+            "the registration is what stops the next run reading this as forgotten: {listing}"
+        );
+        drop(clones);
+
+        // And the run after it, which is where the loss actually landed: with the
+        // registration still there this reads prunable-and-dirty rather than
+        // forgotten, so it is offered to nobody and the note is still on disk.
+        let again = plan_for(&world, Insistence::NotInsisted);
+        assert_eq!(again.worktrees().removing(), 0, "{:?}", again.worktrees());
+        assert_eq!(
+            std::fs::read_to_string(unsaved.join("notes.md")).expect("the note is still here"),
+            "an afternoon\n"
+        );
+    }
+
+    #[test]
+    fn a_registration_with_nothing_behind_it_is_not_by_itself_something_to_prune() {
+        // devlaunch#442 review, S3. It frees no bytes, and the metadata prune is
+        // the whole of the work -- so a run does it, and the run after that has
+        // nothing to say. Reported as work every time and cleared by none of them,
+        // `--prune` asked the question and did nothing, forever.
+        let mut world = World::empty();
+        let clone = world.clone_at("r-live-aa", "live");
+        world.record("r-live-aa", "live", &clone);
+        let removed_by_hand = an_agent_worktree(&clone, "agent-gone");
+        as_a_host_sees_them(&clone);
+        std::fs::remove_dir_all(&removed_by_hand).expect("a directory removed by hand");
+        world.devpod.lists(&[listed("live", &clone)]);
+
+        let plan = plan_for(&world, Insistence::NotInsisted);
+        assert_eq!(
+            plan.worktrees().clones()[0]
+                .registrations_with_nothing_here()
+                .container_paths(),
+            1
+        );
+        assert!(
+            !plan.nothing_to_do(),
+            "the registration can be cleared, so clearing it is work"
+        );
+
+        let clones = clones_for(&world.repos_dir, &world.devpod);
+        {
+            let mut context = CommandContext::new(&world.devpod);
+            prune_clones(
+                &mut context,
+                &clones,
+                &mut world.storage,
+                &plan,
+                &mut ignoring(),
+            )
+            .expect("the pass ran");
+        }
+        drop(clones);
+
+        let again = plan_for(&world, Insistence::NotInsisted);
+
+        assert!(
+            again.nothing_to_do(),
+            "the prune cleared it, so there is nothing left to offer: {:?}",
+            again.worktrees()
+        );
     }
 
     #[test]

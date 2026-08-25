@@ -1467,6 +1467,57 @@ fn plain_force_does_not_reach_the_agent_worktrees() {
 }
 
 #[test]
+fn the_clone_sentences_count_clone_bytes_and_the_worktree_sentence_counts_worktree_bytes() {
+    // devlaunch#442 review, S2. The worktree total used to be chained into the
+    // plan's and the report's figures and then spent on clone sentences, so
+    // "Removing 1 that nothing references -- 128.0 KiB" sat above a single
+    // 120.0 KiB row, and "Removed 0 clone director(ies) -- 8.0 KiB." was printed
+    // over a run that removed no clone at all. Scaled to the host in devlaunch#426
+    // that is 104 GB folded into the number somebody says yes to.
+    let world = World::with(&["--prunable", "--agent-worktrees"]);
+    let run = world.answering("no\n", &["--prune"]);
+    run.exited(0);
+
+    let headline = a_size_in(&run.out, "Removing 1 that nothing references -- ");
+    let only_row = a_size_in(&run.out, "devlaunch-gone-nobody (");
+    assert_eq!(
+        headline, only_row,
+        "the headline is a total over the clone rows under it, and there is one: {}",
+        run.out
+    );
+
+    // And the same bytes are not stated twice: the worktree section has its own.
+    let worktrees = a_size_in(&run.out, "Agent git worktrees inside the clones above -- ");
+    assert!(worktrees > 0.0, "{}", run.out);
+    assert_ne!(
+        worktrees, headline,
+        "these are different claims about different directories: {}",
+        run.out
+    );
+}
+
+/// The size `dl` printed straight after `after`, in whatever unit it chose.
+///
+/// The unit is not normalised because nothing here compares across units: every
+/// figure in one run of this fixture is KiB, and a comparison that silently
+/// succeeded across units would be the bug rather than the check.
+fn a_size_in(text: &str, after: &str) -> f64 {
+    let at = text
+        .find(after)
+        .unwrap_or_else(|| panic!("no {after:?} in {text}"))
+        + after.len();
+    let number: String = text[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    assert!(
+        text[at + number.len()..].starts_with(" KiB"),
+        "this fixture's figures are all KiB: {text}"
+    );
+    number.parse().expect("a number")
+}
+
+#[test]
 fn the_listing_attributes_the_bytes_that_are_agent_worktrees() {
     // The ask this one is on a different surface for: it was invisible in
     // `--ls --size` on the host that filled up, which is why it got to 100%.

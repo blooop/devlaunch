@@ -1383,7 +1383,7 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         lines.push(format!(
             "Removing {} that nothing references -- {}:",
             plan.removing().len(),
-            describe_usage(&plan.freed())
+            describe_usage(&plan.clones_freed())
         ));
         for reclaimable in plan.removing() {
             let mut line = format!(
@@ -1469,14 +1469,27 @@ fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
                 worktree_kept_because(&kept.because)
             ));
         }
-        if found.registrations_with_nothing_here() > 0 {
+        // Two sentences rather than one number, because the two are different
+        // facts: a container path is what every worktree an agent made inside a
+        // devcontainer carries, and a path in this clone with nothing at it is
+        // somebody's own removal or a run interrupted halfway. Neither frees
+        // anything.
+        let nothing_here = found.registrations_with_nothing_here();
+        if nothing_here.container_paths() > 0 {
             lines.push(format!(
-                "    - {} registration(s) here name no directory, so nothing is freed by \
-                 forgetting them",
-                found.registrations_with_nothing_here()
+                "    - {} registration(s) here name a path inside a container, which never \
+                 resolved on this host, so nothing is freed by forgetting them",
+                nothing_here.container_paths()
             ));
         }
-        if !found.metadata_may_be_pruned() {
+        if nothing_here.deleted() > 0 {
+            lines.push(format!(
+                "    - {} registration(s) here name a directory in this clone that is not there \
+                 any more, so nothing is freed by forgetting them",
+                nothing_here.deleted()
+            ));
+        }
+        if !found.metadata_gate().open() {
             lines.push(
                 "    - git worktree prune is held back here: it is all-or-nothing across a \
                  clone, and it would drop the registration that is keeping a worktree above"
@@ -1608,7 +1621,7 @@ pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
     let mut lines = vec![format!(
         "Removed {} clone director(ies) -- {}.",
         report.removed.len(),
-        describe_usage(&report.freed())
+        describe_usage(&report.clones_freed())
     )];
     for withheld in &report.withheld {
         lines.push(format!(

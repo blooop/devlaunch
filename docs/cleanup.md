@@ -280,7 +280,12 @@ A directory found there is one of four things:
 
 Removing one is refused for the same two things a clone's removal is refused
 for, asked of the worktree rather than of the clone: uncommitted or untracked
-work in it, and commits nothing else reaches. Both matter. A worktree on a
+work in it, and commits nothing else reaches. The nested agent worktrees inside a
+worktree are the one thing left out of the first question, because they are what
+this sweep reasons about separately and a worktree holding one would otherwise
+read dirty forever. They are left out by *being* worktrees, not by where they sit:
+content under a `.claude/worktrees/` that is not a worktree is somebody's, and a
+tracked file modified there is an edit like any other. Both matter. A worktree on a
 fully-merged branch with an afternoon of unstaged edits in it reads as finished
 if you only ask about commits, and a worktree on no branch at all has no branch
 for a branch-keyed question to find. `--force-worktrees` is the one flag that
@@ -324,6 +329,37 @@ what it holds, and the report says so. That is not tidiness: the prune is
 all-or-nothing across a clone, so running it would drop the registration of the
 kept worktree too, turning it into a forgotten directory, which the next run
 removes outright. Held back, the guard keeps working.
+
+**The holdback answers to what the run did, not to what the plan said it would
+do.** Those two can differ, and the gap is exactly the window this command
+already documents: the plan is on screen, a container writes into a worktree, and
+the re-check refuses one the plan meant to remove. Ask the plan and no holdback
+fires, the prune takes the refused worktree's registration with it, and the next
+run reads a forgotten directory and removes it. So the two passes fold their
+outcomes into one gate rather than one of them reading the other's forecast.
+
+For the same reason, a directory with no registration is still asked what it holds
+whenever there is anything left to ask through. "git has already forgotten it" is
+the one arm that removes without a probe, so it is the arm a wrong answer is most
+expensive on: if the admin directory is still there, so are an index and a HEAD,
+and the question gets put. With the admin directory gone there is genuinely
+nothing to ask, and that is the limit rather than a choice.
+
+A registration with no directory behind it frees nothing, and the report says
+which kind it is: a container path, which never resolved on this host and is the
+ordinary shape of every worktree an agent made inside a devcontainer, or a path in
+this clone with nothing at it, which is somebody's own removal or a run
+interrupted between the removal and the prune. Clearing one is a `git worktree
+prune` and no more, so a run does it and the run after that has nothing to say. It
+is not by itself something for `--prune` to ask about: while the prune is held
+back the registration is being kept on purpose, and counting it as work made the
+command ask the question and do nothing, every run.
+
+One more thing about the ordering, for an **orphan** clone that has agent
+worktrees in it: reclaiming it takes two runs. The clone-level probe counts the
+worktrees' contents as uncommitted work, correctly, because removing the clone
+would destroy whatever they hold. So run one keeps the clone and sweeps the
+worktrees; run two finds the clone empty of them and reclaims it with no flag.
 
 The bytes are also attributed in `dl --ls --size`, as a part of the clone's
 figure and never an addition, because the worktrees are inside it. They were

@@ -233,9 +233,8 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 `--prune`, `--reconcile` and `--purge` print their plan and ask first. `-y` skips the question,
 and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere else.
 `--force-worktrees` is the separate answer for the agent git worktrees `--prune` finds inside a
-clone: the locked ones, the dirty ones, and the ones holding commits nothing else reaches are
-reported and left alone without it. It is not `--force` because those are different hazards, and
-`--force` is a word people already type.
+clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and why it is not
+`--force`.
 
 ```bash
 $ dl --version
@@ -336,10 +335,10 @@ because that is a fact about a ticket or somebody's intent. It reports what exis
 one holds, via `dl --ls --json`, and leaves the choosing to you or to a tool that knows.
 
 An agent harness working inside a workspace makes its own git worktrees under the clone, and
-nothing used to collect them: on one host they were 82% of everything in the cache, 104 GB, and
-no `dl --ls --size` row said so. That figure is now named, and `--prune` reaches inside the
-clones it keeps to reclaim the ones that are finished. [docs/cleanup.md](docs/cleanup.md) has the
-rules and what each refusal is asserting.
+nothing used to collect them. `dl --ls --size` now says how much of a clone is worktrees, and
+`--prune` reaches inside the clones it keeps to reclaim the ones that are finished.
+[docs/cleanup.md](docs/cleanup.md) has the rules, the measurements, and what each refusal is
+asserting.
 
 Deleting a workspace takes its clone and the named Docker volumes its devcontainer created.
 Images are yours: `docker system df` is what shows those.

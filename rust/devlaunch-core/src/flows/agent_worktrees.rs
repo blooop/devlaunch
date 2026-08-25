@@ -27,7 +27,9 @@
 //! [`decide`] is the only place any of them becomes deletable:
 //!
 //! - **Forgotten.** No registration names it. git has already let go and the
-//!   directory is the whole of what is left.
+//!   directory is the whole of what is left. This is the arm that deletes without
+//!   git's help, so it is asked what it holds wherever there is still an admin
+//!   directory to ask through, and only takes git's word when there is not.
 //! - **Prunable.** Registered, and git's own listing says the registration is
 //!   collectable — which on a host is what a container-registered worktree looks
 //!   like, because the path it names is not there.
@@ -163,9 +165,13 @@ pub struct Lock {
 struct Registration {
     /// Where inside a clone the registration sits, as
     /// `.claude/worktrees/<leaf>[/.claude/worktrees/<leaf>…]`. This is the join
-    /// key; the path git printed is deliberately not kept, because on a host it
-    /// names nothing.
+    /// key, and the only thing a directory is ever matched on.
     inside: String,
+    /// The path git printed, kept for one question and never handed to the
+    /// filesystem: whether it is a path *in this clone* or a container's. That is
+    /// the whole of what tells a registration whose directory somebody deleted
+    /// apart from one that never resolved on this host.
+    registered_at: PathBuf,
     head: WorktreeHead,
     locked: Option<Lock>,
     prunable: bool,
@@ -181,6 +187,7 @@ fn registrations(listing: &str) -> Vec<Registration> {
     let mut found = Vec::new();
     for paragraph in listing.split("\n\n") {
         let mut inside = None;
+        let mut registered_at = None;
         let mut reference = None;
         let mut commit = None;
         let mut locked = None;
@@ -191,7 +198,10 @@ fn registrations(listing: &str) -> Vec<Registration> {
                 None => (line, None),
             };
             match (key, rest) {
-                ("worktree", Some(path)) => inside = inside_a_worktrees_dir(Path::new(path)),
+                ("worktree", Some(path)) => {
+                    inside = inside_a_worktrees_dir(Path::new(path));
+                    registered_at = Some(PathBuf::from(path));
+                }
                 ("HEAD", Some(sha)) => commit = Some(sha.to_owned()),
                 ("branch", Some(name)) => reference = Some(name.to_owned()),
                 ("locked", reason) => {
@@ -203,7 +213,8 @@ fn registrations(listing: &str) -> Vec<Registration> {
                 _ => {}
             }
         }
-        let (Some(inside), Some(commit)) = (inside, commit) else {
+        let (Some(inside), Some(registered_at), Some(commit)) = (inside, registered_at, commit)
+        else {
             continue;
         };
         let head = match reference {
@@ -212,6 +223,7 @@ fn registrations(listing: &str) -> Vec<Registration> {
         };
         found.push(Registration {
             inside,
+            registered_at,
             head,
             locked,
             prunable,
@@ -269,6 +281,14 @@ fn linked_worktree_name(directory: &Path) -> Option<String> {
     let (name, rest) = parts.split_last()?;
     let (worktrees, rest) = rest.split_last()?;
     let dot_git = rest.last()?;
+    // `..` would name the clone's own `.git` and `.` its `.git/worktrees`, so a
+    // gitfile carrying either would have this module probe, and then remove,
+    // something that is not one worktree -- and without this guard it *did*
+    // remove it, as a directory git had forgotten. The tail is file content and
+    // file content is not trusted to be a name (devlaunch#442 review, S6).
+    if name == "." || name == ".." || name.is_empty() {
+        return None;
+    }
     (dot_git == ADMIN_DIR[0] && worktrees == ADMIN_DIR[1]).then(|| name.clone())
 }
 
@@ -284,15 +304,20 @@ fn linked_worktree_name(directory: &Path) -> Option<String> {
 /// ceiling, and an arm nobody can reclaim is an arm nobody should pay to weigh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorktreeStatus {
-    /// No registration names it, so there is no admin directory to ask git
-    /// anything through either.
+    /// No registration names it: git has let go of the name.
     ///
-    /// Nothing is probed here and that is a real limit, not an oversight: with
-    /// the admin directory gone there is no index and no HEAD, so no `git status`
-    /// can be run against the directory at all. devlaunch#426 calls this category
-    /// safe to delete outright, and it is the one category where devlaunch takes
-    /// git's word for it rather than checking.
-    Forgotten { usage: DiskUsage },
+    /// devlaunch#426 calls this category safe to delete outright, and it is the
+    /// one arm that takes git's word rather than checking — **but only where there
+    /// is nothing left to check with**. With the admin directory gone there is no
+    /// index and no HEAD, so no question can be put at all, and `holds` is
+    /// [`Unsaved::NothingToLose`] because that is the honest answer rather than a
+    /// shortcut. Where the admin directory *is* here the directory can still be
+    /// asked what it holds, and it is asked: reaching this arm with one present
+    /// means git dropped the name or the suffix join missed, and no wrong
+    /// classification should be able to cost somebody work (devlaunch#442 review,
+    /// S1). This is the arm that deletes, so it is the arm that has to be hardest
+    /// to reach by accident.
+    Forgotten { holds: Unsaved, usage: DiskUsage },
     /// Registered, and git's own listing calls the registration prunable.
     Prunable {
         head: WorktreeHead,
@@ -368,11 +393,11 @@ fn in_the_cache(git: &Git<'_>, bare: Option<&Path>, commit: &str) -> InTheCache 
 ///   refuses. `--git-dir=<clone>/.git/worktrees/<name>` with
 ///   `--work-tree=<directory>` is the same repository reached from the side that
 ///   does resolve here.
-/// - **`.claude/worktrees/` is excluded from it.** A worktree holding a nested
-///   worktree would otherwise always read dirty — the nested directory is
-///   untracked — and would be kept forever while the bytes that matter sat inside
-///   it. Those nested directories are what this sweep reasons about separately,
-///   not somebody's unsaved work.
+/// - **Nested worktrees are dropped from the answer, and nothing else is.** A
+///   worktree holding a nested one would otherwise always read dirty — the nested
+///   directory is untracked — and would be kept forever while the bytes that
+///   matter sat inside it. [`dirt_in`] carries which entries go and why the
+///   exclusion is per-entry rather than per-path.
 /// - **Reachability asks the cache first.** See [`InTheCache`].
 fn unsaved_in(
     git: &Git<'_>,
@@ -382,19 +407,11 @@ fn unsaved_in(
     directory: &Path,
     head: &WorktreeHead,
 ) -> Unsaved {
-    let dirt = match git.worktree_dirt(admin, directory).said() {
-        None => {
-            return Unsaved::CouldNotTell(CouldNotTell::GitCouldNotRead {
-                clone: directory.to_path_buf(),
-                reason: "git could not read this worktree through the clone's admin directory"
-                    .to_owned(),
-            });
-        }
-        Some(dirt) => dirt,
-    };
     let mut losses = Vec::new();
-    if let Some(changed) = NonEmpty::of(dirt.lines().map(str::to_owned)) {
-        losses.push(Loss::Uncommitted(changed));
+    match dirt_in(git, admin, directory) {
+        Err(could_not_tell) => return could_not_tell,
+        Ok(None) => {}
+        Ok(Some(changed)) => losses.push(changed),
     }
     match in_the_cache(git, bare, head.commit()) {
         InTheCache::Reached => {}
@@ -423,6 +440,116 @@ fn unsaved_in(
     }
 }
 
+/// What one worktree directory holds that is not committed, asked through the
+/// admin directory, or that git would not say.
+///
+/// **The nested-worktree exclusion lives here rather than in a pathspec, and that
+/// is the whole point** (devlaunch#442 review, S4). `:!.claude/worktrees` kept the
+/// motivating case working — a worktree holding a nested one would otherwise read
+/// dirty forever, and be kept forever while the bytes that matter sat inside it —
+/// but it excluded the place rather than the thing, so it also hid two kinds of
+/// real work: a *tracked* file modified under that path, and plain content
+/// somebody put under a `.claude/worktrees/` that is not a worktree at all. The
+/// second is the dangerous one, because the sweep skips it too (it is not a linked
+/// worktree), so nothing reported it and nothing protected it, and it went when
+/// its parent did.
+///
+/// So git is asked without a pathspec and the answer is filtered by what an entry
+/// *is*: an untracked entry is dropped only when everything under it is a
+/// confirmed linked worktree, which is exactly the set this sweep reasons about
+/// separately. A tracked change is never dropped, whatever its path.
+fn dirt_in(git: &Git<'_>, admin: &Path, directory: &Path) -> Result<Option<Loss>, Unsaved> {
+    let dirt = match git.worktree_dirt(admin, directory).said() {
+        None => {
+            return Err(Unsaved::CouldNotTell(CouldNotTell::GitCouldNotRead {
+                clone: directory.to_path_buf(),
+                reason: "git could not read this worktree through the clone's admin directory"
+                    .to_owned(),
+            }));
+        }
+        Some(dirt) => dirt,
+    };
+    let lines = dirt
+        .lines()
+        .filter(|line| !is_only_nested_worktrees(directory, line))
+        .map(str::to_owned);
+    Ok(NonEmpty::of(lines).map(Loss::Uncommitted))
+}
+
+/// The dirt half alone, for a directory with no registration to ask about
+/// reachability with.
+fn dirt_only(git: &Git<'_>, admin: &Path, directory: &Path) -> Unsaved {
+    match dirt_in(git, admin, directory) {
+        Err(could_not_tell) => could_not_tell,
+        Ok(None) => Unsaved::NothingToLose,
+        Ok(Some(loss)) => match Losses::of([loss]) {
+            Some(losses) => Unsaved::WouldLose(losses),
+            None => Unsaved::NothingToLose,
+        },
+    }
+}
+
+/// Whether one `git status --porcelain` line is nothing but agent worktrees the
+/// sweep is reasoning about separately.
+///
+/// Only ever true of an **untracked** entry on the `.claude/worktrees/` spine.
+/// Both halves of that matter: a tracked change under the same path is somebody's
+/// edit to a file the repository knows about, and an untracked entry anywhere else
+/// is not this module's business and must not cost a walk to find out.
+fn is_only_nested_worktrees(root: &Path, line: &str) -> bool {
+    let Some(entry) = line.strip_prefix("?? ") else {
+        return false;
+    };
+    // git quotes a path holding anything unusual. Quoted means unparsed here,
+    // which reads as work, which is the direction that keeps the directory.
+    if entry.starts_with('"') {
+        return false;
+    }
+    let entry = Path::new(entry.trim_end_matches('/'));
+    on_the_worktrees_spine(entry) && holds_only_worktrees(&root.join(entry))
+}
+
+/// Whether `entry` is the `.claude/worktrees/` spine or something under it.
+///
+/// The cheap guard in front of [`holds_only_worktrees`], which walks: without it
+/// an untracked `build/` would be walked in full to establish what everyone
+/// already knows, which is what the pathspec was buying.
+fn on_the_worktrees_spine(entry: &Path) -> bool {
+    let parts: Vec<String> = entry
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    parts.first().is_some_and(|first| first == WORKTREES_DIR[0])
+        && parts.get(1).is_none_or(|second| second == WORKTREES_DIR[1])
+}
+
+/// Whether every leaf under `path` is inside a confirmed linked worktree.
+///
+/// Stops at each worktree rather than descending into it, which is what bounds
+/// the walk: the multi-gigabyte `.pixi/` that makes these directories worth
+/// reclaiming is always inside one, so the only thing walked is content that is
+/// *not* a worktree — which is precisely the content this is looking for.
+///
+/// A symlink is not descended into, which is what makes the recursion terminate:
+/// a link back up its own tree would otherwise be walked forever. It reads as
+/// something to keep, like anything else here that is not a confirmed worktree.
+fn holds_only_worktrees(path: &Path) -> bool {
+    if std::fs::symlink_metadata(path).is_ok_and(|it| it.is_symlink()) {
+        return false;
+    }
+    if linked_worktree_name(path).is_some() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        // A file, or a directory that will not be read. Neither is a worktree, so
+        // neither is something to drop from the answer.
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .all(|entry| holds_only_worktrees(&entry.path()))
+}
+
 /// Which arm `directory` is, asked in the order that fails towards keeping it.
 fn worktree_status(
     git: &Git<'_>,
@@ -432,10 +559,24 @@ fn worktree_status(
     admin: Option<&Path>,
     registered: Option<&Registration>,
 ) -> WorktreeStatus {
-    let (Some(registration), Some(admin)) = (registered, admin) else {
-        return WorktreeStatus::Forgotten {
-            usage: disk_usage::exclusive_usage(directory),
-        };
+    let (registration, admin) = match (registered, admin) {
+        (Some(registration), Some(admin)) => (registration, admin),
+        // An admin directory with nothing joined to it. git has dropped the name,
+        // or this module's suffix join missed one -- and either way the index and
+        // HEAD are here, so the directory is asked what it holds before it is
+        // treated as an empty leftover.
+        (None, Some(admin)) => {
+            return WorktreeStatus::Forgotten {
+                holds: dirt_only(git, admin, directory),
+                usage: disk_usage::exclusive_usage(directory),
+            };
+        }
+        _ => {
+            return WorktreeStatus::Forgotten {
+                holds: Unsaved::NothingToLose,
+                usage: disk_usage::exclusive_usage(directory),
+            };
+        }
     };
     if !registration.prunable && registration.locked.is_none() {
         return WorktreeStatus::Held {
@@ -548,7 +689,9 @@ pub(crate) fn decide(status: WorktreeStatus, insistence: Insistence) -> Worktree
         WorktreeStatus::Held { head } => {
             return WorktreeDecision::Keep(WorktreeKept::StillHeld { head });
         }
-        WorktreeStatus::Forgotten { usage } => (SeenAs::Forgotten, usage, Vec::new()),
+        WorktreeStatus::Forgotten { holds, usage } => {
+            (SeenAs::Forgotten, usage, objections_of(None, &holds))
+        }
         WorktreeStatus::Prunable { holds, usage, .. } => {
             (SeenAs::Prunable, usage, objections_of(None, &holds))
         }
@@ -617,7 +760,7 @@ pub struct CloneWorktrees {
     repo: String,
     removing: Vec<ReclaimableWorktree>,
     keeping: Vec<KeptWorktree>,
-    registrations_with_nothing_here: usize,
+    registrations_with_nothing_here: RegistrationsWithNothingHere,
 }
 
 impl CloneWorktrees {
@@ -647,44 +790,142 @@ impl CloneWorktrees {
     /// Registrations under a `.claude/worktrees/` with no directory here at all.
     ///
     /// Worth its own count because it is the one category with **no bytes behind
-    /// it**: the registration is either a container path that never resolved on
-    /// this host or a directory somebody removed by hand, and either way there is
-    /// nothing to free. `git worktree prune` is the whole of the work.
-    pub fn registrations_with_nothing_here(&self) -> usize {
+    /// it**: there is nothing to free, and [`Git::worktree_prune`] is the whole of
+    /// the work.
+    pub fn registrations_with_nothing_here(&self) -> RegistrationsWithNothingHere {
         self.registrations_with_nothing_here
     }
 
-    /// What removing this clone's share would free.
-    pub fn freed(&self) -> DiskUsage {
-        disk_usage::total_usage(self.removing.iter().map(|it| it.usage.clone()))
+    /// How the plan expects `git worktree prune` to go in this clone.
+    ///
+    /// **A forecast, and it says so.** It is a fold over the worktrees the *plan*
+    /// is keeping, which is everything the plan can know — and the acting pass
+    /// re-classifies every candidate, so it can withhold one the plan meant to
+    /// remove. That pass therefore builds its own gate from this one and folds its
+    /// own outcomes in, rather than reading a prediction: see [`reclaim`].
+    pub fn metadata_gate(&self) -> MetadataGate {
+        self.keeping
+            .iter()
+            .fold(MetadataGate::default(), |gate, kept| {
+                gate.and_keeping(&kept.because)
+            })
     }
 
-    /// Whether `git worktree prune` may run in this clone once the removals are
-    /// done.
+    /// Whether this clone's share of the sweep would change anything.
     ///
-    /// **A data-loss guard, not tidiness.** `git worktree prune` is
-    /// all-or-nothing across a clone, and on a host it drops the registration of
-    /// *every* container-registered worktree — including one being kept because
-    /// it is dirty or holds commits nothing else reaches. That registration is the
-    /// only reason a later run can tell the directory apart from a forgotten one,
-    /// and a forgotten one is removed outright. So pruning here would protect a
-    /// worktree once and hand it over the second time.
-    ///
-    /// A lock survives a prune by git's own rule, so a worktree kept only for
-    /// being locked does not hold the prune back.
-    pub fn metadata_may_be_pruned(&self) -> bool {
-        !self.keeping.iter().any(|kept| match &kept.because {
-            WorktreeKept::StillHeld { .. } => false,
-            WorktreeKept::Objected(objections) => objections
-                .iter()
-                .any(|objection| matches!(objection, WorktreeObjection::Holds(_))),
-        })
+    /// **A registration with nothing behind it is not by itself work.** It frees
+    /// no bytes, and the only thing that clears it is the metadata prune — which
+    /// runs only where the gate is open. Where the gate is closed the registration
+    /// is being kept on purpose, so counting it as work makes `--prune` print a
+    /// section, ask the question and do nothing, every run, for as long as the
+    /// worktree it is protecting stays protected (devlaunch#442 review, S3).
+    fn nothing_to_do(&self) -> bool {
+        self.removing.is_empty()
+            && (self.registrations_with_nothing_here.none() || !self.metadata_gate().open())
     }
 
     fn nothing_to_say(&self) -> bool {
         self.removing.is_empty()
             && self.keeping.is_empty()
-            && self.registrations_with_nothing_here == 0
+            && self.registrations_with_nothing_here.none()
+    }
+}
+
+/// Whether `git worktree prune` may still run in one clone.
+///
+/// **A data-loss guard, not tidiness, and it answers to outcomes rather than to
+/// predictions.** `git worktree prune` is all-or-nothing across a clone, and on a
+/// host it drops the registration of *every* container-registered worktree —
+/// including one being kept because it is dirty or holds commits nothing else
+/// reaches. That registration is the only reason a later run can tell the
+/// directory apart from a forgotten one, and [`WorktreeStatus::Forgotten`] is the
+/// arm that deletes. So pruning there protects a worktree once and hands it over
+/// the second time.
+///
+/// Which is why this is a value that gets folded, and not a method on
+/// [`CloneWorktrees`]. A gate read off the plan's keeps alone misses the candidate
+/// the acting pass re-classified and withheld — the prune then ran, took that
+/// worktree's registration with it, and the next run removed the directory and an
+/// afternoon's uncommitted work outright, with no flag typed at either run
+/// (devlaunch#442 review, S1). The plan and the act disagree by design; the fold
+/// is what stops that disagreement being spendable.
+///
+/// A lock survives a prune by git's own rule, so a worktree kept only for being
+/// locked does not close the gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MetadataGate {
+    closed: bool,
+}
+
+impl MetadataGate {
+    /// Fold in one worktree that is staying, whichever pass decided it.
+    pub(crate) fn and_keeping(mut self, because: &WorktreeKept) -> Self {
+        self.closed |= registration_goes_on_protecting(because);
+        self
+    }
+
+    /// Whether the prune may run.
+    pub fn open(self) -> bool {
+        !self.closed
+    }
+}
+
+/// Whether the registration is what goes on protecting a worktree that is
+/// staying. The single rule, which both passes reach through [`MetadataGate`].
+fn registration_goes_on_protecting(because: &WorktreeKept) -> bool {
+    match because {
+        // git holds this one, and git skips what it holds when it prunes.
+        WorktreeKept::StillHeld { .. } => false,
+        WorktreeKept::Objected(objections) => objections
+            .iter()
+            .any(|objection| matches!(objection, WorktreeObjection::Holds(_))),
+    }
+}
+
+/// Registrations under a `.claude/worktrees/` with no directory in the clone,
+/// told apart by *why* there is nothing there.
+///
+/// **Two counts rather than one, because the sharpened spec on devlaunch#426 asks
+/// the two apart and they are different facts.** Neither has host bytes behind it,
+/// so `git worktree prune` is the whole of the work either way — but a registered
+/// container path that never resolved here is the ordinary shape of every worktree
+/// an agent made inside a devcontainer, where a registration naming a directory in
+/// *this* clone that is not there is either somebody's own `rm -rf` or a previous
+/// run interrupted between the removal and the prune. One is routine and one is
+/// worth reading, and a single number said neither.
+///
+/// The registered path is compared as a prefix and never resolved, which is the
+/// module's whole discipline about these paths: on a host a container path names
+/// nothing, and asking the filesystem about it is how that fact gets lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RegistrationsWithNothingHere {
+    container_paths: usize,
+    deleted: usize,
+}
+
+impl RegistrationsWithNothingHere {
+    /// Registered at a path outside this clone — a container's, which is what
+    /// every worktree an agent made inside a devcontainer carries.
+    pub fn container_paths(self) -> usize {
+        self.container_paths
+    }
+
+    /// Registered at a path inside this clone, with nothing at it.
+    pub fn deleted(self) -> usize {
+        self.deleted
+    }
+
+    /// Whether there are none of either.
+    pub fn none(self) -> bool {
+        self.container_paths == 0 && self.deleted == 0
+    }
+
+    fn count(&mut self, clone: &Path, registered_at: &Path) {
+        if registered_at.starts_with(clone) {
+            self.deleted += 1;
+        } else {
+            self.container_paths += 1;
+        }
     }
 }
 
@@ -704,12 +945,17 @@ impl WorktreeSweep {
     }
 
     /// How many directories this run would remove.
-    pub fn removing(&self) -> usize {
+    ///
+    /// The counts are what the tests assert against; `dl` reads the per-clone
+    /// lists, so nothing outside this crate has ever wanted either of these.
+    #[cfg(test)]
+    pub(crate) fn removing(&self) -> usize {
         self.clones.iter().map(|it| it.removing.len()).sum()
     }
 
     /// How many it would leave, whatever the reason.
-    pub fn keeping(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn keeping(&self) -> usize {
         self.clones.iter().map(|it| it.keeping.len()).sum()
     }
 
@@ -724,9 +970,7 @@ impl WorktreeSweep {
 
     /// Whether this sweep would change anything on disk or in git.
     pub fn nothing_to_do(&self) -> bool {
-        self.clones
-            .iter()
-            .all(|it| it.removing.is_empty() && it.registrations_with_nothing_here == 0)
+        self.clones.iter().all(CloneWorktrees::nothing_to_do)
     }
 
     /// Whether there is nothing to say about it either.
@@ -788,12 +1032,16 @@ impl ClonePicture {
         ))
     }
 
-    /// Registrations under a `.claude/worktrees/` with no directory in `clone`.
-    fn registrations_with_nothing_here(&self, clone: &Path) -> usize {
-        self.registered
-            .iter()
-            .filter(|registration| !clone.join(&registration.inside).exists())
-            .count()
+    /// Registrations under a `.claude/worktrees/` with no directory in `clone`,
+    /// counted by why there is nothing there.
+    fn registrations_with_nothing_here(&self, clone: &Path) -> RegistrationsWithNothingHere {
+        let mut counted = RegistrationsWithNothingHere::default();
+        for registration in &self.registered {
+            if !clone.join(&registration.inside).exists() {
+                counted.count(clone, &registration.registered_at);
+            }
+        }
+        counted
     }
 }
 
@@ -887,7 +1135,7 @@ pub(crate) fn sweep_clone(
 /// `None` rather than a zero, because "this clone has never had an agent worktree
 /// in it" and "it has some and they cost nothing" are different facts, and the
 /// first is what nearly every clone is.
-pub fn bytes_in(clone: &Path) -> Option<DiskUsage> {
+pub(crate) fn bytes_in(clone: &Path) -> Option<DiskUsage> {
     let root = worktrees_dir(clone);
     root.is_dir().then(|| disk_usage::exclusive_usage(&root))
 }
@@ -1010,6 +1258,10 @@ pub(crate) fn reclaim(
             }));
         return;
     };
+    // Seeded from the plan's keeps and then fed every outcome this pass reaches,
+    // so the thing the prune is gated on is what happened rather than what was
+    // foreseen. See [`MetadataGate`] for what reading the forecast here cost.
+    let mut gate = clone.metadata_gate();
     let mut removed_anything = false;
     for worktree in &clone.removing {
         let status = picture.status_of(git, &clone.clone, bare, &worktree.path);
@@ -1027,6 +1279,7 @@ pub(crate) fn reclaim(
         };
         match decision {
             WorktreeDecision::Keep(because) => {
+                gate = gate.and_keeping(&because);
                 report.withheld.push(WithheldWorktree {
                     path: worktree.path.clone(),
                     because,
@@ -1045,10 +1298,13 @@ pub(crate) fn reclaim(
             }
         }
     }
-    if !removed_anything {
+    // A clone whose only outstanding work is a registration with nothing behind it
+    // still has that work done, or the plan would go on offering it forever
+    // (devlaunch#442 review, S3).
+    if !removed_anything && clone.registrations_with_nothing_here.none() {
         return;
     }
-    if !clone.metadata_may_be_pruned() {
+    if !gate.open() {
         report.metadata_held_back.push(clone.clone.clone());
         return;
     }

@@ -694,11 +694,10 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktree
 pub struct devlaunch_core::flows::agent_worktrees::CloneWorktrees
 impl devlaunch_core::flows::agent_worktrees::CloneWorktrees
 pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::clone_path(&self) -> &std::path::Path
-pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::keeping(&self) -> &[devlaunch_core::flows::agent_worktrees::KeptWorktree]
-pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::metadata_may_be_pruned(&self) -> bool
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::metadata_gate(&self) -> devlaunch_core::flows::agent_worktrees::MetadataGate
 pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::owner(&self) -> &str
-pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::registrations_with_nothing_here(&self) -> usize
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::registrations_with_nothing_here(&self) -> devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
 pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::removing(&self) -> &[devlaunch_core::flows::agent_worktrees::ReclaimableWorktree]
 pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::repo(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::CloneWorktrees
@@ -730,6 +729,20 @@ pub fn devlaunch_core::flows::agent_worktrees::Lock::eq(&self, &devlaunch_core::
 impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Lock
 pub fn devlaunch_core::flows::agent_worktrees::Lock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Lock
+pub struct devlaunch_core::flows::agent_worktrees::MetadataGate
+impl devlaunch_core::flows::agent_worktrees::MetadataGate
+pub fn devlaunch_core::flows::agent_worktrees::MetadataGate::open(self) -> bool
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::MetadataGate
+pub fn devlaunch_core::flows::agent_worktrees::MetadataGate::clone(&self) -> devlaunch_core::flows::agent_worktrees::MetadataGate
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::MetadataGate
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::MetadataGate
+pub fn devlaunch_core::flows::agent_worktrees::MetadataGate::eq(&self, &devlaunch_core::flows::agent_worktrees::MetadataGate) -> bool
+impl core::default::Default for devlaunch_core::flows::agent_worktrees::MetadataGate
+pub fn devlaunch_core::flows::agent_worktrees::MetadataGate::default() -> devlaunch_core::flows::agent_worktrees::MetadataGate
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::MetadataGate
+pub fn devlaunch_core::flows::agent_worktrees::MetadataGate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::agent_worktrees::MetadataGate
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::MetadataGate
 pub struct devlaunch_core::flows::agent_worktrees::ReclaimableWorktree
 pub devlaunch_core::flows::agent_worktrees::ReclaimableWorktree::path: std::path::PathBuf
 pub devlaunch_core::flows::agent_worktrees::ReclaimableWorktree::promotion: devlaunch_core::flows::agent_worktrees::WorktreePromotion
@@ -743,6 +756,22 @@ pub fn devlaunch_core::flows::agent_worktrees::ReclaimableWorktree::eq(&self, &d
 impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::ReclaimableWorktree
 pub fn devlaunch_core::flows::agent_worktrees::ReclaimableWorktree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::ReclaimableWorktree
+pub struct devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+impl devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::container_paths(self) -> usize
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::deleted(self) -> usize
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::none(self) -> bool
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::clone(&self) -> devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::eq(&self, &devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere) -> bool
+impl core::default::Default for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::default() -> devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+pub fn devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::RegistrationsWithNothingHere
 pub struct devlaunch_core::flows::agent_worktrees::WithheldWorktree
 pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::because: devlaunch_core::flows::agent_worktrees::WorktreeKept
 pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::path: std::path::PathBuf
@@ -777,10 +806,8 @@ pub struct devlaunch_core::flows::agent_worktrees::WorktreeSweep
 impl devlaunch_core::flows::agent_worktrees::WorktreeSweep
 pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::clones(&self) -> &[devlaunch_core::flows::agent_worktrees::CloneWorktrees]
 pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
-pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::keeping(&self) -> usize
 pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::nothing_to_do(&self) -> bool
 pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::nothing_to_say(&self) -> bool
-pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::removing(&self) -> usize
 impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WorktreeSweep
 pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::clone(&self) -> devlaunch_core::flows::agent_worktrees::WorktreeSweep
 impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WorktreeSweep
@@ -791,7 +818,6 @@ pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::default() -> devla
 impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WorktreeSweep
 pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WorktreeSweep
-pub fn devlaunch_core::flows::agent_worktrees::bytes_in(&std::path::Path) -> core::option::Option<devlaunch_core::flows::disk_usage::DiskUsage>
 pub mod devlaunch_core::flows::branch_manager
 pub enum devlaunch_core::flows::branch_manager::BranchError
 pub devlaunch_core::flows::branch_manager::BranchError::NotCreated
@@ -1552,8 +1578,6 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Clo
 pub struct devlaunch_core::flows::lifecycle::Insisted
 pub devlaunch_core::flows::lifecycle::Insisted::clones: devlaunch_core::flows::lifecycle::Insistence
 pub devlaunch_core::flows::lifecycle::Insisted::worktrees: devlaunch_core::flows::lifecycle::Insistence
-impl devlaunch_core::flows::lifecycle::Insisted
-pub fn devlaunch_core::flows::lifecycle::Insisted::nothing() -> Self
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::Insisted
 pub fn devlaunch_core::flows::lifecycle::Insisted::clone(&self) -> devlaunch_core::flows::lifecycle::Insisted
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::Insisted
@@ -1576,7 +1600,7 @@ pub fn devlaunch_core::flows::lifecycle::Kept::fmt(&self, &mut core::fmt::Format
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Kept
 pub struct devlaunch_core::flows::lifecycle::PrunePlan
 impl devlaunch_core::flows::lifecycle::PrunePlan
-pub fn devlaunch_core::flows::lifecycle::PrunePlan::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
+pub fn devlaunch_core::flows::lifecycle::PrunePlan::clones_freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::keeping(&self) -> &[devlaunch_core::flows::lifecycle::Kept]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::nothing_to_do(&self) -> bool
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::removing(&self) -> &[devlaunch_core::flows::lifecycle::Reclaimable]
@@ -1597,8 +1621,8 @@ pub devlaunch_core::flows::lifecycle::PruneReport::removed: alloc::vec::Vec<devl
 pub devlaunch_core::flows::lifecycle::PruneReport::withheld: alloc::vec::Vec<devlaunch_core::flows::lifecycle::Withheld>
 pub devlaunch_core::flows::lifecycle::PruneReport::worktrees: devlaunch_core::flows::agent_worktrees::WorktreeReport
 impl devlaunch_core::flows::lifecycle::PruneReport
+pub fn devlaunch_core::flows::lifecycle::PruneReport::clones_freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::lifecycle::PruneReport::finished(&self) -> bool
-pub fn devlaunch_core::flows::lifecycle::PruneReport::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::PruneReport
 pub fn devlaunch_core::flows::lifecycle::PruneReport::clone(&self) -> devlaunch_core::flows::lifecycle::PruneReport
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::PruneReport

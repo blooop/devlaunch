@@ -400,24 +400,21 @@ impl<'r> Git<'r> {
     /// from the side that does resolve here, and `--work-tree` is the directory
     /// on this host.
     ///
-    /// **`.claude/worktrees/` is excluded from the walk.** A worktree holding a
-    /// nested worktree would otherwise always read dirty — the nested directory
-    /// is untracked — so it would be kept forever while the bytes that matter sat
-    /// inside it. Those nested directories are what the sweep reasons about
-    /// separately, not somebody's unsaved work. The exclusion is a pathspec so
-    /// git never walks the subtree, which also keeps a multi-gigabyte `.pixi`
-    /// inside one out of the status walk.
+    /// **Every line git prints comes back, including the nested agent worktrees
+    /// the caller reasons about separately.** This used to carry a
+    /// `:!.claude/worktrees` pathspec, which excluded the *place* rather than the
+    /// thing and so also hid a tracked file modified under that path and plain
+    /// content sitting there that is not a worktree at all (devlaunch#442 review,
+    /// S4). Which entries to disregard is a question about what a directory *is*,
+    /// which is `flows::agent_worktrees`'s question and not a git client's, so the
+    /// filtering is done there and the name of the directory stays in the one
+    /// module that reasons about it.
     pub(crate) fn worktree_dirt(&self, admin: &Path, work_tree: &Path) -> GitAnswer<String> {
         let args = [
             format!("--git-dir={}", admin.display()),
             format!("--work-tree={}", work_tree.display()),
             "status".to_owned(),
             "--porcelain".to_owned(),
-            "--".to_owned(),
-            // Spelled here rather than taken from `flows::agent_worktrees`, which
-            // is where the directory is named and reasoned about: a client does
-            // not import a flow. The two have to move together.
-            ":!.claude/worktrees".to_owned(),
         ];
         self.captured(
             "status --porcelain",

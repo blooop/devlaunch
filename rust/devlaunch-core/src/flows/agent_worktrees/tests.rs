@@ -523,6 +523,115 @@ fn a_symlink_in_the_worktrees_place_is_stepped_over() {
 }
 
 // =======================================================================
+// what the dirty check sees under a `.claude/worktrees/` (devlaunch#442, S4)
+// =======================================================================
+
+#[test]
+fn plain_content_under_a_candidates_worktrees_place_is_work() {
+    // The dangerous residue of excluding the place instead of the thing. This
+    // directory is not a linked worktree, so the sweep never reports it -- and
+    // with `.claude/worktrees/` excluded from the dirty check wholesale, nothing
+    // protected it either. It went when its parent did, unreported.
+    let world = Clone::new();
+    let finished = world.worktree("agent-finished");
+    let scratch = worktrees_dir(&finished).join("scratch");
+    std::fs::create_dir_all(&scratch).expect("a plain directory");
+    std::fs::write(scratch.join("notes.md"), "an afternoon\n").expect("a note");
+    world.containerise();
+
+    let found = world.plan();
+
+    assert!(removing(&found).is_empty(), "{:?}", removing(&found));
+    assert!(
+        matches!(kept_because(&found, &finished), WorktreeKept::Objected(_)),
+        "content nothing else accounts for has to object"
+    );
+}
+
+#[test]
+fn a_tracked_file_modified_under_the_worktrees_place_is_still_work() {
+    // Contrived -- the harness's directory is normally ignored -- but it is real
+    // uncommitted work, and a pathspec that hides a whole path hides this too.
+    let world = Clone::new();
+    let finished = world.worktree("agent-tracked");
+    let tracked = worktrees_dir(&finished).join("keep.md");
+    std::fs::create_dir_all(tracked.parent().expect("a parent")).expect("the directory");
+    std::fs::write(&tracked, "committed\n").expect("the file");
+    commit(&finished, "a tracked file where the sweep looks");
+    run_git(&finished, &["push", "origin", "agent-tracked"]);
+    world.fetch();
+    std::fs::write(&tracked, "edited, and nowhere else\n").expect("the edit");
+    world.containerise();
+
+    let found = world.plan();
+
+    assert!(removing(&found).is_empty(), "{:?}", removing(&found));
+    assert!(
+        matches!(kept_because(&found, &finished), WorktreeKept::Objected(_)),
+        "an edit to a file the repository knows about is work"
+    );
+}
+
+// =======================================================================
+// the arm that deletes is the hardest one to reach (devlaunch#442, S1)
+// =======================================================================
+
+#[test]
+fn a_directory_whose_admin_directory_is_here_is_asked_what_it_holds() {
+    // git has let go of the name -- nothing in the listing joins to this
+    // directory any more -- but the admin directory it wrote is still here, so
+    // there is an index and a HEAD to ask through. A classification that lands on
+    // the deleting arm with a probe available must take the probe: neither git
+    // dropping a name nor this module's suffix join missing one should cost
+    // somebody an afternoon.
+    let world = Clone::new();
+    let unsaved = world.worktree("agent-unsaved");
+    std::fs::write(unsaved.join("notes.md"), "an afternoon\n").expect("a note");
+    let gitdir = world
+        .clone
+        .join(".git")
+        .join("worktrees")
+        .join("agent-unsaved")
+        .join("gitdir");
+    std::fs::write(&gitdir, "/workspaces/a-container/elsewhere/.git\n")
+        .expect("a registration that no longer looks like a worktrees path");
+
+    let found = world.plan();
+
+    assert!(removing(&found).is_empty(), "{:?}", removing(&found));
+    assert!(
+        matches!(kept_because(&found, &unsaved), WorktreeKept::Objected(_)),
+        "an unjoinable registration is not a licence to delete"
+    );
+}
+
+#[test]
+fn a_gitfile_naming_the_clones_own_admin_directory_is_not_a_worktree() {
+    // The tail of a gitfile is file content, and file content is not trusted to
+    // be a name: `..` would name the clone's own `.git` and have this module
+    // probe, and then remove, something that is not one worktree.
+    let world = Clone::new();
+    let liar = worktrees_dir(&world.clone).join("agent-liar");
+    std::fs::create_dir_all(&liar).expect("a directory");
+    std::fs::write(
+        liar.join(".git"),
+        "gitdir: /workspaces/x/.git/worktrees/..\n",
+    )
+    .expect("a gitfile naming no worktree");
+    std::fs::write(liar.join("a-file"), "mine\n").expect("a file");
+
+    let found = world
+        .sweep(Insistence::Insisted)
+        .expect("a clone with a `.claude/worktrees/` is swept");
+
+    assert!(
+        removing(&found).is_empty() && keeping(&found).is_empty(),
+        "nothing here names one worktree, so there is nothing to say: {found:?}"
+    );
+    assert!(liar.exists());
+}
+
+// =======================================================================
 // the prune-metadata guard
 // =======================================================================
 
@@ -534,7 +643,7 @@ fn metadata_is_pruned_when_nothing_was_held_back_for_what_it_holds() {
 
     let found = world.plan();
 
-    assert!(found.metadata_may_be_pruned());
+    assert!(found.metadata_gate().open());
 }
 
 #[test]
@@ -552,7 +661,7 @@ fn metadata_is_not_pruned_while_a_worktree_is_kept_for_what_it_holds() {
     let found = world.plan();
 
     assert_eq!(removing(&found).len(), 1);
-    assert!(!found.metadata_may_be_pruned());
+    assert!(!found.metadata_gate().open());
 }
 
 #[test]
@@ -571,7 +680,7 @@ fn a_lock_does_not_hold_the_metadata_prune_back() {
     let found = world.plan();
 
     assert_eq!(removing(&found).len(), 1);
-    assert!(found.metadata_may_be_pruned());
+    assert!(found.metadata_gate().open());
 }
 
 // =======================================================================
@@ -590,8 +699,35 @@ fn a_registration_whose_directory_is_gone_is_counted_and_frees_nothing() {
 
     let found = world.plan();
 
-    assert_eq!(found.registrations_with_nothing_here(), 1);
+    assert_eq!(found.registrations_with_nothing_here().container_paths(), 1);
+    assert_eq!(
+        found.registrations_with_nothing_here().deleted(),
+        0,
+        "the registration named a container path, not a path in this clone"
+    );
     assert_eq!(removing(&found).len(), 1, "{:?}", removing(&found));
+}
+
+#[test]
+fn a_registration_naming_a_path_in_this_clone_is_told_apart_from_a_container_one() {
+    // The sharpened spec asks the two apart. Neither has bytes behind it, so the
+    // metadata prune is the whole of the work either way -- but a container path
+    // is the ordinary shape of every worktree an agent made inside a
+    // devcontainer, and a path in this clone with nothing at it is somebody's own
+    // removal or a run interrupted between the removal and the prune. One number
+    // said neither (devlaunch#442 review, S5).
+    let world = Clone::new();
+    let deleted = world.worktree("agent-deleted");
+    world.worktree("agent-here");
+    // No `containerise` for this one: the registration keeps the host path it was
+    // made with, and the directory it names is gone.
+    std::fs::remove_dir_all(&deleted).expect("a directory removed by hand");
+
+    let found = world.plan();
+
+    let nothing_here = found.registrations_with_nothing_here();
+    assert_eq!(nothing_here.deleted(), 1);
+    assert_eq!(nothing_here.container_paths(), 0);
 }
 
 // =======================================================================
