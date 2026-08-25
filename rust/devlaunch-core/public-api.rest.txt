@@ -2079,6 +2079,10 @@ pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::branch: all
 pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::owner: alloc::string::String
 pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::reason: devlaunch_core::flows::repo_manager::NotRefreshed
 pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::repo: alloc::string::String
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked::owner: alloc::string::String
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked::reason: alloc::string::String
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked::repo: alloc::string::String
 pub devlaunch_core::flows::repo_manager::CacheNotice::TrackedFilesNotListed
 pub devlaunch_core::flows::repo_manager::CacheNotice::TrackedFilesNotListed::reason: alloc::string::String
 pub devlaunch_core::flows::repo_manager::CacheNotice::WorkspaceCloneRemoved
