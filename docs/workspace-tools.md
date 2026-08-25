@@ -729,7 +729,12 @@ completes from any prefix long enough to leave the owner behind, and `dl <id>` i
 still a way to name a workspace.
 
 The hold-back applies only to a prefix. `dl <TAB>` with nothing typed is not a
-collision to resolve, so it lists both, the way it always did.
+collision to resolve, so it lists both, the way it always did. An id typed out in
+full is offered too, beside the owner: `DL_WORKSPACES` is every devpod workspace,
+including names devpod was given by hand rather than derived by `dl`, so a
+workspace really can be called `blooop` on a machine whose cache knows the owner
+`blooop`. For that one no longer prefix exists, and holding it back would not
+delay it, it would hide it.
 
 Nothing about the cache changed, so a `completions.bash` written by an older `dl`
 works with this script and the other way round.

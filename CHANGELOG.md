@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that had to keep working: an id pasted or half-typed out of `dl --ls`, since
   `dl <id>` is still a way to name a workspace. One keystroke swaps the list, so
   `dl kinisi-ros<TAB>` offers the ids and nothing else. The hold-back applies to a
-  prefix only: `dl <TAB>` with nothing typed lists both, as it always did.
+  prefix only: `dl <TAB>` with nothing typed lists both, as it always did, and an
+  id typed out in full is offered beside the owner it shares a name with, for
+  which no longer prefix exists.
 
   A completing id also gets its trailing space back. The old branch suppressed the
   space for every candidate because some of them were owners, which need the

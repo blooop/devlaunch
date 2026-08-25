@@ -252,6 +252,18 @@ done
         assert "kinisi-robotics/" in completions
         assert "kinisi-ros-nb2-lobi" in completions
 
+    def test_an_id_typed_in_full_is_offered_beside_the_owner_it_shares_a_name_with(self):
+        """`DL_WORKSPACES` is every devpod workspace, including hand-made names."""
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            f.write('DL_WORKSPACES="blooop other-main-abcd"\n')
+            f.write('DL_REPOS="blooop/devlaunch"\n')
+            f.write('DL_OWNERS="blooop"\n')
+            f.write('DL_BRANCHES="blooop/devlaunch@main"\n')
+
+        # No longer prefix leaves the owner behind, so without this the workspace
+        # can never be completed and TAB appends a `/` to an already-whole word.
+        assert sorted(self.run_completion("dl blooop")) == ["blooop", "blooop/"]
+
     def test_ids_complete_when_the_cache_knows_no_owners(self):
         """A cache with workspaces and no repos of dl's own is still completable."""
         with open(self.cache_file, "w", encoding="utf-8") as f:

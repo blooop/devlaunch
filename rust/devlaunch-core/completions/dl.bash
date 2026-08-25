@@ -162,11 +162,11 @@ _dl_completion() {
         # reaches `kinisi-robotics/kinisi_ros` in two tabs.
         #
         # An id is a whole word with nothing after it, and it stays reachable
-        # rather than being dropped: keep typing and the prefix stops matching any
-        # owner, which is exactly when this offers the ids instead. That is the
-        # case the fallback exists for -- an id pasted or half-typed out of
-        # `dl --ls` still completes, and `dl <id>` is a launch arm the grammar
-        # keeps (`WorkspaceSpec::ExistingIdOrName`).
+        # rather than being dropped: keep typing and either the prefix stops
+        # matching any owner or the id is typed out in full, and both bring it
+        # back. That is the case the fallback exists for -- an id pasted or
+        # half-typed out of `dl --ls` still completes, and `dl <id>` is a launch
+        # arm the grammar keeps (`WorkspaceSpec::ExistingIdOrName`).
         #
         # Nothing here changes what the cache holds, so a `completions.bash`
         # written by an older build works unchanged and vice versa.
@@ -194,6 +194,20 @@ _dl_completion() {
         if (( ${#COMPREPLY[@]} > 0 )); then
             # No trailing space: the `/` is a continuation, not the end of a word.
             compopt -o nospace
+            # An id typed out in full is offered beside the owner rather than held
+            # back, because holding it back is not a delay for it -- no longer
+            # prefix ever leaves the owner behind, so the word would never complete
+            # at all, and the lone owner candidate would append a `/` to a word
+            # that was already whole. `DL_WORKSPACES` is every devpod workspace,
+            # not only the ones dl derived a suffixed id for, so a hand-made
+            # workspace named after an owner is a name that can really be there.
+            local workspace
+            for workspace in $DL_WORKSPACES; do
+                if [[ "$workspace" == "$cur" ]]; then
+                    COMPREPLY+=( "$workspace" )
+                    break
+                fi
+            done
         elif [[ -n "$DL_WORKSPACES" ]]; then
             # A space, unlike the old shared branch, which suppressed it for every
             # candidate because some of them were owners. An id is finished when it
