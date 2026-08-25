@@ -48,6 +48,7 @@ use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
 
+use crate::select::Chosen;
 use crate::session::StartupError;
 
 // ---------------------------------------------------------------------------
@@ -1217,13 +1218,16 @@ pub(crate) fn removed(workspace_id: &str, insistence: Insistence) -> String {
 /// is that a batch which stops halfway can be read against what was asked for. A
 /// single pick is the same pair on one line: it is the common case, and a heading
 /// over one row is a heading with nothing under it.
-pub(crate) fn picked(verb: &str, picks: &[(&str, &str)]) -> Vec<String> {
-    let pair = |(row, id): &(&str, &str)| format!("{row} -> {id}");
-    match picks {
-        [only] => vec![format!("Picked {}", pair(only))],
+pub(crate) fn picked(verb: &str, picks: &NonEmpty<Chosen>) -> Vec<String> {
+    let listed: Vec<String> = picks
+        .iter()
+        .map(|pick| format!("{} -> {}", pick.row, pick.workspace_id))
+        .collect();
+    match listed.as_slice() {
+        [only] => vec![format!("Picked {only}")],
         several => {
             let mut lines = vec![format!("Picked {} workspaces for {verb}:", several.len())];
-            lines.extend(several.iter().map(|pick| format!("  {}", pair(pick))));
+            lines.extend(several.iter().map(|pick| format!("  {pick}")));
             lines
         }
     }
@@ -3146,10 +3150,21 @@ mod tests {
     /// deliberately never on screen while the row was being chosen.
     #[test]
     fn a_pick_names_the_row_that_was_chosen_beside_the_id_it_resolved_to() {
+        /// The picks as the picker hands them over: `(row, id)` written in that
+        /// order, and named on the way into `Chosen` so a pair written backwards is
+        /// a compile error here rather than a receipt with its halves swapped.
+        fn taken(picks: &[(&str, &str)]) -> NonEmpty<Chosen> {
+            NonEmpty::of(picks.iter().map(|(row, workspace_id)| Chosen {
+                workspace_id: (*workspace_id).to_owned(),
+                row: (*row).to_owned(),
+            }))
+            .expect("at least one pick")
+        }
+
         assert_eq!(
             picked(
                 "rm",
-                &[("blooop | devlaunch | main", "devlaunch-main-3j1t")]
+                &taken(&[("blooop | devlaunch | main", "devlaunch-main-3j1t")])
             ),
             ["Picked blooop | devlaunch | main -> devlaunch-main-3j1t"]
         );
@@ -3159,11 +3174,11 @@ mod tests {
         assert_eq!(
             picked(
                 "rm",
-                &[
+                &taken(&[
                     ("blooop | devlaunch | main", "devlaunch-main-3j1t"),
                     ("myfork | devlaunch | main", "devlaunch-main-7q0x"),
                     ("- | someones-project", "someones-project"),
-                ]
+                ])
             ),
             [
                 "Picked 3 workspaces for rm:",
@@ -3176,7 +3191,7 @@ mod tests {
         // the order the batch is applied in. Re-sorting the heading would describe a
         // run that did not happen.
         assert_eq!(
-            picked("stop", &[("- | b", "b"), ("- | a", "a")]),
+            picked("stop", &taken(&[("- | b", "b"), ("- | a", "a")])),
             [
                 "Picked 2 workspaces for stop:",
                 "  - | b -> b",

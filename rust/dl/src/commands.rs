@@ -1117,11 +1117,7 @@ fn render_select<'r>(
             // screen back by now and nothing else in the run ever puts the row and
             // the workspace id side by side — the id has no owner in it, and the row
             // is not what devpod is addressed by.
-            let picks: Vec<(&str, &str)> = chosen
-                .iter()
-                .map(|pick| (pick.row.as_str(), pick.workspace_id.as_str()))
-                .collect();
-            for line in render::picked(verb.word(), &picks) {
+            for line in render::picked(verb.word(), &chosen) {
                 eprintln!("{line}");
             }
             let mut ending = Ending::Done;
