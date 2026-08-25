@@ -1769,7 +1769,17 @@ mod tests {
     }
 
     #[test]
-    fn scratch_preview() {
+    fn the_whole_table_lines_up_under_its_own_headings() {
+        // Every other test here asks about one row shape. This one asks the
+        // question the shapes were split up to answer: put all of them in one
+        // listing and does it read as a table?
+        //
+        // Four shapes at once -- a pair that collided and says its id, a row with a
+        // long branch that no other row has, a row on a short branch, and a
+        // workspace dl did not clone -- because the widths are a fact about the set
+        // and a shape that is fine alone can still be the one that does not line up
+        // beside the others. Asserting the drawn text is the only way to see that:
+        // a per-column assertion agrees with itself by construction.
         let cache = Cache::new();
         cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
         cache.clone_at("blooop", "devlaunch", "devlaunch-main-legacy", "main");
@@ -1790,13 +1800,45 @@ mod tests {
             ]"#,
         );
         let offering = offered(&workspaces, cache.path());
-        println!("---PICKER---");
-        println!("[{}]", invitation(Arity::Several));
-        println!("[{}]", offering.heading);
+
+        let mut drawn = vec![offering.heading.clone()];
+        drawn.extend(offering.offers.iter().map(|offer| offer.label.clone()));
+        assert_eq!(
+            drawn,
+            [
+                "OWNER  | REPO             | BRANCH                  | WORKSPACE",
+                "blooop | devlaunch        | main                    | devlaunch-main-3j1t",
+                "blooop | devlaunch        | main                    | devlaunch-main-legacy",
+                "blooop | wayfinder        | wayfinder/devlaunch-467",
+                "myfork | bencher          | fix/thing",
+                "-      | someones-project",
+            ]
+        );
+        // And the claim that assertion is standing for, said as a rule rather than
+        // as one drawing: a cell that has anything after it starts where the same
+        // cell starts on the heading. The rows that end early are the ones the rule
+        // says nothing about, which is what `trimmed` is for.
+        let column_starts = |line: &str| {
+            let mut at = 0;
+            line.split(" | ")
+                .map(|cell| {
+                    let start = at;
+                    at += cell.chars().count() + " | ".chars().count();
+                    start
+                })
+                .collect::<Vec<_>>()
+        };
+        let headings = column_starts(&offering.heading);
         for offer in &offering.offers {
-            println!("[{}]", offer.label);
+            let row = column_starts(&offer.label);
+            assert_eq!(
+                row,
+                headings[..row.len()],
+                "a row's columns start somewhere its headings do not: {:?} under {:?}",
+                offer.label,
+                offering.heading,
+            );
         }
-        println!("---END---");
     }
 
     #[test]
