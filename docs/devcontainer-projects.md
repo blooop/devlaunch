@@ -118,6 +118,59 @@ compose-based devcontainers:
   container. Such a service exists only to be `extends:`-ed, and is visible
   because another file `include:`s it. List the services you actually want.
 
+### Concurrent workspaces run out of subnets
+
+Each compose project also gets its own bridge network, and docker draws those
+from a fixed set of address pools. The default set is small: `172.17.0.0/12`
+split into /16s yields 15 — it starts at 172.17, not 172.16 — and
+`192.168.0.0/16` split into /20s yields 16, so **31 networks for the whole
+host**. Fewer in practice, because docker skips any block that collides with a
+network the host already has: the default bridge takes 172.17 itself, and a LAN
+on `192.168.1.0/24` or a VPN on `192.168.194.0/24` costs a slot each.
+
+Past that, the next launch dies inside devpod's compose call:
+
+```
+Error response from daemon: all predefined address pools have been fully subnetted
+```
+
+It arrives from docker through devpod unmapped, so it reads like a launch failure
+rather than a host with no subnets left to hand out. Three things about the
+ceiling:
+
+- **Only compose devcontainers consume a slot.** A single-container workspace
+  joins the default bridge and allocates nothing, so the limit stays invisible
+  until a project moves onto a compose file.
+- **It is the host's ceiling, not devlaunch's** — shared with every other network
+  on the machine, compose or not.
+- **`stop` keeps the subnet, `rm` returns it.** devpod stops a compose workspace
+  with `compose stop`, which leaves its network standing, and deletes it with
+  `compose down`, which removes it. So a workspace stopped to free memory is
+  still holding a slot. `dl <ws> rm` gives one back and `dl --purge` gives back
+  every workspace devlaunch owns; `docker network prune` reclaims whatever no
+  container is attached to, which is the quickest way out of a launch that has
+  just failed.
+
+The lasting fix is to give docker a bigger pool, in `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "10.128.0.0/12", "size": 24 }
+  ]
+}
+```
+
+That is 4096 /24s instead of 31, and losing the `192.168.0.0/16` default is half
+the point: it is the range most likely to collide with the LAN the host is on.
+Check `ip -4 route` before settling on a base, because a VPN that routes part of
+`10/8` — ZeroTier and Tailscale both can — wants one outside it.
+
+`systemctl restart docker` applies it. That restarts the daemon, not the machine,
+so no reboot is involved, but it stops every running container, so pick the
+moment. Networks that already exist keep the subnets they hold; only new ones
+draw from the new pool.
+
 ## Git LFS
 
 Workspaces are cloned from a local bare cache that holds no LFS objects, so
