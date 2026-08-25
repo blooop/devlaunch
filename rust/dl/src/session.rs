@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use devlaunch_core::clients::git::Git;
-use devlaunch_core::domain::config::{self, ConfigError, WorktreeConfig};
+use devlaunch_core::domain::config::{self, ConfigError, RetiredKey, WorktreeConfig};
 use devlaunch_core::domain::metadata::{MetadataError, MetadataStorage, Notice};
 use devlaunch_core::domain::xdg::{self, NoHomeDirectory};
 use devlaunch_core::flows::lifecycle::SelfInvocation;
@@ -59,12 +59,15 @@ impl From<MetadataError> for StartupError {
 /// Where devlaunch keeps everything: the directory ownership is decided by and
 /// `--purge` removes.
 ///
-/// The answer comes from `xdg` so that this, the worktree config's default
-/// `repos_dir` and `metadata.json`'s default path cannot drift apart — ownership
-/// decides what `--purge` may delete by asking whether a workspace's source is
-/// under this directory, and the clones it is asking about were put there by the
-/// other two. (`flows::completion_cache` carried a second copy of this call until
-/// the port finished and there was one caller left.)
+/// The answer comes from `xdg` so that this, the clone root and `metadata.json`'s
+/// default path cannot drift apart — ownership decides what `--purge` may delete
+/// by asking whether a workspace's source is under this directory, and the clones
+/// it is asking about were put there by the other two. (`flows::completion_cache`
+/// carried a second copy of this call until the port finished and there was one
+/// caller left.)
+///
+/// It is now the *only* input to the other two: the clone root is
+/// `xdg::clone_root_in` of this, and nothing a user can write moves it (#467).
 pub(crate) fn cache_dir() -> Result<PathBuf, NoHomeDirectory> {
     xdg::devlaunch_cache()
 }
@@ -104,8 +107,8 @@ fn refresh_program(current_exe: Option<PathBuf>) -> String {
     }
 }
 
-/// The worktree config, for the commands that need only `repos_dir`.
-pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
+/// The worktree config, and whatever of `config.toml` this build no longer reads.
+pub(crate) fn worktree_config() -> Result<(WorktreeConfig, Vec<RetiredKey>), ConfigError> {
     config::worktree_config()
 }
 
@@ -113,9 +116,9 @@ pub(crate) fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
 ///
 /// Holds the manager and the store together because the listing reads both and
 /// they have to describe the same cache. There is deliberately no second copy of
-/// the config here: `repos_dir` is what the commands want from it, and the manager
-/// is what answers for that (see [`lifecycle::ClonePlacement`]), so a command
-/// cannot scan one tree while locking against another.
+/// the config here: the clone root is what the commands want, and the manager is
+/// what answers for that (see [`lifecycle::ClonePlacement`]), so a command cannot
+/// scan one tree while locking against another.
 pub(crate) struct Records<'r> {
     pub(crate) storage: MetadataStorage,
     /// The clone manager, which is the one thing that names a record's clone
@@ -127,6 +130,11 @@ pub(crate) struct Records<'r> {
     /// Rendered by the caller: these are typed events, and the sentences are the
     /// binary's.
     pub(crate) notices: Vec<Notice>,
+    /// The keys `config.toml` names that this build no longer reads. Only
+    /// `worktree.repos_dir` today, and it is here rather than ignored because it
+    /// used to decide where the clones went: a user who set it has a tree at that
+    /// path, and this run is the only thing that will ever name it.
+    pub(crate) retired_keys: Vec<RetiredKey>,
     /// What the cache migration did, when it ran and produced a report. `None`
     /// covers both the common already-current case (a single integer comparison,
     /// no scan) and a migration that a concurrent process had already finished.
@@ -149,7 +157,8 @@ pub(crate) struct Records<'r> {
 /// rename. On an already-migrated cache the migration costs a single integer
 /// comparison: the trigger is the version header the load already parsed.
 pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, StartupError> {
-    let config = worktree_config()?;
+    let (config, retired_keys) = worktree_config()?;
+    let cache_dir = cache_dir()?;
     let (mut storage, notices) = MetadataStorage::open(MetadataStorage::default_path()?)?;
     // The report is kept and rendered by the caller. Python's `migrate_cache`
     // announces inside itself (migration.py `_announce`); core renders no English
@@ -157,15 +166,16 @@ pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, St
     // migration's orphan/unmigrated notices, including the only pointer a user
     // gets to `dl --reconcile`/`recreate` for the containers it orphaned.
     let (migration, migration_refused) =
-        match migration::migrate_cache(&mut storage, &config.repos_dir) {
+        match migration::migrate_cache(&mut storage, &xdg::clone_root_in(&cache_dir)) {
             Ok(report) => (report, None),
             Err(refused) => (None, Some(refused)),
         };
-    let clones = WorkspaceCloneManager::from_config(&config, Git::new(runner));
+    let clones = WorkspaceCloneManager::in_cache(&cache_dir, &config, Git::new(runner));
     Ok(Records {
         storage,
         clones,
         notices,
+        retired_keys,
         migration,
         migration_refused,
     })

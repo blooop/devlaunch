@@ -2061,12 +2061,13 @@ impl PrunePlan {
 
 /// The directory `--prune` scans, canonicalised once.
 ///
-/// `repos_dir` as the clone manager reports it. Taking it from there rather than
-/// rebuilding `<cache>/repos` is what keeps the directories scanned, the locks
-/// taken and the workspace sources compared answering to the same configuration: a
-/// `config.toml` that moves `repos_dir` moves all three, and they cannot drift into
-/// scanning one tree while serialising against another or comparing against a
-/// third.
+/// The clone root as the manager reports it. Asking the manager rather than
+/// rebuilding `<cache>/repos` here is what keeps the directories scanned, the
+/// locks taken and the workspace sources compared answering to one root, so they
+/// cannot drift into scanning one tree while serialising against another or
+/// comparing against a third. Since #467 that root is derived from the cache
+/// directory and nothing a user writes can move it, so the three agree by
+/// construction as well as by plumbing.
 ///
 /// Absent is not a failure — a fresh install has no repos directory yet, and
 /// resolving one that is not there is what says so.

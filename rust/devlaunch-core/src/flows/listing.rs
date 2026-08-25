@@ -245,12 +245,12 @@ pub fn describe_source(source: &WorkspaceSource) -> SourceDescription {
 /// dl cannot establish shows no owner, rather than showing a path component that
 /// happens to sit where an owner would.
 ///
-/// One consequence worth naming. A `config.toml` that points `repos_dir` outside
-/// the cache directory puts dl's own clones somewhere this does not recognise, so
-/// those rows lose their owner — the same blind spot, from the same containment
-/// test, that `--purge` and the `SIZE` column already have (see
-/// [`is_devlaunch_clone`]). Closing it here would mean reading the config on the
-/// picker's path, which is the read the paragraph above is about.
+/// This reading is complete for dl's own clones and does not need the config to
+/// be. `config.toml` used to be able to put them outside the cache directory
+/// (`worktree.repos_dir`), which cost those rows their owner — the same blind
+/// spot, from the same containment test, that `--purge` and the `SIZE` column
+/// had. That key is retired (#467) and the clone root is derived from the cache
+/// directory, so the picker needs no config read to be right about them.
 ///
 /// Owned, like [`describe_source`] beside it, rather than borrowed from the
 /// workspace: it keeps the signature free of lifetime plumbing for one short
@@ -442,13 +442,24 @@ fn layout_of_clone(workspace: &Workspace, cache_dir: &Path) -> Option<(String, S
 /// characters with `<cache>` and is not inside it, which
 /// [`Path::starts_with`]'s component-wise comparison is what gives for free.
 ///
-/// Not every workspace dl creates is recognised. `dl ./path` and `dl <git-url>`
-/// open a source dl did not clone and does not record anywhere, and a
-/// `config.toml` that points `repos_dir` outside the cache puts the clones
-/// somewhere `--purge` does not remove either — so all three read as someone
-/// else's. That is the safe direction to be wrong in, it keeps this predicate and
-/// what a purge actually destroys answering to the same directory, and `--purge`
-/// names what it leaves rather than passing over it in silence.
+/// Not every workspace dl creates is recognised, but every *clone* it makes is.
+/// `dl ./path` and `dl <git-url>` open a source dl did not clone and does not
+/// record anywhere, so those read as someone else's: that is the safe direction
+/// to be wrong in, it keeps this predicate and what a purge actually destroys
+/// answering to the same directory, and `--purge` names what it leaves rather
+/// than passing over it in silence.
+///
+/// **The containment test is complete for dl's own clones**, which is what makes
+/// one predicate enough. A clone's directory is
+/// [`clone_root_in`](crate::domain::xdg::clone_root_in) of the cache directory
+/// plus owner, repo and id, so it is inside `cache_dir` by construction. It was
+/// not always: `config.toml` could name a `repos_dir` outside the cache, and a
+/// clone there answered `false` here — taking `devlaunch`, `SIZE` and `unsaved`
+/// out together and leaving a tree `--purge` and `--prune` both scanned past.
+/// Retiring that key (#467) removed the case rather than adding a second
+/// predicate to cover it. Complete *for a given cache home*: a moved
+/// `XDG_CACHE_HOME` strands what the old one held, as it does for any tool that
+/// respects it.
 pub(crate) fn is_devlaunch_clone(workspace: &Workspace, cache_dir: &Path) -> bool {
     match &workspace.source {
         // Purely lexical, so a clone whose directory has already been removed is
@@ -1220,8 +1231,11 @@ mod tests {
     use devlaunch_test_support::{FakeRunner, Response, Source, WorkspaceState};
 
     use super::*;
+    use crate::clients::git::Git;
+    use crate::domain::config::{WorktreeConfig, parse_worktree_config};
     use crate::domain::model::WorktreeInfo;
     use crate::domain::workspace_id::WorkspaceId;
+    use crate::flows::workspace_clone::WorkspaceCloneManager;
 
     // ----------------------------------------------------------- test doubles
 
@@ -1725,6 +1739,45 @@ mod tests {
             measurable_clone(&ours, &cache),
             Some(cache.join("repos/blooop/r/r-main-aaa"))
         );
+    }
+
+    #[test]
+    fn every_clone_a_configuration_can_place_is_one_this_recognises() {
+        // The completeness claim, and the reason `repos_dir` went. This predicate
+        // is a single containment test against the cache directory, and the three
+        // answers derived from it — `devlaunch`, `SIZE`, `unsaved` — degrade
+        // together the moment it says no. It is only sound if nothing a user can
+        // write puts one of dl's own clones outside that directory, so the clone
+        // root is derived from the cache directory and a configuration cannot move
+        // it, whatever the file names.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let cache = dir.path().join("cache").join("devlaunch");
+        let (config, _retired) = parse_worktree_config(
+            "[worktree]\nrepos_dir = \"/somewhere/else\"\n",
+            &WorktreeConfig::defaults(),
+        )
+        .expect("a readable configuration");
+        let runner = FakeRunner::new();
+        let clones = WorkspaceCloneManager::in_cache(&cache, &config, Git::new(&runner));
+
+        let path = clones
+            .workspace_path("blooop", "devlaunch", "main")
+            .expect("a safe name");
+        let id = path
+            .file_name()
+            .expect("a leaf")
+            .to_string_lossy()
+            .into_owned();
+        let ours = workspace(&id, local(&path));
+
+        assert!(
+            is_devlaunch_clone(&ours, &cache),
+            "a clone dl placed reads as someone else's: {}",
+            path.display()
+        );
+        assert_eq!(measurable_clone(&ours, &cache), Some(path.clone()));
+        assert_eq!(owner_of(&ours, &cache).as_deref(), Some("blooop"));
+        assert_eq!(repo_of(&ours, &cache).as_deref(), Some("devlaunch"));
     }
 
     #[test]
@@ -2457,8 +2510,7 @@ mod tests {
     #[test]
     fn a_leftover_record_cannot_make_a_foreign_workspace_dls_own() {
         // `unsaved: null` iff `devlaunch: false`, on the input that can break it: a
-        // record can outlive the reason its workspace counts as dl's (a
-        // `config.toml` that moves `repos_dir` out of the cache), and a
+        // record can outlive the reason its workspace counts as dl's, and a
         // `devlaunch: false` row with a record behind it used to report a
         // `wouldLose` about a directory the same row called `path: null`.
         let mut scene = Scene::build();

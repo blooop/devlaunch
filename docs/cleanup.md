@@ -134,11 +134,10 @@ Leaving 2 workspace(s) devlaunch did not create:
 Are you sure? [y/N]
 ```
 
-Three things `dl` does create are in that second list rather than the first.
+Two things `dl` does create are in that second list rather than the first.
 `dl ./some/path` and `dl <git-url>` open a source `dl` did not clone, so it
-cannot tell them from a workspace you made by hand. And a `config.toml` that
-points `repos_dir` outside the cache puts the clones somewhere `--purge` does not
-remove either, so those are left too. Delete any of them with `dl <workspace> rm`.
+cannot tell them from a workspace you made by hand. Delete either with
+`dl <workspace> rm`.
 Erring this way is deliberate: a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
