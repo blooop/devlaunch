@@ -504,6 +504,21 @@ fn the_background_sweep_s_bound_reaches_the_spawn() {
 }
 
 #[test]
+fn packing_collapses_every_loose_ref_in_the_bare_under_a_bound() {
+    // `--all` and not the default, which packs tags alone and would leave every
+    // head the sweep just fetched sitting loose. The bound is there because this
+    // touches no network: thirty seconds of `pack-refs` is a stuck filesystem, and
+    // the caller is a detached child nobody is watching.
+    let fake = ScriptedRunner::new();
+
+    Git::new(&fake).pack_refs(Path::new("/cache/o/r/.bare"));
+
+    assert_eq!(strs(&argv(&fake)), ["git", "pack-refs", "--all"]);
+    assert_eq!(cwd(&fake).as_deref(), Some(Path::new("/cache/o/r/.bare")));
+    assert_eq!(timeout(&fake), Some(Duration::from_secs(30)));
+}
+
+#[test]
 fn fetching_one_ref_moves_exactly_that_ref_in_the_c_locale() {
     let fake = ScriptedRunner::new();
 
@@ -967,6 +982,7 @@ fn nothing_here_spawns_more_than_once_per_verb() {
 
     git.clone_bare("url", Path::new("/cache/.bare"));
     git.fetch_all(Path::new("/cache/.bare"), None);
+    git.pack_refs(Path::new("/cache/.bare"));
     git.fetch_ref(Path::new("/cache/.bare"), "feature");
     git.symbolic_ref(Path::new("/cache/.bare"), "HEAD");
     git.remote_branch_listing(Path::new("/cache/.bare"));
@@ -993,7 +1009,7 @@ fn nothing_here_spawns_more_than_once_per_verb() {
     git.status_porcelain(Path::new("/ws"));
     git.unpushed_commits(Path::new("/ws"));
 
-    assert_eq!(fake.call_count(), 27, "one spawn per verb, 27 verbs");
+    assert_eq!(fake.call_count(), 28, "one spawn per verb, 28 verbs");
     assert!(
         fake.calls()
             .iter()

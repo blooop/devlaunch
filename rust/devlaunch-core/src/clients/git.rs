@@ -586,6 +586,50 @@ impl<'r> Git<'r> {
         self.captured("fetch", &spec)
     }
 
+    /// Collapse every loose ref in the bare into `packed-refs`.
+    ///
+    /// A ref git writes as a file costs a whole filesystem block, typically 4096
+    /// bytes against the ~81 the packed line takes, and [`Git::fetch_all`] writes
+    /// one per ref it updates. Nothing else in devlaunch ever packed them:
+    /// `pack-refs --auto` is a documented no-op on the `files` backend, and no
+    /// `gc` is run on the bare, so `gc.auto` never gets the chance either.
+    /// Measured on git 2.51.1 over a bare with 301 loose refs of 551, the loose
+    /// files held 1204 KiB of blocks against a 30 KiB `packed-refs` for all 551,
+    /// and the pack took 23 ms.
+    ///
+    /// `--all` rather than the default, and the difference is the whole verb here
+    /// rather than a nicety: measured on 2.51.1 against a bare holding 301 loose
+    /// heads and 101 loose tags, a bare `pack-refs` took the tags to zero and left
+    /// all 301 heads exactly where they were. Heads are the population a broad
+    /// sweep of a real repository mostly makes.
+    ///
+    /// **Pure, in the sense that decides where this is allowed to live.** Packing
+    /// changes how a ref is stored and not which refs exist, so it can lose no
+    /// work — and it does not change what a later `--prune` may delete either.
+    /// Measured on 2.51.1: a prune of a packed ref rewrites `packed-refs` through
+    /// the same ref transaction, deletes nothing else, and a ref that was loose
+    /// over a stale packed line loses *both*, so nothing is resurrected at the old
+    /// sha. The only difference is cost, and it falls on the prune: removing a
+    /// packed ref rewrites the whole file where removing a loose one unlinks
+    /// a single path.
+    ///
+    /// Bounded at [`ABOUT_ONE_REPO`] rather than left unbounded like the sweep's
+    /// fetch: this touches no network, so a pack that has not finished in thirty
+    /// seconds is a stuck filesystem rather than a slow remote, and the caller it
+    /// runs under is a detached child whose whole point is that nobody is watching
+    /// it.
+    pub(crate) fn pack_refs(&self, bare: &Path) -> GitAnswer<String> {
+        self.captured(
+            "pack-refs",
+            &SpawnSpec::new(
+                Invocation::new(PROGRAM)
+                    .with_args(["pack-refs", "--all"])
+                    .with_cwd(bare.to_path_buf()),
+            )
+            .with_timeout(ABOUT_ONE_REPO),
+        )
+    }
+
     /// Fetch exactly one branch into the bare cache.
     ///
     /// The launch path's entire network budget, so the time it can hold the repo

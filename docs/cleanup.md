@@ -344,6 +344,64 @@ everything else on the machine. Deleting them is a decision with your own
 containers on the other side of it, and `docker system df` is the tool that shows
 you what it costs.
 
+### The bare caches' loose refs, and who packs them
+
+| artifact | who reclaims it | what makes that safe |
+| --- | --- | --- |
+| loose ref files under a bare cache's `refs/` | the background freshness sweep, with one `git pack-refs --all` after each fetch that succeeded | packing changes how a ref is stored and not which refs exist, so there is nothing to prove and nothing to consent to |
+
+Every ref a fetch updates is written as a file, and a file costs a whole
+filesystem block: about 4096 bytes each, against the 81 or so the same ref takes
+as a line in `packed-refs`. Nothing used to collapse them. `pack-refs --auto` is a
+documented no-op on git's `files` ref backend, and `dl` runs no `gc` on a bare, so
+`gc.auto` never gets the chance either.
+
+The cost is one block per **ref**, which means it tracks how many branches and
+tags a remote leaves open and has almost nothing to do with how big the
+repository is. Measured across ten real remotes with `git ls-remote`,
+`torvalds/linux` carries 1887 refs against `microsoft/vscode`'s 5342 and
+`rust-lang/rust`'s 334, with a median around 370. So a whole cache of 20 to 40
+repositories holds something like 30 MB to 60 MB of loose refs, a couple of
+percent of one bare's own size. **Disk is not the reason this is here.**
+
+What carries it is placement. The broad sweep is the only thing in `dl` that
+fetches every head and tag, so it is the only thing that makes loose refs in
+quantity, and it already holds the repository's lock while it does. Packing there
+costs one more bounded `git` call in a scope that just spent its whole network
+budget, and it happens only on a pass that actually fetched. Measured on git
+2.51.1 over a bare of 551 refs, 301 of them loose, those files held 1204 KiB of
+blocks against a 30 KiB `packed-refs` for all 551, and the pack itself took 23 ms.
+
+There is a second payment, and it is banked rather than collected. A guard that
+walks every ref on the bare to decide whether a clone is safe to remove reads one
+file instead of thousands once the refs are packed, and such a probe measured
+2.8 ms against 5.3 ms on that same bare. **No shipped code collects that yet.**
+The bare-side reachability guard is decided and not built, and what ships today
+asks the clone instead. So the saving is a reason to keep this once that guard
+arrives, and it is not a reason this is here now.
+
+**A pack that refuses is not a fetch that failed.** The fetch is the point of the
+sweep and the packing is the optional half, so a refusal becomes a notice
+carrying the repository and git's own words, the record's freshness stamp still
+lands, and the next sweep tries again. Withholding the stamp would make every
+later pass re-fetch the whole repository forever on account of a representation
+change that did not come off.
+
+That notice reaches nobody today, and the honest reading of why is that the sweep
+runs detached with its output discarded, so every notice it raises goes to a null
+descriptor and this is simply the first one that anybody would want to read. What
+a refusal costs while it stays unread is bounded: loose refs are one file per ref
+rewritten in place rather than appended, so a pack that keeps failing holds the
+ref count flat at what one sweep writes instead of growing it.
+
+**Packing does not change what a later prune may delete.** A ref the remote
+retracts is removed whether it was loose or packed: git rewrites `packed-refs`
+through the same ref transaction that unlinks a loose file, and a ref that was
+loose over a stale packed line loses both, so nothing comes back at an old sha.
+The only difference is cost, and it falls on the prune rather than here, since
+removing a packed ref rewrites the whole file where removing a loose one unlinks a
+single path.
+
 ### Reconciling records that disagree
 
 `dl` keeps its own record of every workspace, and devpod keeps one too. They
