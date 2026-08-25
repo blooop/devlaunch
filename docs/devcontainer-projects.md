@@ -168,8 +168,16 @@ Check `ip -4 route` before settling on a base, because a VPN that routes part of
 
 `systemctl restart docker` applies it. That restarts the daemon, not the machine,
 so no reboot is involved, but it stops every running container, so pick the
-moment. Networks that already exist keep the subnets they hold; only new ones
-draw from the new pool.
+moment. User-defined networks that already exist keep the subnets they hold;
+only new ones draw from the new pool.
+
+The default bridge is the exception, because its subnet is re-derived at daemon
+start rather than stored: it moves into the new pool and takes the new size, so
+the `size` above is also the size of `docker0`. A /24 leaves ~253 addresses for
+containers started with no network of their own, against the /16 it had before.
+That is ample for a devlaunch host, where each workspace has its own network,
+but set `bip` alongside the pools if something on the host really does put
+hundreds of containers on the default bridge.
 
 ## Git LFS
 
