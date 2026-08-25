@@ -61,13 +61,14 @@ Three things to know about it:
   XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next owner/repo
   ```
 
-  **Only that one variable, and it is a trade rather than a free simplification.**
-  Scoping `XDG_CONFIG_HOME` too would guard one more thing — a personal
-  `config.toml` under it can pin `repos_dir` back at the real cache and beat
-  `XDG_CACHE_HOME` outright, which is why `test/conftest.py` scopes both — but it
-  also hides the host's `gh` login from `gh auth token`, so every workspace opens
-  with no GitHub credentials. The credential loss happens on every run; the
-  `repos_dir` hazard needs a `config.toml` most hosts do not have.
+  **Only that one variable, and there is nothing left behind it.** A personal
+  `config.toml` used to be able to pin `repos_dir` back at the real cache and beat
+  `XDG_CACHE_HOME` outright; that key is retired (#467) and the clone root is
+  derived from the cache directory, so one variable now scopes the whole of what
+  `dl` stores. `test/conftest.py` still scopes `XDG_CONFIG_HOME` as well, which is
+  belt-and-braces rather than a load-bearing guard, and a scratch run leaves it
+  alone deliberately: scoping it hides the host's `gh` login from `gh auth token`,
+  so every workspace would open with no GitHub credentials.
 
   That isolates the bookkeeping, not the machine — `dl` drives devpod and docker
   on the host either way, so the workspaces a scratch run creates are real ones
@@ -82,7 +83,7 @@ Three things to know about it:
   `test/conftest.py` sets for the suite.
 
   **`dl --prune`** is scoped by the same variable and more narrowly: it removes
-  clone directories under `repos_dir` and never touches a devpod workspace at
+  clone directories under `<cache>/repos` and never touches a devpod workspace at
   all, so a scratch cache leaves it with nothing to find. It prints its plan and
   asks before removing anything, and `-y` is what skips the question — so a
   scratch run of it is a read-only way to see the classification.

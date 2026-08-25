@@ -12,6 +12,13 @@
 //!   working with its other keys applied. There has never been an unknown-key
 //!   warning here and a retired knob is not the thing to introduce nagging for.
 //!
+//! **`repos_dir` is the one exception, and the exception is what defines the
+//! rule.** It is retired too (#467), but it *gated where the clones went*: a
+//! user who set it has a real tree at a path dl no longer looks at. Nothing is
+//! moved and nothing is deleted, so the whole of that migration is that the
+//! directory is named once — see [`RetiredKey`]. Silence is what would strand a
+//! tree, which is exactly what `auto_fetch`, having gated nothing, could not do.
+//!
 //! What does not carry over is Python's tolerance of a wrong *type*: an
 //! `fetch_interval = "soon"` was accepted and broke later, arithmetic-first.
 //! Here it is a typed refusal at load, which is the whole reason for a parse
@@ -32,16 +39,12 @@ const DEFAULT_PRUNE_AFTER_DAYS: u64 = 30;
 
 /// Configuration for the worktree backend.
 ///
-/// All data lives under `repos_dir`:
-///
-/// ```text
-/// repos_dir/owner/repo/          the bare git repository
-/// repos_dir/owner/repo/clones/   the workspace clones, one per branch
-/// ```
+/// **No paths.** Where the clones go is derived from the cache directory
+/// ([`clone_root_in`](super::xdg::clone_root_in)) and cannot be configured, so
+/// this carries settings and never placement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeConfig {
     pub enabled: bool,
-    pub repos_dir: PathBuf,
     pub fetch_interval: u64,
     pub auto_prune: bool,
     pub prune_after_days: u64,
@@ -75,12 +78,34 @@ impl From<NoHomeDirectory> for ConfigError {
     }
 }
 
+/// A key this build no longer reads, found named in `config.toml`.
+///
+/// Carried out of the load rather than warned about inside it, like
+/// [`metadata::Notice`](super::metadata::Notice): the fact is core's and the
+/// sentence is the binary's (#251 §5).
+///
+/// One arm, and it is here rather than the file simply ignoring the key because
+/// this key *had authority over where data went*. A key that gated nothing is
+/// ignored in silence — see the module doc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetiredKey {
+    /// `worktree.repos_dir`, retired in #467. It used to decide where dl put its
+    /// clones; it no longer does, and the tree it named is left exactly where its
+    /// owner put it.
+    ///
+    /// `named` is the value verbatim, quoted as data — not resolved against the
+    /// cache, and not compared with it. A comparison is the thing that can be
+    /// silently wrong (a symlinked home, a `XDG_CACHE_HOME` that has moved since
+    /// the tree was made), and being wrong in that direction is silence about a
+    /// tree nothing else will ever name.
+    ReposDir { named: String },
+}
+
 impl WorktreeConfig {
-    /// The defaults, with `repos_dir` under `cache` — `devlaunch_cache()/repos`.
-    pub(crate) fn defaults_in(cache: &Path) -> Self {
+    /// The defaults, which are what almost every run uses.
+    pub(crate) fn defaults() -> Self {
         Self {
             enabled: true,
-            repos_dir: cache.join("repos"),
             fetch_interval: DEFAULT_FETCH_INTERVAL,
             auto_prune: true,
             prune_after_days: DEFAULT_PRUNE_AFTER_DAYS,
@@ -94,29 +119,30 @@ pub(crate) fn config_path() -> Result<PathBuf, NoHomeDirectory> {
     xdg::config_home().map(|config| config.join("devlaunch").join("config.toml"))
 }
 
-/// The worktree configuration this machine is running with.
+/// The worktree configuration this machine is running with, and whatever of it
+/// this build no longer reads.
 ///
 /// Reads `config_home()/devlaunch/config.toml` if it is there, defaults if it is
-/// not, and then makes sure `repos_dir` exists — see [`ensure_repos_dir`] for
-/// why that is a side effect of loading rather than of using it.
-pub fn worktree_config() -> Result<WorktreeConfig, ConfigError> {
+/// not. **Pure but for that read**: loading a configuration creates no
+/// directories, which it used to do for a `repos_dir` it could no longer be sure
+/// of.
+pub fn worktree_config() -> Result<(WorktreeConfig, Vec<RetiredKey>), ConfigError> {
     let path = config_path()?;
-    let defaults = WorktreeConfig::defaults_in(&xdg::devlaunch_cache()?);
-    let config = worktree_config_at(&path, &defaults)?;
-    ensure_repos_dir(&config.repos_dir);
-    Ok(config)
+    worktree_config_at(&path, &WorktreeConfig::defaults())
 }
 
 /// The configuration in `path`, or `defaults` if there is no file there.
 ///
-/// Pure but for the read: nothing is created, so this is what tests drive.
+/// Pure but for the read, so this is what tests drive.
 pub(crate) fn worktree_config_at(
     path: &Path,
     defaults: &WorktreeConfig,
-) -> Result<WorktreeConfig, ConfigError> {
+) -> Result<(WorktreeConfig, Vec<RetiredKey>), ConfigError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(defaults.clone()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok((defaults.clone(), Vec::new()));
+        }
         Err(error) => {
             return Err(ConfigError::Unreadable {
                 path: path.to_path_buf(),
@@ -146,7 +172,8 @@ pub(crate) enum Malformed {
     WrongType { reason: String },
 }
 
-/// Read the `[worktree]` tables out of `text`, filling in from `defaults`.
+/// Read the `[worktree]` tables out of `text`, filling in from `defaults`, and
+/// say which retired keys the text still names.
 ///
 /// The error is the parser's message; the caller adds the path. Which arm it is
 /// comes from a syntax-only pass first: a text no [`toml::Table`] can be read
@@ -156,7 +183,7 @@ pub(crate) enum Malformed {
 pub(crate) fn parse_worktree_config(
     text: &str,
     defaults: &WorktreeConfig,
-) -> Result<WorktreeConfig, Malformed> {
+) -> Result<(WorktreeConfig, Vec<RetiredKey>), Malformed> {
     if let Err(error) = text.parse::<toml::Table>() {
         return Err(Malformed::NotToml {
             reason: error.to_string(),
@@ -167,67 +194,25 @@ pub(crate) fn parse_worktree_config(
     })?;
     let worktree = document.worktree.unwrap_or_default();
     let cleanup = worktree.cleanup.unwrap_or_default();
-    Ok(WorktreeConfig {
-        enabled: worktree.enabled.unwrap_or(defaults.enabled),
-        repos_dir: worktree
-            .repos_dir
-            .map(|raw| expand_tilde(&raw))
-            .unwrap_or_else(|| defaults.repos_dir.clone()),
-        fetch_interval: worktree.fetch_interval.unwrap_or(defaults.fetch_interval),
-        auto_prune: cleanup.auto_prune.unwrap_or(defaults.auto_prune),
-        prune_after_days: cleanup
-            .prune_after_days
-            .unwrap_or(defaults.prune_after_days),
-        fallback_image: worktree
-            .fallback_image
-            .or_else(|| defaults.fallback_image.clone()),
-    })
-}
-
-/// Create `repos_dir` if it is somewhere devlaunch may create directories.
-///
-/// Under the home directory or under `/tmp` and nowhere else, and failures are
-/// ignored: this is a convenience for a first run, not a step anything depends
-/// on, and a config pointing at a directory this user cannot create is the
-/// caller's problem to report when it actually needs it.
-///
-/// Python does this in the constructor, so every construction of a config had
-/// the side effect. Here it is a step of loading, which is the same moment
-/// without the surprise.
-pub(crate) fn ensure_repos_dir(repos_dir: &Path) {
-    if is_ours_to_create(repos_dir) {
-        let _ = std::fs::create_dir_all(repos_dir);
-    }
-}
-
-/// Whether a path is somewhere this may create directories unasked.
-fn is_ours_to_create(path: &Path) -> bool {
-    if path.starts_with("/tmp") {
-        return true;
-    }
-    crate::osext::home_dir().is_some_and(|home| path.starts_with(&home))
-}
-
-/// `~` and `~/…` against `$HOME`, as Python's `expanduser` reads them.
-///
-/// `~user` is left alone: resolving another user's home needs the password
-/// database, and a `repos_dir` naming somebody else's home is not a case
-/// devlaunch has.
-fn expand_tilde(raw: &str) -> PathBuf {
-    let Some(rest) = raw.strip_prefix('~') else {
-        return PathBuf::from(raw);
-    };
-    let Some(home) = crate::osext::home_dir() else {
-        return PathBuf::from(raw);
-    };
-    match rest {
-        "" => home,
-        rest => match rest.strip_prefix('/') {
-            Some(relative) => home.join(relative),
-            // `~other/path`: not ours to resolve.
-            None => PathBuf::from(raw),
+    let retired = worktree
+        .repos_dir
+        .map(|named| RetiredKey::ReposDir { named })
+        .into_iter()
+        .collect();
+    Ok((
+        WorktreeConfig {
+            enabled: worktree.enabled.unwrap_or(defaults.enabled),
+            fetch_interval: worktree.fetch_interval.unwrap_or(defaults.fetch_interval),
+            auto_prune: cleanup.auto_prune.unwrap_or(defaults.auto_prune),
+            prune_after_days: cleanup
+                .prune_after_days
+                .unwrap_or(defaults.prune_after_days),
+            fallback_image: worktree
+                .fallback_image
+                .or_else(|| defaults.fallback_image.clone()),
         },
-    }
+        retired,
+    ))
 }
 
 /// The file's shape: every key optional, unknown keys ignored.
@@ -239,6 +224,11 @@ struct StoredConfig {
 #[derive(Debug, Default, Deserialize)]
 struct StoredWorktree {
     enabled: Option<bool>,
+    /// Read only so that it can be *reported* ([`RetiredKey::ReposDir`]) — no
+    /// value of it reaches a [`WorktreeConfig`]. Dropping the field would make
+    /// serde skip the key like any other unknown one, which is the silence this
+    /// arm exists to prevent. Still `Option<String>` rather than a permissive
+    /// type, so a wrong-typed value refuses the load exactly as it did before.
     repos_dir: Option<String>,
     fetch_interval: Option<u64>,
     fallback_image: Option<String>,
@@ -263,13 +253,22 @@ mod tests {
 
     use super::*;
 
-    /// The defaults a machine with this cache directory would have.
     fn defaults() -> WorktreeConfig {
-        WorktreeConfig::defaults_in(Path::new("/home/someone/.cache/devlaunch"))
+        WorktreeConfig::defaults()
     }
 
+    /// The settings a text reads as, for the tests that are not about retirement.
     fn parse(text: &str) -> WorktreeConfig {
-        parse_worktree_config(text, &defaults()).expect("readable configuration")
+        parse_worktree_config(text, &defaults())
+            .expect("readable configuration")
+            .0
+    }
+
+    /// The retired keys a text still names.
+    fn retired(text: &str) -> Vec<RetiredKey> {
+        parse_worktree_config(text, &defaults())
+            .expect("readable configuration")
+            .1
     }
 
     #[test]
@@ -279,10 +278,6 @@ mod tests {
         assert!(
             config.enabled,
             "the worktree backend is on unless told not to"
-        );
-        assert_eq!(
-            config.repos_dir,
-            PathBuf::from("/home/someone/.cache/devlaunch/repos")
         );
         assert_eq!(config.fetch_interval, 3600);
         assert!(config.auto_prune);
@@ -303,7 +298,6 @@ mod tests {
             r#"
             [worktree]
             enabled = false
-            repos_dir = "/custom/repos"
             fetch_interval = 7200
             fallback_image = "ubuntu:22.04"
 
@@ -317,7 +311,6 @@ mod tests {
             config,
             WorktreeConfig {
                 enabled: false,
-                repos_dir: PathBuf::from("/custom/repos"),
                 fetch_interval: 7200,
                 auto_prune: false,
                 prune_after_days: 60,
@@ -331,7 +324,6 @@ mod tests {
         let config = parse("[worktree]\nenabled = false\n");
 
         assert!(!config.enabled);
-        assert_eq!(config.repos_dir, defaults().repos_dir);
         assert_eq!(config.fetch_interval, 3600);
         assert!(config.auto_prune);
         assert_eq!(config.prune_after_days, 30);
@@ -362,22 +354,57 @@ mod tests {
         assert_eq!(config.fetch_interval, 7200);
     }
 
+    // --- the retired keys --------------------------------------------------
+
     #[test]
-    fn a_repos_dir_starting_with_a_tilde_is_expanded() {
-        let home = std::env::home_dir().expect("this machine has a home directory");
-
-        let config = parse("[worktree]\nrepos_dir = \"~/custom/repos\"\n");
-
-        assert_eq!(config.repos_dir, home.join("custom/repos"));
+    fn a_config_still_naming_repos_dir_reports_the_directory_it_named() {
+        // The one key retired *with* a notice, because it decided where the
+        // clones went: a user who set it has a tree at that path, and nothing
+        // else will ever name it.
         assert_eq!(
-            parse("[worktree]\nrepos_dir = \"~\"\n").repos_dir,
-            home,
-            "a bare tilde is the home directory itself"
+            retired("[worktree]\nrepos_dir = \"/srv/clones\"\n"),
+            vec![RetiredKey::ReposDir {
+                named: "/srv/clones".to_owned()
+            }]
         );
+    }
+
+    #[test]
+    fn the_value_is_reported_exactly_as_the_file_wrote_it() {
+        // Quoted as data, like every other reason this module carries. Nothing
+        // resolves it, so nothing can resolve it *wrongly* and report a
+        // directory the user never typed.
         assert_eq!(
-            parse("[worktree]\nrepos_dir = \"~someone/repos\"\n").repos_dir,
-            PathBuf::from("~someone/repos"),
-            "another user's home is not ours to resolve"
+            retired("[worktree]\nrepos_dir = \"~/custom/repos\"\n"),
+            vec![RetiredKey::ReposDir {
+                named: "~/custom/repos".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_config_naming_repos_dir_still_loads_with_its_other_keys() {
+        // Reported, not refused: the module's whole property is that a stale
+        // file is not punished.
+        let config = parse("[worktree]\nrepos_dir = \"/srv/clones\"\nfetch_interval = 7200\n");
+
+        assert_eq!(config.fetch_interval, 7200);
+        assert_eq!(
+            config,
+            WorktreeConfig {
+                fetch_interval: 7200,
+                ..defaults()
+            }
+        );
+    }
+
+    #[test]
+    fn a_config_that_does_not_name_it_reports_nothing() {
+        assert!(retired("").is_empty());
+        assert!(retired("[worktree]\nfetch_interval = 7200\n").is_empty());
+        assert!(
+            retired("[worktree]\nauto_fetch = false\n").is_empty(),
+            "a key that gated nothing is still ignored in silence"
         );
     }
 
@@ -413,10 +440,11 @@ mod tests {
     fn no_file_at_all_is_the_defaults() {
         let dir = tempfile::tempdir().expect("a temp dir");
 
-        let config =
+        let (config, retired) =
             worktree_config_at(&dir.path().join("config.toml"), &defaults()).expect("the defaults");
 
         assert_eq!(config, defaults());
+        assert!(retired.is_empty());
     }
 
     #[test]
@@ -425,9 +453,25 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[worktree]\nfetch_interval = 60\n").expect("the fixture");
 
-        let config = worktree_config_at(&path, &defaults()).expect("readable");
+        let (config, _retired) = worktree_config_at(&path, &defaults()).expect("readable");
 
         assert_eq!(config.fetch_interval, 60);
+    }
+
+    #[test]
+    fn a_file_on_disk_carries_its_retired_keys_out_of_the_load() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[worktree]\nrepos_dir = \"/srv/clones\"\n").expect("the fixture");
+
+        let (_config, retired) = worktree_config_at(&path, &defaults()).expect("readable");
+
+        assert_eq!(
+            retired,
+            vec![RetiredKey::ReposDir {
+                named: "/srv/clones".to_owned()
+            }]
+        );
     }
 
     #[test]
@@ -473,42 +517,5 @@ mod tests {
             config_path(),
             xdg::config_home().map(|home| home.join("devlaunch").join("config.toml"))
         );
-    }
-
-    // --- creating repos_dir ------------------------------------------------
-
-    #[test]
-    fn a_repos_dir_under_tmp_is_created_on_demand() {
-        let dir = tempfile::Builder::new()
-            .prefix("devlaunch-config-test")
-            .tempdir_in("/tmp")
-            .expect("a temp dir under /tmp");
-        let repos = dir.path().join("repos");
-
-        ensure_repos_dir(&repos);
-
-        assert!(repos.is_dir());
-    }
-
-    #[test]
-    fn a_repos_dir_somewhere_else_is_left_to_whoever_owns_it() {
-        // Nothing is created outside the home directory and /tmp, and a failure
-        // to create is ignored rather than raised — a first run's convenience
-        // must not become a run's error.
-        let elsewhere = Path::new("/proc/devlaunch-should-not-create/repos");
-
-        assert!(!is_ours_to_create(elsewhere));
-        ensure_repos_dir(elsewhere);
-
-        assert!(!elsewhere.exists());
-    }
-
-    #[test]
-    fn the_home_directory_is_ours_to_create_in() {
-        let home = std::env::home_dir().expect("this machine has a home directory");
-
-        assert!(is_ours_to_create(&home.join(".cache/devlaunch/repos")));
-        assert!(is_ours_to_create(Path::new("/tmp/anything")));
-        assert!(!is_ours_to_create(Path::new("/etc/devlaunch")));
     }
 }

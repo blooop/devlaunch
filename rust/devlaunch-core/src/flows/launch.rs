@@ -3414,12 +3414,12 @@ mod tests {
 
     impl<'r> RealCold<'r> {
         fn new(cache_dir: &Path, git: Git<'r>) -> Self {
-            let config = WorktreeConfig::defaults_in(cache_dir);
+            let config = WorktreeConfig::defaults();
             let (storage, _) = MetadataStorage::open(cache_dir.join("metadata.json"))
                 .expect("a fresh store opens");
             Self {
                 clones: WorkspaceCloneManager::new(
-                    &config.repos_dir,
+                    crate::domain::xdg::clone_root_in(cache_dir),
                     Duration::from_secs(config.fetch_interval),
                     git,
                     // The LFS fork is a separate concern, pinned in
