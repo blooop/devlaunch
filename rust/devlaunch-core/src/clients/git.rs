@@ -475,18 +475,43 @@ impl<'r> Git<'r> {
         self.about(clone, &["status", "--porcelain"])
     }
 
-    /// Commits on *branch* that no remote-tracking ref contains.
+    /// Commits in *clone* that no remote-tracking ref contains, whichever ref
+    /// they are on.
+    ///
+    /// **`--all`, not the checked-out branch, and that is the whole of #471.** A
+    /// clone is asked what *it* holds, and it holds every ref in it: commit on
+    /// `wip`, switch back to `main`, and a probe that named one branch reported the
+    /// clone as safe to delete while holding the only copy of that commit.
+    /// `--all` reaches every local branch, every worktree's HEAD including
+    /// detached ones, and `refs/stash`.
+    ///
+    /// The stash is deliberate rather than incidental. It is one ref per clone,
+    /// written to the clone's own `refs/stash` even from inside a linked worktree,
+    /// and what it holds exists nowhere else, so it belongs on the same side of
+    /// the answer as an unpushed commit.
     ///
     /// **Argument order is load-bearing.** `--not` flips the sense of every ref
-    /// *after* it, so the branch has to be named before it:
-    /// `log --not --remotes <branch>` excludes the branch as well and is silently
-    /// always empty — which would report every clone as safe to delete.
+    /// *after* it, so the refs being asked about have to be named before it:
+    /// `log --not --remotes --all` excludes them as well and is silently always
+    /// empty — which would report every clone as safe to delete.
     ///
-    /// `--remotes` rather than the branch's upstream, so work pushed under
-    /// another name, or merged and fetched back, is correctly not counted as
-    /// lost.
-    pub(crate) fn unpushed_commits(&self, clone: &Path, branch: &str) -> GitAnswer<String> {
-        self.about(clone, &["log", "--oneline", branch, "--not", "--remotes"])
+    /// `--remotes` rather than any branch's upstream, so work pushed under another
+    /// name, or merged and fetched back, is correctly not counted as lost.
+    ///
+    /// `--all` spans `refs/tags` too, and one consequence is worth naming because
+    /// it is a choice: a tag reachable from no remote *branch* reads as unpushed
+    /// even when the remote carries the tag itself, which is the ordinary state of
+    /// a repository that tags releases on branches it then deletes. That is a
+    /// report of work as unsaved when it is saved, and it is the direction this
+    /// answer is meant to fail in — a clone kept costs disk, a clone deleted costs
+    /// the work. Narrowing the ref set to buy a tidier report would trade the
+    /// first cost for the second.
+    ///
+    /// Answers on a clone with no refs at all, where there is nothing to be
+    /// unpushed: git exits 0 with no output rather than refusing, so a clone of an
+    /// empty repository needs no gate here and does not get one.
+    pub(crate) fn unpushed_commits(&self, clone: &Path) -> GitAnswer<String> {
+        self.about(clone, &["log", "--oneline", "--all", "--not", "--remotes"])
     }
 
     // ------------------------------------------------------- the bare cache

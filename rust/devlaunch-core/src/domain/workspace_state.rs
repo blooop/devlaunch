@@ -157,11 +157,12 @@ pub enum CouldNotTell {
     GitCouldNotRead { clone: PathBuf, reason: String },
     /// The repository read fine, and listing unpushed commits then refused —
     /// broken remote-tracking refs, usually.
-    UnpushedNotListed {
-        clone: PathBuf,
-        branch: String,
-        reason: String,
-    },
+    ///
+    /// Names no branch, because since #471 the question names none: it is asked of
+    /// every ref in the clone at once. A branch here would be the checked-out one
+    /// standing in for a question it was not about, which is the shape of thing
+    /// this module keeps deleting.
+    UnpushedNotListed { clone: PathBuf, reason: String },
     /// No directory could be named for this workspace's record at all: the
     /// recorded path is unusable and the derivation refused the record's own
     /// triple (the `dl <ws> rm` guard's arm — see
@@ -184,12 +185,8 @@ impl CouldNotTell {
             Self::GitCouldNotRead { clone, reason } => {
                 format!("git could not read {}: {reason}", clone.display())
             }
-            Self::UnpushedNotListed {
-                clone,
-                branch,
-                reason,
-            } => format!(
-                "git could not list unpushed commits on {branch} in {}: {reason}",
+            Self::UnpushedNotListed { clone, reason } => format!(
+                "git could not list unpushed commits in {}: {reason}",
                 clone.display()
             ),
             Self::DirectoryUnknown { workspace_id } => {
@@ -390,7 +387,7 @@ pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
         GitAnswer::Said(head) if !head.is_empty() => Some(head),
         _ => None,
     };
-    let unsaved = unsaved(git, clone, branch.as_deref());
+    let unsaved = unsaved(git, clone);
     CloneState { branch, unsaved }
 }
 
@@ -448,11 +445,13 @@ fn path_in(line: &str) -> Option<&str> {
 /// then fails has failed for a reason nobody here can account for, and accounting
 /// for it by saying "nothing to lose" is the bug this module exists to not have.
 ///
-/// *branch* being `None` after a successful `status` means HEAD names no commit —
-/// a clone of an empty repository, or one checked out to a ref that does not exist
-/// yet. There is no commit to be unpushed, so there is nothing to ask `git log`
-/// about.
-fn unsaved(git: &Git<'_>, clone: &Path, branch: Option<&str>) -> Unsaved {
+/// The `git log` is asked unconditionally, and since #471 it is asked about every
+/// ref in the clone rather than about the checked-out branch. That drops the gate
+/// this used to carry, which skipped the question when HEAD named no commit: on a
+/// clone with no refs at all git exits 0 with no output, so the gate bought
+/// nothing, and on a clone whose HEAD is unborn but which carries an orphan branch
+/// it hid the one thing there was to find.
+fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
     let status = match git.status_porcelain(clone) {
         GitAnswer::Said(status) => status,
         GitAnswer::Refused(refused) => {
@@ -467,20 +466,17 @@ fn unsaved(git: &Git<'_>, clone: &Path, branch: Option<&str>) -> Unsaved {
     if let Some(changed) = NonEmpty::of(status.lines().map(str::to_owned)) {
         losses.push(Loss::Uncommitted(changed));
     }
-    if let Some(branch) = branch {
-        match git.unpushed_commits(clone, branch) {
-            GitAnswer::Said(unpushed) => {
-                if let Some(commits) = NonEmpty::of(unpushed.lines().map(str::to_owned)) {
-                    losses.push(Loss::Unpushed(commits));
-                }
+    match git.unpushed_commits(clone) {
+        GitAnswer::Said(unpushed) => {
+            if let Some(commits) = NonEmpty::of(unpushed.lines().map(str::to_owned)) {
+                losses.push(Loss::Unpushed(commits));
             }
-            GitAnswer::Refused(refused) => {
-                return Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
-                    clone: clone.to_path_buf(),
-                    branch: branch.to_owned(),
-                    reason: refused.reason().to_owned(),
-                });
-            }
+        }
+        GitAnswer::Refused(refused) => {
+            return Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
+                clone: clone.to_path_buf(),
+                reason: refused.reason().to_owned(),
+            });
         }
     }
     match Losses::of(losses) {

@@ -303,6 +303,50 @@ fn a_branch_whose_commits_are_on_the_remote_under_another_name_is_saved() {
 }
 
 #[test]
+fn a_commit_on_a_branch_that_is_not_checked_out_is_unsaved() {
+    // The whole of #471, and it is a live data-loss path in shipped code: commit
+    // on `wip`, switch back, and the clone reads as safe to delete while holding
+    // the only copy of that commit. Asking about the checked-out branch alone is
+    // what got this wrong — the question is what the *clone* holds, and a clone
+    // holds every ref in it.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    git(&clone, &["checkout", "-q", "-b", "wip"]);
+    write(&clone.join("wip.txt"), "an hour of work\n");
+    commit(&clone, "wip");
+    git(&clone, &["checkout", "-q", "feature"]);
+
+    // The premise, asserted rather than assumed: the checked-out branch really is
+    // clean and fully pushed, so the only thing left to find is on `wip`.
+    assert_eq!(git(&clone, &["status", "--porcelain"]), "");
+    assert_eq!(read(&clone).branch.as_deref(), Some("feature"));
+
+    assert_eq!(would_lose(&held(&clone)), "1 unpushed commit(s)");
+}
+
+#[test]
+fn a_stashed_change_is_unsaved_too() {
+    // `refs/stash` is a ref in the clone, so reaching every ref reaches it. Not
+    // incidental: a stash is work that exists nowhere else and the clone is the
+    // only place it lives, so it belongs on the same side of the answer as an
+    // unpushed commit. It is written to the clone's own `refs/stash` even from
+    // inside a linked worktree, so there is one stash per clone to find.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("stashed.txt"), "half a plan\n");
+    git(&clone, &["add", "-A"]);
+    git(
+        &clone,
+        &["-c", "user.email=t@t", "-c", "user.name=t", "stash", "-q"],
+    );
+
+    assert_eq!(git(&clone, &["status", "--porcelain"]), "");
+    // Two commits: git writes a stash as a commit plus its index parent, and both
+    // are counted, because a count of commits is what this answer is.
+    assert_eq!(would_lose(&held(&clone)), "2 unpushed commit(s)");
+}
+
+#[test]
 fn a_clone_that_is_not_there_holds_nothing() {
     // A half-finished delete, or a directory removed by hand. There is no work in
     // it to lose, and nothing here may crash on it.
@@ -439,8 +483,10 @@ fn a_clone_moved_off_its_branch_reports_the_branch_it_is_on() {
 #[test]
 fn a_repository_with_no_commits_yet_is_readable_and_names_no_branch() {
     // `git status` succeeds on it — that is why status is the repository probe —
-    // and `rev-parse --abbrev-ref HEAD` refuses, so there is no branch and
-    // nothing to ask `git log` about. The work in it is still work.
+    // and `rev-parse --abbrev-ref HEAD` refuses, so there is no branch. `git log`
+    // is still asked, and answers 0 with no output on a clone with no refs, which
+    // is why widening the probe needed no gate to protect this case. The work in
+    // it is still work.
     let fixture = Fixture::new();
     let empty = fixture.path("empty");
     std::fs::create_dir_all(&empty).expect("a directory");
@@ -453,6 +499,30 @@ fn a_repository_with_no_commits_yet_is_readable_and_names_no_branch() {
     assert_eq!(
         would_lose(&state.unsaved),
         "1 uncommitted change(s) (notes.md)"
+    );
+}
+
+#[test]
+fn an_unborn_head_does_not_hide_the_commits_on_the_other_branches() {
+    // The second data-loss path the same blindness had, and the one the branch
+    // gate rather than the branch *name* caused: `git checkout --orphan` leaves
+    // HEAD naming no commit, so `rev-parse` refuses, so the old probe skipped the
+    // unpushed question altogether — and reported `NothingToLose` for a clone
+    // holding an unpushed commit on the branch it had just stepped off.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("more.txt"), "more\n");
+    commit(&clone, "more");
+    git(&clone, &["checkout", "-q", "--orphan", "fresh"]);
+    git(&clone, &["rm", "-r", "-q", "--cached", "."]);
+
+    let state = read(&clone);
+
+    assert_eq!(state.branch, None, "an unborn HEAD names no branch");
+    assert!(
+        would_lose(&state.unsaved).contains("1 unpushed commit(s)"),
+        "the commit on `feature` is still the only copy: {:?}",
+        state.unsaved
     );
 }
 
@@ -598,8 +668,12 @@ fn a_readable_repo_whose_remote_refs_are_broken_is_could_not_tell() {
 
     let reason = could_not_tell(&state.unsaved);
     assert!(
-        reason.contains("unpushed commits") && reason.contains("feature"),
-        "the reason says which question refused: {reason:?}"
+        reason.contains("unpushed commits") && reason.contains(&clone.display().to_string()),
+        "the reason says which question refused, and about which clone: {reason:?}"
+    );
+    assert!(
+        !reason.contains("feature"),
+        "and names no branch, because the question named none: {reason:?}"
     );
     assert_eq!(
         state.branch.as_deref(),
