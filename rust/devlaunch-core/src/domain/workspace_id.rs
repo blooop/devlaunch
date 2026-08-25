@@ -18,6 +18,14 @@
 //! [`REPO_SLUG_LENGTH`] characters, never shorter. `ref-slug` absorbs all
 //! remaining truncation.
 //!
+//! [`WorkspaceId::label`] is the same three pieces read for a person rather than
+//! for devpod: `<repo-slug>@<ref-slug>`, no suffix. It is a second *rendering* and
+//! not a second derivation, which is the property worth keeping: both come out of
+//! one [`WorkspaceId::parts`], so a change to where the cuts fall moves the id and
+//! the label together or not at all. Nothing addresses a workspace by a label and
+//! it is not unique, which is what lets it drop the four characters that carry the
+//! identity. See its own docs for where that is spent.
+//!
 //! **What truncation does and does not guarantee.** Only the slugs are ever
 //! shortened, and the suffix is hashed over the full triple before any of that,
 //! so truncating the readable part adds no collisions of its own: two triples
@@ -314,6 +322,61 @@ impl WorkspaceId {
 
     /// The derived id, at most [`TARGET_LENGTH`] characters.
     pub fn value(&self) -> String {
+        let Parts {
+            repo,
+            git_ref,
+            suffix,
+        } = self.parts();
+        join(&[&repo, &git_ref, &suffix])
+    }
+
+    /// The same id read as `repo@ref`: no suffix, and an `@` where the id has a
+    /// dash.
+    ///
+    /// This is the name for a tab bar rather than for devpod, and it is the *id*
+    /// rather than a second derivation of the triple: the same slugs, cut to the
+    /// same lengths by the same budget, so `devlaunch@main` and
+    /// `devlaunch-main-3j1t` are one string with two characters changed. That is
+    /// what keeps a tab matchable by eye against a `dl --ls` row, which a name
+    /// truncated to a budget of its own would not be.
+    ///
+    /// **The suffix goes because nothing reads it, and the `@` comes back because
+    /// people do.** The suffix carries the workspace's identity and none of its
+    /// meaning: it is what keeps two branches whose readable halves cut to the same
+    /// string in two containers, and somebody looking at a tab has already told
+    /// them apart by the branch. The `@` is the character the spec is written with,
+    /// so `devlaunch@main` reads as the branch it is where `devlaunch-main` reads
+    /// as one dashed word.
+    ///
+    /// **Not unique, and it does not have to be**, which is the whole difference
+    /// between this and [`value`](Self::value). Two workspaces whose ids differ
+    /// only in the suffix — the `release/999...176` beside `release/999...234`
+    /// shape [`SUFFIX_LENGTH`] is chosen against — get the same label. Nothing
+    /// addresses a workspace by this, so a shared label costs a moment of ambiguity
+    /// on a tab bar rather than two workspaces sharing one container.
+    ///
+    /// Falls back to the id when either half is empty — a repo or a ref that
+    /// slugs to nothing, `_` being the shortest of them. There is nothing for the
+    /// `@` to sit between there, and the id is the one name that is never empty.
+    pub fn label(&self) -> String {
+        let Parts {
+            repo,
+            git_ref,
+            suffix,
+        } = self.parts();
+        if repo.is_empty() || git_ref.is_empty() {
+            return join(&[&repo, &git_ref, &suffix]);
+        }
+        format!("{repo}@{git_ref}")
+    }
+
+    /// The three pieces an id is joined from, each already cut to its budget.
+    ///
+    /// One derivation for [`value`](Self::value) and [`label`](Self::label) rather
+    /// than two that agree by inspection: the label is the id with the suffix
+    /// dropped and one separator changed, and that claim only stays true while a
+    /// single function decides where the cuts fall.
+    fn parts(&self) -> Parts {
         let suffix = self.suffix();
         let mut repo_part = slug(&self.repo);
         // Cut the repo slug only when the id would otherwise overflow. Whenever the
@@ -333,8 +396,22 @@ impl WorkspaceId {
         // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
         // the empty string, `join` drops it, and the id lands exactly on the cap.
         let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
-        join(&[&repo_part, &fit_ref(&self.git_ref, room), &suffix])
+        Parts {
+            git_ref: fit_ref(&self.git_ref, room),
+            repo: repo_part,
+            suffix,
+        }
     }
+}
+
+/// The pieces [`WorkspaceId::parts`] cuts, in the order an id joins them.
+///
+/// Any of the three can be the empty string, which [`join`] drops rather than
+/// spelling as a stray dash.
+struct Parts {
+    repo: String,
+    git_ref: String,
+    suffix: String,
 }
 
 impl fmt::Display for WorkspaceId {
@@ -1230,6 +1307,108 @@ mod tests {
             }
         }
         assert_eq!(longest, TARGET_LENGTH, "the budget must be reachable");
+    }
+
+    // ------------------------------------------------- the name a person reads
+
+    #[test]
+    fn a_label_is_the_id_with_the_suffix_off_and_an_at_where_the_dash_was() {
+        // The whole claim: the two strings differ in exactly the five characters the
+        // tab has no use for. Nothing derives the label from the triple a second
+        // time, so a change to how the id is cut cannot move one without moving the
+        // other.
+        let parsed = id("blooop", "devlaunch", "feature/auth");
+        assert_eq!(parsed.value(), "devlaunch-feature-auth-np10");
+        assert_eq!(parsed.label(), "devlaunch@feature-auth");
+
+        // Stated as a *difference*, not as a reconstruction, because which dash the
+        // `@` replaces cannot be read off the id: a repo slug holds dashes of its
+        // own, so `my-repo@main` and `my@repo-main` are the same id read two ways.
+        // That is exactly why a placement carries the name beside the id instead of
+        // recovering one from the other (`flows::launch::Placement::title`).
+        for (repo, git_ref, label) in [
+            ("devlaunch", "feature/auth", "devlaunch@feature-auth"),
+            ("my-repo", "main", "my-repo@main"),
+            ("my_repo.v2", "release/1.2", "my-repo-v2@release-1-2"),
+        ] {
+            let parsed = id("owner", repo, git_ref);
+            assert_eq!(parsed.label(), label, "{repo}@{git_ref}");
+            assert_eq!(
+                parsed.value(),
+                format!("{}-{}", parsed.label().replace('@', "-"), parsed.suffix()),
+                "the label and the id differ by the suffix and one separator"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_is_cut_by_the_ids_budget_and_not_by_one_of_its_own() {
+        // The room the ref gets is decided against the suffix's four characters even
+        // though the label does not carry them. That is the point: a label wider than
+        // the id's readable half would be a tab that says more than the `dl --ls` row
+        // it is meant to be matched against, and the room is not the label's to spend.
+        let parsed = id("owner", &"r".repeat(47), &"b".repeat(80));
+        assert_eq!(
+            parsed.label(),
+            format!("{}@{}", "r".repeat(REPO_SLUG_LENGTH), "b".repeat(21))
+        );
+        assert_eq!(
+            parsed.label().len(),
+            TARGET_LENGTH - SUFFIX_LENGTH - 1,
+            "the whole id, less the suffix and the dash in front of it"
+        );
+    }
+
+    #[test]
+    fn a_label_with_nothing_to_put_an_at_between_answers_the_id() {
+        // `_` is a safe name -- `is_word` accepts it -- and slugs to nothing, so a
+        // repo or a ref can genuinely arrive empty. There is no `@` to write with one
+        // side missing, and `@main` or `devlaunch@` would read as a broken spec, so
+        // the id is what comes back: it is the one name that is never empty.
+        let no_repo = id("owner", "_", "main");
+        assert_eq!(no_repo.label(), no_repo.value());
+        assert_eq!(no_repo.label(), format!("main-{}", no_repo.suffix()));
+
+        let no_ref = id("owner", "devlaunch", "_");
+        assert_eq!(no_ref.label(), no_ref.value());
+        assert_eq!(no_ref.label(), format!("devlaunch-{}", no_ref.suffix()));
+    }
+
+    #[test]
+    fn a_label_holds_one_at_and_nothing_else_a_shell_or_a_terminal_reads() {
+        // The label reaches two sinks that fear characters: an OSC 2 escape, ended by
+        // a control, and a `PS1` assignment bash expands again at every prompt. Both
+        // are filtered downstream (`sanitize_title`), and this is why that filter
+        // finds nothing to do on this path: `slug` leaves lowercase alphanumerics and
+        // dashes, and the only character added to them is the `@`.
+        for git_ref in [
+            "main",
+            "feature/auth",
+            "main\n",
+            "release/9.9.9",
+            "UPPER/Case",
+        ] {
+            let label = id("owner", "my_repo.v2", git_ref).label();
+            assert!(
+                label
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '@'),
+                "{label}"
+            );
+            assert!(label.matches('@').count() <= 1, "{label}");
+        }
+    }
+
+    #[test]
+    fn two_workspaces_that_differ_only_in_the_suffix_share_one_label() {
+        // The property the label gives up, asserted so that it is a decision. The
+        // suffix is the whole of what keeps these two apart, and it is exactly what
+        // the tab drops -- so `dl --ls`, the hostname and devpod can still tell them
+        // apart and a tab bar cannot. Nothing addresses a workspace by a label.
+        let one = id("owner", "repo", &format!("release/{}176", "9".repeat(40)));
+        let two = id("owner", "repo", &format!("release/{}234", "9".repeat(40)));
+        assert_ne!(one.value(), two.value());
+        assert_eq!(one.label(), two.label());
     }
 
     /// The repo-slug floor cannot win against the total budget: the floor, the

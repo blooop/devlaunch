@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.17.0] - 2026-08-25
+## [0.18.0] - 2026-08-25
 
 ### Changed
 
@@ -39,6 +39,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Nothing about `completions.bash` changed, so an older `dl` writing the cache and
   this script reading it agree, and the reverse.
+
+## [0.17.0] - 2026-08-25
+
+### Changed
+
+- **The terminal tab reads `devlaunch@main` again, and the selector never gives up
+  a branch name to keep two rows apart.** Both are the same correction: one
+  workspace id, rendered for the surface that is reading it, rather than one string
+  everywhere.
+
+  The tab is the id with the two characters a glance cannot use taken off: the
+  four-character identity suffix, and the dash between the repo and the branch,
+  spelled `@`. `dl blooop/devlaunch` names the pane `devlaunch@main` where devpod,
+  the container hostname and the `WORKSPACE` column of `dl --ls` all still say
+  `devlaunch-main-3j1t`. It is a rendering of the id and not a second derivation of
+  the spec, so the two are one string with two characters changed and a tab still
+  matches a listing row by eye. The branch stays the id's slug, cut to the id's
+  budget, which is what keeps a 200-character branch from making a
+  200-character tab. The full spec, `owner/repo@branch`, had no such bound and is
+  not what came back.
+
+  What it costs is a name that is no longer a pure function of the workspace across
+  every way of reaching it. Which dash the `@` replaces cannot be read off an id,
+  since a repo slug holds dashes of its own, so the name travels with the launch that
+  resolved the branch. A workspace named by its bare id on the command line is titled
+  by that id, and a workspace opened both ways carries two profile lines with the
+  last one winning.
+
+  The selector is not one of those, and it is the one that matters, since `dl` with
+  no arguments is how a workspace is reopened. It hands the launch an id like any
+  other caller, but it read the owner, the repo and the branch to draw the row, so
+  the pick carries them and the tab reads `devlaunch@main` either way. A triple that
+  no longer derives that very id, which is what a `git switch` inside the container
+  leaves, is dropped in favour of the id.
+
+  In the selector, two rows that would be drawn alike now gain a fourth column
+  holding their whole id instead of collapsing into it:
+
+  ```
+  blooop | devlaunch | main | devlaunch-main-3j1t
+  blooop | devlaunch | main | devlaunch-main-legacy
+  ```
+
+  Both of those rows are on `main`, so the branch was never what was ambiguous, and
+  taking it off screen left a person picking between two ids. `dl rm` is one of the
+  verbs the selector opens for. Only the rows that collide grow the column.
+
 
 ## [0.16.0] - 2026-08-25
 

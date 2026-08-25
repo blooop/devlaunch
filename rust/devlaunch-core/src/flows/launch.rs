@@ -1954,25 +1954,30 @@ pub(crate) fn dotfiles_update(
 ///
 /// # What the title says
 ///
-/// The name is the caller's to choose ([`Launch::titled`]), and every arm chooses the
-/// **workspace id** — the same string devpod is addressed by, the container's
-/// hostname, and the `WORKSPACE` column of `dl --ls`. One workspace, one name, in
-/// every place a person reads one.
+/// The name is the placement's ([`Placement::title`]), and it is the workspace id
+/// with its two unreadable characteristics taken off: the four-character suffix,
+/// which carries identity and no meaning, and the dash between the repo and the ref,
+/// which is spelled `@`. `dl blooop/devlaunch` names the pane `devlaunch@main` where
+/// devpod, the hostname and the `WORKSPACE` column of `dl --ls` all say
+/// `devlaunch-main-3j1t`.
 ///
-/// It has been the spec, `owner/repo@ref`, and the argument for that was sound as far
-/// as it went: an id carries no owner, so a fork and its upstream are two tabs spelled
-/// alike, and it spells the ref as a slug, so `feature/auth` reads as `feature-auth`.
-/// What that argument left out is that only one of the four launch arms *has* a spec.
-/// A bare devpod name, a path and a URL never formed a triple, so three arms were
-/// titled by id anyway and the tab's shape depended on how the workspace had been
-/// reached. Paying a real loss of legibility for a name three quarters of the arms
-/// could not use was the wrong trade. [`Launch::titled`] carries the whole of it.
+/// **It is the id, not a second derivation of the spec.** The slugs and the
+/// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a
+/// tab and a listing row still match by eye: one is the other with a suffix removed
+/// and a separator changed. A tab is read at a glance and a listing row is read
+/// deliberately, and the two characters that go are the two a glance cannot use.
 ///
-/// The bound comes with the choice rather than needing an argument of its own: an id
-/// is [`TARGET_LENGTH`](crate::domain::workspace_id) characters at most, because
-/// devpod refuses to create or report a workspace whose name exceeds 48. A spec had
-/// no such bound — [`WorkspaceId::new`] validates characters and not length, so a
-/// 200-character ref made a 200-character tab.
+/// It has also been the full spec, `owner/repo@ref`, and the reason that is not what
+/// came back is length: [`WorkspaceId::new`] validates the characters of a triple and
+/// not its length, so a 200-character ref made a 200-character tab. A label inherits
+/// the id's bound instead -- at most
+/// [`TARGET_LENGTH`](crate::domain::workspace_id) characters, less the suffix --
+/// because devpod refuses a workspace whose name exceeds 48. What stays lost with the
+/// owner is the fork: `blooop/devlaunch@main` and a fork of it read alike, since an
+/// id has never carried an owner and this is still the id.
+///
+/// The three arms that never formed a triple -- a bare devpod name, a path and a URL
+/// -- have no ref for an `@` to precede and are titled by id, exactly as before.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalTitle {
     /// Write this, exactly.
@@ -1985,7 +1990,7 @@ impl TerminalTitle {
     /// What this host wants written for *name*.
     ///
     /// *name* is what a person should read, not what devpod is addressed by — see the
-    /// type's own docs and [`Launch::titled`] for which of the two it is.
+    /// type's own docs and [`Placement::title`] for which of the two it is.
     pub(crate) fn from_host(host: &Host, name: &str) -> Self {
         if switched_on(host.no_title.as_deref()) || !host.stderr_tty {
             return Self::Off;
@@ -2083,7 +2088,7 @@ pub(crate) fn attach_workspace(
         //
         // Decided by the caller and not here, because what a workspace is *called*
         // is a fact about the spec that was launched and this function is given only
-        // an id — see [`Launch::titled`].
+        // an id — see [`Placement::title`].
         notices.say(LaunchNotice::TerminalTitle(title));
         if command.is_none()
             && matches!(
@@ -2288,6 +2293,7 @@ pub enum Placement {
     /// away.
     Known {
         workspace_id: String,
+        title: String,
         state: ContainerState,
     },
     /// devpod lists this workspace and could not describe it — a provider that is
@@ -2299,11 +2305,12 @@ pub enum Placement {
     /// `NotFound` for it would be this module answering a question only devpod can
     /// answer. It is exactly the workspace somebody is about to run
     /// `dl <ws> rm` on, so the arm has to survive to the verb.
-    Listed { workspace_id: String },
+    Listed { workspace_id: String, title: String },
     /// This launch may have to create it: `source` is what devpod is given and
     /// `workspace_id` is the `--id`. Nothing has been asked of devpod about it.
     Creating {
         workspace_id: String,
+        title: String,
         source: String,
     },
 }
@@ -2313,15 +2320,32 @@ impl Placement {
     pub fn workspace_id(&self) -> &str {
         match self {
             Self::Known { workspace_id, .. }
-            | Self::Listed { workspace_id }
+            | Self::Listed { workspace_id, .. }
             | Self::Creating { workspace_id, .. } => workspace_id,
+        }
+    }
+
+    /// What to call this workspace where a person reads it -- see
+    /// [`TerminalTitle`] for the two shapes it comes in and why.
+    ///
+    /// Carried beside the id rather than derived from it, because the arm that has
+    /// the shorter name is the arm that resolved a triple, and a triple is not
+    /// recoverable from an id: the id joins the repo slug and the ref slug with the
+    /// same dash both of them may hold, so nothing downstream can tell which dash
+    /// the `@` belongs at. Set once, where the placement is built and the triple is
+    /// still in hand.
+    pub fn title(&self) -> &str {
+        match self {
+            Self::Known { title, .. }
+            | Self::Listed { title, .. }
+            | Self::Creating { title, .. } => title,
         }
     }
 
     /// What devpod is given positionally.
     pub fn source(&self) -> &str {
         match self {
-            Self::Known { workspace_id, .. } | Self::Listed { workspace_id } => workspace_id,
+            Self::Known { workspace_id, .. } | Self::Listed { workspace_id, .. } => workspace_id,
             Self::Creating { source, .. } => source,
         }
     }
@@ -2329,7 +2353,7 @@ impl Placement {
     /// How devpod is told which workspace this is.
     pub(crate) fn naming(&self) -> Naming<'_> {
         match self {
-            Self::Known { workspace_id, .. } | Self::Listed { workspace_id } => {
+            Self::Known { workspace_id, .. } | Self::Listed { workspace_id, .. } => {
                 Naming::Known { workspace_id }
             }
             Self::Creating { workspace_id, .. } => Naming::Create { workspace_id },
@@ -2394,6 +2418,7 @@ pub fn resolve_triple(
             state,
         } => Resolution::Warm {
             placement: Placement::Known {
+                title: titled(&workspace_id, workspace),
                 workspace_id,
                 state,
             },
@@ -2402,6 +2427,25 @@ pub fn resolve_triple(
             workspace: workspace.clone(),
         },
     })
+}
+
+/// What to call *workspace_id* where a person reads it, given the triple that
+/// resolved to it.
+///
+/// [`WorkspaceId::label`] only where the id is this triple's own derivation.
+/// [`lifecycle::resolve_known_workspace`] may answer with an id `metadata.json`
+/// recorded instead, for a workspace created under an older id scheme and not yet
+/// reconciled, and a label derived from the triple is a rendering of the id the
+/// triple *would* have derived rather than of the one in play: `devlaunch@main` on
+/// the tab of a workspace whose `dl --ls` row reads `devlaunch-main-legacy`, with
+/// nothing between them to match by eye. The tab is a rendering of the id it is
+/// addressed by, or it is that id.
+fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
+    if workspace_id == workspace.value() {
+        workspace.label()
+    } else {
+        workspace_id.to_owned()
+    }
 }
 
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
@@ -2491,6 +2535,7 @@ pub(crate) fn prepare(
     match prepared {
         Ok(prepared) => Ok(Placement::Creating {
             workspace_id: workspace.value(),
+            title: workspace.label(),
             source: prepared.path.to_string_lossy().into_owned(),
         }),
         Err(error) => Err(NotPrepared::Preparation(error)),
@@ -2663,6 +2708,9 @@ pub struct Launch<'a, 'r, 'l> {
     /// Where this launch's notices go, as they happen. A `Vec` in a test that wants
     /// the sequence, the binary's printer in production.
     notices: &'a mut dyn Notices<LaunchNotice>,
+    /// What the caller already knows this workspace is, for a launch that names it
+    /// by id. See [`Self::recognised_as`].
+    recognised: Option<WorkspaceId>,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -2684,7 +2732,36 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             forward,
             token: HostToken::new(),
             notices,
+            recognised: None,
         }
+    }
+
+    /// The triple a caller has already recovered for the workspace it is about to
+    /// name by id.
+    ///
+    /// **The picker is the caller this exists for**, and it is the only one. It
+    /// hands back a workspace id, so a launch from it takes the bare-name arm and
+    /// has no triple of its own -- but the picker had one a moment earlier, read
+    /// out of the cache layout and the clone's `HEAD` to draw the row it was picked
+    /// from. Without it, `dl` with no arguments, which is how a workspace is
+    /// reopened, titles the tab `devlaunch-main-3j1t` where
+    /// `dl blooop/devlaunch@main` titles it `devlaunch@main`, and the two names pile
+    /// up in the profile a line each.
+    ///
+    /// It changes **only what the workspace is called**. Nothing here reaches
+    /// devpod, the clone or the records: the launch is still the bare-name arm, one
+    /// `devpod status` and no more, and a caller that passes a triple for the wrong
+    /// workspace gets a differently-titled tab and nothing else. That is what makes
+    /// this safe to take from a caller at all, and it is why the check on it lives
+    /// in [`titled`] rather than out there: the picker carries evidence, core
+    /// reaches the verdict, and a `HEAD` that has moved since the workspace was made
+    /// is refused here exactly as a recorded id is.
+    ///
+    /// `None` is the default and the answer for every other arm.
+    #[must_use]
+    pub fn recognised_as(mut self, workspace: Option<WorkspaceId>) -> Self {
+        self.recognised = workspace;
+        self
     }
 
     /// Run one launch.
@@ -2712,6 +2789,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 source,
                 workspace_id,
             } => Ok(Ok(Placement::Creating {
+                title: workspace_id.clone(),
                 workspace_id,
                 source,
             })),
@@ -2733,6 +2811,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let state = lifecycle::workspace_state(self.context.runner(), &name);
         if let Ok(state) = state {
             return Ok(Ok(Placement::Known {
+                title: self.recognised_title(&name),
                 workspace_id: name,
                 state,
             }));
@@ -2746,7 +2825,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .workspaces()
             .map_err(LaunchAborted::ListingUnreadable)?;
         if listed.iter().any(|workspace| workspace.id == name) {
-            return Ok(Ok(Placement::Listed { workspace_id: name }));
+            return Ok(Ok(Placement::Listed {
+                title: self.recognised_title(&name),
+                workspace_id: name,
+            }));
         }
         Ok(Err(LaunchRefusal::UnknownWorkspace { name }))
     }
@@ -2859,7 +2941,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                             spec: raw_spec.to_owned(),
                         });
                     }
-                    let session = self.attach(placement.workspace_id(), verb.command());
+                    let session = self.attach(placement, verb.command());
                     self.forced_refresh();
                     return session;
                 }
@@ -2868,7 +2950,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         if let Some(refused) = self.bring_up(verb, devcontainer, placement)? {
             return Ok(Launched::Refused(refused));
         }
-        let session = self.attach(placement.workspace_id(), verb.command());
+        let session = self.attach(placement, verb.command());
         // This path may have created the workspace, so the refresh has to happen
         // now that it exists.
         self.forced_refresh();
@@ -2889,7 +2971,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.forced_refresh();
             return Ok(Launched::Ready);
         }
-        let session = self.attach(placement.workspace_id(), verb.command());
+        let session = self.attach(placement, verb.command());
         self.forced_refresh();
         session
     }
@@ -2910,7 +2992,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         if let Some(refused) = self.bring_up(verb, devcontainer, placement)? {
             return Ok(Launched::Refused(refused));
         }
-        let session = self.attach(placement.workspace_id(), verb.command());
+        let session = self.attach(placement, verb.command());
         // `workspace_stop` already asked for a refresh on the way through; the
         // once-per-command latch is what keeps this from being a second one.
         self.forced_refresh();
@@ -2949,7 +3031,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                     self.context.runner(),
                     placement.workspace_id(),
                     PassOccasion::TopUp,
-                    self.container_title(placement.workspace_id()).as_deref(),
+                    self.container_title(placement.title()).as_deref(),
                 )
                 .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
             return Ok(Launched::AlreadyRunning);
@@ -2982,7 +3064,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
             let request = UpRequest::new(placement.source(), naming);
-            let title = self.container_title(placement.workspace_id());
+            let title = self.container_title(placement.title());
             let outcome = workspace_up(
                 self.context,
                 self.host,
@@ -3019,7 +3101,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
             .with_devcontainer(devcontainer);
-        let title = self.container_title(placement.workspace_id());
+        let title = self.container_title(placement.title());
         let outcome = workspace_up(
             self.context,
             self.host,
@@ -3048,14 +3130,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
 
     fn attach(
         &mut self,
-        workspace_id: &str,
+        placement: &Placement,
         command: Option<&str>,
     ) -> Result<Launched, LaunchAborted> {
-        let title = TerminalTitle::from_host(self.host, &self.titled(workspace_id));
+        let title = TerminalTitle::from_host(self.host, placement.title());
         let context = SessionContext::new(self.context.runner(), self.host, &self.token);
         let session = attach_workspace(
             &context,
-            workspace_id,
+            placement.workspace_id(),
             title,
             command,
             self.forward,
@@ -3069,59 +3151,43 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         }
     }
 
-    /// What to call this workspace where a person reads it.
+    /// What to call *workspace_id*, given whatever [`Self::recognised_as`] was told.
     ///
-    /// The workspace id, for every arm, which is the same string devpod is addressed
-    /// by and the same string `dl --ls` prints in its `WORKSPACE` column.
-    ///
-    /// **It used to be the resolved spec, `owner/repo@ref`, and that was the better
-    /// name read on its own.** A spec carries the owner, which an id does not hold at
-    /// all, so a fork and its upstream are now two tabs spelled alike; and it spells
-    /// the ref where an id holds a slug of one, so `feature/auth` reads as
-    /// `feature-auth` and cannot be told from the branch of that name. Neither is
-    /// recoverable from the id afterwards. That is a real loss, and it is the price
-    /// of what replaces it.
-    ///
-    /// What replaces it is that a workspace has **one** name. The tab, the container
-    /// hostname the prompt renders, and the `dl --ls` row used to be three different
-    /// strings for one workspace: the spec, the id's readable half, and the id. Three
-    /// spellings is what makes a tab hard to match against a listing by eye, and the
-    /// spec was never available to two of the three placements anyway — a bare devpod
-    /// name, a path and a URL never had a triple, so those were titled by id already
-    /// and the tab changed shape depending on how the workspace had been reached.
-    ///
-    /// The bound comes free with the choice. A spec is bounded by nothing here:
-    /// [`WorkspaceId::new`] validates characters and not length, so a 200-character
-    /// ref made a 200-character tab. An id is bounded at
-    /// [`TARGET_LENGTH`](crate::domain::workspace_id) by devpod's own ceiling.
-    fn titled(&self, workspace_id: &str) -> String {
-        workspace_id.to_owned()
+    /// The id itself where nothing was told, which is every arm but the picker's.
+    fn recognised_title(&self, workspace_id: &str) -> String {
+        match &self.recognised {
+            Some(workspace) => titled(workspace_id, workspace),
+            None => workspace_id.to_owned(),
+        }
     }
 
     /// The name a shell in this container should keep putting on the terminal, or
     /// `None` when there is none worth installing.
     ///
-    /// The workspace id, which is what [`Self::titled`] answers too. Both have to be
-    /// the one string or the tab changes the moment the first prompt paints: dl
-    /// writes its escape at the handover, and this line repaints at every prompt
-    /// after it.
+    /// [`Placement::title`], which is what the escape dl writes at the handover
+    /// carries too. Both have to be the one string or the tab changes the moment the
+    /// first prompt paints: dl writes its escape once, and this line repaints at
+    /// every prompt after it.
     ///
-    /// **The dedupe is what makes an id the right key here rather than merely an
-    /// acceptable one.** The line is written under a mark hashed from its own text
+    /// **A workspace has to reach the same name however it was reached, and that is
+    /// a property of the placement rather than of this function.** The line is
+    /// written under a mark hashed from its own text
     /// ([`profile_prepend`](crate::flows::provision)), so a name that varies for one
     /// workspace does not replace the line, it appends a second one, and the last
-    /// append is what every prompt then obeys. The spec this used to carry was only a
-    /// pure function of the workspace for launches that resolved a triple: the same
-    /// workspace reached once as `blooop/devlaunch@main` and once by its id wrote two
-    /// lines and ended up permanently titled by whichever came last. An id is the one
-    /// name every arm has and every arm agrees on, so a workspace has at most one
-    /// line, ever, however it was reached.
+    /// append is what every prompt then obeys. Every launch that resolves a triple
+    /// derives the label from that triple, so those agree; the arms that never had
+    /// one use the id, which they also agree on. What is left is a workspace opened
+    /// *both* ways -- once as `blooop/devlaunch@main` and once as
+    /// `dl devlaunch-main-3j1t` -- which writes two lines and keeps whichever came
+    /// last. That is the price of the `@`, and it is bounded: one extra line, and a
+    /// tab named by the id instead of by the label.
     ///
     /// Filtered by [`sanitize_title`], the same way the escape is, because the two
-    /// halves must not disagree about what a name may hold. A *derived* id cannot
-    /// hold anything to filter, whether it came from a triple or from
-    /// [`source_workspace_id`](crate::domain::workspace_id), but two arms reach here
-    /// with a string this crate never validated: a bare devpod name and a path leaf.
+    /// halves must not disagree about what a name may hold. A label and a *derived*
+    /// id both hold nothing to filter -- [`slug`](crate::domain::workspace_id::slug)
+    /// leaves only lowercase alphanumerics and dashes, and the label adds one `@` --
+    /// but two arms reach here with a string this crate never validated: a bare
+    /// devpod name and a path leaf.
     ///
     /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs the whole
     /// feature rather than part of it. Three pieces now, not two: the escape this
@@ -3136,11 +3202,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// this process is about to emit and the wrong one for a line installed in a
     /// profile: `dl <ws> up` is a prewarm with its output redirected, and the
     /// interactive session that arrives later is the one the line is for.
-    fn container_title(&self, workspace_id: &str) -> Option<String> {
+    fn container_title(&self, title: &str) -> Option<String> {
         if switched_on(self.host.no_title.as_deref()) {
             return None;
         }
-        sanitize_title(workspace_id)
+        sanitize_title(title)
     }
 
     /// A session outcome, with the two never-ran arms lifted to [`LaunchAborted`].
@@ -3192,6 +3258,7 @@ mod tests {
 
     use crate::clients::git::Git;
     use crate::domain::config::WorktreeConfig;
+    use crate::domain::model::WorktreeInfo;
     use crate::flows::lifecycle::SelfInvocation;
     use crate::flows::workspace_clone::GitLfs;
 
@@ -3347,12 +3414,12 @@ mod tests {
 
     impl<'r> RealCold<'r> {
         fn new(cache_dir: &Path, git: Git<'r>) -> Self {
-            let config = WorktreeConfig::defaults_in(cache_dir);
+            let config = WorktreeConfig::defaults();
             let (storage, _) = MetadataStorage::open(cache_dir.join("metadata.json"))
                 .expect("a fresh store opens");
             Self {
                 clones: WorkspaceCloneManager::new(
-                    &config.repos_dir,
+                    crate::domain::xdg::clone_root_in(cache_dir),
                     Duration::from_secs(config.fetch_interval),
                     git,
                     // The LFS fork is a separate concern, pinned in
@@ -5772,6 +5839,7 @@ mod tests {
             Ok(Resolution::Warm {
                 placement: Placement::Known {
                     workspace_id: workspace.value(),
+                    title: workspace.label(),
                     state: ContainerState::Running,
                 }
             })
@@ -5784,6 +5852,52 @@ mod tests {
                 "--output".to_owned(),
                 "json".to_owned(),
             ]]
+        );
+    }
+
+    #[test]
+    fn an_id_metadata_recorded_is_titled_by_that_id_and_not_by_the_triples_label() {
+        // The label is a rendering of the id in play, and this is the one path where
+        // the id in play is not the one the triple derives. `resolve_known_workspace`
+        // answers with the id `metadata.json` recorded when devpod has never heard of
+        // the derived one -- a workspace created under an older id scheme and not yet
+        // reconciled. Titling that by `devlaunch@main` would put a rendering of
+        // `devlaunch-main-3j1t` on the tab of a workspace whose `dl --ls` row reads
+        // `devlaunch-main-legacy`, with no two characters between them and nothing to
+        // match by eye. It also installs that name in the legacy container's profile,
+        // where nothing on screen ties it back to anything.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running("devlaunch-main-legacy");
+        {
+            let (mut storage, _) = MetadataStorage::open(scene.cache_dir().join("metadata.json"))
+                .expect("a fresh store");
+            let mut record = WorktreeInfo::new(
+                "blooop",
+                "devlaunch",
+                "main",
+                scene
+                    .cache_dir()
+                    .join("repos/blooop/devlaunch/devlaunch-main-legacy"),
+                &workspace.value(),
+            );
+            record.devpod_workspace_id = Some("devlaunch-main-legacy".to_owned());
+            storage.add_worktree(record).expect("the record is saved");
+        }
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let mut context = CommandContext::new(&scene.runner);
+
+        let resolution = resolve_triple(&mut context, &mut cold, &workspace, &mut no_notices());
+
+        assert_eq!(
+            resolution,
+            Ok(Resolution::Warm {
+                placement: Placement::Known {
+                    workspace_id: "devlaunch-main-legacy".to_owned(),
+                    title: "devlaunch-main-legacy".to_owned(),
+                    state: ContainerState::Running,
+                }
+            })
         );
     }
 
@@ -5811,18 +5925,22 @@ mod tests {
         // Python reads it off two correlated locals; here it is one value.
         let running = Placement::Known {
             workspace_id: "myws".to_owned(),
+            title: "myws".to_owned(),
             state: ContainerState::Running,
         };
         let stopped = Placement::Known {
             workspace_id: "myws".to_owned(),
+            title: "myws".to_owned(),
             state: ContainerState::Stopped,
         };
         let creating = Placement::Creating {
             workspace_id: "myws".to_owned(),
+            title: "myws".to_owned(),
             source: "/clone".to_owned(),
         };
         let listed = Placement::Listed {
             workspace_id: "myws".to_owned(),
+            title: "myws".to_owned(),
         };
 
         assert!(running.is_running());
@@ -5925,18 +6043,20 @@ mod tests {
     }
 
     #[test]
-    fn a_triple_names_the_terminal_after_the_id_devpod_is_addressed_by() {
-        // One workspace, one name. What a person reads on the tab is the string
-        // devpod is addressed by in the same launch (the `status` and `ssh` below),
-        // which is also the container hostname and the `dl --ls` row.
+    fn a_triple_names_the_terminal_after_the_label_devpod_is_not_addressed_by() {
+        // The tab reads `devlaunch@feature-auth` where devpod, in this same launch
+        // (the `status` and `ssh` below), is addressed by
+        // `devlaunch-feature-auth-np10`. Both halves are asserted here because the
+        // claim is the relationship between them: the label is the id with the
+        // suffix off and one dash spelled `@`, so a tab still matches a `dl --ls`
+        // row by eye without carrying the four characters nothing reads.
         //
-        // `feature/auth` is the ref that shows what that costs rather than merely
-        // what it buys: the id spells it `feature-auth`, which is also the name of a
-        // different branch this repository could have, so the tab cannot say which
-        // of the two the session is in. The spec could, and used to. It was dropped
-        // because three of the four launch arms never had one -- see
-        // `Launch::titled` -- so the tab changed shape with how a workspace had been
-        // reached.
+        // `feature/auth` is the ref that shows what the *slug* costs, which the `@`
+        // does not buy back: both spell it `feature-auth`, which is also the name of
+        // a different branch this repository could have, so neither can say which of
+        // the two the session is in. Only the full spec could, and it is not what
+        // came back -- see `TerminalTitle` for why the length made that the wrong
+        // trade.
         let workspace =
             WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
         let mut scene = Scene::new().with_running(&workspace.value());
@@ -5971,11 +6091,12 @@ mod tests {
             parts.said.iter().any(|notice| notice
                 == &LaunchNotice::TerminalTitle(TerminalTitle::Write(format!(
                     "\x1b]2;{}\x07",
-                    workspace.value()
+                    workspace.label()
                 )))),
             "{:?}",
             parts.said
         );
+        assert_eq!(workspace.label(), "devlaunch@feature-auth");
         // And the id is what devpod was given, unchanged by any of this.
         assert_eq!(workspace.value(), "devlaunch-feature-auth-np10");
         assert!(
@@ -5986,6 +6107,71 @@ mod tests {
             "{:?}",
             scene.devpod_commands()
         );
+    }
+
+    #[test]
+    fn a_bare_name_a_caller_recognised_is_titled_by_the_label_after_all() {
+        // The picker opens a workspace **by id** and is the one caller that still
+        // knows its triple: it read the owner and repo out of the cache layout and
+        // the branch out of the clone's `HEAD` in order to draw the row. Without
+        // that handed on, `dl` with no arguments -- the way a workspace is reopened
+        // -- put `devlaunch-main-3j1t` on the tab where the same workspace opened as
+        // `dl blooop/devlaunch@main` put `devlaunch@main`, and the two names would
+        // then pile up in the profile a line each.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        scene.host.stderr_tty = true;
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            )
+            .recognised_as(Some(workspace.clone()));
+            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
+    }
+
+    #[test]
+    fn a_triple_that_no_longer_derives_this_id_is_not_what_the_tab_says() {
+        // `HEAD` is the branch checked out *now*, so a `git switch` inside the
+        // container leaves the picker holding a triple that derives a different
+        // workspace. Naming the tab from it would put another workspace's label on
+        // this one. The check is core's and not the picker's: the picker carries
+        // the evidence, `titled` reaches the verdict, and it is the same verdict the
+        // recorded-id path gets.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let switched = WorkspaceId::new("blooop", "devlaunch", "other").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            )
+            .recognised_as(Some(switched));
+            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
     }
 
     #[test]
@@ -6333,16 +6519,21 @@ mod tests {
     }
 
     #[test]
-    fn one_name_per_workspace_is_what_keeps_the_profile_line_from_piling_up() {
+    fn a_workspace_opened_both_ways_installs_two_names_and_the_last_one_wins() {
+        // The price of the `@`, pinned so that it is a decision and not a surprise.
         // One workspace, opened both ways: by spec, and later by the id it derived.
-        // The profile line is deduped by a hash of its own text, so a second,
-        // different name for one workspace would not replace the first, it would
-        // append, and the last append is what every prompt obeys.
+        // A spec resolves a triple and installs the label; a bare id never had a
+        // triple, so it installs the id. Two different strings for one workspace.
         //
-        // The id is the same string both times, which is the whole reason it is the
-        // name. The spec this used to install was only a pure function of the
-        // workspace for the launches that resolved a triple: opening by id installed
-        // nothing, and opening by spec afterwards appended a second line.
+        // The profile line is deduped by a hash of its own text, so the second does
+        // not replace the first, it appends -- and the last append is what every
+        // prompt obeys, which leaves the tab reading `devlaunch-main-3j1t` where the
+        // spec had asked for `devlaunch@main`.
+        //
+        // It is bounded at one extra line and one less readable tab, and it is what
+        // naming after the id bought outright: every arm agreed on the id, so there
+        // was one line ever. What that cost was the `@`, on every launch, to keep a
+        // guarantee that only bites when the same workspace is reached two ways.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let scene = Scene::new().with_running(&workspace.value());
         let updater = SelfInvocation::new("dl");
@@ -6374,8 +6565,11 @@ mod tests {
             let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
         }
 
-        let name = Some(workspace.value());
-        assert_eq!(parts.provision.titles(), vec![name.clone(), name]);
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some(workspace.label()), Some(workspace.value())],
+            "the spec installs the label and the bare id installs the id"
+        );
     }
 
     #[test]
@@ -6386,10 +6580,11 @@ mod tests {
         // newline lands in a file every login sources, inside the quoted word,
         // splitting one PS1 assignment over two physical lines.
         //
-        // Naming after the id closed that by construction rather than by filtering:
-        // `slug` erases the newline before an id exists, so there is no control left
-        // to carry. So this asserts the id arrives whole -- had `sanitize_title`
-        // found anything to drop, the name installed would not be `value()`.
+        // Naming after the derived name closed that by construction rather than by
+        // filtering: `slug` erases the newline before an id exists, so there is no
+        // control left for the label to carry either. So this asserts the label
+        // arrives whole -- had `sanitize_title` found anything to drop, the name
+        // installed would not be `label()`.
         // `sanitize_title` still earns its keep on the two arms that reach a title
         // without deriving one, a bare devpod name and a path leaf, and
         // `a_spec_cannot_smuggle_a_second_escape_into_the_title` is where the raw
@@ -6414,11 +6609,11 @@ mod tests {
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
     }
 
     #[test]
-    fn the_pass_is_told_to_have_the_container_keep_titling_after_the_id() {
+    fn the_pass_is_told_to_have_the_container_keep_titling_after_the_label() {
         // The other half of the title, and the half that lasts. dl's own escape is
         // overwritten by the first interactive prompt; this is the name the pass
         // installs in the container's profile so every prompt after that writes it
@@ -6445,7 +6640,7 @@ mod tests {
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
     }
 
     #[test]
@@ -6506,7 +6701,7 @@ mod tests {
         };
 
         assert_eq!(launched, Ok(Launched::AlreadyRunning));
-        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
         // And nothing was written to the terminal that is not there.
         assert!(
             !parts.said.iter().any(|notice| matches!(

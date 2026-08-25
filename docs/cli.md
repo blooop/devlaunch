@@ -30,13 +30,33 @@ act on what you picked, pick it.
 Two rows can still be drawn alike, when two workspaces of one repository sit on one
 branch. The id-scheme migration leaves exactly that pair for a while: the renamed
 clone under its new id, and the container still on the old one. When it happens
-**both** rows go back to their full ids, suffix and all, because the row's own text
-is how `dl` knows which workspace you picked, and two rows reading the same would be
-one workspace deleted in place of another. The suffix appears exactly where it is
-doing work.
+**both** rows gain a fourth column holding their whole id:
 
-A row whose clone is not on disk shows its whole id too, since there is no `HEAD` to
-read. That is the honest answer: the workspace's source is gone.
+```
+blooop | devlaunch | main | devlaunch-main-3j1t
+blooop | devlaunch | main | devlaunch-main-legacy
+```
+
+The row's own text is how `dl` knows which workspace you picked, so two rows reading
+the same would be one workspace deleted in place of another, and the id is what
+settles it. It is appended rather than replacing the columns, and that is the
+correction to what this used to do: both rows collapsed into their bare ids, which
+took the branch off screen to fix an ambiguity the branch never caused. Both of those
+rows are on `main`. Picking between two ids is harder than picking between two rows
+that say `main` and carry a tiebreak, and `dl rm` is one of the verbs this opens for.
+
+Only the rows that collide grow the column. A third workspace of the same repository
+on another branch keeps its three.
+
+A row whose clone is not on disk shows its whole id in place of the repo and the
+branch, since there is no `HEAD` to read. That is the honest answer: the workspace's
+source is gone.
+
+Nothing here is short of room, and that is why the picker spends it differently from
+[the terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace). A row
+is read one at a time down the terminal, so the branch is spelled in full, slashes and
+all. A tab is a handful of characters read at a glance next to a dozen others, so it
+takes the truncated slug and drops the suffix. Same workspace, two jobs.
 
 ## Commands that need a terminal
 

@@ -365,7 +365,7 @@ Every launch names the terminal after the workspace it is opening, just before t
 session takes over:
 
 ```
-ESC ] 2 ; devlaunch-main-3j1t BEL
+ESC ] 2 ; devlaunch@main BEL
 ```
 
 That is one escape sequence to whichever stream dl was given, and the point of
@@ -384,26 +384,50 @@ A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are 
 the same size of decision. That one installs a package into a container and starts a
 session; this one writes an escape sequence and two lines into a profile.
 
-**It is the [workspace id](workspaces.md#workspace-ids), however you named the
-workspace.** `dl blooop/devlaunch` names the pane `devlaunch-main-3j1t`: the string
-devpod is addressed by, the container's hostname, and the `WORKSPACE` column of
-`dl --ls`. One workspace, one name, so a tab and a listing row match by eye.
+**It is the [workspace id](workspaces.md#workspace-ids) read for a person:
+`<repo>@<branch>`, with the hashed suffix off.** `dl blooop/devlaunch` names the pane
+`devlaunch@main` where devpod, the container's hostname and the `WORKSPACE` column of
+`dl --ls` all say `devlaunch-main-3j1t`. One string with two characters changed, so a
+tab and a listing row still match by eye.
 
-It used to be the spec you typed, resolved, `blooop/devlaunch@main`, and read on its
-own that is the better name. An id carries no owner at all, so a fork and its
-upstream are two tabs spelled the same, and it spells the branch as a slug, so
-`feature/auth` reads as `feature-auth`, the name of a different branch the same
-repository could have. What the spec left out is that only one of the four ways of
-naming a workspace has one. A bare `dl myworkspace` *is* its id, and `dl ./some/dir`
-or a plain URL never had a branch for an `@` to precede, so three of the four were
-titled by id anyway and the shape of the tab depended on how you had reached the
-workspace.
+Two characters, and they are the two a glance cannot use. The suffix carries the
+workspace's identity and none of its meaning: it is what keeps two branches whose
+readable halves cut to the same string in two containers, and by the time you are
+looking at a tab you have told them apart by the branch. The `@` is the character a
+spec is written with, so `devlaunch@main` reads as the branch it is where
+`devlaunch-main` reads as one dashed word.
 
-It stays short enough for a tab bar, and that now comes with the choice rather than
-needing an argument of its own: an id is at most 47 characters, because devpod
-refuses to create or report a workspace whose name runs past 48. A spec had no such
-bound. A triple is checked for the characters it holds and not for its length, so a
-200-character branch made a 200-character tab.
+The branch is the id's slug of one, cut to the id's budget. `feature/auth` reads as
+`devlaunch@feature-auth`, which is also how the branch `feature-auth` would read, and
+a long branch is cut where the id cuts it. That is the tab bar's constraint rather
+than a shortfall: a name in a tab shares a strip of screen with a dozen others and is
+read at a glance. Where the whole branch matters, the
+[selector](cli.md#the-selector) spells it out, slashes and all.
+
+It used to be the whole spec you typed, resolved, `blooop/devlaunch@main`, and the
+reason that is not what came back is length. A triple is checked for the characters
+it holds and not for its length, so a 200-character branch made a 200-character tab.
+A label inherits the id's bound instead: at most 47 characters less the five the
+suffix and its dash take. What stays lost with the owner is the fork: an id has never
+carried one, so `blooop/devlaunch@main` and a fork of it read alike.
+
+`dl ./some/dir` and a plain URL never had a branch for an `@` to precede, so those
+are titled by id, exactly as before. So is a workspace you name by its id on the
+command line: `dl devlaunch-main-3j1t` is handed a name and nothing else, and a
+branch cannot be read back out of an id (the repo slug holds dashes of its own, so
+`my-repo@main` and `my@repo-main` are one id read two ways).
+
+**The selector is the exception, and it is the one that matters**, because `dl` with
+no arguments is how a workspace is reopened. It hands the launch a workspace id like
+any other, but it had the triple a moment earlier: it read the owner and repo out of
+the cache layout and the branch out of the clone's `HEAD` to draw the row you picked.
+That travels with the pick, so a workspace opened from the selector is titled
+`devlaunch@main`, the same as one opened as `dl blooop/devlaunch@main`.
+
+It is checked rather than trusted. `HEAD` is the branch checked out *now*, so a
+`git switch` inside the container leaves a triple that derives some other workspace,
+and a triple that does not derive this very id is dropped in favour of the id. That is
+the same check a workspace addressed by a recorded id gets.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for
@@ -422,13 +446,13 @@ wants and in a different shape.
 So the setup pass appends one line to the profile a login shell reads:
 
 ```
-case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"devlaunch-main-3j1t"\a\]" ;; esac
+case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"devlaunch@main"\a\]" ;; esac
 ```
 
 Appended, and that is the whole mechanism: two escapes in one prompt are applied in
 order, so the last one sets the title. Nothing is rewritten. The visible
-`vscode@devlaunch-main-3j1t:~/repo$` still says the hostname, and only the tab
-changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
+`vscode@devlaunch-main-3j1t:~/repo$` still says the hostname, which is the id, and
+only the tab changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
 `PS1`, so the stock escape would land afterwards and win.) Interactive bash only.
 `bash -lc` reads the same profile on every `dl <ws> -- cmd` one-shot, and `\[`, `\e`
 and `\a` mean nothing to dash, which is `/bin/sh` and which reads `~/.profile` too,
@@ -439,15 +463,19 @@ It is written once, since the line carries a content-hash comment the next launc
 recognises, and it rides the same round trip as the hostname stage, so it costs no
 extra trip.
 
-**The name is the workspace id, and it is the same one everywhere.** The hostname is
-that id, `dl --ls` prints that id, and devpod is addressed by it, so a tab and a
-listing row match by eye. It also has to be one string for a second reason: the line
-is recognised by a hash of its own text, so a second, different name for one
-workspace would not replace the first but sit after it, and the last one wins. The
-id is the one name every launch arm has, so a workspace gets at most one such line,
-ever. This used to install `owner/repo@main` instead, which only a launch that
-resolved a triple had, so `dl myworkspace` installed nothing and opening the same
-workspace both ways left two lines.
+**The line and the escape carry the same string**, or the tab would change the moment
+the first prompt painted. Both come from the placement, which decides the name once,
+where the launch still knows whether it resolved a branch.
+
+That leaves one rough edge, and it is the price of the `@`. The line is recognised by
+a hash of its own text, so a second, different name for one workspace does not replace
+the first, it sits after it, and the last one wins. Every launch that resolves a
+branch derives the same label, and the arms that never had one all use the id, so
+those agree among themselves. What does not agree is one workspace opened **both**
+ways: `dl blooop/devlaunch@main` installs `devlaunch@main`, a later
+`dl devlaunch-main-3j1t` installs the id, and the tab reads as the id from then on. It
+costs one extra line in the profile and a less readable tab, in a case most workspaces
+never reach.
 
 **It is installed when a workspace enters Running, not on every attach.** A
 workspace that is already up keeps whatever its profile was given, so

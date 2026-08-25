@@ -12,6 +12,8 @@ use std::path::Path;
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::clients::devpod_home::DevpodHome;
 use devlaunch_core::domain::spec::DevcontainerPath;
+use devlaunch_core::domain::workspace_id::WorkspaceId;
+use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::launch::LaunchNotice;
@@ -127,6 +129,9 @@ pub(crate) fn dispatch(
             &target,
             verb,
             devcontainer.as_ref(),
+            // A target named on the command line is resolved by the launch itself;
+            // only the picker arrives knowing more than it says.
+            None,
         ),
     }
 }
@@ -360,10 +365,6 @@ fn render_refresh(context: &mut CommandContext<'_>, cache: &Path) -> Ending {
 /// the cache is written from what could still be seen. Refusing there would mean
 /// an unreachable devpod stops `dl --install` from installing completions at all.
 fn refresh_cache(context: &mut CommandContext<'_>, cache: &Path) -> Result<Refreshed, Ending> {
-    let config = match session::worktree_config() {
-        Err(refused) => return Err(refuse_startup(&StartupError::Config(refused))),
-        Ok(config) => config,
-    };
     // Asked before the refresh rather than after, because a missing devpod has to
     // stop this before anything is *written*: in Python the missing-binary refusal
     // travels out of the refresh's very first `devpod list` and past every local
@@ -376,7 +377,8 @@ fn refresh_cache(context: &mut CommandContext<'_>, cache: &Path) -> Result<Refre
     {
         return Err(refuse_listing(&refused));
     }
-    let refreshed = completion_cache::update_completion_cache(context, cache, &config.repos_dir);
+    let refreshed =
+        completion_cache::update_completion_cache(context, cache, &xdg::clone_root_in(cache));
     if let Some(refused) = &refreshed.listing_refused {
         // Every other unreadable listing is reported and stepped over: see the
         // note above the signature.
@@ -512,6 +514,7 @@ fn render_workspace<'r>(
     target: &str,
     verb: Verb,
     devcontainer: Option<&DevcontainerPath>,
+    recognised: Option<WorkspaceId>,
 ) -> Ending {
     let mut cold = ColdPath::new(runner);
     match launch::family(&verb) {
@@ -541,6 +544,7 @@ fn render_workspace<'r>(
                 target,
                 &launched,
                 devcontainer,
+                recognised,
             );
             after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
         }
@@ -1138,6 +1142,10 @@ fn render_select<'r>(
                     &pick.workspace_id,
                     verb.clone(),
                     devcontainer,
+                    // The picker knows what it drew: this row's clone said it is
+                    // this triple, and the launch it is about to start knows only
+                    // the id. See `Launch::recognised_as`.
+                    pick.triple.clone(),
                 );
                 if matches!(ending, Ending::Done) {
                     ending = ran;
@@ -1291,8 +1299,15 @@ fn refuse_startup(refused: &StartupError) -> Ending {
     Ending::Refused
 }
 
-/// Everything a metadata load and the cache migration had to say.
+/// Everything the config load, the metadata load and the cache migration had to
+/// say.
 pub(crate) fn report(records: &Records<'_>) {
+    // The config is read before the records are opened, so its notices are said
+    // first — and here rather than at the load, so that the once-per-command
+    // guarantee `report` already carries covers them too.
+    for line in render::retired_keys(&records.retired_keys) {
+        eprintln!("{line}");
+    }
     for line in render::metadata_notices(&records.notices) {
         eprintln!("{line}");
     }

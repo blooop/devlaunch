@@ -46,14 +46,33 @@ Branch names are case-sensitive, because git refs are.
 URL specs (`dl github.com/owner/repo`) get an id in the same shape, with the suffix
 hashed over the URL.
 
-One workspace has one name. The id is what devpod is addressed by, what `dl --ls`
-prints, what the container's hostname is set to, and what dl writes on the terminal
-tab, so a tab and a listing row can be matched by eye. The hostname used to drop the
-suffix and the tab used to carry `owner/repo@branch` instead, which meant three
-spellings for one workspace and a tab whose shape depended on how the workspace had
-been reached. A bare devpod name, a path and a URL never had an `owner/repo@branch` to
-show. What the change costs is that the tab no longer names the owner, so a fork and
-its upstream read alike, and it spells the branch as a slug.
+One workspace, one id, three ways of reading it. The id itself is what devpod is
+addressed by, what `dl --ls` prints and what the container's hostname is set to:
+everything that has to be unique, or has to be typed back, or has to fit in a DNS
+label.
+
+The other two are renderings of that same id, cut to what their surface is for:
+
+| Where | Reads | Why that shape |
+|-------|-------|----------------|
+| `dl --ls`, the hostname, devpod | `devlaunch-main-3j1t` | Addressed and typed back, so it must be unique and it must be one word |
+| The [terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace) | `devlaunch@main` | A handful of characters read at a glance beside a dozen others, so the suffix goes and the branch stays the id's slug |
+| The [selector](cli.md#the-selector) | `blooop \| devlaunch \| main` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
+
+They are renderings and not separate derivations, which is what keeps them
+matchable: the tab is the id with the suffix off and one dash spelled `@`, so
+`devlaunch@main` and `devlaunch-main-3j1t` are recognisably the same workspace.
+
+Which dash the `@` replaces is not readable off the id, since a repo slug holds
+dashes of its own, so the tab's name travels with the launch that resolved it rather
+than being recovered later. A workspace you name by its bare id on the command line
+is therefore titled by that id. The selector is not: it read the triple to draw the
+row, and hands it on with the pick.
+
+The tab is the one that gives something up. It does not name the owner, since an id
+never carried one, so a fork and its upstream read alike; and it spells the branch as
+the id's slug, so `feature/auth` reads as `feature-auth`. Both are recoverable in the
+selector, which is where a name is read carefully rather than glanced at.
 
 At 47 characters the id leaves 17 of the 64-byte hostname limit for tools that stack
 their own prefixes onto the container name. That was about 26 when the hostname was the
@@ -61,11 +80,6 @@ id without its suffix.
 
 47 is held by devpod instead: it is one character inside devpod's own hard ceiling of
 48, and a 49-character id is refused outright rather than truncated.
-
-Where the id is *not* what you read is the selector: it draws `owner | repo | branch`
-(see [The selector](cli.md#the-selector)), because picking a row off a list is the one
-job the suffix is no help with. Everywhere else it is the id, including
-[the terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace).
 
 Branch names must be safe as both git refs and directory names, so a name with a space or
 a leading dash is rejected rather than quietly rewritten.

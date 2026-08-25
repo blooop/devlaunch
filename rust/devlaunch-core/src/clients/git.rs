@@ -541,6 +541,35 @@ impl<'r> Git<'r> {
     /// dl run wanting the same repository waits for. A launch is watched and
     /// interruptible and passes `None`; the detached background sweep is neither
     /// and passes a bound.
+    ///
+    /// Both refspecs are written out and both are forced, and the tags one is
+    /// spelled rather than left to `--tags`, which is the same refspec *unforced*.
+    /// `--prune` prunes per refspec, so that one word cost two things at once: a
+    /// tag the remote had retracted was never pruned, leaving `refs/tags` monotone
+    /// in every tag the remote ever advertised and pinning every object those tags
+    /// reach for the life of the cache; and a tag the remote *moved* was rejected
+    /// with `would clobber existing tag`, which fails the whole fetch — the heads
+    /// in the same push included — and keeps failing, since nothing here ever
+    /// resolves it. That made one moved tag upstream a permanently `Refused`
+    /// freshness fetch for that repository until a human deleted the local tag by
+    /// hand.
+    ///
+    /// Pruning a tag is a deletion, so it is worth saying which reading licenses
+    /// it: a tag in the bare is a *copy* of an upstream ref and holds no work that
+    /// exists nowhere else, which is the argument that already licenses pruning
+    /// heads. Nothing here is a place work is authored.
+    ///
+    /// One consequence of pruning heads is older than this and is recorded rather
+    /// than handled: when the remote's own default branch disappears, `--prune`
+    /// takes `refs/heads/main` with it and the bare's `HEAD` symref is left
+    /// dangling. `symbolic-ref HEAD` still answers `refs/heads/main`, so
+    /// default-branch detection still returns a name and does not notice. Nor
+    /// does a bare `rev-parse HEAD`, which exits 0 printing the literal `HEAD`;
+    /// it takes `rev-parse --verify HEAD` to get a failure out of it, which is
+    /// why nothing here reports one. What an eye actually meets is `git clone`
+    /// warning `remote HEAD refers to nonexistent ref, unable to checkout`. The
+    /// symptom is a launch aimed at a branch the cache no longer has, on a
+    /// repository whose default branch was deleted upstream.
     pub(crate) fn fetch_all(&self, bare: &Path, limit: Option<Duration>) -> GitAnswer<String> {
         let mut spec = SpawnSpec::new(
             Invocation::new(PROGRAM)
@@ -548,13 +577,57 @@ impl<'r> Git<'r> {
                     "fetch",
                     "origin",
                     "+refs/heads/*:refs/heads/*",
-                    "--tags",
+                    "+refs/tags/*:refs/tags/*",
                     "--prune",
                 ])
                 .with_cwd(bare.to_path_buf()),
         );
         spec.timeout = limit;
         self.captured("fetch", &spec)
+    }
+
+    /// Collapse every loose ref in the bare into `packed-refs`.
+    ///
+    /// A ref git writes as a file costs a whole filesystem block, typically 4096
+    /// bytes against the ~81 the packed line takes, and [`Git::fetch_all`] writes
+    /// one per ref it updates. Nothing else in devlaunch ever packed them:
+    /// `pack-refs --auto` is a documented no-op on the `files` backend, and no
+    /// `gc` is run on the bare, so `gc.auto` never gets the chance either.
+    /// Measured on git 2.51.1 over a bare with 301 loose refs of 551, the loose
+    /// files held 1204 KiB of blocks against a 30 KiB `packed-refs` for all 551,
+    /// and the pack took 23 ms.
+    ///
+    /// `--all` rather than the default, and the difference is the whole verb here
+    /// rather than a nicety: measured on 2.51.1 against a bare holding 301 loose
+    /// heads and 101 loose tags, a bare `pack-refs` took the tags to zero and left
+    /// all 301 heads exactly where they were. Heads are the population a broad
+    /// sweep of a real repository mostly makes.
+    ///
+    /// **Pure, in the sense that decides where this is allowed to live.** Packing
+    /// changes how a ref is stored and not which refs exist, so it can lose no
+    /// work — and it does not change what a later `--prune` may delete either.
+    /// Measured on 2.51.1: a prune of a packed ref rewrites `packed-refs` through
+    /// the same ref transaction, deletes nothing else, and a ref that was loose
+    /// over a stale packed line loses *both*, so nothing is resurrected at the old
+    /// sha. The only difference is cost, and it falls on the prune: removing a
+    /// packed ref rewrites the whole file where removing a loose one unlinks
+    /// a single path.
+    ///
+    /// Bounded at [`ABOUT_ONE_REPO`] rather than left unbounded like the sweep's
+    /// fetch: this touches no network, so a pack that has not finished in thirty
+    /// seconds is a stuck filesystem rather than a slow remote, and the caller it
+    /// runs under is a detached child whose whole point is that nobody is watching
+    /// it.
+    pub(crate) fn pack_refs(&self, bare: &Path) -> GitAnswer<String> {
+        self.captured(
+            "pack-refs",
+            &SpawnSpec::new(
+                Invocation::new(PROGRAM)
+                    .with_args(["pack-refs", "--all"])
+                    .with_cwd(bare.to_path_buf()),
+            )
+            .with_timeout(ABOUT_ONE_REPO),
+        )
     }
 
     /// Fetch exactly one branch into the bare cache.

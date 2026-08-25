@@ -8,12 +8,17 @@
 //! each spelling it.
 //!
 //! The cache home has the same problem and one more caller's worth of it. Three
-//! places used to spell it out identically: dl's own cache directory, the
-//! worktree config's default `repos_dir`, and the metadata file's default path.
-//! They have to agree because `dl --purge` reads the first to decide which
-//! workspaces are devlaunch's — workspaces whose clones the other two put on
-//! disk — so a copy that drifted would make a purge silently stop recognising
-//! its own work.
+//! places used to spell it out identically: dl's own cache directory, the clone
+//! root, and the metadata file's default path. They have to agree because
+//! `dl --purge` reads the first to decide which workspaces are devlaunch's —
+//! workspaces whose clones the other two put on disk — so a copy that drifted
+//! would make a purge silently stop recognising its own work.
+//!
+//! Unifying the *spelling* left one way for them to drift anyway: `config.toml`
+//! could name a `repos_dir` outside the cache, which put dl's own clones
+//! somewhere ownership does not recognise. That key is retired (#467), so the
+//! clone root is now a function of the cache directory ([`clone_root_in`]) and
+//! there is no input left that can separate them.
 //!
 //! Ported from `devlaunch/xdg.py`; see docs/rust-rewrite-plan.md (M2).
 
@@ -58,6 +63,22 @@ pub fn devlaunch_cache() -> Result<PathBuf, NoHomeDirectory> {
 
 fn devlaunch_cache_in(cache_home: &Path) -> PathBuf {
     cache_home.join("devlaunch")
+}
+
+/// The one directory devlaunch clones into, under the cache directory ownership
+/// is decided by.
+///
+/// A function of `cache` and of nothing else, which is the whole point: every
+/// clone dl makes is inside the directory
+/// [`is_devlaunch_clone`](crate::flows::listing) tests against, so a clone of
+/// dl's own that the listing reads as someone else's has no representation. It
+/// used to be configurable (`worktree.repos_dir`), and a value outside the cache
+/// took `devlaunch`, `SIZE` and `unsaved` out together.
+///
+/// Takes the cache directory rather than resolving one, so a caller cannot scan
+/// under one cache while deciding ownership against another.
+pub fn clone_root_in(cache: &Path) -> PathBuf {
+    cache.join("repos")
 }
 
 /// The whole XDG rule, as a function of its two inputs.

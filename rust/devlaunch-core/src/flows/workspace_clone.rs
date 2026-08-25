@@ -320,8 +320,21 @@ impl std::fmt::Debug for WorkspaceCloneManager<'_> {
 }
 
 impl<'r> WorkspaceCloneManager<'r> {
-    /// A manager over the cache `config` describes.
-    pub fn from_config(config: &WorktreeConfig, git: Git<'r>) -> Self {
+    /// A manager over dl's one clone root, `xdg::clone_root_in(cache_dir)`, with
+    /// the fetch interval `config` names.
+    ///
+    /// **The root is derived from the cache directory rather than configured**,
+    /// which is what makes the ownership question sound: every clone this manager
+    /// places is inside the directory
+    /// [`is_devlaunch_clone`](crate::flows::listing) tests against, so one of dl's
+    /// own clones reading as someone else's has no representation. `config.toml`
+    /// used to be able to separate them (`worktree.repos_dir`, retired in #467),
+    /// and a root outside the cache took `devlaunch`, `SIZE` and `unsaved` out
+    /// together while leaving the tree unreclaimed by anything.
+    ///
+    /// The caller passes the same cache directory it decides ownership with, so
+    /// the two cannot be built from different answers.
+    pub fn in_cache(cache_dir: &Path, config: &WorktreeConfig, git: Git<'r>) -> Self {
         // Python stages the *construction* of this manager, not just its work
         // (`@timing.staged("host-prep")` on `dl.py`'s `_get_clone_manager`), so
         // every command that reaches for the cache reports a `host-prep` stage
@@ -331,7 +344,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         // stages a command opened.
         let _stage = timing::stage(timing::Stage::HostPrep);
         Self::new(
-            &config.repos_dir,
+            crate::domain::xdg::clone_root_in(cache_dir),
             std::time::Duration::from_secs(config.fetch_interval),
             git,
             GitLfs::detected(),
@@ -2593,9 +2606,7 @@ mod tests {
         assert!(
             !fetches
                 .iter()
-                .any(|argv| argv.iter().any(|arg| arg.contains('*'))
-                    || argv.contains(&"--tags")
-                    || argv.contains(&"--prune")),
+                .any(|argv| argv.iter().any(|arg| arg.contains('*')) || argv.contains(&"--prune")),
             "{fetches:?}"
         );
     }

@@ -11,7 +11,7 @@ members = [
 # The single source of the version (docs/rust-rewrite-plan.md: cutover ships
 # 0.1.0, version read from Cargo.toml).
 [workspace.package]
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/blooop/devlaunch"

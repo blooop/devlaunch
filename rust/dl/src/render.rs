@@ -755,6 +755,30 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
     }
 }
 
+/// What a `config.toml` naming a key this build no longer reads is told, one line
+/// each.
+///
+/// The whole of `repos_dir`'s migration (#467). Nothing on disk is touched, so
+/// the notice is the only thing standing between a user who set that key and a
+/// clone tree nothing will ever mention again: it names the directory, says dl
+/// has stopped reading the key, and points at `XDG_CACHE_HOME`, which is the
+/// supported way to move the cache and always was.
+///
+/// Not an error, because a stale config is not punished here, and not a
+/// suggestion to delete anything either: what is at that path is the user's, and
+/// dl has no business having an opinion about it.
+pub(crate) fn retired_keys(keys: &[config::RetiredKey]) -> Vec<String> {
+    keys.iter()
+        .map(|key| match key {
+            config::RetiredKey::ReposDir { named } => format!(
+                "config.toml still sets worktree.repos_dir = '{named}'. dl no longer reads it: \
+                 clones live under dl's cache directory, and XDG_CACHE_HOME is what moves that. \
+                 Nothing in that tree was moved or removed, so it is yours to keep or delete."
+            ),
+        })
+        .collect()
+}
+
 /// Why a metadata write or open failed, in one line.
 ///
 /// A reason phrase and not a sentence: every caller has its own opening — `Could not
@@ -982,6 +1006,11 @@ fn cache_notice(notice: &CacheNotice) -> Option<String> {
              refreshed ({}); it may be behind the remote.",
             not_refreshed(reason)
         ),
+        CacheNotice::RefsNotPacked {
+            owner,
+            repo,
+            reason,
+        } => format!("Could not pack the refs of {owner}/{repo}: {reason}"),
         CacheNotice::LfsCacheNotFilled { reason } => {
             format!("Could not fill the cache's git-lfs store: {reason}")
         }
@@ -2364,6 +2393,35 @@ mod tests {
         }
     }
 
+    // ------------------------------------------------------- the retired keys
+
+    #[test]
+    fn a_retired_repos_dir_is_named_with_the_directory_it_pointed_at() {
+        // The whole of #467's migration: nothing on disk is touched, so this line
+        // is the only thing that will ever mention that tree again.
+        let lines = retired_keys(&[config::RetiredKey::ReposDir {
+            named: "/srv/clones".to_owned(),
+        }]);
+
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let said = &lines[0];
+        assert!(said.contains("worktree.repos_dir"), "{said}");
+        assert!(said.contains("/srv/clones"), "{said}");
+        assert!(
+            said.contains("XDG_CACHE_HOME"),
+            "it has to point at what does move the cache: {said}"
+        );
+        assert!(
+            said.contains("Nothing in that tree was moved or removed"),
+            "a user must not be left wondering whether dl deleted it: {said}"
+        );
+    }
+
+    #[test]
+    fn a_config_naming_nothing_retired_says_nothing() {
+        assert!(retired_keys(&[]).is_empty());
+    }
+
     // ---------------------------------------------- the refusal advice line
 
     /// The one line a person is meant to paste, with paths a shell would
@@ -3080,6 +3138,25 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_the_sweep_could_not_do_names_the_repository_and_gits_own_words() {
+        // The sweep walks every repository in one detached process, so a line that
+        // did not name one would be unactionable. It is a notice and not an error
+        // because the fetch beside it succeeded: the cost of the refusal is a
+        // filesystem block per ref until the next sweep, and nothing else.
+        let said = |notice: CacheNotice| cache_notice(&notice).expect("a line");
+
+        assert_eq!(
+            said(CacheNotice::RefsNotPacked {
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+                reason: "fatal: unable to create 'packed-refs.lock': Permission denied".to_owned(),
+            }),
+            "Could not pack the refs of blooop/devlaunch: fatal: unable to create \
+             'packed-refs.lock': Permission denied"
+        );
+    }
+
+    #[test]
     fn the_branch_decision_reads_as_the_four_lines_python_logged() {
         // `worktree/branch_manager.py` 49/56/62/67. Which of the four happened is an
         // answer (`BranchEnsured`) rather than a log line in the decision itself, and
@@ -3159,6 +3236,8 @@ mod tests {
             NonEmpty::of(picks.iter().map(|(row, workspace_id)| Chosen {
                 workspace_id: (*workspace_id).to_owned(),
                 row: (*row).to_owned(),
+                // `picked` renders the row beside the id and reads nothing else.
+                triple: None,
             }))
             .expect("at least one pick")
         }

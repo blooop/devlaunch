@@ -465,7 +465,11 @@ fn cloning_the_cache_is_bare_and_runs_nowhere_in_particular() {
 }
 
 #[test]
-fn the_broad_sweep_fetches_every_head_and_tag_and_prunes() {
+fn the_broad_sweep_forces_every_head_and_tag_refspec_and_prunes() {
+    // The tags refspec is spelled out rather than left to `--tags`, which is the
+    // same refspec unforced, and `--prune` prunes per refspec. Unforced, a tag the
+    // remote retracted was never pruned and a tag it moved refused the whole
+    // fetch, permanently.
     let fake = ScriptedRunner::new();
 
     Git::new(&fake).fetch_all(Path::new("/cache/o/r/.bare"), None);
@@ -477,7 +481,7 @@ fn the_broad_sweep_fetches_every_head_and_tag_and_prunes() {
             "fetch",
             "origin",
             "+refs/heads/*:refs/heads/*",
-            "--tags",
+            "+refs/tags/*:refs/tags/*",
             "--prune"
         ]
     );
@@ -497,6 +501,21 @@ fn the_background_sweep_s_bound_reaches_the_spawn() {
     Git::new(&fake).fetch_all(Path::new("/cache/o/r/.bare"), Some(Duration::from_secs(60)));
 
     assert_eq!(timeout(&fake), Some(Duration::from_secs(60)));
+}
+
+#[test]
+fn packing_collapses_every_loose_ref_in_the_bare_under_a_bound() {
+    // `--all` and not the default, which packs tags alone and would leave every
+    // head the sweep just fetched sitting loose. The bound is there because this
+    // touches no network: thirty seconds of `pack-refs` is a stuck filesystem, and
+    // the caller is a detached child nobody is watching.
+    let fake = ScriptedRunner::new();
+
+    Git::new(&fake).pack_refs(Path::new("/cache/o/r/.bare"));
+
+    assert_eq!(strs(&argv(&fake)), ["git", "pack-refs", "--all"]);
+    assert_eq!(cwd(&fake).as_deref(), Some(Path::new("/cache/o/r/.bare")));
+    assert_eq!(timeout(&fake), Some(Duration::from_secs(30)));
 }
 
 #[test]
@@ -963,6 +982,7 @@ fn nothing_here_spawns_more_than_once_per_verb() {
 
     git.clone_bare("url", Path::new("/cache/.bare"));
     git.fetch_all(Path::new("/cache/.bare"), None);
+    git.pack_refs(Path::new("/cache/.bare"));
     git.fetch_ref(Path::new("/cache/.bare"), "feature");
     git.symbolic_ref(Path::new("/cache/.bare"), "HEAD");
     git.remote_branch_listing(Path::new("/cache/.bare"));
@@ -989,7 +1009,7 @@ fn nothing_here_spawns_more_than_once_per_verb() {
     git.status_porcelain(Path::new("/ws"));
     git.unpushed_commits(Path::new("/ws"));
 
-    assert_eq!(fake.call_count(), 27, "one spawn per verb, 27 verbs");
+    assert_eq!(fake.call_count(), 28, "one spawn per verb, 28 verbs");
     assert!(
         fake.calls()
             .iter()

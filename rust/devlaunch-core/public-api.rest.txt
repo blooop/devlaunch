@@ -40,6 +40,7 @@ pub fn devlaunch_core::domain::spec::DevcontainerPath::fmt(&self, &mut core::fmt
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::spec::DevcontainerPath
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
+pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
 pub mod devlaunch_core::clients
 pub mod devlaunch_core::clients::devpod
@@ -289,13 +290,23 @@ impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devla
 pub fn devlaunch_core::domain::config::ConfigError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
 impl core::fmt::Debug for devlaunch_core::domain::config::ConfigError
 pub fn devlaunch_core::domain::config::ConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum devlaunch_core::domain::config::RetiredKey
+pub devlaunch_core::domain::config::RetiredKey::ReposDir
+pub devlaunch_core::domain::config::RetiredKey::ReposDir::named: alloc::string::String
+impl core::clone::Clone for devlaunch_core::domain::config::RetiredKey
+pub fn devlaunch_core::domain::config::RetiredKey::clone(&self) -> devlaunch_core::domain::config::RetiredKey
+impl core::cmp::Eq for devlaunch_core::domain::config::RetiredKey
+impl core::cmp::PartialEq for devlaunch_core::domain::config::RetiredKey
+pub fn devlaunch_core::domain::config::RetiredKey::eq(&self, &devlaunch_core::domain::config::RetiredKey) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::config::RetiredKey
+pub fn devlaunch_core::domain::config::RetiredKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::config::RetiredKey
 pub struct devlaunch_core::domain::config::WorktreeConfig
 pub devlaunch_core::domain::config::WorktreeConfig::auto_prune: bool
 pub devlaunch_core::domain::config::WorktreeConfig::enabled: bool
 pub devlaunch_core::domain::config::WorktreeConfig::fallback_image: core::option::Option<alloc::string::String>
 pub devlaunch_core::domain::config::WorktreeConfig::fetch_interval: u64
 pub devlaunch_core::domain::config::WorktreeConfig::prune_after_days: u64
-pub devlaunch_core::domain::config::WorktreeConfig::repos_dir: std::path::PathBuf
 impl core::clone::Clone for devlaunch_core::domain::config::WorktreeConfig
 pub fn devlaunch_core::domain::config::WorktreeConfig::clone(&self) -> devlaunch_core::domain::config::WorktreeConfig
 impl core::cmp::Eq for devlaunch_core::domain::config::WorktreeConfig
@@ -304,7 +315,7 @@ pub fn devlaunch_core::domain::config::WorktreeConfig::eq(&self, &devlaunch_core
 impl core::fmt::Debug for devlaunch_core::domain::config::WorktreeConfig
 pub fn devlaunch_core::domain::config::WorktreeConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::config::WorktreeConfig
-pub fn devlaunch_core::domain::config::worktree_config() -> core::result::Result<devlaunch_core::domain::config::WorktreeConfig, devlaunch_core::domain::config::ConfigError>
+pub fn devlaunch_core::domain::config::worktree_config() -> core::result::Result<(devlaunch_core::domain::config::WorktreeConfig, alloc::vec::Vec<devlaunch_core::domain::config::RetiredKey>), devlaunch_core::domain::config::ConfigError>
 pub mod devlaunch_core::domain::locks
 pub enum devlaunch_core::domain::locks::LockError
 pub devlaunch_core::domain::locks::LockError::Acquire
@@ -585,6 +596,7 @@ pub fn devlaunch_core::domain::workspace_id::UnsafeName::hash<__H: core::hash::H
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_id::UnsafeName
 pub struct devlaunch_core::domain::workspace_id::WorkspaceId
 impl devlaunch_core::domain::workspace_id::WorkspaceId
+pub fn devlaunch_core::domain::workspace_id::WorkspaceId::label(&self) -> alloc::string::String
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::new(&str, &str, &str) -> core::result::Result<Self, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::value(&self) -> alloc::string::String
 impl core::clone::Clone for devlaunch_core::domain::workspace_id::WorkspaceId
@@ -674,6 +686,7 @@ impl core::fmt::Debug for devlaunch_core::domain::xdg::NoHomeDirectory
 pub fn devlaunch_core::domain::xdg::NoHomeDirectory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::domain::xdg::NoHomeDirectory
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::xdg::NoHomeDirectory
+pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path::PathBuf
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub mod devlaunch_core::flows
@@ -957,14 +970,18 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::NotPre
 pub enum devlaunch_core::flows::launch::Placement
 pub devlaunch_core::flows::launch::Placement::Creating
 pub devlaunch_core::flows::launch::Placement::Creating::source: alloc::string::String
+pub devlaunch_core::flows::launch::Placement::Creating::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Creating::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Known
 pub devlaunch_core::flows::launch::Placement::Known::state: devlaunch_core::clients::devpod::ContainerState
+pub devlaunch_core::flows::launch::Placement::Known::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Known::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Listed
+pub devlaunch_core::flows::launch::Placement::Listed::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Listed::workspace_id: alloc::string::String
 impl devlaunch_core::flows::launch::Placement
 pub fn devlaunch_core::flows::launch::Placement::source(&self) -> &str
+pub fn devlaunch_core::flows::launch::Placement::title(&self) -> &str
 pub fn devlaunch_core::flows::launch::Placement::workspace_id(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::launch::Placement
 pub fn devlaunch_core::flows::launch::Placement::clone(&self) -> devlaunch_core::flows::launch::Placement
@@ -1079,6 +1096,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Host
 pub struct devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
+pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
 pub struct devlaunch_core::flows::launch::UnquotableCommand
 pub devlaunch_core::flows::launch::UnquotableCommand::command: alloc::string::String
@@ -2079,6 +2097,10 @@ pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::branch: all
 pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::owner: alloc::string::String
 pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::reason: devlaunch_core::flows::repo_manager::NotRefreshed
 pub devlaunch_core::flows::repo_manager::CacheNotice::RefNotFetched::repo: alloc::string::String
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked::owner: alloc::string::String
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked::reason: alloc::string::String
+pub devlaunch_core::flows::repo_manager::CacheNotice::RefsNotPacked::repo: alloc::string::String
 pub devlaunch_core::flows::repo_manager::CacheNotice::TrackedFilesNotListed
 pub devlaunch_core::flows::repo_manager::CacheNotice::TrackedFilesNotListed::reason: alloc::string::String
 pub devlaunch_core::flows::repo_manager::CacheNotice::WorkspaceCloneRemoved
@@ -2288,7 +2310,7 @@ impl core::marker::Copy for devlaunch_core::flows::workspace_clone::Removed
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::workspace_clone::Removed
 pub struct devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
 impl<'r> devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
-pub fn devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>::from_config(&devlaunch_core::domain::config::WorktreeConfig, devlaunch_core::clients::git::Git<'r>) -> Self
+pub fn devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>::in_cache(&std::path::Path, &devlaunch_core::domain::config::WorktreeConfig, devlaunch_core::clients::git::Git<'r>) -> Self
 pub fn devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>::on_repo_lock_wait(&mut self, impl core::ops::function::Fn(&str, &str) + 'static)
 pub fn devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>::repo_manager(&self) -> &devlaunch_core::flows::repo_manager::RepositoryManager<'r>
 impl core::fmt::Debug for devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>
