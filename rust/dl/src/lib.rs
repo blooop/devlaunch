@@ -31,6 +31,7 @@ mod select;
 mod session;
 mod target;
 
+use devlaunch_core::clients::ssh;
 use devlaunch_core::flows::completion_cache;
 use devlaunch_core::flows::lifecycle::{Refresh, RefreshReason};
 use devlaunch_core::runner::ProcessRunner;
@@ -231,19 +232,11 @@ pub fn install_signal_handlers() {
 pub fn interactive_terminal() -> bool {
     // SAFETY: `isatty` reads a property of the descriptor and touches nothing.
     let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
-    tty && !no_tty_requested(std::env::var("DEVLAUNCH_NO_TTY").ok().as_deref())
-}
-
-/// Whether `DEVLAUNCH_NO_TTY` asked for no terminal behaviour.
-///
-/// The falsey list is `clients/ssh.rs`'s (`FALSEY`), copied rather than shared for
-/// the reason that module gives: escape hatches answering to one shared constant
-/// are one edit away from becoming one escape hatch.
-fn no_tty_requested(value: Option<&str>) -> bool {
-    match value {
-        None => false,
-        Some(value) => !matches!(value, "" | "0" | "false" | "no"),
-    }
+    // Core's reading, not a copy of it. The copy that used to live here answered
+    // `std::env::var(..).ok()` and a bare `matches!` over the falsey words, so
+    // `FALSE`, ` no ` and a non-UTF-8 value each meant one thing to the ssh
+    // transport and the other to the prompt below.
+    tty && !ssh::tty_disabled_by_environment()
 }
 
 /// Read one submission from a cooked-mode terminal: the line the user ends with
@@ -507,29 +500,6 @@ fn report_timing() {
     if let Some(report) = timing::emit() {
         for line in report.lines() {
             eprintln!("{line}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod terminal {
-    //! The `DEVLAUNCH_NO_TTY` reading [`interactive_terminal`] shares with the ssh
-    //! transport: unset and the four falsey spellings mean "the terminal stands",
-    //! anything else means "behave as if there were none".
-
-    use super::no_tty_requested;
-
-    #[test]
-    fn unset_and_falsey_values_keep_the_terminal() {
-        for value in [None, Some(""), Some("0"), Some("false"), Some("no")] {
-            assert!(!no_tty_requested(value), "{value:?}");
-        }
-    }
-
-    #[test]
-    fn any_other_value_is_a_request_for_no_terminal() {
-        for value in ["1", "true", "yes", "anything"] {
-            assert!(no_tty_requested(Some(value)), "{value:?}");
         }
     }
 }
