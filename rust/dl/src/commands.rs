@@ -1043,6 +1043,12 @@ fn render_reconcile(
                 "Could not re-point {workspace_id}: {}",
                 render::repoint_failure(failure)
             ),
+            // stderr with the refusals rather than stdout with the adoptions:
+            // the workspace opens the right clone now, but dl's half of the
+            // repair did not happen, and the exit code says so.
+            lifecycle::Adoption::Unrecorded { workspace_id } => {
+                eprintln!("Re-pointed {workspace_id}; dl's own record was not updated")
+            }
         }
     }
     say(&notices);

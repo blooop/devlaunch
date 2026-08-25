@@ -7,23 +7,30 @@
 //! from the Python `dl` at an input boundary in a way that costs correctness or
 //! a credential:
 //!
+//! Only [`env_str`] is linked below, because only [`env_str`] is `pub`. The
+//! module is binary surface for that one reader; the other three stayed
+//! `pub(crate)` (see the note on `pub mod osext` in `lib.rs`). A link from a
+//! `pub` module's doc to a `pub(crate)` item renders as plain text whatever the
+//! brackets say, and costs a `rustdoc::private_intra_doc_links` warning for the
+//! privilege, so the brackets are off rather than pointing at nothing.
+//!
 //! - [`env_str`] reads a variable the way `os.environ.get` does — a non-UTF-8
 //!   value is *present*, not absent. `std::env::var(..).ok()` reports a non-UTF-8
 //!   value as unset, which turns an opt-out (`DEVLAUNCH_NO_GH_TOKEN`) into an
 //!   opt-in and forwards a credential the user asked to withhold.
-//! - [`strip`] trims the exact set `str.strip()` trims. Rust's `str::trim` uses
+//! - `strip` trims the exact set `str.strip()` trims. Rust's `str::trim` uses
 //!   the Unicode `White_Space` property, which omits U+001C–U+001F; Python's
 //!   `str.isspace()` includes them. Those four codepoints otherwise invert every
 //!   `DEVLAUNCH_*` switch and reject an otherwise-valid `GH_TOKEN`.
-//! - [`home_dir`] matches `posixpath.expanduser("~")`: a present-but-empty `HOME`
+//! - `home_dir` matches `posixpath.expanduser("~")`: a present-but-empty `HOME`
 //!   expands to `/`, and only an *absent* `HOME` consults the password database.
 //!   `std::env::home_dir` treats empty and absent alike (both fall to the passwd
 //!   entry), which reaches the real home when the caller cleared `HOME`.
-//! - [`temp_dir`] validates the directory and honours `TMPDIR`/`TEMP`/`TMP` with
+//! - `temp_dir` validates the directory and honours `TMPDIR`/`TEMP`/`TMP` with
 //!   the `/tmp` family as the fallback, the way `tempfile.gettempdir()` does. A
 //!   non-existent `TMPDIR` otherwise makes the token-staging file fail to create
 //!   and silently costs the workspace its gh login.
-//! - [`system_words`] reads a failure the way `OSError.strerror` gives it.
+//! - `system_words` reads a failure the way `OSError.strerror` gives it.
 //!   `std::io::Error`'s `Display` appends `" (os error {errno})"`, which is the
 //!   errno repeated at a person who is being shown the path it happened to.
 
@@ -33,6 +40,15 @@ use std::path::PathBuf;
 /// Read an environment variable as a string, lossily, the way `os.environ.get`
 /// does: a value that is present but not valid UTF-8 is `Some` (with U+FFFD for
 /// the undecodable bytes), never `None`.
+///
+/// binary surface -- not part of the frozen wf API (#251 section 7)
+///
+/// The one item of this module the binaries can see, because they have
+/// `DEVLAUNCH_*` variables of their own and no way to spell this reading
+/// correctly for themselves: `aid` read `DEVLAUNCH_AID_AGENT` with
+/// `std::env::var(..).ok()` and so started the default agent for a value it
+/// should have refused by name. It reaches this through `dl`, which re-exports
+/// it beside `shell` and `python_repr`.
 pub fn env_str(name: &str) -> Option<String> {
     from_os(std::env::var_os(name))
 }
@@ -49,7 +65,7 @@ fn from_os(value: Option<OsString>) -> Option<String> {
 /// The set is `char::is_whitespace()` plus U+001C–U+001F (file/group/record/unit
 /// separators), which Python's `str.isspace()` counts and the Unicode
 /// `White_Space` property that backs `str::trim` does not.
-pub fn strip(value: &str) -> &str {
+pub(crate) fn strip(value: &str) -> &str {
     value.trim_matches(is_python_space)
 }
 
@@ -63,7 +79,7 @@ fn is_python_space(c: char) -> bool {
 /// A present `HOME` — even empty — wins: its trailing slashes are stripped and an
 /// empty result becomes `/`, exactly as `expanduser` does. Only an absent `HOME`
 /// consults the password database.
-pub fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     home_from(std::env::var_os("HOME"), std::env::home_dir)
 }
 
@@ -95,7 +111,7 @@ fn home_from(
 /// accepts a file. A directory that does not exist or cannot be written is
 /// skipped rather than returned, so a stale `TMPDIR` cannot cost the caller its
 /// write.
-pub fn temp_dir() -> PathBuf {
+pub(crate) fn temp_dir() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
     for name in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(value) = env_str(name)
@@ -143,7 +159,7 @@ fn usable(dir: &std::path::Path) -> bool {
 /// place both a flow (`flows::repo_manager`) and a client
 /// (`clients::devpod_home`) may name: the crate's layers run strictly downward,
 /// and a client never names a flow.
-pub fn system_words(error: &std::io::Error) -> String {
+pub(crate) fn system_words(error: &std::io::Error) -> String {
     let text = error.to_string();
     match error.raw_os_error() {
         Some(errno) => text

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-25
+
+### Fixed
+
+- **`dl --reconcile` no longer reports an adoption as landed when it wrote no
+  record.** Re-pointing devpod at the clone and recording the worktree are two
+  steps, and the second can find nothing to update — another run removed the
+  record while the plan sat there waiting to be applied. That case was reported
+  as `Repointed` like any other, with the run finishing successfully, so the one
+  outcome worth knowing about looked identical to the ordinary one. It is now its
+  own `Unrecorded` arm: devpod re-pointed, dl's record not written, said on
+  stderr, and the run does not report itself finished. A store that refused the
+  write lands in the same arm for the same reason — it is the same half-done
+  adoption — and the refusal is named beside it.
+
 ### Added
 
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota
@@ -22,6 +37,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletes. An author's plain "lgtm" does not satisfy it, and merging on a
   self-review is recorded as a notice on the run, and a review that predates the
   head is warned about rather than failed on.
+
+### Fixed
+
+- **claude no longer takes the terminal title back in a `dl` session it started
+  itself.** dl names a pane after the workspace and claude renames it continuously
+  from its own read of what the session is doing, so the two are one contest and
+  claude wins every round after the first: dl's name was gone within about a
+  second. The feature shipped with `aid` setting
+  `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, but only as a prefix on the claude it
+  launched, which left every `claude` typed at a workspace's own prompt losing the
+  name. The title stage now writes the variable into the container's login
+  profile, so it reaches whoever starts claude without
+  rewriting anybody's command — the one rule aid was right to keep. `DEVLAUNCH_NO_TITLE`
+  governs all three pieces of the feature, and since a profile is read by shells that
+  start after it is written, a workspace that was already up wants a re-login or a
+  `dl <ws> recreate`.
+
+- **`DEVLAUNCH_NO_TTY=FALSE` no longer means one thing to the prompt and another
+  to the transport.** `dl` gates its own terminal behaviour on the same variable
+  the ssh transport is gated on, and the two read it differently: core lowercases
+  the value and strips it the way Python's `str.strip()` does before comparing it
+  against the falsey words, while `dl` kept a copy that compared the raw bytes
+  with a bare `matches!`. So `FALSE` and `" no "` opted out of the prompt and not
+  out of the pty, and a non-UTF-8 value opted out of the *pty* and not the prompt
+  — `std::env::var(..).ok()` reports such a value as unset, which is the
+  opt-out-into-opt-in inversion `osext` exists to prevent and names in as many
+  words. The copy existed because `osext` was `pub(crate)` and neither half of
+  what makes the reading right — the lossy read or Python's strip — can be
+  spelled without it, so the fix is a seam rather than a third copy:
+  `clients::ssh::tty_disabled_by_environment` is binary surface, and `dl` asks it.
+  The deleted tests only ever covered the spellings where the two agreed, which is
+  why the divergence was invisible.
+
+- **`aid` no longer starts the default agent when `DEVLAUNCH_AID_AGENT` holds a
+  value it cannot decode.** The variable was read through
+  `std::env::var(..).ok()`, which reports a value that is not valid UTF-8 as
+  *unset* — so `DEVLAUNCH_AID_AGENT=$'\xff'` was not a broken agent name, it was
+  no agent name at all. The default agent was chosen, the workspace was opened,
+  and nothing anywhere mentioned the variable that had asked for something else.
+  The `is not a known agent` refusal that `DEVLAUNCH_AID_AGENT=nope` already got
+  was unreachable for exactly the values that cannot be written as a string. The
+  read is a lossy decode now, so the undecodable byte arrives present under
+  U+FFFD: a name to refuse rather than a variable to ignore, refused by name
+  with no devpod call made.
+
+- **On git 2.20 and older, a launch that asks for a new branch no longer fails
+  outright.** Up to v2.20.0 git wrote `Couldn't find remote ref %s` through a
+  bare `die()` (`remote.c:1785`) — capital C, and never routed through gettext,
+  so the `LC_ALL=C` the fetch is pinned under could not normalise it; it is
+  lowercase and translatable from v2.21.0. The reader that recognises "the
+  remote has not got this ref" is the one that falls back to the default branch,
+  and it matched only the later wording. On a host still running that git the
+  ref-missing *answer* therefore read as a failure, the fallback never ran, and
+  an ordinary "start a new branch" launch died on a message about a ref nobody
+  had asked to exist yet. The refusal is classified from the verb that produced
+  it now, and case does not decide it.
+
+- **A repository that is not there on Codeberg or Forgejo now gets the
+  wrong-owner hint.** Those hosts answer a 404 with `remote: Not found.`, and
+  none of the three phrases the renderer sniffed for appear anywhere in that
+  output — all three were GitHub's and GitLab's wordings. The only other line is
+  git's own `fatal: repository '<url>' not found`, which does not contain the
+  substring `repository not found` the renderer was looking for, so a mistyped
+  owner on those hosts got the bare clone failure and no suggestion of what to
+  try. The reader matches git's line as a whole line ending in `' not found`
+  now, which is the host's wording out of the decision entirely, and still keeps
+  out `branch '%s' not found`, `tag '%s' not found` and `repository '%s' does
+  not exist`.
 
 ### Changed
 

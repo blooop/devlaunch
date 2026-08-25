@@ -2982,8 +2982,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// one trailing newline, so `main\n` is a ref — and a newline reaching the
     /// profile line lands inside the quoted word, splitting one `PS1` assignment
     /// across two physical lines of a file every login sources.
-    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
-    /// the feature rather than half of it.
+    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs the whole
+    /// feature rather than part of it. Three pieces now, not two: the escape this
+    /// process writes, the `PS1` line every prompt repaints, and the export that
+    /// stops claude renaming the pane between prompts. Somebody who turned dl's
+    /// naming off did not ask for claude's titling to go too, and nothing in a
+    /// container would tell them why it had.
     ///
     /// `stderr_tty` is deliberately *not* consulted, where
     /// [`TerminalTitle::from_host`] does consult it. That flag answers "is there a
@@ -5995,9 +5999,11 @@ mod tests {
 
     #[test]
     fn the_title_switch_reaches_the_container_and_not_just_dls_own_escape() {
-        // `DEVLAUNCH_NO_TITLE` has to govern both halves or it governs neither: a
-        // host that silenced the escape and still had its profile edited would find
-        // the variable did nothing it could see.
+        // `DEVLAUNCH_NO_TITLE` has to govern every piece or it governs none: a host
+        // that silenced the escape and still had its profile edited would find the
+        // variable did nothing it could see. Three pieces now -- the escape, the
+        // `PS1` line, and claude's suppression -- and refusing a container title
+        // here is what takes all of them with it, since they share one stage.
         let mut scene = Scene::new().with_running("myws");
         scene.host.no_title = Some("1".to_owned());
         let updater = SelfInvocation::new("dl");

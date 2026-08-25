@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use crate::clients::git::{self, Failure, Git, GitRefused};
 use crate::domain::locks::{self, Contention, LockError, LockGuard};
-use crate::domain::metadata::{self, MetadataError, MetadataStorage};
+use crate::domain::metadata::{self, MetadataError, MetadataStorage, RecordUpdate};
 use crate::domain::model::{BaseRepository, RecordedDefaultBranch, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
@@ -1223,15 +1223,10 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        let repository = BaseRepository {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            remote_url: remote_url.to_owned(),
-            local_path: bare.clone(),
-            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(&bare)),
-            last_fetched: Some(Timestamp::now()),
-            worktrees: Vec::new(),
-        };
+        let mut repository = BaseRepository::new(owner, repo, remote_url, bare.clone());
+        repository.default_branch =
+            RecordedDefaultBranch::from_stored(self.default_branch_of(&bare));
+        repository.last_fetched = Some(Timestamp::now());
         let recorded = self.record(storage, repository, notices)?;
         // After the record, as Python logs it: what the line reports is a clone
         // that is both on disk and known about.
@@ -1252,18 +1247,13 @@ impl<'r> RepositoryManager<'r> {
         bare: &Path,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BaseRepository, CloneError> {
-        let repository = BaseRepository {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            remote_url: remote_url.to_owned(),
-            local_path: bare.to_path_buf(),
-            // Read off the adopted clone, not defaulted: a repository whose
-            // default branch is `master` and one this could read nothing at all
-            // from would otherwise get the same answer.
-            default_branch: RecordedDefaultBranch::from_stored(self.default_branch_of(bare)),
-            last_fetched: Some(Timestamp::now()),
-            worktrees: Vec::new(),
-        };
+        let mut repository = BaseRepository::new(owner, repo, remote_url, bare.to_path_buf());
+        // Read off the adopted clone, not defaulted: a repository whose default
+        // branch is `master` and one this could read nothing at all from would
+        // otherwise get the same answer.
+        repository.default_branch =
+            RecordedDefaultBranch::from_stored(self.default_branch_of(bare));
+        repository.last_fetched = Some(Timestamp::now());
         // The record *is* the point of this call, so a write that fails is the
         // call failing: there is nothing else it accomplished.
         self.record(storage, repository, notices)
@@ -1396,7 +1386,7 @@ impl<'r> RepositoryManager<'r> {
             self.git.fetch_all(&bare, limit)
         };
         if let Some(refused) = fetched.refusal() {
-            return Err(match refused.how {
+            return Err(match refused.how() {
                 Failure::TimedOut => FetchRepoError::TimedOut {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
@@ -1408,14 +1398,26 @@ impl<'r> RepositoryManager<'r> {
             });
         }
 
-        if let Some(mut recorded) = storage.get_repository(owner, repo).cloned() {
-            recorded.last_fetched = Some(Timestamp::now());
-            match storage.add_repository(recorded) {
-                Ok(store_notices) => {
-                    notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
-                }
-                Err(error) => return Err(FetchRepoError::NotRecorded(error)),
-            }
+        // The stamp is the only field this touches, so it moves inside the
+        // metadata lock rather than riding back in a copy of the whole record
+        // taken before the lock existed.
+        let (stamped, store_notices) = storage
+            .update_repository(owner, repo, |recorded| {
+                recorded.last_fetched = Some(Timestamp::now());
+            })
+            .map_err(FetchRepoError::NotRecorded)?;
+        notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
+        match stamped {
+            RecordUpdate::Applied => {}
+            // The "no record, nothing to stamp" this used to spell as an `if
+            // let Some`, and silent for the same reason it was silent then: the
+            // sweeper is bookkeeping behind a fetch that has already happened,
+            // and a repository dropped from the store while that fetch ran is
+            // not news about the fetch. Spelled as an arm rather than dropped
+            // with `_`, because a caller that cannot say what it does with an
+            // answer is the shape that turned a no-op into a reported success
+            // in `apply_reconciliation`.
+            RecordUpdate::Absent => {}
         }
         // Last, where Python logs it: past the fetch and past the bookkeeping, so
         // the line means both are done.
@@ -1482,18 +1484,15 @@ impl<'r> RepositoryManager<'r> {
         };
         Ok(match fetched.refusal() {
             None => FetchOutcome::Updated,
-            Some(refused) => {
-                // git reached the remote and was told the ref is not there: the
-                // one case where a non-zero exit is an *answer*. Classified from
-                // git's own words, which is why `fetch_ref` pins the C locale.
-                if refused.reason().contains("couldn't find remote ref") {
-                    FetchOutcome::RefMissingOnRemote
-                } else {
-                    FetchOutcome::Failed {
-                        reason: refused.reason().to_owned(),
-                    }
-                }
-            }
+            // git reached the remote and was told the ref is not there: the one
+            // case where a non-zero exit is an *answer*. Which case that is, the
+            // client says — it is the module that reads git's words.
+            Some(refused) => match refused.how() {
+                Failure::RefMissingOnRemote => FetchOutcome::RefMissingOnRemote,
+                _ => FetchOutcome::Failed {
+                    reason: refused.reason().to_owned(),
+                },
+            },
         })
     }
 
@@ -2215,7 +2214,6 @@ pub(crate) mod tests {
             cloned.last_fetched.is_some(),
             "the sweep's clock starts here"
         );
-        assert!(cloned.worktrees.is_empty());
         assert_eq!(
             cache.storage.get_repository("owner", "repo"),
             Some(&cloned),
@@ -2694,6 +2692,29 @@ pub(crate) mod tests {
         let fake = FakeGit::new().with_script(
             ["git", "fetch"],
             Response::failed(128, "fatal: couldn't find remote ref refs/heads/nosuch\n"),
+        );
+        let manager = a_manager(&cache, Git::new(&fake));
+
+        assert_eq!(
+            manager
+                .fetch_ref("owner", "repo", "nosuch", &mut ignoring())
+                .expect("safe"),
+            FetchOutcome::RefMissingOnRemote
+        );
+    }
+
+    #[test]
+    fn a_ref_the_remote_has_not_got_is_its_own_answer_whatever_case_git_uses() {
+        // Up to v2.20.0 git said `Couldn't find remote ref` — capital C, and
+        // `die()` rather than `die(_())`, so pinning `LC_ALL=C` never covered it
+        // (`remote.c:1785` at v2.20.0; lowercase and translated from v2.21.0). On
+        // a host still running that git, an ordinary "start a new branch" launch
+        // becomes a failure, because the answer reads as one.
+        let cache = a_cache();
+        cache.given_bare_clone("owner", "repo");
+        let fake = FakeGit::new().with_script(
+            ["git", "fetch"],
+            Response::failed(128, "fatal: Couldn't find remote ref refs/heads/nosuch\n"),
         );
         let manager = a_manager(&cache, Git::new(&fake));
 
