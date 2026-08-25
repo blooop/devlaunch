@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones.** The identity suffix was eight characters spelled in pronounceable
   syllables (`devlaunch-main-zovomobo`); it is now four characters of base 36
   (`devlaunch-main-3j1t`). Base 36 carries 5.17 bits per character against the
-  syllable table's 3.0, so the same identity fits in half the space and the four
+  syllable table's 3.0, so the suffix halves in length and the four
   characters it gives back go to the branch, which is the part anyone reads: the
   ref budget goes from 17 characters to 21, and
   `kinisi-ros-ags-devcontainer-tooling-su-lenevere` becomes

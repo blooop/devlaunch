@@ -30,9 +30,10 @@ part that identifies the branch survives. Note the third and fourth lines above:
 and they get different ids.
 
 The suffix was eight characters and spelled in pronounceable syllables (`zovomobo`,
-`hesirora`). Base 36 carries the same identity in half the space, and the four
-characters it gives back go to the branch, which is the part anyone reads. What it
-costs is collision headroom: 20.7 bits against the old 24, or roughly one chance in
+`hesirora`). Base 36 packs 5.17 bits into a character where the syllable table managed
+3.0, so the suffix halves in length, and the four characters it gives back go to the
+branch, which is the part anyone reads. What it costs is collision headroom: a tenth of
+the old room, 20.7 bits against the old 24, or roughly one chance in
 37000 that ten near-identical long branches in one repository collide. Only branches
 whose readable half truncates to the same string can contend at all, so the number that
 matters is a repository's crop of `release/999...176`-shaped names rather than the count
