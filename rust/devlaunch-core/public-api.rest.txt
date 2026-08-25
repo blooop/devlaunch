@@ -147,6 +147,40 @@ pub fn devlaunch_core::clients::devpod::Workspace::eq(&self, &devlaunch_core::cl
 impl core::fmt::Debug for devlaunch_core::clients::devpod::Workspace
 pub fn devlaunch_core::clients::devpod::Workspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Workspace
+pub mod devlaunch_core::clients::devpod_home
+pub enum devlaunch_core::clients::devpod_home::RepointFailure
+pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord
+pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord::path: std::path::PathBuf
+pub devlaunch_core::clients::devpod_home::RepointFailure::NotJson
+pub devlaunch_core::clients::devpod_home::RepointFailure::NotJson::path: std::path::PathBuf
+pub devlaunch_core::clients::devpod_home::RepointFailure::NotJson::reason: alloc::string::String
+pub devlaunch_core::clients::devpod_home::RepointFailure::Unreadable
+pub devlaunch_core::clients::devpod_home::RepointFailure::Unreadable::path: std::path::PathBuf
+pub devlaunch_core::clients::devpod_home::RepointFailure::Unreadable::reason: alloc::string::String
+pub devlaunch_core::clients::devpod_home::RepointFailure::Unwritable
+pub devlaunch_core::clients::devpod_home::RepointFailure::Unwritable::path: std::path::PathBuf
+pub devlaunch_core::clients::devpod_home::RepointFailure::Unwritable::reason: alloc::string::String
+impl core::clone::Clone for devlaunch_core::clients::devpod_home::RepointFailure
+pub fn devlaunch_core::clients::devpod_home::RepointFailure::clone(&self) -> devlaunch_core::clients::devpod_home::RepointFailure
+impl core::cmp::Eq for devlaunch_core::clients::devpod_home::RepointFailure
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod_home::RepointFailure
+pub fn devlaunch_core::clients::devpod_home::RepointFailure::eq(&self, &devlaunch_core::clients::devpod_home::RepointFailure) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod_home::RepointFailure
+pub fn devlaunch_core::clients::devpod_home::RepointFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::RepointFailure
+pub struct devlaunch_core::clients::devpod_home::DevpodHome
+impl devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::at(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::locate() -> core::option::Option<Self>
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::path(&self) -> &std::path::Path
+impl core::clone::Clone for devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::clone(&self) -> devlaunch_core::clients::devpod_home::DevpodHome
+impl core::cmp::Eq for devlaunch_core::clients::devpod_home::DevpodHome
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::eq(&self, &devlaunch_core::clients::devpod_home::DevpodHome) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod_home::DevpodHome
+pub fn devlaunch_core::clients::devpod_home::DevpodHome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::DevpodHome
 pub mod devlaunch_core::clients::gh
 pub enum devlaunch_core::clients::gh::GhEvent
 pub devlaunch_core::clients::gh::GhEvent::CouldNotRun(devlaunch_core::clients::gh::GhUnavailable)
@@ -175,6 +209,23 @@ pub fn devlaunch_core::clients::gh::GhUnavailable::fmt(&self, &mut core::fmt::Fo
 impl core::marker::Copy for devlaunch_core::clients::gh::GhUnavailable
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::gh::GhUnavailable
 pub mod devlaunch_core::clients::git
+pub enum devlaunch_core::clients::git::Failure
+pub devlaunch_core::clients::git::Failure::BranchAlreadyExists
+pub devlaunch_core::clients::git::Failure::Exited(devlaunch_runner::Exit)
+pub devlaunch_core::clients::git::Failure::GitNotInstalled
+pub devlaunch_core::clients::git::Failure::NotStarted(devlaunch_runner::OsFailure)
+pub devlaunch_core::clients::git::Failure::RefMissingOnRemote
+pub devlaunch_core::clients::git::Failure::RepositoryNotFound
+pub devlaunch_core::clients::git::Failure::TimedOut
+impl core::clone::Clone for devlaunch_core::clients::git::Failure
+pub fn devlaunch_core::clients::git::Failure::clone(&self) -> devlaunch_core::clients::git::Failure
+impl core::cmp::Eq for devlaunch_core::clients::git::Failure
+impl core::cmp::PartialEq for devlaunch_core::clients::git::Failure
+pub fn devlaunch_core::clients::git::Failure::eq(&self, &devlaunch_core::clients::git::Failure) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::git::Failure
+pub fn devlaunch_core::clients::git::Failure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::clients::git::Failure
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::git::Failure
 pub struct devlaunch_core::clients::git::Git<'r>
 impl<'r> devlaunch_core::clients::git::Git<'r>
 pub fn devlaunch_core::clients::git::Git<'r>::new(&'r dyn devlaunch_runner::Runner) -> Self
@@ -183,6 +234,7 @@ pub fn devlaunch_core::clients::git::Git<'r>::clone(&self) -> devlaunch_core::cl
 impl<'r> core::marker::Copy for devlaunch_core::clients::git::Git<'r>
 pub struct devlaunch_core::clients::git::GitRefused
 impl devlaunch_core::clients::git::GitRefused
+pub fn devlaunch_core::clients::git::GitRefused::how(&self) -> devlaunch_core::clients::git::Failure
 pub fn devlaunch_core::clients::git::GitRefused::reason(&self) -> &str
 impl core::clone::Clone for devlaunch_core::clients::git::GitRefused
 pub fn devlaunch_core::clients::git::GitRefused::clone(&self) -> devlaunch_core::clients::git::GitRefused
@@ -219,6 +271,7 @@ pub fn devlaunch_core::clients::ssh::UnsafeRequest::eq(&self, &devlaunch_core::c
 impl core::fmt::Debug for devlaunch_core::clients::ssh::UnsafeRequest
 pub fn devlaunch_core::clients::ssh::UnsafeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::ssh::UnsafeRequest
+pub fn devlaunch_core::clients::ssh::tty_disabled_by_environment() -> bool
 pub mod devlaunch_core::domain
 pub mod devlaunch_core::domain::config
 pub enum devlaunch_core::domain::config::ConfigError
@@ -805,8 +858,12 @@ pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::Lifecycle(devlaunch_core::flows::lifecycle::LifecycleNotice)
+pub devlaunch_core::flows::launch::LaunchNotice::NoDevpodSshConfig
+pub devlaunch_core::flows::launch::LaunchNotice::NoDevpodSshConfig::looked_in: std::path::PathBuf
+pub devlaunch_core::flows::launch::LaunchNotice::NoDevpodSshConfig::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::NoGitHubToken(devlaunch_core::clients::gh::GhEvent)
 pub devlaunch_core::flows::launch::LaunchNotice::NoTerminalAlias
+pub devlaunch_core::flows::launch::LaunchNotice::NoTerminalAlias::config: std::path::PathBuf
 pub devlaunch_core::flows::launch::LaunchNotice::NoTerminalAlias::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotADirectory
 pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotADirectory::source: std::path::PathBuf
@@ -815,6 +872,7 @@ pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotCreated::reason: al
 pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotCreated::source: std::path::PathBuf
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchNotice::SshConfigUnlocatable
 pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles
 pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
@@ -1042,9 +1100,11 @@ pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows:
 pub mod devlaunch_core::flows::lifecycle
 pub enum devlaunch_core::flows::lifecycle::Adoption
 pub devlaunch_core::flows::lifecycle::Adoption::Refused
-pub devlaunch_core::flows::lifecycle::Adoption::Refused::failure: devlaunch_core::flows::lifecycle::RepointFailure
+pub devlaunch_core::flows::lifecycle::Adoption::Refused::failure: devlaunch_core::clients::devpod_home::RepointFailure
 pub devlaunch_core::flows::lifecycle::Adoption::Refused::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::Adoption::Repointed(alloc::boxed::Box<devlaunch_core::flows::lifecycle::Adoptable>)
+pub devlaunch_core::flows::lifecycle::Adoption::Unrecorded
+pub devlaunch_core::flows::lifecycle::Adoption::Unrecorded::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::Adoption
 pub fn devlaunch_core::flows::lifecycle::Adoption::clone(&self) -> devlaunch_core::flows::lifecycle::Adoption
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::Adoption
@@ -1278,26 +1338,6 @@ pub fn devlaunch_core::flows::lifecycle::RemovalRefused::eq(&self, &devlaunch_co
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalRefused
 pub fn devlaunch_core::flows::lifecycle::RemovalRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
-pub enum devlaunch_core::flows::lifecycle::RepointFailure
-pub devlaunch_core::flows::lifecycle::RepointFailure::NotADevpodRecord
-pub devlaunch_core::flows::lifecycle::RepointFailure::NotADevpodRecord::path: std::path::PathBuf
-pub devlaunch_core::flows::lifecycle::RepointFailure::NotJson
-pub devlaunch_core::flows::lifecycle::RepointFailure::NotJson::path: std::path::PathBuf
-pub devlaunch_core::flows::lifecycle::RepointFailure::NotJson::reason: alloc::string::String
-pub devlaunch_core::flows::lifecycle::RepointFailure::Unreadable
-pub devlaunch_core::flows::lifecycle::RepointFailure::Unreadable::path: std::path::PathBuf
-pub devlaunch_core::flows::lifecycle::RepointFailure::Unreadable::reason: alloc::string::String
-pub devlaunch_core::flows::lifecycle::RepointFailure::Unwritable
-pub devlaunch_core::flows::lifecycle::RepointFailure::Unwritable::path: std::path::PathBuf
-pub devlaunch_core::flows::lifecycle::RepointFailure::Unwritable::reason: alloc::string::String
-impl core::clone::Clone for devlaunch_core::flows::lifecycle::RepointFailure
-pub fn devlaunch_core::flows::lifecycle::RepointFailure::clone(&self) -> devlaunch_core::flows::lifecycle::RepointFailure
-impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RepointFailure
-impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RepointFailure
-pub fn devlaunch_core::flows::lifecycle::RepointFailure::eq(&self, &devlaunch_core::flows::lifecycle::RepointFailure) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RepointFailure
-pub fn devlaunch_core::flows::lifecycle::RepointFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RepointFailure
 pub enum devlaunch_core::flows::lifecycle::SpawnRefused
 pub devlaunch_core::flows::lifecycle::SpawnRefused::Blocked(devlaunch_runner::OsFailure)
 pub devlaunch_core::flows::lifecycle::SpawnRefused::ProgramNotFound
@@ -1533,19 +1573,18 @@ pub fn devlaunch_core::flows::lifecycle::Withheld::eq(&self, &devlaunch_core::fl
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Withheld
 pub fn devlaunch_core::flows::lifecycle::Withheld::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Withheld
-pub fn devlaunch_core::flows::lifecycle::apply_reconciliation(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &std::path::Path, &devlaunch_core::flows::lifecycle::ReconcilePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcileReport
+pub fn devlaunch_core::flows::lifecycle::apply_reconciliation(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::clients::devpod_home::DevpodHome, &devlaunch_core::flows::lifecycle::ReconcilePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcileReport
 pub fn devlaunch_core::flows::lifecycle::child_work(&std::path::Path, devlaunch_core::flows::lifecycle::RefreshReason) -> devlaunch_core::flows::lifecycle::ChildWork
-pub fn devlaunch_core::flows::lifecycle::devpod_home() -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::lifecycle::guard_removal(&str, devlaunch_core::domain::workspace_state::Unsaved, devlaunch_core::flows::lifecycle::Insistence) -> devlaunch_core::flows::lifecycle::Guarded
 pub fn devlaunch_core::flows::lifecycle::objection(&devlaunch_core::domain::workspace_state::Unsaved) -> core::option::Option<devlaunch_core::flows::lifecycle::Objection>
 pub fn devlaunch_core::flows::lifecycle::prune_clones(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::flows::lifecycle::PrunePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PruneOutcome, devlaunch_core::flows::lifecycle::PruneError>
 pub fn devlaunch_core::flows::lifecycle::prune_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PrunePlan, devlaunch_core::flows::lifecycle::PruneError>
-pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::lifecycle::PurgePlan, core::option::Option<&std::path::Path>, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::PurgeStep)) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgeOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::lifecycle::PurgePlan, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::PurgeStep)) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgeOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::flows::lifecycle::purge_plan(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgePlan, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::lifecycle::reconcile_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcilePlan
 pub fn devlaunch_core::flows::lifecycle::sweep_repo_fetches(&devlaunch_core::flows::repo_manager::RepositoryManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage) -> devlaunch_core::flows::lifecycle::SweepReport
 pub fn devlaunch_core::flows::lifecycle::unsaved_work_in(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::clients::git::Git<'_>, &std::path::Path, &str, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::domain::workspace_state::Unsaved
-pub fn devlaunch_core::flows::lifecycle::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&std::path::Path>, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::flows::lifecycle::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::flows::lifecycle::workspace_state(&dyn devlaunch_runner::Runner, &str) -> core::result::Result<devlaunch_core::clients::devpod::ContainerState, devlaunch_core::clients::devpod::StatusUnreadable>
 pub fn devlaunch_core::flows::lifecycle::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::listing
@@ -1803,7 +1842,7 @@ pub mod devlaunch_core::flows::provision
 pub mod devlaunch_core::flows::provision::verdict_cache
 pub struct devlaunch_core::flows::provision::verdict_cache::VerdictCache
 impl devlaunch_core::flows::provision::verdict_cache::VerdictCache
-pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::under(&std::path::Path, core::option::Option<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::under(&std::path::Path, core::option::Option<devlaunch_core::clients::devpod_home::DevpodHome>) -> Self
 impl core::clone::Clone for devlaunch_core::flows::provision::verdict_cache::VerdictCache
 pub fn devlaunch_core::flows::provision::verdict_cache::VerdictCache::clone(&self) -> devlaunch_core::flows::provision::verdict_cache::VerdictCache
 impl core::cmp::Eq for devlaunch_core::flows::provision::verdict_cache::VerdictCache
@@ -2277,6 +2316,8 @@ pub trait devlaunch_core::notices::Notices<T>
 pub fn devlaunch_core::notices::Notices::say(&mut self, T)
 impl<T> devlaunch_core::notices::Notices<T> for alloc::vec::Vec<T>
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
+pub mod devlaunch_core::osext
+pub fn devlaunch_core::osext::env_str(&str) -> core::option::Option<alloc::string::String>
 pub mod devlaunch_core::runner
 pub use devlaunch_core::runner::<<devlaunch_runner::*>>
 pub mod devlaunch_core::shell

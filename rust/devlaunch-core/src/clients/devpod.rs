@@ -553,10 +553,9 @@ pub struct Workspace {
     pub(crate) provider: String,
     pub(crate) ide: String,
     /// The devpod context this workspace belongs to. Ids are unique per context,
-    /// not globally, so it is half of the workspace's address on disk — devpod
-    /// keeps each workspace's own record at
-    /// `<devpod home>/contexts/<context>/workspaces/<id>/workspace.json`, which
-    /// is what `--reconcile` re-points.
+    /// not globally, so it is half of the workspace's address on disk: it is one
+    /// of the two things [`super::devpod_home::DevpodHome::record`] needs to name
+    /// the record `--reconcile` re-points.
     pub(crate) context: String,
 }
 

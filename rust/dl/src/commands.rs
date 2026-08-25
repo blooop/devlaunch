@@ -10,6 +10,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
+use devlaunch_core::clients::devpod_home::DevpodHome;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
@@ -560,7 +561,7 @@ fn render_workspace<'r>(
 /// A `devpod up` that dies in `postCreateCommand` is the case that matters, and the
 /// one an earlier draft of this got wrong by keying on the exit code. It leaves the
 /// container **running**, devpod's record written and the clone cut — which is why
-/// [`lifecycle::create_record`] exists at all — so an unattended
+/// `clients::devpod_home::create_record` exists at all — so an unattended
 /// `dl owner/repo --rm -- make test` against a broken devcontainer would leak
 /// precisely the workspace the flag was reached for. A session devpod refused
 /// outright, and an OpenSSH that is not installed, leave the same thing behind and
@@ -719,7 +720,7 @@ fn render_remove<'r>(
         // answer is: the process that knows what its environment says hands the
         // answer down. `None` is a machine with no home directory, where devpod has
         // no records to read and so no volume names to derive.
-        lifecycle::devpod_home().as_deref(),
+        DevpodHome::locate().as_ref(),
         &workspace_id,
         insistence,
         &mut notices,
@@ -794,8 +795,8 @@ fn purge_devlaunch_data(context: &mut CommandContext<'_>, cache: &Path, yes: boo
     }
     // Read after the question, because a purge that was declined asks devpod
     // nothing and reads nothing.
-    let devpod_home = lifecycle::devpod_home();
-    let purged = lifecycle::purge_all_data(context, &plan, devpod_home.as_deref(), &mut |step| {
+    let devpod_home = DevpodHome::locate();
+    let purged = lifecycle::purge_all_data(context, &plan, devpod_home.as_ref(), &mut |step| {
         match render::purge_step(&step) {
             // Said before the round trip that may take a while, which is why this
             // is a callback and not a report: "Deleting workspace X" assembled
@@ -1013,7 +1014,7 @@ fn render_reconcile(
         println!("Aborted.");
         return Ending::Done;
     }
-    let Some(devpod_home) = lifecycle::devpod_home() else {
+    let Some(devpod_home) = DevpodHome::locate() else {
         return refuse_startup(&StartupError::NoHomeDirectory);
     };
     let Records { storage, .. } = &mut records;
@@ -1042,6 +1043,12 @@ fn render_reconcile(
                 "Could not re-point {workspace_id}: {}",
                 render::repoint_failure(failure)
             ),
+            // stderr with the refusals rather than stdout with the adoptions:
+            // the workspace opens the right clone now, but dl's half of the
+            // repair did not happen, and the exit code says so.
+            lifecycle::Adoption::Unrecorded { workspace_id } => {
+                eprintln!("Re-pointed {workspace_id}; dl's own record was not updated")
+            }
         }
     }
     say(&notices);
