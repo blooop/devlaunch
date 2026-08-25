@@ -40,6 +40,7 @@ pub fn devlaunch_core::domain::spec::DevcontainerPath::fmt(&self, &mut core::fmt
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::spec::DevcontainerPath
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
+pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
 pub mod devlaunch_core::clients
 pub mod devlaunch_core::clients::devpod
@@ -585,6 +586,7 @@ pub fn devlaunch_core::domain::workspace_id::UnsafeName::hash<__H: core::hash::H
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_id::UnsafeName
 pub struct devlaunch_core::domain::workspace_id::WorkspaceId
 impl devlaunch_core::domain::workspace_id::WorkspaceId
+pub fn devlaunch_core::domain::workspace_id::WorkspaceId::label(&self) -> alloc::string::String
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::new(&str, &str, &str) -> core::result::Result<Self, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::value(&self) -> alloc::string::String
 impl core::clone::Clone for devlaunch_core::domain::workspace_id::WorkspaceId
@@ -957,14 +959,18 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::NotPre
 pub enum devlaunch_core::flows::launch::Placement
 pub devlaunch_core::flows::launch::Placement::Creating
 pub devlaunch_core::flows::launch::Placement::Creating::source: alloc::string::String
+pub devlaunch_core::flows::launch::Placement::Creating::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Creating::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Known
 pub devlaunch_core::flows::launch::Placement::Known::state: devlaunch_core::clients::devpod::ContainerState
+pub devlaunch_core::flows::launch::Placement::Known::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Known::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Listed
+pub devlaunch_core::flows::launch::Placement::Listed::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Listed::workspace_id: alloc::string::String
 impl devlaunch_core::flows::launch::Placement
 pub fn devlaunch_core::flows::launch::Placement::source(&self) -> &str
+pub fn devlaunch_core::flows::launch::Placement::title(&self) -> &str
 pub fn devlaunch_core::flows::launch::Placement::workspace_id(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::launch::Placement
 pub fn devlaunch_core::flows::launch::Placement::clone(&self) -> devlaunch_core::flows::launch::Placement
@@ -1079,6 +1085,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Host
 pub struct devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
+pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
 pub struct devlaunch_core::flows::launch::UnquotableCommand
 pub devlaunch_core::flows::launch::UnquotableCommand::command: alloc::string::String

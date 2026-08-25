@@ -3159,6 +3159,8 @@ mod tests {
             NonEmpty::of(picks.iter().map(|(row, workspace_id)| Chosen {
                 workspace_id: (*workspace_id).to_owned(),
                 row: (*row).to_owned(),
+                // `picked` renders the row beside the id and reads nothing else.
+                triple: None,
             }))
             .expect("at least one pick")
         }

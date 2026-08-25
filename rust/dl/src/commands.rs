@@ -12,6 +12,7 @@ use std::path::Path;
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::clients::devpod_home::DevpodHome;
 use devlaunch_core::domain::spec::DevcontainerPath;
+use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::launch::LaunchNotice;
@@ -127,6 +128,9 @@ pub(crate) fn dispatch(
             &target,
             verb,
             devcontainer.as_ref(),
+            // A target named on the command line is resolved by the launch itself;
+            // only the picker arrives knowing more than it says.
+            None,
         ),
     }
 }
@@ -512,6 +516,7 @@ fn render_workspace<'r>(
     target: &str,
     verb: Verb,
     devcontainer: Option<&DevcontainerPath>,
+    recognised: Option<WorkspaceId>,
 ) -> Ending {
     let mut cold = ColdPath::new(runner);
     match launch::family(&verb) {
@@ -541,6 +546,7 @@ fn render_workspace<'r>(
                 target,
                 &launched,
                 devcontainer,
+                recognised,
             );
             after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
         }
@@ -1138,6 +1144,10 @@ fn render_select<'r>(
                     &pick.workspace_id,
                     verb.clone(),
                     devcontainer,
+                    // The picker knows what it drew: this row's clone said it is
+                    // this triple, and the launch it is about to start knows only
+                    // the id. See `Launch::recognised_as`.
+                    pick.triple.clone(),
                 );
                 if matches!(ending, Ending::Done) {
                     ending = ran;

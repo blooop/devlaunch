@@ -1041,10 +1041,13 @@ impl Stage {
 /// and neither tools switch touches it either: naming a pane is no more tool
 /// provisioning than naming a container is.
 ///
-/// **`workspace` is the whole id and `title` is the same string**, which is what
-/// makes the prompt this stage feeds and the tab the next one writes agree. See
-/// [`TerminalTitle`](crate::flows::launch::TerminalTitle) for why the tab stopped
-/// being the resolved spec.
+/// **`workspace` is the whole id and `title` is a rendering of it**, so the prompt
+/// this stage feeds and the tab the next one writes are the same name at two
+/// lengths: `devlaunch-main-3j1t` in `vscode@devlaunch-main-3j1t:~/repo$`, and
+/// `devlaunch@main` on the tab. They are not required to be one string and
+/// deliberately are not, because a hostname has to be a legal DNS label and a tab
+/// has a strip of screen. See
+/// [`TerminalTitle`](crate::flows::launch::TerminalTitle) for what the tab drops.
 ///
 /// **The stage runs on the pass, so the name is installed when a workspace enters
 /// Running and not on every attach.** A workspace already up keeps whatever its
@@ -1066,11 +1069,12 @@ pub(crate) fn setup_stages(
         // hands over — which is why it rides the `up`'s own trip rather than the
         // attach's.
         //
-        // The whole id, suffix included, because the prompt, the tab and the
-        // `dl --ls` row are one string now. The suffix used to be dropped here, on
-        // the grounds that a UTS name addresses nothing; what that cost was a third
-        // spelling to reconcile by eye, and two workspaces differing only in their
-        // suffix rendering the same prompt.
+        // The whole id, suffix included, and unlike the tab it keeps the suffix:
+        // this is the string `dl --ls` prints and devpod is addressed by, and it is
+        // what a prompt is read *back* from. The suffix used to be dropped here too,
+        // on the grounds that a UTS name addresses nothing; what that cost was a
+        // spelling that matched neither of the others, and two workspaces differing
+        // only in their suffix rendering one prompt.
         Stage::new(
             HOSTNAME_STAGE,
             format!("sudo hostname {}", quote(workspace)),
