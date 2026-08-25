@@ -2539,11 +2539,12 @@ pub(crate) mod tests {
 
     #[test]
     fn the_sweep_packs_the_refs_after_the_fetch_and_before_it_stamps_the_record() {
-        // Order is the whole of the placement argument. Packing after the fetch is
-        // what makes it the loose refs *this* pass wrote; packing before the stamp
-        // is what keeps a repository whose pack refused from being stamped as
-        // though nothing happened -- the stamp lands either way, and the arm below
-        // is what says so.
+        // Both halves of the order are load-bearing. After the fetch is what makes
+        // the refs it packs the ones *this* pass wrote loose. Before the stamp is
+        // what puts a refusal on stderr ahead of the line that closes the block,
+        // since `FetchedUpdates` means the fetch and its bookkeeping are both done
+        // and a warning arriving after it would read as being about the next
+        // repository the sweep walks.
         let mut cache = a_cache();
         let bare = cache.given_bare_clone("owner", "repo");
         cache.given_record("owner", "repo");
@@ -2601,13 +2602,28 @@ pub(crate) mod tests {
             .fetch_repo(&mut cache.storage, "owner", "repo", None, &mut notices)
             .expect("a pack that refused is not a fetch that failed");
 
-        assert!(
-            notices.contains(&CacheNotice::RefsNotPacked {
-                owner: "owner".to_owned(),
-                repo: "repo".to_owned(),
-                reason: "fatal: unable to create 'packed-refs.lock': Permission denied".to_owned(),
-            }),
-            "the refusal has to reach a reader, and say which repository: {notices:?}"
+        // In this order, which is what the placement buys: the refusal names the
+        // repository and lands *before* the line that closes the block, so a sweep
+        // walking a whole cache cannot read as though the warning belonged to the
+        // next repository along.
+        assert_eq!(
+            notices,
+            vec![
+                CacheNotice::FetchingUpdates {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                },
+                CacheNotice::RefsNotPacked {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    reason: "fatal: unable to create 'packed-refs.lock': Permission denied"
+                        .to_owned(),
+                },
+                CacheNotice::FetchedUpdates {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                },
+            ]
         );
         assert!(
             cache
@@ -2617,13 +2633,6 @@ pub(crate) mod tests {
                 .last_fetched
                 .is_some(),
             "the stamp is about the fetch, and the fetch happened"
-        );
-        assert!(
-            notices.contains(&CacheNotice::FetchedUpdates {
-                owner: "owner".to_owned(),
-                repo: "repo".to_owned(),
-            }),
-            "the sweep finished: {notices:?}"
         );
     }
 
