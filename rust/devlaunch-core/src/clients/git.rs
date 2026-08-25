@@ -597,9 +597,11 @@ impl<'r> Git<'r> {
     /// files held 1204 KiB of blocks against a 30 KiB `packed-refs` for all 551,
     /// and the pack took 23 ms.
     ///
-    /// `--all` rather than the default, because the default packs only tags and
-    /// would leave every head loose, which is the population the sweep actually
-    /// makes.
+    /// `--all` rather than the default, and the difference is the whole verb here
+    /// rather than a nicety: measured on 2.51.1 against a bare holding 301 loose
+    /// heads and 101 loose tags, a bare `pack-refs` took the tags to zero and left
+    /// all 301 heads exactly where they were. Heads are the population a broad
+    /// sweep of a real repository mostly makes.
     ///
     /// **Pure, in the sense that decides where this is allowed to live.** Packing
     /// changes how a ref is stored and not which refs exist, so it can lose no
