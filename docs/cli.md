@@ -45,9 +45,31 @@ so interactive programs start and stay up instead of exiting immediately. A codi
 agent, `htop`, `git rebase -i`, a REPL. Redirect the output and the terminal
 goes away again, so `dl <ws> -- ls > files.txt` stays free of escape sequences.
 
-This needs the ssh host alias `devpod up` writes to `~/.ssh/config`. If a
-workspace has none, `dl` says so and falls back to the plain `devpod ssh`
-transport, which has no terminal; `dl <ws> restart` republishes the alias. Set
+This needs the ssh host alias `devpod up` writes. Where it writes it is devpod's
+choice and `dl` follows it: `SSH_CONFIG_INCLUDE_PATH` from devpod's context
+options, else `$DEVPOD_SSH_CONFIG`, else the `SSH_CONFIG_PATH` context option,
+else `~/.ssh/config`. devpod writes to whichever of those it picks and to no
+other, so a host that exports `DEVPOD_SSH_CONFIG` has no `~/.ssh/config` for `dl`
+to read. The context options are read from the copy `dl` has already cached, never
+by asking devpod again, because that question costs more than the terminal it
+decides.
+
+That same file is then handed to OpenSSH as `-F <path>`, because OpenSSH reads
+none of the above: it resolves `~` through `getpwuid`, so the config `dl` decided
+from has to be named on the command line or the alias does not resolve at all.
+One consequence worth knowing: a session over this transport is built from that
+file alone. `/etc/ssh/ssh_config` never applies, because naming any file with `-F`
+makes OpenSSH skip the system config, and that holds even when the file named is
+your own `~/.ssh/config`. A `Host *` block of your own applies only while devpod
+publishes into the file `dl` names, so it drops out as soon as devpod publishes
+elsewhere.
+
+If a workspace has no alias, `dl` says so and falls back to the plain `devpod ssh`
+transport, which has no terminal; `dl <ws> restart` republishes the alias. If
+there is no ssh config at all, `dl` says that instead and names the file it looked
+in, and the advice it gives is qualified: a restart publishes there only if devpod
+writes to that same file, so a notice that comes back means `DEVPOD_SSH_CONFIG` or
+one of devpod's ssh-config context options names a different one. Set
 `DEVLAUNCH_NO_TTY=1` to force the fallback everywhere.
 
 ### `--rm`: the throwaway workspace

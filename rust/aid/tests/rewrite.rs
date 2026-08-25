@@ -10,6 +10,8 @@
 //! workspace through dl and through nothing else, so the fixture that judges it has
 //! to be the one that judges dl.
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -70,7 +72,11 @@ impl World {
         self.aid_with(args, &[])
     }
 
-    fn aid_with(&self, args: &[&str], extra: &[(&str, &str)]) -> Run {
+    /// `extra` is keyed by [`OsStr`] values rather than `&str` because one of the
+    /// values a caller has to be able to set is not a string: a
+    /// `DEVLAUNCH_AID_AGENT` holding undecodable bytes is the case the reader used
+    /// to report as unset, and it cannot be written as one.
+    fn aid_with(&self, args: &[&str], extra: &[(&str, &OsStr)]) -> Run {
         let root = self.root.display().to_string();
         let mut command = Command::new(env!("CARGO_BIN_EXE_aid"));
         command
@@ -220,11 +226,39 @@ fn a_command_line_with_no_workspace_never_reaches_dl() {
 #[test]
 fn an_agent_the_environment_invented_is_refused_before_anything_opens() {
     let world = World::with(&["--warm"]);
-    let run = world.aid_with(&[MAIN, "hi"], &[("DEVLAUNCH_AID_AGENT", "nope")]);
+    let run = world.aid_with(
+        &[MAIN, "hi"],
+        &[("DEVLAUNCH_AID_AGENT", OsStr::new("nope"))],
+    );
     run.exited(1);
     assert_eq!(
         run.err,
         "DEVLAUNCH_AID_AGENT='nope' is not a known agent. Choose one of: claude, codex, gemini.\n"
+    );
+    assert!(world.devpod_calls().is_empty());
+}
+
+#[test]
+fn an_agent_name_that_does_not_decode_is_refused_rather_than_read_as_unset() {
+    // The same refusal as above, for the value that used to slip past it. `aid`
+    // read this variable with `std::env::var(..).ok()`, which reports a value that
+    // is not valid UTF-8 as *absent* -- so `DEVLAUNCH_AID_AGENT=$'\xff'` was not a
+    // broken agent name, it was no agent name, and aid quietly started the default
+    // agent instead of saying the variable is wrong. That is the inversion
+    // `osext::env_str` exists to prevent, one hatch along from the
+    // `DEVLAUNCH_NO_TTY` one.
+    //
+    // The name comes back as U+FFFD because the reading is a lossy decode: the
+    // undecodable byte is *present* under the replacement character, which is what
+    // makes the value a name to refuse rather than a variable to ignore.
+    let world = World::with(&["--warm"]);
+    let undecodable = OsStr::from_bytes(b"\xff");
+    let run = world.aid_with(&[MAIN, "hi"], &[("DEVLAUNCH_AID_AGENT", undecodable)]);
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "DEVLAUNCH_AID_AGENT='\u{fffd}' is not a known agent. \
+         Choose one of: claude, codex, gemini.\n"
     );
     assert!(world.devpod_calls().is_empty());
 }

@@ -10,7 +10,9 @@ use std::io;
 use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
+use devlaunch_core::clients::git::Failure as GitFailure;
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
@@ -26,8 +28,7 @@ use devlaunch_core::flows::launch::{
 };
 use devlaunch_core::flows::lifecycle::{
     KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
-    VolumeRefusal,
+    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, Unlocatable, VolumeRefusal,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
@@ -1638,10 +1639,37 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         ),
 
         // --- the session (warning at 3845, info at 3864/3891, debug at 3875)
-        LaunchNotice::NoTerminalAlias { workspace_id } => format!(
-            "No devpod ssh host entry for {workspace_id}, so this command gets no terminal; \
-             interactive programs may exit immediately. `dl {workspace_id} restart` republishes it."
+        LaunchNotice::NoTerminalAlias {
+            workspace_id,
+            config,
+        } => format!(
+            "No devpod ssh host entry for {workspace_id} in {}, so this command gets no terminal; \
+             interactive programs may exit immediately. `dl {workspace_id} restart` republishes it.",
+            config.display()
         ),
+        // The advice here is deliberately *qualified* where NoTerminalAlias's is
+        // flat, and that difference is the whole reason these are two arms. A
+        // restart republishes an entry into a config that exists; against a config
+        // that is not there it only helps if devpod publishes into the same file dl
+        // read, and when it does not, the same notice comes back.
+        LaunchNotice::NoDevpodSshConfig {
+            workspace_id,
+            looked_in,
+        } => format!(
+            "No ssh config at {}, which is where dl expects `devpod up` to publish its host \
+             aliases, so {workspace_id} has no alias and this command gets no terminal; \
+             interactive programs may exit immediately. `dl {workspace_id} restart` publishes \
+             there if that is the file devpod writes; if this comes back, DEVPOD_SSH_CONFIG or \
+             devpod's ssh-config context options name a different one.",
+            looked_in.display()
+        ),
+        LaunchNotice::SshConfigUnlocatable => {
+            "This machine has no home directory and nothing names an ssh config \
+             (DEVPOD_SSH_CONFIG, or devpod's SSH_CONFIG_PATH context option), so dl cannot tell \
+             where `devpod up` publishes its host aliases. This command gets no terminal; \
+             interactive programs may exit immediately."
+                .to_owned()
+        }
         LaunchNotice::SshCommand { argv } => format!("SSH command: {}", argv.join(" ")),
         // debug: devpod's own diagnostics are already on the user's stderr, and the
         // status is the exit code this command ends with.
@@ -1859,7 +1887,11 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
 /// Only a not-found refusal gets the line, and only from a clone step. A clone
 /// that failed on the network, on credentials or on the disk names a repository
 /// that may well exist under the owner given, and a "did you mean" would send the
-/// reader after a problem they do not have.
+/// reader after a problem they do not have. Which refusal is which is not decided
+/// here: [`GitFailure::RepositoryNotFound`] is read off git's stderr in
+/// `clients::git`, where git's words are already being read, and this asks for
+/// the arm. A renderer that classified would be a second place git's wordings
+/// live.
 ///
 /// **Divergence row 29**: Python printed git's stderr and stopped. Additive —
 /// nothing above this line changes, and a machine whose cache holds no candidate
@@ -1884,7 +1916,7 @@ pub(crate) fn wrong_owner_hint(refused: &LaunchRefusal, known: &CompletionData) 
     let CloneError::GitRefused { refused: git, .. } = clone else {
         return None;
     };
-    if !reads_as_repository_not_found(git.reason()) {
+    if git.how() != GitFailure::RepositoryNotFound {
         return None;
     }
     let typed = format!("{owner}/{repo}");
@@ -1970,46 +2002,6 @@ fn same_repo_other_owners(known: &CompletionData, owner: &str, repo: &str) -> Ve
         })
         .cloned()
         .collect()
-}
-
-/// Whether git's stderr is the host saying the repository is not there.
-///
-/// Matched on the text because that is the only place the distinction exists: git
-/// exits 128 for this, for a refused key and for a DNS failure alike, so the exit
-/// status cannot tell them apart. The three phrases are the three hosts' own
-/// wordings — GitHub's `Repository not found` (ssh and https both), GitLab's `The
-/// project you were looking for could not be found`, and Bitbucket's `conq:
-/// repository does not exist`.
-///
-/// Each is matched whole, and each shorter form was tried and rejected. `not
-/// exist` alone also catches git's *local* complaint, `repository '/some/path'
-/// does not exist`, which is a missing directory rather than a host's answer.
-/// `could not be found` alone is generic English rather than anything GitLab
-/// specifically said. And `and the repository exists` rides along with every ssh
-/// failure git reports, refused keys included, one word from the wording above.
-///
-/// # Why no `LC_ALL=C`, when the other substring-classified verbs pin it
-///
-/// `Git::fetch_ref` and `ensure_branch` force `LC_ALL=C`/`LANGUAGE=C` precisely
-/// because their callers match on `couldn't find remote ref` and `already exists`,
-/// which git *translates*. `clone_bare` inherits the environment instead, and may:
-/// all three phrases here are the **remote's** bytes, relayed over the wire by the
-/// host's own git-upload-pack and never passed through git's gettext catalogue, so
-/// a French locale does not move them. What a non-English locale can lose is the
-/// hint from git's own translatable `repository '%s' not found` wording — a
-/// candidate not offered, never a wrong one offered.
-///
-/// A host that words it some fourth way loses the hint and keeps git's own
-/// message, which is the safe direction for this to be wrong in.
-fn reads_as_repository_not_found(reason: &str) -> bool {
-    let reason = reason.to_lowercase();
-    [
-        "repository not found",
-        "project you were looking for could not be found",
-        "repository does not exist",
-    ]
-    .iter()
-    .any(|phrase| reason.contains(phrase))
 }
 
 /// `a`, `a or b`, `a, b or c` — the list joined the way a sentence wants it.
@@ -2411,45 +2403,6 @@ mod tests {
     }
 
     #[test]
-    fn the_hosts_not_found_wordings_are_told_from_its_other_refusals() {
-        // The three hosts' own wordings.
-        assert!(reads_as_repository_not_found(
-            "ERROR: Repository not found."
-        ));
-        assert!(reads_as_repository_not_found(
-            "remote: Repository not found.\nfatal: repository 'https://x/y.git' not found"
-        ));
-        assert!(reads_as_repository_not_found(
-            "GitLab: The project you were looking for could not be found or you don't have \
-             permission to view it."
-        ));
-        // The whole phrase, not the tail of it: `could not be found` on its own is
-        // generic English rather than anything a host said.
-        assert!(!reads_as_repository_not_found(
-            "error: object file .git/objects/ab/cdef could not be found"
-        ));
-        assert!(reads_as_repository_not_found(
-            "conq: repository does not exist."
-        ));
-
-        // And the near misses. The last line of git's stock ssh advice — "and the
-        // repository exists" — rides along with *every* ssh failure, refused keys
-        // included, and is one word from the wording above; git's own complaint
-        // about a missing local directory is not a host's answer at all.
-        assert!(!reads_as_repository_not_found(
-            "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote \
-             repository.\n\nPlease make sure you have the correct access rights\nand the \
-             repository exists."
-        ));
-        assert!(!reads_as_repository_not_found(
-            "ssh: Could not resolve hostname github.com: Temporary failure in name resolution"
-        ));
-        assert!(!reads_as_repository_not_found(
-            "fatal: repository '/home/someone/not-there' does not exist"
-        ));
-    }
-
-    #[test]
     fn a_list_of_candidates_reads_as_a_sentence() {
         let one = ["'a/r'".to_owned()];
         let two = ["'a/r'".to_owned(), "'b/r'".to_owned()];
@@ -2846,6 +2799,88 @@ mod tests {
                  downloads its own packages."
                     .to_owned()
             )
+        );
+    }
+
+    /// The three sentences devlaunch#421 split `NoAlias` into, rendered.
+    fn the_three_pty_notices() -> (String, String, String) {
+        let path = std::path::PathBuf::from("/scratch/ssh_config");
+        (
+            launch_notice(&LaunchNotice::NoTerminalAlias {
+                workspace_id: "myws".to_owned(),
+                config: path.clone(),
+            })
+            .expect("a sentence"),
+            launch_notice(&LaunchNotice::NoDevpodSshConfig {
+                workspace_id: "myws".to_owned(),
+                looked_in: path,
+            })
+            .expect("a sentence"),
+            launch_notice(&LaunchNotice::SshConfigUnlocatable).expect("a sentence"),
+        )
+    }
+
+    #[test]
+    fn each_way_of_losing_the_pty_transport_names_the_file_dl_read() {
+        // Each sentence has to say which of the three happened, and every one of
+        // them names a path or says why there is none.
+        let (alias_absent, no_config, nowhere) = the_three_pty_notices();
+
+        assert!(
+            alias_absent.contains("/scratch/ssh_config"),
+            "{alias_absent}"
+        );
+        assert!(no_config.contains("/scratch/ssh_config"), "{no_config}");
+        assert_ne!(
+            alias_absent, no_config,
+            "one sentence for both is what let the bug ship"
+        );
+        assert!(nowhere.contains("DEVPOD_SSH_CONFIG"), "{nowhere}");
+        for line in [&alias_absent, &no_config, &nowhere] {
+            assert!(line.contains("no terminal"), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_advice_each_pty_notice_gives_is_the_advice_that_arm_can_honour() {
+        // The reason the split is worth a type is that the *advice* differs, so
+        // "the three strings differ" is not the assertion the split needs -- three
+        // wrong-but-different sentences pass it, and that is how a
+        // `NoDevpodSshConfig` reading "`dl myws restart` writes it" got past a
+        // green test while the enum doc, docs/cli.md and the CHANGELOG all said a
+        // restart is not the fix for this arm. So the claim is pinned instead of
+        // its distinctness.
+        let (alias_absent, no_config, nowhere) = the_three_pty_notices();
+
+        // Read the config, alias missing from it: a restart puts it back, flatly.
+        assert!(
+            alias_absent.contains("`dl myws restart` republishes it"),
+            "{alias_absent}"
+        );
+
+        // Nothing readable where dl looked: a restart writes *that file* only if
+        // that is where devpod publishes, so the advice is offered conditionally
+        // and names what to check when it is not. Nothing here may promise a
+        // restart outright.
+        assert!(
+            no_config
+                .contains("`dl myws restart` publishes there if that is the file devpod writes"),
+            "{no_config}"
+        );
+        assert!(
+            no_config.contains("DEVPOD_SSH_CONFIG"),
+            "the arm that may be dl reading the wrong file has to name the variable that decides it: {no_config}"
+        );
+        assert!(
+            !no_config.contains("restart` writes it"),
+            "an unconditional restart is the claim three other places in this repo deny: {no_config}"
+        );
+
+        // Nowhere to look at all: there is no workspace-level fix, so no restart
+        // is offered.
+        assert!(
+            !nowhere.contains("restart"),
+            "a machine with no home directory has nothing a restart would change: {nowhere}"
         );
     }
 

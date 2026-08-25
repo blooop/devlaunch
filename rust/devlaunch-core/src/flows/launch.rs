@@ -63,6 +63,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun};
+use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
@@ -170,15 +171,20 @@ pub struct Host {
     /// difference is a case worth serving: `dl <ws> -- make test > log` has
     /// redirected stdout and still has a terminal to name.
     pub(crate) stderr_tty: bool,
-    /// `~/.ssh/config`, where devpod publishes its host aliases. `None` on a
-    /// machine with no home directory, which reads the same as a config with no
-    /// alias in it: fall back to the devpod transport.
-    pub(crate) ssh_config: Option<PathBuf>,
+    /// `$DEVPOD_SSH_CONFIG`, which `devpod up` takes `--ssh-config`'s default
+    /// from — so it names the file devpod publishes its host aliases into, and
+    /// the only one it publishes them into.
+    pub(crate) devpod_ssh_config: Option<String>,
+    /// The home directory, which holds the `~/.ssh/config` devpod falls back to
+    /// and expands a `~/` in any of the paths above. `None` on a machine with no
+    /// home directory; `dl` still runs there when `XDG_CACHE_HOME` is set, and
+    /// then there is no ssh config for it to look in at all.
+    pub(crate) home: Option<PathBuf>,
     /// Everything devlaunch stores: the launch locks, the shared pixi cache and
     /// the context-options cache all hang off this.
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
-    pub(crate) devpod_home: Option<PathBuf>,
+    pub(crate) devpod_home: Option<DevpodHome>,
 }
 
 impl Host {
@@ -197,9 +203,10 @@ impl Host {
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
-            ssh_config: ssh::config_path(),
+            devpod_ssh_config: crate::osext::env_str(ssh::CONFIG_VAR),
+            home: crate::osext::home_dir(),
             cache_dir: cache_dir.into(),
-            devpod_home: lifecycle::devpod_home(),
+            devpod_home: DevpodHome::locate(),
         }
     }
 
@@ -227,9 +234,24 @@ impl Host {
 
     /// devpod's own config file, which holds every context and its options.
     pub(crate) fn devpod_config(&self) -> Option<PathBuf> {
-        self.devpod_home
-            .as_ref()
-            .map(|home| home.join("config.yaml"))
+        self.devpod_home.as_ref().map(DevpodHome::config)
+    }
+
+    /// The ssh config `devpod up` publishes this host's aliases into.
+    ///
+    /// `options` is the answer dl has **already** cached. Two of devpod's four
+    /// candidate paths are context options, and asking devpod for them costs
+    /// 0.4-0.7s (devlaunch#393) — more than the pty transport this decides on
+    /// saves. A cache miss reads as "devpod's own defaults", which is what dl
+    /// assumed unconditionally before, so the miss is never worse than the bug
+    /// this replaced.
+    pub(crate) fn ssh_config(&self, options: &ContextOptions) -> Option<PathBuf> {
+        ssh::config_path(ssh::ConfigSources {
+            include_option: options.ssh_config_include_path(),
+            env: self.devpod_ssh_config.as_deref(),
+            path_option: options.ssh_config_path(),
+            home: self.home.as_deref(),
+        })
     }
 }
 
@@ -307,9 +329,32 @@ pub enum LaunchNotice {
     TokenNotStaged { reason: String },
 
     // --- the session (dl.py `workspace_ssh`)
-    /// dl is on a terminal but devpod published no ssh alias for this workspace,
-    /// so this command gets no pty and interactive programs may exit immediately.
-    NoTerminalAlias { workspace_id: String },
+    /// dl read the ssh config devpod publishes into and found no alias for this
+    /// workspace, so this command gets no pty and interactive programs may exit
+    /// immediately.
+    NoTerminalAlias {
+        workspace_id: String,
+        config: PathBuf,
+    },
+    /// There is no ssh config where dl expects devpod to publish its host
+    /// aliases, so no workspace has an alias and no command can get a pty. Named
+    /// apart from [`Self::NoTerminalAlias`] because the advice differs, and
+    /// differs by being *conditional*: a restart republishes an entry into a
+    /// config that exists, and against a config that is not there it helps only
+    /// if devpod writes to the same file dl read. When it does not — the
+    /// variable differs from the one `devpod up` ran under, or a context option
+    /// names a file dl's cache had not seen — a restart publishes somewhere dl
+    /// is not looking and the notice comes back. Until devlaunch#421 the two
+    /// were the same sentence, and this is the half that shipped — silently, on
+    /// every host that sets `DEVPOD_SSH_CONFIG`.
+    NoDevpodSshConfig {
+        workspace_id: String,
+        looked_in: PathBuf,
+    },
+    /// dl cannot say where devpod would publish an alias, so it cannot look.
+    /// Carries nothing: what is missing is the machine's home directory, which is
+    /// the same fact for every workspace.
+    SshConfigUnlocatable,
     /// The argv of the session about to start, program included.
     SshCommand { argv: Vec<String> },
     /// devpod itself failed the session; its own diagnostics are already on the
@@ -406,6 +451,19 @@ impl ContextOptions {
         self.0.get("DOTFILES_SCRIPT").map(String::as_str)
     }
 
+    /// The ssh config `devpod up` writes host aliases into, if the context names
+    /// one. Beaten by `--ssh-config` / `$DEVPOD_SSH_CONFIG`, and beats nothing
+    /// but the `~/.ssh/config` default — see [`ssh::config_path`].
+    pub(crate) fn ssh_config_path(&self) -> Option<&str> {
+        self.0.get("SSH_CONFIG_PATH").map(String::as_str)
+    }
+
+    /// The `Include` file `devpod up` writes host aliases into instead, if the
+    /// context names one. Beats every other candidate.
+    pub(crate) fn ssh_config_include_path(&self) -> Option<&str> {
+        self.0.get("SSH_CONFIG_INCLUDE_PATH").map(String::as_str)
+    }
+
     /// The `devpod up` flags these options contribute, in Python's order.
     fn up_args(&self) -> Vec<String> {
         let mut args = Vec::new();
@@ -447,6 +505,23 @@ pub(crate) fn context_options(
     };
     write_options_cache(cache_path, &options);
     ContextOptions(options)
+}
+
+/// The context options dl has already cached, and nothing else.
+///
+/// The sibling of [`context_options`] for the one caller that must not spend a
+/// round trip: [`terminal_for`] reads two candidate ssh-config paths out of these
+/// on *every* launch, including the warm ones, and `devpod context options` costs
+/// 0.4-0.7s (devlaunch#393) against a pty transport worth rather less than that.
+/// So a cache miss answers with devpod's defaults rather than asking, and devpod
+/// is asked by whoever was going to ask anyway.
+pub(crate) fn already_cached_options(host: &Host, now: SystemTime) -> ContextOptions {
+    cached_options(
+        &host.context_options_cache(),
+        host.devpod_config().as_deref(),
+        now,
+    )
+    .unwrap_or_default()
 }
 
 /// The cached options, if the cache exists, is young enough, and is newer than
@@ -1099,8 +1174,7 @@ fn up_under_stage(
         && serialization.waited()
         && !request.wants_more_than_a_running_workspace()
         && is_running(context.runner(), identity)
-        && lifecycle::create_record(host.devpod_home.as_deref(), identity)
-            != lifecycle::CreateRecord::NeverCompleted
+        && create_record(host.devpod_home.as_ref(), identity) != CreateRecord::NeverCompleted
     {
         notices.say(LaunchNotice::BroughtUpBySibling {
             workspace_id: identity.to_owned(),
@@ -1330,28 +1404,60 @@ fn with_zellij_session(command: &str, zellij: ZellijWrap) -> String {
 
 /// What dl has to hand a command in the way of a terminal.
 ///
-/// Three arms rather than a bool, because the middle one is a *report*: dl is on a
-/// terminal and cannot use it, which is worth saying and is not the same as being
-/// in CI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Five arms rather than a bool, because the three middle ones are *reports*: dl
+/// is on a terminal and cannot use it, which is worth saying and is not the same
+/// as being in CI. They were one arm until devlaunch#421, and that is what let the
+/// bug ship: "devpod published no alias for this workspace" and "dl is reading a
+/// file devpod never writes" arrived as one sentence about restarting the
+/// workspace, which fixes the first and is useless against the second. A state
+/// that cannot be told apart cannot be reported, so it is split in the type.
+///
+/// **Every arm carries the config, including the one that works.** That is not
+/// symmetry for its own sake: OpenSSH resolves an alias through `getpwuid`'s
+/// `~/.ssh/config` and reads no environment variable, so the file dl found the
+/// alias in has to reach the invocation as `-F` or the invocation names a host
+/// that does not resolve. `Usable` was the one arm with no path, and the value was
+/// therefore dropped at exactly the point it was needed and kept only where it was
+/// printed — a `dl <ws> -- <cmd>` that stopped running at all, on the same hosts
+/// this split was written for. The path travels with the state instead, so
+/// `ssh::command_args` can require it and an invocation with no `-F` is not
+/// something this flow can express.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Terminal {
-    /// dl is on a terminal and devpod published this workspace's ssh alias.
-    Usable,
-    /// dl is on a terminal and devpod published no alias for this workspace, so
-    /// there is no way to ask for a pty. The command still runs.
-    NoAlias,
+    /// dl is on a terminal and devpod published this workspace's ssh alias in that
+    /// config, which is the file OpenSSH has to be told to read.
+    Usable { config: PathBuf },
+    /// dl read the config devpod publishes into and this workspace has no alias
+    /// in it, so there is no way to ask for a pty. The command still runs.
+    NoAlias { config: PathBuf },
+    /// dl knows which file devpod would publish into and there is nothing it can
+    /// read there. Either devpod has never brought a workspace up on this host,
+    /// or dl is looking somewhere devpod does not write.
+    ConfigMissing { looked_in: PathBuf },
+    /// dl cannot say where devpod would publish at all: no `DEVPOD_SSH_CONFIG`, no
+    /// context option naming one, and no home directory to hold the default. `dl`
+    /// reaches here on a machine with `XDG_CACHE_HOME` set and no home.
+    ConfigUnlocatable,
     /// dl is not on a terminal, or the user opted this machine out.
     Absent,
 }
 
 /// What dl can give a command on this host, for this workspace.
-pub(crate) fn terminal_for(host: &Host, workspace_id: &str) -> Terminal {
+///
+/// `options` is the context options dl has already cached — see
+/// [`Host::ssh_config`] for why this must not be the ones devpod would answer
+/// with.
+pub(crate) fn terminal_for(host: &Host, options: &ContextOptions, workspace_id: &str) -> Terminal {
     if !ssh::terminal_usable(host.no_tty.as_deref(), host.stdin_tty, host.stdout_tty) {
         return Terminal::Absent;
     }
-    match host.ssh_config.as_deref() {
-        Some(config) if ssh::devpod_host_configured(config, workspace_id) => Terminal::Usable,
-        _ => Terminal::NoAlias,
+    let Some(config) = host.ssh_config(options) else {
+        return Terminal::ConfigUnlocatable;
+    };
+    match ssh::alias_in(&config, workspace_id) {
+        ssh::Alias::Published => Terminal::Usable { config },
+        ssh::Alias::WorkspaceAbsent => Terminal::NoAlias { config },
+        ssh::Alias::NoConfig => Terminal::ConfigMissing { looked_in: config },
     }
 }
 
@@ -1367,13 +1473,21 @@ pub(crate) fn terminal_for(host: &Host, workspace_id: &str) -> Terminal {
 /// payload-free tag, a `DevpodCommand` paired with no payload dispatched an
 /// interactive attach that ran nothing and reported nothing, and a `Terminal`
 /// paired with no payload panicked an `expect`.
+///
+/// [`Self::Terminal`] carries the config for the same reason it carries the
+/// payload: the invocation needs both, and re-deriving either at the call site is
+/// a second lookup that can disagree with the one that made the decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Route<'p> {
     /// A bare attach. It stays on devpod whatever the terminal says: devpod
     /// requests a pty for exactly this case, so there is nothing to escape.
     DevpodAttach,
-    /// A command under a pty, through the ssh alias `devpod up` published.
-    Terminal(&'p RemotePayload),
+    /// A command under a pty, through the ssh alias `devpod up` published, in the
+    /// config the alias was read out of.
+    Terminal {
+        payload: &'p RemotePayload,
+        config: &'p Path,
+    },
     /// A command through `devpod ssh --command`, which never asks for a pty.
     DevpodCommand(&'p RemotePayload),
 }
@@ -1381,7 +1495,7 @@ pub(crate) enum Route<'p> {
 /// Route this session, reporting a terminal dl had and could not use.
 pub(crate) fn route<'p>(
     command: Option<&'p RemotePayload>,
-    terminal: Terminal,
+    terminal: &'p Terminal,
     workspace_id: &str,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Route<'p> {
@@ -1389,11 +1503,26 @@ pub(crate) fn route<'p>(
         return Route::DevpodAttach;
     };
     match terminal {
-        Terminal::Usable => Route::Terminal(command),
-        Terminal::NoAlias => {
+        Terminal::Usable { config } => Route::Terminal {
+            payload: command,
+            config,
+        },
+        Terminal::NoAlias { config } => {
             notices.say(LaunchNotice::NoTerminalAlias {
                 workspace_id: workspace_id.to_owned(),
+                config: config.clone(),
             });
+            Route::DevpodCommand(command)
+        }
+        Terminal::ConfigMissing { looked_in } => {
+            notices.say(LaunchNotice::NoDevpodSshConfig {
+                workspace_id: workspace_id.to_owned(),
+                looked_in: looked_in.clone(),
+            });
+            Route::DevpodCommand(command)
+        }
+        Terminal::ConfigUnlocatable => {
+            notices.say(LaunchNotice::SshConfigUnlocatable);
             Route::DevpodCommand(command)
         }
         Terminal::Absent => Route::DevpodCommand(command),
@@ -1517,10 +1646,13 @@ pub(crate) fn workspace_ssh(
                 .map_err(SessionRefused::Unquotable)?,
         ),
     };
-    let terminal = terminal_for(session.host, workspace_id);
-    match route(payload.as_ref(), terminal, workspace_id, notices) {
-        Route::Terminal(payload) => {
-            ssh_with_terminal(session, workspace_id, payload, workdir, notices)
+    // The already-cached options, never a fresh `devpod context options`: this is
+    // on the warm path, where that round trip costs more than the pty it decides.
+    let options = already_cached_options(session.host, SystemTime::now());
+    let terminal = terminal_for(session.host, &options, workspace_id);
+    match route(payload.as_ref(), &terminal, workspace_id, notices) {
+        Route::Terminal { payload, config } => {
+            ssh_with_terminal(session, workspace_id, payload, config, workdir, notices)
         }
         Route::DevpodAttach => {
             devpod_session(session, workspace_id, None, workdir, forward, notices)
@@ -1583,16 +1715,28 @@ fn devpod_session(
 }
 
 /// The OpenSSH transport: an already-wrapped payload under a pty.
+///
+/// `config` is the file the alias was found in, and it arrives from
+/// [`Route::Terminal`] rather than from a lookup here — the transport must not get
+/// a second opinion about which config it is talking about. It reaches ssh as
+/// `-F`, because ssh reads neither `$DEVPOD_SSH_CONFIG` nor `$HOME`.
 fn ssh_with_terminal(
     session: &SessionContext<'_>,
     workspace_id: &str,
     payload: &RemotePayload,
+    config: &Path,
     workdir: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     let forwarding = gh::openssh_forwarding(session.forwarded_token(notices));
-    let args = ssh::command_args(workspace_id, payload.as_str(), &forwarding.args, workdir)
-        .map_err(SessionRefused::UnsafeRequest)?;
+    let args = ssh::command_args(
+        config,
+        workspace_id,
+        payload.as_str(),
+        &forwarding.args,
+        workdir,
+    )
+    .map_err(SessionRefused::UnsafeRequest)?;
     notices.say(LaunchNotice::SshCommand { argv: args.clone() });
     let exit = {
         let _span = timing::span("ssh");
@@ -2668,16 +2812,13 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // unfinished, since `up` is what it was doing, and a host whose devpod
         // records will not read attaches exactly as it did before.
         if placement.is_running() {
-            match lifecycle::create_record(
-                self.host.devpod_home.as_deref(),
-                placement.workspace_id(),
-            ) {
-                lifecycle::CreateRecord::NeverCompleted => {
+            match create_record(self.host.devpod_home.as_ref(), placement.workspace_id()) {
+                CreateRecord::NeverCompleted => {
                     self.notices.say(LaunchNotice::CreateNeverFinished {
                         workspace_id: placement.workspace_id().to_owned(),
                     });
                 }
-                lifecycle::CreateRecord::Completed | lifecycle::CreateRecord::Unknown => {
+                CreateRecord::Completed | CreateRecord::Unknown => {
                     // Whatever brought this workspace up finished before this launch
                     // asked: nothing to build and nothing to wait for. If a prewarm was
                     // fired for it, this is what a prewarm that paid off looks like.
@@ -2762,8 +2903,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // for to fix a workspace, and the documented recovery would be the one path
         // that declines to run.
         if placement.is_running()
-            && lifecycle::create_record(self.host.devpod_home.as_deref(), placement.workspace_id())
-                != lifecycle::CreateRecord::NeverCompleted
+            && create_record(self.host.devpod_home.as_ref(), placement.workspace_id())
+                != CreateRecord::NeverCompleted
         {
             self.notices.say(LaunchNotice::AlreadyRunning {
                 workspace_id: placement.workspace_id().to_owned(),
@@ -2954,8 +3095,13 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// hold anything to filter, whether it came from a triple or from
     /// [`source_workspace_id`](crate::domain::workspace_id), but two arms reach here
     /// with a string this crate never validated: a bare devpod name and a path leaf.
-    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs both halves of
-    /// the feature rather than half of it.
+    ///
+    /// `DEVLAUNCH_NO_TITLE` still decides it, so one variable governs the whole
+    /// feature rather than part of it. Three pieces now, not two: the escape this
+    /// process writes, the `PS1` line every prompt repaints, and the export that
+    /// stops claude renaming the pane between prompts. Somebody who turned dl's
+    /// naming off did not ask for claude's titling to go too, and nothing in a
+    /// container would tell them why it had.
     ///
     /// `stderr_tty` is deliberately *not* consulted, where
     /// [`TerminalTitle::from_host`] does consult it. That flag answers "is there a
@@ -3051,7 +3197,7 @@ mod tests {
                     ..gh::HostEnv::default()
                 },
                 cache_dir: dir.path().to_path_buf(),
-                devpod_home: Some(dir.path().join("devpod")),
+                devpod_home: Some(DevpodHome::at(dir.path().join("devpod"))),
                 ..Host::default()
             };
             Self {
@@ -3063,6 +3209,11 @@ mod tests {
         }
 
         /// A host on a terminal, with devpod's alias published for `workspace_ids`.
+        ///
+        /// Published where `$DEVPOD_SSH_CONFIG` names, because that is the shape
+        /// this repo's own scratch convention, `test/conftest.py` and
+        /// `scripts/bench_launch.py` all create — and the shape dl silently lost
+        /// the pty transport on until devlaunch#421.
         fn on_a_terminal(mut self, workspace_ids: &[&str]) -> Self {
             let config = self.dir.path().join("ssh-config");
             let text: String = workspace_ids
@@ -3072,7 +3223,26 @@ mod tests {
             std::fs::write(&config, text).expect("an ssh config");
             self.host.stdin_tty = true;
             self.host.stdout_tty = true;
-            self.host.ssh_config = Some(config);
+            self.host.devpod_ssh_config = Some(config.display().to_string());
+            // No `~/.ssh/config` under it: devpod writes to the file above and
+            // nowhere else, so a home that had one would hide the regression.
+            self.host.home = Some(self.dir.path().join("home"));
+            self
+        }
+
+        /// A host on a terminal whose only ssh config is the `~/.ssh/config`
+        /// devpod falls back to when nothing names another.
+        fn on_a_terminal_with_a_home_config(mut self, workspace_ids: &[&str]) -> Self {
+            self = self.on_a_terminal(workspace_ids);
+            let published = self
+                .host
+                .devpod_ssh_config
+                .take()
+                .expect("on_a_terminal named one");
+            let home_config = self.dir.path().join("home").join(".ssh").join("config");
+            std::fs::create_dir_all(home_config.parent().expect("a parent"))
+                .expect("a scratch .ssh");
+            std::fs::rename(&published, &home_config).expect("the config moves");
             self
         }
 
@@ -3092,10 +3262,9 @@ mod tests {
         /// the result beside it, which is what devpod writes on its way out of a
         /// successful `up`.
         fn with_create_completed(self, workspace_id: &str) -> Self {
-            let dir = self.devpod_record_dir(workspace_id);
-            std::fs::create_dir_all(&dir).expect("a devpod record directory");
-            std::fs::write(dir.join("workspace.json"), "{}").expect("a workspace record");
-            std::fs::write(dir.join("workspace_result.json"), "{}").expect("a create result");
+            let home = self.devpod_home();
+            self.write_record(workspace_id);
+            std::fs::write(home.result("default", workspace_id), "{}").expect("a create result");
             self
         }
 
@@ -3103,21 +3272,25 @@ mod tests {
         /// no result beside it. A `postCreateCommand` that exits non-zero leaves
         /// exactly this, with the container still up.
         fn with_create_aborted(self, workspace_id: &str) -> Self {
-            let dir = self.devpod_record_dir(workspace_id);
-            std::fs::create_dir_all(&dir).expect("a devpod record directory");
-            std::fs::write(dir.join("workspace.json"), "{}").expect("a workspace record");
+            self.write_record(workspace_id);
             self
         }
 
-        fn devpod_record_dir(&self, workspace_id: &str) -> PathBuf {
+        fn devpod_home(&self) -> &DevpodHome {
             self.host
                 .devpod_home
                 .as_ref()
                 .expect("a scratch devpod home")
-                .join("contexts")
-                .join("default")
-                .join("workspaces")
-                .join(workspace_id)
+        }
+
+        /// The `workspace.json` devpod writes on its way *in*, at whatever path
+        /// `clients::devpod_home` says it goes — asked rather than rebuilt, so this
+        /// fixture cannot go on passing after devpod moves its layout.
+        fn write_record(&self, workspace_id: &str) {
+            let record = self.devpod_home().record("default", workspace_id);
+            std::fs::create_dir_all(record.parent().expect("a devpod record directory"))
+                .expect("a devpod record directory");
+            std::fs::write(record, "{}").expect("a workspace record");
         }
 
         fn cache_dir(&self) -> &Path {
@@ -4392,16 +4565,180 @@ mod tests {
 
     // ------------------------------------------------------ which transport
 
+    /// `terminal_for` with no context options cached, which is every host that
+    /// has not run a `devpod up` through dl this hour.
+    fn terminal_here(host: &Host, workspace_id: &str) -> Terminal {
+        terminal_for(host, &ContextOptions::default(), workspace_id)
+    }
+
+    /// The file `on_a_terminal` published the aliases into.
+    fn published_config(host: &Host) -> PathBuf {
+        PathBuf::from(
+            host.devpod_ssh_config
+                .clone()
+                .expect("on_a_terminal named one"),
+        )
+    }
+
+    #[test]
+    fn the_config_devpod_ssh_config_names_is_where_dl_looks_for_the_alias() {
+        // The shipped bug (devlaunch#421), stated where a user would meet it:
+        // `devpod up` publishes into `$DEVPOD_SSH_CONFIG` and creates no
+        // `~/.ssh/config` at all, and dl answered `NoAlias`, dropped to the
+        // transport with no pty, and blamed the workspace for it. Red on
+        // origin/main: `Host::from_process` never read that variable and
+        // `config_path()` was `~/.ssh/config` and nothing else.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        assert!(
+            !scene.dir.path().join("home").join(".ssh").exists(),
+            "the point of the test is that there is no ~/.ssh/config to find"
+        );
+
+        assert_eq!(
+            terminal_here(&scene.host, "myws"),
+            Terminal::Usable {
+                config: published_config(&scene.host)
+            }
+        );
+    }
+
+    #[test]
+    fn the_usable_state_carries_the_config_the_alias_was_found_in() {
+        // The second half of devlaunch#421, and the reason `Usable` has a field.
+        // Finding the alias and being able to *use* it stopped being one fact the
+        // moment dl looked anywhere but `~/.ssh/config`: OpenSSH resolves an alias
+        // through `getpwuid`'s config and reads no environment, so the path has to
+        // reach the invocation. It reached nothing, because `Usable` was the one
+        // arm that dropped it -- and `dl <ws> -- <cmd>` at a terminal exited 255
+        // with `Could not resolve hostname` instead of running.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        let published = published_config(&scene.host);
+
+        let Terminal::Usable { config } = terminal_here(&scene.host, "myws") else {
+            panic!("the alias is published, so this is Usable");
+        };
+
+        assert_eq!(config, published);
+        // And it is the file the alias is actually in, not merely a path.
+        assert_eq!(ssh::alias_in(&config, "myws"), ssh::Alias::Published);
+    }
+
+    #[test]
+    fn the_home_default_is_still_where_dl_looks_when_nothing_names_a_config() {
+        // devpod's own fallback, and the only case dl handled before.
+        let scene = Scene::new().on_a_terminal_with_a_home_config(&["myws"]);
+
+        assert_eq!(scene.host.devpod_ssh_config, None);
+        assert_eq!(
+            terminal_here(&scene.host, "myws"),
+            Terminal::Usable {
+                config: scene.dir.path().join("home").join(".ssh").join("config")
+            }
+        );
+    }
+
+    #[test]
+    fn a_cached_context_option_names_the_config_and_no_round_trip_pays_for_it() {
+        // The context options carry two of devpod's four candidate paths. That
+        // reading them cannot cost a warm launch a `devpod context options`
+        // (0.4-0.7s, devlaunch#393 — more than the pty transport is worth) is
+        // settled by the signature rather than by an assertion: `terminal_for`
+        // takes no `Runner`, so it has nothing to ask devpod with. What is left
+        // for a test is that the two options are honoured at all, and in devpod's
+        // order — `ssh::config_path`'s tests hold the order.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        let named = scene
+            .host
+            .devpod_ssh_config
+            .clone()
+            .expect("on_a_terminal named one");
+        let by_option = Host {
+            devpod_ssh_config: None,
+            ..scene.host.clone()
+        };
+        let options = ContextOptions::from_map(BTreeMap::from([(
+            "SSH_CONFIG_PATH".to_owned(),
+            named.clone(),
+        )]));
+
+        assert_eq!(
+            terminal_for(&by_option, &options, "myws"),
+            Terminal::Usable {
+                config: PathBuf::from(&named)
+            },
+            "the SSH_CONFIG_PATH context option is a place devpod publishes"
+        );
+        assert_eq!(
+            terminal_for(
+                &by_option,
+                &ContextOptions::from_map(BTreeMap::from([(
+                    "SSH_CONFIG_INCLUDE_PATH".to_owned(),
+                    named.clone()
+                )])),
+                "myws"
+            ),
+            Terminal::Usable {
+                config: PathBuf::from(&named)
+            },
+            "and so is SSH_CONFIG_INCLUDE_PATH"
+        );
+    }
+
+    #[test]
+    fn the_ssh_config_is_read_from_the_cache_and_never_asked_for() {
+        // The whole warm-path budget of the lookup: one cache file, no subprocess.
+        // Written by whichever launch was going to ask devpod anyway, read here —
+        // and `already_cached_options` takes no `Runner` either, so "never asked
+        // for" is a fact about the signature and this is what it buys.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        let named = scene
+            .host
+            .devpod_ssh_config
+            .clone()
+            .expect("on_a_terminal named one");
+        let host = Host {
+            devpod_ssh_config: None,
+            ..scene.host.clone()
+        };
+        write_options_cache(
+            &host.context_options_cache(),
+            &BTreeMap::from([("SSH_CONFIG_PATH".to_owned(), named.clone())]),
+        );
+
+        let options = already_cached_options(&host, SystemTime::now());
+
+        assert!(options.ssh_config_path().is_some());
+        assert_eq!(
+            terminal_for(&host, &options, "myws"),
+            Terminal::Usable {
+                config: PathBuf::from(&named)
+            }
+        );
+    }
+
     #[test]
     fn a_terminal_and_an_alias_route_a_command_through_openssh() {
         // The regression: an interactive payload must not go through `--command`.
+        // And the route carries the config with the payload, because the argv it
+        // becomes needs both: re-deriving the path on the far side of `route` is
+        // a second lookup that can disagree with the one that chose the transport.
         let scene = Scene::new().on_a_terminal(&["myws"]);
+        let published = published_config(&scene.host);
 
-        assert_eq!(terminal_for(&scene.host, "myws"), Terminal::Usable);
+        let terminal = terminal_here(&scene.host, "myws");
+        assert_eq!(
+            terminal,
+            Terminal::Usable {
+                config: published.clone()
+            }
+        );
         let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
         assert_eq!(
-            route(Some(&payload), Terminal::Usable, "myws", &mut no_notices()),
-            Route::Terminal(&payload)
+            route(Some(&payload), &terminal, "myws", &mut no_notices()),
+            Route::Terminal {
+                payload: &payload,
+                config: &published
+            }
         );
     }
 
@@ -4410,7 +4747,7 @@ mod tests {
         // Piped output must stay clean, so no pty and no escape sequences.
         let scene = Scene::new();
 
-        assert_eq!(terminal_for(&scene.host, "myws"), Terminal::Absent);
+        assert_eq!(terminal_here(&scene.host, "myws"), Terminal::Absent);
     }
 
     #[test]
@@ -4421,27 +4758,98 @@ mod tests {
             ..scene.host.clone()
         };
 
-        assert_eq!(terminal_for(&opted_out, "myws"), Terminal::Absent);
+        assert_eq!(terminal_here(&opted_out, "myws"), Terminal::Absent);
     }
 
     #[test]
-    fn a_missing_host_alias_falls_back_and_says_so() {
+    fn a_missing_host_alias_falls_back_and_says_which_config_it_read() {
         // A workspace devpod never wrote an alias for still has to run the command.
         let scene = Scene::new().on_a_terminal(&["some-other-workspace"]);
+        let config = PathBuf::from(
+            scene
+                .host
+                .devpod_ssh_config
+                .clone()
+                .expect("on_a_terminal named one"),
+        );
         let mut notices = no_notices();
 
-        assert_eq!(terminal_for(&scene.host, "myws"), Terminal::NoAlias);
+        let terminal = terminal_here(&scene.host, "myws");
+        assert_eq!(
+            terminal,
+            Terminal::NoAlias {
+                config: config.clone()
+            }
+        );
         let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
         assert_eq!(
-            route(Some(&payload), Terminal::NoAlias, "myws", &mut notices),
+            route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)
         );
         assert_eq!(
             notices,
             vec![LaunchNotice::NoTerminalAlias {
-                workspace_id: "myws".to_owned()
+                workspace_id: "myws".to_owned(),
+                config
             }]
         );
+    }
+
+    #[test]
+    fn no_config_at_all_is_its_own_state_and_names_where_dl_looked() {
+        // The other half of the devlaunch#421 split. "devpod published nothing for
+        // this workspace" and "dl is reading a file devpod never writes" used to
+        // be one `NoAlias`, so the fix dl suggested — restart the workspace —
+        // could not distinguish the case it fixes from the case it cannot touch.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        let never_written = scene.dir.path().join("elsewhere").join("ssh_config");
+        let host = Host {
+            devpod_ssh_config: Some(never_written.display().to_string()),
+            ..scene.host.clone()
+        };
+        let mut notices = no_notices();
+
+        let terminal = terminal_here(&host, "myws");
+        assert_eq!(
+            terminal,
+            Terminal::ConfigMissing {
+                looked_in: never_written.clone()
+            }
+        );
+        let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
+        assert_eq!(
+            route(Some(&payload), &terminal, "myws", &mut notices),
+            Route::DevpodCommand(&payload)
+        );
+        assert_eq!(
+            notices,
+            vec![LaunchNotice::NoDevpodSshConfig {
+                workspace_id: "myws".to_owned(),
+                looked_in: never_written
+            }]
+        );
+    }
+
+    #[test]
+    fn nowhere_to_look_is_its_own_state_too() {
+        // Reachable: `XDG_CACHE_HOME` set and no home directory is a machine dl
+        // runs on, and there is then no path to name in a notice at all.
+        let scene = Scene::new().on_a_terminal(&["myws"]);
+        let host = Host {
+            devpod_ssh_config: None,
+            home: None,
+            ..scene.host.clone()
+        };
+        let mut notices = no_notices();
+
+        let terminal = terminal_here(&host, "myws");
+        assert_eq!(terminal, Terminal::ConfigUnlocatable);
+        let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
+        assert_eq!(
+            route(Some(&payload), &terminal, "myws", &mut notices),
+            Route::DevpodCommand(&payload)
+        );
+        assert_eq!(notices, vec![LaunchNotice::SshConfigUnlocatable]);
     }
 
     #[test]
@@ -4450,9 +4858,21 @@ mod tests {
         // one case devpod requests one for.
         let mut notices = no_notices();
 
-        for terminal in [Terminal::Usable, Terminal::NoAlias, Terminal::Absent] {
+        for terminal in [
+            Terminal::Usable {
+                config: PathBuf::from("/scratch/ssh_config"),
+            },
+            Terminal::NoAlias {
+                config: PathBuf::from("/scratch/ssh_config"),
+            },
+            Terminal::ConfigMissing {
+                looked_in: PathBuf::from("/scratch/ssh_config"),
+            },
+            Terminal::ConfigUnlocatable,
+            Terminal::Absent,
+        ] {
             assert_eq!(
-                route(None, terminal, "myws", &mut notices),
+                route(None, &terminal, "myws", &mut notices),
                 Route::DevpodAttach,
                 "{terminal:?}"
             );
@@ -4557,7 +4977,17 @@ mod tests {
     #[test]
     fn the_openssh_transport_carries_the_same_payload_under_a_pty() {
         // Both transports must deliver the same command to the same shell.
+        //
+        // And the argv names the config the alias was read out of. This is the
+        // whole of `workspace_ssh` measured at once, and it is the assertion that
+        // was missing: devlaunch#421's first half taught dl to *read* devpod's real
+        // config, and the argv still said `ssh -t myws.devpod` with no `-F` -- so on
+        // a host publishing anywhere but `~/.ssh/config`, dl decided it had a
+        // terminal and then handed OpenSSH an alias OpenSSH could not resolve.
+        // `on_a_terminal` publishes into `$DEVPOD_SSH_CONFIG` and leaves no
+        // `~/.ssh/config`, which is exactly that host.
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+        let published = published_config(&scene.host);
 
         let (session, _, _) = a_session(&scene, Some("claude"));
 
@@ -4571,10 +5001,19 @@ mod tests {
             scene.runner.argvs(),
             vec![vec![
                 "ssh".to_owned(),
+                "-F".to_owned(),
+                published.display().to_string(),
                 "-t".to_owned(),
                 "myws.devpod".to_owned(),
                 "bash -lc claude".to_owned(),
             ]]
+        );
+        // Not merely "a -F": the file named is the one holding the alias, and it
+        // is not the home default OpenSSH would have gone to on its own.
+        assert_eq!(ssh::alias_in(&published, "myws"), ssh::Alias::Published);
+        assert_ne!(
+            published,
+            scene.dir.path().join("home").join(".ssh").join("config")
         );
     }
 
@@ -5961,9 +6400,11 @@ mod tests {
 
     #[test]
     fn the_title_switch_reaches_the_container_and_not_just_dls_own_escape() {
-        // `DEVLAUNCH_NO_TITLE` has to govern both halves or it governs neither: a
-        // host that silenced the escape and still had its profile edited would find
-        // the variable did nothing it could see.
+        // `DEVLAUNCH_NO_TITLE` has to govern every piece or it governs none: a host
+        // that silenced the escape and still had its profile edited would find the
+        // variable did nothing it could see. Three pieces now -- the escape, the
+        // `PS1` line, and claude's suppression -- and refusing a container title
+        // here is what takes all of them with it, since they share one stage.
         let mut scene = Scene::new().with_running("myws");
         scene.host.no_title = Some("1".to_owned());
         let updater = SelfInvocation::new("dl");

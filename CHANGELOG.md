@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-08-25
+## [0.15.0] - 2026-08-25
 
 ### Changed
 
@@ -63,6 +63,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one the workspace was created for. Nothing reconstructs a triple from an id
   any more.
 
+### Fixed
+
+- **`dl` looks for devpod's ssh host aliases where devpod writes them, so the pty
+  transport stops disappearing in silence.** `dl <ws> -- <cmd>` runs over OpenSSH
+  through the alias `devpod up` publishes, and `dl` decided whether that alias
+  existed by reading a hardcoded `~/.ssh/config`. devpod does not necessarily
+  write there: it targets the `SSH_CONFIG_INCLUDE_PATH` context option, else
+  `--ssh-config` (whose default it fills in from `$DEVPOD_SSH_CONFIG`), else the
+  `SSH_CONFIG_PATH` context option, else `~/.ssh/config` — and it writes to
+  whichever it picks and to *no other*. So on any host that exports
+  `DEVPOD_SSH_CONFIG` there was no `~/.ssh/config` to find, `dl` concluded the
+  workspace had no alias, dropped every command to `devpod ssh --command` (no
+  pty, `TERM=dumb`, interactive programs exiting on sight), and the only thing it
+  said was that the *workspace* needed restarting. This repo's own scratch
+  convention, `test/conftest.py` and `scripts/bench_launch.py` all export that
+  variable, so the transport was unreachable on exactly the hosts we measure on:
+  **before/after numbers from a run that set `DEVPOD_SSH_CONFIG` are not
+  comparable across this change**, because the earlier side of them was silently
+  on the other transport.
+  The two context-option paths are read from the copy `dl` has already cached and
+  never by a fresh `devpod context options`: that trip costs 0.4-0.7s (#393) on a
+  path where the whole decision is worth less, and a cache miss falls back to
+  devpod's own defaults, which is what `dl` assumed unconditionally before.
+  And the silence is gone from the type rather than from a log line. `Terminal`'s
+  one `NoAlias` arm was two facts wearing one name; it is now `NoAlias` (this
+  config has no entry for this workspace, and `dl <ws> restart` republishes it),
+  `ConfigMissing` (there is no ssh config where `dl` expects devpod to publish,
+  named in the notice, and a restart helps only if devpod writes to that same
+  file) and `ConfigUnlocatable` (no home directory and nothing naming a config,
+  so there is nowhere to look). Each has its own sentence, and each names the
+  path `dl` read. (#421)
+- **`dl` hands OpenSSH the ssh config it read the alias out of, as `-F <path>`.**
+  The other half of the same bug, and the half that made it worse rather than
+  quieter. OpenSSH reads neither `$DEVPOD_SSH_CONFIG` nor `$HOME`; it resolves the
+  default user config through `getpwuid(getuid())`. So once `dl` started deciding
+  the alias existed by reading devpod's real config, the invocation it built still
+  pointed OpenSSH at `~/.ssh/config`, and on a host where devpod publishes
+  elsewhere `ssh -t <ws>.devpod <cmd>` failed with `Could not resolve hostname` at
+  exit 255: the command did not run at all, where before it had merely run without
+  a terminal. The config now travels inside `Terminal::Usable` and
+  `ssh::command_args` takes it as a parameter, so an invocation with no `-F` is not
+  expressible. **The trade:** `-F` makes OpenSSH read that file *instead of*
+  `~/.ssh/config`, and it skips `/etc/ssh/ssh_config` unconditionally, including
+  when the file named *is* your own user config. So a system-wide `Host *` block
+  never applies to a devlaunch session, and one of your own stops applying as soon
+  as devpod publishes somewhere other than your user config. Taken deliberately: `dl` cannot know whether `ssh` would have
+  read the file `dl` read, since `$HOME` and `getpwuid`'s home are allowed to
+  differ, and devpod's own block is self-contained. The e2e suite's `ssh` shim,
+  which had been supplying exactly this `-F` and hiding the defect from a green
+  run, is deleted. (#421)
+
+## [0.14.0] - 2026-08-25
+
+### Fixed
+
+- **`dl --reconcile` no longer reports an adoption as landed when it wrote no
+  record.** Re-pointing devpod at the clone and recording the worktree are two
+  steps, and the second can find nothing to update — another run removed the
+  record while the plan sat there waiting to be applied. That case was reported
+  as `Repointed` like any other, with the run finishing successfully, so the one
+  outcome worth knowing about looked identical to the ordinary one. It is now its
+  own `Unrecorded` arm: devpod re-pointed, dl's record not written, said on
+  stderr, and the run does not report itself finished. A store that refused the
+  write lands in the same arm for the same reason — it is the same half-done
+  adoption — and the refusal is named beside it.
+
 ### Added
 
 - **CI fails when nothing reviewed a pull request.** Sourcery answers a quota
@@ -78,6 +144,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletes. An author's plain "lgtm" does not satisfy it, and merging on a
   self-review is recorded as a notice on the run, and a review that predates the
   head is warned about rather than failed on.
+
+### Fixed
+
+- **claude no longer takes the terminal title back in a `dl` session it started
+  itself.** dl names a pane after the workspace and claude renames it continuously
+  from its own read of what the session is doing, so the two are one contest and
+  claude wins every round after the first: dl's name was gone within about a
+  second. The feature shipped with `aid` setting
+  `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, but only as a prefix on the claude it
+  launched, which left every `claude` typed at a workspace's own prompt losing the
+  name. The title stage now writes the variable into the container's login
+  profile, so it reaches whoever starts claude without
+  rewriting anybody's command — the one rule aid was right to keep. `DEVLAUNCH_NO_TITLE`
+  governs all three pieces of the feature, and since a profile is read by shells that
+  start after it is written, a workspace that was already up wants a re-login or a
+  `dl <ws> recreate`.
+
+- **`DEVLAUNCH_NO_TTY=FALSE` no longer means one thing to the prompt and another
+  to the transport.** `dl` gates its own terminal behaviour on the same variable
+  the ssh transport is gated on, and the two read it differently: core lowercases
+  the value and strips it the way Python's `str.strip()` does before comparing it
+  against the falsey words, while `dl` kept a copy that compared the raw bytes
+  with a bare `matches!`. So `FALSE` and `" no "` opted out of the prompt and not
+  out of the pty, and a non-UTF-8 value opted out of the *pty* and not the prompt
+  — `std::env::var(..).ok()` reports such a value as unset, which is the
+  opt-out-into-opt-in inversion `osext` exists to prevent and names in as many
+  words. The copy existed because `osext` was `pub(crate)` and neither half of
+  what makes the reading right — the lossy read or Python's strip — can be
+  spelled without it, so the fix is a seam rather than a third copy:
+  `clients::ssh::tty_disabled_by_environment` is binary surface, and `dl` asks it.
+  The deleted tests only ever covered the spellings where the two agreed, which is
+  why the divergence was invisible.
+
+- **`aid` no longer starts the default agent when `DEVLAUNCH_AID_AGENT` holds a
+  value it cannot decode.** The variable was read through
+  `std::env::var(..).ok()`, which reports a value that is not valid UTF-8 as
+  *unset* — so `DEVLAUNCH_AID_AGENT=$'\xff'` was not a broken agent name, it was
+  no agent name at all. The default agent was chosen, the workspace was opened,
+  and nothing anywhere mentioned the variable that had asked for something else.
+  The `is not a known agent` refusal that `DEVLAUNCH_AID_AGENT=nope` already got
+  was unreachable for exactly the values that cannot be written as a string. The
+  read is a lossy decode now, so the undecodable byte arrives present under
+  U+FFFD: a name to refuse rather than a variable to ignore, refused by name
+  with no devpod call made.
+
+- **On git 2.20 and older, a launch that asks for a new branch no longer fails
+  outright.** Up to v2.20.0 git wrote `Couldn't find remote ref %s` through a
+  bare `die()` (`remote.c:1785`) — capital C, and never routed through gettext,
+  so the `LC_ALL=C` the fetch is pinned under could not normalise it; it is
+  lowercase and translatable from v2.21.0. The reader that recognises "the
+  remote has not got this ref" is the one that falls back to the default branch,
+  and it matched only the later wording. On a host still running that git the
+  ref-missing *answer* therefore read as a failure, the fallback never ran, and
+  an ordinary "start a new branch" launch died on a message about a ref nobody
+  had asked to exist yet. The refusal is classified from the verb that produced
+  it now, and case does not decide it.
+
+- **A repository that is not there on Codeberg or Forgejo now gets the
+  wrong-owner hint.** Those hosts answer a 404 with `remote: Not found.`, and
+  none of the three phrases the renderer sniffed for appear anywhere in that
+  output — all three were GitHub's and GitLab's wordings. The only other line is
+  git's own `fatal: repository '<url>' not found`, which does not contain the
+  substring `repository not found` the renderer was looking for, so a mistyped
+  owner on those hosts got the bare clone failure and no suggestion of what to
+  try. The reader matches git's line as a whole line ending in `' not found`
+  now, which is the host's wording out of the decision entirely, and still keeps
+  out `branch '%s' not found`, `tag '%s' not found` and `repository '%s' does
+  not exist`.
+
+### Changed
+
+- **devpod's on-disk layout is one module's, and that module now exists.**
+  `clients::devpod` was the seam for devpod-the-command; devpod-the-filesystem
+  had none, so `<devpod home>/contexts/<ctx>/workspaces/<id>/…` was rebuilt
+  wherever it was needed — four times in `devlaunch-core`'s implementation and
+  four more in its test fixtures, under a comment claiming it was spelled "in one
+  place and not three". `clients::devpod_home::DevpodHome` owns it now, including
+  the one write (`--reconcile` re-points a record's `source.localFolder`, which
+  devpod v0.26.1 offers no subcommand for), and `devlaunch-core`'s new
+  `tests/devpod_layout.rs` fails if any other module in the crate spells it
+  again. `lifecycle::devpod_home()` becomes `DevpodHome::locate()`, and
+  `lifecycle::RepointFailure` moves with the write that raises it;
+  `api::workspace_delete`, `lifecycle::purge_all_data` and
+  `lifecycle::apply_reconciliation` take a `DevpodHome` where they took a bare
+  path. It also takes a test module back out of the crate's internal surface:
+  `flows::lifecycle`'s `mod tests` was `pub(crate)` only so two other flows could
+  import a devpod-home fixture from it, and the fixture now lives with the
+  layout it builds.
 
 ## [0.13.0] - 2026-08-24
 

@@ -307,6 +307,141 @@ fn a_refusal_never_has_nothing_to_say() {
     }
 }
 
+// ----------------------------------------------- reading git's own words
+
+/// How `git clone --bare` read a refusal, given what git wrote to stderr.
+///
+/// Through the verb rather than through the reader directly: which reader is
+/// wired to which verb is half of what these assertions are for.
+fn cloning_read(stderr: &str) -> Option<Failure> {
+    let fake = ScriptedRunner::new().with_script(["git"], Response::failed(128, stderr));
+    Git::new(&fake)
+        .clone_bare("git@github.com:o/r.git", Path::new("/cache/o/r/.bare"))
+        .refusal()
+        .map(GitRefused::how)
+}
+
+#[test]
+fn a_branch_that_is_already_there_is_read_where_git_says_so() {
+    // Both wordings git has used: `A branch named '%s' already exists.` up to
+    // v2.34.0 (`branch.c:208`), lowercase and unstopped from v2.35.0
+    // (`branch.c:307`). The tail of the sentence carries both.
+    for said in [
+        "fatal: a branch named 'feature' already exists\n",
+        "fatal: A branch named 'feature' already exists.\n",
+    ] {
+        let fake = ScriptedRunner::new().with_script(["git"], Response::failed(128, said));
+
+        let answer = Git::new(&fake).create_branch(Path::new("/cache/o/r"), "feature", "main");
+
+        assert_eq!(
+            answer.refusal().map(GitRefused::how),
+            Some(Failure::BranchAlreadyExists),
+            "git said {said:?}"
+        );
+    }
+}
+
+#[test]
+fn a_ref_namespace_collision_is_not_a_branch_that_is_already_there() {
+    // git's other `git branch` refusal, recorded from v2.51.1: creating `feat/x`
+    // where `feat` is already a branch. It says `exists`, it is not the branch
+    // being there, and its caller must not swallow it.
+    let said = "fatal: cannot lock ref 'refs/heads/feat/x': 'refs/heads/feat' exists; \
+                cannot create 'refs/heads/feat/x'\n";
+    let fake = ScriptedRunner::new().with_script(["git"], Response::failed(128, said));
+
+    let answer = Git::new(&fake).create_branch(Path::new("/cache/o/r"), "feat/x", "main");
+
+    assert_eq!(
+        answer.refusal().map(GitRefused::how),
+        Some(Failure::Exited(Exit::Code(128)))
+    );
+}
+
+#[test]
+fn a_ref_the_remote_has_not_got_is_read_whatever_case_git_used() {
+    // Up to v2.20.0 git wrote this one through a bare `die()` — `Couldn't find
+    // remote ref %s` (`remote.c:1785`), neither lowercase nor translatable, so the
+    // pinned C locale does not reach it. From v2.21.0 it is lowercase and goes
+    // through `die(_())` (`remote.c:1840`).
+    for said in [
+        "fatal: couldn't find remote ref refs/heads/nosuch\n",
+        "fatal: Couldn't find remote ref refs/heads/nosuch\n",
+    ] {
+        let fake = ScriptedRunner::new().with_script(["git"], Response::failed(128, said));
+
+        let answer = Git::new(&fake).fetch_ref(Path::new("/cache/o/r/.bare"), "nosuch");
+
+        assert_eq!(
+            answer.refusal().map(GitRefused::how),
+            Some(Failure::RefMissingOnRemote),
+            "git said {said:?}"
+        );
+    }
+}
+
+#[test]
+fn the_hosts_not_found_wordings_are_told_from_a_clone_s_other_refusals() {
+    // The three hosts' own wordings, and git's own line for an HTTP 404.
+    for said in [
+        "ERROR: Repository not found.",
+        "remote: Repository not found.\nfatal: repository 'https://x/y.git' not found",
+        "GitLab: The project you were looking for could not be found or you don't have \
+         permission to view it.",
+        "conq: repository does not exist.",
+        // Recorded from Codeberg (Forgejo) with git 2.51.1: its 404 body carries
+        // none of the three phrases above, so git's own line is all there is.
+        "Cloning into bare repository '/cache/acme/widgets'...\nremote: Not found.\n\
+         fatal: repository 'https://codeberg.org/acme/widgets.git/' not found",
+    ] {
+        assert_eq!(
+            cloning_read(said),
+            Some(Failure::RepositoryNotFound),
+            "a host said {said:?}"
+        );
+    }
+}
+
+#[test]
+fn a_clone_that_failed_some_other_way_is_left_as_an_exit() {
+    // The near misses. The last line of git's stock ssh advice — "and the
+    // repository exists" — rides along with *every* ssh failure, refused keys
+    // included, and is one word from GitHub's wording. git's own complaint about a
+    // missing local directory is not a host's answer at all. `could not be found`
+    // on its own is generic English rather than anything GitLab said. And git has
+    // other `'%s' not found` lines that must not read as the repository's.
+    for said in [
+        "git@github.com:o/r.git: Permission denied (publickey).\nfatal: Could not read from \
+         remote repository.\n\nPlease make sure you have the correct access rights\nand the \
+         repository exists.",
+        "ssh: Could not resolve hostname github.com: Temporary failure in name resolution",
+        "fatal: repository '/home/someone/not-there' does not exist",
+        "error: object file .git/objects/ab/cdef could not be found",
+        "Cloning into bare repository '/cache/acme/widgets'...\nfatal: branch 'main' not found",
+    ] {
+        assert_eq!(
+            cloning_read(said),
+            Some(Failure::Exited(Exit::Code(128))),
+            "git said {said:?}"
+        );
+    }
+}
+
+#[test]
+fn a_phrase_belongs_to_the_verb_that_says_it() {
+    // `git clone` says "already exists" about its *destination directory*, and
+    // `git branch` says it about the branch. Naming the reader at the call site is
+    // what keeps the two apart: the clone lands on an exit, not on a branch.
+    assert_eq!(
+        cloning_read(
+            "fatal: destination path 'widgets' already exists and is not an empty \
+                      directory.\n"
+        ),
+        Some(Failure::Exited(Exit::Code(128)))
+    );
+}
+
 // ------------------------------------------------------------ the cache
 
 #[test]

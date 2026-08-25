@@ -205,7 +205,13 @@ pub(crate) struct BaseRepository {
     pub(crate) default_branch: RecordedDefaultBranch,
     pub(crate) last_fetched: Option<Timestamp>,
     /// The branch names this repository has workspace clones for.
-    pub(crate) worktrees: Vec<String>,
+    ///
+    /// Narrower than its neighbours on purpose: [`super::metadata`] keeps it in
+    /// step with the worktree map on every add and remove, and it is the one
+    /// field of this record a dl run that holds no repo lock can move (#400
+    /// §4). Out of reach of `flows`, so a caller with one field to change has
+    /// to say which field, and cannot carry a stale copy of this one along.
+    pub(super) worktrees: Vec<String>,
 }
 
 /// A workspace clone of one branch.
@@ -217,8 +223,13 @@ pub struct WorktreeInfo {
     #[serde(serialize_with = "as_string")]
     pub(crate) local_path: PathBuf,
     pub(crate) workspace_id: String,
-    pub(crate) created_at: Timestamp,
-    pub(crate) last_used: Timestamp,
+    /// Written by [`WorktreeInfo::new`] and by nothing else. Narrower than
+    /// their neighbours because no production caller outside this module reads
+    /// either one (#400 §4) — `dl ls` takes the last-used column off the devpod
+    /// listing, not off the record — so the day one wants them, it asks here
+    /// rather than reaching in.
+    pub(super) created_at: Timestamp,
+    pub(super) last_used: Timestamp,
     pub(crate) devpod_workspace_id: Option<String>,
 }
 
@@ -245,9 +256,12 @@ pub(crate) struct NotRebuilt {
 impl BaseRepository {
     /// A repository with the defaults `models.py` declares.
     ///
-    /// Held for the #251 §7 public-API freeze — the record `up` writes on a first
-    /// clone. Only tests build one today.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The record `up` writes on a first clone, and now the only way to build
+    /// one outside this module: `worktrees` is out of `flows`' reach (#412), so
+    /// a caller registering a repository no longer picks what its branch list
+    /// says. Both flows-layer sites used to spell the record out as a literal
+    /// and both wrote `worktrees: Vec::new()`. That is still the value; it is
+    /// this module's answer now rather than one invented at the call site.
     pub(crate) fn new(owner: &str, repo: &str, remote_url: &str, local_path: PathBuf) -> Self {
         Self {
             owner: owner.to_owned(),
