@@ -438,7 +438,7 @@ fn a_ctrl_c_that_reaches_dl_mid_session_leaves_a_throwaway_workspace_standing() 
     let ssh_started = root_path.join("ssh.started");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
-        .args(["devlaunch-main-zovomobo", "--rm"])
+        .args(["devlaunch-main-3j1t", "--rm"])
         .env_clear()
         .keeping_coverage()
         .env("PATH", format!("{root}/bin:{root}/gh-bin:/usr/bin:/bin"))
@@ -479,7 +479,7 @@ fn a_ctrl_c_that_reaches_dl_mid_session_leaves_a_throwaway_workspace_standing() 
     );
     assert!(
         root_path
-            .join("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo")
+            .join("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t")
             .exists(),
         "the clone went without a removal having run"
     );

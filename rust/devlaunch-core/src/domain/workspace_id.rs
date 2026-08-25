@@ -13,21 +13,29 @@
 //! <repo-slug>-<ref-slug>-<suffix>
 //! ```
 //!
-//! `suffix` is eight characters of hashed identity and is never truncated.
-//! `repo-slug` is the readable context and is cut to at most
+//! `suffix` is [`SUFFIX_LENGTH`] characters of hashed identity and is never
+//! truncated. `repo-slug` is the readable context and is cut to at most
 //! [`REPO_SLUG_LENGTH`] characters, never shorter. `ref-slug` absorbs all
 //! remaining truncation.
 //!
 //! **What truncation does and does not guarantee.** Only the slugs are ever
 //! shortened, and the suffix is hashed over the full triple before any of that,
 //! so truncating the readable part adds no collisions of its own: two triples
-//! collide only when their suffixes collide. That is a birthday bound, not a
-//! guarantee: distinct triples share an id with probability 2**-[`SUFFIX_BITS`]
-//! per pair, so a large enough corpus will eventually produce one. At the earlier
-//! 18-bit width a real pair did — `release/9999999999999999999999999176` and
-//! `...234` in one repo — which is why the width is now 24. The property worth
-//! relying on is the *independence*: truncation policy is a readability choice
-//! with no effect on the collision rate.
+//! collide only when their suffixes collide *and* their readable halves cut to
+//! the same string. That is a birthday bound, not a guarantee: a pair shares a
+//! suffix with probability 1/[`SUFFIX_SPACE`], so a large enough corpus will
+//! eventually produce one. At an earlier 18-bit width a real pair did —
+//! `release/9999999999999999999999999176` and `...234` in one repo. The property
+//! worth relying on is the *independence*: truncation policy is a readability
+//! choice with no effect on the collision rate.
+//!
+//! **A collision is not caught today**, which is why the width is the whole of
+//! the defence. Sharing an id means sharing one clone directory and one devpod
+//! workspace, so the loser opens the winner's checkout with nothing said.
+//! blooop/devlaunch#438 is the guard for that, and it is cheap because
+//! [`WorktreeInfo`](crate::domain::model::WorktreeInfo) already stores the triple
+//! beside the id derived from it. See [`SUFFIX_LENGTH`] for what the width is
+//! chosen against in the meantime.
 //!
 //! [`source_workspace_id`] covers git sources that name no ref (plain URL
 //! specs), which cannot form a triple. Note that path specs (`dl ./some/dir`) do
@@ -79,12 +87,19 @@ use std::fmt;
 /// suffixes onto that name against a 64-byte limit (kinisi-robotics/kinisi_ros#9766
 /// already sat at 62/64 with a 38-char id). Widening to 47 spent nine characters of
 /// that reserve on legibility — branch names that used to lose their tail now keep
-/// it. That reserve is no longer the tight one: the hostname is the id's readable
-/// half ([`hostname_of`]), so what a downstream caller builds on tops out at
-/// TARGET_LENGTH - SUFFIX_LENGTH - 1 = 38 characters and leaves ~26. What still
-/// holds the cap here is devpod's 48, which the id itself is measured against.
-/// Nothing breaks at any value up to 48, and the id alone is a legal hostname at 47
-/// for the caller that passes one whole.
+/// it.
+///
+/// **That reserve is the tight one again, and deliberately so.** The container's
+/// hostname used to be the id's readable half, which topped a downstream caller out
+/// at 38 and left about 26 bytes of the 64. The prompt, the tab and the `dl --ls`
+/// row are one string now, the whole id, so what downstream builds on is 47 and the
+/// reserve is 17. #9766's stack does not fit in 17. Nothing here can detect that:
+/// the limit belongs to a consumer this crate has never heard of, and the symptom is
+/// that consumer's rather than a launch that fails. It is written down because the
+/// next person to widen this constant should know the slack was already spent once.
+///
+/// What holds the cap here is devpod's 48, which the id itself is measured against.
+/// Nothing breaks at any value up to 48, and the id is a legal hostname at 47.
 pub(crate) const TARGET_LENGTH: usize = 47;
 
 /// The repo slug is cut to this length when the id would otherwise overflow, and
@@ -92,28 +107,43 @@ pub(crate) const TARGET_LENGTH: usize = 47;
 /// it is safe, but trimming it to nothing would make `devpod list` unreadable.
 pub(crate) const REPO_SLUG_LENGTH: usize = 20;
 
-// 16 consonants x 4 vowels = 64 combinations = exactly 6 bits per syllable, so
-// four syllables encode 24 bits of the digest in 8 pronounceable characters
-// ("zovomobo", "hesirora", "lenevere") with no wordlist to keep in sync across
-// languages.
-//
-// This was 3 syllables / 18 bits when the scheme was first decided. 18 bits put
-// a birthday collision inside a single repo's plausible branch count — 500
-// branches already produced one in test — so it was widened by one syllable. The
-// extra two characters come out of the readable budget; the cap did not move
-// to pay for them.
-const CONSONANTS: &[u8; 16] = b"bdfghjklmnprstvz";
-const VOWELS: &[u8; 4] = b"aeio";
-const SYLLABLES: usize = 4;
-
-/// Bits of the digest the suffix encodes (6 per syllable).
+/// The alphabet the suffix is spelled in: every character a DNS label allows
+/// except `-`, which is the separator the id is joined on.
 ///
-/// Only this module's tests read it; the encoder walks the syllables instead.
+/// Base 36 is 5.17 bits per character. The scheme this replaced spelled the suffix
+/// as consonant-vowel syllables drawn from a 16x4 table, which is 6 bits per *two*
+/// characters, so 3.0 per character: it spent 42% of every character on being
+/// pronounceable. Nothing reads a suffix aloud, and the characters it gives back go
+/// to the ref slug, which people do read.
+const SUFFIX_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+/// Distinct suffixes: [`SUFFIX_ALPHABET`] to the [`SUFFIX_LENGTH`].
+///
+/// Only this module's tests and its prose read it; the encoder divides instead.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const SUFFIX_BITS: usize = SYLLABLES * 6;
+pub(crate) const SUFFIX_SPACE: u64 = 36u64.pow(SUFFIX_LENGTH as u32);
 
 /// Length of the identity-bearing suffix, in characters.
-pub(crate) const SUFFIX_LENGTH: usize = SYLLABLES * 2;
+///
+/// 4 characters is 20.7 bits, against the 24 the syllable scheme spent 8 characters
+/// on and the 18 that demonstrably failed.
+///
+/// **The width is chosen against the population that actually contends for a
+/// suffix, which is not the number of workspaces on the machine.** Two triples can
+/// only collide when their readable halves truncate to the same string as well, so
+/// the contending set is one repository's near-identical long refs:
+/// `release/999…176` beside `release/999…234`, or a wall of dependabot branches. At
+/// ten of those the collision probability is 0.003%, one in thirty-seven thousand.
+/// The 500 that broke 18 bits would be 7% here, so this is a decision about a
+/// workload rather than a constant to move on taste. A machine that grows corpora
+/// of that shape wants 5 characters, which is 25.8 bits and still narrower than
+/// what it replaced.
+///
+/// **The width is the whole of the defence, which is the part worth fixing.** A
+/// collision is not detected, so the loser of one silently opens the winner's
+/// checkout. blooop/devlaunch#438 is the guard, and it costs nothing to hold: the
+/// triple is already stored beside the id it derived.
+pub(crate) const SUFFIX_LENGTH: usize = 4;
 
 /// Domain tag for ref-less sources, kept out of the triple's hash input so a URL
 /// spec can never derive the same suffix as an `(owner, repo, ref)` workspace.
@@ -213,7 +243,7 @@ pub(crate) fn slug(text: &str) -> String {
 /// is case-insensitive and so are GitHub owner and repo names, so two spellings
 /// of one URL are one workspace.
 pub(crate) fn source_workspace_id(source: &str) -> String {
-    let suffix = syllable_suffix(&[SOURCE_KIND, &source.to_lowercase()]);
+    let suffix = hashed_suffix(&[SOURCE_KIND, &source.to_lowercase()]);
     let room = TARGET_LENGTH.saturating_sub(suffix.len() + 1);
     join(&[head(&slug(source), room).trim_matches('-'), &suffix])
 }
@@ -264,7 +294,7 @@ impl WorkspaceId {
         &self.git_ref
     }
 
-    /// The eight-character identity suffix. Never truncated.
+    /// The [`SUFFIX_LENGTH`]-character identity suffix. Never truncated.
     ///
     /// Owner and repo are lowercased before hashing because GitHub treats them
     /// case-insensitively: `NVIDIA/cuda-samples` and `nvidia/cuda-samples` are
@@ -275,7 +305,7 @@ impl WorkspaceId {
     /// Lowercasing does not move ids for input that was already lowercase, which
     /// is every id this project has published.
     pub(crate) fn suffix(&self) -> String {
-        syllable_suffix(&[
+        hashed_suffix(&[
             &self.owner.to_lowercase(),
             &self.repo.to_lowercase(),
             &self.git_ref,
@@ -286,10 +316,10 @@ impl WorkspaceId {
     pub fn value(&self) -> String {
         let suffix = self.suffix();
         let mut repo_part = slug(&self.repo);
-        // Cut the repo slug only when the id would otherwise overflow. Capping it
-        // at REPO_SLUG_LENGTH leaves at least TARGET_LENGTH - 20 - 1 - 1 - 8 = 17
-        // characters for the ref, so the ref budget can never go non-positive —
-        // the hole that let a 47-char repo name skip truncation altogether.
+        // Cut the repo slug only when the id would otherwise overflow. Whenever the
+        // cut does fire, the ref is left TARGET_LENGTH - 20 - 1 - 1 - 4 = 21
+        // characters, so it can never come out of that branch with nothing to spend
+        // — the hole that let a 47-char repo name skip truncation altogether.
         let untruncated = join(&[&repo_part, &fit_ref(&self.git_ref, TARGET_LENGTH), &suffix]);
         if untruncated.len() > TARGET_LENGTH {
             repo_part = head(&repo_part, REPO_SLUG_LENGTH)
@@ -297,6 +327,11 @@ impl WorkspaceId {
                 .to_string();
         }
         let separators = if repo_part.is_empty() { 1 } else { 2 };
+        // Saturating because the *other* branch can reach zero, and reaches it
+        // legitimately: a repo slug of 42 with a ref that slugs to nothing fits
+        // inside the budget untruncated, so the cut never fires and the arithmetic
+        // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
+        // the empty string, `join` drops it, and the id lands exactly on the cap.
         let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
         join(&[&repo_part, &fit_ref(&self.git_ref, room), &suffix])
     }
@@ -308,27 +343,33 @@ impl fmt::Display for WorkspaceId {
     }
 }
 
-/// Eight characters of hashed identity for NUL-delimited *fields*.
+/// [`SUFFIX_LENGTH`] characters of hashed identity for NUL-delimited *fields*.
 ///
 /// The digest is taken over the fields joined by NUL, with no other
 /// normalization applied here. The delimiter is what keeps field boundaries, so
 /// `(a, bc)` stays distinct from `(ab, c)`; callers decide what to normalize
 /// before calling.
 ///
-/// This algorithm is frozen. Every workspace directory and devpod workspace on
-/// disk is named by its output, so the tables, the syllable count, the digest,
-/// the byte slice and the delimiter are all pinned by golden vectors taken from
-/// the Python implementation.
-fn syllable_suffix(fields: &[&str]) -> String {
+/// This algorithm is frozen, and the freeze is enforced by the golden vectors
+/// rather than merely asked for: every workspace directory and devpod workspace on
+/// disk is named by this output, so the alphabet, the length, the digest, the byte
+/// slice and the delimiter are all pinned. Moving any of them moves every id, which
+/// is a schema-version bump and a run of [`migration`](crate::flows::migration), not
+/// an edit.
+///
+/// The bias from folding 64 bits into [`SUFFIX_SPACE`] is real and ignorable: the
+/// space divides 2^64 about 1.1e13 times, so a favoured residue is favoured by one
+/// part in 1e13, some twelve orders of magnitude under the birthday rate the width
+/// is chosen against.
+fn hashed_suffix(fields: &[&str]) -> String {
     let digest = sha256(fields.join("\0").as_bytes());
     let mut head = [0u8; 8];
     head.copy_from_slice(&digest[..8]);
     let mut bits = u64::from_be_bytes(head);
     let mut out = String::with_capacity(SUFFIX_LENGTH);
-    for _ in 0..SYLLABLES {
-        out.push(CONSONANTS[((bits >> 2) & 15) as usize] as char);
-        out.push(VOWELS[(bits & 3) as usize] as char);
-        bits >>= 6;
+    for _ in 0..SUFFIX_LENGTH {
+        out.push(SUFFIX_ALPHABET[(bits % 36) as usize] as char);
+        bits /= 36;
     }
     out
 }
@@ -374,135 +415,6 @@ fn fit_ref(git_ref: &str, room: usize) -> String {
         .to_string()
 }
 
-/// The `<ref-slug>` an id carries, for a workspace derived for *repo*.
-///
-/// The display-side inverse of [`WorkspaceId::value`]'s readable half. It lives
-/// here because that is where the halves were joined: a caller that spelled out
-/// the suffix width or the repo cap for itself would be a second derivation to
-/// disagree with the first, which is defect #4 of devlaunch#55 — one rule, two
-/// derivations — in the direction nothing has written yet.
-///
-/// **The repo has to come from outside, because the id does not say where its own
-/// first boundary is.** Both slugs may hold dashes, so `devlaunch-main-zovomobo`
-/// reads equally well as repo `devlaunch` with ref `main` and as repo
-/// `devlaunch-main` with no ref at all. The caller that has a repo to pass is the
-/// one reading dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>`, which
-/// names it.
-///
-/// `None` for anything that does not read as one, and every arm of that is a
-/// workspace a caller should show whole instead: an id with no syllable suffix on
-/// it, a repo whose slug is not the prefix under either spelling, nothing left
-/// between the two, or an id that *both* spellings explain and disagree about. The
-/// suffix check is what makes this answer `None` for a name dl did not derive rather
-/// than cutting eight characters off the end of it.
-///
-/// **What comes back is a slug, and a slug is not a ref.** [`slug`] collapses `/`
-/// and `-` alike, and [`fit_ref`] drops whole segments before it truncates
-/// characters — so `feature/auth` and `feature-auth` both read back as
-/// `feature-auth`, and a long ref reads back short. Nothing may hand the result to
-/// [`WorkspaceId::new`] and expect the workspace it came from: it is a label to
-/// read, and the id remains the only thing that addresses anything.
-pub(crate) fn ref_slug_of<'a>(id: &'a str, repo: &str) -> Option<&'a str> {
-    let body = without_suffix(id)?;
-    let repo_slug = slug(repo);
-    if repo_slug.is_empty() {
-        // `value` joins with the empty part dropped, so an id for a repo whose
-        // slug is empty carries no repo part and no separator for one.
-        return non_empty(body);
-    }
-    // Both spellings `value` can have used, because it cuts the repo slug to
-    // REPO_SLUG_LENGTH only when the id would otherwise overflow.
-    let cut = head(&repo_slug, REPO_SLUG_LENGTH).trim_matches('-');
-    match (after_part(body, &repo_slug), after_part(body, cut)) {
-        // Both explain the id and they disagree about where the boundary is, so
-        // nothing here knows which spelling produced it: it takes a repo slug over
-        // the cap with a dash at exactly the cap, and a ref beginning with the
-        // segment after it. Answering one of them is how a row shows a branch that
-        // is not the branch, so it answers neither and the caller draws the id
-        // whole.
-        (Some(under), Some(over)) if under != over => None,
-        (Some(rest), _) | (None, Some(rest)) => non_empty(rest),
-        (None, None) => None,
-    }
-}
-
-/// The hostname a container launched under *id* should carry: the id's readable
-/// half, without the identity suffix.
-///
-/// The other display-side inverse of [`WorkspaceId::value`], and the shallower of
-/// the two — [`ref_slug_of`] has to find the boundary *between* the two slugs and
-/// needs a repo passed in to do it, where this one only has to find the end of the
-/// readable part, which the suffix's fixed width and alphabet already say. So it
-/// needs nothing but the id and cannot answer the wrong half.
-///
-/// **The suffix is dropped because a hostname is not an address.** It is in the id
-/// to keep the id injective — one devpod workspace and one clone directory per
-/// `(owner, repo, ref)` — and nothing addresses a container by the name in its UTS
-/// namespace, which is this. What that costs is real and small: two owners of one
-/// repo on one branch, and `feature/auth` beside `feature-auth`, now render the
-/// same prompt. The tab is what tells those apart — it carries the whole spec, see
-/// [`setup_stages`](crate::flows::provision) — and a prompt long enough to be
-/// unique was not thereby legible.
-///
-/// *id* whole for anything that does not read as an id this module derived: a bare
-/// devpod name (`dl myworkspace`), and an id whose readable half is empty because
-/// its source slugged to nothing. The fallback is the id rather than a refusal
-/// because every caller wants a hostname and every id is already a legal one.
-///
-/// **The suffix check is a syllable test and not proof of derivation.** Four
-/// consonant-vowel pairs is a shape English words have too, so a hand-named devpod
-/// workspace ending in one — `foo-motorola`, `release-bananana` — loses that word
-/// from its prompt. Accepted rather than fixed: what a false positive costs is a
-/// shorter prompt on a workspace dl did not name, and the fix is to carry the
-/// derived name down from the launch through a trait every caller implements.
-/// [`ref_slug_of`] takes the same bet for a worse prize, since a false positive
-/// there prints a branch label that is not the branch.
-pub(crate) fn hostname_of(id: &str) -> &str {
-    without_suffix(id).and_then(non_empty).unwrap_or(id)
-}
-
-/// *body* with `<part>-` taken off the front, or `None` if it does not start that
-/// way.
-///
-/// The separator is required, which is what keeps a repo slug that is merely a
-/// *prefix* of a longer one from matching: `dev` does not strip `devlaunch-main`.
-fn after_part<'a>(body: &'a str, part: &str) -> Option<&'a str> {
-    body.strip_prefix(part)?.strip_prefix('-')
-}
-
-/// An id with its identity suffix and the separator in front of it removed.
-///
-/// `None` unless the last [`SUFFIX_LENGTH`] characters really are a syllable
-/// suffix and a `-` precedes them. Checking the syllables rather than just
-/// counting characters is what makes this a parse: `some-hand-made-ws` is not an
-/// id this module derived, and cutting its last eight characters off would answer
-/// a confident lie where `None` is the truth.
-fn without_suffix(id: &str) -> Option<&str> {
-    let cut = id.len().checked_sub(SUFFIX_LENGTH)?;
-    if !is_syllables(id.get(cut..)?) {
-        return None;
-    }
-    id.get(..cut)?.strip_suffix('-')
-}
-
-/// Whether *text* is exactly what [`syllable_suffix`] emits: [`SYLLABLES`]
-/// consonant-vowel pairs drawn from the two tables.
-///
-/// Byte-wise, which is sound because both tables are ASCII: a non-ASCII character
-/// cannot be in either, so it fails the test rather than splitting a character.
-fn is_syllables(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes.len() == SUFFIX_LENGTH
-        && bytes
-            .chunks(2)
-            .all(|pair| CONSONANTS.contains(&pair[0]) && VOWELS.contains(&pair[1]))
-}
-
-/// *text* unless it is empty, so "nothing was left" is one answer and not two.
-fn non_empty(text: &str) -> Option<&str> {
-    (!text.is_empty()).then_some(text)
-}
-
 /// SHA-256 (FIPS 180-4), because the frozen suffix is defined by this digest.
 /// The `sha2` crate rather than a hand-rolled compression function: the golden
 /// ids pin the output either way, and crypto primitives are the one place
@@ -517,357 +429,287 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// (owner, repo, ref) -> (suffix, value), straight out of the Python
-    /// implementation. FROZEN: every workspace directory and devpod workspace
-    /// on disk is named by this output.
+    /// (owner, repo, ref) -> (suffix, value). FROZEN: every workspace directory
+    /// and devpod workspace on disk is named by this output.
+    ///
+    /// **What these pin changed once, and it is worth saying which.** They were
+    /// taken from the Python implementation and defended parity with it. That port
+    /// is finished and the Python is gone, so what they defend now is only that
+    /// **these ids do not move again** — and they have moved exactly once since,
+    /// when the suffix went from eight syllable characters to four of base 36
+    /// ([`SUFFIX_LENGTH`]). Regenerating them is therefore not a way to make a
+    /// failing test pass. It is a schema-version bump plus a run of
+    /// [`migration`](crate::flows::migration), which renames every clone directory
+    /// on disk so uncommitted work survives and reports the devpod workspaces it
+    /// orphans. A diff here with neither of those is a bug that costs someone their
+    /// containers.
     const GOLDEN_TRIPLES: &[(&str, &str, &str, &str, &str)] = &[
-        (
-            "blooop",
-            "devlaunch",
-            "main",
-            "zovomobo",
-            "devlaunch-main-zovomobo",
-        ),
-        (
-            "blooop",
-            "wayfinder",
-            "main",
-            "hesirora",
-            "wayfinder-main-hesirora",
-        ),
+        ("blooop", "devlaunch", "main", "3j1t", "devlaunch-main-3j1t"),
+        ("blooop", "wayfinder", "main", "tdmx", "wayfinder-main-tdmx"),
         (
             "blooop",
             "devlaunch",
             "feature/auth",
-            "poliseno",
-            "devlaunch-feature-auth-poliseno",
+            "np10",
+            "devlaunch-feature-auth-np10",
         ),
         (
             "blooop",
             "devlaunch",
             "feature-auth",
-            "nesatabe",
-            "devlaunch-feature-auth-nesatabe",
+            "lsi0",
+            "devlaunch-feature-auth-lsi0",
         ),
         (
             "blooop",
             "devlaunch",
             "feature.auth",
-            "bahahefo",
-            "devlaunch-feature-auth-bahahefo",
+            "w88t",
+            "devlaunch-feature-auth-w88t",
         ),
         (
             "blooop",
             "devlaunch",
             "feature_auth",
-            "vakotite",
-            "devlaunch-feature-auth-vakotite",
+            "4l43",
+            "devlaunch-feature-auth-4l43",
         ),
         (
             "blooop",
             "devlaunch",
             "featureauth",
-            "mepediro",
-            "devlaunch-featureauth-mepediro",
+            "lzmk",
+            "devlaunch-featureauth-lzmk",
         ),
-        (
-            "blooop",
-            "devlaunch",
-            "Main",
-            "zogizozi",
-            "devlaunch-main-zogizozi",
-        ),
+        ("blooop", "devlaunch", "Main", "jzcc", "devlaunch-main-jzcc"),
         (
             "NVIDIA",
             "cuda-samples",
             "main",
-            "libemaka",
-            "cuda-samples-main-libemaka",
+            "mut5",
+            "cuda-samples-main-mut5",
         ),
         (
             "nvidia",
             "cuda-samples",
             "main",
-            "libemaka",
-            "cuda-samples-main-libemaka",
+            "mut5",
+            "cuda-samples-main-mut5",
         ),
-        (
-            "BlOoOp",
-            "dEvLaUnCh",
-            "main",
-            "zovomobo",
-            "devlaunch-main-zovomobo",
-        ),
+        ("BlOoOp", "dEvLaUnCh", "main", "3j1t", "devlaunch-main-3j1t"),
         (
             "owner",
             "My_Repo.git",
             "Feature/MyBranch",
-            "rimivese",
-            "my-repo-git-feature-mybranch-rimivese",
+            "qlim",
+            "my-repo-git-feature-mybranch-qlim",
         ),
         (
             "blooop",
             "devlaunch",
             "dependabot/github_actions/codecov/codecov-action-6",
-            "sifivasa",
-            "devlaunch-dependabot-codecov-action-6-sifivasa",
+            "amlt",
+            "devlaunch-dependabot-codecov-action-6-amlt",
         ),
         (
             "blooop",
             "devlaunch",
             "dependabot/github_actions/blooop/prek-action-2",
-            "zakogozo",
-            "devlaunch-dependabot-prek-action-2-zakogozo",
+            "wr14",
+            "devlaunch-dependabot-blooop-prek-action-2-wr14",
         ),
         (
             "blooop",
             "python_template",
             "dependabot/pip/lib/dependencies-1",
-            "hinarami",
-            "python-template-dependabot-dependencie-hinarami",
+            "ellr",
+            "python-template-dependabot-dependencies-1-ellr",
         ),
         (
             "blooop",
             "lifetime_foc_rig",
             "dependabot/github_actions/codecov/codecov-action-6",
-            "matagere",
-            "lifetime-foc-rig-dependabot-codecov-ac-matagere",
+            "go3m",
+            "lifetime-foc-rig-dependabot-codecov-action-go3m",
         ),
         (
             "kinisi-robotics",
             "kinisi_ros",
             "ags-devcontainer-tooling-support",
-            "lenevere",
-            "kinisi-ros-ags-devcontainer-tooling-su-lenevere",
+            "17uu",
+            "kinisi-ros-ags-devcontainer-tooling-suppor-17uu",
         ),
         (
             "blooop",
             "devlaunch",
             "fix/gh-auth-in-devcontainer",
-            "pedoveho",
-            "devlaunch-fix-gh-auth-in-devcontainer-pedoveho",
+            "tz62",
+            "devlaunch-fix-gh-auth-in-devcontainer-tz62",
         ),
-        (
-            "blooop",
-            "test_renv",
-            "nb4",
-            "polenita",
-            "test-renv-nb4-polenita",
-        ),
+        ("blooop", "test_renv", "nb4", "n95z", "test-renv-nb4-n95z"),
         (
             "blooop",
             "dl",
             "a/bbbbbbbb/cccccccc/dddddddd/zzz",
-            "jobiriti",
-            "dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-jobiriti",
+            "31vu",
+            "dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-31vu",
         ),
         (
             "blooop",
             "dl",
             "a/bbbbbbbbbbbb/cccccccccccc/dddddddddddd/zzz",
-            "gigisini",
-            "dl-a-cccccccccccc-dddddddddddd-zzz-gigisini",
+            "6igc",
+            "dl-a-cccccccccccc-dddddddddddd-zzz-6igc",
         ),
         (
             "blooop",
             "dl",
             "aa/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/zz",
-            "degosare",
-            "dl-aa-zz-degosare",
+            "tiiw",
+            "dl-aa-zz-tiiw",
         ),
         (
             "blooop",
             "devlaunch",
             "a//b///c/d",
-            "hagoloke",
-            "devlaunch-a-b-c-d-hagoloke",
+            "8qqi",
+            "devlaunch-a-b-c-d-8qqi",
         ),
         (
             "blooop",
             "devlaunch",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "zedabezi",
-            "devlaunch-aaaaaaaaaaaaaaaaaaaaaaaaaaaa-zedabezi",
+            "pljo",
+            "devlaunch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pljo",
         ),
         (
             "owner",
             "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
             "main",
-            "rerajezi",
-            "rrrrrrrrrrrrrrrrrrrr-main-rerajezi",
+            "134a",
+            "rrrrrrrrrrrrrrrrrrrr-main-134a",
         ),
         (
             "owner",
             "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
             "a/very/long/branch/name/that/eats/the/budget",
-            "bijizoli",
-            "rrrrrrrrrrrrrrrrrrrr-a-eats-the-budget-bijizoli",
+            "ulfi",
+            "rrrrrrrrrrrrrrrrrrrr-a-eats-the-budget-ulfi",
         ),
         (
             "owner",
             "rrrrrrrrrrrrrrrrrrrr",
             "a/very/long/branch/name/that/eats/the/budget",
-            "tafifipo",
-            "rrrrrrrrrrrrrrrrrrrr-a-eats-the-budget-tafifipo",
+            "k4h4",
+            "rrrrrrrrrrrrrrrrrrrr-a-eats-the-budget-k4h4",
         ),
         (
             "owner",
             "repo",
             "release/9999999999999999999999999176",
-            "sehirani",
-            "repo-release-9999999999999999999999999-sehirani",
+            "t91t",
+            "repo-release-9999999999999999999999999176-t91t",
         ),
         (
             "owner",
             "repo",
             "release/9999999999999999999999999234",
-            "zivalero",
-            "repo-release-9999999999999999999999999-zivalero",
+            "me30",
+            "repo-release-9999999999999999999999999234-me30",
         ),
-        ("a", "bc", "main", "bajovafa", "bc-main-bajovafa"),
-        ("ab", "c", "main", "mofijihe", "c-main-mofijihe"),
+        ("a", "bc", "main", "0kfc", "bc-main-0kfc"),
+        ("ab", "c", "main", "rikf", "c-main-rikf"),
         (
             "anyone",
             "github.com",
             "owner/repo",
-            "vogasono",
-            "github-com-owner-repo-vogasono",
+            "bwb8",
+            "github-com-owner-repo-bwb8",
         ),
         (
             "blooop",
             "a-repo-name-that-is-long",
             "feature/shared-prefix-1",
-            "lapajiha",
-            "a-repo-name-that-is-feature-shared-pre-lapajiha",
+            "w7wc",
+            "a-repo-name-that-is-feature-shared-prefix-w7wc",
         ),
         (
             "blooop",
             "a-repo-name-that-is-long",
             "feature/shared-prefix-2",
-            "sopalopi",
-            "a-repo-name-that-is-feature-shared-pre-sopalopi",
+            "b611",
+            "a-repo-name-that-is-feature-shared-prefix-b611",
         ),
-        (
-            "owner",
-            "repo",
-            "v1.2.3",
-            "jozalali",
-            "repo-v1-2-3-jozalali",
-        ),
-        (
-            "owner",
-            "repo",
-            "release_1",
-            "kihetira",
-            "repo-release-1-kihetira",
-        ),
+        ("owner", "repo", "v1.2.3", "nw8g", "repo-v1-2-3-nw8g"),
+        ("owner", "repo", "release_1", "ejia", "repo-release-1-ejia"),
         (
             "owner",
             "r",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "sigivapa",
-            "r-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-sigivapa",
+            "6rmm",
+            "r-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-6rmm",
         ),
         (
             "owner",
             "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "bagakino",
-            "rrrrrrrrrrrrrrrrrrrr-bbbbbbbbbbbbbbbbb-bagakino",
+            "kjce",
+            "rrrrrrrrrrrrrrrrrrrr-bbbbbbbbbbbbbbbbbbbbb-kjce",
         ),
-        (
-            "owner",
-            "repo",
-            "caf\u{e9}",
-            "vodojage",
-            "repo-caf-vodojage",
-        ),
-        (
-            "owner",
-            "repo",
-            "\u{5206}\u{652f}",
-            "gafafade",
-            "repo-gafafade",
-        ),
-        (
-            "owner",
-            "repo",
-            "\u{432}\u{435}\u{442}\u{43a}\u{430}",
-            "dogedife",
-            "repo-dogedife",
-        ),
-        (
-            "owner",
-            "repo",
-            "\u{661}\u{662}\u{663}",
-            "rolofito",
-            "repo-rolofito",
-        ),
-        ("owner", "KKK", "main", "notitogi", "kkk-main-notitogi"),
-        ("owner", "repo", "x\n", "vefidaze", "repo-x-vefidaze"),
-        (
-            "owner",
-            "repo",
-            "\u{130}stanbul",
-            "zinimili",
-            "repo-i-stanbul-zinimili",
-        ),
-        ("owner", "\u{212a}", "main", "javefiji", "k-main-javefiji"),
+        ("owner", "repo", "café", "nhwi", "repo-caf-nhwi"),
+        ("owner", "repo", "分支", "g78q", "repo-g78q"),
+        ("owner", "repo", "ветка", "j5k1", "repo-j5k1"),
+        ("owner", "repo", "١٢٣", "jr9e", "repo-jr9e"),
+        ("owner", "KKK", "main", "3t1u", "kkk-main-3t1u"),
+        ("owner", "repo", "x\n", "5pb6", "repo-x-5pb6"),
+        ("owner", "repo", "İstanbul", "axd9", "repo-i-stanbul-axd9"),
+        ("owner", "K", "main", "onou", "k-main-onou"),
     ];
 
     /// source -> id, for git sources that name no ref.
     const GOLDEN_SOURCES: &[(&str, &str)] = &[
-        ("github.com/owner/repo", "github-com-owner-repo-lokolede"),
+        ("github.com/owner/repo", "github-com-owner-repo-jbsm"),
         (
             "github.com/loft-sh/devpod",
-            "github-com-loft-sh-devpod-vatomiha",
+            "github-com-loft-sh-devpod-oowa",
         ),
-        (
-            "gitlab.com/group/my_repo",
-            "gitlab-com-group-my-repo-gaditizi",
-        ),
-        (
-            "gitlab.com/group/my-repo",
-            "gitlab-com-group-my-repo-ledorapa",
-        ),
-        (
-            "gitlab.com/group/my.repo",
-            "gitlab-com-group-my-repo-napasava",
-        ),
+        ("gitlab.com/group/my_repo", "gitlab-com-group-my-repo-c8uq"),
+        ("gitlab.com/group/my-repo", "gitlab-com-group-my-repo-1n65"),
+        ("gitlab.com/group/my.repo", "gitlab-com-group-my-repo-wl1k"),
         (
             "github.com/Blooop/DevLaunch",
-            "github-com-blooop-devlaunch-lakatoje",
+            "github-com-blooop-devlaunch-swgi",
         ),
         (
             "github.com/blooop/devlaunch",
-            "github-com-blooop-devlaunch-lakatoje",
+            "github-com-blooop-devlaunch-swgi",
         ),
         (
             "github.com/oooooooooooooooooooooooooooooooooooooooo/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
-            "github-com-ooooooooooooooooooooooooooo-rasijome",
+            "github-com-ooooooooooooooooooooooooooooooo-8hgl",
         ),
         (
             "github.com/oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
-            "github-com-ooooooooooooooooooooooooooo-bepolero",
+            "github-com-ooooooooooooooooooooooooooooooo-dduk",
         ),
-        ("github.com/o/r", "github-com-o-r-deparori"),
-        ("o", "o-rotebife"),
+        ("github.com/o/r", "github-com-o-r-hlw0"),
+        ("o", "o-7u7f"),
         (
             "github.com/owner/repo.git",
-            "github-com-owner-repo-git-tefakojo",
+            "github-com-owner-repo-git-h9if",
         ),
         (
             "git@github.com:owner/repo.git",
-            "git-github-com-owner-repo-git-vijisada",
+            "git-github-com-owner-repo-git-awz4",
         ),
         (
             "GIT@GitHub.COM:Owner/Repo",
-            "git-github-com-owner-repo-natapake",
+            "git-github-com-owner-repo-8jb3",
         ),
-        ("github.com/owner/repo-", "github-com-owner-repo-fesihali"),
-        ("-----", "fapijige"),
-        ("", "serotizo"),
-        ("\u{5206}\u{652f}", "gafalofi"),
+        ("github.com/owner/repo-", "github-com-owner-repo-l97z"),
+        ("-----", "4pwo"),
+        ("", "lnye"),
+        ("分支", "8pgu"),
     ];
 
     /// text -> slug.
@@ -957,7 +799,7 @@ mod tests {
     ];
 
     #[test]
-    fn golden_triples_reproduce_the_python_derivation() {
+    fn golden_triples_do_not_move() {
         for &(owner, repo, git_ref, suffix, value) in GOLDEN_TRIPLES {
             let id = WorkspaceId::new(owner, repo, git_ref)
                 .unwrap_or_else(|_| panic!("{owner}/{repo}@{git_ref:?} must parse"));
@@ -967,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn golden_sources_reproduce_the_python_derivation() {
+    fn golden_sources_do_not_move() {
         for &(source, expected) in GOLDEN_SOURCES {
             assert_eq!(source_workspace_id(source), expected, "source {source:?}");
         }
@@ -1044,23 +886,20 @@ mod tests {
     // ---- the suffix -------------------------------------------------------
 
     #[test]
-    fn the_suffix_is_four_syllables() {
-        assert_eq!(SUFFIX_LENGTH, 8);
-        assert_eq!(SUFFIX_BITS, 24);
-        assert_eq!(id("blooop", "devlaunch", "main").suffix().len(), 8);
+    fn the_suffix_is_four_base36_characters() {
+        assert_eq!(SUFFIX_LENGTH, 4);
+        assert_eq!(SUFFIX_SPACE, 1_679_616);
+        assert_eq!(id("blooop", "devlaunch", "main").suffix().len(), 4);
     }
 
     #[test]
-    fn the_suffix_alternates_consonant_and_vowel() {
+    fn the_suffix_is_drawn_from_the_base36_alphabet() {
+        // Every character a DNS label allows but `-`, which is the separator the id
+        // is joined on -- so a suffix can never be read as two parts.
         let suffix = id("blooop", "devlaunch", "main").suffix();
         assert_eq!(suffix.len(), SUFFIX_LENGTH);
-        for (i, ch) in suffix.chars().enumerate() {
-            let table = if i % 2 == 0 {
-                "bdfghjklmnprstvz"
-            } else {
-                "aeio"
-            };
-            assert!(table.contains(ch), "{ch} at {i}");
+        for ch in suffix.chars() {
+            assert!(ch.is_ascii_lowercase() || ch.is_ascii_digit(), "{ch}");
         }
     }
 
@@ -1111,7 +950,7 @@ mod tests {
 
     #[test]
     fn lowercase_input_is_unaffected_by_case_folding() {
-        assert_eq!(id("blooop", "devlaunch", "main").suffix(), "zovomobo");
+        assert_eq!(id("blooop", "devlaunch", "main").suffix(), "3j1t");
     }
 
     #[test]
@@ -1394,7 +1233,7 @@ mod tests {
     }
 
     /// The repo-slug floor cannot win against the total budget: the floor, the
-    /// suffix and the two dashes come to 30, so `fit_ref` is left seventeen
+    /// suffix and the two dashes come to 26, so `fit_ref` is left twenty-one
     /// characters to land in and the worst case lands *on* the cap, not past it.
     #[test]
     fn the_repo_slug_floor_still_leaves_the_ref_room() {
@@ -1403,9 +1242,10 @@ mod tests {
         // from the constants -- deriving it from the same expression asserts
         // nothing -- so it moves by hand when the budget does, and widening the
         // budget has to say so here instead of being absorbed in silence. 47 - 20
-        // - 8 - 2; it read 8 when the budget was 38.
+        // - 4 - 2; it read 17 at an eight-character suffix, and 8 when the budget
+        // was 38.
         let room = TARGET_LENGTH.saturating_sub(REPO_SLUG_LENGTH + SUFFIX_LENGTH + 2);
-        assert_eq!(room, 17);
+        assert_eq!(room, 21);
         let parsed = id("owner", &"r".repeat(47), &"b".repeat(80));
         assert_eq!(
             parsed.value(),
@@ -1417,6 +1257,39 @@ mod tests {
             )
         );
         assert_eq!(parsed.value().len(), TARGET_LENGTH);
+    }
+
+    /// The one input that reaches `value`'s `saturating_sub` with something to
+    /// saturate, so the saturation is pinned as behaviour rather than left looking
+    /// like defensive decoration.
+    ///
+    /// The repo-slug cap fires only when the id would overflow, and this one does
+    /// not: 42 characters of repo, a ref that slugs to nothing, one dash and the
+    /// suffix come to exactly the budget. So the cut is skipped, and the ref budget
+    /// computed after it asks for -1. A plain subtraction panics in debug and wraps
+    /// to `usize::MAX` in release, which `fit_ref` would answer with the whole ref.
+    #[test]
+    fn a_repo_that_fills_the_budget_on_its_own_leaves_the_ref_no_room_and_not_a_wrap() {
+        let repo = "r".repeat(42);
+        let parsed = id("owner", &repo, "_");
+
+        assert_eq!(slug("_"), "", "the ref has to slug to nothing");
+        assert_eq!(parsed.value(), format!("{repo}-{}", parsed.suffix()));
+        assert_eq!(parsed.value().len(), TARGET_LENGTH);
+        // One shorter and the arithmetic is ordinary, which is what makes 42 the
+        // boundary rather than an arbitrary length.
+        let shorter = id("owner", &"r".repeat(41), "_");
+        assert_eq!(shorter.value().len(), TARGET_LENGTH - 1);
+        // One longer and the cut fires instead, which is the branch the comment on
+        // `value` is about.
+        let longer = id("owner", &"r".repeat(43), "_");
+        assert!(
+            longer
+                .value()
+                .starts_with(&format!("{}-", "r".repeat(REPO_SLUG_LENGTH))),
+            "{}",
+            longer.value()
+        );
     }
 
     #[test]
@@ -1600,7 +1473,7 @@ mod tests {
         let first = id("blooop", "devlaunch", "main").value();
         let second = id("blooop", "devlaunch", "main").value();
         assert_eq!(first, second);
-        assert_eq!(first, "devlaunch-main-zovomobo");
+        assert_eq!(first, "devlaunch-main-3j1t");
     }
 
     // ---- the real-world corpus -------------------------------------------
@@ -1668,269 +1541,5 @@ mod tests {
         assert_eq!(parsed.owner(), "blooop");
         assert_eq!(parsed.repo(), "devlaunch");
         assert_eq!(parsed.git_ref(), "feature/auth");
-    }
-
-    // -------------------------------------------------- reading an id apart
-
-    /// The id a triple derives, so these read against the real derivation rather
-    /// than against a hand-spelled string that could drift from it.
-    fn derived(owner: &str, repo: &str, git_ref: &str) -> String {
-        WorkspaceId::new(owner, repo, git_ref)
-            .expect("a safe triple")
-            .value()
-    }
-
-    #[test]
-    fn an_id_gives_up_its_ref_slug_when_the_repo_is_known() {
-        // The whole point of the inverse: the readable half of an id is the two
-        // things a person is looking for, and the repo is what says where the
-        // boundary between them falls.
-        let id = derived("blooop", "devlaunch", "main");
-
-        assert_eq!(id, "devlaunch-main-zovomobo");
-        assert_eq!(ref_slug_of(&id, "devlaunch"), Some("main"));
-    }
-
-    #[test]
-    fn a_repo_slug_cut_to_the_cap_is_still_recognised() {
-        // `value` cuts the repo slug to REPO_SLUG_LENGTH when the id would
-        // otherwise overflow, so the prefix in the id is not always `slug(repo)` —
-        // and a reader that only tried the full spelling would answer `None` for
-        // every workspace of a long-named repository.
-        let repo = "a-very-long-repository-name-indeed";
-        let id = derived("blooop", repo, "main");
-
-        assert_eq!(id, "a-very-long-reposito-main-mafedavi");
-        assert!(slug(repo).len() > REPO_SLUG_LENGTH, "the cap has to bite");
-        assert_eq!(ref_slug_of(&id, repo), Some("main"));
-    }
-
-    #[test]
-    fn the_full_repo_spelling_is_tried_before_the_cut_one() {
-        // Order matters and only shows up on a repo whose slug is *inside* the cap:
-        // `head(slug, 20)` of a shorter slug is the slug itself, so both candidates
-        // agree — but a reader that tried a *cut* candidate first on a repo like
-        // `devlaunch` would strip fewer characters than the id spent and hand back
-        // a ref-slug with the tail of the repo name still on the front.
-        let id = derived("blooop", "devlaunch", "feature/auth");
-
-        assert_eq!(ref_slug_of(&id, "devlaunch"), Some("feature-auth"));
-        // The same id read against a repo it was not derived for: the prefix does
-        // not match under either spelling, so there is no ref to report.
-        assert_eq!(ref_slug_of(&id, "wayfinder"), None);
-    }
-
-    #[test]
-    fn a_long_ref_reads_back_as_the_slug_the_id_kept_and_not_as_the_ref() {
-        // The caveat the doc comment leads with, pinned: `fit_ref` drops whole
-        // middle segments, so what comes back is legible and is *not* the ref. A
-        // caller that handed this to `WorkspaceId::new` would derive a different
-        // workspace, which is why nothing does.
-        let git_ref = "dependabot/github_actions/codecov/codecov-action-6";
-        let id = derived("blooop", "devlaunch", git_ref);
-
-        assert_eq!(
-            ref_slug_of(&id, "devlaunch"),
-            Some("dependabot-codecov-action-6")
-        );
-        assert_ne!(ref_slug_of(&id, "devlaunch"), Some(git_ref));
-    }
-
-    #[test]
-    fn two_refs_that_slug_alike_read_back_alike() {
-        // Defect #1 of devlaunch#55, in the one place it survives: `slug` collapses
-        // `/` and `-`, so these two branches are two workspaces with one readable
-        // part between them. The ids differ — that is what the suffix is for — and a
-        // caller drawing only the readable part has to notice, because the string
-        // it is about to print does not distinguish them.
-        let over = derived("blooop", "devlaunch", "feature/auth");
-        let under = derived("blooop", "devlaunch", "feature-auth");
-
-        assert_ne!(over, under);
-        assert_eq!(ref_slug_of(&over, "devlaunch"), Some("feature-auth"));
-        assert_eq!(ref_slug_of(&under, "devlaunch"), Some("feature-auth"));
-    }
-
-    #[test]
-    fn a_name_this_module_did_not_derive_is_refused_rather_than_cut() {
-        // The check that makes this a parse instead of a substring operation.
-        // Without it every one of these would answer a confident lie: eight
-        // characters off the end of a name that never had a suffix on it.
-        for name in [
-            // No syllables: `made-ws` is not four consonant-vowel pairs.
-            "some-hand-made-ws",
-            // Right shape, wrong tables: `q` and `u` are in neither.
-            "devlaunch-main-qulaquli",
-            // Nothing but a suffix, so there is no separator and no repo part.
-            "zovomobo",
-            // Shorter than a suffix.
-            "ws",
-            "",
-        ] {
-            assert_eq!(ref_slug_of(name, "devlaunch"), None, "{name}");
-        }
-    }
-
-    #[test]
-    fn a_multibyte_name_is_refused_without_splitting_a_character() {
-        // `checked_sub` counts bytes, so a name whose last bytes are the middle of a
-        // character would panic on a naive slice. `str::get` answering `None` on a
-        // boundary that is not one is what keeps this total — and the tables are
-        // ASCII, so no non-ASCII name could have been an id anyway.
-        assert_eq!(ref_slug_of("devlaunch-main-zzzzzzé", "devlaunch"), None);
-        assert_eq!(ref_slug_of("é", "devlaunch"), None);
-    }
-
-    #[test]
-    fn an_id_with_no_ref_part_left_answers_nothing_rather_than_an_empty_label() {
-        // A ref whose slug is empty leaves `<repo>-<suffix>`, so there is a repo
-        // prefix and a suffix and nothing between them. `None` rather than
-        // `Some("")`, so a caller has one answer to handle and not two.
-        let id = derived("blooop", "devlaunch", "_");
-
-        assert_eq!(id, "devlaunch-sasevapo");
-        assert_eq!(ref_slug_of(&id, "devlaunch"), None);
-    }
-
-    #[test]
-    fn a_repo_whose_slug_is_empty_leaves_the_ref_alone() {
-        // The mirror case: `value` drops the empty repo part *and* its separator, so
-        // the id is `<ref-slug>-<suffix>` and there is no prefix to strip. A reader
-        // that insisted on one would answer `None` for a workspace it can describe
-        // perfectly well.
-        let id = derived("blooop", "_", "main");
-
-        assert_eq!(id, "main-gakebofi");
-        assert_eq!(ref_slug_of(&id, "_"), Some("main"));
-    }
-
-    #[test]
-    fn an_id_two_repo_spellings_both_explain_is_refused_rather_than_guessed() {
-        // A repo slug over the cap with a dash at exactly the cap, and a branch
-        // starting with the segment after it. Both readings derive this very id:
-        //
-        //   repo `…-bbbb` untruncated, ref slug `cccccccccc`
-        //   repo cut to the twenty a's, ref slug `bbbb-cccccccccc`   <- the real one
-        //
-        // Nothing in the id says which, because the cut is applied on a length the
-        // ref has already been fitted to and neither reading overruns it. Reading it
-        // one way and answering confidently is how a row shows a branch that is not
-        // the branch, so it answers `None` and the caller draws the id whole.
-        let repo = "aaaaaaaaaaaaaaaaaaaa-bbbb";
-        let id = derived("o", repo, "bbbb-cccccccccc");
-
-        assert_eq!(id, "aaaaaaaaaaaaaaaaaaaa-bbbb-cccccccccc-vekozazi");
-        assert!(slug(repo).len() > REPO_SLUG_LENGTH, "the cap has to bite");
-        assert_eq!(ref_slug_of(&id, repo), None);
-    }
-
-    #[test]
-    fn only_a_repo_slug_with_a_dash_at_the_cap_can_be_read_two_ways() {
-        // The refusal above is conservative, and this is the whole of what it costs.
-        // Two spellings can only both match when the cut lands on a `-`: the cut
-        // reading needs a `-` at the cap in the *body*, and the full reading needs
-        // the same position in the *slug*, so a repo slug without one there is read
-        // apart under exactly one spelling however long it is.
-        //
-        // For this repo that means some ids a cleverer reader could resolve are
-        // refused too — `main` below is only derivable under the full spelling,
-        // since the cut one would not have overflowed. Recovering it means
-        // re-deriving the cut rule from a ref that has already been fitted, which is
-        // arithmetic this module would have to keep in step with `value` forever, for
-        // a prettier column on repositories named like this one.
-        let dashed = "aaaaaaaaaaaaaaaaaaaa-bbbb";
-        assert_eq!(ref_slug_of(&derived("o", dashed, "main"), dashed), None);
-
-        // Only one spelling matches here, so it is answered: `bbbb` is not the front
-        // of this ref, so there is nothing for the full spelling to strip.
-        let cut = derived("o", dashed, "release/9999999999999999999999999176");
-        assert_eq!(cut, "aaaaaaaaaaaaaaaaaaaa-release-999999999-dobakero");
-        assert_eq!(ref_slug_of(&cut, dashed), Some("release-999999999"));
-
-        // And a repo slug just as far over the cap with no dash at it is unaffected,
-        // which is every long repository name that is not this shape.
-        let plain = "aaaaaaaaaaaaaaaaaaaaabbbb";
-        assert!(slug(plain).len() > REPO_SLUG_LENGTH, "the cap has to bite");
-        assert_eq!(
-            ref_slug_of(&derived("o", plain, "main"), plain),
-            Some("main")
-        );
-        let plain_cut = derived("o", plain, "release/9999999999999999999999999176");
-        assert_eq!(ref_slug_of(&plain_cut, plain), Some("release-999999999"));
-    }
-
-    #[test]
-    fn a_hostname_is_the_id_without_its_identity_suffix() {
-        // The prompt reads `vscode@devlaunch-main:~$` for the workspace devpod
-        // addresses as `devlaunch-main-zovomobo`. Nine of those characters are hash,
-        // and a prompt is read rather than resolved.
-        let id = derived("blooop", "devlaunch", "main");
-
-        assert_eq!(id, "devlaunch-main-zovomobo");
-        assert_eq!(hostname_of(&id), "devlaunch-main");
-    }
-
-    #[test]
-    fn two_workspaces_that_differ_only_in_their_suffix_share_a_hostname() {
-        // The cost, pinned rather than left to be met in a terminal. The suffix is
-        // the only part of the id that separates either pair — one repo under two
-        // owners, and the two refs that slug alike — so dropping it makes their
-        // prompts identical. They are still two workspaces: different ids, different
-        // containers, different clones. What tells them apart is the tab, which
-        // carries the spec whole.
-        let mine = derived("blooop", "devlaunch", "main");
-        let theirs = derived("someone-else", "devlaunch", "main");
-        assert_ne!(mine, theirs);
-        assert_eq!(hostname_of(&mine), hostname_of(&theirs));
-
-        let slashed = derived("blooop", "devlaunch", "feature/auth");
-        let dashed = derived("blooop", "devlaunch", "feature-auth");
-        assert_ne!(slashed, dashed);
-        assert_eq!(hostname_of(&slashed), hostname_of(&dashed));
-    }
-
-    #[test]
-    fn a_name_with_no_syllable_suffix_is_its_own_hostname() {
-        // The same parse `ref_slug_of` makes, for the same reason: cutting eight
-        // characters off a name that never carried a suffix would name a container
-        // after a lie. Only the fallback differs — the name whole rather than
-        // `None`, because every workspace gets a hostname and a bare devpod name
-        // (`dl myworkspace`) is already a legal one.
-        for name in [
-            "some-hand-made-ws",
-            "devlaunch-main-qulaquli",
-            "zovomobo",
-            "ws",
-            "",
-            "devlaunch-main-zzzzzzé",
-            "é",
-        ] {
-            assert_eq!(hostname_of(name), name, "{name}");
-        }
-    }
-
-    #[test]
-    fn an_id_that_is_nothing_but_a_suffix_keeps_it_as_its_hostname() {
-        // `value` drops an empty part *and* its separator, so a triple that slugs
-        // away entirely derives an id with no readable half at all — and no
-        // container can be named the empty string. A hash is a poor hostname and a
-        // legal one, which is the right way round.
-        let id = derived("blooop", "_", "_");
-
-        assert_eq!(id, "mifaboje");
-        assert_eq!(hostname_of(&id), id);
-    }
-
-    #[test]
-    fn a_hand_made_name_ending_in_a_syllable_shaped_word_loses_that_word() {
-        // The limit of the parse, pinned so it is known rather than discovered. Four
-        // consonant-vowel pairs over these tables is `motorola` as readily as it is
-        // `zovomobo`, so a workspace dl did not name can be read as though it had a
-        // suffix. The cost is the prompt on somebody's hand-made workspace reading
-        // short, which is why the check is kept as it is.
-        assert_eq!(hostname_of("foo-motorola"), "foo");
-        assert_eq!(hostname_of("release-bananana"), "release");
-        // And nothing about addressing moves with it: the id is untouched.
-        assert!(is_syllables("motorola"));
     }
 }

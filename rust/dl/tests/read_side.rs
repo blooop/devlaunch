@@ -741,7 +741,7 @@ fn the_json_listing_migrates_the_cache_and_the_table_does_not() {
     let world = World::full();
     let v1 = world
         .read("cache/devlaunch/metadata.json")
-        .replace("\"version\": 2", "\"version\": 1");
+        .replace("\"version\": 3", "\"version\": 1");
     std::fs::write(world.path("cache/devlaunch/metadata.json"), &v1).expect("a v1 document");
 
     world.dl(&["--ls"]).succeeded();
@@ -756,7 +756,7 @@ fn the_json_listing_migrates_the_cache_and_the_table_does_not() {
     assert!(
         world
             .read("cache/devlaunch/metadata.json")
-            .contains("\"version\": 2"),
+            .contains("\"version\": 3"),
         "the json listing did not migrate the cache"
     );
 }

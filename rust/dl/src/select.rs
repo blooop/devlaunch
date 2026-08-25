@@ -19,25 +19,31 @@
 //! the clone directory dl chose and manages — a long, mechanically derived path
 //! whose own last component is already the id.
 //!
-//! **What replaced the id is the id, read apart.** An id is
-//! `<repo-slug>-<ref-slug>-<suffix>` ([`devlaunch_core::domain::workspace_id`]),
-//! and two of those three parts are what a person at this picker is looking for
-//! while the third is machinery: the suffix is eight characters of hash, there to
-//! keep two branches from sharing a name, and reading it is no part of choosing a
-//! workspace. The owner is missing from the id altogether, so a fork and its
-//! upstream were two rows spelled the same. All three come out of the source
-//! devpod already reported — [`owner_of`], [`repo_of`] and [`ref_slug_of`] read
-//! dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>`, with no records
-//! opened and no config read — and each column but the last is padded to a common
-//! width so the rows line up under each other.
+//! **What replaced the id is `<owner> | <repo> | <branch>`.** Two of those come out
+//! of dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>` ([`owner_of`],
+//! [`repo_of`]), and the third out of the clone's `HEAD` ([`head_branch_of`]) — no
+//! records opened, no config read, one small file per row. Each column but the last
+//! is padded to a common width so the rows line up under each other.
 //!
-//! Two things this deliberately does not do. It does not draw `owner/repo@ref`:
-//! that reads as a spec `dl` would accept, and a ref-slug is not a ref — `slug`
-//! collapses `/` and `-` alike, so the row for `feature/auth` would invite a
-//! retype that addresses `feature-auth` instead. And it never *only* elides: where
-//! a split would leave two rows drawn the same, both go back to their whole ids,
-//! because the row's own text is what [`chosen`] maps back to a workspace (see
-//! [`named`]).
+//! The owner is what an id cannot carry at all, so a fork and its upstream used to
+//! be two rows spelled the same. The suffix is what an id carries that nobody reads:
+//! four characters of hash, there to keep two branches from sharing a name.
+//!
+//! **The branch is read rather than reconstructed, and that is a change.** These
+//! columns used to come from taking the id apart — strip the repo prefix, strip the
+//! suffix, and slug what is left. That answered with a *slug*, so `feature/auth` and
+//! `feature-auth` drew one row twice and a long branch drew short; and it worked at
+//! all only because the suffix had a shape a parser could recognise, which four
+//! characters of base 36 do not. `HEAD` is exact, and it says which branch is checked
+//! out *now* rather than which one the workspace was made for.
+//!
+//! Two things this deliberately does not do. It does not draw `owner/repo@branch`:
+//! that reads as a spec `dl` would accept, and this is a picker, not a place to
+//! retype what you are already pointing at. And it never *only* elides: where a
+//! split would leave two rows drawn the same — two workspaces of one repository on
+//! one branch, which is what the id-scheme migration leaves for a while — both go
+//! back to their whole ids, because the row's own text is what [`chosen`] maps back
+//! to a workspace (see [`named`]).
 //!
 //! **One deliberate departure from Python's picker: it can take several rows.**
 //! Python's `iterfzf(..., multi=False)` answered one workspace always. Here the
@@ -72,7 +78,7 @@ use std::sync::Arc;
 
 use devlaunch_core::clients::devpod::Workspace;
 use devlaunch_core::domain::workspace_state::NonEmpty;
-use devlaunch_core::flows::listing::{owner_of, ref_slug_of, repo_of};
+use devlaunch_core::flows::listing::{head_branch_of, owner_of, repo_of};
 use skim::prelude::*;
 
 /// One row the picker offers, and the workspace it stands for.
@@ -129,7 +135,7 @@ enum Tail {
 /// has not got.
 ///
 /// `cache_dir` is where dl keeps its clones, and it is what [`owner_of`],
-/// [`repo_of`] and [`ref_slug_of`] read a clone's layout with — the same directory
+/// [`repo_of`] and [`head_branch_of`] are gated on the same layout reading — the same directory
 /// `--purge` decides ownership by, so they cannot disagree about which workspaces
 /// are dl's.
 pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> {
@@ -200,7 +206,7 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
             owner: owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned()),
             tail: match (
                 repo_of(workspace, cache_dir),
-                ref_slug_of(workspace, cache_dir),
+                head_branch_of(workspace, cache_dir),
             ) {
                 // Both or neither: the two are one reading of one layout, and a repo
                 // with no ref beside it would be a column with the wrong thing under
@@ -507,24 +513,65 @@ mod tests {
     use devlaunch_core::flows::listing::CommandContext;
     use devlaunch_test_support::{FakeRunner, Response};
 
-    /// The workspaces devpod lists, from the JSON it would have printed.
-    fn listed(listing: &str) -> Vec<Workspace> {
-        let runner = FakeRunner::new().with_script(
-            ["devpod", "list", "--output", "json"],
-            Response::stdout(listing),
-        );
-        CommandContext::new(&runner)
-            .workspaces()
-            .expect("a listing")
-    }
-
     /// Where dl keeps its clones in these tests: the owner column is read out of
     /// the layout under it, and out of nothing under any other directory.
-    const CACHE: &str = "/home/dev/.cache/devlaunch";
+    ///
+    /// **A real directory, and it did not have to be until the ref column moved.**
+    /// The owner and the repo are still read off the path and need nothing on disk,
+    /// but the branch is read out of the clone's own `HEAD`
+    /// ([`head_branch_of`]), so a row that names a clone which is not there has no
+    /// branch to show.
+    ///
+    /// **One per test, and that is the point rather than an accident.** A cache
+    /// shared by the module raced: two tests calling [`Self::clone_at`] on one path
+    /// both write `HEAD`, `std::fs::write` truncates before it writes, and the
+    /// reader in between sees an empty file and a row with no branch. It surfaced as
+    /// a *different* test failing intermittently, which is the worst way to find it.
+    struct Cache(tempfile::TempDir);
 
-    /// That cache as a path, which is what every call here passes.
-    fn cache() -> &'static Path {
-        Path::new(CACHE)
+    impl Cache {
+        fn new() -> Self {
+            Self(tempfile::tempdir().expect("a cache directory"))
+        }
+
+        fn path(&self) -> &Path {
+            self.0.path()
+        }
+
+        /// The workspaces devpod lists, from the JSON it would have printed.
+        ///
+        /// `{CACHE}` in *listing* stands for this cache, which is a real directory
+        /// and therefore has a name only known at run time.
+        fn listed(&self, listing: &str) -> Vec<Workspace> {
+            let listing = listing.replace("{CACHE}", &self.path().display().to_string());
+            let runner = FakeRunner::new().with_script(
+                ["devpod", "list", "--output", "json"],
+                Response::stdout(&listing),
+            );
+            CommandContext::new(&runner)
+                .workspaces()
+                .expect("a listing")
+        }
+
+        /// A clone of dl's own with *branch* checked out, at the layout `dl` puts it
+        /// in.
+        ///
+        /// Writes the one line of `HEAD` that git would, which is all the ref column
+        /// reads. Returns nothing: the listing names the same path through `{CACHE}`
+        /// in [`Self::listed`], and having this return one would mean two spellings
+        /// of it to keep in step.
+        fn clone_at(&self, owner: &str, repo: &str, id: &str, branch: &str) {
+            let git = self
+                .path()
+                .join("repos")
+                .join(owner)
+                .join(repo)
+                .join(id)
+                .join(".git");
+            std::fs::create_dir_all(&git).expect("a clone");
+            std::fs::write(git.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
+                .expect("a HEAD");
+        }
     }
 
     /// One workspace, with the source object devpod recorded for it.
@@ -542,7 +589,8 @@ mod tests {
         // devlaunch has no reading for. Neither names an owner — one is a path dl
         // did not clone, the other is an image reference — so both take the dash,
         // and both are still *offered*, which is the point of the test.
-        let workspaces = listed(
+        let cache = Cache::new();
+        let workspaces = cache.listed(
             r#"[
                 {"id": "mine", "source": {"localFolder": "/home/dev/myproject"},
                  "lastUsed": "x", "provider": {"name": "docker"},
@@ -553,7 +601,7 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache());
+        let offers = offered(&workspaces, cache.path());
 
         assert_eq!(
             offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
@@ -654,8 +702,9 @@ mod tests {
         // instead of adding to it — observed live: mark two workspaces, and only
         // the last one is acted on. Distinct indices are what make marking
         // accumulate, so they are the spec.
+        let cache = Cache::new();
         let offers = offered(
-            &listed(
+            &cache.listed(
                 r#"[
                 {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
@@ -668,7 +717,7 @@ mod tests {
                  "context": "default"}
             ]"#,
             ),
-            cache(),
+            cache.path(),
         );
 
         assert_eq!(
@@ -684,8 +733,9 @@ mod tests {
     fn several_rows_map_to_several_workspaces_in_the_order_taken() {
         // The multi pick: every chosen row maps back, in the order the rows came
         // back, so `dl rm` applies to the workspaces in the order they were marked.
+        let cache = Cache::new();
         let offers = offered(
-            &listed(
+            &cache.listed(
                 r#"[
                 {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
@@ -698,7 +748,7 @@ mod tests {
                  "context": "default"}
             ]"#,
             ),
-            cache(),
+            cache.path(),
         );
 
         assert_eq!(
@@ -721,12 +771,13 @@ mod tests {
 
     #[test]
     fn a_git_source_is_offered_under_the_owner_its_url_names() {
-        let workspaces = listed(&one(
+        let cache = Cache::new();
+        let workspaces = cache.listed(&one(
             "wf",
             r#"{"gitRepository": "https://github.com/blooop/devlaunch.git"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache())[0].label, "blooop | wf");
+        assert_eq!(offered(&workspaces, cache.path())[0].label, "blooop | wf");
     }
 
     #[test]
@@ -735,16 +786,18 @@ mod tests {
         // makes is a clone at `<cache>/repos/<owner>/<repo>/<workspace id>` handed
         // to devpod as a path, so the owner and the repo are read back out of the
         // layout and the ref off the id — no records opened, no config read, no disk
-        // touched. The eight-character suffix does not appear: it is what keeps two
+        // touched. The four-character suffix does not appear: it is what keeps two
         // branches from sharing an id, and choosing a workspace never involves
         // reading it.
-        let workspaces = listed(&one(
-            "devlaunch-main-zovomobo",
-            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"}"#,
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        let workspaces = cache.listed(&one(
+            "devlaunch-main-3j1t",
+            r#"{"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"}"#,
         ));
 
         assert_eq!(
-            offered(&workspaces, cache())[0].label,
+            offered(&workspaces, cache.path())[0].label,
             "blooop | devlaunch | main"
         );
     }
@@ -755,57 +808,75 @@ mod tests {
         // so the prefix in the id is not the repo directory's name. The *directory*
         // is what the column shows, because that is the repository's actual name and
         // the cut is an artefact of the id's length budget.
-        let workspaces = listed(&one(
-            "a-very-long-reposito-main-mafedavi",
-            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/a-very-long-repository-name-indeed/a-very-long-reposito-main-mafedavi"}"#,
+        let cache = Cache::new();
+        cache.clone_at(
+            "blooop",
+            "an-extraordinarily-long-repository-name-indeed",
+            "an-extraordinarily-l-main-pd3w",
+            "main",
+        );
+        let workspaces = cache.listed(&one(
+            "an-extraordinarily-l-main-pd3w",
+            r#"{"localFolder": "{CACHE}/repos/blooop/an-extraordinarily-long-repository-name-indeed/an-extraordinarily-l-main-pd3w"}"#,
         ));
 
         assert_eq!(
-            offered(&workspaces, cache())[0].label,
-            "blooop | a-very-long-repository-name-indeed | main"
+            offered(&workspaces, cache.path())[0].label,
+            "blooop | an-extraordinarily-long-repository-name-indeed | main"
         );
     }
 
     #[test]
     fn two_rows_that_would_be_drawn_alike_go_back_to_their_whole_ids() {
-        // `feature/auth` and `feature-auth` are two branches, two workspaces and two
-        // ids — and one ref-slug, because `slug` collapses `/` and `-` alike
-        // (devlaunch#55, defect #1). Drawn apart they would be the same row twice,
-        // and `chosen` maps a picked row back by its text with the first match
-        // winning: marking the second would remove the first. `dl rm` is one of the
-        // verbs this picker opens for, so that is a workspace deleted for a
-        // legibility win.
+        // Two workspaces of one repository on one branch: two ids, two clones, and
+        // one thing to say about either. Drawn apart they would be the same row
+        // twice, and `chosen` maps a picked row back by its text with the first
+        // match winning, so marking the second would remove the first. `dl rm` is
+        // one of the verbs this picker opens for, so that is a workspace deleted for
+        // a legibility win.
         //
-        // Both rows go back to the whole id — not just the second — because there is
-        // no first: the collision is between what the two rows say, and neither has a
-        // better claim on the shorter spelling.
-        let workspaces = listed(
+        // This is not a contrived pair. The id-scheme migration leaves exactly it:
+        // the renamed clone under its derived id, and the container still carrying
+        // the old one until `dl --reconcile` or a `recreate` catches up.
+        //
+        // Both rows go back to the whole id, not just the second, because there is
+        // no first: the collision is between what the two rows say, and neither has
+        // a better claim on the shorter spelling.
+        //
+        // The pair this used to use was `feature/auth` beside `feature-auth`, which
+        // collided because the ref was recovered by slugging an id and `slug`
+        // collapses `/` and `-` alike. The ref is read from the clone's `HEAD` now,
+        // so those two spell themselves apart and are no longer a collision at all.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-legacy", "main");
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-feature-auth-poliseno",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "devlaunch-feature-auth-nesatabe",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-nesatabe"},
+                {"id": "devlaunch-main-legacy",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-legacy"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache());
+        let offers = offered(&workspaces, cache.path());
 
         assert_eq!(
             offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
             [
-                "blooop | devlaunch-feature-auth-poliseno",
-                "blooop | devlaunch-feature-auth-nesatabe",
+                "blooop | devlaunch-main-3j1t",
+                "blooop | devlaunch-main-legacy",
             ]
         );
         // And the property the fallback exists for: each row still maps back to its
         // own workspace.
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id("devlaunch-feature-auth-nesatabe"))
+            Pick::Chose(one_id("devlaunch-main-legacy"))
         );
     }
 
@@ -820,10 +891,11 @@ mod tests {
         //
         // The collision key cannot see this one: the two rows have different key
         // shapes, so counting keys finds no duplicate.
-        let workspaces = listed(
+        let cache = Cache::new();
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-main-zovomobo",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
@@ -833,7 +905,7 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache());
+        let offers = offered(&workspaces, cache.path());
 
         let labels: Vec<&String> = offers.iter().map(|offer| &offer.label).collect();
         assert_ne!(labels[0], labels[1], "two rows drawn alike: {labels:?}");
@@ -860,24 +932,25 @@ mod tests {
         // What is on screen is then two rows one space apart, which is the
         // collision the guard exists to prevent: a person cannot tell them apart,
         // and `dl rm` is one of the verbs that opens this picker.
-        let workspaces = listed(
+        let cache = Cache::new();
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-main-zovomobo",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
                  "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "wayfinderx-main-hagilado",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/wayfinderx/wayfinderx-main-hagilado"},
+                {"id": "wayfinderx-main-0ei3",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/wayfinderx/wayfinderx-main-0ei3"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache());
+        let offers = offered(&workspaces, cache.path());
         let labels: Vec<String> = offers.iter().map(|offer| offer.label.clone()).collect();
 
         // Not `assert_ne!` on the raw strings: they differ by the padding, which is
@@ -903,34 +976,43 @@ mod tests {
         // The pass this replaced could not do this: it de-split every row in the
         // listing, so one ambiguous pair put the suffix back on rows that were never
         // ambiguous.
-        let workspaces = listed(
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at(
+            "blooop",
+            "devlaunch",
+            "devlaunch-feature-auth-np10",
+            "feature/auth",
+        );
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-main-zovomobo",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
                  "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "devlaunch-feature-auth-poliseno",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                {"id": "devlaunch-feature-auth-np10",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-feature-auth-np10"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
         );
 
         assert_eq!(
-            offered(&workspaces, cache())
+            offered(&workspaces, cache.path())
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
                 // Collided with the whole-name row, so it is back to its id.
-                "blooop | devlaunch-main-zovomobo",
+                "blooop | devlaunch-main-3j1t",
                 "blooop | devlaunch | main",
-                // Did not collide with anything, so it keeps its columns.
-                "blooop | devlaunch | feature-auth",
+                // Did not collide with anything, so it keeps its columns -- and it
+                // spells the ref, where the id could only offer `feature-auth`.
+                "blooop | devlaunch | feature/auth",
             ]
         );
     }
@@ -939,33 +1021,42 @@ mod tests {
     fn a_collision_only_pulls_in_the_rows_that_collide() {
         // The fallback is scoped to the rows drawn alike. A third workspace of the
         // same repository keeps its split row, because nothing else is drawn like it
-        // — so one ambiguous pair does not put the suffix back on a whole listing.
-        let workspaces = listed(
+        // -- so one ambiguous pair does not put the suffix back on a whole listing.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-legacy", "main");
+        cache.clone_at(
+            "blooop",
+            "devlaunch",
+            "devlaunch-feature-auth-np10",
+            "feature/auth",
+        );
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-feature-auth-poliseno",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-poliseno"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "devlaunch-feature-auth-nesatabe",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-feature-auth-nesatabe"},
+                {"id": "devlaunch-main-legacy",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-legacy"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "devlaunch-main-zovomobo",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                {"id": "devlaunch-feature-auth-np10",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-feature-auth-np10"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
         );
 
         assert_eq!(
-            offered(&workspaces, cache())
+            offered(&workspaces, cache.path())
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
-                "blooop | devlaunch-feature-auth-poliseno",
-                "blooop | devlaunch-feature-auth-nesatabe",
-                "blooop | devlaunch | main",
+                "blooop | devlaunch-main-3j1t",
+                "blooop | devlaunch-main-legacy",
+                "blooop | devlaunch | feature/auth",
             ]
         );
     }
@@ -976,21 +1067,24 @@ mod tests {
         // The ids differ only in the suffix that is no longer drawn, so the owner
         // column is the whole of what tells the rows apart — and it is enough, so
         // neither row falls back.
-        let workspaces = listed(
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("someone", "devlaunch", "devlaunch-main-div6", "main");
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-main-zovomobo",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "devlaunch-main-dedavevi",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/someone/devlaunch/devlaunch-main-dedavevi"},
+                {"id": "devlaunch-main-div6",
+                 "source": {"localFolder": "{CACHE}/repos/someone/devlaunch/devlaunch-main-div6"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
         );
 
         assert_eq!(
-            offered(&workspaces, cache())
+            offered(&workspaces, cache.path())
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
@@ -1006,12 +1100,13 @@ mod tests {
         // its directory. Read as dl's layout it would say the owner is `dev`, which
         // is a fabrication — nobody's repository is owned by a path component of
         // somebody's home directory. Being outside dl's cache is what settles it.
-        let workspaces = listed(&one(
+        let cache = Cache::new();
+        let workspaces = cache.listed(&one(
             "myproject",
             r#"{"localFolder": "/home/dev/myproject"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache())[0].label, "- | myproject");
+        assert_eq!(offered(&workspaces, cache.path())[0].label, "- | myproject");
     }
 
     #[test]
@@ -1019,12 +1114,13 @@ mod tests {
         // The other half of the rule. Inside the cache, but its leaf is not this
         // workspace's id — so it is not the `<owner>/<repo>/<workspace id>` layout
         // dl writes, and there is no owner to be read out of it.
-        let workspaces = listed(&one(
+        let cache = Cache::new();
+        let workspaces = cache.listed(&one(
             "mine",
-            r#"{"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/somewhere-else"}"#,
+            r#"{"localFolder": "{CACHE}/repos/blooop/devlaunch/somewhere-else"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache())[0].label, "- | mine");
+        assert_eq!(offered(&workspaces, cache.path())[0].label, "- | mine");
     }
 
     #[test]
@@ -1035,12 +1131,13 @@ mod tests {
         // components above the leaf sits the cache directory itself, so the
         // "owner" would be `devlaunch`, the name of dl's cache. An owner has to be
         // a directory dl put under the cache, not the cache.
-        let workspaces = listed(&one(
+        let cache = Cache::new();
+        let workspaces = cache.listed(&one(
             "myproject",
-            r#"{"localFolder": "/home/dev/.cache/devlaunch/scratch/myproject"}"#,
+            r#"{"localFolder": "{CACHE}/scratch/myproject"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache())[0].label, "- | myproject");
+        assert_eq!(offered(&workspaces, cache.path())[0].label, "- | myproject");
     }
 
     #[test]
@@ -1053,14 +1150,22 @@ mod tests {
         // `kinisi_ros` also pins the column on the *directory* rather than the id's
         // prefix: the id spells it `kinisi-ros`, because `slug` turns `_` into `-`,
         // and the underscore is the repository's real name.
-        let workspaces = listed(
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at(
+            "kinisi-robotics",
+            "kinisi_ros",
+            "kinisi-ros-main-uwq5",
+            "main",
+        );
+        let workspaces = cache.listed(
             r#"[
-                {"id": "devlaunch-main-zovomobo",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "kinisi-ros-main-zivefoti",
-                 "source": {"localFolder": "/home/dev/.cache/devlaunch/repos/kinisi-robotics/kinisi_ros/kinisi-ros-main-zivefoti"},
+                {"id": "kinisi-ros-main-uwq5",
+                 "source": {"localFolder": "{CACHE}/repos/kinisi-robotics/kinisi_ros/kinisi-ros-main-uwq5"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "a-very-long-workspace-name-of-its-own",
@@ -1071,7 +1176,7 @@ mod tests {
         );
 
         assert_eq!(
-            offered(&workspaces, cache())
+            offered(&workspaces, cache.path())
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
@@ -1088,7 +1193,8 @@ mod tests {
         // Alignment is a fact about the list, not about one row: every owner is
         // drawn to the width of the widest, so the ids start in the same column and
         // the eye can run down them. The dash is padded like any other owner.
-        let workspaces = listed(
+        let cache = Cache::new();
+        let workspaces = cache.listed(
             r#"[
                 {"id": "one", "source": {"gitRepository": "github.com/blooop/devlaunch"},
                  "lastUsed": "x", "provider": {"name": "docker"},
@@ -1103,7 +1209,7 @@ mod tests {
         );
 
         assert_eq!(
-            offered(&workspaces, cache())
+            offered(&workspaces, cache.path())
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
@@ -1120,7 +1226,8 @@ mod tests {
         // The picker is a view of the workspace list: no sorting, and no filtering
         // by whose workspace it is. `no_sort` is what keeps skim from re-ordering
         // what this hands it.
-        let workspaces = listed(
+        let cache = Cache::new();
+        let workspaces = cache.listed(
             r#"[
                 {"id": "zebra", "source": {"localFolder": "/z"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
@@ -1132,7 +1239,7 @@ mod tests {
         );
 
         assert_eq!(
-            offered(&workspaces, cache())
+            offered(&workspaces, cache.path())
                 .iter()
                 .map(|offer| offer.workspace_id.clone())
                 .collect::<Vec<_>>(),
@@ -1142,20 +1249,28 @@ mod tests {
 
     #[test]
     fn an_empty_listing_offers_nothing_and_is_not_a_picker() {
-        let none = listed("[]");
+        let cache = Cache::new();
+        let none = cache.listed("[]");
 
-        assert!(offered(&none, cache()).is_empty());
+        assert!(offered(&none, cache.path()).is_empty());
         // And no terminal is opened to say so: nothing to pick from is answered
         // before anything is drawn, whichever arity asked.
-        assert_eq!(pick(&none, Arity::One, cache()), Pick::NoWorkspaces);
-        assert_eq!(pick(&none, Arity::Several, cache()), Pick::NoWorkspaces);
+        assert_eq!(pick(&none, Arity::One, cache.path()), Pick::NoWorkspaces);
+        assert_eq!(
+            pick(&none, Arity::Several, cache.path()),
+            Pick::NoWorkspaces
+        );
     }
 
     #[test]
     fn a_row_that_names_no_workspace_is_no_choice() {
         // Python's `ws_map.get(selected)`: a label the map has not got answers
         // `None`, and `None` is the help and exit 1.
-        let offers = offered(&listed(&one("mine", r#"{"localFolder": "/p"}"#)), cache());
+        let cache = Cache::new();
+        let offers = offered(
+            &cache.listed(&one("mine", r#"{"localFolder": "/p"}"#)),
+            cache.path(),
+        );
 
         assert_eq!(chosen(&offers, Vec::new()), Pick::Quit);
         assert_eq!(

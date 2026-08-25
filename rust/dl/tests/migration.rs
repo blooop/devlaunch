@@ -137,11 +137,11 @@ impl Run {
 }
 
 /// The two lines Python's migration wrote to stderr, verbatim. `main` is the old
-/// flattened-branch leaf; `devlaunch-main-zovomobo` is the id this build derives;
+/// flattened-branch leaf; `devlaunch-main-3j1t` is the id this build derives;
 /// the orphaned-container line is the only place a user is told about
 /// `dl --reconcile` and `dl <workspace> recreate`.
 const MIGRATION_NOTICES: &str = "\
-dl: migrated 1 workspace clone directory to the new id scheme (e.g. main -> devlaunch-main-zovomobo)
+dl: migrated 1 workspace clone directory to the new id scheme (e.g. main -> devlaunch-main-3j1t)
 dl: 1 devpod container(s) still carry the old workspace ids and are now orphaned; dl --reconcile re-points them at the renamed clones, and dl <workspace> recreate finishes each repair -- that restores the clone association and the workspace, not state that lived only inside the old container, and only until the branch is launched again (a fresh launch claims the clone, and reconcile never re-points a clone a live container holds). dl deletes nothing for you; for the ones you are finished with: xargs -r -n1 devpod delete < {ROOT}/cache/devlaunch/orphaned-workspaces.txt
 ";
 
@@ -163,7 +163,7 @@ fn the_migration_notices_are_the_ones_python_printed() {
     // one per line, for the cleanup command the notice names.
     assert_eq!(
         world.leaves("cache/devlaunch/repos/blooop/devlaunch"),
-        vec![".bare".to_owned(), "devlaunch-main-zovomobo".to_owned()],
+        vec![".bare".to_owned(), "devlaunch-main-3j1t".to_owned()],
     );
     assert_eq!(
         world.read("cache/devlaunch/orphaned-workspaces.txt"),
@@ -201,9 +201,9 @@ fn the_migration_notices_are_the_ones_python_printed() {
         only_in(&after, &before),
         [
             "cache/devlaunch/orphaned-workspaces.txt",
-            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo/",
-            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo/.git/ (git store, contents omitted)",
-            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovomobo/README.md",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t/",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t/.git/ (git store, contents omitted)",
+            "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-3j1t/README.md",
         ],
         "the migration wrote something the notices do not mention"
     );

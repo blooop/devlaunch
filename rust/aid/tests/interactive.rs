@@ -22,7 +22,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 /// The workspace id this build derives for `blooop/devlaunch@main`, which the
 /// scenario records and devpod knows.
-const MAIN: &str = "devlaunch-main-zovomobo";
+const MAIN: &str = "devlaunch-main-3j1t";
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -225,7 +225,7 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
 const BANNER: &str = "press Enter";
 
 /// The OSC 2 title `dl` writes for [`MAIN`], bytes and all.
-const TITLE: &str = "\x1b]2;devlaunch-main-zovomobo\x07";
+const TITLE: &str = "\x1b]2;devlaunch-main-3j1t\x07";
 
 #[test]
 fn the_terminal_really_is_named_on_a_real_pty() {

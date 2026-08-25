@@ -62,7 +62,7 @@ RECORDED = "2026-08-01T10:11:12+0000"
 # The workspace id this build derives for `blooop/devlaunch@main`. Written down
 # rather than computed, because a fixture that derived it the way dl does could
 # not tell a change in the derivation from a change in the world.
-MAIN_WS = "devlaunch-main-zovomobo"
+MAIN_WS = "devlaunch-main-3j1t"
 MAIN_LEAF = MAIN_WS
 
 # The branch with no clone and no record: the cold launch's.
@@ -200,7 +200,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
 
     (cache / "metadata.json").write_text(
         json.dumps(
-            {"version": 2, "repositories": repositories, "worktrees": worktrees},
+            {"version": 3, "repositories": repositories, "worktrees": worktrees},
             indent=2,
         )
         + "\n",

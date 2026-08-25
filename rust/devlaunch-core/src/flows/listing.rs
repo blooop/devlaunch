@@ -63,7 +63,6 @@ use crate::clients::devpod::{self, ContainerState, ListingUnreadable, Workspace,
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
-use crate::domain::workspace_id;
 use crate::domain::workspace_state::{self, CloneState, CouldNotTell, NonEmpty, Unsaved};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
@@ -284,7 +283,7 @@ pub fn owner_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
 /// **A git source answers `None` even though its URL names a repo.** A workspace
 /// dl did not clone was named by
 /// [`source_workspace_id`](crate::domain::workspace_id), which hashes a source with
-/// no ref in it at all — so [`ref_slug_of`] has nothing to answer for it either,
+/// no ref in it at all — so [`head_branch_of`] has nothing to answer for it either,
 /// and a repo on its own would be half a reading.
 ///
 /// The *directory* and not the id's prefix: the id spells `kinisi_ros` as
@@ -297,23 +296,79 @@ pub fn repo_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
     layout_of_clone(workspace, cache_dir).map(|(_owner, repo)| repo)
 }
 
-/// The ref-slug a workspace's id carries, read against the repo it was derived
-/// for.
+/// The branch a workspace's clone has checked out, read from its `HEAD`.
 ///
-/// Answered exactly when [`repo_of`] is, minus the ids that do not read apart —
-/// which is what makes the pair safe to ask separately: a caller wanting both
-/// takes them together and treats one answer without the other as neither.
+/// Answered exactly when [`repo_of`] is, minus the clones that cannot say — which
+/// is what makes the pair safe to ask separately: a caller wanting both takes them
+/// together and treats one answer without the other as neither.
 ///
-/// **What comes back is a slug, and a slug is not a ref.**
-/// [`ref_slug_of`](crate::domain::workspace_id::ref_slug_of) has the whole of that
-/// caveat: `feature/auth` and `feature-auth` read back alike, and a long ref reads
-/// back short. It is a label to read, and the id remains the only thing that
-/// addresses a workspace.
+/// **The ref, not a slug of one.** This used to recover a label by *parsing the
+/// workspace id*: strip the repo prefix, strip the identity suffix, and read what
+/// was left. That answered with a slug, so `feature/auth` and `feature-auth` read
+/// back alike and a long ref read back short, and it only worked because the suffix
+/// had a recognisable shape. When the suffix became four characters of base 36
+/// ([`SUFFIX_LENGTH`](crate::domain::workspace_id)) there was no shape left to test,
+/// and the parse degraded to "assume the last four characters are the hash".
+///
+/// Reading `HEAD` retires all of that. It is exact, it costs one small file read
+/// with no subprocess and no metadata lock, and it answers the better question: not
+/// which branch the workspace was *created* for, but which one is checked out in it
+/// now. Nothing reconstructs a triple from an id any more.
+///
+/// `None` for a detached HEAD, a clone that is gone, and a `HEAD` that cannot be
+/// read. All three are cases where the id would have carried a stale label, so the
+/// caller showing the whole id instead is the honest answer rather than a loss.
 ///
 /// binary surface — not part of the frozen wf API (#251 §7)
-pub fn ref_slug_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
-    let (_owner, repo) = layout_of_clone(workspace, cache_dir)?;
-    workspace_id::ref_slug_of(&workspace.id, &repo).map(str::to_owned)
+pub fn head_branch_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
+    // The same gate `repo_of` passes, so the two still answer together: it is what
+    // says this is a clone dl laid out rather than any directory devpod opened.
+    layout_of_clone(workspace, cache_dir)?;
+    let WorkspaceSource::LocalFolder(path) = &workspace.source else {
+        return None;
+    };
+    head_branch(Path::new(path))
+}
+
+/// The branch named by `<clone>/.git`'s `HEAD`, or `None` if it does not name one.
+///
+/// Best-effort by construction: every step is a `?`, so an unreadable `.git`, a
+/// missing `HEAD`, a detached one (a bare object id, with no `ref:` to strip) and a
+/// symbolic ref pointing outside `refs/heads/` all answer `None` rather than
+/// guessing. Nothing here runs git: `HEAD` is one line that git maintains, and a
+/// subprocess per row is not worth paying to render a column.
+fn head_branch(clone: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir(clone)?.join("HEAD")).ok()?;
+    let branch = head.lines().next()?.strip_prefix("ref:")?.trim();
+    non_empty(branch.strip_prefix("refs/heads/")?)
+}
+
+/// `<clone>/.git`, following a gitfile to wherever it points.
+///
+/// A `.git` is a directory in an ordinary clone and a *file* in a worktree or a
+/// submodule, holding `gitdir: <path>`. dl's own clones are ordinary, so the file
+/// case is here for the containers that are not: a repo whose devcontainer arranges
+/// its checkout differently is still a workspace this column has to render. The
+/// path may be relative, and it is relative to the clone.
+fn git_dir(clone: &Path) -> Option<PathBuf> {
+    let dot_git = clone.join(".git");
+    if std::fs::metadata(&dot_git).ok()?.is_dir() {
+        return Some(dot_git);
+    }
+    let pointed = std::fs::read_to_string(&dot_git).ok()?;
+    let named = pointed.lines().next()?.strip_prefix("gitdir:")?.trim();
+    let target = non_empty(named)?;
+    let target = Path::new(&target);
+    Some(if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        clone.join(target)
+    })
+}
+
+/// *text* unless it is empty, so "nothing was named" is one answer and not two.
+fn non_empty(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// dl's clone layout read backwards: the two directories above a leaf named for
@@ -2081,9 +2136,9 @@ mod tests {
                 .value();
             // The ids the Python run produced, so the fixture and the goldens are
             // known to be about the same workspaces.
-            assert_eq!(clean_id, "demo-feature-tohefodo");
-            assert_eq!(dirty_id, "demo-messy-jojibima");
-            assert_eq!(unrecorded_id, "other-main-rejopejo");
+            assert_eq!(clean_id, "demo-feature-j53q");
+            assert_eq!(dirty_id, "demo-messy-valn");
+            assert_eq!(unrecorded_id, "other-main-tcyo");
 
             let clean = clone_at(
                 &remote,
@@ -2822,5 +2877,186 @@ mod tests {
             Source::classify("https://github.com/o/r.git"),
             Source::GitRepository("https://github.com/o/r.git".into())
         );
+    }
+
+    // ------------------------------------------- the branch a clone has checked out
+
+    /// A clone at dl's layout with *head* written verbatim into its `.git/HEAD`,
+    /// and the workspace devpod would list for it.
+    fn clone_with_head(cache: &Path, owner: &str, repo: &str, id: &str, head: &str) -> Workspace {
+        let clone = cache.join("repos").join(owner).join(repo).join(id);
+        std::fs::create_dir_all(clone.join(".git")).expect("a clone");
+        std::fs::write(clone.join(".git/HEAD"), head).expect("a HEAD");
+        Workspace {
+            id: id.to_owned(),
+            source: WorkspaceSource::LocalFolder(clone.to_string_lossy().into_owned()),
+            last_used: String::new(),
+            provider: String::new(),
+            ide: String::new(),
+            context: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_branch_comes_off_head_with_its_slashes_intact() {
+        // The whole reason this stopped being read off the id. A ref recovered by
+        // slugging an id spells `feature/auth` as `feature-auth`, which is also the
+        // name of a different branch, so the column could not say which of the two a
+        // workspace was on. `HEAD` says.
+        let dir = temp_dir();
+        let cache = dir.path();
+        let slashed = clone_with_head(
+            cache,
+            "blooop",
+            "devlaunch",
+            "devlaunch-feature-auth-np10",
+            "ref: refs/heads/feature/auth\n",
+        );
+        let dashed = clone_with_head(
+            cache,
+            "blooop",
+            "devlaunch",
+            "devlaunch-feature-auth-lsi0",
+            "ref: refs/heads/feature-auth\n",
+        );
+
+        assert_eq!(
+            head_branch_of(&slashed, cache).as_deref(),
+            Some("feature/auth")
+        );
+        assert_eq!(
+            head_branch_of(&dashed, cache).as_deref(),
+            Some("feature-auth")
+        );
+    }
+
+    #[test]
+    fn a_branch_switched_inside_the_workspace_is_the_one_reported() {
+        // The id records the branch a workspace was *created* for and cannot record
+        // anything else, so it went stale the moment somebody ran `git switch`
+        // inside the container. `HEAD` is the branch that is actually checked out,
+        // which is what a person reading a picker is choosing between.
+        let dir = temp_dir();
+        let cache = dir.path();
+        let workspace = clone_with_head(
+            cache,
+            "blooop",
+            "devlaunch",
+            "devlaunch-main-3j1t",
+            "ref: refs/heads/somewhere-else\n",
+        );
+
+        assert_eq!(
+            head_branch_of(&workspace, cache).as_deref(),
+            Some("somewhere-else")
+        );
+    }
+
+    #[test]
+    fn a_head_that_names_no_branch_answers_nothing_rather_than_guessing() {
+        // Every one of these is a case where the id would have carried a label, and
+        // a wrong or stale one. `None` lets the caller draw the whole id, which is
+        // the honest row. A detached HEAD is the interesting arm: it is a legal
+        // state a container can be left in, and the object id it holds is not a
+        // branch however much it looks like a word.
+        let dir = temp_dir();
+        let cache = dir.path();
+        for (label, head) in [
+            ("detached", "9f2c1ab4e5d6079813254768a9bcdef012345678\n"),
+            ("a tag, not a branch", "ref: refs/tags/v1.0.0\n"),
+            ("truncated", "ref:\n"),
+            ("empty", ""),
+        ] {
+            let workspace = clone_with_head(
+                cache,
+                "blooop",
+                "devlaunch",
+                &format!("devlaunch-main-{}", label.len()),
+                head,
+            );
+            assert_eq!(head_branch_of(&workspace, cache), None, "{label}");
+        }
+    }
+
+    #[test]
+    fn a_clone_that_is_not_there_answers_nothing() {
+        // The one thing reading `HEAD` cannot do that parsing an id could: a clone
+        // whose directory is gone has no branch to report. It is also a workspace
+        // whose source no longer exists, so a row that quietly kept its old label
+        // would be the misleading answer rather than the helpful one.
+        let dir = temp_dir();
+        let cache = dir.path();
+        let workspace = clone_with_head(
+            cache,
+            "blooop",
+            "devlaunch",
+            "devlaunch-main-3j1t",
+            "ref: refs/heads/main\n",
+        );
+        std::fs::remove_dir_all(cache.join("repos/blooop/devlaunch/devlaunch-main-3j1t"))
+            .expect("the clone goes");
+
+        assert_eq!(head_branch_of(&workspace, cache), None);
+    }
+
+    #[test]
+    fn a_gitfile_is_followed_to_the_directory_it_names() {
+        // dl's own clones carry a `.git` directory, but a repository's devcontainer
+        // is free to arrange its checkout as a worktree or a submodule, where `.git`
+        // is a file holding `gitdir: <path>`. Both spellings of the path, because
+        // git writes a relative one for a worktree inside the repository and an
+        // absolute one otherwise.
+        let dir = temp_dir();
+        let cache = dir.path();
+        for (id, relative) in [("devlaunch-main-rel", true), ("devlaunch-main-abs", false)] {
+            let clone = cache.join("repos/blooop/devlaunch").join(id);
+            let real = clone.join("elsewhere");
+            std::fs::create_dir_all(&real).expect("a git directory");
+            std::fs::write(real.join("HEAD"), "ref: refs/heads/main\n").expect("a HEAD");
+            let named = if relative {
+                "elsewhere".to_owned()
+            } else {
+                real.to_string_lossy().into_owned()
+            };
+            std::fs::write(clone.join(".git"), format!("gitdir: {named}\n")).expect("a gitfile");
+            let workspace = Workspace {
+                id: id.to_owned(),
+                source: WorkspaceSource::LocalFolder(clone.to_string_lossy().into_owned()),
+                last_used: String::new(),
+                provider: String::new(),
+                ide: String::new(),
+                context: String::new(),
+            };
+
+            assert_eq!(
+                head_branch_of(&workspace, cache).as_deref(),
+                Some("main"),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_outside_dls_layout_answers_nothing_however_readable_its_head_is() {
+        // The gate `repo_of` passes, held here too, so the pair still answers
+        // together. A directory somebody opened by path is a perfectly good git
+        // repository with a perfectly good HEAD, and it is not dl's to describe as
+        // one of its own.
+        let dir = temp_dir();
+        let cache = dir.path().join("cache");
+        let foreign = dir.path().join("elsewhere/myproject");
+        std::fs::create_dir_all(foreign.join(".git")).expect("a repository");
+        std::fs::write(foreign.join(".git/HEAD"), "ref: refs/heads/main\n").expect("a HEAD");
+        let workspace = Workspace {
+            id: "myproject".to_owned(),
+            source: WorkspaceSource::LocalFolder(foreign.to_string_lossy().into_owned()),
+            last_used: String::new(),
+            provider: String::new(),
+            ide: String::new(),
+            context: String::new(),
+        };
+
+        assert_eq!(head_branch_of(&workspace, &cache), None);
+        assert_eq!(repo_of(&workspace, &cache), None);
     }
 }
