@@ -37,13 +37,22 @@
 //! characters of base 36 do not. `HEAD` is exact, and it says which branch is checked
 //! out *now* rather than which one the workspace was made for.
 //!
-//! Two things this deliberately does not do. It does not draw `owner/repo@branch`:
-//! that reads as a spec `dl` would accept, and this is a picker, not a place to
-//! retype what you are already pointing at. And it never *only* elides: where a
-//! split would leave two rows drawn the same — two workspaces of one repository on
-//! one branch, which is what the id-scheme migration leaves for a while — both go
-//! back to their whole ids, because the row's own text is what [`chosen`] maps back
-//! to a workspace (see [`named`]).
+//! **The branch is never given up to keep two rows apart.** Where a split would
+//! leave two rows drawn the same — two workspaces of one repository on one branch,
+//! which is what the id-scheme migration leaves for a while — both gain a fourth
+//! column holding their whole id, rather than collapsing into it. The row's own text
+//! is what [`chosen`] maps back to a workspace, so *something* has to tell the two
+//! apart (see [`named`]); what does not follow is that it has to be the branch that
+//! goes. A picker is read one row at a time with the whole terminal width to spend,
+//! and the branch is what somebody standing at it is choosing by — so the id is
+//! appended and the branch stays where it was. This is the opposite trade from
+//! [the terminal tab](devlaunch_core::flows::launch::TerminalTitle), which drops the
+//! suffix and truncates the branch, and it is opposite because the constraints are:
+//! a tab is a few characters read at a glance and needs no uniqueness at all.
+//!
+//! One thing this deliberately does not do: it does not draw `owner/repo@branch`.
+//! That reads as a spec `dl` would accept, and this is a picker, not a place to
+//! retype what you are already pointing at.
 //!
 //! **One deliberate departure from Python's picker: it can take several rows.**
 //! Python's `iterfzf(..., multi=False)` answered one workspace always. Here the
@@ -125,11 +134,22 @@ struct Naming {
 /// independently absent: dl's own layout names both halves or neither, and a row
 /// holding one of them would be a column with the wrong thing under it.
 enum Tail {
-    /// The id read apart into the repo it was derived for and the ref-slug it
-    /// carries.
-    Split { repo: String, git_ref: String },
-    /// devpod's workspace name, whole — for a workspace dl did not clone, and for
-    /// one whose split would not have been unique (see [`named`]).
+    /// dl's own clone: the repo out of the cache layout, and the branch out of the
+    /// clone's `HEAD`.
+    Split {
+        repo: String,
+        git_ref: String,
+        /// The workspace id, drawn as a fourth column, when another row says the
+        /// same `<repo> | <branch>` and this is what tells the two apart.
+        ///
+        /// `None` for nearly every row, and that is the shape worth keeping: the
+        /// id is four columns of machinery for a question only a collision asks,
+        /// so it is on screen exactly where it is doing work. Which rows collide
+        /// is a fact about the whole list, so only [`named`] may set it.
+        distinguished_by: Option<String>,
+    },
+    /// devpod's workspace name, whole — for a workspace dl did not clone, which
+    /// has no layout to read a repo and no clone to read a `HEAD` from.
     Whole(String),
 }
 
@@ -199,22 +219,29 @@ fn drawn(namings: &[Naming]) -> Vec<String> {
         .collect()
 }
 
-/// How every row wants to be named, with any split that would not have been
-/// unique put back together.
+/// How every row wants to be named, with a column added to any that would not
+/// otherwise have been unique.
 ///
 /// **The second pass is not cosmetic.** [`chosen`] maps a picked row back to its
 /// workspace by the row's own text, first match winning, so two rows drawn the same
-/// are a row that selects the other workspace — and `dl rm` is one of the verbs
-/// this picker opens for. A ref-slug is a lossy reading of a ref ([`slug`] collapses
-/// `/` and `-` alike, and a long ref loses whole segments), so one repo really can
-/// hold two branches that read apart identically: `feature/auth` and `feature-auth`
-/// are devlaunch#55's own example, and they are two workspaces.
+/// are a row that selects the other workspace — and `dl rm` is one of the verbs this
+/// picker opens for. Two workspaces of one repository on one branch really do
+/// happen: the id-scheme migration leaves the renamed clone under its derived id
+/// beside a container still carrying the old one, until `dl --reconcile` or a
+/// `recreate` catches up.
 ///
-/// Falling back to the whole id is what settles it, because that is the string the
-/// ids were given a hashed suffix to make unique in the first place. It also puts
-/// the suffix on screen in exactly the case it is doing work, and nowhere else.
+/// The whole id is what settles it, because that is the string the ids were given a
+/// hashed suffix to make unique in the first place. It is **appended**, in a fourth
+/// column, rather than replacing the split: the two rows have the same branch, so
+/// the branch is not what was ambiguous, and taking it off screen to fix an
+/// ambiguity it did not cause leaves a person picking between two ids. The branch is
+/// what the picker is read by; the id is the tiebreak, and it is drawn in exactly
+/// the case it is doing work.
 ///
-/// [`slug`]: devlaunch_core::domain::workspace_id
+/// One pass is enough, and the id is why: an id is unique within a devpod context,
+/// so a row that gains one cannot collide with anything, and no row's new text can
+/// make a fresh pair. (Two contexts holding one id draw one row whatever is done
+/// here — see [`offered`].)
 fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
     let mut namings: Vec<Naming> = workspaces
         .iter()
@@ -228,7 +255,11 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
                 // with no ref beside it would be a column with the wrong thing under
                 // it. `listing` answers them separately only so that neither has to
                 // return a pair.
-                (Some(repo), Some(git_ref)) => Tail::Split { repo, git_ref },
+                (Some(repo), Some(git_ref)) => Tail::Split {
+                    repo,
+                    git_ref,
+                    distinguished_by: None,
+                },
                 _ => Tail::Whole(workspace.id.clone()),
             },
             id: workspace.id.clone(),
@@ -239,8 +270,14 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
         *drawn.entry(shared_key(naming)).or_default() += 1;
     }
     for naming in &mut namings {
-        if matches!(naming.tail, Tail::Split { .. }) && drawn[&shared_key(naming)] > 1 {
-            naming.tail = Tail::Whole(naming.id.clone());
+        if drawn[&shared_key(naming)] > 1 {
+            let id = naming.id.clone();
+            if let Tail::Split {
+                distinguished_by, ..
+            } = &mut naming.tail
+            {
+                *distinguished_by = Some(id);
+            }
         }
     }
     namings
@@ -271,18 +308,32 @@ fn shared_key(naming: &Naming) -> String {
 
 /// One row, padded into the label skim draws and [`chosen`] reads back.
 ///
-/// A split row takes three columns and a whole-name row takes two, so the name
-/// runs on through the space a ref would have occupied. That is deliberate rather
-/// than a column left blank: a foreign workspace has no repo, and a dash under a
-/// repo heading would be inventing the same answer twice.
+/// A split row takes three columns, four where a collision made it say its id, and a
+/// whole-name row takes two, so the name runs on through the space a repo and a
+/// branch would have occupied. That is deliberate rather than a column left blank: a
+/// foreign workspace has no repo, and a dash under a repo heading would be inventing
+/// the same answer twice.
 ///
-/// Nothing here keeps two rows apart. Whether the labels are distinct is a fact
-/// about the whole list, and [`offered`] is where it is established.
+/// The branch is drawn whole in every shape that has one. Nothing about the picker
+/// is short of room the way a tab bar is: rows are read one at a time, down the
+/// terminal, and a branch that ran past the width would still be searchable by the
+/// characters skim never drew.
+///
+/// Nothing here decides which rows collide. That is a fact about the whole list, and
+/// [`named`] is where it is established; this only draws what it was told.
 fn label(naming: &Naming, owner_width: usize, repo_width: usize) -> String {
     match &naming.tail {
-        Tail::Split { repo, git_ref } => {
+        Tail::Split {
+            repo,
+            git_ref,
+            distinguished_by,
+        } => {
+            let tiebreak = match distinguished_by {
+                Some(id) => format!(" | {id}"),
+                None => String::new(),
+            };
             format!(
-                "{owner:owner_width$} | {repo:repo_width$} | {git_ref}",
+                "{owner:owner_width$} | {repo:repo_width$} | {git_ref}{tiebreak}",
                 owner = naming.owner
             )
         }
@@ -879,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn two_rows_that_would_be_drawn_alike_go_back_to_their_whole_ids() {
+    fn two_rows_that_would_be_drawn_alike_say_their_ids_and_keep_their_branch() {
         // Two workspaces of one repository on one branch: two ids, two clones, and
         // one thing to say about either. Drawn apart they would be the same row
         // twice, and `chosen` maps a picked row back by its text with the first
@@ -891,9 +942,15 @@ mod tests {
         // the renamed clone under its derived id, and the container still carrying
         // the old one until `dl --reconcile` or a `recreate` catches up.
         //
-        // Both rows go back to the whole id, not just the second, because there is
-        // no first: the collision is between what the two rows say, and neither has
-        // a better claim on the shorter spelling.
+        // Both rows gain the column, not just the second, because there is no first:
+        // the collision is between what the two rows say, and neither has a better
+        // claim on the shorter spelling.
+        //
+        // **The branch stays.** These rows used to collapse into their whole ids,
+        // which fixed the ambiguity by deleting the column that was never ambiguous
+        // -- both are on `main` -- and left a person picking between two ids. The id
+        // is appended instead: same guarantee, and the branch is still what the row
+        // is read by.
         //
         // The pair this used to use was `feature/auth` beside `feature-auth`, which
         // collided because the ref was recovered by slugging an id and `slug`
@@ -920,8 +977,8 @@ mod tests {
         assert_eq!(
             offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
             [
-                "blooop | devlaunch-main-3j1t",
-                "blooop | devlaunch-main-legacy",
+                "blooop | devlaunch | main | devlaunch-main-3j1t",
+                "blooop | devlaunch | main | devlaunch-main-legacy",
             ]
         );
         // And the property the fallback exists for: each row still maps back to its
@@ -929,7 +986,7 @@ mod tests {
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
             Pick::Chose(one_id(
-                "blooop | devlaunch-main-legacy",
+                "blooop | devlaunch | main | devlaunch-main-legacy",
                 "devlaunch-main-legacy",
             ))
         );
@@ -1029,7 +1086,7 @@ mod tests {
         // repository is not, and keeps its columns.
         //
         // The pass this replaced could not do this: it de-split every row in the
-        // listing, so one ambiguous pair put the suffix back on rows that were never
+        // listing, so one ambiguous pair put the id back on rows that were never
         // ambiguous.
         let cache = Cache::new();
         cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
@@ -1062,8 +1119,9 @@ mod tests {
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
-                // Collided with the whole-name row, so it is back to its id.
-                "blooop | devlaunch-main-3j1t",
+                // Collided with the whole-name row, so it says its id too -- and
+                // still says its branch, which is what the row is picked by.
+                "blooop | devlaunch | main | devlaunch-main-3j1t",
                 "blooop | devlaunch | main",
                 // Did not collide with anything, so it keeps its columns -- and it
                 // spells the ref, where the id could only offer `feature-auth`.
@@ -1075,8 +1133,8 @@ mod tests {
     #[test]
     fn a_collision_only_pulls_in_the_rows_that_collide() {
         // The fallback is scoped to the rows drawn alike. A third workspace of the
-        // same repository keeps its split row, because nothing else is drawn like it
-        // -- so one ambiguous pair does not put the suffix back on a whole listing.
+        // same repository keeps its three columns, because nothing else is drawn
+        // like it -- so one ambiguous pair does not put the id on a whole listing.
         let cache = Cache::new();
         cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
         cache.clone_at("blooop", "devlaunch", "devlaunch-main-legacy", "main");
@@ -1109,8 +1167,8 @@ mod tests {
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
-                "blooop | devlaunch-main-3j1t",
-                "blooop | devlaunch-main-legacy",
+                "blooop | devlaunch | main | devlaunch-main-3j1t",
+                "blooop | devlaunch | main | devlaunch-main-legacy",
                 "blooop | devlaunch | feature/auth",
             ]
         );

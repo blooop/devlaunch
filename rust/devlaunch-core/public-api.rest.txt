@@ -585,6 +585,7 @@ pub fn devlaunch_core::domain::workspace_id::UnsafeName::hash<__H: core::hash::H
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_id::UnsafeName
 pub struct devlaunch_core::domain::workspace_id::WorkspaceId
 impl devlaunch_core::domain::workspace_id::WorkspaceId
+pub fn devlaunch_core::domain::workspace_id::WorkspaceId::label(&self) -> alloc::string::String
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::new(&str, &str, &str) -> core::result::Result<Self, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::value(&self) -> alloc::string::String
 impl core::clone::Clone for devlaunch_core::domain::workspace_id::WorkspaceId
@@ -957,14 +958,18 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::NotPre
 pub enum devlaunch_core::flows::launch::Placement
 pub devlaunch_core::flows::launch::Placement::Creating
 pub devlaunch_core::flows::launch::Placement::Creating::source: alloc::string::String
+pub devlaunch_core::flows::launch::Placement::Creating::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Creating::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Known
 pub devlaunch_core::flows::launch::Placement::Known::state: devlaunch_core::clients::devpod::ContainerState
+pub devlaunch_core::flows::launch::Placement::Known::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Known::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Listed
+pub devlaunch_core::flows::launch::Placement::Listed::title: alloc::string::String
 pub devlaunch_core::flows::launch::Placement::Listed::workspace_id: alloc::string::String
 impl devlaunch_core::flows::launch::Placement
 pub fn devlaunch_core::flows::launch::Placement::source(&self) -> &str
+pub fn devlaunch_core::flows::launch::Placement::title(&self) -> &str
 pub fn devlaunch_core::flows::launch::Placement::workspace_id(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::launch::Placement
 pub fn devlaunch_core::flows::launch::Placement::clone(&self) -> devlaunch_core::flows::launch::Placement

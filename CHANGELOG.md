@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-25
+
+### Changed
+
+- **The terminal tab reads `devlaunch@main` again, and the selector never gives up
+  a branch name to keep two rows apart.** Both are the same correction: one
+  workspace id, rendered for the surface that is reading it, rather than one string
+  everywhere.
+
+  The tab is the id with the two characters a glance cannot use taken off: the
+  four-character identity suffix, and the dash between the repo and the branch,
+  spelled `@`. `dl blooop/devlaunch` names the pane `devlaunch@main` where devpod,
+  the container hostname and the `WORKSPACE` column of `dl --ls` all still say
+  `devlaunch-main-3j1t`. It is a rendering of the id and not a second derivation of
+  the spec, so the two are one string with two characters changed and a tab still
+  matches a listing row by eye. The branch stays the id's slug, cut to the id's
+  budget, which is what keeps a 200-character branch from making a
+  200-character tab. The full spec, `owner/repo@branch`, had no such bound and is
+  not what came back.
+
+  What it costs is a name that is no longer a pure function of the workspace across
+  every way of reaching it. A launch that resolves a branch installs the label; a
+  bare `dl devlaunch-main-3j1t` never had a branch and installs the id. The profile
+  line that repaints the tab at every prompt is deduped by a hash of its own text,
+  so a workspace opened both ways carries two lines and the last one wins. One extra
+  line, and a tab that reads as the id, in a case most workspaces never reach.
+
+  In the selector, two rows that would be drawn alike now gain a fourth column
+  holding their whole id instead of collapsing into it:
+
+  ```
+  blooop | devlaunch | main | devlaunch-main-3j1t
+  blooop | devlaunch | main | devlaunch-main-legacy
+  ```
+
+  Both of those rows are on `main`, so the branch was never what was ambiguous, and
+  taking it off screen left a person picking between two ids. `dl rm` is one of the
+  verbs the selector opens for. Only the rows that collide grow the column.
+
 ## [0.16.0] - 2026-08-25
 
 ### Changed
