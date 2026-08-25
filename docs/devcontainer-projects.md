@@ -151,33 +151,53 @@ ceiling:
   container is attached to, which is the quickest way out of a launch that has
   just failed.
 
-The lasting fix is to give docker a bigger pool, in `/etc/docker/daemon.json`:
+The lasting fix is to give docker more pools, in `/etc/docker/daemon.json`:
 
 ```json
 {
   "default-address-pools": [
+    { "base": "172.17.0.0/12", "size": 16 },
     { "base": "10.128.0.0/12", "size": 24 }
   ]
 }
 ```
 
-That is 4096 /24s instead of 31, and losing the `192.168.0.0/16` default is half
-the point, because it is the range most likely to collide with the LAN the host
-is on. Check `ip -4 route` before settling on a base. A VPN that routes part of
-`10/8`, which ZeroTier and Tailscale both can, wants one outside it.
+That is 4096 /24s behind the 15 /16s the host already had. The shape of the list
+matters more than the numbers in it.
+
+`default-address-pools` replaces the defaults rather than adding to them, so
+whatever is in the list is the whole set. Listing the stock `172.17.0.0/12` pool
+first is what keeps it. Dropping the stock `192.168.0.0/16` pool is the
+deliberate part, because that is the range most likely to collide with the LAN
+the host is on.
+
+Docker fills the pools in order, taking the first free block of the first pool
+that has one. A host with the config above still hands out 172.18, 172.19,
+172.20 and so on exactly as it did before, and only reaches the 10.128 pool once
+the /12 in front of it is used up. Nothing about the first fifteen networks
+changes.
+
+That ordering is also what keeps the default bridge where it is. `docker0` is the
+exception to everything else here, because its subnet is re-derived at daemon
+start rather than stored, and it is the first allocation the daemon makes, so it
+takes the first block of the first pool. With the config above that is
+`172.17.0.0/16`, unchanged. With a single 10.128 pool it is `10.128.0.0/24`,
+which both moves `docker0` and resizes it to that pool's `size`. A /24 leaves
+about 253 addresses for containers started with no network of their own, which is
+ample on a devlaunch host where every workspace has a network of its own, but
+`172.17.0.1` is hardcoded in a decade of scripts and images, and keeping the
+172.17 pool in front means never finding out which of them are on the host. Set
+`bip` if a host needs `docker0` pinned regardless of the pools.
+
+Check `ip -4 route` before settling on a second base. A VPN that routes part of
+`10/8`, which ZeroTier and Tailscale both can, wants a base outside what it
+routes. GCP hands its default VPC subnets out of `10.128.0.0/9`, so a host that
+dials into one of those wants a base outside that as well.
 
 `systemctl restart docker` applies it. That restarts the daemon, not the machine,
 so no reboot is involved, but it stops every running container, so pick the
 moment. User-defined networks that already exist keep the subnets they hold, and
-only new ones draw from the new pool.
-
-The default bridge is the exception, because its subnet is re-derived at daemon
-start rather than stored. It moves into the new pool and takes the new size, so
-the `size` above is also the size of `docker0`. A /24 leaves about 253 addresses
-for containers started with no network of their own, against the /16 it had
-before. That is ample for a devlaunch host, where every workspace has a network
-of its own, but set `bip` alongside the pools if something on the host really
-does put hundreds of containers on the default bridge.
+only new ones draw from the new pools.
 
 ## Git LFS
 
