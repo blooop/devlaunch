@@ -1214,10 +1214,12 @@ pub(crate) fn removed(workspace_id: &str, insistence: Insistence) -> String {
 /// that was chosen, and the row alone is not what devpod is addressed by. This line
 /// is the one place both are known.
 ///
-/// A batch takes a heading and one indented line each, because the point of the list
-/// is that a batch which stops halfway can be read against what was asked for. A
-/// single pick is the same pair on one line: it is the common case, and a heading
-/// over one row is a heading with nothing under it.
+/// A batch takes a heading and one indented line each, because every workspace in a
+/// batch is attempted whatever happened to the ones before it: a refusal in the
+/// middle leaves a gap in the blocks below rather than ending the run, and the rows
+/// written down here first are the only thing that gap can be read against. A single
+/// pick is the same pair on one line: it is the common case, and a heading over one
+/// row is a heading with nothing under it.
 pub(crate) fn picked(verb: &str, picks: &NonEmpty<Chosen>) -> Vec<String> {
     let listed: Vec<String> = picks
         .iter()
