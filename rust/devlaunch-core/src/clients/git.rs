@@ -359,6 +359,102 @@ impl<'r> Git<'r> {
         self.about(clone, &["log", "--oneline", branch, "--not", "--remotes"])
     }
 
+    /// Every worktree registered in *clone*, as `worktree list --porcelain`
+    /// writes it: the clone's own entry first, then one paragraph per linked
+    /// worktree carrying its `branch` or `detached`, and `locked` or `prunable`
+    /// where git says so.
+    ///
+    /// **The registered paths are not necessarily paths on this machine.** An
+    /// agent harness running inside a devcontainer registers its worktrees at the
+    /// container's `/workspaces/<id>/…`, and the very same directories are
+    /// reached from the host through the clone. So this output is read for what
+    /// git *thinks* about each registration, and a registration is matched to a
+    /// directory by its place inside the clone rather than by resolving the path
+    /// git prints, which on a host resolves to nothing (devlaunch#426).
+    pub(crate) fn worktree_listing(&self, clone: &Path) -> GitAnswer<String> {
+        self.about(clone, &["worktree", "list", "--porcelain"])
+    }
+
+    /// Drop the registrations whose worktree directory git can no longer find.
+    ///
+    /// Locked registrations are skipped by git itself, which is what makes a lock
+    /// survive this and go on protecting a worktree somebody may be working in.
+    ///
+    /// All-or-nothing across the clone: git offers no way to drop one
+    /// registration and keep another, which is why the caller decides whether a
+    /// clone may be pruned at all rather than which of its registrations goes.
+    pub(crate) fn worktree_prune(&self, clone: &Path) -> GitAnswer<String> {
+        self.about(clone, &["worktree", "prune"])
+    }
+
+    /// The porcelain status of one linked worktree, asked through the clone's
+    /// admin directory for it.
+    ///
+    /// **Not [`Git::about`], and the difference is what makes this answerable at
+    /// all.** A linked worktree's own `.git` is a gitfile, and for an agent
+    /// worktree that gitfile names a path inside a container. Pointing
+    /// `--git-dir` at it on a host resolves nothing and git refuses — so a dirty
+    /// check that went the ordinary way would report every one of these as
+    /// unreadable, which is a refusal to reclaim anything.
+    /// `--git-dir=<clone>/.git/worktrees/<name>` is the same repository reached
+    /// from the side that does resolve here, and `--work-tree` is the directory
+    /// on this host.
+    ///
+    /// **`.claude/worktrees/` is excluded from the walk.** A worktree holding a
+    /// nested worktree would otherwise always read dirty — the nested directory
+    /// is untracked — so it would be kept forever while the bytes that matter sat
+    /// inside it. Those nested directories are what the sweep reasons about
+    /// separately, not somebody's unsaved work. The exclusion is a pathspec so
+    /// git never walks the subtree, which also keeps a multi-gigabyte `.pixi`
+    /// inside one out of the status walk.
+    pub(crate) fn worktree_dirt(&self, admin: &Path, work_tree: &Path) -> GitAnswer<String> {
+        let args = [
+            format!("--git-dir={}", admin.display()),
+            format!("--work-tree={}", work_tree.display()),
+            "status".to_owned(),
+            "--porcelain".to_owned(),
+            "--".to_owned(),
+            // Spelled here rather than taken from `flows::agent_worktrees`, which
+            // is where the directory is named and reasoned about: a client does
+            // not import a flow. The two have to move together.
+            ":!.claude/worktrees".to_owned(),
+        ];
+        self.captured(
+            "status --porcelain",
+            &SpawnSpec::new(
+                Invocation::new(PROGRAM)
+                    .with_args(args)
+                    .with_cwd(work_tree.to_path_buf()),
+            )
+            .with_timeout(ABOUT_ONE_REPO),
+        )
+        .map(|stdout| stdout.trim_end_matches('\n').to_owned())
+    }
+
+    /// How many commits are reachable from *rev* and from no ref in *repo*.
+    ///
+    /// Asked of the sibling bare cache, which is the repository devlaunch
+    /// actually fetches into, so `--all` there means "everything the forge had at
+    /// the last fetch". `0` is therefore the one answer that says a commit is
+    /// safely somewhere else.
+    ///
+    /// A refusal is usually `bad object`: the cache has never seen the commit,
+    /// which is what an unpushed branch looks like from over there. The caller
+    /// reads it that way and asks the clone as well rather than treating it as an
+    /// error.
+    pub(crate) fn commits_beyond_every_ref(&self, repo: &Path, rev: &str) -> GitAnswer<String> {
+        self.captured(
+            "rev-list",
+            &SpawnSpec::new(
+                Invocation::new(PROGRAM)
+                    .with_args(["rev-list", "--count", rev, "--not", "--all"])
+                    .with_cwd(repo.to_path_buf()),
+            )
+            .with_timeout(ABOUT_ONE_REPO),
+        )
+        .map(trimmed)
+    }
+
     // ------------------------------------------------------- the bare cache
 
     /// `git clone --bare <remote_url> <bare>` — the cache for one repository.

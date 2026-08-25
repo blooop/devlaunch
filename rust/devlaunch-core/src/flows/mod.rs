@@ -1,3 +1,5 @@
+// binary surface — not part of the frozen wf API (#251 §7)
+pub mod agent_worktrees;
 // binary surface — not part of the frozen wf API (#251 §7): the branch decision's
 // refusal travels inside a launch refusal, and the words for it are the binary's.
 pub mod branch_manager;
