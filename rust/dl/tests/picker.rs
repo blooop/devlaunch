@@ -13,15 +13,18 @@
 //! matches; the line that explains the rows is on the screen while the rows are —
 //! rather than the names of fields.
 //!
-//! The same reasoning admits one test that is not about the layout: a pick has to
-//! travel *out* through skim as well, as the label bytes `select::chosen` then
+//! The same reasoning admits the two tests that are not about the layout: a pick has
+//! to travel *out* through skim as well, as the label bytes `select::chosen` then
 //! matches against, and a label skim does not hand back verbatim reaches no
 //! workspace at all. That is the same class of failure — everything on dl's side
 //! spelled right, and the picker doing nothing — and it is equally invisible to a
-//! unit test, which feeds `chosen` the very strings it built.
+//! unit test, which feeds `chosen` the very strings it built. TAB is the same seam
+//! again and worse: skim keys a marked row by an index the row has to carry itself,
+//! so a batch is one place where marking three rows and acting on one is a defect no
+//! unit test can reach.
 //!
 //! The cost is that these are the only tests in the crate that need a terminal and
-//! a spawned process, which is why there are five of them and not a suite: what
+//! a spawned process, which is why there are six of them and not a suite: what
 //! the picker *offers* and the order it offers it in are pure functions tested in
 //! `select.rs`, and neither is re-tested here.
 
@@ -212,7 +215,7 @@ fn taking_a_row_acts_on_the_workspace_that_rows_label_names() {
     // longer a bare id: it carries a separator and a run of padding spaces, and
     // anything a later change adds to it — colour especially, which would put
     // escape sequences in `SkimItem::text` — travels this same path.
-    let (screen, calls) = Screen::run(
+    let (screen, calls, said) = Screen::run(
         &["stop"],
         "wayfinder",
         |screen| screen.row_of("blooop-devlaunch").is_none(),
@@ -223,6 +226,64 @@ fn taking_a_row_acts_on_the_workspace_that_rows_label_names() {
         calls.iter().any(|call| call == "stop blooop-wayfinder"),
         "the pick should have stopped `blooop-wayfinder`, but devpod was asked \
          {calls:?}, from this screen:\n{screen}"
+    );
+    // And the pick says which row it took, on the screen the picker gave back. The
+    // row is what was on screen while it was being chosen; the id is what every line
+    // after this names, and an id carries no owner, so neither half stands in for the
+    // other.
+    assert!(
+        said.contains("Picked blooop | blooop-wayfinder -> blooop-wayfinder"),
+        "a pick that named nothing: {said:?}"
+    );
+}
+
+/// The batch. `dl rm` is the verb TAB exists for, and the heading is the only thing
+/// in the run that says how many rows it took — devpod's own lines arrive one at a
+/// time and say nothing about the extent of what was asked for.
+///
+/// On a terminal rather than in `select.rs` for the reason the pick above is: TAB
+/// travels through skim, whose multi-select keys marked rows by an index the rows
+/// have to carry themselves, and every unit test here feeds `chosen` the strings it
+/// built rather than the ones skim handed back.
+#[test]
+fn a_batch_of_marked_rows_is_named_and_counted_before_the_first_one_goes() {
+    // TAB marks the row under the cursor and steps down, so two of them take the
+    // first two rows in devpod's order. Enter then takes the marked set rather than
+    // the row the cursor ended on, which is the whole difference between a batch and
+    // a pick.
+    let (screen, calls, said) = Screen::run(&["rm"], "\t\t", |_| true, Dismiss::Take);
+
+    // Asserted as one block rather than line by line, because the order is part of
+    // the claim: the rows are listed in the order they were marked, which is the
+    // order they are then acted on. `contains` and not equality because skim hands
+    // the terminal back with a title sequence of its own, and it lands on the front
+    // of the first line dl writes afterwards.
+    assert!(
+        said.contains(
+            "Picked 2 workspaces for rm:\r\n  blooop | blooop-devlaunch -> \
+             blooop-devlaunch\r\n  blooop | blooop-wayfinder -> blooop-wayfinder\r\n"
+        ),
+        "the batch was not named: {said:?}\nfrom this screen:\n{screen}"
+    );
+    // Both were removed, in the order they were marked, and each one said so. A
+    // heading over a batch that then acted on one row would be the worse failure of
+    // the two, which is why the calls are asserted beside the words.
+    for workspace in ["blooop-devlaunch", "blooop-wayfinder"] {
+        assert!(
+            calls
+                .iter()
+                .any(|call| *call == format!("delete {workspace}")),
+            "`{workspace}` was marked and never deleted; devpod was asked {calls:?}"
+        );
+        assert!(
+            said.contains(&format!("Removed workspace {workspace}.")),
+            "`{workspace}` was deleted without saying so: {said:?}"
+        );
+    }
+    // And the third row, which was never marked, was left alone.
+    assert!(
+        !calls.iter().any(|call| call == "delete myproject"),
+        "an unmarked workspace was deleted: {calls:?}"
     );
 }
 
@@ -274,17 +335,19 @@ impl Screen {
         Self::run(args, keys, settled, Dismiss::Quit).0
     }
 
-    /// The screen, and every call the fake devpod took before the child was gone.
+    /// The screen, every call the fake devpod took before the child was gone, and
+    /// what `dl` wrote once the picker had given the screen back.
     ///
-    /// `dismiss` is how the picker is left: quit, or the pick taken. The calls are
-    /// read after the child has exited, which is what makes the ones a pick causes
-    /// visible — the screen is snapshotted before, since dismissing draws over it.
+    /// `dismiss` is how the picker is left: quit, or the pick taken. The calls and
+    /// the trailing output are read after the child has exited, which is what makes
+    /// the ones a pick causes visible — the screen is snapshotted before, since
+    /// dismissing draws over it.
     fn run(
         args: &[&str],
         keys: &str,
         settled: impl Fn(&Screen) -> bool,
         dismiss: Dismiss,
-    ) -> (Self, Vec<String>) {
+    ) -> (Self, Vec<String>, String) {
         let world = World::new();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -306,7 +369,7 @@ impl Screen {
         let drawn = Arc::new(Mutex::new(Vec::new()));
         let mut reader = pair.master.try_clone_reader().expect("a pty reader");
         let collecting = Arc::clone(&drawn);
-        std::thread::spawn(move || {
+        let collecting_bytes = std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             while let Ok(read) = reader.read(&mut buffer) {
                 if read == 0 {
@@ -358,7 +421,17 @@ impl Screen {
         }
         let _ = child.kill();
 
-        (screen, world.devpod_calls())
+        // Drained to EOF before the bytes are read, not merely once the child is
+        // gone. The collector is a thread, so a process that has exited is only a
+        // promise that no *more* bytes are coming -- the last ones dl wrote can
+        // still be sitting in the pty unread, and the batch assertion is on the
+        // final line of the run. Every slave fd is closed by now (this end was
+        // dropped at spawn, the child's went with it), so the read that ends the
+        // loop is already pending and this waits on it rather than for it.
+        let _ = collecting_bytes.join();
+
+        let afterwards = Self::afterwards(&drawn.lock().expect("the collected bytes").clone());
+        (screen, world.devpod_calls(), afterwards)
     }
 
     /// The bytes a terminal received, as the grid it would be showing.
@@ -497,6 +570,25 @@ impl Screen {
             .position(|window| window == ALTERNATE)
             .unwrap_or(raw.len());
         String::from_utf8_lossy(&raw[..covered]).into_owned()
+    }
+
+    /// What the terminal was sent once the picker gave the screen back.
+    ///
+    /// [`Screen::underneath`]'s mirror, and the only place a line `dl` prints *after*
+    /// a pick can be read: those bytes arrive after skim has left the alternate
+    /// screen, so they are on neither the picker's grid nor the screen it covered.
+    /// Not laid out, for `underneath`'s reason — the question asked of it is whether
+    /// a sentence is in there.
+    ///
+    /// A run whose picker never opened has nothing after it, which makes an
+    /// assertion about these bytes fail rather than pass vacuously.
+    fn afterwards(raw: &[u8]) -> String {
+        const RESTORED: &[u8] = b"\x1b[?1049l";
+        let given_back = raw
+            .windows(RESTORED.len())
+            .position(|window| window == RESTORED)
+            .map_or(raw.len(), |at| at + RESTORED.len());
+        String::from_utf8_lossy(&raw[given_back..]).into_owned()
     }
 
     /// The first row showing `text`, counted from 0.

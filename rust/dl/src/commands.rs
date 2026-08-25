@@ -708,6 +708,12 @@ fn render_remove<'r>(
         }
     }
 
+    // Which workspace this is, named before devpod is asked and after the guard has
+    // had its say. Everything below names the resolved id, and a target that was a
+    // branch, a path, or a row in the picker is not that word — see
+    // [`render::removing`].
+    eprintln!("{}", render::removing(&workspace_id));
+
     let Records {
         storage, clones, ..
     } = records;
@@ -737,6 +743,11 @@ fn render_remove<'r>(
         }
         Ok(DeleteOutcome::Deleted { .. }) => {
             say(&notices);
+            // After the clone's own lines, because it closes the delete: what a
+            // reader wants from the end of one workspace's block is which workspace
+            // it was. `insistence` is passed because it decides what this exit code
+            // established — see [`render::removed`].
+            eprintln!("{}", render::removed(&workspace_id, insistence));
             Ending::Done
         }
     }
@@ -1101,9 +1112,16 @@ fn render_select<'r>(
         select::Arity::One
     };
     match select::pick(&workspaces, arity, cache) {
-        select::Pick::Chose(workspace_ids) => {
+        select::Pick::Chose(chosen) => {
+            // Said before the first workspace is touched, because skim has taken its
+            // screen back by now and nothing else in the run ever puts the row and
+            // the workspace id side by side — the id has no owner in it, and the row
+            // is not what devpod is addressed by.
+            for line in render::picked(verb.word(), &chosen) {
+                eprintln!("{line}");
+            }
             let mut ending = Ending::Done;
-            for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
+            for (already_acted, pick) in chosen.iter().enumerate() {
                 // Each workspace after the first is one more state change after
                 // whatever refresh the last one spawned, so the child indexing the
                 // old world must not be the last word — the same reasoning as
@@ -1117,7 +1135,7 @@ fn render_select<'r>(
                     context,
                     cache,
                     refresh,
-                    workspace_id,
+                    &pick.workspace_id,
                     verb.clone(),
                     devcontainer,
                 );

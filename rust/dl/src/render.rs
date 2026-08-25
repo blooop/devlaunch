@@ -27,8 +27,9 @@ use devlaunch_core::flows::launch::{
     BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
-    KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, Unlocatable, VolumeRefusal,
+    Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
+    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, Unlocatable,
+    VolumeRefusal,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
@@ -47,6 +48,7 @@ use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
 
+use crate::select::Chosen;
 use crate::session::StartupError;
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1150,89 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
 /// workspace still standing — reads as an answer to this.
 pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
     format!("--rm: the session has ended, removing {spec}.")
+}
+
+/// The workspace a removal is about to ask devpod for, said before the round trip.
+///
+/// The delete is the one place where "which workspace" was a question dl's own
+/// output did not answer until it was over. `dl <ws> rm` can be handed a branch, a
+/// path or a bare `owner/repo`, and `dl rm` is handed nothing at all: the picker
+/// takes a row reading `<owner> | <repo> | <branch>`, hands an id back and then draws
+/// its own screen away, so the name devpod is addressed by was never on screen at
+/// the moment it was chosen. Everything the delete says afterwards names that id,
+/// and this is the line they are answers to.
+///
+/// Before the round trip rather than after, for [`rm_on_exit_removing`]'s reason: a
+/// `devpod delete` is seconds of container teardown, and a name that arrives once
+/// the container is gone is a receipt rather than a warning. Said only once the
+/// unsaved-work guard has passed, so it never announces a removal that is about to
+/// be refused.
+pub(crate) fn removing(workspace_id: &str) -> String {
+    format!("Removing workspace {workspace_id}...")
+}
+
+/// devpod let go of the workspace: the receipt a delete that worked used to leave
+/// entirely to devpod.
+///
+/// The clone lines beside this one name the *clone*, and a workspace with no clone
+/// recorded prints none of them, so the only thing naming what had gone was `devpod
+/// delete`'s own stdout: devpod's wording to change, on the other stream from every
+/// line dl says about the same delete, and absent from exactly the case that has
+/// nothing else. Last of the delete's lines because it is the one that closes it,
+/// which is what makes a batch of picked rows readable by its ends.
+///
+/// **`insistence` decides the words, because it decides what the exit code proved.**
+/// Without `--force`, devpod fails on a workspace it does not have, so a delete that
+/// succeeded is a workspace devpod had and let go: `Removed` is a fact. `--force`
+/// passes devpod's own `--ignore-not-found`, which is the flag asking for absence
+/// rather than a removal — and it makes "there was nothing there" exit 0, with
+/// nothing in the answer to tell it from a real delete. A path spec is resolved
+/// without asking devpod anything at all, so `dl ./wrong-directory rm --force` gets
+/// that far and comes back successful. Saying `Removed` there would be dl affirming,
+/// on its own account, a delete that never happened.
+///
+/// One phrasing for `--force` whatever it found, rather than a guess between the
+/// two: absence is what it asked for and absence is what it established, on a
+/// workspace that was really there as much as on one that never was.
+pub(crate) fn removed(workspace_id: &str, insistence: Insistence) -> String {
+    match insistence {
+        Insistence::NotInsisted => format!("Removed workspace {workspace_id}."),
+        Insistence::Insisted => format!("Workspace {workspace_id} is gone."),
+    }
+}
+
+/// What the picker took, said before the first workspace is touched: each row as it
+/// was drawn, and the workspace id it resolved to.
+///
+/// **Both halves, because neither one is enough.** The picker draws
+/// `<owner> | <repo> | <branch>` and every line after this names a workspace id, and an
+/// id is `<repo-slug>-<ref-slug>-<suffix>`
+/// ([`devlaunch_core::domain::workspace_id`]) with **no owner in it at all**: a fork
+/// and its upstream are one id apart only in four characters of hash, which
+/// [`select`](crate::select) deliberately never puts on screen because reading it is
+/// no part of choosing a workspace. So an id alone cannot be checked against the row
+/// that was chosen, and the row alone is not what devpod is addressed by. This line
+/// is the one place both are known.
+///
+/// A batch takes a heading and one indented line each, because every workspace in a
+/// batch is attempted whatever happened to the ones before it: a refusal in the
+/// middle leaves a gap in the blocks below rather than ending the run, and the rows
+/// written down here first are the only thing that gap can be read against. A single
+/// pick is the same pair on one line: it is the common case, and a heading over one
+/// row is a heading with nothing under it.
+pub(crate) fn picked(verb: &str, picks: &NonEmpty<Chosen>) -> Vec<String> {
+    let listed: Vec<String> = picks
+        .iter()
+        .map(|pick| format!("{} -> {}", pick.row, pick.workspace_id))
+        .collect();
+    match listed.as_slice() {
+        [only] => vec![format!("Picked {only}")],
+        several => {
+            let mut lines = vec![format!("Picked {} workspaces for {verb}:", several.len())];
+            lines.extend(several.iter().map(|pick| format!("  {pick}")));
+            lines
+        }
+    }
 }
 
 /// devpod would not let go of the workspace, and the clone was kept.
@@ -3026,6 +3111,94 @@ mod tests {
                 remote: "origin".to_owned(),
             }),
             "Pushed branch fix/42 to origin"
+        );
+    }
+
+    /// The delete's own two lines, which are the only ones a workspace with no
+    /// clone recorded under it has: the clone notices beside them do not fire, and
+    /// what named it before was `devpod delete`'s stdout and nothing else.
+    #[test]
+    fn a_delete_names_the_workspace_going_in_and_names_it_again_once_it_is_gone() {
+        assert_eq!(
+            removing("devlaunch-main-3j1t"),
+            "Removing workspace devlaunch-main-3j1t..."
+        );
+        assert_eq!(
+            removed("devlaunch-main-3j1t", Insistence::NotInsisted),
+            "Removed workspace devlaunch-main-3j1t."
+        );
+        // `--force` carries devpod's `--ignore-not-found`, so a success establishes
+        // absence and not a removal: there is nothing in the answer to tell a real
+        // delete from a workspace that was never there, and a path spec never asked
+        // devpod either. The words say only what was established.
+        assert_eq!(
+            removed("devlaunch-main-3j1t", Insistence::Insisted),
+            "Workspace devlaunch-main-3j1t is gone."
+        );
+    }
+
+    /// The words a pick is reported in. That a real pick reaches them at all is
+    /// `tests/picker.rs`'s, which drives the binary on a pty; this is the wording,
+    /// including the two rows an id cannot tell apart, which no fake devpod listing
+    /// has to offer for the question to be settled.
+    ///
+    /// **The row is on the line beside the id, and that is the whole point of the
+    /// line.** An id is `<repo-slug>-<ref-slug>-<suffix>`
+    /// ([`devlaunch_core::domain::workspace_id`]) and the *owner is not in it* —
+    /// which is exactly the column the picker draws first and the one a fork is told
+    /// from its upstream by. A receipt naming the id alone leaves
+    /// `blooop | devlaunch | main` and `myfork | devlaunch | main` reporting the
+    /// same words with four characters of hash between them, and the hash was
+    /// deliberately never on screen while the row was being chosen.
+    #[test]
+    fn a_pick_names_the_row_that_was_chosen_beside_the_id_it_resolved_to() {
+        /// The picks as the picker hands them over: `(row, id)` written in that
+        /// order, and named on the way into `Chosen` so a pair written backwards is
+        /// a compile error here rather than a receipt with its halves swapped.
+        fn taken(picks: &[(&str, &str)]) -> NonEmpty<Chosen> {
+            NonEmpty::of(picks.iter().map(|(row, workspace_id)| Chosen {
+                workspace_id: (*workspace_id).to_owned(),
+                row: (*row).to_owned(),
+            }))
+            .expect("at least one pick")
+        }
+
+        assert_eq!(
+            picked(
+                "rm",
+                &taken(&[("blooop | devlaunch | main", "devlaunch-main-3j1t")])
+            ),
+            ["Picked blooop | devlaunch | main -> devlaunch-main-3j1t"]
+        );
+        // The two rows an id cannot tell apart, which is the case the row column is
+        // carried for: same repo, same ref, different owner, and the ids differ only
+        // in the hash.
+        assert_eq!(
+            picked(
+                "rm",
+                &taken(&[
+                    ("blooop | devlaunch | main", "devlaunch-main-3j1t"),
+                    ("myfork | devlaunch | main", "devlaunch-main-7q0x"),
+                    ("- | someones-project", "someones-project"),
+                ])
+            ),
+            [
+                "Picked 3 workspaces for rm:",
+                "  blooop | devlaunch | main -> devlaunch-main-3j1t",
+                "  myfork | devlaunch | main -> devlaunch-main-7q0x",
+                "  - | someones-project -> someones-project",
+            ]
+        );
+        // The order is the picker's, which is the order the rows were marked in and
+        // the order the batch is applied in. Re-sorting the heading would describe a
+        // run that did not happen.
+        assert_eq!(
+            picked("stop", &taken(&[("- | b", "b"), ("- | a", "a")])),
+            [
+                "Picked 2 workspaces for stop:",
+                "  - | b -> b",
+                "  - | a -> a",
+            ]
         );
     }
 

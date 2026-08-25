@@ -1688,9 +1688,15 @@ fn rm_on_exit_removes_the_workspace_once_the_session_has_ended() {
             // reach for Ctrl-C, and a notice that arrives once the container is
             // gone is a receipt rather than a warning.
             &format!("--rm: the session has ended, removing {MAIN}."),
+            // The removal's own two lines, which the `rm` verb prints from the same
+            // place: the first names the workspace devpod is about to be asked for
+            // (here the same word, because the target *was* an id), and the last
+            // closes the delete.
+            &format!("Removing workspace {MAIN}..."),
             "Removed workspace clone: {ROOT}/cache/devlaunch/repos/blooop/devlaunch/\
              devlaunch-main-3j1t",
             &format!("Removed local clone for {MAIN}"),
+            &format!("Removed workspace {MAIN}."),
         ]
     );
     assert!(!world.path(clone).exists(), "the clone was left behind");

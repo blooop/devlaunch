@@ -466,14 +466,19 @@ fn a_clean_clone_is_deleted_with_its_workspace() {
         run.out,
         "Successfully deleted workspace devlaunch-main-legacy\n"
     );
-    // Both lines, in Python's order: `worktree/workspace_clone.py` logs the
-    // directory from inside the removal, and `dl.py` logs the workspace after it
-    // returns. The first one is why the notice channel is a sink — a storage flow's
-    // line has to land where the storage flow said it.
+    // The workspace named before the round trip and again once it has gone, with the
+    // clone's two lines between them in Python's order: `worktree/workspace_clone.py`
+    // logs the directory from inside the removal, and `dl.py` logs the workspace
+    // after it returns. That middle pair is why the notice channel is a sink — a
+    // storage flow's line has to land where the storage flow said it. The outer two
+    // are dl's own, and they are the only lines that name what was deleted on a
+    // workspace with no clone recorded under it, where devpod's stdout is all there
+    // used to be.
     assert_eq!(
         run.err,
-        "Removed workspace clone: {ROOT}/cache/devlaunch/repos/blooop/devlaunch/\
-         devlaunch-main-legacy\nRemoved local clone for devlaunch-main-legacy\n"
+        "Removing workspace devlaunch-main-legacy...\nRemoved workspace clone: \
+         {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy\nRemoved local clone \
+         for devlaunch-main-legacy\nRemoved workspace devlaunch-main-legacy.\n"
     );
     assert!(!world.exists(clone), "the clone was left behind");
     assert!(
@@ -522,6 +527,28 @@ fn a_purge_takes_the_devcontainer_volumes_of_the_workspaces_it_deleted() {
     assert_eq!(
         world.docker_calls(),
         ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
+    );
+}
+
+/// The workspace dl has no clone for is the case the two new lines exist for: none
+/// of the clone notices fire, so before them the only thing on any stream naming
+/// what had been deleted was `devpod delete`'s own stdout — devpod's wording to
+/// change, and gone entirely if it ever stops printing it.
+///
+/// It is also what `dl rm` reads like from the picker, which hands an id back and
+/// then draws its screen away: the id was never on screen while the row was being
+/// chosen, and these are the lines that put it there.
+#[test]
+fn a_workspace_with_no_clone_is_still_named_going_in_and_coming_out() {
+    let world = World::base();
+
+    let run = world.dl(&["someones-project", "rm"]);
+
+    run.exited(0);
+    // A foreign workspace has no clone lines, so these two are all there is.
+    assert_eq!(
+        run.err,
+        "Removing workspace someones-project...\nRemoved workspace someones-project.\n"
     );
 }
 
@@ -600,6 +627,17 @@ fn force_deletes_despite_the_work_and_asks_devpod_to_ignore_an_absence() {
         run.out,
         "Successfully deleted workspace devlaunch-dirty-fqta\n"
     );
+    // The same "is gone" as the mistyped path above, on a workspace that really was
+    // there: one phrasing for `--force` whatever it found, because the flag asks for
+    // absence and absence is the whole of what its success establishes. A receipt
+    // that read `Removed` here and `is gone` there would be dl guessing which of the
+    // two happened.
+    assert!(
+        run.err
+            .ends_with("Workspace devlaunch-dirty-fqta is gone.\n"),
+        "{:?}",
+        run.err
+    );
     assert_eq!(
         world.devpod_calls(),
         [
@@ -615,6 +653,38 @@ fn force_deletes_despite_the_work_and_asks_devpod_to_ignore_an_absence() {
     );
 }
 
+/// `--force` establishes absence, not a removal, so the receipt must not claim one.
+///
+/// A path spec is resolved without asking devpod anything — there is no triple to
+/// look a record up by — and `--force` passes devpod's own `--ignore-not-found`,
+/// which turns "there was nothing there" into exit 0. Both halves are deliberate,
+/// and between them a mistyped directory reaches the delete, succeeds, and has
+/// nothing at all to distinguish it from a workspace that was really removed.
+///
+/// So `Removed workspace <id>.` would be dl affirming, on its own account, a delete
+/// that never happened. Mistype a path with `--force` and you get a confident
+/// receipt for a workspace that never existed.
+#[test]
+fn a_forced_delete_says_the_workspace_is_gone_and_never_that_it_removed_one() {
+    let world = World::base();
+
+    let run = world.dl(&["./no-such-directory-here", "rm", "--force"]);
+
+    run.exited(0);
+    assert_eq!(
+        run.err,
+        "Removing workspace no-such-directory-here...\nWorkspace no-such-directory-here is \
+         gone.\n",
+        "a workspace that never existed was reported as removed"
+    );
+    // The delete really was attempted, which is what makes the receipt above the
+    // only thing standing between a user and a false claim.
+    assert_eq!(
+        world.devpod_calls(),
+        ["devpod delete no-such-directory-here --ignore-not-found"]
+    );
+}
+
 #[test]
 fn a_delete_devpod_refuses_keeps_the_clone_and_hands_the_status_back() {
     let world = World::base();
@@ -623,9 +693,13 @@ fn a_delete_devpod_refuses_keeps_the_clone_and_hands_the_status_back() {
     run.exited(3);
     assert_eq!(
         run.err,
-        "devpod: cannot read devcontainer.json\ndevpod could not delete devlaunch-main-legacy; \
-         keeping the local clone so it stays retryable. If its devcontainer.json moved, restore \
-         the path or run: devpod delete devlaunch-main-legacy --force\n"
+        // The announcement stands even though the delete then failed: it says what
+        // was attempted, and the refusal under it says what came of it. No
+        // `Removed workspace` line, which is the whole point of that one being last.
+        "Removing workspace devlaunch-main-legacy...\ndevpod: cannot read \
+         devcontainer.json\ndevpod could not delete devlaunch-main-legacy; keeping the local clone \
+         so it stays retryable. If its devcontainer.json moved, restore the path or run: devpod \
+         delete devlaunch-main-legacy --force\n"
     );
     assert!(
         world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),

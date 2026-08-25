@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-25
+
+### Changed
+
+- **A delete now says which workspace it deleted.** `dl rm` from the picker said
+  nothing that named its own work: skim hands back a workspace id and takes its
+  screen away, and the only thing naming the workspace afterwards was `devpod
+  delete`'s own line on stdout — devpod's wording rather than dl's, on the other
+  stream from every line dl says about the same delete, and absent entirely for a
+  workspace with no clone recorded, where none of the clone notices fire either.
+  The delete now names it going in, once the unsaved-work guard has passed so a
+  refusal is never announced as a removal, and again on the way out, closing the
+  block so a batch reads by its ends.
+
+  A pick names **the row it took beside the id it resolved to**
+  (`Picked blooop | devlaunch | main -> devlaunch-main-3j1t`), and both halves
+  are load-bearing: an id is `<repo-slug>-<ref-slug>-<suffix>` and carries no
+  owner, so a fork and its upstream are one id apart only in the hashed suffix
+  the picker deliberately never draws. Reporting the id alone handed the user a
+  name they could not check against the row they chose. A batch of TAB-marked rows
+  is listed under a heading before the first workspace is touched, which is the
+  only thing in the run that says how many rows were taken.
+
+  `--force` closes with `Workspace <id> is gone.` rather than `Removed`, because
+  that is what its exit code proves. It passes devpod's `--ignore-not-found`, so
+  "there was nothing there" succeeds and cannot be told apart from a real delete,
+  and a path is resolved without asking devpod anything at all — so
+  `dl ./wrong-directory rm --force` reaches the delete and comes back successful.
+  Saying `Removed` there would be dl affirming a delete that never happened.
+
 ## [0.15.0] - 2026-08-25
 
 ### Changed
