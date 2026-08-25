@@ -4636,7 +4636,11 @@ fi
         let rendered = String::from_utf8_lossy(&rendered.stdout);
 
         // Verbatim: the prompt paints the name it was handed, not an expansion of it.
-        assert_eq!(rendered, format!("\x01\x1b]2;{title}\x07\x02"), "{rendered}");
+        assert_eq!(
+            rendered,
+            format!("\x01\x1b]2;{title}\x07\x02"),
+            "{rendered}"
+        );
     }
 
     #[test]

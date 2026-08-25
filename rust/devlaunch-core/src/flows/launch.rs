@@ -4581,7 +4581,10 @@ mod tests {
         // arms that title after a bare devpod name or a path leaf never had them
         // refused. A derived id holds none of the three, so nothing legitimate is
         // lost by dropping them at the same boundary the controls go.
-        assert_eq!(sanitize_title("ws$(id)`id`\\u"), Some("ws(id)idu".to_owned()));
+        assert_eq!(
+            sanitize_title("ws$(id)`id`\\u"),
+            Some("ws(id)idu".to_owned())
+        );
         // The whole point: what survives cannot be re-read as an instruction.
         let filtered = sanitize_title("$(touch /tmp/pwned)").expect("a title");
         assert!(!filtered.contains(['$', '`', '\\']), "{filtered}");
