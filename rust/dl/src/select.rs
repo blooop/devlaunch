@@ -238,10 +238,24 @@ fn drawn(namings: &[Naming]) -> Vec<String> {
 /// what the picker is read by; the id is the tiebreak, and it is drawn in exactly
 /// the case it is doing work.
 ///
-/// One pass is enough, and the id is why: an id is unique within a devpod context,
-/// so a row that gains one cannot collide with anything, and no row's new text can
-/// make a fresh pair. (Two contexts holding one id draw one row whatever is done
-/// here — see [`offered`].)
+/// **Rounds, not a pass, because an append is a new string.** A row that gains its
+/// id says something no row said before, and the list has to be asked about *that*:
+/// rows one and two colliding can leave row one drawn exactly like a row three that
+/// was never in their group, and a single pass never revisits row three. Collapsing
+/// to the whole id could not do this — `owner | id` is unique by construction, since
+/// ids are unique within a devpod context and nothing else is drawn in that shape —
+/// so appending is what gives that guarantee up, and the rounds are what buy it back.
+///
+/// A row that still collides *after* saying its id falls all the way back to
+/// `owner | id`, and that is where it stops. So a row moves at most twice, the moves
+/// only ever go one way, and the round that moves nothing is the fixpoint. Reaching
+/// the fallback at all takes a devpod workspace whose id holds ` | `, which devpod
+/// itself will not create. Correctness first where it does: `dl rm` acting on the
+/// wrong row is one workspace deleted in place of another, where a bare id is only a
+/// row that is harder to read.
+///
+/// (Two contexts holding one id draw one row whatever is done here — see
+/// [`offered`].)
 fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
     let mut namings: Vec<Naming> = workspaces
         .iter()
@@ -265,22 +279,46 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
             id: workspace.id.clone(),
         })
         .collect();
-    let mut drawn: HashMap<String, usize> = HashMap::new();
-    for naming in &namings {
-        *drawn.entry(shared_key(naming)).or_default() += 1;
-    }
-    for naming in &mut namings {
-        if drawn[&shared_key(naming)] > 1 {
-            let id = naming.id.clone();
-            if let Tail::Split {
-                distinguished_by, ..
-            } = &mut naming.tail
-            {
-                *distinguished_by = Some(id);
+    loop {
+        let drawn = tallied(&namings);
+        let mut moved = false;
+        for naming in &mut namings {
+            if drawn[&shared_key(naming)] <= 1 {
+                continue;
             }
+            let id = naming.id.clone();
+            match &mut naming.tail {
+                Tail::Split {
+                    distinguished_by: slot @ None,
+                    ..
+                } => {
+                    *slot = Some(id);
+                    moved = true;
+                }
+                Tail::Split { .. } => {
+                    naming.tail = Tail::Whole(id);
+                    moved = true;
+                }
+                // `owner | id` is where a row stops. A second row drawn like this
+                // one shares its owner *and* its id, which is one workspace listed
+                // under two devpod contexts and not something a label can separate.
+                Tail::Whole(_) => {}
+            }
+        }
+        if !moved {
+            break;
         }
     }
     namings
+}
+
+/// How many rows say each thing.
+fn tallied(namings: &[Naming]) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for naming in namings {
+        *counts.entry(shared_key(naming)).or_default() += 1;
+    }
+    counts
 }
 
 /// What two rows drawn the same have in common: the text of the row itself.
@@ -1127,6 +1165,66 @@ mod tests {
                 // spells the ref, where the id could only offer `feature-auth`.
                 "blooop | devlaunch | feature/auth",
             ]
+        );
+    }
+
+    #[test]
+    fn a_row_that_appends_its_id_cannot_land_on_a_row_that_was_never_colliding() {
+        // The append is a *new* string, so it has to be checked against the whole
+        // list and not only against the group it came out of. Here rows one and two
+        // collide, row one appends its id to settle that, and the row it becomes is
+        // byte-identical to row three -- which was never in the colliding group and
+        // is never revisited by a single pass.
+        //
+        // `chosen` is first-match-wins, so picking row three returned row one's
+        // workspace. `dl rm` is one of the verbs this picker opens for, so that is
+        // one workspace deleted in place of another.
+        //
+        // Collapsing to the whole id could not do this: `owner | id` is unique by
+        // construction, since ids are unique within a devpod context and nothing
+        // else is ever drawn in that shape. Appending gives that up, so the second
+        // round is what buys it back.
+        //
+        // The foreign ids here hold ` | `, which devpod itself would not create --
+        // the same synthetic `a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row`
+        // uses, and for the same reason: this picker draws whatever devpod lists.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        let workspaces = cache.listed(
+            r#"[
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch | main | devlaunch-main-3j1t",
+                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offers = offered(&workspaces, cache.path());
+        let unpadded: Vec<&str> = offers.iter().map(|offer| offer.unpadded.as_str()).collect();
+
+        assert_eq!(
+            unpadded.len(),
+            unpadded
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            "two rows say the same thing: {unpadded:?}"
+        );
+        // And the row that says row three's text still maps to row three.
+        assert_eq!(
+            chosen(&offers, vec![offers[2].label.clone()]),
+            Pick::Chose(one_id(
+                &offers[2].unpadded,
+                "devlaunch | main | devlaunch-main-3j1t",
+            ))
         );
     }
 
