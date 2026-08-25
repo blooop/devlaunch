@@ -744,8 +744,9 @@ fn render_remove<'r>(
             say(&notices);
             // After the clone's own lines, because it closes the delete: what a
             // reader wants from the end of one workspace's block is which workspace
-            // it was.
-            eprintln!("{}", render::removed(&workspace_id));
+            // it was. `insistence` is passed because it decides what this exit code
+            // established — see [`render::removed`].
+            eprintln!("{}", render::removed(&workspace_id, insistence));
             Ending::Done
         }
     }

@@ -26,9 +26,9 @@ use devlaunch_core::flows::launch::{
     BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
-    KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure, Unlocatable,
-    VolumeRefusal,
+    Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
+    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, RepointFailure,
+    Unlocatable, VolumeRefusal,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
@@ -1178,8 +1178,25 @@ pub(crate) fn removing(workspace_id: &str) -> String {
 /// line dl says about the same delete, and absent from exactly the case that has
 /// nothing else. Last of the delete's lines because it is the one that closes it,
 /// which is what makes a batch of picked rows readable by its ends.
-pub(crate) fn removed(workspace_id: &str) -> String {
-    format!("Removed workspace {workspace_id}.")
+///
+/// **`insistence` decides the words, because it decides what the exit code proved.**
+/// Without `--force`, devpod fails on a workspace it does not have, so a delete that
+/// succeeded is a workspace devpod had and let go: `Removed` is a fact. `--force`
+/// passes devpod's own `--ignore-not-found`, which is the flag asking for absence
+/// rather than a removal — and it makes "there was nothing there" exit 0, with
+/// nothing in the answer to tell it from a real delete. A path spec is resolved
+/// without asking devpod anything at all, so `dl ./wrong-directory rm --force` gets
+/// that far and comes back successful. Saying `Removed` there would be dl affirming,
+/// on its own account, a delete that never happened.
+///
+/// One phrasing for `--force` whatever it found, rather than a guess between the
+/// two: absence is what it asked for and absence is what it established, on a
+/// workspace that was really there as much as on one that never was.
+pub(crate) fn removed(workspace_id: &str, insistence: Insistence) -> String {
+    match insistence {
+        Insistence::NotInsisted => format!("Removed workspace {workspace_id}."),
+        Insistence::Insisted => format!("Workspace {workspace_id} is gone."),
+    }
 }
 
 /// What the picker took, said before the first workspace is touched: each row as it
@@ -2991,8 +3008,16 @@ mod tests {
             "Removing workspace devlaunch-main-abc12345..."
         );
         assert_eq!(
-            removed("devlaunch-main-abc12345"),
+            removed("devlaunch-main-abc12345", Insistence::NotInsisted),
             "Removed workspace devlaunch-main-abc12345."
+        );
+        // `--force` carries devpod's `--ignore-not-found`, so a success establishes
+        // absence and not a removal: there is nothing in the answer to tell a real
+        // delete from a workspace that was never there, and a path spec never asked
+        // devpod either. The words say only what was established.
+        assert_eq!(
+            removed("devlaunch-main-abc12345", Insistence::Insisted),
+            "Workspace devlaunch-main-abc12345 is gone."
         );
     }
 

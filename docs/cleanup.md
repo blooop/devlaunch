@@ -73,21 +73,41 @@ never announced as a removal. The last line closes the block, which is what make
 batch legible: one block per workspace, each ending in the name of the workspace it
 was.
 
+**With `--force` that last line reads `Workspace <id> is gone.` instead**, and the
+difference is what the exit code proved rather than a change of tone. Without the
+flag, devpod fails on a workspace it does not have, so a delete that succeeded is one
+devpod had and let go. `--force` passes devpod's own `--ignore-not-found`, which is
+the flag asking for absence rather than for a removal, and it makes "there was
+nothing there" succeed with nothing in the answer to tell it from a real delete. A
+path is resolved without asking devpod anything at all, so `dl ./wrong-directory rm
+--force` gets as far as the delete and comes back successful. Saying `Removed` there
+would be dl affirming a delete that never happened.
+
 The two middle lines belong to the clone, and a workspace with no clone recorded
 under it prints neither of them. That is the case the outer two exist for: before
 them, the only thing on any stream naming what had been deleted was `devpod
 delete`'s own line on stdout, which is devpod's wording rather than dl's.
 
 It matters most for `dl rm` with no workspace named. The picker draws its rows as
-`<owner> | <repo> | <ref>`, hands back a workspace id, and then takes its screen
-away, so the id was never on screen while the row was being chosen. A pick of more
-than one row is listed before the first workspace is touched:
+`<owner> | <repo> | <ref>` and then takes its screen away, so a pick names the row it
+took beside the id it resolved to, before the first workspace is touched:
 
 ```
-Selected 3 workspaces for rm:
-  devlaunch-main-a1b2c3d4
-  devlaunch-fix-9e8d7c6b
-  someones-project
+Picked blooop | devlaunch | main -> devlaunch-main-a1b2c3d4
+```
+
+Both halves, because neither stands in for the other. An id is
+`<repo-slug>-<ref-slug>-<suffix>` and carries no owner, so a fork and its upstream are
+one id apart only in the hashed suffix, which the picker deliberately never draws:
+reading it is no part of choosing a workspace. The row is what was on screen while the
+choice was being made, and the id is what devpod is addressed by and what every line
+below this names. A batch takes a heading and one line each:
+
+```
+Picked 3 workspaces for rm:
+  blooop | devlaunch | main -> devlaunch-main-a1b2c3d4
+  myfork | devlaunch | main -> devlaunch-main-9e8d7c6b
+  - | someones-project -> someones-project
 ```
 
 ### What purge deletes

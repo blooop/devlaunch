@@ -627,6 +627,17 @@ fn force_deletes_despite_the_work_and_asks_devpod_to_ignore_an_absence() {
         run.out,
         "Successfully deleted workspace devlaunch-dirty-dofaraji\n"
     );
+    // The same "is gone" as the mistyped path above, on a workspace that really was
+    // there: one phrasing for `--force` whatever it found, because the flag asks for
+    // absence and absence is the whole of what its success establishes. A receipt
+    // that read `Removed` here and `is gone` there would be dl guessing which of the
+    // two happened.
+    assert!(
+        run.err
+            .ends_with("Workspace devlaunch-dirty-dofaraji is gone.\n"),
+        "{:?}",
+        run.err
+    );
     assert_eq!(
         world.devpod_calls(),
         [
@@ -639,6 +650,38 @@ fn force_deletes_despite_the_work_and_asks_devpod_to_ignore_an_absence() {
     assert!(
         !world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-dofaraji"),
         "the clone survived a forced delete"
+    );
+}
+
+/// `--force` establishes absence, not a removal, so the receipt must not claim one.
+///
+/// A path spec is resolved without asking devpod anything — there is no triple to
+/// look a record up by — and `--force` passes devpod's own `--ignore-not-found`,
+/// which turns "there was nothing there" into exit 0. Both halves are deliberate,
+/// and between them a mistyped directory reaches the delete, succeeds, and has
+/// nothing at all to distinguish it from a workspace that was really removed.
+///
+/// So `Removed workspace <id>.` would be dl affirming, on its own account, a delete
+/// that never happened. Mistype a path with `--force` and you get a confident
+/// receipt for a workspace that never existed.
+#[test]
+fn a_forced_delete_says_the_workspace_is_gone_and_never_that_it_removed_one() {
+    let world = World::base();
+
+    let run = world.dl(&["./no-such-directory-here", "rm", "--force"]);
+
+    run.exited(0);
+    assert_eq!(
+        run.err,
+        "Removing workspace no-such-directory-here...\nWorkspace no-such-directory-here is \
+         gone.\n",
+        "a workspace that never existed was reported as removed"
+    );
+    // The delete really was attempted, which is what makes the receipt above the
+    // only thing standing between a user and a false claim.
+    assert_eq!(
+        world.devpod_calls(),
+        ["devpod delete no-such-directory-here --ignore-not-found"]
     );
 }
 
