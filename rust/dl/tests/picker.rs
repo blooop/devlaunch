@@ -369,7 +369,7 @@ impl Screen {
         let drawn = Arc::new(Mutex::new(Vec::new()));
         let mut reader = pair.master.try_clone_reader().expect("a pty reader");
         let collecting = Arc::clone(&drawn);
-        std::thread::spawn(move || {
+        let collecting_bytes = std::thread::spawn(move || {
             let mut buffer = [0u8; 8192];
             while let Ok(read) = reader.read(&mut buffer) {
                 if read == 0 {
@@ -420,6 +420,15 @@ impl Screen {
             }
         }
         let _ = child.kill();
+
+        // Drained to EOF before the bytes are read, not merely once the child is
+        // gone. The collector is a thread, so a process that has exited is only a
+        // promise that no *more* bytes are coming -- the last ones dl wrote can
+        // still be sitting in the pty unread, and the batch assertion is on the
+        // final line of the run. Every slave fd is closed by now (this end was
+        // dropped at spawn, the child's went with it), so the read that ends the
+        // loop is already pending and this waits on it rather than for it.
+        let _ = collecting_bytes.join();
 
         let afterwards = Self::afterwards(&drawn.lock().expect("the collected bytes").clone());
         (screen, world.devpod_calls(), afterwards)
