@@ -177,10 +177,20 @@ impl PtyAid {
     }
 
     /// Type a line and press Enter, the way a person at the terminal would.
+    ///
+    /// The line and its Enter go out in **one** `write_all`, and that is
+    /// load-bearing rather than tidy. A pty master write is copied into the line
+    /// discipline in one go, so a single write makes every completed line of a
+    /// paste readable at the same instant. Two writes are two of those, and the
+    /// gap between them is a window: the first one completes `fix this`, wakes
+    /// the read in `aid`, and `read_terminal_submission` drains what the terminal
+    /// holds *right now* — which, if the Enter completing `and then that` has not
+    /// been written yet, is line one alone. That is the flake in #401, and it is
+    /// the test lying about its own premise rather than a defect in what it
+    /// tests: a terminal delivering a paste writes it whole.
     fn send_line(&mut self, line: &str) {
         self.writer
-            .write_all(line.as_bytes())
-            .and_then(|()| self.writer.write_all(b"\n"))
+            .write_all(format!("{line}\n").as_bytes())
             .and_then(|()| self.writer.flush())
             .expect("typing into the pty");
     }
@@ -255,6 +265,53 @@ fn the_title_switch_really_silences_it_on_a_real_pty() {
 }
 
 #[test]
+fn a_falsey_no_tty_leaves_the_terminal_alone_on_a_real_pty() {
+    // One variable, one reading. `aid`'s prompt and the ssh transport are both
+    // gated on `DEVLAUNCH_NO_TTY`, and they used to disagree about what it says:
+    // core lowercased and stripped the value before comparing it against the
+    // falsey words, and `dl`'s own copy of that predicate compared the raw bytes
+    // with a bare `matches!`. So `FALSE` — a spelling a person writes without
+    // thinking, and the one `DEVLAUNCH_NO_TITLE=FALSE` would get right — kept the
+    // pty for the transport and took it away from the prompt.
+    //
+    // Cased *and* padded, because those were two separate halves of the divergence
+    // (`to_lowercase` and `osext::strip`) and either one alone still hides the
+    // other. The banner appearing is the whole assertion: no banner means aid
+    // decided there was no terminal to prompt at.
+    // One world for both spellings rather than one each: these tests are timing
+    // sensitive under a loaded `--workspace` run, and a scenario build is the
+    // expensive half of a case that only needs a warm workspace to prompt about.
+    let world = World::with(&["--warm"]);
+    for value in ["FALSE", " no "] {
+        let mut session = PtyAid::spawn(&world, &[MAIN], &[("DEVLAUNCH_NO_TTY", value)]);
+        session.expect(BANNER);
+        session.send_line("fix the bug");
+        session.expect("aid -> dl");
+        assert_eq!(session.wait(), 0, "DEVLAUNCH_NO_TTY={value:?}");
+    }
+
+    // And the truthy direction, in the same test because it is the same claim:
+    // the reading is consulted at all. Without this, the wrapper's whole body
+    // could be `false` — killing `DEVLAUNCH_NO_TTY=1` for every `dl` and `aid`
+    // there is — and all three crates stay green, which is what deleting `dl`'s
+    // own truthy test left behind.
+    //
+    // Asserted by what a skipped prompt *does* rather than by waiting out a
+    // banner that never comes: with no terminal to prompt at, `aid` hands the
+    // agent line straight to dl, so `aid -> dl` arriving with nothing typed is
+    // the opt-out working. Waiting for the banner's absence would cost the
+    // 60-second deadline on the passing path.
+    let opted_out = PtyAid::spawn(&world, &[MAIN], &[("DEVLAUNCH_NO_TTY", "1")]);
+    opted_out.expect("aid -> dl");
+    assert!(
+        !opted_out.text().contains(BANNER),
+        "the editor prompted anyway; the pty said:\n{}",
+        opted_out.text()
+    );
+    assert_eq!(opted_out.wait(), 0);
+}
+
+#[test]
 fn a_typed_prompt_reaches_the_agent_with_no_shell_in_the_way() {
     // The double quotes are the point: they reach the agent literally, because
     // the prompt never passes through a shell on the host — the escaping pain the
@@ -285,7 +342,8 @@ fn a_pasted_multi_line_prompt_arrives_whole_rather_than_leaking() {
     let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
     session.expect(BANNER);
     // One write, as a terminal delivers a paste: both lines arrive together, so
-    // the second is already queued when the first's Enter is read.
+    // the second is already queued when the first's Enter is read. `send_line`
+    // issuing exactly one write is what keeps that sentence true.
     session.send_line("fix this\nand then that");
     assert_eq!(session.wait(), 0);
     assert_eq!(

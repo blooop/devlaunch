@@ -1404,7 +1404,7 @@ impl<'r> RepositoryManager<'r> {
             self.git.fetch_all(&bare, limit)
         };
         if let Some(refused) = fetched.refusal() {
-            return Err(match refused.how {
+            return Err(match refused.how() {
                 Failure::TimedOut => FetchRepoError::TimedOut {
                     owner: owner.to_owned(),
                     repo: repo.to_owned(),
@@ -1502,18 +1502,15 @@ impl<'r> RepositoryManager<'r> {
         };
         Ok(match fetched.refusal() {
             None => FetchOutcome::Updated,
-            Some(refused) => {
-                // git reached the remote and was told the ref is not there: the
-                // one case where a non-zero exit is an *answer*. Classified from
-                // git's own words, which is why `fetch_ref` pins the C locale.
-                if refused.reason().contains("couldn't find remote ref") {
-                    FetchOutcome::RefMissingOnRemote
-                } else {
-                    FetchOutcome::Failed {
-                        reason: refused.reason().to_owned(),
-                    }
-                }
-            }
+            // git reached the remote and was told the ref is not there: the one
+            // case where a non-zero exit is an *answer*. Which case that is, the
+            // client says — it is the module that reads git's words.
+            Some(refused) => match refused.how() {
+                Failure::RefMissingOnRemote => FetchOutcome::RefMissingOnRemote,
+                _ => FetchOutcome::Failed {
+                    reason: refused.reason().to_owned(),
+                },
+            },
         })
     }
 
@@ -2713,6 +2710,29 @@ pub(crate) mod tests {
         let fake = FakeGit::new().with_script(
             ["git", "fetch"],
             Response::failed(128, "fatal: couldn't find remote ref refs/heads/nosuch\n"),
+        );
+        let manager = a_manager(&cache, Git::new(&fake));
+
+        assert_eq!(
+            manager
+                .fetch_ref("owner", "repo", "nosuch", &mut ignoring())
+                .expect("safe"),
+            FetchOutcome::RefMissingOnRemote
+        );
+    }
+
+    #[test]
+    fn a_ref_the_remote_has_not_got_is_its_own_answer_whatever_case_git_uses() {
+        // Up to v2.20.0 git said `Couldn't find remote ref` — capital C, and
+        // `die()` rather than `die(_())`, so pinning `LC_ALL=C` never covered it
+        // (`remote.c:1785` at v2.20.0; lowercase and translated from v2.21.0). On
+        // a host still running that git, an ordinary "start a new branch" launch
+        // becomes a failure, because the answer reads as one.
+        let cache = a_cache();
+        cache.given_bare_clone("owner", "repo");
+        let fake = FakeGit::new().with_script(
+            ["git", "fetch"],
+            Response::failed(128, "fatal: Couldn't find remote ref refs/heads/nosuch\n"),
         );
         let manager = a_manager(&cache, Git::new(&fake));
 

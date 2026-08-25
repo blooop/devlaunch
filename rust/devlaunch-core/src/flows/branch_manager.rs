@@ -21,7 +21,7 @@
 
 use std::path::Path;
 
-use crate::clients::git::{self, Git};
+use crate::clients::git::{self, Failure, Git};
 
 /// How the remote side of a branch is established.
 ///
@@ -235,12 +235,12 @@ impl<'r> BranchManager<'r> {
 
     /// Create a local branch at `start_point`.
     ///
-    /// A branch that is already there is not a failure, and is told apart from a
-    /// real one by reading git's stderr — which is why the client pins the C
-    /// locale on this verb. A failure git said nothing about falls through to the
-    /// error, carrying the exit status: "Failed to create branch: " with nothing
-    /// after the colon tells the reader only that something went wrong, which the
-    /// error already said.
+    /// A branch that is already there is not a failure. Which refusal that is, is
+    /// the client's to say — [`Failure::BranchAlreadyExists`] is read off git's
+    /// stderr where git's words are already being read, and this matches the arm.
+    /// A failure git said nothing about falls through to the error, carrying the
+    /// exit status: "Failed to create branch: " with nothing after the colon tells
+    /// the reader only that something went wrong, which the error already said.
     pub(crate) fn create_local_branch(
         &self,
         repo: &Path,
@@ -249,7 +249,7 @@ impl<'r> BranchManager<'r> {
     ) -> Result<(), BranchError> {
         match self.git.create_branch(repo, branch, start_point).refusal() {
             None => Ok(()),
-            Some(refused) if refused.reason().contains("already exists") => Ok(()),
+            Some(refused) if refused.how() == Failure::BranchAlreadyExists => Ok(()),
             Some(refused) => Err(BranchError::NotCreated {
                 branch: branch.to_owned(),
                 reason: refused.reason().to_owned(),
