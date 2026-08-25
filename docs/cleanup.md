@@ -361,6 +361,11 @@ worktrees' contents as uncommitted work, correctly, because removing the clone
 would destroy whatever they hold. So run one keeps the clone and sweeps the
 worktrees; run two finds the clone empty of them and reclaims it with no flag.
 
+The plan states two figures and they are two different claims: what removing the
+clone directories would free, and what the worktrees inside the clones it is
+keeping would free. Folding the second into the first made the headline number
+describe directories that are not going, and then said the same bytes twice.
+
 The bytes are also attributed in `dl --ls --size`, as a part of the clone's
 figure and never an addition, because the worktrees are inside it. They were
 invisible there on the host above, which is how it reached 100%.
