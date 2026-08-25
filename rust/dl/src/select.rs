@@ -520,13 +520,13 @@ mod tests {
     /// The owner and the repo are still read off the path and need nothing on disk,
     /// but the branch is read out of the clone's own `HEAD`
     /// ([`head_branch_of`]), so a row that names a clone which is not there has no
-    /// branch to show. One cache for the whole module: the tests only ever add
-    /// clones to it, and every clone is named for the workspace that holds it.
-    /// A clone of dl's own with *branch* checked out, at the layout `dl` puts it in.
+    /// branch to show.
     ///
-    /// Writes the one line of `HEAD` that git would, which is all the ref column
-    /// reads. Returns nothing: the listing names the same path through `{CACHE}`,
-    /// and having this return one would mean two spellings of it to keep in step.
+    /// **One per test, and that is the point rather than an accident.** A cache
+    /// shared by the module raced: two tests calling [`Self::clone_at`] on one path
+    /// both write `HEAD`, `std::fs::write` truncates before it writes, and the
+    /// reader in between sees an empty file and a row with no branch. It surfaced as
+    /// a *different* test failing intermittently, which is the worst way to find it.
     struct Cache(tempfile::TempDir);
 
     impl Cache {
@@ -553,6 +553,13 @@ mod tests {
                 .expect("a listing")
         }
 
+        /// A clone of dl's own with *branch* checked out, at the layout `dl` puts it
+        /// in.
+        ///
+        /// Writes the one line of `HEAD` that git would, which is all the ref column
+        /// reads. Returns nothing: the listing names the same path through `{CACHE}`
+        /// in [`Self::listed`], and having this return one would mean two spellings
+        /// of it to keep in step.
         fn clone_at(&self, owner: &str, repo: &str, id: &str, branch: &str) {
             let git = self
                 .path()
