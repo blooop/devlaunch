@@ -449,15 +449,25 @@ fn layout_of_clone(workspace: &Workspace, cache_dir: &Path) -> Option<(String, S
 /// answering to the same directory, and `--purge` names what it leaves rather
 /// than passing over it in silence.
 ///
-/// **The containment test is complete for dl's own clones**, which is what makes
-/// one predicate enough. A clone's directory is
+/// **The containment test is complete for the clones this build places**, which
+/// is what makes one predicate enough. A clone's directory is
 /// [`clone_root_in`](crate::domain::xdg::clone_root_in) of the cache directory
-/// plus owner, repo and id, so it is inside `cache_dir` by construction. It was
-/// not always: `config.toml` could name a `repos_dir` outside the cache, and a
-/// clone there answered `false` here — taking `devlaunch`, `SIZE` and `unsaved`
-/// out together and leaving a tree `--purge` and `--prune` both scanned past.
-/// Retiring that key (#467) removed the case rather than adding a second
-/// predicate to cover it. Complete *for a given cache home*: a moved
+/// plus owner, repo and id, so it is inside `cache_dir` by construction, and a
+/// configuration can no longer say otherwise: [`WorktreeConfig`] carries no
+/// paths at all.
+///
+/// Read that scope literally, because it is narrower than "dl's own clones" and
+/// the difference is a real machine. A build before #467 could place a clone
+/// outside the cache, under a `repos_dir` this one no longer reads, and such a
+/// clone still answers `false` here: `devlaunch`, `SIZE` and `unsaved` go out
+/// together and `--prune` does not reach it, since retiring the key moved the
+/// pruned root *inwards*. Deleting the key from `config.toml` also stops the
+/// migration notice, so nothing then names that tree at all. #460 accepted that
+/// stranding knowingly, on the ground that the alternative is a second
+/// predicate carrying a key nothing writes. What is fixed is that no new such
+/// clone can be made; what is not fixed is the ones already on disk.
+///
+/// Complete *for a given cache home* in the same literal way: a moved
 /// `XDG_CACHE_HOME` strands what the old one held, as it does for any tool that
 /// respects it.
 pub(crate) fn is_devlaunch_clone(workspace: &Workspace, cache_dir: &Path) -> bool {

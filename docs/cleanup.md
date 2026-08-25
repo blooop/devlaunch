@@ -134,10 +134,13 @@ Leaving 2 workspace(s) devlaunch did not create:
 Are you sure? [y/N]
 ```
 
-Two things `dl` does create are in that second list rather than the first.
+Three things `dl` does create can land in that second list rather than the first.
 `dl ./some/path` and `dl <git-url>` open a source `dl` did not clone, so it
-cannot tell them from a workspace you made by hand. Delete either with
-`dl <workspace> rm`.
+cannot tell them from a workspace you made by hand. The third is older: a
+workspace an earlier `dl` placed outside the cache, under the `worktree.repos_dir`
+key that version still read. This one no longer does, so such a clone reads as
+someone else's here and `--prune` does not reach it either. Delete any of the
+three with `dl <workspace> rm`.
 Erring this way is deliberate: a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
