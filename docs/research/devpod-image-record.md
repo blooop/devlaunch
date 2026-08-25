@@ -31,7 +31,10 @@ workspaces over one folder, two folders with identical content, a build with
 published to a local `registry:2` and pulled back.
 
 Nothing here is inferred from devpod's documentation. Every claim is a file this
-machine wrote or a command whose output is quoted.
+machine wrote or a command whose output is quoted. Section 6 then puts devpod's
+own source beside each measurement, which is where the two caveats the running
+binary cannot answer come from: the file is undocumented, and only the docker
+driver was established.
 
 ## 1. The record exists, and it is one field
 
@@ -66,6 +69,14 @@ That `Image` is the whole answer to the ticket's question. It is a reference
 devpod chose, not one anybody guessed, which is the property
 [devlaunch#325](https://github.com/blooop/devlaunch/issues/325) established for
 volume names and `docs/cleanup.md` states as the rule.
+
+**It is a tag, never an image id, and that is structural.** `ContainerDetails`
+has exactly four members and none of them can hold one
+(`pkg/devcontainer/config/container_details.go:16-34`): docker's top-level
+`.Image`, the `sha256:…` digest, has nowhere to land. The container the record
+above describes was running image id `sha256:a44bf1cf424e…` and the record kept
+only the tag. So the reference has to be resolved through docker to become an id,
+and between the write and the read the tag can have been moved.
 
 **This is the file `dl` already reads.** `flows::lifecycle::devcontainer_volumes`
 opens the same `workspace_result.json`, through the same
@@ -201,13 +212,16 @@ publish.
 
 ### Measured coverage on the scratch daemon
 
-Of the 14 `:devpod-`tagged images those thirteen workspaces produced, 10 were
-named by a surviving `workspace_result.json` and 4 were not: two superseded by a
-rebuild, two from creates that failed in their lifecycle hooks. Plus the
-`devpod build` leftover, which I removed by hand before the prebuild pull test.
-That ratio is an artifact of a test session that deliberately provoked every
-failure mode, not a prediction about a real host. What it fixes is the shape: a
-read of the records is a lower bound on the set, never the whole of it.
+At the point the inventory was taken, 13 `:devpod-`tagged images had come out of
+these workspaces. Nine were named by a surviving `workspace_result.json`; four
+were not, two superseded by a rebuild and two from creates that failed in their
+lifecycle hooks. Plus the `devpod build` leftover, removed by hand before the
+prebuild pull test. (A fourteenth tag on the same daemon, `proj-d3c2f:devpod-099e…`,
+belonged to a parallel run reading devpod's source, not to these workspaces.)
+
+That ratio is an artifact of a session that deliberately provoked every failure
+mode, not a prediction about a real host. What it fixes is the shape: a read of
+the records is a lower bound on the set, never the whole of it.
 
 ## 3. Attaching a label at build time
 
@@ -317,7 +331,31 @@ One thing worth writing down about primary sources here: the devpod `dl` runs is
 `github.com/skevetter/devpod`, alongside `github.com/skevetter/api` and
 `github.com/skevetter/agentapi`. Anyone reading devpod's source for this question
 needs that fork, and the `loft-sh` tree is the ancestor rather than the thing
-being run.
+being run. `gh api repos/skevetter/devpod` confirms `fork: true`, parent
+`loft-sh/devpod`; the fork's tags run `v0.8.0` to `v0.26.1`, which is where the
+"0.8" this repository used to pin actually lived.
+
+The source agrees with the measurements across both trees. In the fork,
+`pkg/devcontainer/config/result.go` and `container_details.go` are identical at
+`v0.8.0`, `v0.15.0` and `v0.26.1`, and the `LegacyImage` field carrying JSON tag `Image`
+is byte-identical throughout. Going further back into `loft-sh`, the file appears
+in the `v0.4.8` to `v0.5.0` window, together with the fourth `Result` member
+`DevContainerConfigWithPath`, while the **JSON key `Image` under
+`ContainerDetails.Config` has existed since `v0.1.0`** and has never been renamed.
+
+| tag | `workspace_result.json` | `Result` members | image field |
+| --- | --- | --- | --- |
+| loft-sh v0.1.0 | absent | three, untagged | `Image string` |
+| loft-sh v0.3.0 | absent | three | `Image`, now JSON tagged |
+| loft-sh v0.5.0 | present | four, all tagged | renamed `LegacyImage`, tag still `Image` |
+| loft-sh v0.6.15 | present | four | identical to v0.26.1 |
+| fork v0.8.0 to v0.26.1 | present | four | identical |
+
+One rename did happen, and it is in the *name* rather than the record: loft-sh
+built `vsc-<basename>-<hash>:<prebuildHash>` (`pkg/driver/docker/build.go:246-248`
+at v0.6.15) and the fork dropped the `vsc-` prefix, already gone by `v0.8.0`.
+That is worth knowing only because it means the tag *shape* is fork-specific
+while the *field* is not.
 
 ## 5. What sharing does to the answer
 
@@ -404,17 +442,133 @@ what the recipe pulls is not. That is the same "the hash covers the recipe, not
 what the recipe pulls" argument `CLAUDE.md` makes about the prebuild tag, seen
 from the other end.
 
+## 6. The code behind it
+
+Every claim above is a measurement, and the source says the same. Citations are
+against `github.com/skevetter/devpod` at `v0.26.1` (commit `86b6f9f5`) unless
+they name `loft-sh`.
+
+**The layout and the file names.** `pkg/provider/dir.go:17-24` declares
+`WorkspaceConfigFile = "workspace.json"` and
+`WorkspaceResultFile = "workspace_result.json"`; `GetWorkspaceDir`
+(`pkg/provider/dir.go:112-123`) joins `contexts/<context>/workspaces/<id>` under
+the config dir, which is `$DEVPOD_HOME` or `~/.devpod`
+(`pkg/config/dir.go:11-26`, `pkg/config/env.go:17`). This is the layout
+`clients::devpod_home` already spells, confirmed against its owner.
+
+**The type.** `workspace_result.json` is `devcontainer/config.Result`
+(`pkg/devcontainer/config/result.go:12-17`), whose four members are exactly the
+four keys observed. The image lives in `ContainerDetailsConfig`
+(`pkg/devcontainer/config/container_details.go:23-34`) as
+the `LegacyImage` field carrying JSON tag `Image`, and it is populated because the
+struct is the unmarshal target for `docker inspect`
+(`pkg/docker/helper.go:324-334`). The Go field carries a comment saying it
+"shouldn't get used anymore and is only there for testing", which is worth
+noting and is not a reason to distrust the value: it is whatever devpod passed to
+`docker run`, and the JSON key has been in place since loft-sh `v0.1.0`.
+
+**Written once, only on success.** The single write is `cmd/up.go:452`,
+`provider2.SaveWorkspaceResult(client.WorkspaceConfig(), result)`, at the tail of
+`devPodUp` after every failing branch has already returned. That is the code
+behind "a create that died in its hooks has no result".
+
+**Nothing in devpod reads the image back.** The readers of the file
+(`cmd/ssh.go:680`, `pkg/client/clientimplementation/workspace_client.go:220`)
+want the workdir and the last devcontainer.json. The only code that touches
+`ContainerDetails.Config.Image` is devpod's own e2e suite
+(`e2e/tests/up/dockerfile_build.go:86,103,132,150`), which uses it to check
+whether a rebuild produced a different image, which is close to the use a
+reclaim path would make of it.
+
+**The name and the hash.** `GetImageName`
+(`pkg/devcontainer/build/options.go:221-226`) is
+`ToDockerImageName(basename) + "-" + hash(localWorkspaceFolder)[:5] + ":" + prebuildHash`,
+which is the `<folder>-<5 hex>:devpod-<32 hex>` measured. `CalculatePrebuildHash`
+(`pkg/devcontainer/config/prebuild.go:33-72`) hashes four things: architecture, a
+normalized config, the post-feature Dockerfile content, and a `.dockerignore`
+aware hash of the build context. The normalized config keeps
+`DockerfileContainer{Dockerfile, Context, Build}`, and `Build` is
+`*ConfigBuildOptions` including `Options []string` (`config.go:291`) which is why
+adding `build.options` moved the tag. The prebuild lookup is the same string:
+`prebuildImage := prebuildRepo + ":" + prebuildHash` (`pkg/devcontainer/build.go:341`),
+and on a hit it becomes `BuildInfo.ImageName` and then `docker run`'s argument,
+which is why a prebuild reference is recorded verbatim.
+
+**Why the built image has no labels.** The metadata label is set on
+`BuildOptions.Labels` (`pkg/devcontainer/build/options.go:118-121`), and the
+buildx command builder (`pkg/driver/docker/build.go:95-105`) emits
+`-f -t --build-arg --build-context --target --platform --cache-from --cache-to`,
+the caller's `CliOpts`, and the context. It never emits `--label`, and never
+passes `Labels`. Only the internal buildkit path applies them
+(`pkg/devcontainer/buildkit/buildkit.go:116-119`). So on the default path the
+label is silently dropped, which is exactly the `Config.Labels: null` measured,
+and it is inherited from upstream rather than a fork regression: loft-sh
+`v0.6.15`'s `buildxBuild` emits no `--label` either.
+
+**Why `build.options` is the only route.** `ConfigBuildOptions.Options`
+(`config.go:290-291`) becomes `buildOptions.CliOpts`
+(`pkg/devcontainer/build/options.go:107`) and is appended raw to the buildx
+command line (`pkg/driver/docker/build.go:102`), so `["--label", "k=v"]` reaches
+docker. `customizations.devpod` has exactly two fields, `prebuildRepository` and
+`featureDownloadHTTPHeaders` (`config.go:346-349`), so there is no label there.
+And `--extra-devcontainer-path` cannot reach a build for two independent reasons:
+`AddConfigToImageMetadata` (`pkg/devcontainer/config/metadata.go:18-30`) copies
+only the base, actions and non-compose parts into an `ImageMetadata` that has no
+`DockerfileContainer` and no `ImageContainer` at all, and its call site
+(`pkg/devcontainer/build.go:46-55`) runs *after* the build has returned. Both
+halves match the measurement.
+
+**Why a delete keeps the image.** `pkg/devcontainer/delete.go:11-40` stops and
+deletes the container; `DeleteDevContainer`
+(`pkg/driver/docker/docker.go:174-188`) calls `Remove`, which is plain
+`docker rm <id>` with no `-v` (`pkg/docker/helper.go:150-157`); then
+`DeleteWorkspaceFolder`
+(`pkg/client/clientimplementation/workspace_client.go:845-868`) removes the ssh
+config entry and `os.RemoveAll`s the record directory. A grep of `pkg/`, `cmd/`
+and `providers/` for `rmi`, `image rm` or image pruning finds nothing. devpod
+never removes an image, anywhere.
+
+**Also on disk, outside the directory this ticket asked about.** There is a
+second, agent-side `workspace.json` at
+`$DEVPOD_HOME/agent/contexts/<context>/workspaces/<id>/workspace.json`
+(`provider.AgentWorkspaceInfo`, `pkg/agent/workspace.go:209`), and a third copy
+of the `Result` *inside* the container at `/var/run/devpod/result.json`
+(`pkg/config/paths.go:17`, written by `pkg/devcontainer/setup/setup.go:97-120`).
+The agent-side file carries no image reference. The in-container copy is not
+reachable from the host without entering the container.
+
+### Two caveats the source raises and the measurements cannot settle
+
+**The file is undocumented.** `workspace_result.json` appears nowhere in devpod's
+own `docs/` tree; `prebuildRepository` appears once, as a devcontainer.json
+snippet. So there is no published contract for this file's shape, only the code.
+It has in fact been stable since loft-sh `v0.5.0`, which is a track record rather
+than a promise. `clients::devpod_home` is already the place that absorbs that
+risk for the volume names, and it carries the argument in its module doc.
+
+**Only the docker driver was established.** Every claim here is the docker
+driver. The kubernetes driver builds its `ContainerDetails` by hand
+(`pkg/driver/kubernetes/find.go:49-58`) and the custom driver unmarshals whatever
+a provider prints (`pkg/driver/custom/custom.go:67`); whether either populates
+`Config.Image` was not traced. It is moot for `dl` as it stands, which drives the
+docker provider, and it would stop being moot if that ever changed.
+
 ## Answers, in one place
 
 1. **Does devpod record the image?** Yes.
    `workspace_result.json` → `.ContainerDetails.Config.Image`, the same file the
    volume sweep already parses. Uniform across build, image and prebuild paths.
-   `workspace.json` carries nothing.
+   `workspace.json` carries nothing. It is the reference devpod passed to
+   `docker run`, so a tag rather than an image id, and devpod's own non-test code
+   never reads it back.
 2. **Is it there after a failed create?** No. A create that dies in its lifecycle
    hooks leaves `workspace.json` alone, and the image it built stands. Same on
-   0.8.11.
+   0.8.11. The single write is at the tail of `devPodUp` after every failing
+   branch has returned (`cmd/up.go:452`).
 3. **Is it stable across versions?** Yes, unchanged across 0.8.11, 0.16.6 and
-   0.26.1, which spans everything `dl` has ever pinned.
+   0.26.1, which spans everything `dl` has ever pinned, and the JSON key goes
+   back to loft-sh `v0.1.0`. With one caveat the measurements cannot supply: the
+   file is undocumented, so that is a track record and not a promise.
 4. **Can `dl` cause a label at build time?** Not through `devpod up`, which
    exposes no build options, and not through `--extra-devcontainer-path`, whose
    merge drops `build.options`. Only through the repository's own
