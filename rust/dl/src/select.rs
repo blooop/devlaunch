@@ -82,6 +82,16 @@ use skim::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Offer {
     pub(crate) label: String,
+    /// The same row with the padding taken out: what this row *says*, as opposed to
+    /// how wide it happened to be drawn.
+    ///
+    /// Kept because a pick is reported back to the user in words
+    /// ([`render::picked`](crate::render::picked)), and `label` is padded against the
+    /// widest entry in the list — quoting it would put runs of spaces inside a
+    /// sentence, and a trailing one on the narrower of two rows that differ only by
+    /// padding. It is `label`'s own unpadded form and is built beside it from the
+    /// same naming, which is the only thing that keeps the two from drifting.
+    pub(crate) unpadded: String,
     pub(crate) workspace_id: String,
 }
 
@@ -150,9 +160,14 @@ pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> 
     let labels = drawn(&namings);
     workspaces
         .iter()
+        .zip(&namings)
         .zip(labels)
-        .map(|(workspace, label)| Offer {
-            label,
+        .map(|((workspace, naming), padded)| Offer {
+            label: padded,
+            // The same row asked for at no width, which is what `shared_key` asks
+            // `label` for and for the same reason: the row's own text, with the
+            // widths of its neighbours taken out.
+            unpadded: label(naming, 0, 0),
             workspace_id: workspace.id.clone(),
         })
         .collect()
@@ -289,6 +304,24 @@ pub(crate) enum Arity {
     Several,
 }
 
+/// One row the picker took: the workspace it names, and the words it was chosen by.
+///
+/// The pair rather than the id alone, because the two answer different questions and
+/// only one of them is on screen at the moment of choosing. An id is
+/// `<repo-slug>-<ref-slug>-<suffix>` ([`devlaunch_core::domain::workspace_id`]) and
+/// carries **no owner**, so `blooop | devlaunch | main` and
+/// `myfork | devlaunch | main` are two rows whose ids differ only in the hashed
+/// suffix this picker deliberately never draws. A command that reported the id alone
+/// would be telling the user about a workspace they cannot check against the row they
+/// took; `row` is what closes that, and [`render::picked`](crate::render::picked) is
+/// where the two are printed together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Chosen {
+    pub(crate) workspace_id: String,
+    /// The row's own text, unpadded — [`Offer::unpadded`], not [`Offer::label`].
+    pub(crate) row: String,
+}
+
 /// What the picker settled.
 ///
 /// Four arms where Python has `Optional[str]`, because its `None` covers four
@@ -298,10 +331,10 @@ pub(crate) enum Arity {
 /// help and exits 1 — but which one happened is the caller's to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
-    /// These workspaces, by id, in the order skim handed the rows back. One entry
-    /// always under [`Arity::One`]; [`NonEmpty`] because an empty set of choices
-    /// is [`Pick::Quit`], not a batch of nothing.
-    Chose(NonEmpty<String>),
+    /// These workspaces, in the order skim handed the rows back. One entry always
+    /// under [`Arity::One`]; [`NonEmpty`] because an empty set of choices is
+    /// [`Pick::Quit`], not a batch of nothing.
+    Chose(NonEmpty<Chosen>),
     /// The picker was opened and closed without a choice: Esc, Ctrl-C, or rows
     /// that named no workspace.
     Quit,
@@ -457,7 +490,10 @@ fn chosen(offers: &[Offer], rows: Vec<String>) -> Pick {
         offers
             .iter()
             .find(|offer| offer.label == *row)
-            .map(|offer| offer.workspace_id.clone())
+            .map(|offer| Chosen {
+                workspace_id: offer.workspace_id.clone(),
+                row: offer.unpadded.clone(),
+            })
     });
     NonEmpty::of(picked).map_or(Pick::Quit, Pick::Chose)
 }
@@ -563,7 +599,7 @@ mod tests {
         // offer rather than a line of text.
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id("from-an-image"))
+            Pick::Chose(one_id("- | from-an-image", "from-an-image"))
         );
     }
 
@@ -637,13 +673,28 @@ mod tests {
         assert!(skim_options(Arity::Several).no_sort);
     }
 
-    /// A `Pick::Chose` of exactly these ids, for the assertions below.
-    fn ids(named: &[&str]) -> Pick {
-        Pick::Chose(NonEmpty::of(named.iter().map(|id| (*id).to_owned())).expect("at least one id"))
+    /// A `Pick::Chose` of exactly these `(row, id)` pairs, for the assertions below.
+    ///
+    /// Both halves are written out rather than derived from the offers under test: an
+    /// expectation built by asking the same `offered` call what it said would agree
+    /// with itself whatever it answered, and the row is now part of what a pick
+    /// promises.
+    fn ids(named: &[(&str, &str)]) -> Pick {
+        Pick::Chose(
+            NonEmpty::of(named.iter().map(|(row, id)| Chosen {
+                workspace_id: (*id).to_owned(),
+                row: (*row).to_owned(),
+            }))
+            .expect("at least one id"),
+        )
     }
 
-    fn one_id(named: &str) -> NonEmpty<String> {
-        NonEmpty::of([named.to_owned()]).expect("one id")
+    fn one_id(row: &str, named: &str) -> NonEmpty<Chosen> {
+        NonEmpty::of([Chosen {
+            workspace_id: named.to_owned(),
+            row: row.to_owned(),
+        }])
+        .expect("one id")
     }
 
     #[test]
@@ -706,7 +757,7 @@ mod tests {
                 &offers,
                 vec![offers[2].label.clone(), offers[0].label.clone()]
             ),
-            ids(&["third", "first"])
+            ids(&[("- | third", "third"), ("- | first", "first")])
         );
         // A row naming no workspace is dropped rather than sinking the rows that
         // do name one — the batch the user marked still happens.
@@ -715,7 +766,7 @@ mod tests {
                 &offers,
                 vec!["something else".to_owned(), offers[1].label.clone()]
             ),
-            ids(&["second"])
+            ids(&[("- | second", "second")])
         );
     }
 
@@ -805,7 +856,10 @@ mod tests {
         // own workspace.
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id("devlaunch-feature-auth-nesatabe"))
+            Pick::Chose(one_id(
+                "blooop | devlaunch-feature-auth-nesatabe",
+                "devlaunch-feature-auth-nesatabe",
+            ))
         );
     }
 
@@ -840,7 +894,7 @@ mod tests {
         // And the property that matters: each row still reaches its own workspace.
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id("devlaunch | main"))
+            Pick::Chose(one_id("blooop | devlaunch | main", "devlaunch | main"))
         );
     }
 

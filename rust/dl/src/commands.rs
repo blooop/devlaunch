@@ -1104,19 +1104,20 @@ fn render_select<'r>(
         select::Arity::One
     };
     match select::pick(&workspaces, arity, cache) {
-        select::Pick::Chose(workspace_ids) => {
-            // A batch, listed before the first workspace is touched: the picker's
-            // screen is gone by now and TAB-marking five rows is the one way of
-            // asking for something whose extent nothing else says. One row needs no
-            // heading — the verb names it on its own first line.
-            let chosen: Vec<&str> = workspace_ids.iter().map(String::as_str).collect();
-            if chosen.len() > 1 {
-                for line in render::picked(verb.word(), &chosen) {
-                    eprintln!("{line}");
-                }
+        select::Pick::Chose(chosen) => {
+            // Said before the first workspace is touched, because skim has taken its
+            // screen back by now and nothing else in the run ever puts the row and
+            // the workspace id side by side — the id has no owner in it, and the row
+            // is not what devpod is addressed by.
+            let picks: Vec<(&str, &str)> = chosen
+                .iter()
+                .map(|pick| (pick.row.as_str(), pick.workspace_id.as_str()))
+                .collect();
+            for line in render::picked(verb.word(), &picks) {
+                eprintln!("{line}");
             }
             let mut ending = Ending::Done;
-            for (already_acted, workspace_id) in workspace_ids.iter().enumerate() {
+            for (already_acted, pick) in chosen.iter().enumerate() {
                 // Each workspace after the first is one more state change after
                 // whatever refresh the last one spawned, so the child indexing the
                 // old world must not be the last word — the same reasoning as
@@ -1130,7 +1131,7 @@ fn render_select<'r>(
                     context,
                     cache,
                     refresh,
-                    workspace_id,
+                    &pick.workspace_id,
                     verb.clone(),
                     devcontainer,
                 );

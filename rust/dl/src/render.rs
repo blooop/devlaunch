@@ -1182,20 +1182,33 @@ pub(crate) fn removed(workspace_id: &str) -> String {
     format!("Removed workspace {workspace_id}.")
 }
 
-/// What a picker that took more than one row is about to do, listed before the
-/// first workspace is touched.
+/// What the picker took, said before the first workspace is touched: each row as it
+/// was drawn, and the workspace id it resolved to.
 ///
-/// One line per workspace rather than a comma run, because these are ids carrying a
-/// hashed suffix and the point of the list is that a batch which stops halfway can
-/// be read against what was asked for. Nothing for a single row: the verb's own
-/// first line names that one, and a list of one is a heading with nothing under it.
-pub(crate) fn picked(verb: &str, workspace_ids: &[&str]) -> Vec<String> {
-    let mut lines = vec![format!(
-        "Selected {} workspaces for {verb}:",
-        workspace_ids.len()
-    )];
-    lines.extend(workspace_ids.iter().map(|id| format!("  {id}")));
-    lines
+/// **Both halves, because neither one is enough.** The picker draws
+/// `<owner> | <repo> | <ref>` and every line after this names a workspace id, and an
+/// id is `<repo-slug>-<ref-slug>-<suffix>`
+/// ([`devlaunch_core::domain::workspace_id`]) with **no owner in it at all**: a fork
+/// and its upstream are one id apart only in eight characters of hash, which
+/// [`select`](crate::select) deliberately never puts on screen because reading it is
+/// no part of choosing a workspace. So an id alone cannot be checked against the row
+/// that was chosen, and the row alone is not what devpod is addressed by. This line
+/// is the one place both are known.
+///
+/// A batch takes a heading and one indented line each, because the point of the list
+/// is that a batch which stops halfway can be read against what was asked for. A
+/// single pick is the same pair on one line: it is the common case, and a heading
+/// over one row is a heading with nothing under it.
+pub(crate) fn picked(verb: &str, picks: &[(&str, &str)]) -> Vec<String> {
+    let pair = |(row, id): &(&str, &str)| format!("{row} -> {id}");
+    match picks {
+        [only] => vec![format!("Picked {}", pair(only))],
+        several => {
+            let mut lines = vec![format!("Picked {} workspaces for {verb}:", several.len())];
+            lines.extend(several.iter().map(|pick| format!("  {}", pair(pick))));
+            lines
+        }
+    }
 }
 
 /// devpod would not let go of the workspace, and the clone was kept.
@@ -2983,32 +2996,57 @@ mod tests {
         );
     }
 
-    /// A picker cannot be driven from a test — it wants a tty — so the list it
-    /// prints is pinned here, where the words are.
+    /// The words a pick is reported in. That a real pick reaches them at all is
+    /// `tests/picker.rs`'s, which drives the binary on a pty; this is the wording,
+    /// including the two rows an id cannot tell apart, which no fake devpod listing
+    /// has to offer for the question to be settled.
+    ///
+    /// **The row is on the line beside the id, and that is the whole point of the
+    /// line.** An id is `<repo-slug>-<ref-slug>-<suffix>`
+    /// ([`devlaunch_core::domain::workspace_id`]) and the *owner is not in it* —
+    /// which is exactly the column the picker draws first and the one a fork is told
+    /// from its upstream by. A receipt naming the id alone leaves
+    /// `blooop | devlaunch | main` and `myfork | devlaunch | main` reporting the
+    /// same words with eight characters of hash between them, and the hash was
+    /// deliberately never on screen while the row was being chosen.
     #[test]
-    fn a_batch_of_picked_rows_is_listed_under_a_count_and_the_verb_that_asked() {
+    fn a_pick_names_the_row_that_was_chosen_beside_the_id_it_resolved_to() {
+        assert_eq!(
+            picked(
+                "rm",
+                &[("blooop | devlaunch | main", "devlaunch-main-abc12345")]
+            ),
+            ["Picked blooop | devlaunch | main -> devlaunch-main-abc12345"]
+        );
+        // The two rows an id cannot tell apart, which is the case the row column is
+        // carried for: same repo, same ref, different owner, and the ids differ only
+        // in the hash.
         assert_eq!(
             picked(
                 "rm",
                 &[
-                    "devlaunch-main-abc12345",
-                    "devlaunch-fix-def67890",
-                    "someones-project"
+                    ("blooop | devlaunch | main", "devlaunch-main-abc12345"),
+                    ("myfork | devlaunch | main", "devlaunch-main-def67890"),
+                    ("- | someones-project", "someones-project"),
                 ]
             ),
             [
-                "Selected 3 workspaces for rm:",
-                "  devlaunch-main-abc12345",
-                "  devlaunch-fix-def67890",
-                "  someones-project",
+                "Picked 3 workspaces for rm:",
+                "  blooop | devlaunch | main -> devlaunch-main-abc12345",
+                "  myfork | devlaunch | main -> devlaunch-main-def67890",
+                "  - | someones-project -> someones-project",
             ]
         );
         // The order is the picker's, which is the order the rows were marked in and
         // the order the batch is applied in. Re-sorting the heading would describe a
         // run that did not happen.
         assert_eq!(
-            picked("stop", &["b", "a"]),
-            ["Selected 2 workspaces for stop:", "  b", "  a"]
+            picked("stop", &[("- | b", "b"), ("- | a", "a")]),
+            [
+                "Picked 2 workspaces for stop:",
+                "  - | b -> b",
+                "  - | a -> a",
+            ]
         );
     }
 
