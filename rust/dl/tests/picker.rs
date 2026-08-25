@@ -203,6 +203,61 @@ fn the_invitation_is_on_the_picker_s_screen_and_never_on_the_one_it_covers() {
 }
 
 #[test]
+fn the_column_headings_are_drawn_between_the_invitation_and_the_rows() {
+    // The picker is a table, and this is the line that says what its columns are.
+    // It shares skim's header with the invitation, on a second line — which is a
+    // claim about skim and not about `dl`: the option holds one string, and whether
+    // a newline inside it becomes a second row is `Header::with_options`' business
+    // (it splits on newlines; `src/header.rs`). An option that took the whole thing
+    // as one line would draw `...TAB to mark several):OWNER | REPO`, and the unit
+    // test on `skim_options` would still pass, because the string `dl` asked for
+    // would be exactly right.
+    //
+    // A header and not a row, and that is the half with teeth. Offered as a row it
+    // would look identical on the screen this test reads, and then be filterable,
+    // markable with TAB, and pickable — a heading that maps back to no workspace,
+    // in a picker `dl rm` opens.
+    let screen = Screen::of(&["stop"]);
+
+    let heading = screen.row_of("OWNER").unwrap_or_else(|| {
+        panic!("the picker never drew its column headings:\n{screen}");
+    });
+    let invitation = screen
+        .row_of("Select workspaces (type to filter, TAB to mark several):")
+        .unwrap_or_else(|| panic!("the invitation was never drawn:\n{screen}"));
+    assert!(
+        invitation < heading,
+        "the headings belong under the invitation, not above it:\n{screen}"
+    );
+    assert!(
+        screen.rows[heading].contains("REPO"),
+        "the heading names one column and not the rest:\n{screen}"
+    );
+    for workspace in LISTED {
+        let row = screen
+            .row_of(workspace)
+            .unwrap_or_else(|| panic!("`{workspace}` was never drawn:\n{screen}"));
+        assert!(
+            heading < row,
+            "the headings belong above the rows they name, but `{workspace}` is on row {} and \
+             the headings on row {}:\n{screen}",
+            row + 1,
+            heading + 1,
+        );
+    }
+
+    // And it is not one of the rows: typing something no workspace matches empties
+    // the list, and a heading that was a row would still be sitting in it.
+    let filtered = Screen::after(&["stop"], "zzznomatch", |screen| {
+        LISTED.iter().all(|listed| screen.row_of(listed).is_none())
+    });
+    assert!(
+        filtered.row_of("OWNER").is_some(),
+        "the headings went with the rows, so they are a row:\n{filtered}"
+    );
+}
+
+#[test]
 fn taking_a_row_acts_on_the_workspace_that_rows_label_names() {
     // The seam every other test here stops short of: skim hands a *label* back,
     // and `select::chosen` finds the workspace by matching that label against the

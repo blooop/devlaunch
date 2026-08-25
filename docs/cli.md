@@ -11,11 +11,28 @@ The selector is built in. There is no `fzf` on `PATH` and no `iterfzf`, which is
 why there is nothing to install for it, and why `dl` with its input redirected
 away from a terminal simply declines to open one.
 
-Each row is `<owner> | <repo> | <branch>`. The owner and the repo are read off the
-clone's place in dl's layout, `<cache>/repos/<owner>/<repo>/<id>`, and the branch is
-read out of the clone's own `HEAD`. The hashed suffix does not appear: it is there
-to keep two branches from sharing an id, and reading it is no part of choosing a
-workspace.
+It is a table. Each row is `<owner> | <repo> | <branch>`, under headings that say so:
+
+```
+Select workspaces (type to filter, TAB to mark several):
+OWNER  | REPO             | BRANCH
+blooop | devlaunch        | main
+blooop | wayfinder        | wayfinder/devlaunch-467
+myfork | bencher          | fix/thing
+-      | someones-project
+```
+
+The owner and the repo are read off the clone's place in dl's layout,
+`<cache>/repos/<owner>/<repo>/<id>`, and the branch is read out of the clone's own
+`HEAD`. The hashed suffix does not appear: it is there to keep two branches from
+sharing an id, and reading it is no part of choosing a workspace.
+
+Every cell is padded to its column's widest entry, the heading counted as one of
+them, so a column starts in the same place on every line. The headings are drawn in
+the picker's header rather than offered as a row, which is what keeps them from
+being filtered away, marked with TAB or picked. A column is named exactly when some
+row has something in it, so a list of nothing dl cloned is headed `OWNER | REPO` and
+stops there.
 
 **The branch is the one checked out now**, not the one the workspace was made for,
 so a `git switch` inside a container shows up here. The columns used to be recovered
@@ -30,11 +47,13 @@ act on what you picked, pick it.
 Two rows can still be drawn alike, when two workspaces of one repository sit on one
 branch. The id-scheme migration leaves exactly that pair for a while: the renamed
 clone under its new id, and the container still on the old one. When it happens
-**both** rows gain a fourth column holding their whole id:
+**both** rows gain a fourth column holding their whole id, and the table gains the
+heading for it:
 
 ```
-blooop | devlaunch | main | devlaunch-main-3j1t
-blooop | devlaunch | main | devlaunch-main-legacy
+OWNER  | REPO      | BRANCH | WORKSPACE
+blooop | devlaunch | main   | devlaunch-main-3j1t
+blooop | devlaunch | main   | devlaunch-main-legacy
 ```
 
 The row's own text is how `dl` knows which workspace you picked, so two rows reading
@@ -48,9 +67,12 @@ that say `main` and carry a tiebreak, and `dl rm` is one of the verbs this opens
 Only the rows that collide grow the column. A third workspace of the same repository
 on another branch keeps its three.
 
-A row whose clone is not on disk shows its whole id in place of the repo and the
-branch, since there is no `HEAD` to read. That is the honest answer: the workspace's
-source is gone.
+A row whose clone is not on disk shows its whole id in the repo column and stops
+there, since there is no `HEAD` to read and so no branch to draw. That is the honest
+answer: the workspace's source is gone. It sits in the column rather than running on
+past it, which is what puts every row on one grid, and the price is that a long name
+widens the repo column for the rows around it. `REPO` heads it either way, and that
+is the one place the heading is looser than the cells under it.
 
 Nothing here is short of room, and that is why the picker spends it differently from
 [the terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace). A row

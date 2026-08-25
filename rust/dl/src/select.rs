@@ -22,8 +22,22 @@
 //! **What replaced the id is `<owner> | <repo> | <branch>`.** Two of those come out
 //! of dl's own clone layout, `<cache>/repos/<owner>/<repo>/<id>` ([`owner_of`],
 //! [`repo_of`]), and the third out of the clone's `HEAD` ([`head_branch_of`]) — no
-//! records opened, no config read, one small file per row. Each column but the last
-//! is padded to a common width so the rows line up under each other.
+//! records opened, no config read, one small file per row.
+//!
+//! **It is a table, headings and all.** Every cell is padded to its column's widest
+//! entry, the heading over it counted as one of them ([`Columns`]), so a column
+//! starts at the same place on every line and `OWNER | REPO | BRANCH` sits directly
+//! over the cells it names. The heading is drawn in skim's header beside the
+//! [`invitation`] rather than offered as a row, which is what keeps it from being
+//! filtered away, marked with TAB, or picked. A column is named exactly when some
+//! row has something in it: a listing of nothing dl cloned is headed `OWNER | REPO`
+//! and stops.
+//!
+//! A workspace dl did not clone sits in that grid too — its devpod name in the repo
+//! column, and the row ends there rather than drawing an empty branch cell. The name
+//! used to run on through the space a repo and a branch would have taken, exempt
+//! from the column and from the width it is measured for; it pays that width now,
+//! which is the price of every row being on one grid.
 //!
 //! The owner is what an id cannot carry at all, so a fork and its upstream used to
 //! be two rows spelled the same. The suffix is what an id carries that nobody reads:
@@ -104,10 +118,10 @@ pub(crate) struct Offer {
     /// Kept because a pick is reported back to the user in words
     /// ([`render::picked`](crate::render::picked)), and `label` is padded against the
     /// widest entry in the list — quoting it would put runs of spaces inside a
-    /// sentence. The padding is *internal*: [`label`] pads every column but the
-    /// last, so a label never ends in it and trimming one does not recover this.
-    /// It has to be built, and it is built beside `label` from the same naming,
-    /// which is the only thing that keeps the two from drifting.
+    /// sentence. The padding is *internal*: [`label`] pads every column and then
+    /// trims the line's end, so a label never ends in it and trimming one does not
+    /// recover this. It has to be built, and it is built beside `label` from the
+    /// same naming, which is the only thing that keeps the two from drifting.
     pub(crate) unpadded: String,
     pub(crate) workspace_id: String,
     /// The triple this row's clone is of, when the id it derives is this very
@@ -180,23 +194,37 @@ enum Tail {
     Whole(String),
 }
 
+/// The whole picker: its heading line, and the rows under it.
+///
+/// One value rather than two returns, because the heading is only true of *these*
+/// rows — it is padded to the widths they were drawn to, and it names a column
+/// exactly when one of them has something in it. A heading built anywhere else, or
+/// kept beside a list it was not measured from, is a heading that stops lining up
+/// with what is under it.
+pub(crate) struct Offering {
+    /// The column headings, padded to the same widths as the rows.
+    ///
+    /// Drawn inside skim's header along with the [`invitation`], which is what keeps
+    /// it out of the rows: a heading offered as a row is a row that can be filtered
+    /// away, marked with TAB, and picked.
+    pub(crate) heading: String,
+    pub(crate) offers: Vec<Offer>,
+}
+
 /// Every workspace devpod listed, in devpod's order, as the picker shows it.
 ///
 /// No filtering of any kind: the picker is a view of `dl --ls`, so a workspace
 /// devlaunch did not create and one whose source it cannot read are both offered.
 ///
-/// Both columns before the last are padded to the widest entry *in this list*,
-/// which is why the labels are built here in one pass over all of them rather than
-/// one workspace at a time: alignment is a fact about the set of rows, not about
-/// any one of them. The repo column is measured over the rows that have one, so a
-/// listing of nothing but foreign workspaces is not padded out around a column it
-/// has not got.
+/// Every column is padded to the widest entry *in this list*, which is why the
+/// labels are built here in one pass over all of them rather than one workspace at
+/// a time: alignment is a fact about the set of rows, not about any one of them.
 ///
 /// `cache_dir` is where dl keeps its clones, and it is what [`owner_of`],
 /// [`repo_of`] and [`head_branch_of`] are gated on the same layout reading — the same directory
 /// `--purge` decides ownership by, so they cannot disagree about which workspaces
 /// are dl's.
-pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> {
+pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Offering {
     // One pass, and it is [`named`]'s: a key that is the row's own unpadded text
     // sees every way two rows can be drawn alike, including the cross-shape case a
     // whole-name row makes with a split one, and de-splits only the rows that
@@ -211,40 +239,144 @@ pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> 
     // columns — `<owner> | <id>` collided the same way — and closing it means
     // addressing a workspace by more than its id.
     let namings = named(workspaces, cache_dir);
-    let labels = drawn(&namings);
-    workspaces
-        .iter()
-        .zip(&namings)
-        .zip(labels)
-        .map(|((workspace, naming), padded)| Offer {
-            label: padded,
-            triple: naming.triple.clone(),
-            // The same row asked for at no width, which is what `shared_key` asks
-            // `label` for and for the same reason: the row's own text, with the
-            // widths of its neighbours taken out.
-            unpadded: label(naming, 0, 0),
-            workspace_id: workspace.id.clone(),
-        })
-        .collect()
+    let columns = Columns::of(&namings);
+    Offering {
+        heading: heading(&columns),
+        offers: workspaces
+            .iter()
+            .zip(&namings)
+            .map(|(workspace, naming)| Offer {
+                label: label(naming, &columns),
+                triple: naming.triple.clone(),
+                // The same row asked for at no width, which is what `shared_key`
+                // asks `label` for and for the same reason: the row's own text,
+                // with the widths of its neighbours taken out.
+                unpadded: label(naming, &Columns::UNPADDED),
+                workspace_id: workspace.id.clone(),
+            })
+            .collect(),
+    }
 }
 
-/// Every row's label, padded against the widest entry in each column.
+/// How wide each column is drawn, and which of them this listing has anything to
+/// put in.
 ///
-/// Both columns before the last are padded to the widest entry *in this list*,
-/// which is why the labels are drawn from all of them at once rather than one row at
-/// a time: alignment is a fact about the set of rows, not about any one of them. The
-/// repo column is measured over the rows that have one, so a listing of nothing but
-/// foreign workspaces is not padded out around a column it has not got.
-fn drawn(namings: &[Naming]) -> Vec<String> {
-    let owner_width = widest(namings.iter().map(|naming| naming.owner.as_str()));
-    let repo_width = widest(namings.iter().filter_map(|naming| match &naming.tail {
-        Tail::Split { repo, .. } => Some(repo.as_str()),
-        Tail::Whole(_) => None,
-    }));
-    namings
-        .iter()
-        .map(|naming| label(naming, owner_width, repo_width))
-        .collect()
+/// Widths and not a per-row measurement, because alignment is a fact about the set
+/// of rows: a column is as wide as its widest cell, and every row pays that width so
+/// that whatever comes after it starts at the same place on every line.
+///
+/// **The heading counts as a cell.** A column whose entries are all narrower than
+/// the word over them would otherwise have that word overhang into the next column,
+/// which is a heading that lines up with nothing — [`render::table_lines`] reproduces
+/// exactly that for `dl --ls`'s `WORKSPACE`, deliberately, because it is Python's and
+/// the harness compares it byte for byte. Nothing here is anybody's byte-for-byte, so
+/// it is measured the way it should have been.
+///
+/// [`render::table_lines`]: crate::render::table_lines
+struct Columns {
+    owner: usize,
+    /// The repository — **or** the devpod name of a workspace dl did not clone,
+    /// which is drawn in this column too and therefore measured for it.
+    ///
+    /// The name used to be exempt: it ran on through the space a repo and a branch
+    /// would have taken, so a long one cost the rows around it nothing. It sits in
+    /// the column now, which is what puts every row on the same grid, and the price
+    /// is that one long foreign name widens the column for everybody — the same
+    /// price one long repository name has always cost.
+    repo: usize,
+    /// `None` when no row in this listing has a branch: nothing dl cloned is in it,
+    /// so there is no column and no heading over it.
+    git_ref: Option<usize>,
+    /// Whether any row was drawn its whole id to tell it from another
+    /// ([`Tail::Split::distinguished_by`]).
+    ///
+    /// A flag and not a width, because it is the last column: nothing follows it, so
+    /// there is nothing to line up and the only question left is whether the heading
+    /// names a column that exists.
+    workspace: bool,
+}
+
+impl Columns {
+    /// Every column at no width, which is what [`shared_key`] measures a row by: the
+    /// row's own text, with the widths of its neighbours taken out.
+    const UNPADDED: Self = Self {
+        owner: 0,
+        repo: 0,
+        git_ref: Some(0),
+        workspace: false,
+    };
+
+    fn of(namings: &[Naming]) -> Self {
+        let cells =
+            |heading: &'static str, texts: Vec<&str>| widest(std::iter::once(heading).chain(texts));
+        let branches: Vec<&str> = namings
+            .iter()
+            .filter_map(|naming| match &naming.tail {
+                Tail::Split { git_ref, .. } => Some(git_ref.as_str()),
+                Tail::Whole(_) => None,
+            })
+            .collect();
+        Self {
+            owner: cells(
+                OWNER,
+                namings.iter().map(|naming| naming.owner.as_str()).collect(),
+            ),
+            repo: cells(
+                REPO,
+                namings
+                    .iter()
+                    .map(|naming| match &naming.tail {
+                        Tail::Split { repo, .. } => repo.as_str(),
+                        Tail::Whole(name) => name.as_str(),
+                    })
+                    .collect(),
+            ),
+            git_ref: (!branches.is_empty()).then(|| cells(BRANCH, branches)),
+            workspace: namings.iter().any(|naming| {
+                matches!(
+                    &naming.tail,
+                    Tail::Split {
+                        distinguished_by: Some(_),
+                        ..
+                    }
+                )
+            }),
+        }
+    }
+}
+
+/// The words over the columns.
+const OWNER: &str = "OWNER";
+const REPO: &str = "REPO";
+const BRANCH: &str = "BRANCH";
+const WORKSPACE: &str = "WORKSPACE";
+
+/// The heading line, padded to the same widths the rows were drawn to.
+///
+/// A column is named exactly when some row has something in it, so a listing of
+/// nothing but workspaces dl did not clone is headed `OWNER | REPO` and stops —
+/// there is no branch to head, and no id column, so naming either would put a word
+/// over empty air.
+///
+/// **`REPO` heads the devpod name of a foreign workspace too**, because that is the
+/// column the name is drawn in. It is the one place the heading is looser than the
+/// cells under it: a workspace dl did not clone has no repository, and what it has
+/// instead is its own name. The alternative — a fifth shape where the name goes in
+/// the `WORKSPACE` column — draws two empty cells to get there and puts the only
+/// thing that row says furthest right on the line.
+fn heading(columns: &Columns) -> String {
+    let mut line = format!(
+        "{OWNER:owner$} | {REPO:repo$}",
+        owner = columns.owner,
+        repo = columns.repo,
+    );
+    if let Some(width) = columns.git_ref {
+        line.push_str(&format!(" | {BRANCH:width$}"));
+        if columns.workspace {
+            line.push_str(&format!(" | {WORKSPACE}"));
+        }
+    }
+    trimmed(line)
 }
 
 /// How every row wants to be named, with a column added to any that would not
@@ -378,16 +510,22 @@ fn shared_key(naming: &Naming) -> String {
     // so a change to how a row is drawn cannot leave the key describing the old
     // drawing. It also makes the NUL delimiter unnecessary — ` | ` is the delimiter,
     // and it is the one on screen.
-    label(naming, 0, 0)
+    label(naming, &Columns::UNPADDED)
 }
 
 /// One row, padded into the label skim draws and [`chosen`] reads back.
 ///
-/// A split row takes three columns, four where a collision made it say its id, and a
-/// whole-name row takes two, so the name runs on through the space a repo and a
-/// branch would have occupied. That is deliberate rather than a column left blank: a
-/// foreign workspace has no repo, and a dash under a repo heading would be inventing
-/// the same answer twice.
+/// A split row takes three columns, four where a collision made it say its id. A
+/// whole-name row takes two: the devpod name sits in the repo column, and the row
+/// stops there rather than drawing an empty branch cell after it. Every cell is
+/// padded to its column, so the fourth column starts at the same place on every line
+/// that has one and the [`heading`] over them all lines up.
+///
+/// **And then the line's end is trimmed**, which is what keeps the padding
+/// *internal*. A row's last cell has nothing after it to line up with, so the spaces
+/// that would follow it are invisible on a terminal and merely wrong everywhere else:
+/// in [`Offer::unpadded`], in a `dl rm` receipt quoting the row, and in a test
+/// asserting what was drawn.
 ///
 /// The branch is drawn whole in every shape that has one. Nothing about the picker
 /// is short of room the way a tab bar is: rows are read one at a time, down the
@@ -396,8 +534,13 @@ fn shared_key(naming: &Naming) -> String {
 ///
 /// Nothing here decides which rows collide. That is a fact about the whole list, and
 /// [`named`] is where it is established; this only draws what it was told.
-fn label(naming: &Naming, owner_width: usize, repo_width: usize) -> String {
-    match &naming.tail {
+fn label(naming: &Naming, columns: &Columns) -> String {
+    let owner_width = columns.owner;
+    let repo_width = columns.repo;
+    // A split row always has a branch, so the column exists whenever one is drawn;
+    // `None` means no split row is in this listing, and nothing below runs.
+    let ref_width = columns.git_ref.unwrap_or(0);
+    trimmed(match &naming.tail {
         Tail::Split {
             repo,
             git_ref,
@@ -408,12 +551,27 @@ fn label(naming: &Naming, owner_width: usize, repo_width: usize) -> String {
                 None => String::new(),
             };
             format!(
-                "{owner:owner_width$} | {repo:repo_width$} | {git_ref}{tiebreak}",
+                "{owner:owner_width$} | {repo:repo_width$} | {git_ref:ref_width$}{tiebreak}",
                 owner = naming.owner
             )
         }
-        Tail::Whole(name) => format!("{owner:owner_width$} | {name}", owner = naming.owner),
-    }
+        Tail::Whole(name) => format!(
+            "{owner:owner_width$} | {name:repo_width$}",
+            owner = naming.owner
+        ),
+    })
+}
+
+/// A drawn line with the padding its last cell did not need taken off.
+///
+/// One function because [`label`] and [`heading`] both owe it, and a heading that
+/// kept trailing spaces where the rows under it did not would be a line that
+/// compares unequal to itself for a reason nobody can see.
+fn trimmed(line: String) -> String {
+    let end = line.trim_end().len();
+    let mut line = line;
+    line.truncate(end);
+    line
 }
 
 /// The width of the widest of *texts*, in the characters a terminal draws and
@@ -485,8 +643,8 @@ pub(crate) enum Pick {
 /// Offer these workspaces and wait for one — or, under [`Arity::Several`], any
 /// number — to be chosen.
 pub(crate) fn pick(workspaces: &[Workspace], arity: Arity, cache_dir: &Path) -> Pick {
-    let offers = offered(workspaces, cache_dir);
-    if offers.is_empty() {
+    let offering = offered(workspaces, cache_dir);
+    if offering.offers.is_empty() {
         return Pick::NoWorkspaces;
     }
     // Asked before skim is entered, and not as politeness: skim opens `/dev/tty`
@@ -495,7 +653,8 @@ pub(crate) fn pick(workspaces: &[Workspace], arity: Arity, cache_dir: &Path) -> 
     if !a_terminal_exists() {
         return Pick::NoTerminal;
     }
-    chosen(&offers, run_skim(&offers, arity))
+    let rows = run_skim(&offering, arity);
+    chosen(&offering.offers, rows)
 }
 
 /// Whether this run has a terminal at all.
@@ -538,7 +697,7 @@ pub(crate) fn invitation(arity: Arity) -> &'static str {
 /// of the interactive half a test can read without a terminal: these options *are*
 /// the picker's shape, so a lever that quietly does nothing is caught here rather
 /// than by looking at it.
-fn skim_options(arity: Arity) -> SkimOptions {
+fn skim_options(arity: Arity, heading: &str) -> SkimOptions {
     SkimOptions {
         // skim's `--multi` when the verb takes several — TAB toggles a row, as it
         // does in fzf — and `iterfzf(options, multi=False)`'s one pick otherwise.
@@ -568,16 +727,24 @@ fn skim_options(arity: Arity) -> SkimOptions {
         // Unlike `reverse` next door, this field is read straight off the options
         // by `Header::with_options`, so it works without `SkimOptions::build` —
         // which is why the pty test is still the thing that proves it.
-        header: Some(invitation(arity).to_owned()),
+        //
+        // Two lines, and skim draws them as two: `Header::with_options` splits the
+        // string on newlines and gives each its own row, at the same column the item
+        // rows are printed at (`src/header.rs`, `src/selection.rs` — both `col(2)`),
+        // which is what lets the headings sit directly over the cells they name.
+        // Both belong here rather than one of them above the picker, for the reason
+        // the paragraph above gives: skim's alternate screen covers anything printed
+        // on the way in.
+        header: Some(format!("{}\n{heading}", invitation(arity))),
         ..Default::default()
     }
 }
 
 /// The rows skim was left on: empty when the picker was quit without an answer.
-fn run_skim(offers: &[Offer], arity: Arity) -> Vec<String> {
-    let options = skim_options(arity);
+fn run_skim(offering: &Offering, arity: Arity) -> Vec<String> {
+    let options = skim_options(arity, &offering.heading);
     let (tx, rx): (SkimItemSender, SkimItemReceiver) = unbounded();
-    for row in rows_of(offers) {
+    for row in rows_of(&offering.offers) {
         // A send that fails means the reader is gone, which is a picker that is not
         // going to answer; the remaining rows are not worth a diagnostic.
         if tx.send(row).is_err() {
@@ -768,11 +935,11 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache.path());
+        let offers = offered(&workspaces, cache.path()).offers;
 
         assert_eq!(
             offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
-            ["- | mine", "- | from-an-image"]
+            ["-     | mine", "-     | from-an-image"]
         );
         // Picking the row maps back to the workspace, which is what makes it an
         // offer rather than a line of text.
@@ -793,8 +960,8 @@ mod tests {
         //
         // Both arities, because the layout is not the multi-select's business: a
         // single-pick `dl stop` is drawn exactly like a multi-pick `dl rm`.
-        assert_eq!(skim_options(Arity::One).layout, "reverse");
-        assert_eq!(skim_options(Arity::Several).layout, "reverse");
+        assert_eq!(skim_options(Arity::One, A_HEADING).layout, "reverse");
+        assert_eq!(skim_options(Arity::Several, A_HEADING).layout, "reverse");
     }
 
     #[test]
@@ -809,7 +976,7 @@ mod tests {
         //
         // Pinned so that a later tidy-up cannot "simplify" the layout string into
         // the flag and silently put the search bar back at the bottom.
-        let asked = skim_options(Arity::One);
+        let asked = skim_options(Arity::One, A_HEADING);
 
         assert_eq!(asked.layout, "reverse");
         assert!(
@@ -830,26 +997,44 @@ mod tests {
         // `dl` asks for it, and that the wording still follows the arity. Both
         // matter: an unspoken TAB clause on a single-pick picker is a lie, and a
         // missing one on a multi-pick picker is the defect.
+        //
+        // The column headings share the header with it, on a second line: skim
+        // splits this string on newlines and draws one row each, so the invitation
+        // stays the sentence above the table and the headings stay the line above
+        // the rows.
         assert_eq!(
-            skim_options(Arity::Several).header.as_deref(),
-            Some("Select workspaces (type to filter, TAB to mark several):")
+            skim_options(Arity::Several, "OWNER  | REPO")
+                .header
+                .as_deref(),
+            Some(
+                "Select workspaces (type to filter, TAB to mark several):\n\
+                 OWNER  | REPO"
+            )
         );
         // And no TAB clause on the picker that takes one row: a key named in the
         // header and inert under the cursor is worse than an unmentioned one.
         assert_eq!(
-            skim_options(Arity::One).header.as_deref(),
-            Some("Select workspace (type to filter):")
+            skim_options(Arity::One, "OWNER  | REPO").header.as_deref(),
+            Some(
+                "Select workspace (type to filter):\n\
+                 OWNER  | REPO"
+            )
         );
     }
+
+    /// A heading for the tests that are not about one: what the picker draws over
+    /// its columns is [`heading`]'s business, and these are asking about the levers
+    /// beside it.
+    const A_HEADING: &str = "OWNER | REPO";
 
     #[test]
     fn what_the_picker_will_take_is_the_arity_and_the_order_is_never_skim_s() {
         // The two options the layout change sits beside, so a mistyped struct
         // literal cannot trade one for another unnoticed.
-        assert!(!skim_options(Arity::One).multi);
-        assert!(skim_options(Arity::Several).multi);
-        assert!(skim_options(Arity::One).no_sort);
-        assert!(skim_options(Arity::Several).no_sort);
+        assert!(!skim_options(Arity::One, A_HEADING).multi);
+        assert!(skim_options(Arity::Several, A_HEADING).multi);
+        assert!(skim_options(Arity::One, A_HEADING).no_sort);
+        assert!(skim_options(Arity::Several, A_HEADING).no_sort);
     }
 
     /// A `Pick::Chose` of exactly these `(row, id)` pairs, for the assertions below.
@@ -918,7 +1103,8 @@ mod tests {
             ]"#,
             ),
             cache.path(),
-        );
+        )
+        .offers;
 
         assert_eq!(
             rows_of(&offers)
@@ -949,7 +1135,8 @@ mod tests {
             ]"#,
             ),
             cache.path(),
-        );
+        )
+        .offers;
 
         assert_eq!(
             chosen(
@@ -977,7 +1164,10 @@ mod tests {
             r#"{"gitRepository": "https://github.com/blooop/devlaunch.git"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache.path())[0].label, "blooop | wf");
+        assert_eq!(
+            offered(&workspaces, cache.path()).offers[0].label,
+            "blooop | wf"
+        );
     }
 
     #[test]
@@ -997,7 +1187,7 @@ mod tests {
         ));
 
         assert_eq!(
-            offered(&workspaces, cache.path())[0].label,
+            offered(&workspaces, cache.path()).offers[0].label,
             "blooop | devlaunch | main"
         );
     }
@@ -1021,7 +1211,7 @@ mod tests {
         ));
 
         assert_eq!(
-            offered(&workspaces, cache.path())[0].label,
+            offered(&workspaces, cache.path()).offers[0].label,
             "blooop | an-extraordinarily-long-repository-name-indeed | main"
         );
     }
@@ -1069,13 +1259,15 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache.path());
+        let offers = offered(&workspaces, cache.path()).offers;
 
         assert_eq!(
             offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
             [
-                "blooop | devlaunch | main | devlaunch-main-3j1t",
-                "blooop | devlaunch | main | devlaunch-main-legacy",
+                // `main` is padded to `BRANCH`, the widest thing in that column, so
+                // the two ids start in the same place and read as a column.
+                "blooop | devlaunch | main   | devlaunch-main-3j1t",
+                "blooop | devlaunch | main   | devlaunch-main-legacy",
             ]
         );
         // And the property the fallback exists for: each row still maps back to its
@@ -1115,7 +1307,7 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache.path());
+        let offers = offered(&workspaces, cache.path()).offers;
 
         let labels: Vec<&String> = offers.iter().map(|offer| &offer.label).collect();
         assert_ne!(labels[0], labels[1], "two rows drawn alike: {labels:?}");
@@ -1160,7 +1352,7 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache.path());
+        let offers = offered(&workspaces, cache.path()).offers;
         let labels: Vec<String> = offers.iter().map(|offer| offer.label.clone()).collect();
 
         // Not `assert_ne!` on the raw strings: they differ by the padding, which is
@@ -1213,17 +1405,20 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache.path())
+                .offers
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
                 // Collided with the whole-name row, so it says its id too -- and
                 // still says its branch, which is what the row is picked by.
-                "blooop | devlaunch | main | devlaunch-main-3j1t",
+                "blooop | devlaunch        | main         | devlaunch-main-3j1t",
+                // The whole-name row is the widest thing in the repo column, which
+                // is what every split row above and below it is now padded to.
                 "blooop | devlaunch | main",
                 // Did not collide with anything, so it keeps its columns -- and it
                 // spells the ref, where the id could only offer `feature-auth`.
-                "blooop | devlaunch | feature/auth",
+                "blooop | devlaunch        | feature/auth",
             ]
         );
     }
@@ -1267,7 +1462,7 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache.path());
+        let offers = offered(&workspaces, cache.path()).offers;
         let unpadded: Vec<&str> = offers.iter().map(|offer| offer.unpadded.as_str()).collect();
 
         assert_eq!(
@@ -1321,12 +1516,15 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache.path())
+                .offers
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
-                "blooop | devlaunch | main | devlaunch-main-3j1t",
-                "blooop | devlaunch | main | devlaunch-main-legacy",
+                "blooop | devlaunch | main         | devlaunch-main-3j1t",
+                "blooop | devlaunch | main         | devlaunch-main-legacy",
+                // The row that did not collide is what the branch column is widest
+                // for, and the two ids above it line up on that width.
                 "blooop | devlaunch | feature/auth",
             ]
         );
@@ -1356,6 +1554,7 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache.path())
+                .offers
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
@@ -1377,7 +1576,10 @@ mod tests {
             r#"{"localFolder": "/home/dev/myproject"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache.path())[0].label, "- | myproject");
+        assert_eq!(
+            offered(&workspaces, cache.path()).offers[0].label,
+            "-     | myproject"
+        );
     }
 
     #[test]
@@ -1391,7 +1593,10 @@ mod tests {
             r#"{"localFolder": "{CACHE}/repos/blooop/devlaunch/somewhere-else"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache.path())[0].label, "- | mine");
+        assert_eq!(
+            offered(&workspaces, cache.path()).offers[0].label,
+            "-     | mine"
+        );
     }
 
     #[test]
@@ -1408,15 +1613,24 @@ mod tests {
             r#"{"localFolder": "{CACHE}/scratch/myproject"}"#,
         ));
 
-        assert_eq!(offered(&workspaces, cache.path())[0].label, "- | myproject");
+        assert_eq!(
+            offered(&workspaces, cache.path()).offers[0].label,
+            "-     | myproject"
+        );
     }
 
     #[test]
-    fn the_repo_column_is_padded_over_the_rows_that_have_one() {
-        // Alignment across the two row shapes. The repo column is measured over the
-        // split rows only, so a foreign workspace's name does not widen a column it
-        // has no entry in — it runs on through the space a ref would have taken,
-        // which is what a row with nothing to put in two columns should do.
+    fn the_repo_column_is_measured_over_the_foreign_names_drawn_in_it_too() {
+        // Alignment across the two row shapes, and the price of putting them on one
+        // grid. A workspace dl did not clone keeps devpod's name for it, and that
+        // name is drawn in the repo column — so it is measured for the repo column,
+        // and a long one widens it for every row.
+        //
+        // It used to be exempt: the column was measured over the split rows only and
+        // the name ran on through the space a repo and a branch would have taken.
+        // That kept two short rows short at the cost of the third starting its text
+        // somewhere no other row did, under a heading naming a column it was not in.
+        // A table is the thing being asked for, and this is what one costs.
         //
         // `kinisi_ros` also pins the column on the *directory* rather than the id's
         // prefix: the id spells it `kinisi-ros`, because `slug` turns `_` into `-`,
@@ -1448,12 +1662,13 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache.path())
+                .offers
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
-                "blooop          | devlaunch  | main",
-                "kinisi-robotics | kinisi_ros | main",
+                "blooop          | devlaunch                             | main",
+                "kinisi-robotics | kinisi_ros                            | main",
                 "-               | a-very-long-workspace-name-of-its-own",
             ]
         );
@@ -1481,6 +1696,7 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache.path())
+                .offers
                 .iter()
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
@@ -1511,6 +1727,7 @@ mod tests {
 
         assert_eq!(
             offered(&workspaces, cache.path())
+                .offers
                 .iter()
                 .map(|offer| offer.workspace_id.clone())
                 .collect::<Vec<_>>(),
@@ -1523,7 +1740,7 @@ mod tests {
         let cache = Cache::new();
         let none = cache.listed("[]");
 
-        assert!(offered(&none, cache.path()).is_empty());
+        assert!(offered(&none, cache.path()).offers.is_empty());
         // And no terminal is opened to say so: nothing to pick from is answered
         // before anything is drawn, whichever arity asked.
         assert_eq!(pick(&none, Arity::One, cache.path()), Pick::NoWorkspaces);
@@ -1541,12 +1758,228 @@ mod tests {
         let offers = offered(
             &cache.listed(&one("mine", r#"{"localFolder": "/p"}"#)),
             cache.path(),
-        );
+        )
+        .offers;
 
         assert_eq!(chosen(&offers, Vec::new()), Pick::Quit);
         assert_eq!(
             chosen(&offers, vec!["something else".to_owned()]),
             Pick::Quit
+        );
+    }
+
+    #[test]
+    fn the_whole_table_lines_up_under_its_own_headings() {
+        // Every other test here asks about one row shape. This one asks the
+        // question the shapes were split up to answer: put all of them in one
+        // listing and does it read as a table?
+        //
+        // Four shapes at once -- a pair that collided and says its id, a row with a
+        // long branch that no other row has, a row on a short branch, and a
+        // workspace dl did not clone -- because the widths are a fact about the set
+        // and a shape that is fine alone can still be the one that does not line up
+        // beside the others. Asserting the drawn text is the only way to see that:
+        // a per-column assertion agrees with itself by construction.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-legacy", "main");
+        cache.clone_at(
+            "blooop",
+            "wayfinder",
+            "wayfinder-wf-467-a2b3",
+            "wayfinder/devlaunch-467",
+        );
+        cache.clone_at("myfork", "bencher", "bencher-fix-x9q2", "fix/thing");
+        let workspaces = cache.listed(
+            r#"[
+                {"id": "devlaunch-main-3j1t", "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-legacy", "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-legacy"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
+                {"id": "wayfinder-wf-467-a2b3", "source": {"localFolder": "{CACHE}/repos/blooop/wayfinder/wayfinder-wf-467-a2b3"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
+                {"id": "bencher-fix-x9q2", "source": {"localFolder": "{CACHE}/repos/myfork/bencher/bencher-fix-x9q2"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
+                {"id": "someones-project", "source": {"localFolder": "/home/dev/someones-project"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+        let offering = offered(&workspaces, cache.path());
+
+        let mut drawn = vec![offering.heading.clone()];
+        drawn.extend(offering.offers.iter().map(|offer| offer.label.clone()));
+        assert_eq!(
+            drawn,
+            [
+                "OWNER  | REPO             | BRANCH                  | WORKSPACE",
+                "blooop | devlaunch        | main                    | devlaunch-main-3j1t",
+                "blooop | devlaunch        | main                    | devlaunch-main-legacy",
+                "blooop | wayfinder        | wayfinder/devlaunch-467",
+                "myfork | bencher          | fix/thing",
+                "-      | someones-project",
+            ]
+        );
+        // And the claim that assertion is standing for, said as a rule rather than
+        // as one drawing: a cell that has anything after it starts where the same
+        // cell starts on the heading. The rows that end early are the ones the rule
+        // says nothing about, which is what `trimmed` is for.
+        let column_starts = |line: &str| {
+            let mut at = 0;
+            line.split(" | ")
+                .map(|cell| {
+                    let start = at;
+                    at += cell.chars().count() + " | ".chars().count();
+                    start
+                })
+                .collect::<Vec<_>>()
+        };
+        let headings = column_starts(&offering.heading);
+        for offer in &offering.offers {
+            let row = column_starts(&offer.label);
+            assert_eq!(
+                row,
+                headings[..row.len()],
+                "a row's columns start somewhere its headings do not: {:?} under {:?}",
+                offer.label,
+                offering.heading,
+            );
+        }
+    }
+
+    #[test]
+    fn the_heading_names_a_column_exactly_when_some_row_has_something_in_it() {
+        // The picker is a table, so it says what its columns are -- and it says it
+        // in skim's header rather than as a row, which is what keeps it from being
+        // filtered away, marked with TAB, or picked.
+        //
+        // Three shapes, one rule: a heading appears when a cell under it does. A
+        // listing of nothing dl cloned has no branch to head and no id column, so
+        // heading either would put a word over empty air.
+        let cache = Cache::new();
+        let foreign = cache.listed(&one("myproject", r#"{"localFolder": "/home/dev/mine"}"#));
+        assert_eq!(offered(&foreign, cache.path()).heading, "OWNER | REPO");
+
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        let cloned = cache.listed(&one(
+            "devlaunch-main-3j1t",
+            r#"{"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"}"#,
+        ));
+        assert_eq!(
+            offered(&cloned, cache.path()).heading,
+            "OWNER  | REPO      | BRANCH"
+        );
+
+        // And the fourth column, which exists only where a collision drew it.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-legacy", "main");
+        let collided = cache.listed(
+            r#"[
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-legacy",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-legacy"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+        assert_eq!(
+            offered(&collided, cache.path()).heading,
+            "OWNER  | REPO      | BRANCH | WORKSPACE"
+        );
+    }
+
+    #[test]
+    fn the_heading_is_measured_as_a_cell_so_it_cannot_overhang_its_own_column() {
+        // A column whose entries are all narrower than the word over them would draw
+        // the word into the next column, and every heading after it would sit one
+        // place right of the cells it names. The heading is measured with the cells
+        // for exactly that reason -- so the owners here are padded out to `OWNER`
+        // rather than the heading being cut down to `-`.
+        //
+        // `dl --ls` does the opposite for its `WORKSPACE` column, and on purpose:
+        // that arithmetic is Python's, quirk and all, and the harness compares it
+        // byte for byte. This table is nobody's byte-for-byte.
+        let cache = Cache::new();
+        let workspaces = cache.listed(
+            r#"[
+                {"id": "a", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"},
+                {"id": "b", "source": {"localFolder": "/b"}, "lastUsed": "x",
+                 "provider": {"name": "docker"}, "ide": {"name": "none"},
+                 "context": "default"}
+            ]"#,
+        );
+
+        let offering = offered(&workspaces, cache.path());
+
+        assert_eq!(offering.heading, "OWNER | REPO");
+        assert_eq!(
+            offering
+                .offers
+                .iter()
+                .map(|offer| offer.label.clone())
+                .collect::<Vec<_>>(),
+            ["-     | a", "-     | b"]
+        );
+    }
+
+    #[test]
+    fn a_row_never_ends_in_the_padding_its_last_cell_did_not_need() {
+        // Every cell is padded to its column, and then the line's end is trimmed.
+        // The trailing run is invisible on a terminal and merely wrong everywhere
+        // else: `unpadded` is quoted inside a sentence by `render::picked`, and a
+        // `dl rm` receipt reading `Picked blooop | devlaunch | main    -> ...` is
+        // the shape of the bug.
+        //
+        // The rows here make the case that has something to trim: one long branch
+        // sets the branch column's width, and the short branch beside it ends the
+        // line rather than paying it.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at(
+            "blooop",
+            "devlaunch",
+            "devlaunch-a-very-long-branch-9x2k",
+            "a/very/long/branch/name",
+        );
+        let workspaces = cache.listed(
+            r#"[
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-a-very-long-branch-9x2k",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-a-very-long-branch-9x2k"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offering = offered(&workspaces, cache.path());
+
+        for offer in &offering.offers {
+            assert_eq!(
+                offer.label,
+                offer.label.trim_end(),
+                "a label ends in padding: {:?}",
+                offer.label
+            );
+            assert_eq!(
+                offer.unpadded,
+                offer.unpadded.trim_end(),
+                "an unpadded row ends in padding: {:?}",
+                offer.unpadded
+            );
+        }
+        assert_eq!(
+            offering.heading,
+            offering.heading.trim_end(),
+            "the heading ends in padding: {:?}",
+            offering.heading
+        );
+        assert_eq!(
+            offering.offers[0].label, "blooop | devlaunch | main",
+            "the short branch ends its line rather than paying the column's width"
         );
     }
 }

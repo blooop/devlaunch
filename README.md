@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.18.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.19.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -157,22 +157,25 @@ or a coding agent all work. Redirect the output and the terminal goes away, so
 
 ### The selector
 
-Each row is `owner | repo | branch`:
+It is a table of `owner | repo | branch`:
 
 ```
+Select workspaces (type to filter, TAB to mark several):
+OWNER           | REPO       | BRANCH
 blooop          | devlaunch  | main
 blooop          | devlaunch  | picker-columns
-kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-su
+kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-support
 -               | myproject
 ```
 
 The search bar is the top line and the matches read downward from it, so the first match is the
-row nearest what you are typing. A workspace `dl` did not clone has no owner or repo to read, so
-it keeps devpod's name for it and a dash where the owner would go. The branch column is the
-branch as the workspace id spells it, which is slugged and shortened, so it is not always
-retypeable. Pick the row rather than copying it; the row carries the real id underneath. Where
-two rows would read alike, both fall back to their full ids so that picking one cannot delete the
-other.
+row nearest what you are typing. Every cell is padded to its column, so a column starts in the
+same place on every row, and the headings sit above them in the picker's header rather than among
+the rows. A workspace `dl` did not clone has no owner or repo to read, so it keeps devpod's name
+for it in the repo column and takes a dash where the owner would go. The branch is the one
+checked out in the clone right now, spelled in full. Pick the row rather than copying it; the row
+carries the real id underneath. Where two rows would read alike, both gain a fourth column
+holding their whole id, so that picking one cannot delete the other.
 
 For the verbs that finish on their own (`up`, `stop`, `rm`, `code`, `dotfiles`) TAB marks any
 number of rows and Enter applies the verb to each, and the line above the matches says so. The
@@ -235,7 +238,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.18.0
+dl 0.19.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
