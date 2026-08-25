@@ -718,6 +718,55 @@ After running `dl --install`, tab completion offers:
 - File/directory paths when starting with `./`, `/`, or `~`
 - All global flags (`--ls`, `--install`, etc.) and workspace commands
 
+### Owners come before workspace ids, and why
+
+The first word of a `dl` line can be two different things, a spec or the id of a
+workspace you already have, and for one repository they can start with the same
+letters. A workspace id is `<repo-slug>-<ref-slug>-<suffix>`, and the slug turns
+`_` into `-`, so the repository `kinisi-robotics/kinisi_ros` produces ids that all
+begin `kinisi-ros`. That is nine characters of the owner's own name,
+`kinisi-robotics`. Offer both as one list and bash completes to the longest prefix
+they share and stops:
+
+```
+$ dl kin<TAB>
+kinisi-ro
+kinisi-robotics/                            kinisi-ros-nb2-lobijate
+kinisi-ros-feature-robot-id-dahenego        kinisi-ros-remove-pins-tihagada
+```
+
+It takes one repository to do that. There is no fork involved and no second owner:
+the two names in the way of each other are an owner and the ids of its own
+repository, so typing more does not help until the spellings diverge.
+
+Owners are offered first now, and workspace ids only for a prefix no owner matches:
+
+```
+$ dl kin<TAB>
+kinisi-robotics/
+$ dl kinisi-robotics/<TAB>
+kinisi-robotics/kinisi_ros
+```
+
+The owner wins the tie because it continues. A `/` is the next keystroke and the
+repository completes from there, so a spec that matches is always on the way
+somewhere, while an id is a finished word. Ids are held back rather than dropped,
+and one keystroke brings them back: `dl kinisi-ros<TAB>` matches no owner, so it
+offers the three ids and nothing else. An id copied out of `dl --ls` still
+completes from any prefix long enough to leave the owner behind, and `dl <id>` is
+still a way to name a workspace.
+
+The hold-back applies only to a prefix. `dl <TAB>` with nothing typed is not a
+collision to resolve, so it lists both, the way it always did. An id typed out in
+full is offered too, beside the owner: `DL_WORKSPACES` is every devpod workspace,
+including names devpod was given by hand rather than derived by `dl`, so a
+workspace really can be called `blooop` on a machine whose cache knows the owner
+`blooop`. For that one no longer prefix exists, and holding it back would not
+delay it, it would hide it.
+
+Nothing about the cache changed, so a `completions.bash` written by an older `dl`
+works with this script and the other way round.
+
 ### How the completion cache stays current
 
 The data behind completions lives in `~/.cache/devlaunch/completions.json`, and
