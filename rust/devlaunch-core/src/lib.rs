@@ -5,8 +5,9 @@
 //!
 //! 1. **runner** — the one seam to the outside: a spawn-spec in, an outcome
 //!    out. The only place a process is started.
-//! 2. **tool clients** — `devpod`, `git`, `gh`, `ssh`: typed argv builders
-//!    and output parsers over the runner.
+//! 2. **tool clients** — `devpod`, `devpod_home`, `git`, `gh`, `ssh`: typed
+//!    argv builders and output parsers over the runner, plus `devpod_home` for
+//!    devpod-the-filesystem where `devpod` is devpod-the-command.
 //! 3. **domain** — `workspace_id`, `spec`, `model`, `metadata`, `config`,
 //!    `xdg`, `locks`: the data model, written once.
 //! 4. **flows** — `launch`, `lifecycle`, `listing`, `provision`,

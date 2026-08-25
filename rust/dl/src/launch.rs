@@ -32,13 +32,14 @@
 
 use std::path::Path;
 
+use devlaunch_core::clients::devpod_home::DevpodHome;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::flows::completion_cache;
 use devlaunch_core::flows::launch::{
     self, Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Plan, Provision,
     Session,
 };
-use devlaunch_core::flows::lifecycle::{self, Refresh};
+use devlaunch_core::flows::lifecycle::Refresh;
 use devlaunch_core::flows::listing::CommandContext;
 use devlaunch_core::flows::provision::verdict_cache::VerdictCache;
 use devlaunch_core::flows::provision::{
@@ -140,7 +141,7 @@ impl ToolProvisioning {
             // A `None` devpod home here means something else again: no file to
             // check a remembered verdict against, so nothing is ever trusted and
             // every pass travels, exactly as it did before the cache existed.
-            verdicts: VerdictCache::under(cache, lifecycle::devpod_home()),
+            verdicts: VerdictCache::under(cache, DevpodHome::locate()),
         }
     }
 }
@@ -258,8 +259,7 @@ pub(crate) enum Reached {
     /// attached to. A devpod workspace, a container, and a clone may all exist,
     /// **including when the `up` failed**: a create that dies in its lifecycle hooks
     /// leaves the container running and devpod's record written, which is the whole
-    /// reason [`lifecycle::create_record`](devlaunch_core::flows::lifecycle::create_record)
-    /// exists.
+    /// reason `clients::devpod_home::create_record` exists.
     TheWorkspace,
     /// The launch stopped before devpod was asked for anything: an unsafe spec, a
     /// workspace nothing answers to, a default branch that could not be named, a

@@ -45,6 +45,7 @@ use crate::domain::model::{BaseRepository, RecordedDefaultBranch, Timestamp};
 use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
 use crate::notices::Notices;
+use crate::osext::system_words;
 use crate::timing;
 
 /// The bare repository's directory name, inside the repo directory.
@@ -549,25 +550,6 @@ pub(crate) fn present(path: &Path) -> bool {
         std::fs::symlink_metadata(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound
     )
-}
-
-/// The system's own words for a failure, as Python's `OSError.strerror` gives
-/// them.
-///
-/// [`std::io::Error`]'s `Display` is `"{strerror} (os error {errno})"` for an OS
-/// error, and the errno is already carried by the arm that holds this string —
-/// where it is carried at all. So the suffix is dropped: the reason is printed to
-/// a person beside the path it is about, and `Permission denied` is the whole of
-/// what they need from it.
-pub(crate) fn system_words(error: &std::io::Error) -> String {
-    let text = error.to_string();
-    match error.raw_os_error() {
-        Some(errno) => text
-            .strip_suffix(&format!(" (os error {errno})"))
-            .unwrap_or(&text)
-            .to_owned(),
-        None => text,
-    }
 }
 
 /// One path a removal could not remove, and what the system said about it.
