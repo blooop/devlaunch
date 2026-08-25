@@ -121,14 +121,14 @@ compose-based devcontainers:
 ### Concurrent workspaces run out of subnets
 
 Each compose project also gets its own bridge network, and docker draws those
-from a fixed set of address pools. The default set is small: `172.17.0.0/12`
-split into /16s yields 15 — it starts at 172.17, not 172.16 — and
-`192.168.0.0/16` split into /20s yields 16, so **31 networks for the whole
-host**. Fewer in practice, because docker skips any block that collides with a
-network the host already has: the default bridge takes 172.17 itself, and a LAN
+from a fixed set of address pools. The default set is small. `172.17.0.0/12`
+split into /16s yields 15, because it starts at 172.17 rather than 172.16, and
+`192.168.0.0/16` split into /20s yields 16. That is 31 networks for the whole
+host, and fewer in practice, because docker skips any block that collides with a
+network the host already has. The default bridge takes 172.17 itself, and a LAN
 on `192.168.1.0/24` or a VPN on `192.168.194.0/24` costs a slot each.
 
-Past that, the next launch dies inside devpod's compose call:
+Past that, the next launch dies inside devpod's compose call.
 
 ```
 Error response from daemon: all predefined address pools have been fully subnetted
@@ -141,13 +141,13 @@ ceiling:
 - **Only compose devcontainers consume a slot.** A single-container workspace
   joins the default bridge and allocates nothing, so the limit stays invisible
   until a project moves onto a compose file.
-- **It is the host's ceiling, not devlaunch's** — shared with every other network
-  on the machine, compose or not.
+- **It is the host's ceiling, not devlaunch's.** Every other network on the
+  machine shares it, compose or not.
 - **`stop` keeps the subnet, `rm` returns it.** devpod stops a compose workspace
   with `compose stop`, which leaves its network standing, and deletes it with
   `compose down`, which removes it. So a workspace stopped to free memory is
   still holding a slot. `dl <ws> rm` gives one back and `dl --purge` gives back
-  every workspace devlaunch owns; `docker network prune` reclaims whatever no
+  every workspace devlaunch owns. `docker network prune` reclaims whatever no
   container is attached to, which is the quickest way out of a launch that has
   just failed.
 
@@ -162,22 +162,22 @@ The lasting fix is to give docker a bigger pool, in `/etc/docker/daemon.json`:
 ```
 
 That is 4096 /24s instead of 31, and losing the `192.168.0.0/16` default is half
-the point: it is the range most likely to collide with the LAN the host is on.
-Check `ip -4 route` before settling on a base, because a VPN that routes part of
-`10/8` — ZeroTier and Tailscale both can — wants one outside it.
+the point, because it is the range most likely to collide with the LAN the host
+is on. Check `ip -4 route` before settling on a base. A VPN that routes part of
+`10/8`, which ZeroTier and Tailscale both can, wants one outside it.
 
 `systemctl restart docker` applies it. That restarts the daemon, not the machine,
 so no reboot is involved, but it stops every running container, so pick the
-moment. User-defined networks that already exist keep the subnets they hold;
+moment. User-defined networks that already exist keep the subnets they hold, and
 only new ones draw from the new pool.
 
 The default bridge is the exception, because its subnet is re-derived at daemon
-start rather than stored: it moves into the new pool and takes the new size, so
-the `size` above is also the size of `docker0`. A /24 leaves ~253 addresses for
-containers started with no network of their own, against the /16 it had before.
-That is ample for a devlaunch host, where each workspace has its own network,
-but set `bip` alongside the pools if something on the host really does put
-hundreds of containers on the default bridge.
+start rather than stored. It moves into the new pool and takes the new size, so
+the `size` above is also the size of `docker0`. A /24 leaves about 253 addresses
+for containers started with no network of their own, against the /16 it had
+before. That is ample for a devlaunch host, where every workspace has a network
+of its own, but set `bip` alongside the pools if something on the host really
+does put hundreds of containers on the default bridge.
 
 ## Git LFS
 
