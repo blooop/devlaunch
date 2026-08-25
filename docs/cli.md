@@ -11,21 +11,32 @@ The selector is built in. There is no `fzf` on `PATH` and no `iterfzf`, which is
 why there is nothing to install for it, and why `dl` with its input redirected
 away from a terminal simply declines to open one.
 
-Each row is the [workspace id](workspaces.md#workspace-ids) read apart, with the
-hashed suffix left off. The suffix is there to keep two branches from sharing an
-id, and reading it is no part of choosing a workspace.
+Each row is `<owner> | <repo> | <branch>`. The owner and the repo are read off the
+clone's place in dl's layout, `<cache>/repos/<owner>/<repo>/<id>`, and the branch is
+read out of the clone's own `HEAD`. The hashed suffix does not appear: it is there
+to keep two branches from sharing an id, and reading it is no part of choosing a
+workspace.
 
-**The right-hand column is the branch as the id spells it, which is not always the
-branch.** It is slugged, so `feature/auth` reads as `feature-auth`, and a long one
-is shortened. That is why the row is three columns and not `owner/repo@branch`:
-the latter reads like something you could retype, and retyping a slugged branch
-name can address a different workspace. To act on what you picked, pick it.
+**The branch is the one checked out now**, not the one the workspace was made for,
+so a `git switch` inside a container shows up here. The columns used to be recovered
+by taking the id apart instead, which could only answer with a slug: `feature/auth`
+read as `feature-auth`, indistinguishable from the branch of that name, and a long
+one read short. Reading `HEAD` costs one small file and answers exactly.
 
-Two branches can therefore share the middle and right columns: `feature/auth` and
-`feature-auth` read alike. When that happens **both** rows go back to their full
-ids, suffix and all, because the row's own text is how `dl` knows which workspace
-you picked, and two rows reading the same would be one workspace deleted in place
-of another. The suffix appears exactly where it is doing work.
+The row is still three columns rather than `owner/repo@branch`, because that reads
+like something you could retype and the picker is not a place to retype anything. To
+act on what you picked, pick it.
+
+Two rows can still be drawn alike, when two workspaces of one repository sit on one
+branch. The id-scheme migration leaves exactly that pair for a while: the renamed
+clone under its new id, and the container still on the old one. When it happens
+**both** rows go back to their full ids, suffix and all, because the row's own text
+is how `dl` knows which workspace you picked, and two rows reading the same would be
+one workspace deleted in place of another. The suffix appears exactly where it is
+doing work.
+
+A row whose clone is not on disk shows its whole id too, since there is no `HEAD` to
+read. That is the honest answer: the workspace's source is gone.
 
 ## Commands that need a terminal
 

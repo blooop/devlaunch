@@ -7,8 +7,8 @@
 //! ```text
 //! repos_dir/blooop/devlaunch/
 //! ├── .bare/                          the bare git repository
-//! ├── devlaunch-main-zovomobo/            a workspace clone
-//! └── devlaunch-feature-auth-poliseno/    another
+//! ├── devlaunch-main-3j1t/            a workspace clone
+//! └── devlaunch-feature-auth-np10/    another
 //! ```
 //!
 //! The leaf names are [`WorkspaceId::value`] — the same string that names the

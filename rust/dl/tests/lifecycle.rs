@@ -343,12 +343,12 @@ fn a_stop_reaches_the_workspace_the_record_names() {
     assert_eq!(
         run.err,
         "Addressing devpod workspace 'devlaunch-main-legacy' from the record for \
-         blooop/devlaunch@main; this build derives 'devlaunch-main-zovomobo'\n"
+         blooop/devlaunch@main; this build derives 'devlaunch-main-3j1t'\n"
     );
     assert_eq!(
         world.devpod_calls(),
         [
-            "devpod status devlaunch-main-zovomobo --output json",
+            "devpod status devlaunch-main-3j1t --output json",
             "devpod status devlaunch-main-legacy --output json",
             "devpod stop devlaunch-main-legacy",
         ],
@@ -567,19 +567,19 @@ fn a_delete_with_nothing_recorded_to_name_runs_no_docker() {
 #[test]
 fn a_clone_holding_work_that_is_nowhere_else_is_refused() {
     let world = World::base();
-    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-dofaraji";
-    let run = world.dl(&["devlaunch-dirty-dofaraji", "rm"]);
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta";
+    let run = world.dl(&["devlaunch-dirty-fqta", "rm"]);
     run.exited(1);
     assert_eq!(
         run.err,
-        "devlaunch-dirty-dofaraji holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
-         or run: dl devlaunch-dirty-dofaraji rm --force\n"
+        "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
+         or run: dl devlaunch-dirty-fqta rm --force\n"
     );
     assert_eq!(run.out, "");
     assert!(world.exists(clone), "the refusal deleted the clone anyway");
     assert_eq!(
         world.devpod_calls(),
-        ["devpod status devlaunch-dirty-dofaraji --output json"],
+        ["devpod status devlaunch-dirty-fqta --output json"],
         "nothing was asked of devpod but which workspace this is"
     );
 }
@@ -621,11 +621,11 @@ fn a_clone_holding_a_commit_no_remote_has_is_refused_and_named_as_that() {
 #[test]
 fn force_deletes_despite_the_work_and_asks_devpod_to_ignore_an_absence() {
     let world = World::with(&["--not-a-clone"]);
-    let run = world.dl(&["devlaunch-dirty-dofaraji", "rm", "--force"]);
+    let run = world.dl(&["devlaunch-dirty-fqta", "rm", "--force"]);
     run.exited(0);
     assert_eq!(
         run.out,
-        "Successfully deleted workspace devlaunch-dirty-dofaraji\n"
+        "Successfully deleted workspace devlaunch-dirty-fqta\n"
     );
     // The same "is gone" as the mistyped path above, on a workspace that really was
     // there: one phrasing for `--force` whatever it found, because the flag asks for
@@ -634,21 +634,21 @@ fn force_deletes_despite_the_work_and_asks_devpod_to_ignore_an_absence() {
     // two happened.
     assert!(
         run.err
-            .ends_with("Workspace devlaunch-dirty-dofaraji is gone.\n"),
+            .ends_with("Workspace devlaunch-dirty-fqta is gone.\n"),
         "{:?}",
         run.err
     );
     assert_eq!(
         world.devpod_calls(),
         [
-            "devpod status devlaunch-dirty-dofaraji --output json",
+            "devpod status devlaunch-dirty-fqta --output json",
             // devpod's own --ignore-not-found: a forced remove is "ensure absent",
             // the way `rm -f` is.
-            "devpod delete devlaunch-dirty-dofaraji --ignore-not-found",
+            "devpod delete devlaunch-dirty-fqta --ignore-not-found",
         ]
     );
     assert!(
-        !world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-dofaraji"),
+        !world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta"),
         "the clone survived a forced delete"
     );
 }
@@ -790,13 +790,13 @@ fn the_child_migrates_the_cache_like_every_other_run() {
     let world = World::base();
     let v1 = world
         .read("cache/devlaunch/metadata.json")
-        .replace("\"version\": 2", "\"version\": 1");
+        .replace("\"version\": 3", "\"version\": 1");
     std::fs::write(world.path("cache/devlaunch/metadata.json"), &v1).expect("a v1 document");
     world.dl(&["--update-cache", "--force"]).exited(0);
     assert!(
         world
             .read("cache/devlaunch/metadata.json")
-            .contains("\"version\": 2"),
+            .contains("\"version\": 3"),
         "the refresh child did not migrate the cache"
     );
 }
@@ -909,7 +909,7 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
         run.out,
         format!(
             "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
-             Deleting DevPod workspace: devlaunch-dirty-dofaraji\n\
+             Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed: {{ROOT}}/cache/devlaunch\n{DOCKER_BOUNDARY}"
         )
     );
@@ -931,7 +931,7 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
         [
             "devpod list --output json",
             "devpod delete devlaunch-main-legacy --force",
-            "devpod delete devlaunch-dirty-dofaraji --force",
+            "devpod delete devlaunch-dirty-fqta --force",
         ],
         "the foreign workspace was deleted, or the ownership scope was wider than \
          the plan the user answered"
@@ -955,7 +955,7 @@ fn a_purge_that_could_not_remove_everything_says_which_paths_refused() {
         run.out,
         format!(
             "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
-             Deleting DevPod workspace: devlaunch-dirty-dofaraji\n\
+             Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed what was permitted under {{ROOT}}/cache/devlaunch. These refused:\n  \
              - {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-locked/held: \
              Permission denied\n\n\
@@ -982,7 +982,7 @@ fn a_purge_that_removed_not_one_path_says_that_rather_than_the_other_sentence() 
         run.out,
         format!(
             "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
-             Deleting DevPod workspace: devlaunch-dirty-dofaraji\n\
+             Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed nothing under {{ROOT}}/cache/devlaunch. These refused:\n  \
              - {{ROOT}}/cache/devlaunch: is a symbolic link to {{ROOT}}/elsewhere/devlaunch, \
              which a purge will not follow\n\n\
@@ -1026,7 +1026,7 @@ fn a_purge_that_deleted_workspaces_and_found_no_cache_says_nothing_about_the_cac
         run.out,
         format!(
             "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
-             Deleting DevPod workspace: devlaunch-dirty-dofaraji\n{DOCKER_BOUNDARY}"
+             Deleting DevPod workspace: devlaunch-dirty-fqta\n{DOCKER_BOUNDARY}"
         )
     );
 }
@@ -1061,8 +1061,8 @@ fn a_prune_with_nothing_to_remove_says_why_each_directory_is_staying() {
         format!(
             "Clone directories under {{ROOT}}/cache/devlaunch/repos:\n\n\
              Leaving 2:\n  \
-             - {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-dofaraji: \
-             workspace devlaunch-dirty-dofaraji still opens it\n  \
+             - {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta: \
+             workspace devlaunch-dirty-fqta still opens it\n  \
              - {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy: \
              workspace devlaunch-main-legacy still opens it\n\n\
              Nothing to prune.\n{DOCKER_BOUNDARY}"
@@ -1084,7 +1084,7 @@ Removing 1 that nothing references -- <size>:
   - {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-nobody (<size>)
 
 Leaving 3:
-  - {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-dofaraji: workspace devlaunch-dirty-dofaraji still opens it
+  - {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta: workspace devlaunch-dirty-fqta still opens it
   - {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-dirty: holds 1 uncommitted change(s) (scratch.txt) -- add --force to remove it anyway
   - {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy: workspace devlaunch-main-legacy still opens it
 
@@ -1295,7 +1295,7 @@ const RECONCILE_PLAN: &str = "\
 devpod workspaces sourced under {ROOT}/cache/devlaunch/repos at something that is not a clone:
 
 Re-pointing 1:
-  - other-feature-x-legacy: {ROOT}/cache/devlaunch/repos/blooop/other/feature-x -> {ROOT}/cache/devlaunch/repos/blooop/other/other-feature-x-repezebi
+  - other-feature-x-legacy: {ROOT}/cache/devlaunch/repos/blooop/other/feature-x -> {ROOT}/cache/devlaunch/repos/blooop/other/other-feature-x-t0h1
 
 Each of these needs `dl <workspace> recreate` afterwards: the container
 still has the old source bind-mounted, and no record change moves a mount.
@@ -1347,7 +1347,7 @@ fn a_reconcile_re_points_devpods_record_and_writes_the_id_beside_it() {
         run.out,
         format!(
             "{RECONCILE_PLAN}Re-pointed other-feature-x-legacy at \
-             {{ROOT}}/cache/devlaunch/repos/blooop/other/other-feature-x-repezebi\n"
+             {{ROOT}}/cache/devlaunch/repos/blooop/other/other-feature-x-t0h1\n"
         )
     );
     assert_eq!(run.err, "");
@@ -1359,7 +1359,7 @@ fn a_reconcile_re_points_devpods_record_and_writes_the_id_beside_it() {
     assert_eq!(
         record["source"]["localFolder"].as_str().expect("a folder"),
         world
-            .path("cache/devlaunch/repos/blooop/other/other-feature-x-repezebi")
+            .path("cache/devlaunch/repos/blooop/other/other-feature-x-t0h1")
             .display()
             .to_string()
     );

@@ -7,9 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-25
+
+### Changed
+
+- **A delete now says which workspace it deleted.** `dl rm` from the picker said
+  nothing that named its own work: skim hands back a workspace id and takes its
+  screen away, and the only thing naming the workspace afterwards was `devpod
+  delete`'s own line on stdout — devpod's wording rather than dl's, on the other
+  stream from every line dl says about the same delete, and absent entirely for a
+  workspace with no clone recorded, where none of the clone notices fire either.
+  The delete now names it going in, once the unsaved-work guard has passed so a
+  refusal is never announced as a removal, and again on the way out, closing the
+  block so a batch reads by its ends.
+
+  A pick names **the row it took beside the id it resolved to**
+  (`Picked blooop | devlaunch | main -> devlaunch-main-3j1t`), and both halves
+  are load-bearing: an id is `<repo-slug>-<ref-slug>-<suffix>` and carries no
+  owner, so a fork and its upstream are one id apart only in the hashed suffix
+  the picker deliberately never draws. Reporting the id alone handed the user a
+  name they could not check against the row they chose. A batch of TAB-marked rows
+  is listed under a heading before the first workspace is touched, which is the
+  only thing in the run that says how many rows were taken.
+
+  `--force` closes with `Workspace <id> is gone.` rather than `Removed`, because
+  that is what its exit code proves. It passes devpod's `--ignore-not-found`, so
+  "there was nothing there" succeeds and cannot be told apart from a real delete,
+  and a path is resolved without asking devpod anything at all — so
+  `dl ./wrong-directory rm --force` reaches the delete and comes back successful.
+  Saying `Removed` there would be dl affirming a delete that never happened.
+
 ## [0.15.0] - 2026-08-25
 
 ### Changed
+
+- **Every workspace id moves, and the clone directories are renamed onto the new
+  ones.** The identity suffix was eight characters spelled in pronounceable
+  syllables (`devlaunch-main-zovomobo`); it is now four characters of base 36
+  (`devlaunch-main-3j1t`). Base 36 carries 5.17 bits per character against the
+  syllable table's 3.0, so the suffix halves in length and the four
+  characters it gives back go to the branch, which is the part anyone reads: the
+  ref budget goes from 17 characters to 21, and
+  `kinisi-ros-ags-devcontainer-tooling-su-lenevere` becomes
+  `kinisi-ros-ags-devcontainer-tooling-suppor-17uu`.
+
+  What it costs is collision headroom, 20.7 bits against 24. The population that
+  can actually collide is one repository's near-identical long refs, since two
+  triples must also truncate to the same readable half, so ten of those carry a
+  0.003% chance, one in thirty-seven thousand. Five hundred, the crop that broke
+  an earlier 18-bit width, would be 7%. A collision is not detected today and
+  means one clone directory and one devpod workspace shared silently;
+  blooop/devlaunch#438 is the guard for that.
+
+  `metadata.json` goes to schema 3, and the migration renames every clone
+  directory onto its new id, so **uncommitted work survives**. The containers
+  cannot be renamed in place: they keep their old ids, are reported as orphaned,
+  and are listed in `orphaned-workspaces.txt` for `dl --reconcile` and
+  `dl <workspace> recreate`.
+
+- **One workspace, one name.** The terminal tab, the container hostname and the
+  `WORKSPACE` column of `dl --ls` are all the workspace id now. They used to be
+  three different strings: the tab carried `owner/repo@branch`, the hostname
+  carried the id with its suffix dropped, and only the listing carried the id
+  itself. A tab and a listing row can now be matched by eye.
+
+  What that costs is real. The tab no longer names the owner, so a fork and its
+  upstream read alike, and it spells the branch as a slug. The spec was the better
+  name read on its own, but only one of the four launch arms ever had one: a bare
+  devpod name, a path and a URL never form a triple, so three quarters of launches
+  were titled by id anyway and the tab's shape depended on how the workspace had
+  been reached. The tab was also unbounded, since nothing validates a ref's length,
+  so a 200-character branch made a 200-character tab.
+
+  The hostname is 47 characters where it was 38, which leaves 17 bytes of the
+  64-byte limit for tools that stack their own prefixes onto the container name.
+
+- **The picker reads the branch out of the clone instead of out of the id.** The
+  `<owner> | <repo> | <branch>` columns used to be recovered by taking an id apart:
+  strip the repo prefix, strip the suffix, slug what is left. That answered with a
+  slug, so `feature/auth` and `feature-auth` drew one row twice and a long branch
+  drew short, and it only worked because the syllable suffix had a shape a parser
+  could recognise, which base 36 does not. The branch comes from the clone's own
+  `HEAD` now: exact, slashes intact, one small file read with no subprocess and no
+  metadata lock. It also reports the branch that is checked out *now* rather than
+  the one the workspace was created for. Nothing reconstructs a triple from an id
+  any more.
 
 - **zellij is installed only into workspaces that asked for it, and
   `DEVLAUNCH_ZELLIJ=1` is the ask.** It used to go into every container `dl`
@@ -41,32 +123,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing and, in particular, can never turn provisioning back on for somebody who
   had asked for it off. `DEVLAUNCH_NO_TOOLS=1` still overrides a launch that did
   ask, because installing zellij is still tool provisioning.
-
-- **A delete now says which workspace it deleted.** `dl rm` from the picker said
-  nothing that named its own work: skim hands back a workspace id and takes its
-  screen away, and the only thing naming the workspace afterwards was `devpod
-  delete`'s own line on stdout — devpod's wording rather than dl's, on the other
-  stream from every line dl says about the same delete, and absent entirely for a
-  workspace with no clone recorded, where none of the clone notices fire either.
-  The delete now names it going in, once the unsaved-work guard has passed so a
-  refusal is never announced as a removal, and again on the way out, closing the
-  block so a batch reads by its ends.
-
-  A pick names **the row it took beside the id it resolved to**
-  (`Picked blooop | devlaunch | main -> devlaunch-main-a1b2c3d4`), and both halves
-  are load-bearing: an id is `<repo-slug>-<ref-slug>-<suffix>` and carries no
-  owner, so a fork and its upstream are one id apart only in the hashed suffix
-  the picker deliberately never draws. Reporting the id alone handed the user a
-  name they could not check against the row they chose. A batch of TAB-marked rows
-  is listed under a heading before the first workspace is touched, which is the
-  only thing in the run that says how many rows were taken.
-
-  `--force` closes with `Workspace <id> is gone.` rather than `Removed`, because
-  that is what its exit code proves. It passes devpod's `--ignore-not-found`, so
-  "there was nothing there" succeeds and cannot be told apart from a real delete,
-  and a path is resolved without asking devpod anything at all — so
-  `dl ./wrong-directory rm --force` reaches the delete and comes back successful.
-  Saying `Removed` there would be dl affirming a delete that never happened.
 
 ### Fixed
 

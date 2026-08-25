@@ -71,7 +71,6 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest as _, Sha256};
 
 use crate::clients::devpod::{self, Call, NotRun};
-use crate::domain::workspace_id::hostname_of;
 use crate::notices::Notices;
 use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
@@ -540,11 +539,12 @@ pub(crate) fn profile_prepend(line: &str, on_failure: Option<&str>) -> String {
 /// `~/.bashrc`.
 ///
 /// *title* is interpolated as its own quoted word rather than into the double-quoted
-/// assignment, so a name holding a `$` or a backtick is text and not shell. A spec
-/// cannot hold either — [`WorkspaceId`](crate::domain::workspace_id::WorkspaceId)
-/// refused every character but word ones, dots, slashes and dashes — but the other
-/// three placements title after a bare devpod name or a path leaf, which this crate
-/// never validated.
+/// assignment, which is what makes the *write* text rather than shell. That is all
+/// the quoting buys: `PS1` is expanded again at every prompt, so a `$` or a backtick
+/// that reached the value would run at each one, and no quoting here could stop it.
+/// What stops it is that the caller's filter drops both before a title gets this
+/// far; `the_prompt_that_repaints_the_title_renders_it_as_text` is the render, not
+/// the write.
 fn profile_title_line(title: &str) -> String {
     format!(
         r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"{}"\a\]" ;; esac"#,
@@ -1036,10 +1036,15 @@ impl Stage {
 /// that *did* ask, because installing zellij is tool provisioning. Neither touches
 /// the hostname, which is not tools work under either variable.
 /// `title` is the name a shell in this container should keep putting on the terminal,
-/// or `None` for a launch that wants none — which is `DEVLAUNCH_NO_TITLE`, or a spec
-/// that resolved no triple, both decided by the caller. Last of the three because it
-/// is the one that is not a switch, and neither tools switch touches it either:
-/// naming a pane is no more tool provisioning than naming a container is.
+/// or `None` for a launch that wants none, which is `DEVLAUNCH_NO_TITLE` and is the
+/// caller's decision. Last of the three because it is the one that is not a switch,
+/// and neither tools switch touches it either: naming a pane is no more tool
+/// provisioning than naming a container is.
+///
+/// **`workspace` is the whole id and `title` is the same string**, which is what
+/// makes the prompt this stage feeds and the tab the next one writes agree. See
+/// [`TerminalTitle`](crate::flows::launch::TerminalTitle) for why the tab stopped
+/// being the resolved spec.
 ///
 /// **The stage runs on the pass, so the name is installed when a workspace enters
 /// Running and not on every attach.** A workspace already up keeps whatever its
@@ -1061,12 +1066,14 @@ pub(crate) fn setup_stages(
         // hands over — which is why it rides the `up`'s own trip rather than the
         // attach's.
         //
-        // The id's readable half, not the id: the identity suffix is what makes an
-        // id address one workspace, and a UTS name addresses nothing. See
-        // [`hostname_of`] for what dropping it costs.
+        // The whole id, suffix included, because the prompt, the tab and the
+        // `dl --ls` row are one string now. The suffix used to be dropped here, on
+        // the grounds that a UTS name addresses nothing; what that cost was a third
+        // spelling to reconcile by eye, and two workspaces differing only in their
+        // suffix rendering the same prompt.
         Stage::new(
             HOSTNAME_STAGE,
-            format!("sudo hostname {}", quote(hostname_of(workspace))),
+            format!("sudo hostname {}", quote(workspace)),
         )
         .quieter(),
     ];
@@ -3904,12 +3911,15 @@ fi
     }
 
     #[test]
-    fn the_hostname_stage_names_the_container_without_the_id_s_suffix() {
-        // The workspace id is what devpod is called with; the name in the container's
-        // UTS namespace addresses nothing, so it carries the readable half alone. The
-        // stage still receives the id — it is what the whole pass is keyed on — and
-        // the drop happens here, in the one place a hostname is spelled.
-        let id = "devlaunch-main-zovomobo";
+    fn the_hostname_stage_names_the_container_after_the_whole_id() {
+        // The prompt renders `user@hostname`, the tab carries the same string, and
+        // `dl --ls` prints it in the WORKSPACE column: one workspace, one name.
+        //
+        // The suffix used to be dropped here, on the grounds that a UTS name
+        // addresses nothing so the identity half was dead weight in a prompt. What
+        // that cost was a third spelling to reconcile by eye, and it made two
+        // workspaces that differ only in their suffix render the same prompt.
+        let id = "devlaunch-main-3j1t";
         let script = setup_script(&setup_stages(
             id,
             ToolsSwitch::Install,
@@ -3917,8 +3927,7 @@ fi
             None,
         ));
 
-        assert!(script.contains("sudo hostname devlaunch-main;"), "{script}");
-        assert!(!script.contains(&format!("hostname {id}")));
+        assert!(script.contains(&format!("sudo hostname {id};")), "{script}");
     }
 
     #[test]
@@ -4012,7 +4021,7 @@ fi
     }
 
     #[test]
-    fn a_real_bash_over_the_pass_calls_hostname_with_the_id_s_readable_half() {
+    fn a_real_bash_over_the_pass_calls_hostname_with_the_whole_id() {
         // The derivation through a real shell, reading what `hostname` was actually
         // handed rather than what the script says. The name is interpolated as a
         // quoted word, so this is also where a quoting change that split it into two
@@ -4029,7 +4038,7 @@ fi
             ),
         );
         let script = setup_script(&setup_stages(
-            "devlaunch-main-zovomobo",
+            "devlaunch-main-3j1t",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
             None,
@@ -4050,7 +4059,7 @@ fi
         );
         assert_eq!(
             fs::read_to_string(&seen).expect("sudo ran").trim(),
-            "2 hostname devlaunch-main"
+            "2 hostname devlaunch-main-3j1t"
         );
     }
 
@@ -4526,7 +4535,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            Some("blooop/devlaunch@main"),
+            Some("devlaunch-main-3j1t"),
         )
         .iter()
         .map(|stage| stage.name)
@@ -4552,7 +4561,7 @@ fi
             (ToolsSwitch::Install, ZellijSwitch::Skip),
         ] {
             let names: Vec<StageName> =
-                setup_stages("myws", tools, zellij, Some("blooop/devlaunch@main"))
+                setup_stages("myws", tools, zellij, Some("devlaunch-main-3j1t"))
                     .iter()
                     .map(|stage| stage.name)
                     .collect();
@@ -4568,17 +4577,18 @@ fi
     fn the_title_line_appends_to_ps1_so_it_is_the_last_write_of_every_prompt() {
         // The mechanism, spelled out because it is the whole reason this works.
         // Ubuntu's stock `~/.bashrc` puts `\e]0;\u@\h: \w\a` at the *front* of PS1,
-        // so a prompt renames the pane after the hostname -- which is the workspace
-        // id, the thing the spec is here to replace. Two escapes in one prompt are
-        // applied in order, so the last one wins and this one has to be appended.
+        // so a prompt renames the pane after the hostname and the working directory.
+        // The hostname half is already the name this line installs; what this line is
+        // for is the rest of it. Two escapes in one prompt are applied in order, so
+        // the last one wins and this one has to be appended.
         //
         // A `PROMPT_COMMAND` would lose: bash runs that before it prints PS1, so the
         // stock escape would come afterwards.
-        let line = profile_title_line("blooop/devlaunch@main");
+        let line = profile_title_line("devlaunch-main-3j1t");
 
         assert_eq!(
             line,
-            r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac"#
+            r#"case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"devlaunch-main-3j1t"\a\]" ;; esac"#
         );
         // `$PS1` first, so nothing an image or a dotfile put in the prompt is
         // rewritten -- only added to.
@@ -4589,17 +4599,47 @@ fi
     }
 
     #[test]
-    fn a_title_holding_shell_metacharacters_is_text_and_not_shell() {
-        // A spec cannot hold these -- `WorkspaceId` refused every character but word
-        // ones, dots, slashes and dashes -- but the other three placements title
-        // after a bare devpod name or a path leaf, which this crate never validated.
-        // So the name is its own quoted word rather than interpolated into the
-        // double-quoted assignment.
+    fn a_title_is_its_own_quoted_word_in_the_assignment() {
+        // The name is its own quoted word rather than interpolated into the
+        // double-quoted assignment, so the line that gets *written* holds it as text
+        // however it was spelled. That is the whole of what this asserts: the write.
+        // It is not what makes the title safe, because `PS1` is read again at every
+        // prompt -- see `the_prompt_that_repaints_the_title_renders_it_as_text`.
         let line = profile_title_line("$(touch /tmp/pwned)`id`'x");
 
         assert!(
             line.contains(r#"'$(touch /tmp/pwned)`id`'"'"'x'"#),
             "{line}"
+        );
+    }
+
+    #[test]
+    fn the_prompt_that_repaints_the_title_renders_it_as_text() {
+        // The assertion above is about the assignment. This one is about the render,
+        // which is the half that matters: `PS1` is expanded again at every prompt, so
+        // what the quoting settles at write time gets a second reading later.
+        // `${PS1@P}` is that same expansion, which is what lets a test see it without
+        // a terminal.
+        //
+        // The name here is one the caller's filter would pass -- `!`, `*` and `[` all
+        // survive it, and all three are inert in a prompt. The characters that are
+        // not inert never reach this function; `sanitize_title` is where they go, and
+        // `a_name_cannot_smuggle_a_command_into_the_prompt_that_repaints_it` is where
+        // that is asserted.
+        let title = "ws-feature!auth*x[1]";
+        let line = profile_title_line(title);
+        let rendered = std::process::Command::new("bash")
+            .arg("-ic")
+            .arg(format!("PS1=; {line}; printf '%s' \"${{PS1@P}}\""))
+            .output()
+            .expect("bash");
+        let rendered = String::from_utf8_lossy(&rendered.stdout);
+
+        // Verbatim: the prompt paints the name it was handed, not an expansion of it.
+        assert_eq!(
+            rendered,
+            format!("\x01\x1b]2;{title}\x07\x02"),
+            "{rendered}"
         );
     }
 
@@ -4614,7 +4654,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
-            Some("blooop/devlaunch@main"),
+            Some("devlaunch-main-3j1t"),
         );
         let stage = stages
             .iter()
@@ -4637,7 +4677,7 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Skip,
-            Some("blooop/devlaunch@main"),
+            Some("devlaunch-main-3j1t"),
         );
         let stage = stages
             .iter()
@@ -4670,7 +4710,7 @@ fi
         let stock = ps1.find(r"\e]0;").expect("the stock title escape");
         let ours = ps1.find(r"\e]2;").expect("our title escape");
         assert!(ours > stock, "ours must come last: {ps1:?}");
-        assert!(ps1.contains("blooop/devlaunch@main"), "{ps1:?}");
+        assert!(ps1.contains("devlaunch-main-3j1t"), "{ps1:?}");
 
         // Appended once, however many times the pass runs: the dedupe mark is what
         // keeps a profile from growing one escape per launch.
@@ -4780,13 +4820,13 @@ fi
         // and the last of those is read by any POSIX login shell -- `/bin/sh` is
         // dash on Debian and Ubuntu. `\[`, `\e` and `\a` mean nothing to dash, which
         // renders a prompt literally, so an unguarded append puts
-        // `\[\e]2;blooop/devlaunch@main\a\]` on screen at every prompt. That is worse
+        // `\[\e]2;devlaunch-main-3j1t\a\]` on screen at every prompt. That is worse
         // than no title: it is a corrupted one.
         //
         // The guard is the same `$BASH_VERSION` test Ubuntu's own `~/.profile` uses
         // before it sources `~/.bashrc`. Asserted as an implication so this reads the
         // same whichever shell `sh` is on the machine running it.
-        let line = profile_title_line("blooop/devlaunch@main");
+        let line = profile_title_line("devlaunch-main-3j1t");
         let script = format!(
             "PS1=untouched\n{line}\nprintf '%s\\n%s\\n' \"${{BASH_VERSION:+bash}}\" \"$PS1\""
         );

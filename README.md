@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.15.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.16.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -235,7 +235,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.15.0
+dl 0.16.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -308,7 +308,8 @@ anything to its `devcontainer.json`.
   `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
   of a cold launch, which is why it waits to be asked.
 - **A terminal named after the workspace.** `dl blooop/devlaunch` names the pane
-  `blooop/devlaunch@main` in zellij, tmux, or a plain terminal window.
+  `devlaunch-main-3j1t` in zellij, tmux, or a plain terminal window: the workspace id,
+  the same string `dl --ls` prints and the container's hostname carries.
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
   `pixi global sync` download each package once per machine instead of once per container. On one
   measured profile that is 18s to 28s instead of 62s to 113s and 1.2 GB.

@@ -1156,7 +1156,7 @@ pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
 /// The delete is the one place where "which workspace" was a question dl's own
 /// output did not answer until it was over. `dl <ws> rm` can be handed a branch, a
 /// path or a bare `owner/repo`, and `dl rm` is handed nothing at all: the picker
-/// takes a row reading `<owner> | <repo> | <ref>`, hands an id back and then draws
+/// takes a row reading `<owner> | <repo> | <branch>`, hands an id back and then draws
 /// its own screen away, so the name devpod is addressed by was never on screen at
 /// the moment it was chosen. Everything the delete says afterwards names that id,
 /// and this is the line they are answers to.
@@ -1204,10 +1204,10 @@ pub(crate) fn removed(workspace_id: &str, insistence: Insistence) -> String {
 /// was drawn, and the workspace id it resolved to.
 ///
 /// **Both halves, because neither one is enough.** The picker draws
-/// `<owner> | <repo> | <ref>` and every line after this names a workspace id, and an
+/// `<owner> | <repo> | <branch>` and every line after this names a workspace id, and an
 /// id is `<repo-slug>-<ref-slug>-<suffix>`
 /// ([`devlaunch_core::domain::workspace_id`]) with **no owner in it at all**: a fork
-/// and its upstream are one id apart only in eight characters of hash, which
+/// and its upstream are one id apart only in four characters of hash, which
 /// [`select`](crate::select) deliberately never puts on screen because reading it is
 /// no part of choosing a workspace. So an id alone cannot be checked against the row
 /// that was chosen, and the row alone is not what devpod is addressed by. This line
@@ -3114,20 +3114,20 @@ mod tests {
     #[test]
     fn a_delete_names_the_workspace_going_in_and_names_it_again_once_it_is_gone() {
         assert_eq!(
-            removing("devlaunch-main-abc12345"),
-            "Removing workspace devlaunch-main-abc12345..."
+            removing("devlaunch-main-3j1t"),
+            "Removing workspace devlaunch-main-3j1t..."
         );
         assert_eq!(
-            removed("devlaunch-main-abc12345", Insistence::NotInsisted),
-            "Removed workspace devlaunch-main-abc12345."
+            removed("devlaunch-main-3j1t", Insistence::NotInsisted),
+            "Removed workspace devlaunch-main-3j1t."
         );
         // `--force` carries devpod's `--ignore-not-found`, so a success establishes
         // absence and not a removal: there is nothing in the answer to tell a real
         // delete from a workspace that was never there, and a path spec never asked
         // devpod either. The words say only what was established.
         assert_eq!(
-            removed("devlaunch-main-abc12345", Insistence::Insisted),
-            "Workspace devlaunch-main-abc12345 is gone."
+            removed("devlaunch-main-3j1t", Insistence::Insisted),
+            "Workspace devlaunch-main-3j1t is gone."
         );
     }
 
@@ -3142,16 +3142,16 @@ mod tests {
     /// which is exactly the column the picker draws first and the one a fork is told
     /// from its upstream by. A receipt naming the id alone leaves
     /// `blooop | devlaunch | main` and `myfork | devlaunch | main` reporting the
-    /// same words with eight characters of hash between them, and the hash was
+    /// same words with four characters of hash between them, and the hash was
     /// deliberately never on screen while the row was being chosen.
     #[test]
     fn a_pick_names_the_row_that_was_chosen_beside_the_id_it_resolved_to() {
         assert_eq!(
             picked(
                 "rm",
-                &[("blooop | devlaunch | main", "devlaunch-main-abc12345")]
+                &[("blooop | devlaunch | main", "devlaunch-main-3j1t")]
             ),
-            ["Picked blooop | devlaunch | main -> devlaunch-main-abc12345"]
+            ["Picked blooop | devlaunch | main -> devlaunch-main-3j1t"]
         );
         // The two rows an id cannot tell apart, which is the case the row column is
         // carried for: same repo, same ref, different owner, and the ids differ only
@@ -3160,15 +3160,15 @@ mod tests {
             picked(
                 "rm",
                 &[
-                    ("blooop | devlaunch | main", "devlaunch-main-abc12345"),
-                    ("myfork | devlaunch | main", "devlaunch-main-def67890"),
+                    ("blooop | devlaunch | main", "devlaunch-main-3j1t"),
+                    ("myfork | devlaunch | main", "devlaunch-main-7q0x"),
                     ("- | someones-project", "someones-project"),
                 ]
             ),
             [
                 "Picked 3 workspaces for rm:",
-                "  blooop | devlaunch | main -> devlaunch-main-abc12345",
-                "  myfork | devlaunch | main -> devlaunch-main-def67890",
+                "  blooop | devlaunch | main -> devlaunch-main-3j1t",
+                "  myfork | devlaunch | main -> devlaunch-main-7q0x",
                 "  - | someones-project -> someones-project",
             ]
         );

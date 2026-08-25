@@ -365,7 +365,7 @@ Every launch names the terminal after the workspace it is opening, just before t
 session takes over:
 
 ```
-ESC ] 2 ; blooop/devlaunch@main BEL
+ESC ] 2 ; devlaunch-main-3j1t BEL
 ```
 
 That is one escape sequence to whichever stream dl was given, and the point of
@@ -384,23 +384,26 @@ A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are 
 the same size of decision. That one installs a package into a container and starts a
 session; this one writes an escape sequence and two lines into a profile.
 
-**It is the spec you typed, resolved, not the workspace id.** `dl blooop/devlaunch`
-names the pane `blooop/devlaunch@main`, with the branch filled in as the launch
-resolved it. The [id](workspaces.md#workspace-ids) is a worse name for two reasons. It carries no
-owner at all, so a fork and its upstream are two tabs spelled the same, and it
-spells the branch as a slug, so `feature/auth` reads as `feature-auth`, the name of
-a different branch the same repository could have.
+**It is the [workspace id](workspaces.md#workspace-ids), however you named the
+workspace.** `dl blooop/devlaunch` names the pane `devlaunch-main-3j1t`: the string
+devpod is addressed by, the container's hostname, and the `WORKSPACE` column of
+`dl --ls`. One workspace, one name, so a tab and a listing row match by eye.
 
-The other three ways of naming a workspace have no triple to resolve, so they keep
-the id: a bare `dl myworkspace` *is* its id, and `dl ./some/dir` or a plain URL
-never had a branch for an `@` to precede.
+It used to be the spec you typed, resolved, `blooop/devlaunch@main`, and read on its
+own that is the better name. An id carries no owner at all, so a fork and its
+upstream are two tabs spelled the same, and it spells the branch as a slug, so
+`feature/auth` reads as `feature-auth`, the name of a different branch the same
+repository could have. What the spec left out is that only one of the four ways of
+naming a workspace has one. A bare `dl myworkspace` *is* its id, and `dl ./some/dir`
+or a plain URL never had a branch for an `@` to precede, so three of the four were
+titled by id anyway and the shape of the tab depended on how you had reached the
+workspace.
 
-It stays short enough for a tab bar, but not by anything dl does. A spec is bounded
-by the id it derived, since a triple whose parts overrun 47 characters is refused
-before there is a session, and a bare workspace name or a `./path` arrives as what you
-typed. What keeps *those* short is devpod, which refuses to create or report a
-workspace whose name runs past 48 characters, so a longer one ends the launch before
-there is a session to name.
+It stays short enough for a tab bar, and that now comes with the choice rather than
+needing an argument of its own: an id is at most 47 characters, because devpod
+refuses to create or report a workspace whose name runs past 48. A spec had no such
+bound. A triple is checked for the characters it holds and not for its length, so a
+200-character branch made a 200-character tab.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for
@@ -413,18 +416,18 @@ escapes into somebody else's capture.
 A terminal title has exactly one value and the last writer sets it. An interactive
 shell overwrites dl's within a second of arriving. Ubuntu's stock `~/.bashrc` puts
 `\e]0;\u@\h: \w\a` at the *front* of `PS1`, so every prompt renames the pane after
-the container's hostname, which is the workspace id's readable half,
-`devlaunch-main`, and so says nothing about the owner and spells the ref as a slug.
+the container's hostname and the working directory, which is more than the tab
+wants and in a different shape.
 
 So the setup pass appends one line to the profile a login shell reads:
 
 ```
-case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"blooop/devlaunch@main"\a\]" ;; esac
+case $- in *i*) [ -n "$BASH_VERSION" ] && PS1="$PS1\[\e]2;"devlaunch-main-3j1t"\a\]" ;; esac
 ```
 
 Appended, and that is the whole mechanism: two escapes in one prompt are applied in
 order, so the last one sets the title. Nothing is rewritten. The visible
-`vscode@devlaunch-main:~/repo$` still says the hostname, and only the tab
+`vscode@devlaunch-main-3j1t:~/repo$` still says the hostname, and only the tab
 changes. (A `PROMPT_COMMAND` cannot do this job: bash runs that *before* it prints
 `PS1`, so the stock escape would land afterwards and win.) Interactive bash only.
 `bash -lc` reads the same profile on every `dl <ws> -- cmd` one-shot, and `\[`, `\e`
@@ -436,12 +439,15 @@ It is written once, since the line carries a content-hash comment the next launc
 recognises, and it rides the same round trip as the hostname stage, so it costs no
 extra trip.
 
-**Only a spec is installed this way.** `dl myworkspace` teaches the container
-little: the hostname is the readable half of that same id, so the stock prompt
-already writes everything in it anyone reads. It also cannot, safely. The line is
-recognised by a hash of its own text, so a second, different name for one workspace
-would not replace the first but sit after it, and the last one wins. Keying on the
-spec alone means a workspace has at most one such line, ever.
+**The name is the workspace id, and it is the same one everywhere.** The hostname is
+that id, `dl --ls` prints that id, and devpod is addressed by it, so a tab and a
+listing row match by eye. It also has to be one string for a second reason: the line
+is recognised by a hash of its own text, so a second, different name for one
+workspace would not replace the first but sit after it, and the last one wins. The
+id is the one name every launch arm has, so a workspace gets at most one such line,
+ever. This used to install `owner/repo@main` instead, which only a launch that
+resolved a triple had, so `dl myworkspace` installed nothing and opening the same
+workspace both ways left two lines.
 
 **It is installed when a workspace enters Running, not on every attach.** A
 workspace that is already up keeps whatever its profile was given, so
@@ -490,8 +496,8 @@ Two multiplexer limits are worth stating, because neither is dl's to fix:
 **zellij tab names are not this.** A zellij *tab* is renamed only by `zellij
 action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
-terminal is `<session> | <pane title>`, so the spec is what shows up in a kitty tab
-bar.
+terminal is `<session> | <pane title>`, so the workspace id is what shows up in a
+kitty tab bar.
 
 ## The shared pixi package cache
 

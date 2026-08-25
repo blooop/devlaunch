@@ -122,9 +122,9 @@ def build(root: pathlib.Path, shim: pathlib.Path) -> None:
     foreign.mkdir(parents=True, exist_ok=True)
     (foreign / "notes.txt").write_text("not devlaunch's\n", encoding="utf-8")
 
-    # metadata.json, schema 2, with the one record.
+    # metadata.json, schema 3, with the one record.
     metadata = {
-        "version": 2,
+        "version": 3,
         "repositories": {},
         "worktrees": {
             "blooop/devlaunch/main": {

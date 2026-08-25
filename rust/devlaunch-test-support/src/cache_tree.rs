@@ -261,7 +261,7 @@ mod tests {
             .expect("in the lookalike");
         std::fs::write(clone.join("README.md"), "hello\n").expect("a file in the clone");
         std::fs::write(clone.join(".git/objects/ab/cdef"), "an object").expect("an object");
-        std::fs::write(cache.join("metadata.json"), r#"{"version": 2}"#).expect("metadata");
+        std::fs::write(cache.join("metadata.json"), r#"{"version": 3}"#).expect("metadata");
         std::fs::write(cache.join("metadata.json.lock"), "").expect("a lock");
         std::fs::write(cache.join("completions.json"), "[]").expect("a completions cache");
         std::fs::write(cache.join("last_fetched"), "1970").expect("a sidecar");
@@ -311,7 +311,11 @@ mod tests {
         );
 
         // A record may not.
-        std::fs::write(cache.join("metadata.json"), r#"{"version": 3}"#).expect("metadata moves");
+        std::fs::write(
+            cache.join("metadata.json"),
+            r#"{"version": 3, "worktrees": {}}"#,
+        )
+        .expect("metadata moves");
         assert_ne!(
             cache_fingerprint(scratch.path()),
             before,

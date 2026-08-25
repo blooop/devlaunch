@@ -56,7 +56,15 @@ use super::xdg::{self, NoHomeDirectory};
 /// 2: leaves and workspace ids are both the workspace id (#64). Reached from 1
 ///    by the migration, which renames the directories on disk and then writes
 ///    the new paths and this header in one atomic save.
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+/// 3: the same shape as 2, holding ids derived with a four-character base-36
+///    suffix in place of the eight-character syllable one
+///    ([`SUFFIX_LENGTH`](crate::domain::workspace_id::SUFFIX_LENGTH)). **Not a
+///    change to the format**, which is why nothing in this module reads the
+///    difference: it is a change to the *values*, and it is here because the
+///    header is what triggers the rename. The migration re-derives every id from
+///    the triple its record already stores, so 1 and 2 both reach 3 by the one
+///    pass, and a cache that skipped 2 entirely is not a case to handle.
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 /// What a file whose header cannot be read is assumed to be.
 ///
@@ -1206,11 +1214,13 @@ mod tests {
     use jiff::civil;
     use serde_json::json;
 
-    /// A file the real Python wrote: two-space indent, this key order, non-ASCII
-    /// spelled as `\uXXXX`, and no trailing newline.
+    /// The exact bytes this build writes, in the shape the real Python wrote:
+    /// two-space indent, this key order, non-ASCII spelled as `\uXXXX`, and no
+    /// trailing newline. The `version` is this build's own, which is the one field
+    /// of it that has moved since the port.
     const PYTHON_METADATA: &str = concat!(
         "{\n",
-        "  \"version\": 2,\n",
+        "  \"version\": 3,\n",
         "  \"repositories\": {\n",
         "    \"blooop/devlaunch\": {\n",
         "      \"owner\": \"blooop\",\n",
@@ -1240,9 +1250,10 @@ mod tests {
         "}",
     );
 
-    /// An empty store, as the real Python saves it.
+    /// An empty store, in the shape the real Python saves one, at this build's
+    /// version.
     const PYTHON_EMPTY_METADATA: &str =
-        "{\n  \"version\": 2,\n  \"repositories\": {},\n  \"worktrees\": {}\n}";
+        "{\n  \"version\": 3,\n  \"repositories\": {},\n  \"worktrees\": {}\n}";
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("a temp dir")
@@ -1725,7 +1736,7 @@ mod tests {
 
         let storage = quiet_storage(dir.path());
 
-        assert_eq!(storage.schema_version(), 2);
+        assert_eq!(storage.schema_version(), 3);
         assert_eq!(
             storage
                 .get_worktree("blooop", "devlaunch", "feature/brünch")
@@ -2351,10 +2362,10 @@ mod tests {
 
         quiet_storage(dir.path()).save().expect("saved");
 
-        assert_eq!(SCHEMA_VERSION, 2);
+        assert_eq!(SCHEMA_VERSION, 3);
         let on_disk: Value = serde_json::from_str(&read(&path)).expect("JSON");
-        assert_eq!(on_disk["version"], json!(2));
-        assert_eq!(quiet_storage(dir.path()).schema_version(), 2);
+        assert_eq!(on_disk["version"], json!(3));
+        assert_eq!(quiet_storage(dir.path()).schema_version(), 3);
     }
 
     #[test]
@@ -2405,7 +2416,7 @@ mod tests {
             [
                 Notice::VersionFromNewerBuild {
                     found: 99,
-                    understood: 2,
+                    understood: 3,
                     ..
                 },
                 Notice::OriginalPreserved { .. },
