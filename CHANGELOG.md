@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-25
+
+### Changed
+
+- **The selector is a table, headings and all.** It had columns already, and two of
+  the three were padded to a common width. What it did not have was a line saying
+  what they were, or a promise that a column starts in the same place on every row:
+
+  ```
+  Select workspaces (type to filter, TAB to mark several):
+  OWNER  | REPO             | BRANCH                  | WORKSPACE
+  blooop | devlaunch        | main                    | devlaunch-main-3j1t
+  blooop | devlaunch        | main                    | devlaunch-main-legacy
+  blooop | wayfinder        | wayfinder/devlaunch-467
+  myfork | bencher          | fix/thing
+  -      | someones-project
+  ```
+
+  Three things moved to get there. The branch column is padded now, which is what
+  lets the fourth column line up in the case that draws one: two workspaces of one
+  repository on one branch, where both rows say their whole id. The heading is
+  measured as a cell, so a column of short owners is padded out to `OWNER` rather
+  than the word overhanging the column it names. And the headings are drawn in the
+  picker's own header, beside the invitation, rather than offered as a row: a
+  heading in the list would be filterable, markable with TAB and pickable, in a
+  picker `dl rm` opens.
+
+  A column is named exactly when some row has something in it, so a list of nothing
+  dl cloned is headed `OWNER | REPO` and stops there.
+
+  The one behaviour change under the rows: a workspace dl did not clone keeps
+  devpod's name for it, and that name now sits *in* the repo column instead of
+  running on through the space a repo and a branch would have taken. It is measured
+  for that column too, so a long foreign name widens it for every row, which is the
+  price of one grid and the same price a long repository name has always cost. It
+  reads `REPO` over a workspace name, which is the one place the heading is looser
+  than the cells under it: the alternative puts the only thing that row says
+  furthest right on the line, after two empty cells.
+
 ## [0.17.0] - 2026-08-25
 
 ### Changed
