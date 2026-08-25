@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.18.0] - 2026-08-25
+## [0.19.0] - 2026-08-25
 
 ### Changed
 
@@ -45,6 +45,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads `REPO` over a workspace name, which is the one place the heading is looser
   than the cells under it: the alternative puts the only thing that row says
   furthest right on the line, after two empty cells.
+
+## [0.18.0] - 2026-08-25
+
+### Changed
+
+- **Tab completion of the first word offers owners before workspace ids, so an
+  owner completes past the ids of its own repository.** `dl kin<TAB>` used to stop
+  at `kinisi-ro` and print a screen of workspace ids. Both namespaces were in one
+  `compgen -W` list, and they collide for a single repository: an id is
+  `<repo-slug>-<ref-slug>-<suffix>` and the slug turns `_` into `-`, so
+  `kinisi-robotics/kinisi_ros` derives ids beginning `kinisi-ros`, against an owner
+  named `kinisi-robotics`. bash completes to the longest prefix its candidates
+  share, which was those nine characters. No fork and no second owner were needed
+  to cause it, and typing more did not help until the two spellings diverged.
+
+  The owner wins the tie because it continues: `/` is the next keystroke and the
+  repository completes from there, so `dl kin<TAB><TAB>` now reaches
+  `kinisi-robotics/kinisi_ros`. Workspace ids are held back rather than dropped,
+  and for a prefix no owner matches they are what is offered, which is the case
+  that had to keep working: an id pasted or half-typed out of `dl --ls`, since
+  `dl <id>` is still a way to name a workspace. One keystroke swaps the list, so
+  `dl kinisi-ros<TAB>` offers the ids and nothing else. The hold-back applies to a
+  prefix only: `dl <TAB>` with nothing typed lists both, as it always did, and an
+  id typed out in full is offered beside the owner it shares a name with, for
+  which no longer prefix exists.
+
+  A completing id also gets its trailing space back. The old branch suppressed the
+  space for every candidate because some of them were owners, which need the
+  cursor left against the `/`; now only the owners do, and an id can be followed
+  straight by a verb.
+
+  Nothing about `completions.bash` changed, so an older `dl` writing the cache and
+  this script reading it agree, and the reverse.
 
 ## [0.17.0] - 2026-08-25
 
@@ -91,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both of those rows are on `main`, so the branch was never what was ambiguous, and
   taking it off screen left a person picking between two ids. `dl rm` is one of the
   verbs the selector opens for. Only the rows that collide grow the column.
+
 
 ## [0.16.0] - 2026-08-25
 

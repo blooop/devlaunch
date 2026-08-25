@@ -145,17 +145,58 @@ _dl_completion() {
             return 0
         fi
 
-        # Default: complete workspace names and offer owner/ completion
-        compopt -o nospace  # For owner/ completions
-        local completions="$DL_WORKSPACES"
-
-        # Add owners with trailing slash
+        # Default: owners first, workspace ids only when no owner matches.
+        #
+        # The two namespaces collide for a single repository. An id is
+        # `<repo-slug>-<ref-slug>-<suffix>` and `slug` turns `_` into `-`, so
+        # `kinisi-robotics/kinisi_ros` derives ids that all begin `kinisi-ros`,
+        # against an owner named `kinisi-robotics`. In one list bash completes to
+        # the nine characters they share and stops. No fork and no second owner
+        # is needed, which is why this is a precedence rule and not a filter.
+        #
+        # The owner wins because it continues: `/` is the next keystroke and the
+        # `*/*` branch above completes the repo from there. An id is a finished
+        # word, so it is held back rather than dropped -- `dl <id>` is a launch
+        # arm (`WorkspaceSpec::ExistingIdOrName`), and the two guards below are
+        # what keep an id copied out of `dl --ls` completable.
+        local owners=""
+        local owner
         for owner in $DL_OWNERS; do
-            completions="$completions ${owner}/"
+            owners="$owners ${owner}/"
         done
 
-        if [[ -n "$completions" ]]; then
-            COMPREPLY=( $(compgen -W "${completions}" -- ${cur}) )
+        # Every owner matches the empty prefix, so without this the hold-back
+        # swallows the workspace list on the one gesture that means "show me what
+        # I have" -- and under `nospace` a lone owner is not a short list, it is
+        # bash rewriting the line to `dl owner/`.
+        if [[ -z "$cur" ]]; then
+            compopt -o nospace
+            COMPREPLY=( $(compgen -W "${owners} ${DL_WORKSPACES}" -- "") )
+            return 0
+        fi
+
+        if [[ -n "$owners" ]]; then
+            COMPREPLY=( $(compgen -W "${owners}" -- ${cur}) )
+        fi
+
+        if (( ${#COMPREPLY[@]} > 0 )); then
+            # No trailing space: the `/` is a continuation, not the end of a word.
+            compopt -o nospace
+            # Holding an id back is only defensible while it is a delay, and for an
+            # id typed out in full there is no longer prefix to reach. Reachable
+            # because `DL_WORKSPACES` is every devpod workspace, hand-made names
+            # included, so one really can be called after an owner.
+            local workspace
+            for workspace in $DL_WORKSPACES; do
+                if [[ "$workspace" == "$cur" ]]; then
+                    COMPREPLY+=( "$workspace" )
+                    break
+                fi
+            done
+        elif [[ -n "$DL_WORKSPACES" ]]; then
+            # A space here, where the old shared branch suppressed it for every
+            # candidate because some of them were owners.
+            COMPREPLY=( $(compgen -W "${DL_WORKSPACES}" -- ${cur}) )
         fi
         return 0
     fi

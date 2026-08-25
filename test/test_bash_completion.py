@@ -66,8 +66,30 @@ class TestBashCompletion:
         Returns:
             List of completion suggestions
         """
+        return self.run_completion_with_options(comp_line, comp_point)[0]
+
+    def run_completion_with_options(self, comp_line, comp_point=None):
+        """
+        As `run_completion`, and also the options the function asked bash for.
+
+        `compopt` is how the script says whether a candidate is a whole word or a
+        prefix to keep typing, and it is a real difference to the user: a trailing
+        space after a workspace id, none after an `owner/`. It cannot be observed
+        from COMPREPLY, and the real builtin refuses to run at all outside a live
+        completion ("not currently executing completion function"), which is also
+        what puts an error on stderr every time this harness runs. Shadowing it
+        with a function records the request and silences that. A shell function
+        beats a builtin of the same name, so the script needs no seam of its own.
+
+        Returns:
+            (completions, options) -- options is the list of words passed to each
+            `compopt` call, in order.
+        """
         if comp_point is None:
             comp_point = len(comp_line)
+
+        options_file = pathlib.Path(self.test_dir) / "compopt.log"
+        options_file.unlink(missing_ok=True)
 
         # Create a bash script that sources the completion and runs it
         # Use shlex.quote to properly escape shell arguments
@@ -75,6 +97,8 @@ class TestBashCompletion:
 #!/bin/bash
 export XDG_CACHE_HOME={shlex.quote(str(self.cache_base))}
 source {shlex.quote(str(self.completion_script))}
+
+compopt() {{ printf '%s\\n' "$*" >> {shlex.quote(str(options_file))}; }}
 
 # Set completion environment variables
 export COMP_LINE={shlex.quote(comp_line)}
@@ -94,19 +118,23 @@ done
 
         # Parse output
         completions = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
-        return completions
+        recorded = options_file.read_text(encoding="utf-8") if options_file.exists() else ""
+        options = [line.strip() for line in recorded.strip().split("\n") if line.strip()]
+        return completions, options
 
     def test_completion_with_dashed_workspace(self):
-        """Test completion works with workspace names containing dashes."""
-        # Complete after typing "dl my-"
-        completions = self.run_completion("dl my-")
-        # Positive assertions: dashed names are suggested
-        assert "my-workspace" in completions
-        assert "my-org/" in completions
-        # Negative assertions: dashes are not treated as word breaks
-        # (These would appear if dashes were splitting the words)
-        assert "workspace" not in completions
-        assert "org/" not in completions
+        """Test completion works with names containing dashes, in both namespaces."""
+        # "dl my-" matches an owner, so the ids that also start "my-" are held
+        # back; "dl my-w" matches none, so it falls through to them. Both halves
+        # are here because a dash treated as a word break would show up in one
+        # list or the other, and the tail is what it would leave behind.
+        owners = self.run_completion("dl my-")
+        ids = self.run_completion("dl my-w")
+
+        assert owners == ["my-org/"]
+        assert ids == ["my-workspace"]
+        assert "org/" not in owners
+        assert "workspace" not in ids
 
     def test_completion_with_dashed_org_name(self):
         """Test completion works with organization names containing dashes."""
@@ -192,6 +220,96 @@ done
         # Complete after typing "dl another-org/ano"
         completions = self.run_completion("dl another-org/ano")
         assert "another-org/another-repo" in completions
+
+    # --- the two namespaces in the first word -------------------------------
+    #
+    # An owner and the workspace ids of its own repo share a prefix whenever the
+    # repo slug is a prefix-neighbour of the owner name, which needs no fork and
+    # no second owner: `kinisi-robotics` against ids derived from `kinisi_ros`,
+    # whose slug is `kinisi-ros`. Offering both as one list stalled bash at the
+    # longest common prefix, `kinisi-ro`. These pin the rule that replaced it.
+
+    def write_colliding_cache(self):
+        """The real-world shape: one owner whose name collides with its own ids."""
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            f.write(
+                'DL_WORKSPACES="kinisi-ros-nb2-lobi kinisi-ros-remove-pins-tiha '
+                'kinisi-ros-update-bencher-jegi"\n'
+            )
+            f.write('DL_REPOS="kinisi-robotics/kinisi_ros"\n')
+            f.write('DL_OWNERS="kinisi-robotics"\n')
+            f.write('DL_BRANCHES="kinisi-robotics/kinisi_ros@main"\n')
+
+    def test_an_owner_completes_past_the_ids_of_its_own_repo(self):
+        """`dl kin<TAB>` reaches the owner instead of stalling on shared prefix."""
+        self.write_colliding_cache()
+
+        assert self.run_completion("dl kin") == ["kinisi-robotics/"]
+
+    def test_the_owner_and_then_the_repo_is_two_tabs(self):
+        """The second tab continues through the `/` branch to the whole spec."""
+        self.write_colliding_cache()
+
+        assert self.run_completion("dl kinisi-robotics/") == ["kinisi-robotics/kinisi_ros"]
+
+    def test_workspace_ids_are_offered_when_no_owner_matches(self):
+        """An id half-typed out of `dl --ls` still completes: `dl <id>` is a spec."""
+        self.write_colliding_cache()
+
+        # `kinisi-ros-` matches no owner -- `kinisi-robotics` diverges at the `b`.
+        assert self.run_completion("dl kinisi-ros-nb") == ["kinisi-ros-nb2-lobi"]
+
+    def test_ids_are_held_back_only_while_an_owner_matches(self):
+        """The fallback is per-prefix, not a mode: one keystroke swaps the list."""
+        self.write_colliding_cache()
+
+        assert self.run_completion("dl kinisi-ro") == ["kinisi-robotics/"]
+        assert self.run_completion("dl kinisi-ros") == [
+            "kinisi-ros-nb2-lobi",
+            "kinisi-ros-remove-pins-tiha",
+            "kinisi-ros-update-bencher-jegi",
+        ]
+
+    def test_bare_tab_offers_both_namespaces(self):
+        """Nothing typed is no collision, so `dl <TAB>` still shows everything."""
+        self.write_colliding_cache()
+
+        completions = self.run_completion("dl ")
+
+        assert "kinisi-robotics/" in completions
+        assert "kinisi-ros-nb2-lobi" in completions
+
+    def test_an_id_typed_in_full_is_offered_beside_the_owner_it_shares_a_name_with(self):
+        """`DL_WORKSPACES` is every devpod workspace, including hand-made names."""
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            f.write('DL_WORKSPACES="blooop other-main-abcd"\n')
+            f.write('DL_REPOS="blooop/devlaunch"\n')
+            f.write('DL_OWNERS="blooop"\n')
+            f.write('DL_BRANCHES="blooop/devlaunch@main"\n')
+
+        # No longer prefix leaves the owner behind, so without this the workspace
+        # can never be completed and TAB appends a `/` to an already-whole word.
+        assert sorted(self.run_completion("dl blooop")) == ["blooop", "blooop/"]
+
+    def test_an_owner_keeps_the_cursor_against_the_slash_and_an_id_does_not(self):
+        """An owner is a prefix to keep typing; an id is a whole word."""
+        self.write_colliding_cache()
+
+        _, after_owner = self.run_completion_with_options("dl kin")
+        _, after_id = self.run_completion_with_options("dl kinisi-ros-nb")
+
+        assert after_owner == ["-o nospace"]
+        assert after_id == []
+
+    def test_ids_complete_when_the_cache_knows_no_owners(self):
+        """A cache with workspaces and no repos of dl's own is still completable."""
+        with open(self.cache_file, "w", encoding="utf-8") as f:
+            f.write('DL_WORKSPACES="handmade-workspace"\n')
+            f.write('DL_REPOS=""\n')
+            f.write('DL_OWNERS=""\n')
+            f.write('DL_BRANCHES=""\n')
+
+        assert self.run_completion("dl hand") == ["handmade-workspace"]
 
     def test_completion_branch_at_symbol(self):
         """Test completion triggers after @ symbol for branches."""
