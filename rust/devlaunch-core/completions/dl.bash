@@ -176,6 +176,17 @@ _dl_completion() {
             owners="$owners ${owner}/"
         done
 
+        # Nothing typed is nothing to disambiguate. Every owner matches the empty
+        # prefix, so without this the hold-back below swallows the whole workspace
+        # list on the one gesture that means "show me what I have" -- and with a
+        # single owner it is worse than a short list, because one candidate under
+        # `nospace` is bash rewriting the line to `dl owner/`.
+        if [[ -z "$cur" ]]; then
+            compopt -o nospace
+            COMPREPLY=( $(compgen -W "${owners} ${DL_WORKSPACES}" -- "") )
+            return 0
+        fi
+
         if [[ -n "$owners" ]]; then
             COMPREPLY=( $(compgen -W "${owners}" -- ${cur}) )
         fi

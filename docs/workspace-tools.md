@@ -728,6 +728,9 @@ offers the three ids and nothing else. An id copied out of `dl --ls` still
 completes from any prefix long enough to leave the owner behind, and `dl <id>` is
 still a way to name a workspace.
 
+The hold-back applies only to a prefix. `dl <TAB>` with nothing typed is not a
+collision to resolve, so it lists both, the way it always did.
+
 Nothing about the cache changed, so a `completions.bash` written by an older `dl`
 works with this script and the other way round.
 

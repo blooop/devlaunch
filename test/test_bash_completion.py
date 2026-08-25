@@ -243,6 +243,15 @@ done
             "kinisi-ros-update-bencher-jegi",
         ]
 
+    def test_bare_tab_offers_both_namespaces(self):
+        """Nothing typed is no collision, so `dl <TAB>` still shows everything."""
+        self.write_colliding_cache()
+
+        completions = self.run_completion("dl ")
+
+        assert "kinisi-robotics/" in completions
+        assert "kinisi-ros-nb2-lobi" in completions
+
     def test_ids_complete_when_the_cache_knows_no_owners(self):
         """A cache with workspaces and no repos of dl's own is still completable."""
         with open(self.cache_file, "w", encoding="utf-8") as f:
