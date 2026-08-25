@@ -94,9 +94,10 @@ pub(crate) struct Offer {
     /// Kept because a pick is reported back to the user in words
     /// ([`render::picked`](crate::render::picked)), and `label` is padded against the
     /// widest entry in the list — quoting it would put runs of spaces inside a
-    /// sentence, and a trailing one on the narrower of two rows that differ only by
-    /// padding. It is `label`'s own unpadded form and is built beside it from the
-    /// same naming, which is the only thing that keeps the two from drifting.
+    /// sentence. The padding is *internal*: [`label`] pads every column but the
+    /// last, so a label never ends in it and trimming one does not recover this.
+    /// It has to be built, and it is built beside `label` from the same naming,
+    /// which is the only thing that keeps the two from drifting.
     pub(crate) unpadded: String,
     pub(crate) workspace_id: String,
 }
