@@ -5484,14 +5484,14 @@ mod tests {
     // the fetch sweep
     // =======================================================================
 
-    /// `git fetch origin +refs/heads/*:refs/heads/* --tags --prune` — the broad
-    /// sweep, and the sweep's alone.
+    /// `git fetch origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* --prune`
+    /// — the broad sweep, and the sweep's alone.
     const BROAD_FETCH: [&str; 6] = [
         "git",
         "fetch",
         "origin",
         "+refs/heads/*:refs/heads/*",
-        "--tags",
+        "+refs/tags/*:refs/tags/*",
         "--prune",
     ];
 

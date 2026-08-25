@@ -2593,9 +2593,7 @@ mod tests {
         assert!(
             !fetches
                 .iter()
-                .any(|argv| argv.iter().any(|arg| arg.contains('*'))
-                    || argv.contains(&"--tags")
-                    || argv.contains(&"--prune")),
+                .any(|argv| argv.iter().any(|arg| arg.contains('*')) || argv.contains(&"--prune")),
             "{fetches:?}"
         );
     }

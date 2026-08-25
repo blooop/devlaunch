@@ -541,6 +541,35 @@ impl<'r> Git<'r> {
     /// dl run wanting the same repository waits for. A launch is watched and
     /// interruptible and passes `None`; the detached background sweep is neither
     /// and passes a bound.
+    ///
+    /// Both refspecs are written out and both are forced, and the tags one is
+    /// spelled rather than left to `--tags`, which is the same refspec *unforced*.
+    /// `--prune` prunes per refspec, so that one word cost two things at once: a
+    /// tag the remote had retracted was never pruned, leaving `refs/tags` monotone
+    /// in every tag the remote ever advertised and pinning every object those tags
+    /// reach for the life of the cache; and a tag the remote *moved* was rejected
+    /// with `would clobber existing tag`, which fails the whole fetch — the heads
+    /// in the same push included — and keeps failing, since nothing here ever
+    /// resolves it. That made one moved tag upstream a permanently `Refused`
+    /// freshness fetch for that repository until a human deleted the local tag by
+    /// hand.
+    ///
+    /// Pruning a tag is a deletion, so it is worth saying which reading licenses
+    /// it: a tag in the bare is a *copy* of an upstream ref and holds no work that
+    /// exists nowhere else, which is the argument that already licenses pruning
+    /// heads. Nothing here is a place work is authored.
+    ///
+    /// One consequence of pruning heads is older than this and is recorded rather
+    /// than handled: when the remote's own default branch disappears, `--prune`
+    /// takes `refs/heads/main` with it and the bare's `HEAD` symref is left
+    /// dangling. `symbolic-ref HEAD` still answers `refs/heads/main`, so
+    /// default-branch detection still returns a name and does not notice. Nor
+    /// does a bare `rev-parse HEAD`, which exits 0 printing the literal `HEAD`;
+    /// it takes `rev-parse --verify HEAD` to get a failure out of it, which is
+    /// why nothing here reports one. What an eye actually meets is `git clone`
+    /// warning `remote HEAD refers to nonexistent ref, unable to checkout`. The
+    /// symptom is a launch aimed at a branch the cache no longer has, on a
+    /// repository whose default branch was deleted upstream.
     pub(crate) fn fetch_all(&self, bare: &Path, limit: Option<Duration>) -> GitAnswer<String> {
         let mut spec = SpawnSpec::new(
             Invocation::new(PROGRAM)
@@ -548,7 +577,7 @@ impl<'r> Git<'r> {
                     "fetch",
                     "origin",
                     "+refs/heads/*:refs/heads/*",
-                    "--tags",
+                    "+refs/tags/*:refs/tags/*",
                     "--prune",
                 ])
                 .with_cwd(bare.to_path_buf()),
