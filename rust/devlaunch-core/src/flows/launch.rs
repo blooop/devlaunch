@@ -2418,8 +2418,8 @@ pub fn resolve_triple(
             state,
         } => Resolution::Warm {
             placement: Placement::Known {
+                title: titled(&workspace_id, workspace),
                 workspace_id,
-                title: workspace.label(),
                 state,
             },
         },
@@ -2427,6 +2427,25 @@ pub fn resolve_triple(
             workspace: workspace.clone(),
         },
     })
+}
+
+/// What to call *workspace_id* where a person reads it, given the triple that
+/// resolved to it.
+///
+/// [`WorkspaceId::label`] only where the id is this triple's own derivation.
+/// [`lifecycle::resolve_known_workspace`] may answer with an id `metadata.json`
+/// recorded instead, for a workspace created under an older id scheme and not yet
+/// reconciled, and a label derived from the triple is a rendering of the id the
+/// triple *would* have derived rather than of the one in play: `devlaunch@main` on
+/// the tab of a workspace whose `dl --ls` row reads `devlaunch-main-legacy`, with
+/// nothing between them to match by eye. The tab is a rendering of the id it is
+/// addressed by, or it is that id.
+fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
+    if workspace_id == workspace.value() {
+        workspace.label()
+    } else {
+        workspace_id.to_owned()
+    }
 }
 
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
@@ -3197,6 +3216,7 @@ mod tests {
 
     use crate::clients::git::Git;
     use crate::domain::config::WorktreeConfig;
+    use crate::domain::model::WorktreeInfo;
     use crate::flows::lifecycle::SelfInvocation;
     use crate::flows::workspace_clone::GitLfs;
 
@@ -5790,6 +5810,52 @@ mod tests {
                 "--output".to_owned(),
                 "json".to_owned(),
             ]]
+        );
+    }
+
+    #[test]
+    fn an_id_metadata_recorded_is_titled_by_that_id_and_not_by_the_triples_label() {
+        // The label is a rendering of the id in play, and this is the one path where
+        // the id in play is not the one the triple derives. `resolve_known_workspace`
+        // answers with the id `metadata.json` recorded when devpod has never heard of
+        // the derived one -- a workspace created under an older id scheme and not yet
+        // reconciled. Titling that by `devlaunch@main` would put a rendering of
+        // `devlaunch-main-3j1t` on the tab of a workspace whose `dl --ls` row reads
+        // `devlaunch-main-legacy`, with no two characters between them and nothing to
+        // match by eye. It also installs that name in the legacy container's profile,
+        // where nothing on screen ties it back to anything.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running("devlaunch-main-legacy");
+        {
+            let (mut storage, _) = MetadataStorage::open(scene.cache_dir().join("metadata.json"))
+                .expect("a fresh store");
+            let mut record = WorktreeInfo::new(
+                "blooop",
+                "devlaunch",
+                "main",
+                scene
+                    .cache_dir()
+                    .join("repos/blooop/devlaunch/devlaunch-main-legacy"),
+                &workspace.value(),
+            );
+            record.devpod_workspace_id = Some("devlaunch-main-legacy".to_owned());
+            storage.add_worktree(record).expect("the record is saved");
+        }
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let mut context = CommandContext::new(&scene.runner);
+
+        let resolution = resolve_triple(&mut context, &mut cold, &workspace, &mut no_notices());
+
+        assert_eq!(
+            resolution,
+            Ok(Resolution::Warm {
+                placement: Placement::Known {
+                    workspace_id: "devlaunch-main-legacy".to_owned(),
+                    title: "devlaunch-main-legacy".to_owned(),
+                    state: ContainerState::Running,
+                }
+            })
         );
     }
 
