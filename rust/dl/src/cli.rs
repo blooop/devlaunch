@@ -287,8 +287,12 @@ pub(crate) enum Command {
     Refresh,
     /// `dl --install [<rc-file>]`
     Install { rc: Option<PathBuf> },
-    /// `dl --prune [-y] [--force]`
-    Prune { yes: bool, force: bool },
+    /// `dl --prune [-y] [--force] [--force-worktrees]`
+    Prune {
+        yes: bool,
+        force: bool,
+        force_worktrees: bool,
+    },
     /// `dl --reconcile [-y]`
     Reconcile { yes: bool },
     /// `dl --purge [-y]`
@@ -472,6 +476,10 @@ pub(crate) struct Cli {
     /// regardless of the cache's age (`--update-cache`).
     #[arg(long)]
     force: bool,
+    /// With `--prune`: remove agent git worktrees that are locked, dirty, or hold
+    /// commits nothing else reaches. Reported and left alone without it.
+    #[arg(long = "force-worktrees")]
+    force_worktrees: bool,
     /// Use a non-default devcontainer.json. A bare name means
     /// `.devcontainer/<name>/devcontainer.json`. Stored with the workspace, so
     /// pass it once.
@@ -700,6 +708,17 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
             command: name,
         });
     }
+    // Its own flag rather than a second meaning for `--force`, and refused
+    // everywhere else for the same reason: `--force` is a word people already
+    // type, and letting it reach the worktree sweep would widen it from "past a
+    // clone holding work nowhere else" to "past a worktree somebody may be
+    // working in".
+    if cli.force_worktrees && !matches!(chosen, Chosen::Prune) {
+        return Err(GrammarError::ModifierNotAllowed {
+            modifier: "--force-worktrees",
+            command: name,
+        });
+    }
     Ok(match chosen {
         Chosen::Ls => Command::List {
             output: if cli.json {
@@ -720,6 +739,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::Prune => Command::Prune {
             yes: cli.yes,
             force: cli.force,
+            force_worktrees: cli.force_worktrees,
         },
         Chosen::Reconcile => Command::Reconcile { yes: cli.yes },
         Chosen::Purge => Command::Purge { yes: cli.yes },
@@ -751,6 +771,12 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
     if cli.yes {
         return Err(GrammarError::ModifierNotAllowed {
             modifier: "--yes",
+            command: "a workspace command",
+        });
+    }
+    if cli.force_worktrees {
+        return Err(GrammarError::ModifierNotAllowed {
+            modifier: "--force-worktrees",
             command: "a workspace command",
         });
     }
@@ -1116,14 +1142,45 @@ mod tests {
             parse(&["--prune"]),
             Ok(Command::Prune {
                 yes: false,
-                force: false
+                force: false,
+                force_worktrees: false
             })
         );
         assert_eq!(
             parse(&["--prune", "-y", "--force"]),
             Ok(Command::Prune {
                 yes: true,
-                force: true
+                force: true,
+                force_worktrees: false
+            })
+        );
+    }
+
+    #[test]
+    fn force_worktrees_is_its_own_flag_and_only_the_prune_takes_it() {
+        // Not a second meaning for `--force`: that flag already means "past work
+        // that is nowhere else" and people type it, so letting it reach the agent
+        // worktrees would widen it into "past a worktree somebody may be in".
+        assert_eq!(
+            parse(&["--prune", "--force-worktrees"]),
+            Ok(Command::Prune {
+                yes: false,
+                force: false,
+                force_worktrees: true
+            })
+        );
+        assert_eq!(
+            parse(&["--ls", "--force-worktrees"]),
+            Err(GrammarError::ModifierNotAllowed {
+                modifier: "--force-worktrees",
+                command: "--ls"
+            })
+        );
+        assert_eq!(
+            parse(&["ws", "--force-worktrees"]),
+            Err(GrammarError::ModifierNotAllowed {
+                modifier: "--force-worktrees",
+                command: "a workspace command"
             })
         );
     }

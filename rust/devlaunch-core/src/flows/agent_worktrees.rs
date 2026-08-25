@@ -85,6 +85,7 @@ use crate::clients::git::Git;
 use crate::domain::workspace_state::{CouldNotTell, Loss, Losses, NonEmpty, Unsaved};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::lifecycle::{Insistence, Objection, objection};
+use crate::flows::repo_manager::{Refusal, Removal, remove_tree_as_far_as_it_goes};
 
 /// The directory an agent harness puts its worktrees in, relative to a clone.
 const WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
@@ -733,10 +734,66 @@ impl WorktreeSweep {
         self.clones.is_empty()
     }
 
-    fn record(&mut self, found: Option<CloneWorktrees>) {
+    pub(crate) fn record(&mut self, found: Option<CloneWorktrees>) {
         if let Some(found) = found.filter(|it| !it.nothing_to_say()) {
             self.clones.push(found);
         }
+    }
+}
+
+/// What git says about one clone's worktrees, read once.
+///
+/// One `git worktree list` per clone rather than one per candidate, and the
+/// reason it is a value rather than a parameter list: the acting pass has to
+/// classify each directory *again* immediately before removing it, and it must
+/// re-read git to do that. Sharing this type is what keeps the two passes asking
+/// the same question in the same words.
+pub(crate) struct ClonePicture {
+    registered: Vec<Registration>,
+}
+
+impl ClonePicture {
+    /// What git says about `clone`, or nothing when git will not say.
+    ///
+    /// A refusal takes the whole clone out of the sweep. Reading one as "git named
+    /// no registrations" would classify every directory as forgotten, and
+    /// forgotten is the arm that deletes.
+    pub(crate) fn of(git: &Git<'_>, clone: &Path) -> Option<Self> {
+        let listing = git.worktree_listing(clone).said()?;
+        Some(Self {
+            registered: registrations(&listing),
+        })
+    }
+
+    /// Which arm `directory` is, or nothing when it is not a linked worktree of
+    /// this clone at all.
+    pub(crate) fn status_of(
+        &self,
+        git: &Git<'_>,
+        clone: &Path,
+        bare: Option<&Path>,
+        directory: &Path,
+    ) -> Option<WorktreeStatus> {
+        let inside = inside_the_clone(clone, directory)?;
+        let name = linked_worktree_name(directory)?;
+        let registration = self.registered.iter().find(|it| it.inside == inside);
+        let admin = admin_dir(clone, &name);
+        Some(worktree_status(
+            git,
+            clone,
+            bare,
+            directory,
+            admin.as_deref(),
+            registration,
+        ))
+    }
+
+    /// Registrations under a `.claude/worktrees/` with no directory in `clone`.
+    fn registrations_with_nothing_here(&self, clone: &Path) -> usize {
+        self.registered
+            .iter()
+            .filter(|registration| !clone.join(&registration.inside).exists())
+            .count()
     }
 }
 
@@ -757,26 +814,16 @@ pub(crate) fn sweep_clone(
     insistence: Insistence,
 ) -> Option<CloneWorktrees> {
     let mut pending = children_of(&worktrees_dir(clone))?;
-    // A git that will not answer takes the whole clone out of the sweep. Reading
-    // a refusal as "git named no registrations" would classify every directory as
-    // forgotten, and forgotten is the arm that deletes.
-    let listing = git.worktree_listing(clone).said()?;
-    let registered = registrations(&listing);
+    let picture = ClonePicture::of(git, clone)?;
     let mut removing = Vec::new();
     let mut keeping = Vec::new();
     while let Some(directory) = pending.pop() {
-        let (Some(inside), Some(name)) = (
-            inside_the_clone(clone, &directory),
-            linked_worktree_name(&directory),
-        ) else {
+        let Some(status) = picture.status_of(git, clone, bare, &directory) else {
             // Not a linked worktree: a plain directory that happens to sit here,
             // or one whose `.git` says something else. Not devlaunch's to remove
             // and not descended into either.
             continue;
         };
-        let registration = registered.iter().find(|it| it.inside == inside);
-        let admin = admin_dir(clone, &name);
-        let status = worktree_status(git, clone, bare, &directory, admin.as_deref(), registration);
         match decide(status, insistence) {
             WorktreeDecision::Remove {
                 seen_as,
@@ -809,10 +856,7 @@ pub(crate) fn sweep_clone(
             .then_with(|| left.path.cmp(&right.path))
     });
     keeping.sort_by(|left, right| left.path.cmp(&right.path));
-    let registrations_with_nothing_here = registered
-        .iter()
-        .filter(|registration| !clone.join(&registration.inside).exists())
-        .count();
+    let registrations_with_nothing_here = picture.registrations_with_nothing_here(clone);
     Some(CloneWorktrees {
         clone: clone.to_path_buf(),
         owner: owner.to_owned(),
@@ -853,6 +897,139 @@ fn children_of(root: &Path) -> Option<Vec<PathBuf>> {
         .collect();
     found.sort();
     Some(found)
+}
+
+// ===========================================================================
+// the acting pass
+// ===========================================================================
+
+/// One worktree directory the plan meant to remove that the acting pass would
+/// not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldWorktree {
+    pub path: PathBuf,
+    /// Why it is staying — and it is worth saying this was not so when the plan
+    /// was printed.
+    pub because: WorktreeKept,
+}
+
+/// What the acting pass did about the agent worktrees.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorktreeReport {
+    pub removed: Vec<ReclaimableWorktree>,
+    pub withheld: Vec<WithheldWorktree>,
+    /// Directories that would not come away. Not empty means the run is
+    /// unfinished, and what did go is still gone.
+    pub refused: Vec<Refusal>,
+    /// Clones whose `git worktree prune` was held back, because something in
+    /// them is being kept for what it holds and the registration is what keeps on
+    /// protecting it. Named rather than counted: it is the one line that explains
+    /// why git still lists a worktree whose directory is not there.
+    pub metadata_held_back: Vec<PathBuf>,
+    /// Clones where the prune ran and would not.
+    pub metadata_refused: Vec<PathBuf>,
+}
+
+impl WorktreeReport {
+    /// What this run actually freed, with the figures the plan measured, so what
+    /// somebody is told they got back is what they said yes to.
+    pub fn freed(&self) -> DiskUsage {
+        disk_usage::total_usage(self.removed.iter().map(|it| it.usage.clone()))
+    }
+
+    pub fn nothing_to_say(&self) -> bool {
+        self.removed.is_empty()
+            && self.withheld.is_empty()
+            && self.refused.is_empty()
+            && self.metadata_held_back.is_empty()
+            && self.metadata_refused.is_empty()
+    }
+}
+
+/// Carry out one clone's share of the sweep, and add what happened to `report`.
+///
+/// The caller holds the repository lock. **Every directory is classified again,
+/// under that lock, immediately before it goes**, and only what this pass *also*
+/// finds removable is removed. The lock is not enough on its own and cannot be
+/// made enough: a container running `git worktree add` is not a participant in
+/// it, so the plan a person answered can have been overtaken by a worktree that
+/// is now registered and live. The approved set can therefore shrink between the
+/// report and the act and can never grow, which is the direction that costs a
+/// command rather than somebody's afternoon.
+///
+/// **The directory goes first and `git worktree prune` follows.** Interrupted
+/// between the two, git is left holding a registration whose directory is gone —
+/// which is exactly the prunable state the next run already handles, so the run
+/// heals itself. The other order leaves a registered, present worktree with its
+/// metadata dropped, which nothing recognises and the next run removes outright.
+pub(crate) fn reclaim(
+    git: &Git<'_>,
+    clone: &CloneWorktrees,
+    bare: Option<&Path>,
+    report: &mut WorktreeReport,
+) {
+    let Some(picture) = ClonePicture::of(git, &clone.clone) else {
+        // git will not say what it holds any more, so nothing here is removable:
+        // the classification the plan rests on cannot be re-taken.
+        report
+            .withheld
+            .extend(clone.removing.iter().map(|worktree| WithheldWorktree {
+                path: worktree.path.clone(),
+                because: WorktreeKept::Objected(NonEmpty::one(WorktreeObjection::Holds(
+                    Objection::CouldNotTell(CouldNotTell::GitCouldNotRead {
+                        clone: clone.clone.clone(),
+                        reason:
+                            "git would not list this clone's worktrees a second time".to_owned(),
+                    }),
+                ))),
+            }));
+        return;
+    };
+    let mut removed_anything = false;
+    for worktree in &clone.removing {
+        let status = picture.status_of(git, &clone.clone, bare, &worktree.path);
+        let decision = match status {
+            // The directory is no longer a linked worktree of this clone — it was
+            // removed by hand, or something else is there now. Either way this
+            // pass has nothing it can say is safe to delete.
+            None => WorktreeDecision::Keep(WorktreeKept::Objected(NonEmpty::one(
+                WorktreeObjection::Holds(Objection::CouldNotTell(CouldNotTell::CouldNotLook {
+                    clone: worktree.path.clone(),
+                    error: "this is no longer a linked worktree of the clone".to_owned(),
+                })),
+            ))),
+            Some(status) => decide(status, worktree.promotion.insistence()),
+        };
+        match decision {
+            WorktreeDecision::Keep(because) => {
+                report.withheld.push(WithheldWorktree {
+                    path: worktree.path.clone(),
+                    because,
+                });
+            }
+            WorktreeDecision::Remove { .. } => {
+                match remove_tree_as_far_as_it_goes(&worktree.path) {
+                    Removal::Everything => {
+                        removed_anything = true;
+                        report.removed.push(worktree.clone());
+                    }
+                    Removal::WhatItCould(refused) | Removal::Nothing(refused) => {
+                        report.refused.extend(refused.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+    if !removed_anything {
+        return;
+    }
+    if !clone.metadata_may_be_pruned() {
+        report.metadata_held_back.push(clone.clone.clone());
+        return;
+    }
+    if git.worktree_prune(&clone.clone).said().is_none() {
+        report.metadata_refused.push(clone.clone.clone());
+    }
 }
 
 #[cfg(test)]

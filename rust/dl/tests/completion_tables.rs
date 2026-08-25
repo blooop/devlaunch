@@ -286,7 +286,7 @@ fn aid_flag_list(rewrite: &str, name: &str) -> BTreeSet<String> {
 /// none of these is one. They modify a line that already named one, and the script
 /// offers nothing in that position at all (a first word starting with `--` ends
 /// completion) — a gap worth closing, but a different change than this.
-const NOT_OFFERED_FIRST: [(&str, &str); 4] = [
+const NOT_OFFERED_FIRST: [(&str, &str); 5] = [
     (
         "--json",
         "only with --ls, which has already been typed by then",
@@ -299,6 +299,10 @@ const NOT_OFFERED_FIRST: [(&str, &str); 4] = [
     (
         "--force",
         "modifies rm, --prune or --update-cache, never alone",
+    ),
+    (
+        "--force-worktrees",
+        "modifies --prune, which has already been typed by then",
     ),
 ];
 

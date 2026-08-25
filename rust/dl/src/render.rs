@@ -18,6 +18,9 @@ use devlaunch_core::domain::metadata;
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::flows::agent_worktrees::{
+    SeenAs, WorktreeKept, WorktreeObjection, WorktreePromotion, WorktreeReport, WorktreeSweep,
+};
 use devlaunch_core::flows::branch_manager::BranchError;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
@@ -1396,10 +1399,128 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         ));
         lines.push(String::new());
     }
+    lines.extend(worktree_plan_lines(plan.worktrees()));
     if plan.nothing_to_do() {
         lines.push("Nothing to prune.".to_owned());
     }
     lines
+}
+
+/// The agent git worktrees inside the clones this run is keeping, and what each
+/// of them is (devlaunch#426).
+///
+/// Its own section under the clone plan rather than rows mixed into it, because
+/// these are a different kind of thing: every one of them is inside a clone the
+/// run has just said it is *not* touching, and the rules that reach them are
+/// their own. Nothing at all is printed when there is nothing to say, which is
+/// every host that has never run an agent in a workspace.
+fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
+    if sweep.nothing_to_say() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        format!(
+            "Agent git worktrees inside the clones above -- {}:",
+            describe_usage(&sweep.freed())
+        ),
+        String::new(),
+    ];
+    for found in sweep.clones() {
+        lines.push(format!("  {}:", found.clone_path().display()));
+        for worktree in found.removing() {
+            let mut line = format!(
+                "    - removing {} ({}): {}",
+                worktree.path.display(),
+                describe_usage(&worktree.usage),
+                seen_as(worktree.seen_as)
+            );
+            // What `--force-worktrees` is answering, on the line of the directory
+            // it answers for. Without it the plan reads the same for a worktree
+            // holding an afternoon's work as for a finished one.
+            if let WorktreePromotion::Insisted { despite } = &worktree.promotion {
+                line = format!("{line}, and {}; removing anyway", objected(despite));
+            }
+            lines.push(line);
+        }
+        for kept in found.keeping() {
+            lines.push(format!(
+                "    - leaving {}: {}",
+                kept.path.display(),
+                worktree_kept_because(&kept.because)
+            ));
+        }
+        if found.registrations_with_nothing_here() > 0 {
+            lines.push(format!(
+                "    - {} registration(s) here name no directory, so nothing is freed by \
+                 forgetting them",
+                found.registrations_with_nothing_here()
+            ));
+        }
+        if !found.metadata_may_be_pruned() {
+            lines.push(
+                "    - git worktree prune is held back here: it is all-or-nothing across a \
+                 clone, and it would drop the registration that is keeping a worktree above"
+                    .to_owned(),
+            );
+        }
+    }
+    lines.push(String::new());
+    // Said once, rather than implied by every line above it. `--prune` is a local
+    // command and deliberately does not fetch, so "nothing else reaches these
+    // commits" is a statement about the last fetch and not about the forge now.
+    lines.push(
+        "Whether a worktree's commits are anywhere else is as of the last fetch into the \
+         repository cache; --prune does not fetch."
+            .to_owned(),
+    );
+    lines.push(String::new());
+    lines
+}
+
+/// How git saw a directory that is going.
+fn seen_as(seen: SeenAs) -> &'static str {
+    match seen {
+        SeenAs::Forgotten => "git has already forgotten it",
+        SeenAs::Prunable => "git says the registration for it can go",
+        SeenAs::Locked => "git is holding it locked",
+    }
+}
+
+/// Why one worktree directory is staying, as the report says it.
+///
+/// Every arm names the fact it rests on and none of them claims the worktree is
+/// idle, because nothing on a host can establish that: a lock is the agent
+/// harness's courtesy, and a killed session leaves one behind.
+fn worktree_kept_because(because: &WorktreeKept) -> String {
+    match because {
+        WorktreeKept::StillHeld { head } => format!(
+            "git still holds it and does not offer it up, on {}",
+            head.named()
+        ),
+        WorktreeKept::Objected(objections) => format!(
+            "{} -- add --force-worktrees to remove it anyway",
+            objected(objections)
+        ),
+    }
+}
+
+/// Everything arguing against removing one worktree, joined as one clause.
+fn objected(objections: &NonEmpty<WorktreeObjection>) -> String {
+    objections
+        .iter()
+        .map(worktree_objection)
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+fn worktree_objection(objected: &WorktreeObjection) -> String {
+    match objected {
+        WorktreeObjection::Locked { lock } => match &lock.reason {
+            None => "git is holding it locked".to_owned(),
+            Some(reason) => format!("git is holding it locked ({reason})"),
+        },
+        WorktreeObjection::Holds(holds) => format!("holds {}", objection(holds)),
+    }
 }
 
 /// Why one clone directory is staying, as the report says it.
@@ -1485,6 +1606,59 @@ pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
         lines.extend(report_refusals(
             report.refused.iter(),
             "Some directories would not come away. These refused:",
+            &by_hand,
+        ));
+    }
+    lines.extend(worktree_report_lines(&report.worktrees));
+    lines
+}
+
+/// What the run did about the agent worktrees.
+///
+/// The withheld lines say *that this was not so when the plan was printed*, which
+/// is the whole of what a second classification has to tell somebody who has
+/// already read the first one — and here it is not a rare race: a container is
+/// not a participant in devlaunch's repository lock, so it can register a
+/// worktree while the plan is on screen.
+fn worktree_report_lines(report: &WorktreeReport) -> Vec<String> {
+    if report.nothing_to_say() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "Removed {} agent worktree(s) -- {}.",
+        report.removed.len(),
+        describe_usage(&report.freed())
+    )];
+    for withheld in &report.withheld {
+        lines.push(format!(
+            "Left {}: {}. That was not so when the plan above was printed.",
+            withheld.path.display(),
+            worktree_kept_because(&withheld.because)
+        ));
+    }
+    for clone in &report.metadata_held_back {
+        lines.push(format!(
+            "Did not run git worktree prune in {}: a worktree there is being kept, and the \
+             registration is what goes on protecting it.",
+            clone.display()
+        ));
+    }
+    for clone in &report.metadata_refused {
+        lines.push(format!(
+            "git worktree prune would not run in {}, so git still lists worktrees that are \
+             gone. The next --prune will offer them again.",
+            clone.display()
+        ));
+    }
+    if !report.refused.is_empty() {
+        let by_hand: Vec<std::path::PathBuf> = report
+            .refused
+            .iter()
+            .map(|refusal| refusal.path.clone())
+            .collect();
+        lines.extend(report_refusals(
+            report.refused.iter(),
+            "Some agent worktrees would not come away. These refused:",
             &by_hand,
         ));
     }

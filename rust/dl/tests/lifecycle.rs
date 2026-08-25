@@ -1343,3 +1343,125 @@ fn a_reconcile_that_cannot_write_a_record_says_which_and_exits_one() {
         "it reported a repair it did not make"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --prune reaches the agent worktrees inside the clones it keeps (devlaunch#426)
+// ---------------------------------------------------------------------------
+
+/// The clone every one of these worktrees lives inside: opened by a live
+/// workspace, so `--prune` was never going to touch it.
+const AGENT_CLONE: &str = "{ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+
+#[test]
+fn a_prune_names_the_agent_worktrees_inside_a_clone_it_is_keeping() {
+    // devlaunch#426: 104.5 GB in 72 of these, every one inside a clone belonging
+    // to a live workspace. The dry run is the plan that already existed, grown a
+    // section -- not a second dry-run path.
+    let world = World::with(&["--agent-worktrees"]);
+    let run = world.answering("no\n", &["--prune"]);
+    run.exited(0);
+    let out = without_sizes(&run.out);
+    assert!(
+        out.contains(&format!(
+            "Agent git worktrees inside the clones above -- <size>:\n\n  {AGENT_CLONE}:\n"
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "    - removing {AGENT_CLONE}/.claude/worktrees/agent-finished (<size>): git says \
+             the registration for it can go\n"
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "    - leaving {AGENT_CLONE}/.claude/worktrees/agent-unsaved: holds 1 uncommitted \
+             change(s) (notes.md) -- add --force-worktrees to remove it anyway\n"
+        )),
+        "{out}"
+    );
+    // Said once, and it is the honest scope of the answer: `--prune` does not
+    // fetch, so "nowhere else" is as of the last one.
+    assert!(
+        out.contains(
+            "Whether a worktree's commits are anywhere else is as of the last fetch into the \
+             repository cache; --prune does not fetch.\n"
+        ),
+        "{out}"
+    );
+    // And the plan still ends in the question, so the dry run is the same one
+    // dry run it always was.
+    assert!(out.ends_with(&format!("Are you sure? [y/N] Aborted.\n{DOCKER_BOUNDARY}")));
+}
+
+#[test]
+fn a_prune_removes_the_collectable_agent_worktree_and_keeps_the_clone() {
+    let world = World::with(&["--agent-worktrees"]);
+    let clone = world
+        .root
+        .join("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy");
+    let trees = clone.join(".claude").join("worktrees");
+
+    let run = world.dl(&["--prune", "-y"]);
+
+    run.exited(0);
+    let out = without_sizes(&run.out);
+    assert!(
+        out.contains("Removed 1 agent worktree(s) -- <size>."),
+        "{out}"
+    );
+    assert!(!trees.join("agent-finished").exists(), "{out}");
+    assert!(
+        trees.join("agent-unsaved").exists(),
+        "the one holding a note is still here"
+    );
+    assert!(clone.join(".git").exists(), "the clone itself is untouched");
+    // `git worktree prune` is held back while a worktree there is kept for what it
+    // holds: it is all-or-nothing across a clone, and running it would drop the
+    // registration that is the only reason the next run can tell that directory
+    // from a forgotten one.
+    assert!(out.contains("Did not run git worktree prune in"), "{out}");
+}
+
+#[test]
+fn the_flag_is_what_carries_an_agent_worktree_past_what_it_holds() {
+    let world = World::with(&["--agent-worktrees"]);
+    let trees = world
+        .root
+        .join("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy")
+        .join(".claude")
+        .join("worktrees");
+
+    let run = world.dl(&["--prune", "-y", "--force-worktrees"]);
+
+    run.exited(0);
+    let out = without_sizes(&run.out);
+    assert!(
+        out.contains("Removed 2 agent worktree(s) -- <size>."),
+        "{out}"
+    );
+    assert!(!trees.join("agent-unsaved").exists(), "{out}");
+}
+
+#[test]
+fn plain_force_does_not_reach_the_agent_worktrees() {
+    // The two flags answer different hazards. `--force` is a word people already
+    // type at `--prune`, and widening it here would turn it into permission to
+    // remove a worktree somebody may be working in.
+    let world = World::with(&["--agent-worktrees"]);
+    let trees = world
+        .root
+        .join("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy")
+        .join(".claude")
+        .join("worktrees");
+
+    let run = world.dl(&["--prune", "-y", "--force"]);
+
+    run.exited(0);
+    assert!(
+        trees.join("agent-unsaved").exists(),
+        "--force removed a worktree only --force-worktrees answers for: {}",
+        without_sizes(&run.out)
+    );
+}

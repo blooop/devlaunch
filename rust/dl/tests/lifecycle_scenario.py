@@ -17,6 +17,7 @@ fixture:
                                                   [--unwritable] [--no-cache]
                                                   [--no-workspaces]
                                                   [--devcontainer-volumes]
+                                                  [--agent-worktrees]
 
 The base world, under the root it is given:
 
@@ -68,6 +69,14 @@ FOREIGN_WS = "someones-project"
 # --prunable: two clone directories no workspace opens and no record names.
 PRUNABLE_LEAF = "devlaunch-gone-nobody"
 PRUNABLE_DIRTY_LEAF = "devlaunch-gone-dirty"
+
+# --agent-worktrees: two real git worktrees an agent harness would have made
+# inside the *clean* clone, which a live workspace opens. Registered from inside a
+# container, so the paths git holds are container paths and git calls them
+# prunable -- the shape devlaunch#426 measured 72 of. One is finished and
+# collectable; the other holds an untracked note, so it is reported and kept.
+AGENT_GONE = "agent-finished"
+AGENT_HELD = "agent-unsaved"
 
 # --stale-record: a record whose directory is definitively not there.
 STALE_LEAF = "devlaunch-ancient-forgotten"
@@ -287,6 +296,27 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
             dirty=True,
         )
 
+    if "agent-worktrees" in wanted:
+        # `git worktree add` from inside the clone, then the registrations rewritten
+        # to the container paths they would really carry. Both steps matter: the
+        # classification is git's own `worktree list`, and it is the container path
+        # that makes a registration prunable on a host.
+        trees = clean / ".claude" / "worktrees"
+        trees.mkdir(parents=True, exist_ok=True)
+        for leaf in (AGENT_GONE, AGENT_HELD):
+            git(clean, "worktree", "add", "-q", "-b", leaf, str(trees / leaf))
+            git(clean, "push", "-q", "origin", leaf)
+        git(bare, "fetch", "-q", "origin", "+refs/heads/*:refs/heads/*", "--prune")
+        (trees / AGENT_HELD / "notes.md").write_text("half a thought\n", encoding="utf-8")
+        for leaf in (AGENT_GONE, AGENT_HELD):
+            gitdir = clean / ".git" / "worktrees" / leaf / "gitdir"
+            gitdir.write_text(
+                gitdir.read_text(encoding="utf-8").replace(
+                    str(clean), "/workspaces/devlaunch-main-legacy"
+                ),
+                encoding="utf-8",
+            )
+
     if "unpushed" in wanted:
         # A commit that exists in this clone and nowhere else. Uncommitted work and
         # unpushed commits are different losses and the refusal names which.
@@ -472,6 +502,7 @@ if __name__ == "__main__":
             "[--stale-record] [--orphan] [--unplaceable] [--unwritable] "
             "[--no-cache] [--no-workspaces] [--not-a-clone] [--unpushed] "
             "[--sealed-cache] [--symlinked-cache] [--v1-cache] "
+            "[--agent-worktrees] "
             "[--devcontainer-volumes]"
         )
     flags = {argument.lstrip("-") for argument in sys.argv[3:]}
@@ -489,6 +520,7 @@ if __name__ == "__main__":
         "symlinked-cache",
         "v1-cache",
         "devcontainer-volumes",
+        "agent-worktrees",
     }
     if unknown:
         raise SystemExit(f"lifecycle_scenario.py: unknown fixture(s): {sorted(unknown)}")

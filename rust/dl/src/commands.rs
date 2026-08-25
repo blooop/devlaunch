@@ -15,8 +15,8 @@ use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::launch::LaunchNotice;
 use devlaunch_core::flows::lifecycle::{
-    self, ChildWork, DeleteOutcome, Guarded, Insistence, LifecycleNotice, PruneError, PruneOutcome,
-    Refresh, RefreshReason, StopOutcome,
+    self, ChildWork, DeleteOutcome, Guarded, Insisted, Insistence, LifecycleNotice, PruneError,
+    PruneOutcome, Refresh, RefreshReason, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::repo_manager::CacheNotice;
@@ -103,7 +103,11 @@ pub(crate) fn dispatch(
         Command::UpdateCache { force } => render_update_cache(runner, &mut context, cache, force),
         Command::Refresh => render_refresh(&mut context, cache),
         Command::Install { rc } => render_install(&mut context, cache, rc.as_deref()),
-        Command::Prune { yes, force } => render_prune(runner, &mut context, yes, force),
+        Command::Prune {
+            yes,
+            force,
+            force_worktrees,
+        } => render_prune(runner, &mut context, yes, insisted(force, force_worktrees)),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
         Command::Select { verb, devcontainer } => render_select(
@@ -857,16 +861,36 @@ fn render_prune(
     runner: &dyn Runner,
     context: &mut CommandContext<'_>,
     yes: bool,
-    force: bool,
+    insisted: Insisted,
 ) -> Ending {
-    prune_clone_directories(runner, context, yes, force).with_the_boundary()
+    prune_clone_directories(runner, context, yes, insisted).with_the_boundary()
+}
+
+/// What the two insistence flags mean, in one value.
+///
+/// Built here rather than passed as two booleans, so the pair cannot be handed
+/// over the wrong way round: they answer different hazards and `--force` reaching
+/// the worktree sweep would widen a flag people already type.
+fn insisted(force: bool, force_worktrees: bool) -> Insisted {
+    Insisted {
+        clones: insistence(force),
+        worktrees: insistence(force_worktrees),
+    }
+}
+
+fn insistence(insisted: bool) -> Insistence {
+    if insisted {
+        Insistence::Insisted
+    } else {
+        Insistence::NotInsisted
+    }
 }
 
 fn prune_clone_directories(
     runner: &dyn Runner,
     context: &mut CommandContext<'_>,
     yes: bool,
-    force: bool,
+    insisted: Insisted,
 ) -> Cleanup {
     let mut records = match session::open_records(runner) {
         Err(refused) => return Cleanup::Raised(refuse_startup(&refused)),
@@ -887,18 +911,13 @@ fn prune_clone_directories(
         ));
         return Cleanup::Ended(Ending::Refused);
     }
-    let insistence = if force {
-        Insistence::Insisted
-    } else {
-        Insistence::NotInsisted
-    };
     let mut notices: Vec<LifecycleNotice> = Vec::new();
     let plan = match lifecycle::prune_plan(
         &records.clones,
         &records.storage,
         &workspaces,
         &placement,
-        insistence,
+        insisted,
         &mut notices,
     ) {
         Err(refused) => return Cleanup::Raised(refuse_prune(&refused)),
