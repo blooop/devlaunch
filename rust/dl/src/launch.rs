@@ -34,6 +34,7 @@ use std::path::Path;
 
 use devlaunch_core::clients::devpod_home::DevpodHome;
 use devlaunch_core::domain::spec::DevcontainerPath;
+use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::flows::completion_cache;
 use devlaunch_core::flows::launch::{
     self, Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Plan, Provision,
@@ -199,6 +200,7 @@ pub(crate) fn render_launch<'r>(
     target: &str,
     verb: &LaunchVerb,
     devcontainer: Option<&DevcontainerPath>,
+    recognised: Option<WorkspaceId>,
 ) -> Ran {
     // A path or git source whose derived id is empty — `dl /`, `//`, `/.`, `/..`,
     // all of which normalise to a leaf with no final component — would otherwise
@@ -239,7 +241,8 @@ pub(crate) fn render_launch<'r>(
             &host,
             &mut forward,
             &mut said,
-        );
+        )
+        .recognised_as(recognised);
         launch.run(target, verb, devcontainer)
     };
     ran(outcome, cache)

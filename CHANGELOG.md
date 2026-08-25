@@ -28,11 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not what came back.
 
   What it costs is a name that is no longer a pure function of the workspace across
-  every way of reaching it. A launch that resolves a branch installs the label; a
-  bare `dl devlaunch-main-3j1t` never had a branch and installs the id. The profile
-  line that repaints the tab at every prompt is deduped by a hash of its own text,
-  so a workspace opened both ways carries two lines and the last one wins. One extra
-  line, and a tab that reads as the id, in a case most workspaces never reach.
+  every way of reaching it. Which dash the `@` replaces cannot be read off an id,
+  since a repo slug holds dashes of its own, so the name travels with the launch that
+  resolved the branch. A workspace named by its bare id on the command line is titled
+  by that id, and a workspace opened both ways carries two profile lines with the
+  last one winning.
+
+  The selector is not one of those, and it is the one that matters, since `dl` with
+  no arguments is how a workspace is reopened. It hands the launch an id like any
+  other caller, but it read the owner, the repo and the branch to draw the row, so
+  the pick carries them and the tab reads `devlaunch@main` either way. A triple that
+  no longer derives that very id, which is what a `git switch` inside the container
+  leaves, is dropped in favour of the id.
 
   In the selector, two rows that would be drawn alike now gain a fourth column
   holding their whole id instead of collapsing into it:

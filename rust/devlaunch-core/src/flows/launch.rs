@@ -2708,6 +2708,9 @@ pub struct Launch<'a, 'r, 'l> {
     /// Where this launch's notices go, as they happen. A `Vec` in a test that wants
     /// the sequence, the binary's printer in production.
     notices: &'a mut dyn Notices<LaunchNotice>,
+    /// What the caller already knows this workspace is, for a launch that names it
+    /// by id. See [`Self::recognised_as`].
+    recognised: Option<WorkspaceId>,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -2729,7 +2732,36 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             forward,
             token: HostToken::new(),
             notices,
+            recognised: None,
         }
+    }
+
+    /// The triple a caller has already recovered for the workspace it is about to
+    /// name by id.
+    ///
+    /// **The picker is the caller this exists for**, and it is the only one. It
+    /// hands back a workspace id, so a launch from it takes the bare-name arm and
+    /// has no triple of its own -- but the picker had one a moment earlier, read
+    /// out of the cache layout and the clone's `HEAD` to draw the row it was picked
+    /// from. Without it, `dl` with no arguments, which is how a workspace is
+    /// reopened, titles the tab `devlaunch-main-3j1t` where
+    /// `dl blooop/devlaunch@main` titles it `devlaunch@main`, and the two names pile
+    /// up in the profile a line each.
+    ///
+    /// It changes **only what the workspace is called**. Nothing here reaches
+    /// devpod, the clone or the records: the launch is still the bare-name arm, one
+    /// `devpod status` and no more, and a caller that passes a triple for the wrong
+    /// workspace gets a differently-titled tab and nothing else. That is what makes
+    /// this safe to take from a caller at all, and it is why the check on it lives
+    /// in [`titled`] rather than out there: the picker carries evidence, core
+    /// reaches the verdict, and a `HEAD` that has moved since the workspace was made
+    /// is refused here exactly as a recorded id is.
+    ///
+    /// `None` is the default and the answer for every other arm.
+    #[must_use]
+    pub fn recognised_as(mut self, workspace: Option<WorkspaceId>) -> Self {
+        self.recognised = workspace;
+        self
     }
 
     /// Run one launch.
@@ -2779,7 +2811,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let state = lifecycle::workspace_state(self.context.runner(), &name);
         if let Ok(state) = state {
             return Ok(Ok(Placement::Known {
-                title: name.clone(),
+                title: self.recognised_title(&name),
                 workspace_id: name,
                 state,
             }));
@@ -2794,7 +2826,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             .map_err(LaunchAborted::ListingUnreadable)?;
         if listed.iter().any(|workspace| workspace.id == name) {
             return Ok(Ok(Placement::Listed {
-                title: name.clone(),
+                title: self.recognised_title(&name),
                 workspace_id: name,
             }));
         }
@@ -3116,6 +3148,16 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Err(SessionRefused::Devpod(not_run)) => Err(LaunchAborted::DevpodNotRun(not_run)),
             Err(SessionRefused::Ssh(not_run)) => Err(LaunchAborted::SshNotRun(not_run)),
             Err(other) => Ok(Launched::Refused(LaunchRefusal::NoSession(other))),
+        }
+    }
+
+    /// What to call *workspace_id*, given whatever [`Self::recognised_as`] was told.
+    ///
+    /// The id itself where nothing was told, which is every arm but the picker's.
+    fn recognised_title(&self, workspace_id: &str) -> String {
+        match &self.recognised {
+            Some(workspace) => titled(workspace_id, workspace),
+            None => workspace_id.to_owned(),
         }
     }
 
@@ -6065,6 +6107,71 @@ mod tests {
             "{:?}",
             scene.devpod_commands()
         );
+    }
+
+    #[test]
+    fn a_bare_name_a_caller_recognised_is_titled_by_the_label_after_all() {
+        // The picker opens a workspace **by id** and is the one caller that still
+        // knows its triple: it read the owner and repo out of the cache layout and
+        // the branch out of the clone's `HEAD` in order to draw the row. Without
+        // that handed on, `dl` with no arguments -- the way a workspace is reopened
+        // -- put `devlaunch-main-3j1t` on the tab where the same workspace opened as
+        // `dl blooop/devlaunch@main` put `devlaunch@main`, and the two names would
+        // then pile up in the profile a line each.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        scene.host.stderr_tty = true;
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            )
+            .recognised_as(Some(workspace.clone()));
+            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
+    }
+
+    #[test]
+    fn a_triple_that_no_longer_derives_this_id_is_not_what_the_tab_says() {
+        // `HEAD` is the branch checked out *now*, so a `git switch` inside the
+        // container leaves the picker holding a triple that derives a different
+        // workspace. Naming the tab from it would put another workspace's label on
+        // this one. The check is core's and not the picker's: the picker carries
+        // the evidence, `titled` reaches the verdict, and it is the same verdict the
+        // recorded-id path gets.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let switched = WorkspaceId::new("blooop", "devlaunch", "other").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            )
+            .recognised_as(Some(switched));
+            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
     }
 
     #[test]

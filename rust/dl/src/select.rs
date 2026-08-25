@@ -86,6 +86,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use devlaunch_core::clients::devpod::Workspace;
+use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::flows::listing::{head_branch_of, owner_of, repo_of};
 use skim::prelude::*;
@@ -109,6 +110,23 @@ pub(crate) struct Offer {
     /// which is the only thing that keeps the two from drifting.
     pub(crate) unpadded: String,
     pub(crate) workspace_id: String,
+    /// The triple this row's clone is of, when the id it derives is this very
+    /// workspace.
+    ///
+    /// The picker is the one caller that opens a workspace **by id** and still
+    /// knows its triple: it read the owner and repo out of the cache layout and the
+    /// branch out of the clone's `HEAD` to draw the row. A launch handed a bare id
+    /// cannot recover any of that, so without this the tab of every workspace
+    /// opened from the picker reads as the id
+    /// (`devlaunch-main-3j1t`) where the same workspace opened as
+    /// `dl blooop/devlaunch@main` reads `devlaunch@main`.
+    ///
+    /// `None` where the row is not one of dl's clones, and **also** where the
+    /// recovered triple derives some *other* id: `HEAD` is the branch checked out
+    /// now, so a `git switch` inside the container leaves a triple that is no
+    /// longer this workspace's. Core makes that check itself
+    /// (`flows::launch::titled`); this carries the evidence, not the verdict.
+    pub(crate) triple: Option<WorkspaceId>,
 }
 
 /// What the owner column says for a workspace whose source names no owner: one
@@ -122,6 +140,15 @@ const NO_OWNER: &str = "-";
 struct Naming {
     owner: String,
     tail: Tail,
+    /// The triple this row's clone layout and `HEAD` say the workspace is, when
+    /// they say one.
+    ///
+    /// Kept beside [`Self::tail`] rather than read back out of it, because the two
+    /// answer different questions and stop agreeing: a row that collides is
+    /// *drawn* as its whole id ([`named`]) while still *being* the triple. It is
+    /// what a launch by bare id has no way to recover for itself, so it travels out
+    /// on the [`Offer`] (see [`Offer::triple`]).
+    triple: Option<WorkspaceId>,
     /// The workspace's own id, kept beside the tail because it is what every
     /// fallback falls back *to* — and a fallback that had to go looking for it
     /// again could look in the wrong row.
@@ -191,6 +218,7 @@ pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Offer> 
         .zip(labels)
         .map(|((workspace, naming), padded)| Offer {
             label: padded,
+            triple: naming.triple.clone(),
             // The same row asked for at no width, which is what `shared_key` asks
             // `label` for and for the same reason: the row's own text, with the
             // widths of its neighbours taken out.
@@ -259,9 +287,9 @@ fn drawn(namings: &[Naming]) -> Vec<String> {
 fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
     let mut namings: Vec<Naming> = workspaces
         .iter()
-        .map(|workspace| Naming {
-            owner: owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned()),
-            tail: match (
+        .map(|workspace| {
+            let owner = owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned());
+            let tail = match (
                 repo_of(workspace, cache_dir),
                 head_branch_of(workspace, cache_dir),
             ) {
@@ -275,8 +303,17 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
                     distinguished_by: None,
                 },
                 _ => Tail::Whole(workspace.id.clone()),
-            },
-            id: workspace.id.clone(),
+            };
+            let triple = match &tail {
+                Tail::Split { repo, git_ref, .. } => WorkspaceId::new(&owner, repo, git_ref).ok(),
+                Tail::Whole(_) => None,
+            };
+            Naming {
+                owner,
+                tail,
+                triple,
+                id: workspace.id.clone(),
+            }
         })
         .collect();
     loop {
@@ -416,6 +453,9 @@ pub(crate) struct Chosen {
     pub(crate) workspace_id: String,
     /// The row's own text, unpadded — [`Offer::unpadded`], not [`Offer::label`].
     pub(crate) row: String,
+    /// [`Offer::triple`] for the row that was taken: what this workspace is, for a
+    /// launch that is about to be handed only what it is *called*.
+    pub(crate) triple: Option<WorkspaceId>,
 }
 
 /// What the picker settled.
@@ -589,6 +629,7 @@ fn chosen(offers: &[Offer], rows: Vec<String>) -> Pick {
             .map(|offer| Chosen {
                 workspace_id: offer.workspace_id.clone(),
                 row: offer.unpadded.clone(),
+                triple: offer.triple.clone(),
             })
     });
     NonEmpty::of(picked).map_or(Pick::Quit, Pick::Chose)
@@ -822,15 +863,33 @@ mod tests {
             NonEmpty::of(named.iter().map(|(row, id)| Chosen {
                 workspace_id: (*id).to_owned(),
                 row: (*row).to_owned(),
+                triple: None,
             }))
             .expect("at least one id"),
         )
     }
 
+    /// A pick of one row, for a workspace whose triple the picker could not
+    /// recover: a foreign one, or one whose clone is gone.
     fn one_id(row: &str, named: &str) -> NonEmpty<Chosen> {
+        one_pick(row, named, None)
+    }
+
+    /// A pick of one row of dl's own, which carries the triple its clone said it is.
+    fn one_clone(row: &str, named: &str, triple: (&str, &str, &str)) -> NonEmpty<Chosen> {
+        let (owner, repo, branch) = triple;
+        one_pick(
+            row,
+            named,
+            Some(WorkspaceId::new(owner, repo, branch).expect("a safe triple")),
+        )
+    }
+
+    fn one_pick(row: &str, named: &str, triple: Option<WorkspaceId>) -> NonEmpty<Chosen> {
         NonEmpty::of([Chosen {
             workspace_id: named.to_owned(),
             row: row.to_owned(),
+            triple,
         }])
         .expect("one id")
     }
@@ -1023,9 +1082,10 @@ mod tests {
         // own workspace.
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id(
+            Pick::Chose(one_clone(
                 "blooop | devlaunch | main | devlaunch-main-legacy",
                 "devlaunch-main-legacy",
+                ("blooop", "devlaunch", "main"),
             ))
         );
     }

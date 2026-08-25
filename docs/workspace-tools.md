@@ -411,8 +411,23 @@ A label inherits the id's bound instead: at most 47 characters less the five the
 suffix and its dash take. What stays lost with the owner is the fork: an id has never
 carried one, so `blooop/devlaunch@main` and a fork of it read alike.
 
-A bare `dl myworkspace` *is* its id, and `dl ./some/dir` or a plain URL never had a
-branch for an `@` to precede, so those three are titled by id, exactly as before.
+`dl ./some/dir` and a plain URL never had a branch for an `@` to precede, so those
+are titled by id, exactly as before. So is a workspace you name by its id on the
+command line: `dl devlaunch-main-3j1t` is handed a name and nothing else, and a
+branch cannot be read back out of an id (the repo slug holds dashes of its own, so
+`my-repo@main` and `my@repo-main` are one id read two ways).
+
+**The selector is the exception, and it is the one that matters**, because `dl` with
+no arguments is how a workspace is reopened. It hands the launch a workspace id like
+any other, but it had the triple a moment earlier: it read the owner and repo out of
+the cache layout and the branch out of the clone's `HEAD` to draw the row you picked.
+That travels with the pick, so a workspace opened from the selector is titled
+`devlaunch@main`, the same as one opened as `dl blooop/devlaunch@main`.
+
+It is checked rather than trusted. `HEAD` is the branch checked out *now*, so a
+`git switch` inside the container leaves a triple that derives some other workspace,
+and a triple that does not derive this very id is dropped in favour of the id. That is
+the same check a workspace addressed by a recorded id gets.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for

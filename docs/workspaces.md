@@ -63,6 +63,12 @@ They are renderings and not separate derivations, which is what keeps them
 matchable: the tab is the id with the suffix off and one dash spelled `@`, so
 `devlaunch@main` and `devlaunch-main-3j1t` are recognisably the same workspace.
 
+Which dash the `@` replaces is not readable off the id, since a repo slug holds
+dashes of its own, so the tab's name travels with the launch that resolved it rather
+than being recovered later. A workspace you name by its bare id on the command line
+is therefore titled by that id. The selector is not: it read the triple to draw the
+row, and hands it on with the pick.
+
 The tab is the one that gives something up. It does not name the owner, since an id
 never carried one, so a fork and its upstream read alike; and it spells the branch as
 the id's slug, so `feature/auth` reads as `feature-auth`. Both are recoverable in the
