@@ -219,6 +219,7 @@ pub fn devlaunch_core::clients::ssh::UnsafeRequest::eq(&self, &devlaunch_core::c
 impl core::fmt::Debug for devlaunch_core::clients::ssh::UnsafeRequest
 pub fn devlaunch_core::clients::ssh::UnsafeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::ssh::UnsafeRequest
+pub fn devlaunch_core::clients::ssh::tty_disabled_by_environment() -> bool
 pub mod devlaunch_core::domain
 pub mod devlaunch_core::domain::config
 pub enum devlaunch_core::domain::config::ConfigError
