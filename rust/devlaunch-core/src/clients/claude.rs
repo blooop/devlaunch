@@ -255,7 +255,7 @@ mod tests {
         std::fs::write(
             dir.join(".credentials.json"),
             format!(
-                r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"sk-ant-ort01-r",
+                r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"not-a-real-refresh-token",
                    "expiresAt":1,"scopes":["user:inference"],"subscriptionType":"team"}},
                    "mcpOAuth":{{}}}}"#
             ),
@@ -269,16 +269,16 @@ mod tests {
         // The whole reason this reads the file rather than shipping it: the file
         // holds a refresh token, and a container that refreshed one could rotate the
         // host's own login away. Only the access token is ever named.
-        let home = logged_in("sk-ant-oat01-access");
+        let home = logged_in("not-a-real-access-token");
         let found = resolve_token(Some(home.path()), &HostEnv::default());
         assert_eq!(
             found,
-            TokenLookup::Found(Token("sk-ant-oat01-access".to_owned()))
+            TokenLookup::Found(Token("not-a-real-access-token".to_owned()))
         );
         let TokenLookup::Found(token) = found else {
             unreachable!()
         };
-        assert!(!token.as_str().contains("ort01"));
+        assert!(!token.as_str().contains("refresh"));
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
         // Set, therefore meant: `DEVLAUNCH_NO_CLAUDE_TOKEN=1` on a host that is
         // perfectly well logged in forwards nothing, and says which of the three
         // reasons it was.
-        let home = logged_in("sk-ant-oat01-access");
+        let home = logged_in("not-a-real-access-token");
         let host = HostEnv {
             disable: Some("1".to_owned()),
             ..HostEnv::default()
@@ -301,7 +301,7 @@ mod tests {
     fn a_falsey_opt_out_is_not_an_opt_out() {
         // The spelling `gh` uses, shared deliberately: `DEVLAUNCH_NO_CLAUDE_TOKEN=0`
         // is somebody turning it off, not on.
-        let home = logged_in("sk-ant-oat01-access");
+        let home = logged_in("not-a-real-access-token");
         for falsey in ["", "0", "false", "no"] {
             let host = HostEnv {
                 disable: Some(falsey.to_owned()),
@@ -322,12 +322,12 @@ mod tests {
         // A `dl` running inside a workspace has the variable and no credential file,
         // and forwarding it on is what lets a workspace launch a workspace.
         let host = HostEnv {
-            token: Some("  sk-ant-oat01-exported\n".to_owned()),
+            token: Some("  not-a-real-exported-token\n".to_owned()),
             ..HostEnv::default()
         };
         assert_eq!(
             resolve_token(None, &host),
-            TokenLookup::Found(Token("sk-ant-oat01-exported".to_owned()))
+            TokenLookup::Found(Token("not-a-real-exported-token".to_owned()))
         );
     }
 
@@ -356,7 +356,7 @@ mod tests {
             r#"{"claudeAiOauth":{}}"#,
             r#"{"claudeAiOauth":{"accessToken":""}}"#,
             r#"{"claudeAiOauth":{"accessToken":"has a space"}}"#,
-            r#"{"somethingElse":{"accessToken":"sk-ant-oat01-x"}}"#,
+            r#"{"somethingElse":{"accessToken":"not-a-real-token"}}"#,
         ] {
             let home = tempfile::tempdir().expect("a scratch home");
             std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
@@ -384,7 +384,7 @@ mod tests {
     fn the_name_goes_in_argv_and_the_value_does_not() {
         // The whole discipline this shares with gh: another user reading `ps` sees
         // which variable is being sent and never what is in it.
-        let token = Token("sk-ant-oat01-secret".to_owned());
+        let token = Token("not-a-real-secret-token".to_owned());
         let extended = extend_ssh_forwarding(Forwarding::default(), Some(&token));
         assert_eq!(
             extended.args,
@@ -393,7 +393,7 @@ mod tests {
         assert!(!extended.args.iter().any(|arg| arg.contains("secret")));
         assert_eq!(
             extended.env,
-            EnvSpec::inherited().and(TOKEN_VAR, "sk-ant-oat01-secret")
+            EnvSpec::inherited().and(TOKEN_VAR, "not-a-real-secret-token")
         );
     }
 
@@ -402,7 +402,7 @@ mod tests {
         // The rule `gh::Token` states and tests, and this type had lost it to a
         // derived `Debug`. `TokenLookup` and `Forwarding` both derive one and both
         // hold a `Token`, so the derive was a live route to a log line.
-        let token = Token("sk-ant-oat01-secret".to_owned());
+        let token = Token("not-a-real-secret-token".to_owned());
         assert!(!format!("{token:?}").contains("secret"), "{token:?}");
         let lookup = TokenLookup::Found(token);
         assert!(!format!("{lookup:?}").contains("secret"), "{lookup:?}");
@@ -412,13 +412,13 @@ mod tests {
     fn the_openssh_transport_names_the_variable_and_keeps_the_value_out_of_argv() {
         // The transport `dl <ws> -- claude` actually goes down, whose flags are bare
         // variable names rather than `--send-env` pairs. It had no test at all.
-        let token = Token("sk-ant-oat01-secret".to_owned());
+        let token = Token("not-a-real-secret-token".to_owned());
         let extended = extend_openssh_forwarding(Forwarding::default(), Some(&token));
         assert_eq!(extended.args, vec![TOKEN_VAR.to_owned()]);
         assert!(!extended.args.iter().any(|arg| arg.contains("secret")));
         assert_eq!(
             extended.env,
-            EnvSpec::inherited().and(TOKEN_VAR, "sk-ant-oat01-secret")
+            EnvSpec::inherited().and(TOKEN_VAR, "not-a-real-secret-token")
         );
     }
 
@@ -429,7 +429,7 @@ mod tests {
             env: EnvSpec::inherited().and("GH_TOKEN", "gho_x"),
         };
         assert_eq!(extend_openssh_forwarding(base.clone(), None), base);
-        let token = Token("sk-ant-oat01-secret".to_owned());
+        let token = Token("not-a-real-secret-token".to_owned());
         let extended = extend_openssh_forwarding(base, Some(&token));
         assert_eq!(
             extended.args,
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn extending_a_session_that_already_forwards_gh_keeps_both() {
-        let token = Token("sk-ant-oat01-secret".to_owned());
+        let token = Token("not-a-real-secret-token".to_owned());
         let base = Forwarding {
             args: vec!["--send-env".to_owned(), "GH_TOKEN".to_owned()],
             env: EnvSpec::inherited().and("GH_TOKEN", "gho_x"),
@@ -458,7 +458,7 @@ mod tests {
             extended.env,
             EnvSpec::inherited()
                 .and("GH_TOKEN", "gho_x")
-                .and(TOKEN_VAR, "sk-ant-oat01-secret")
+                .and(TOKEN_VAR, "not-a-real-secret-token")
         );
     }
 }

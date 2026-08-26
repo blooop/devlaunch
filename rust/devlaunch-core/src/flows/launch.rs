@@ -5231,10 +5231,14 @@ mod tests {
         // The reported bug, in one assertion: `dl kinisi-robotics/team-tracker` has no
         // devcontainer, so nothing mounts ~/.claude, so nothing carried a credential
         // and `claude` asked for a fresh login on every launch.
-        let (scene, _home) = with_claude_login(Scene::new().with_running("myws"), "sk-ant-oat01-x");
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
         let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Ours));
         assert!(argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
-        assert!(argv.contains(&"env:sk-ant-oat01-x".to_owned()), "{argv:?}");
+        assert!(
+            argv.contains(&"env:not-a-real-token".to_owned()),
+            "{argv:?}"
+        );
     }
 
     #[test]
@@ -5242,7 +5246,7 @@ mod tests {
         // The discipline this shares with the gh token: `ps` shows which variable is
         // being sent and never what is in it.
         let (scene, _home) =
-            with_claude_login(Scene::new().with_running("myws"), "sk-ant-oat01-secret");
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-secret-token");
         let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Ours));
         assert!(
             !argv
@@ -5259,7 +5263,8 @@ mod tests {
         // can refresh itself. Claude Code prefers the variable over the file, so
         // forwarding here would *replace* that with a short-lived token -- worse than
         // doing nothing, in the one case devlaunch has nothing to add.
-        let (scene, _home) = with_claude_login(Scene::new().with_running("myws"), "sk-ant-oat01-x");
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
         let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Foreign));
         assert!(!argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
         assert!(argv.contains(&"env:".to_owned()), "{argv:?}");
@@ -5269,7 +5274,8 @@ mod tests {
     fn a_pass_that_learned_nothing_forwards_nothing() {
         // `None` is not `Ours`. A probe that could not answer is not evidence that the
         // directory is the container's.
-        let (scene, _home) = with_claude_login(Scene::new().with_running("myws"), "sk-ant-oat01-x");
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
         let argv = a_session_seeing(&scene, None, None);
         assert!(!argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
     }
@@ -5278,7 +5284,7 @@ mod tests {
     fn the_opt_out_reaches_a_workspace_with_no_login_rather_than_failing() {
         // DEVLAUNCH_NO_CLAUDE_TOKEN=1 is a choice, and the session still opens.
         let (mut scene, _home) =
-            with_claude_login(Scene::new().with_running("myws"), "sk-ant-oat01-x");
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
         scene.host.claude = claude::HostEnv {
             disable: Some("1".to_owned()),
             ..claude::HostEnv::default()
@@ -6306,7 +6312,7 @@ mod tests {
         std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
         std::fs::write(
             home.path().join(".claude/.credentials.json"),
-            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-warm"}}"#,
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-warm-token"}}"#,
         )
         .expect("a credential");
         scene.host.home = Some(home.path().to_path_buf());
@@ -6354,7 +6360,7 @@ mod tests {
                 .entries
                 .get(claude::TOKEN_VAR)
                 .map(String::as_str),
-            Some("sk-ant-oat01-warm")
+            Some("not-a-real-warm-token")
         );
     }
 
@@ -6371,7 +6377,7 @@ mod tests {
         std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
         std::fs::write(
             home.path().join(".claude/.credentials.json"),
-            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-warm"}}"#,
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-warm-token"}}"#,
         )
         .expect("a credential");
         scene.host.home = Some(home.path().to_path_buf());
