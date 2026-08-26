@@ -135,9 +135,29 @@ tmpfs, and a root that is not an absolute path.
 A pass that cannot find out forwards nothing. An image without `awk`, a kernel
 without `mountinfo`, a report cut off partway: none of them is evidence that the
 directory belongs to the container, and the cost of being wrong that way is a
-login prompt rather than a hijacked credential. The remembered verdict a top up
-trusts carries this answer with it, so skipping the round trip does not skip the
-decision.
+login prompt rather than a hijacked credential.
+
+### Workspaces that predate this
+
+The answer is recorded on the host, beside the verdict a top up trusts, so
+skipping the round trip does not skip the decision.
+
+A workspace that is already up and finished creating runs no pass at all, though,
+and one created before this existed has no recorded answer. Those get no Claude
+login, and they pick one up on their next `up`, `restart` or `recreate`:
+
+```bash
+dl <workspace> up
+```
+
+Once, per workspace. A workspace created by a build that has this carries an
+answer from the pass that created it and never needs the step.
+
+Paying for a pass on the attach instead was tried and reverted. It puts two
+setup-stage warnings on the terminal of every first attach, on the hottest path
+`dl` has. Forwarding anyway when nothing is known was the other candidate, and it
+would override a mounted credential that can refresh itself, on every warm attach,
+for as long as no pass had run.
 
 ## Tools in every workspace
 

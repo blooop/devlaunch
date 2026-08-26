@@ -3261,9 +3261,20 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         command: Option<&str>,
     ) -> Result<Launched, LaunchAborted> {
         // A warm attach runs no pass, so nothing has observed this container's Claude
-        // config directory during this launch. The host's own records are what stand
-        // in, and they are only consulted when the launch itself learned nothing:
-        // a pass that just ran is always the better answer.
+        // config directory during this launch. The host's own records stand in, and
+        // they are consulted only when the launch itself learned nothing: a pass that
+        // just ran is always the better answer.
+        //
+        // No records and no pass means no login forwarded, which is a real limit and
+        // the least bad of three. Paying a pass here to find out was tried: it puts
+        // two setup-stage warnings on the terminal of every first attach, on the
+        // hottest path dl has, and an aid test caught it. Forwarding anyway was the
+        // other option, and it would override a mounted credential that can refresh
+        // itself, on every warm attach, for as long as no pass ran.
+        //
+        // So a workspace created by this build carries an answer from the pass that
+        // created it and never reaches this at all. A workspace that predates it
+        // acquires one on its next `up`, `restart` or `recreate`.
         if self.claude_seen.get().is_none() {
             self.claude_seen
                 .set(self.provision.remembered_claude(placement.workspace_id()));
@@ -6348,9 +6359,11 @@ mod tests {
     }
 
     #[test]
-    fn a_warm_attach_with_nothing_remembered_forwards_nothing() {
-        // The default `RecordingProvision` remembers nothing, which is what a host
-        // that has never provisioned this workspace looks like.
+    fn a_warm_attach_with_nothing_remembered_forwards_nothing_and_costs_nothing() {
+        // A workspace this build has never provisioned. No login is forwarded, and
+        // no round trip is spent finding out: the attach path stays exactly as
+        // cheap and as quiet as it was. Such a workspace acquires an answer on its
+        // next `up`, and a workspace created by this build has one from the start.
         let workspace =
             WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
         let mut scene = Scene::new().with_running(&workspace.value());
@@ -6393,6 +6406,15 @@ mod tests {
         assert!(
             !ssh.argv().contains(&claude::TOKEN_VAR.to_owned()),
             "{ssh:?}"
+        );
+        assert!(
+            parts
+                .provision
+                .passes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "a warm attach must not start paying for a round trip it never paid for"
         );
     }
 

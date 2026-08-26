@@ -169,6 +169,17 @@ impl VerdictCache {
     /// decision the credential turns on, and it is also what serves the launch that
     /// never runs a pass at all: attaching to a workspace that is already up and
     /// finished creating goes straight to a session.
+    /// Whether any pass has recorded an answer for this workspace at all.
+    ///
+    /// Distinct from [`Self::remembered_claude`] returning `None`, and the
+    /// difference is what keeps two opposite mistakes apart. A memo saying "a pass
+    /// ran and could not tell" must still let a launch skip its round trip; *no
+    /// memo* must not, or a workspace whose verdict was recorded before this
+    /// existed would skip the pass forever and never acquire one.
+    pub fn has_claude_memo(&self, workspace_id: &str) -> bool {
+        self.memo(workspace_id).exists()
+    }
+
     /// `None` for anything unreadable, which is the reading that forwards no login:
     /// no memo yet, a truncated write, a word this build has never heard of.
     pub fn remembered_claude(&self, workspace_id: &str) -> Option<ClaudeConfig> {

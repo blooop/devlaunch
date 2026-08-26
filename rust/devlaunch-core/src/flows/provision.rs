@@ -2141,6 +2141,12 @@ fn provision(
     // hostname the `up` that started it set is still the one it has.
     if let (PassOccasion::TopUp, Some(verdicts)) = (occasion, verdicts)
         && verdicts.trusted(workspace, switches)
+        // And it has an answer about the Claude config directory to give. A verdict
+        // recorded before this build existed does not, and trusting it would skip
+        // the one pass that could ever write one: the shortcut would hold forever
+        // and the memo would never appear. One redundant round trip on the first
+        // launch after upgrading, which is the trade `switches` made too.
+        && verdicts.has_claude_memo(workspace)
     {
         // No probe ran here, and the session that follows still has to decide
         // whether to forward the host's login, so the answer comes from what the
