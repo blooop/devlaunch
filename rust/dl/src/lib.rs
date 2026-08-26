@@ -187,6 +187,12 @@ const DRAINED: [(libc::c_int, InheritedIgnore); 3] = [
 /// has the argument for why SIGINT is not one of them, and gets read rather than
 /// guessed at because the answer lives in that table.
 ///
+/// **And it is now read, not only obeyed.** `rme` sends SIGHUP to `dl`'s parent, and a
+/// shell runs `nohup dl …` by `exec`ing it in place, so that parent is the very
+/// terminal `nohup` was typed to outlive. A run that both refuses to act on SIGHUP
+/// and sends one is `dl` disagreeing with itself, so [`sighup_arrived_ignored`]
+/// carries the answer to [`crate::hangup`], which declines.
+///
 /// Note what the idiom does *not* cover, since it is easy to over-credit: `disown`
 /// and `setsid` set no `SIG_IGN` at all (measured). A disowned job survives its
 /// terminal because the shell does not send it SIGHUP, and a `setsid` one because
@@ -198,6 +204,26 @@ const DRAINED: [(libc::c_int, InheritedIgnore); 3] = [
 /// `dl` launch does. Two copies in two `main`s drifted once — aid's stayed a bare
 /// `_exit` that left the token file on disk and the `up` child running — which is
 /// the drift a single definition ends.
+/// Whether SIGHUP was already `SIG_IGN` when this process started.
+///
+/// Recorded here because this is the only moment it can be read: the `Wins` branch
+/// below installs `SIG_IGN` itself, so from the end of that loop onwards the
+/// disposition of an ignored SIGHUP and a disarmed-by-`nohup` one are the same
+/// bytes. [`crate::hangup`] is what needs the answer, and it runs at the other end
+/// of the process.
+static SIGHUP_ARRIVED_IGNORED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether something disarmed SIGHUP before `dl` started, which is what
+/// `nohup dl …` does.
+///
+/// `false` on a process that never installed the handlers — a unit test, or a
+/// `dl::run` called by something that skipped it — and that is the right default:
+/// it means "nothing said otherwise", which is what every ordinary run is.
+pub(crate) fn sighup_arrived_ignored() -> bool {
+    SIGHUP_ARRIVED_IGNORED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn install_signal_handlers() {
     extern "C" fn drain(signal: libc::c_int) {
         // SAFETY: called only as a signal handler; `cleanup_and_exit` is
@@ -220,7 +246,11 @@ pub fn install_signal_handlers() {
             // only window it widens is one in which the signal is ignored.
             InheritedIgnore::Wins => unsafe {
                 let inherited = libc::signal(signal, libc::SIG_IGN);
-                if inherited != libc::SIG_IGN {
+                if inherited == libc::SIG_IGN {
+                    if signal == libc::SIGHUP {
+                        SIGHUP_ARRIVED_IGNORED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                } else {
                     libc::signal(signal, drain as *const () as libc::sighandler_t);
                 }
             },

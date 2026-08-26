@@ -69,6 +69,16 @@ pub(crate) fn after_the_command(after: AfterRemoval, ending: Ending) -> Ending {
 
 /// SIGHUP to whatever started `dl`.
 fn hang_up_the_parent() {
+    // Something disarmed SIGHUP before this run started, which is what `nohup dl …`
+    // does — and a shell runs that by `exec`ing dl in place, so the parent about to
+    // be signalled is the terminal `nohup` was typed to outlive. `dl` already
+    // treats an inherited ignore as a deliberate statement and leaves the signal
+    // disarmed for the whole run (`install_signal_handlers`); sending the one it
+    // refuses to act on would be the same process arguing both sides.
+    if crate::sighup_arrived_ignored() {
+        eprintln!("{}", render::hangup_disarmed());
+        return;
+    }
     // SAFETY: `getppid` reads a property of this process and touches nothing.
     let parent = unsafe { libc::getppid() };
     // 1 is an orphan's parent: the shell that asked has already gone, so the

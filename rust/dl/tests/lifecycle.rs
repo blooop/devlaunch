@@ -136,6 +136,12 @@ impl World {
     /// code to report: it was killed by a signal, and the line it would have
     /// printed afterwards is the evidence that it never got that far.
     fn dl_inside_a_shell(&self, args: &[&str]) -> Hung {
+        self.shell_run("", args)
+    }
+
+    /// `prelude` runs in the shell before `dl` does, and is where a test disarms a
+    /// signal or sets a variable the run is about to inherit.
+    fn shell_run(&self, prelude: &str, args: &[&str]) -> Hung {
         use std::process::Stdio;
 
         let root = self.root.display().to_string();
@@ -143,7 +149,7 @@ impl World {
         let script = format!(
             // `still-here` is only reached by a shell the signal did not kill, and
             // it carries dl's exit code so the ordinary endings are readable too.
-            "echo \"shell:$$\"; \"$DL\" {}; echo \"still-here:$?\"",
+            "echo \"shell:$$\"; {prelude}\"$DL\" {}; echo \"still-here:$?\"",
             quoted.join(" ")
         );
         let output = Command::new("/bin/sh")
@@ -169,6 +175,19 @@ impl World {
             .output()
             .expect("/bin/sh runs");
         Hung::of(&output, &self.root)
+    }
+
+    /// The same, from a shell that has already disarmed SIGHUP.
+    ///
+    /// `trap "" HUP` sets `SIG_IGN`, and a `SIG_IGN` survives `exec` and is
+    /// inherited by every child — which is precisely what `nohup` does and the only
+    /// thing `dl` can observe about it. So this is a faithful stand-in for
+    /// `nohup dl <ws> rme` in the one respect that decides the behaviour, and a
+    /// better test than `nohup` itself would be: under real `nohup` the shell also
+    /// ignores the signal, so it would survive whether or not `dl` sent one, and
+    /// the assertion would pass on the bug.
+    fn dl_inside_a_shell_that_ignores_sighup(&self, args: &[&str]) -> Hung {
+        self.shell_run("trap \"\" HUP; ", args)
     }
 
     /// Make the fake devpod answer a call from the response table instead of from
@@ -1004,6 +1023,43 @@ fn a_config_choice_rme_cannot_honour_is_said_in_the_word_the_line_used() {
             .starts_with("Ignoring --devcontainer: it does not apply to 'rme'.\n"),
         "{}",
         run.err
+    );
+}
+
+#[test]
+fn rme_under_nohup_leaves_the_terminal_it_was_told_to_outlive() {
+    // `nohup dl <ws> rme` used to hang up the terminal, which is the one thing
+    // `nohup` is typed to prevent. Two things make it that rather than a curiosity.
+    // A shell runs `nohup dl …` by `exec`ing it in place, so dl's parent is the
+    // interactive shell itself and not some intermediate the signal could stop at.
+    // And dl already has a position on an inherited `SIG_IGN`: `install_signal_handlers`
+    // treats it as a deliberate statement and leaves SIGHUP disarmed for the whole
+    // run, because that is how `nohup` outlives a terminal at all. Sending the
+    // signal dl itself refuses to act on is dl disagreeing with itself.
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+
+    let ran = world.dl_inside_a_shell_that_ignores_sighup(&["devlaunch-main-legacy", "rme"]);
+
+    // The removal still happens: `nohup` is about what outlives the terminal, not
+    // about doing less work.
+    ran.survived_with(0);
+    assert!(!world.exists(clone), "the removal did not happen");
+    assert!(
+        ran.err.contains(
+            "rme: SIGHUP was already ignored when dl started, so the shell stays. The removal is \
+             done."
+        ),
+        "{}",
+        ran.err
+    );
+    // Asserted separately from the survival, because a shell that ignores SIGHUP
+    // survives a signal that was sent: the line is the only evidence of which
+    // happened.
+    assert!(
+        !ran.err.contains("Hanging up"),
+        "dl sent the signal it had itself been told to ignore: {}",
+        ran.err
     );
 }
 

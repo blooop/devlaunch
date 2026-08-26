@@ -1284,6 +1284,18 @@ pub(crate) fn hanging_up(parent: i32) -> String {
     format!("Hanging up the shell dl was called from (pid {parent}).")
 }
 
+/// `rme` on a run that inherited an ignored SIGHUP: the removal happened, and the
+/// signal is the one thing this run was told not to deal in.
+///
+/// Names the removal for [`nothing_to_hang_up`]'s reason. It does not name `nohup`
+/// as the cause, because it is not the only one: `setsid` sets no `SIG_IGN` and does
+/// not reach this, but a wrapper script or a supervisor that disarmed the signal
+/// does, and a sentence naming the wrong tool is worse than one naming none.
+pub(crate) fn hangup_disarmed() -> String {
+    "rme: SIGHUP was already ignored when dl started, so the shell stays. The removal is done."
+        .to_owned()
+}
+
 /// `rme` on a run whose parent has already gone: the removal happened, the hangup
 /// has nobody to reach.
 ///
