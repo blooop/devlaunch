@@ -55,6 +55,90 @@ that is *already running* skips that step, and the token it was given at startup
 stays in place, including one it was given before you set
 `DEVLAUNCH_NO_GH_TOKEN`. Run `dl <workspace> restart` to replace it.
 
+## Claude authentication
+
+`claude` starts in every workspace `dl` opens without asking for a login. The
+host's access token is read from `~/.claude/.credentials.json` and forwarded as
+`CLAUDE_CODE_OAUTH_TOKEN`, through a private file for the same reason the GitHub
+token uses one: only the name of the variable is ever readable in `ps`.
+
+`dl` launches arbitrary repos, so this cannot depend on the image and no repo has
+to add anything to its `devcontainer.json`. It used to depend on exactly that. A
+repo whose own devcontainer bind-mounts `~/.claude` had a working `claude` and a
+working status line; a repo with no `.devcontainer/` at all had neither, and the
+reported symptom was a blank status bar in a workspace where `claude-statusline`
+was installed and the `settings.json` naming it had never been applied.
+
+### A variable, not the credential file
+
+Claude Code authenticates from `CLAUDE_CODE_OAUTH_TOKEN` alone, with an otherwise
+empty `$HOME`. Writing `~/.claude/.credentials.json` into the container would work
+too, and it is the worse trade twice over. It leaves a secret on the container's
+disk. And that file carries the *refresh* token as well as the access token, so a
+container that refreshed it could rotate the host's own login away. A variable
+carries one short-lived access token and nothing else.
+
+The cost is that the access token is short-lived, hours rather than days, and a
+variable cannot be refreshed in place. This is the same caveat the GitHub token
+has, for the same reason: see "When the token changes" above.
+
+### Who gets the Claude token
+
+Fewer things than get the GitHub one, deliberately. The GitHub token goes into
+devpod's workspace environment at `up`, which is what makes it available to a
+repo's `postCreateCommand`. This one does not. It rides `--send-env` on the
+sessions `dl` itself opens, so `dl someone/repo` does not run a stranger's
+`postCreateCommand` with your Claude login in reach, and nothing is left behind in
+devpod's workspace configuration.
+
+It is still a wider trust boundary than not forwarding it. Everything running in
+the session can read the variable, and a Claude login is not scoped the way a
+GitHub token is. Skip it for a repo you have not read:
+
+```bash
+DEVLAUNCH_NO_CLAUDE_TOKEN=1 dl someone/repo
+```
+
+A session `dl` did not open does not get it: `devpod ssh` by hand, or the VS Code
+window `dl <workspace> code` hands over to. Widening it to reach those would mean
+widening it to reach `postCreateCommand` too.
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_CLAUDE_TOKEN=1` | Do not forward the host's Claude login into workspaces |
+
+### The repo that arranged its own
+
+Some devcontainers mount `~/.claude` from the host themselves. devlaunch's own is
+one of them. Forwarding into those would make things worse rather than better:
+Claude Code prefers the variable over the file, so a mounted credential that can
+refresh itself would be replaced by one that cannot.
+
+So the setup pass asks. Its probe reports where the container's Claude config
+directory resolved to, what `$HOME` resolved to, and the source subpath of every
+mount at or under that directory. The host reads those and decides, in one place,
+exactly as it does for "is this a real `claude`": a mount whose root is not under
+this container's `$HOME` came from another home, and the login is not forwarded.
+
+The scan reads `/proc/self/mountinfo` rather than asking `findmnt` about the
+directory, because `findmnt --target` answers for the nearest mount at or *above*
+a path and the shape that costs the most sits below one. Before it switched to
+mounting the directory, devlaunch's own claude-code feature mounted nine
+individual paths underneath `~/.claude`, `settings.json` read only and
+`.credentials.json` read write. A question about the directory reports nothing
+mounted there.
+
+Two answers are spared, because neither is evidence of another home: a mount whose
+root is `/`, which is the whole of a separate filesystem and so a volume or a
+tmpfs, and a root that is not an absolute path.
+
+A pass that cannot find out forwards nothing. An image without `awk`, a kernel
+without `mountinfo`, a report cut off partway: none of them is evidence that the
+directory belongs to the container, and the cost of being wrong that way is a
+login prompt rather than a hijacked credential. The remembered verdict a top up
+trusts carries this answer with it, so skipping the round trip does not skip the
+decision.
+
 ## Tools in every workspace
 
 `gh` and `claude` are available in every workspace `dl` opens, in every kind of

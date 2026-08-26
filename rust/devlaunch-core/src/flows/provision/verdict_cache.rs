@@ -63,7 +63,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Switches, ToolsSwitch, ZellijSwitch};
+use super::{ClaudeConfig, Switches, ToolsSwitch, ZellijSwitch};
 
 use crate::clients::devpod_home::{DevpodHome, sole_workspace_result};
 
@@ -129,6 +129,23 @@ impl VerdictCache {
         Stamp::of(&result) == Some(marker.result_mtime)
     }
 
+    /// What the remembered pass saw of the container's Claude config directory.
+    ///
+    /// Read from the marker without re-checking the switches or the anchor, because
+    /// the only caller asks after [`Self::trusted`] has already said yes. Asking
+    /// again would be the same two comparisons over the same file for an answer
+    /// that cannot have changed between the two lines.
+    ///
+    /// This is the whole reason a skipped pass does not skip the credential: a
+    /// remembered verdict means no probe ran, so the fact the injection turns on has
+    /// to come from the marker the pass that *did* run wrote. A marker from before
+    /// this field existed has no `claude_foreign` key, fails to deserialize, and is
+    /// therefore untrusted -- so [`Self::trusted`] has already sent the pass on the
+    /// wire and this is never reached for one.
+    pub(crate) fn remembered(&self, workspace_id: &str) -> Option<ClaudeConfig> {
+        read_marker(&self.marker(workspace_id))?.claude.into()
+    }
+
     /// Which container a pass is about to be about, read **before** it runs.
     ///
     /// The whole of why this is a separate call. A pass is a `devpod ssh` that takes
@@ -151,12 +168,19 @@ impl VerdictCache {
     /// Silent about every way of not working — a cache directory that will not be
     /// created, a write that fails. A verdict cache that could not write is a launch
     /// that pays what it pays today, and a launch is not worth failing over that.
-    pub(crate) fn record(&self, workspace_id: &str, observed: Observed, switches: Switches) {
+    pub(crate) fn record(
+        &self,
+        workspace_id: &str,
+        observed: Observed,
+        switches: Switches,
+        claude: Option<ClaudeConfig>,
+    ) {
         let Observed(result_mtime) = observed;
         let marker = Marker {
             verdict: Verdict::Provisioned,
             result_mtime,
             switches: MarkerSwitches::of(switches),
+            claude: MarkerClaude::of(claude),
         };
         let Ok(text) = serde_json::to_string(&marker) else {
             return;
@@ -196,6 +220,61 @@ struct Marker {
     /// first launch after upgrading, which is the direction [`Verdict`] argues is
     /// the only harmless one.
     switches: MarkerSwitches,
+    /// Whether the pass found the container's Claude config directory owned from
+    /// outside. Here rather than derived on the spot because a trusted marker means
+    /// no pass ran, and nothing else on the host can see a mount table inside a
+    /// container.
+    ///
+    /// Its own spelling and not [`ClaudeConfig`], for the reason [`MarkerSwitches`]
+    /// is not [`Switches`]: an on-disk format is not a place to put a type other
+    /// modules name.
+    ///
+    /// Three values and not a bool, because a pass can fail to find out -- a report
+    /// without the keys, an image with no `awk`. A bool would have to spell that
+    /// either as `false`, which forwards the host's login into a container nobody
+    /// checked, or by declining to write a marker at all, which is what this field
+    /// first did and what costs such a container a redundant round trip on *every*
+    /// launch forever. `Unknown` records the verdict and withholds the login.
+    ///
+    /// Required, not `#[serde(default)]`. A marker written before this field
+    /// existed has no `claude` key and fails to deserialize, so it is untrusted and
+    /// the pass travels once more -- the same one redundant trip
+    /// [`Marker::switches`] cost when it arrived, and the same harmless direction.
+    /// A default would instead make every upgraded machine's warm attach read
+    /// `Unknown` until something cold-started it.
+    claude: MarkerClaude,
+}
+
+/// What a pass saw of the Claude config directory, in the marker's own spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+enum MarkerClaude {
+    #[serde(rename = "ours")]
+    Ours,
+    #[serde(rename = "foreign")]
+    Foreign,
+    /// The pass ran and could not tell.
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+impl MarkerClaude {
+    fn of(claude: Option<ClaudeConfig>) -> Self {
+        match claude {
+            Some(ClaudeConfig::Ours) => Self::Ours,
+            Some(ClaudeConfig::Foreign) => Self::Foreign,
+            None => Self::Unknown,
+        }
+    }
+}
+
+impl From<MarkerClaude> for Option<ClaudeConfig> {
+    fn from(marker: MarkerClaude) -> Self {
+        match marker {
+            MarkerClaude::Ours => Some(ClaudeConfig::Ours),
+            MarkerClaude::Foreign => Some(ClaudeConfig::Foreign),
+            MarkerClaude::Unknown => None,
+        }
+    }
 }
 
 /// The switches a marker was written under, in the marker's own spelling.
@@ -339,8 +418,85 @@ mod tests {
     /// The same pair, for the tests that are about *which* pass wrote the marker.
     fn recorded_under(verdicts: &VerdictCache, workspace_id: &str, switches: Switches) {
         if let Some(observed) = verdicts.observe(workspace_id) {
-            verdicts.record(workspace_id, observed, switches);
+            verdicts.record(workspace_id, observed, switches, Some(ClaudeConfig::Ours));
         }
+    }
+
+    #[test]
+    fn what_the_pass_saw_of_the_claude_config_survives_the_trip_it_saves() {
+        // The whole reason the marker carries anything beyond a verdict. A trusted
+        // marker means no probe ran, and only a probe inside the container can read
+        // that container's mount table, so a skipped pass would otherwise skip the
+        // decision the credential turns on.
+        for (seen, expected) in [
+            (Some(ClaudeConfig::Ours), Some(ClaudeConfig::Ours)),
+            (Some(ClaudeConfig::Foreign), Some(ClaudeConfig::Foreign)),
+            // `Unknown` is a recorded verdict, not a refusal to record one.
+            // Spelling it as "no marker" would cost a container whose probe cannot
+            // answer this question a redundant round trip on every launch, forever.
+            (None, None),
+        ] {
+            let home = devpod_home_with(&[("default", "ws", Some(()))]);
+            let cache = cache();
+            let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+            let observed = verdicts.observe("ws").expect("an anchor");
+            verdicts.record("ws", observed, Switches::INSTALLING, seen);
+
+            assert!(
+                verdicts.trusted("ws", Switches::INSTALLING),
+                "the round trip is saved whatever the pass saw: {seen:?}"
+            );
+            assert_eq!(verdicts.remembered("ws"), expected, "{seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_marker_from_before_the_claude_field_is_not_trusted() {
+        // One redundant trip on the first launch after upgrading, which is how the
+        // `switches` field arrived too, and the only harmless direction. A
+        // `#[serde(default)]` would instead leave every upgraded machine's warm
+        // attach reading "could not tell" until something cold-started it.
+        let home = devpod_home_with(&[("default", "ws", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+        recorded(&verdicts, "ws");
+        assert!(verdicts.trusted("ws", Switches::INSTALLING));
+
+        let marker = read_dir_one(cache.path());
+        let text = std::fs::read_to_string(&marker).expect("a marker");
+        let mut older: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&text).expect("a marker object");
+        assert!(older.remove("claude").is_some(), "{text}");
+        std::fs::write(&marker, serde_json::to_string(&older).expect("json")).expect("a write");
+
+        assert!(
+            !verdicts.trusted("ws", Switches::INSTALLING),
+            "a marker with no word for the Claude config directory cannot be read as one"
+        );
+    }
+
+    /// The one marker file under a scratch cache, wherever this module puts it.
+    ///
+    /// Found rather than spelled out, so this test does not encode a layout the
+    /// module is free to change.
+    fn read_dir_one(cache: &Path) -> PathBuf {
+        fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "json") {
+                    found.push(path);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(cache, &mut found);
+        assert_eq!(found.len(), 1, "expected one marker, found {found:?}");
+        found.pop().expect("the marker")
     }
 
     #[test]
