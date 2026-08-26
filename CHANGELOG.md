@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-26
+
+### Added
+
+- **`dl <ws> kill`, for a workspace that will not respond.** A `devpod up` that
+  outlives the `dl` which started it holds the workspace `flock` forever, and
+  until now nothing in `dl` got you out of it:
+
+  ```
+  $ dl restart
+  09:58:51 info Trying to lock workspace, seems like another process is running that blocks this workspace
+  09:58:56 info Trying to lock workspace, seems like another process is running that blocks this workspace
+  ```
+
+  That line is not a retry with a timeout behind it. devpod takes a blocking
+  `flock` and logs the same string on a timer while it waits, so it waits for as
+  long as the holder lives, and an init-reparented process is never reaped. The
+  existing flags were all the wrong shape: `--force` means "delete despite
+  unpushed work", and `--purge` removes every workspace on the machine, which is
+  not what you want when one of them is wedged. The way out was `ps`, a `kill -9`,
+  and knowing which of the two files named `workspace.lock` was the safe one.
+
+  `kill` reads the host's own process table and acts on what is there. It kills
+  the `devpod` processes that name this workspace and whose own parent has died,
+  SIGTERM first and then SIGKILL for whatever sat through it; removes devpod's
+  stale busy marker, but only once nothing is left holding the workspace; kills
+  any container the workspace's compose project still has running; and prints
+  every one of them, with the pid and the whole command line. It exits `0` only
+  when nothing is left holding the workspace, so `dl <ws> kill && dl <ws>` is safe
+  to type.
+
+  Two things it deliberately does not do. **It never touches the lock file.**
+  Killing the holder is what releases it, because the kernel drops an `flock` when
+  its holder dies. Unlinking it would be worse than the hang: the old holder keeps
+  a lock on an inode nobody else can see, the next caller locks a fresh file, and
+  two processes both believe they have the workspace. And **it leaves a live build
+  alone**, containers and process both, because those are that build's and killing
+  what it is in the middle of creating would break it as surely as signalling it
+  would. The report says so in both cases.
+
+  It also asks devpod nothing when you name a workspace by id. Every other
+  lifecycle verb resolves its target through a `devpod status` with no deadline
+  behind it, which on the host this verb exists for is the same wait arriving one
+  call early. A workspace id is already the id, so there is nothing for a round
+  trip to settle, and a name devpod has never heard of sweeps nothing and is
+  reported as a workspace nobody is holding. `dl owner/repo kill` does have to ask
+  which workspace that resolved to, and gives that one call five seconds before
+  falling back to the derived id. The two docker calls carry deadlines for the
+  same reason: a daemon that never answers must not swallow the report of a
+  SIGKILL that has already landed.
+
+  `kill` takes several workspaces from the selector, the way `stop` and `rm` do. A
+  machine that was suspended, or one whose `dl` the OOM killer took, wedges every
+  workspace that was open at the time.
+
 ## [0.19.1] - 2026-08-26
 
 ### Fixed
