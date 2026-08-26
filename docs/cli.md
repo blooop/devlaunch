@@ -306,19 +306,28 @@ waits for as long as whatever holds the lock lives. The usual holder is a `devpo
 up` that outlived the `dl` that started it: reparented to init, sleeping, no
 children, and nothing on the machine is ever going to reap it.
 
-`dl <ws> kill` is the way out. It asks devpod nothing, which is the point, and it
-does four things:
+`dl <ws> kill` is the way out. The sweep asks devpod nothing, which is the point:
+it reads the host's own process table and acts on what is there. It does four
+things:
 
 - **Kills the host processes holding the workspace.** Only `devpod` processes, and
   only ones that name this workspace and whose own parent has died. SIGTERM first,
-  then SIGKILL for whatever sat through it. A `devpod up` whose `dl` is still
-  running is somebody's build and is left alone, and the report says it was.
+  then SIGKILL for whatever sat through it. Any devpod subcommand counts, not just
+  `up`: they all take the same lock, so an orphaned `devpod delete` or `devpod
+  helper` blocks the next launch exactly as an orphaned `up` does. A `devpod up`
+  whose `dl` is still running is somebody's build and is left alone, and the report
+  says it was.
 - **Removes devpod's stale busy marker**, but only once nothing is left holding the
   workspace. This is the file under devpod's `agent` directory, not the lock.
 - **Kills any container** the workspace's compose project still has running. Often
-  there is none: the container usually dies well before the lock does.
+  there is none: the container usually dies well before the lock does. Not while a
+  live build is standing, though. Those containers are that build's, and killing
+  what it is in the middle of creating would break it as surely as signalling it
+  would, so they are left alone with it and the report says so.
 - **Prints every one of them**, with the pid and the whole command line, so you can
-  see what went and how hard it had to be pushed.
+  see what went and how hard it had to be pushed. The two docker calls carry
+  deadlines for that reason: a daemon that never answers must not swallow the
+  report of a SIGKILL that has already landed.
 
 It exits `0` only when nothing is left holding the workspace, so
 `dl <ws> kill && dl <ws>` is safe to type: a live build or a process that outlived
@@ -330,6 +339,16 @@ be worse than the hang: the old holder keeps a lock on an inode nobody else can
 see, the next caller locks a fresh file, and two processes both believe they have
 the workspace. That is why there is no `--force` here and nothing to delete by
 hand.
+
+**Naming the workspace is the one place devpod could come into it, and by
+workspace id it does not.** Every other lifecycle verb resolves its target through
+a `devpod status` with no deadline behind it, which on the host this verb exists
+for is the same wait arriving one call early. `dl <ws> kill` skips it: a workspace
+id is already the id, so there is nothing for a round trip to settle, and a name
+devpod has never heard of sweeps nothing and is reported as a workspace nobody is
+holding. `dl owner/repo kill` does have to ask which workspace that resolved to,
+and that one call gives devpod five seconds and then falls back to the derived id
+rather than refusing.
 
 `kill` takes several workspaces from the selector, like `stop` and `rm` do. A
 machine that was suspended, or one whose `dl` was killed by the OOM killer, wedges

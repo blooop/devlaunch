@@ -66,7 +66,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 
 use crate::clients::devpod::{
-    self, Call, ContainerState, ListingUnreadable, NotRun, StatusUnreadable, Workspace,
+    self, Call, ContainerState, ListingUnreadable, NotRun, Patience, StatusUnreadable, Workspace,
     WorkspaceSource,
 };
 use crate::clients::devpod_home::{DevpodHome, RepointFailure, sole_workspace_result};
@@ -524,9 +524,10 @@ pub fn sweep_repo_fetches(
 pub fn workspace_state(
     runner: &dyn Runner,
     workspace_id: &str,
+    patience: Patience,
 ) -> Result<ContainerState, StatusUnreadable> {
     let mut stage = timing::stage(timing::Stage::DevpodUp);
-    let answer = devpod::status(runner, workspace_id);
+    let answer = devpod::status(runner, workspace_id, patience);
     // Python's `@timing.staged("devpod-up") get_workspace_state` returns `None`
     // for a devpod that ran and refused, gave non-JSON, or omitted `state` — the
     // stage stays `ok`. Only a devpod that could not be run at all raises
@@ -637,8 +638,9 @@ pub(crate) fn resolve_known_workspace(
     derived: &str,
     recorded_id: impl FnOnce() -> Option<String>,
     notices: &mut dyn Notices<LifecycleNotice>,
+    patience: Patience,
 ) -> Result<KnownWorkspace, NotRun> {
-    match workspace_state(runner, derived) {
+    match workspace_state(runner, derived, patience) {
         Ok(state) => {
             return Ok(KnownWorkspace::Known {
                 workspace_id: derived.to_owned(),
@@ -662,7 +664,7 @@ pub(crate) fn resolve_known_workspace(
     if recorded == derived {
         return unknown();
     }
-    let state = match workspace_state(runner, &recorded) {
+    let state = match workspace_state(runner, &recorded, patience) {
         Ok(state) => state,
         Err(StatusUnreadable::NotRun(not_run)) => return Err(not_run),
         Err(_) => return unknown(),
@@ -3015,7 +3017,7 @@ mod tests {
                 timing::Seam::default(),
                 0.0,
             )));
-            let _ = workspace_state(runner, "dl-ws");
+            let _ = workspace_state(runner, "dl-ws", Patience::AsLongAsItTakes);
             let report = timing::emit().expect("a report");
             let document = report.document().expect("a document");
             document
@@ -5849,6 +5851,7 @@ mod tests {
                 Some("something-else".to_owned())
             },
             &mut ignoring(),
+            Patience::AsLongAsItTakes,
         );
 
         assert_eq!(
@@ -5875,6 +5878,7 @@ mod tests {
             "r-main-new",
             || Some("r-main-old".to_owned()),
             &mut notices,
+            Patience::AsLongAsItTakes,
         );
 
         assert_eq!(
@@ -5905,6 +5909,7 @@ mod tests {
             "r-main-new",
             || Some("r-main-new".to_owned()),
             &mut ignoring(),
+            Patience::AsLongAsItTakes,
         );
         assert_eq!(
             resolved,
@@ -5926,6 +5931,7 @@ mod tests {
             "r-main-new",
             || Some("r-main-old".to_owned()),
             &mut ignoring(),
+            Patience::AsLongAsItTakes,
         );
         assert_eq!(
             resolved,
@@ -5946,6 +5952,7 @@ mod tests {
             "r-main-new",
             || None,
             &mut ignoring(),
+            Patience::AsLongAsItTakes,
         );
         let resolved = resolved.expect("devpod ran and denied it");
         assert_eq!(
@@ -5979,6 +5986,7 @@ mod tests {
                 Some("r-main-old".to_owned())
             },
             &mut ignoring(),
+            Patience::AsLongAsItTakes,
         );
 
         assert_eq!(resolved, Err(NotRun::NotInstalled));
@@ -5999,6 +6007,7 @@ mod tests {
             "r-main-new",
             || None,
             &mut ignoring(),
+            Patience::AsLongAsItTakes,
         );
         assert_eq!(
             resolved,
@@ -6035,7 +6044,10 @@ mod tests {
         // Python's `@timing.staged("devpod-up")`, which is what stops a warm attach
         // showing a gap where its one round trip was.
         let devpod = devpod_knowing(&[("ws", "Running")]);
-        assert_eq!(workspace_state(&devpod, "ws"), Ok(ContainerState::Running));
+        assert_eq!(
+            workspace_state(&devpod, "ws", Patience::AsLongAsItTakes),
+            Ok(ContainerState::Running)
+        );
         assert_eq!(
             devpod.args_to("devpod"),
             [["status", "ws", "--output", "json"]]

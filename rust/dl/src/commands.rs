@@ -32,7 +32,7 @@ use crate::launch::{self, Family, Reached};
 use crate::render;
 use crate::select;
 use crate::session::{self, Records, StartupError};
-use crate::target::{self, Unaddressable};
+use crate::target::{self, Unaddressable, Vetting};
 
 /// How a command ended, as an exit code.
 ///
@@ -653,7 +653,7 @@ fn render_stop<'r>(
     cold: &mut ColdPath<'r>,
     target: &str,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, cold, target) {
+    let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };
@@ -678,19 +678,25 @@ fn render_stop<'r>(
 /// refresh would spawn a background `devpod list` on a host somebody has just
 /// told us is wedged.
 ///
-/// The target is resolved the way `stop` and `rm` resolve theirs, and that is a
-/// decision rather than a copy: the resolution asks devpod for a *status*, which
-/// devlaunch#484's own transcript shows returning on a wedged workspace — the
-/// hang there arrived at the `devpod up` afterwards, with the workspace already
-/// named. A resolution of its own would be a second answer to "which workspace is
-/// this", and the two could disagree about what is being killed.
+/// **The target is resolved without asking devpod anything, wherever it can be.**
+/// Everything else in the family resolves through a `devpod status`, and here
+/// that would be the one call the verb must not make: the workspace somebody
+/// types this at is the workspace whose devpod has stopped answering, and a
+/// `status` on it has no deadline behind it. A bare workspace id needs no round
+/// trip at all — the name *is* the id, and [`target::Vetting::Unnecessary`] is
+/// what says so — while `dl owner/repo kill` still has to ask devpod which
+/// workspace the triple resolved to, and that ask carries a deadline and falls
+/// back to the derived id rather than refusing when it runs out. The resolution
+/// is still the shared one, so it cannot disagree with `stop`'s about which
+/// workspace this is; what changed is only how long it may take and how much of
+/// it is worth a round trip.
 fn render_kill<'r>(
     runner: &'r dyn Runner,
     context: &mut CommandContext<'r>,
     cold: &mut ColdPath<'r>,
     target: &str,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, cold, target) {
+    let addressed = match target::resolve(runner, context, cold, target, Vetting::Unnecessary) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };
@@ -725,7 +731,7 @@ fn render_kill<'r>(
             // the closing line cannot disagree.
             match sweep.holding {
                 kill::Holding::Free => Ending::Done,
-                kill::Holding::StillHeld => Ending::Refused,
+                kill::Holding::StillHeld { .. } => Ending::Refused,
             }
         }
     }
@@ -742,7 +748,7 @@ fn render_remove<'r>(
     target: &str,
     insistence: Insistence,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, cold, target) {
+    let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };

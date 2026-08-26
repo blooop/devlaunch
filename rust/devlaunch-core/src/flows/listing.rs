@@ -59,7 +59,9 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde::Serialize;
 
-use crate::clients::devpod::{self, ContainerState, ListingUnreadable, Workspace, WorkspaceSource};
+use crate::clients::devpod::{
+    self, ContainerState, ListingUnreadable, Patience, Workspace, WorkspaceSource,
+};
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
@@ -977,7 +979,7 @@ fn container_state(runner: &dyn Runner, workspace_id: &str) -> Option<ContainerS
     // this makes are in the prose summary and missing from the document — which is
     // the shape a listing of five workspaces reports the most of.
     let mut stage = timing::stage(timing::Stage::DevpodUp);
-    let answer = devpod::status(runner, workspace_id);
+    let answer = devpod::status(runner, workspace_id, Patience::AsLongAsItTakes);
     // Python stages `get_workspace_state`, which returns `None` (stage `ok`) for a
     // devpod that ran and refused, gave non-JSON, or omitted `state`, and only
     // marks the stage `failed` when devpod could not be run at all — the spawn

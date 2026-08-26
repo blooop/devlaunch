@@ -24,7 +24,8 @@ use devlaunch_core::flows::branch_manager::BranchError;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::kill::{
-    ContainerRefusal, Containers, Ending, Holding, HostCannot, Marker, Sweep, TableUnreadable,
+    ContainerRefusal, Containers, Ending, Holding, HostCannot, Marker, NoSignal, Sweep,
+    TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
     BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
@@ -1324,7 +1325,7 @@ pub(crate) fn killed(workspace_id: &str, sweep: &Sweep) -> Vec<String> {
             )
         })
         .collect();
-    lines.extend(sweep.attended.iter().map(|process| {
+    lines.extend(sweep.holding.attended().iter().map(|process| {
         format!(
             "  {} left alone, something is still watching it: {}",
             process.pid, process.command
@@ -1377,6 +1378,13 @@ fn containers_killed(containers: &Containers) -> Vec<String> {
             "Could not kill this workspace's containers: {}",
             container_refusal(refusal)
         )],
+        // Said, unlike the two silent arms, because it is the one place the sweep
+        // decided *not* to do something the verb advertises: the line above it
+        // already names the build that was left alone, and this says its
+        // containers went with it.
+        Containers::LeftForALiveBuild => {
+            vec!["Left this workspace's containers alone: they belong to that build.".to_owned()]
+        }
         Containers::NoneRunning | Containers::NoDocker => Vec::new(),
     }
 }
@@ -1403,7 +1411,7 @@ fn container_refusal(refusal: &ContainerRefusal) -> String {
 /// line that disagreed with it would be the one a person believes.
 fn verdict(workspace_id: &str, sweep: &Sweep) -> String {
     match sweep.holding {
-        Holding::StillHeld => format!("Workspace {workspace_id} is still held."),
+        Holding::StillHeld { .. } => format!("Workspace {workspace_id} is still held."),
         Holding::Free if sweep.signalled.is_empty() => {
             format!("Nothing on this host is holding workspace {workspace_id}.")
         }
@@ -1434,11 +1442,18 @@ pub(crate) fn kill_unavailable(cannot: &HostCannot) -> String {
             "error: `ps` could not be run ({})",
             os_error_phrase(failure)
         ),
-        HostCannot::SendASignal => {
+        HostCannot::SendASignal(NoSignal::NoKillHere) => {
             "error: something is holding this workspace and this host has no `kill` to signal \
              it with"
                 .to_owned()
         }
+        // Its own sentence, because the one above sends its reader looking for a
+        // program that is already installed. A `kill` the OS would not start is a
+        // fact about this run, not about the machine's toolchain.
+        HostCannot::SendASignal(NoSignal::NotRun(failure)) => format!(
+            "error: something is holding this workspace and `kill` could not be run ({})",
+            os_error_phrase(failure)
+        ),
     }
 }
 
@@ -3599,7 +3614,6 @@ mod tests {
     fn nothing_swept() -> Sweep {
         Sweep {
             signalled: Vec::new(),
-            attended: Vec::new(),
             marker: Marker::Absent,
             containers: Containers::NoneRunning,
             holding: Holding::Free,
@@ -3654,14 +3668,15 @@ mod tests {
                 process: held_by(732_721, "devpod up my-ws"),
                 ending: Ending::Survived,
             }],
-            attended: vec![HostProcess {
-                pid: 5001,
-                parent: 5000,
-                command: "devpod up my-ws".to_owned(),
-            }],
             marker: Marker::LeftForALiveHolder,
-            containers: Containers::NoneRunning,
-            holding: Holding::StillHeld,
+            containers: Containers::LeftForALiveBuild,
+            holding: Holding::StillHeld {
+                attended: vec![HostProcess {
+                    pid: 5001,
+                    parent: 5000,
+                    command: "devpod up my-ws".to_owned(),
+                }],
+            },
         };
 
         assert_eq!(
@@ -3670,6 +3685,7 @@ mod tests {
                 "  732721 still running after SIGKILL: devpod up my-ws",
                 "  5001 left alone, something is still watching it: devpod up my-ws",
                 "Left devpod's busy marker alone: something still holds this workspace.",
+                "Left this workspace's containers alone: they belong to that build.",
                 "Workspace my-ws is still held.",
             ]
         );
@@ -3705,9 +3721,117 @@ mod tests {
              host has none"
         );
         assert_eq!(
-            kill_unavailable(&HostCannot::SendASignal),
+            kill_unavailable(&HostCannot::SendASignal(NoSignal::NoKillHere)),
             "error: something is holding this workspace and this host has no `kill` to signal \
              it with"
+        );
+    }
+
+    /// The three ways a tool can be there and still leave the verb with nothing
+    /// to work on. Each is a different sentence, because a `ps` that refused, a
+    /// `ps` that could not be started and a `kill` the OS would not run send the
+    /// reader to three different places — and none of them to "install `ps`".
+    #[test]
+    fn a_tool_that_is_there_and_would_not_answer_is_not_a_tool_that_is_missing() {
+        assert_eq!(
+            kill_unavailable(&HostCannot::ReadItsProcessTable(TableUnreadable::Refused {
+                exit: Exit::Code(1),
+                stderr: "ps: unsupported option\n".to_owned(),
+            })),
+            "error: `ps` would not read this host's process table: ps: unsupported option"
+        );
+        assert_eq!(
+            kill_unavailable(&HostCannot::ReadItsProcessTable(
+                TableUnreadable::NotStarted(OsFailure {
+                    kind: std::io::ErrorKind::TimedOut,
+                    errno: None,
+                })
+            )),
+            "error: `ps` could not be run (TimedOut)"
+        );
+        assert_eq!(
+            kill_unavailable(&HostCannot::SendASignal(NoSignal::NotRun(OsFailure {
+                kind: std::io::ErrorKind::PermissionDenied,
+                errno: None,
+            }))),
+            "error: something is holding this workspace and `kill` could not be run \
+             (PermissionDenied)"
+        );
+    }
+
+    /// A `ps` that refused without writing anything still has to say something,
+    /// and the exit status is what is left. The fallback exists because a
+    /// half-empty sentence reads as a bug in dl rather than a fact about the host.
+    #[test]
+    fn a_refusal_with_nothing_written_falls_back_to_the_exit_status() {
+        assert_eq!(
+            kill_unavailable(&HostCannot::ReadItsProcessTable(TableUnreadable::Refused {
+                exit: Exit::Code(2),
+                stderr: String::new(),
+            })),
+            "error: `ps` would not read this host's process table: it exited 2"
+        );
+    }
+
+    /// The marker that would not go, and the containers that would not die: both
+    /// are lines rather than refusals, because the rest of the sweep happened and
+    /// the person needs to know which part of it did not.
+    #[test]
+    fn the_two_things_that_would_not_move_are_named_with_the_reason() {
+        let sweep = Sweep {
+            marker: Marker::Unremovable {
+                path: PathBuf::from("/home/x/.devpod/agent/w/workspace.lock"),
+                reason: "permission denied".to_owned(),
+            },
+            containers: Containers::Standing(ContainerRefusal::Refused {
+                exit: Exit::Code(1),
+                stderr: "Error response from daemon: no such container\n".to_owned(),
+            }),
+            ..nothing_swept()
+        };
+
+        assert_eq!(
+            killed("my-ws", &sweep),
+            [
+                "Could not remove devpod's busy marker at \
+                 /home/x/.devpod/agent/w/workspace.lock (permission denied)",
+                "Could not kill this workspace's containers: Error response from daemon: no such \
+                 container",
+                "Nothing on this host is holding workspace my-ws.",
+            ]
+        );
+    }
+
+    /// docker's two other ways of not delivering: one that refused silently, and
+    /// one that never ran. The first falls back to the exit status for the reason
+    /// `ps`'s does; the second is not a docker that refused and must not read as
+    /// one.
+    #[test]
+    fn a_docker_that_said_nothing_and_a_docker_that_never_ran_still_say_something() {
+        let silent = Sweep {
+            containers: Containers::Standing(ContainerRefusal::Refused {
+                exit: Exit::Code(125),
+                stderr: String::new(),
+            }),
+            ..nothing_swept()
+        };
+        assert_eq!(
+            killed("my-ws", &silent)[0],
+            "Could not kill this workspace's containers: docker exited 125"
+        );
+
+        let never_ran = Sweep {
+            containers: Containers::Standing(ContainerRefusal::NotRun {
+                failure: OsFailure {
+                    kind: std::io::ErrorKind::TimedOut,
+                    errno: None,
+                },
+            }),
+            ..nothing_swept()
+        };
+        assert_eq!(
+            killed("my-ws", &never_ran)[0],
+            "Could not kill this workspace's containers: could not run docker (TimedOut)"
         );
     }
 }

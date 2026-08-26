@@ -217,10 +217,11 @@ work that exists nowhere else: a clone with uncommitted or unpushed changes is k
 and `dl <ws> rm --force` is how you override that.
 
 `kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It
-asks devpod nothing: it kills the host processes still holding the workspace whose own parent
-has died, clears devpod's stale busy marker once nothing is left building, kills any container
-the workspace still has running, and prints every one of them. It exits 0 only when nothing is
-left holding the workspace, and it never touches the lock file itself.
+sweeps the host instead of asking devpod: it kills the host processes still holding the
+workspace whose own parent has died, clears devpod's stale busy marker once nothing is left
+building, kills any container the workspace still has running, and prints every one of them. It
+exits 0 only when nothing is left holding the workspace, and it never touches the lock file
+itself. Nothing it does waits on devpod without a deadline, which is the point of having it.
 
 `--stop` and the `prune` verb are retired. Both are still recognised and print what to use
 instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including which exits fire it.

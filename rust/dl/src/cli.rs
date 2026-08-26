@@ -238,7 +238,11 @@ impl Verb {
     /// list on its own evidence rather than by resemblance: a machine that has
     /// been suspended, or one whose `dl` was killed by an OOM, wedges every
     /// workspace that was open at the time, and clearing them one line at a time
-    /// is the visit this exists to save. No for anything that ends in an
+    /// is the visit this exists to save. That is the reason to want it; what
+    /// makes it safe is narrower, and it is the sweep's own scope: each one only
+    /// signals processes naming *its* workspace and spares anything with a live
+    /// parent behind it, so five at once is five independent sweeps rather than
+    /// one wider one. No for anything that ends in an
     /// interactive session — attach, `--`, and the three rebuild verbs, whose
     /// launch attaches when it is done (`LaunchVerb::attaches`): several of those
     /// would be sessions run back to back, each waiting on the last one's exit,

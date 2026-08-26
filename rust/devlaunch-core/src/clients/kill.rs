@@ -24,8 +24,10 @@
 //! reason the marker has to be swept by hand — a `defer` does not run under
 //! SIGKILL.
 
+use std::io::ErrorKind;
+
 use crate::domain::workspace_state::NonEmpty;
-use crate::runner::{Invocation, Outcome, Runner, SpawnSpec};
+use crate::runner::{Invocation, OsFailure, Outcome, Runner, SpawnSpec};
 
 /// The program every call in this module runs.
 pub(crate) const PROGRAM: &str = "kill";
@@ -60,14 +62,25 @@ impl Signal {
 /// on a good run rather than a failure. What survived is read back off the
 /// process table, so the only thing left for this to report is a host where
 /// nothing could be signalled in the first place.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Two ways of not signalling and not one, for [`super::ps::Answer`]'s reason:
+/// a host with no `kill` on it and a `kill` that is there and would not run are
+/// different facts, and only the first is a sentence about the machine being
+/// unusual. Folded together, a `kill` refused by EPERM would be reported as a
+/// host that has no `kill` on it, which sends the reader somewhere there is
+/// nothing to find.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Sent {
     /// `kill` ran. Whether each pid took the signal is the table's answer.
     Attempted,
-    /// No `kill` on PATH, or one that could not be exec'd or started. A host
+    /// No `kill` on PATH, or one that is there and could not be exec'd. A host
     /// where nothing can be signalled is one `dl <ws> kill` cannot unwedge, and
     /// this is what lets it say so instead of reporting an empty sweep.
-    NoKillOnThisHost,
+    NoKillHere,
+    /// `kill` is on this host and did not run: the OS refused the spawn, or the
+    /// child outlasted a bound this call does not set. `failure` is the errno for
+    /// the binary to phrase.
+    NotRun(OsFailure),
 }
 
 /// Send `signal` to every pid, in one call.
@@ -81,11 +94,19 @@ pub(crate) fn signal(runner: &dyn Runner, signal: Signal, pids: &NonEmpty<u32>) 
     let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args));
     match runner.capture(&spec) {
         Outcome::Ran { .. } => Sent::Attempted,
-        Outcome::ProgramNotFound => Sent::NoKillOnThisHost,
-        // A `kill` on PATH that cannot be exec'd, one the OS refused to start,
-        // and one that outlasted a bound this call does not set: none of them
-        // signalled anything, and the fix for all three is the same host.
-        Outcome::TimedOut | Outcome::NotStarted(_) => Sent::NoKillOnThisHost,
+        Outcome::ProgramNotFound => Sent::NoKillHere,
+        // A `kill` found on PATH that could not be exec'd fails with ENOENT at
+        // exec time, which arrives here rather than as `ProgramNotFound`; it
+        // points at the same fix, so it gets the same answer.
+        Outcome::NotStarted(failure) if failure.kind == ErrorKind::NotFound => Sent::NoKillHere,
+        Outcome::NotStarted(failure) => Sent::NotRun(failure),
+        // Unreachable while this call passes no bound, and mapped rather than
+        // claimed impossible: a bound added later must not read as a host with no
+        // `kill` on it.
+        Outcome::TimedOut => Sent::NotRun(OsFailure {
+            kind: ErrorKind::TimedOut,
+            errno: None,
+        }),
     }
 }
 
@@ -143,7 +164,30 @@ mod tests {
 
         assert_eq!(
             signal(&fake, Signal::Terminate, &pids(&[1234])),
-            Sent::NoKillOnThisHost
+            Sent::NoKillHere
+        );
+    }
+
+    /// A `kill` that is on this host and would not run is a different fact, and
+    /// it must not be reported as a host with no `kill` on it: the reader of that
+    /// sentence goes looking for a program that is already there.
+    #[test]
+    fn a_kill_that_is_there_and_would_not_run_is_not_a_missing_kill() {
+        let fake = FakeRunner::new();
+        fake.script(
+            ["kill"],
+            Response::NotStarted(OsFailure {
+                kind: ErrorKind::PermissionDenied,
+                errno: None,
+            }),
+        );
+
+        assert_eq!(
+            signal(&fake, Signal::Terminate, &pids(&[1234])),
+            Sent::NotRun(OsFailure {
+                kind: ErrorKind::PermissionDenied,
+                errno: None,
+            })
         );
     }
 }

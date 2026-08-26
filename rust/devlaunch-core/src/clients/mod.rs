@@ -4,17 +4,18 @@ pub mod devpod;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod devpod_home;
 // Crate-private, unlike its siblings: nothing outside core names docker, and the
-// one thing devlaunch asks it (remove these volumes) is reported through
-// `flows::lifecycle`'s own vocabulary rather than docker's.
+// three things devlaunch asks it — remove these volumes, list what one compose
+// project has running, kill those containers — are reported in the vocabulary of
+// the flow that asked (`flows::lifecycle`, `flows::kill`) rather than docker's.
 pub(crate) mod docker;
-// Crate-private for the same reason: the two signals `dl <ws> kill` sends are
-// the whole of what devlaunch asks of `kill(1)`, and what they came to is
-// reported in the kill flow's vocabulary.
-pub(crate) mod kill;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod gh;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod git;
+// Crate-private for docker's reason: the two signals `dl <ws> kill` sends are
+// the whole of what devlaunch asks of `kill(1)`, and what they came to is
+// reported in the kill flow's vocabulary.
+pub(crate) mod kill;
 // Crate-private for docker's reason: nothing outside core reads the host's
 // process table, and what `dl <ws> kill` found there is reported in the kill
 // flow's vocabulary rather than in `ps`'s columns.

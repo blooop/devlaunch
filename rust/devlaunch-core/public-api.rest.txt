@@ -105,6 +105,18 @@ impl core::fmt::Debug for devlaunch_core::clients::devpod::NotRun
 pub fn devlaunch_core::clients::devpod::NotRun::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::clients::devpod::NotRun
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::NotRun
+pub enum devlaunch_core::clients::devpod::Patience
+pub devlaunch_core::clients::devpod::Patience::AsLongAsItTakes
+pub devlaunch_core::clients::devpod::Patience::UpTo(core::time::Duration)
+impl core::clone::Clone for devlaunch_core::clients::devpod::Patience
+pub fn devlaunch_core::clients::devpod::Patience::clone(&self) -> devlaunch_core::clients::devpod::Patience
+impl core::cmp::Eq for devlaunch_core::clients::devpod::Patience
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod::Patience
+pub fn devlaunch_core::clients::devpod::Patience::eq(&self, &devlaunch_core::clients::devpod::Patience) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod::Patience
+pub fn devlaunch_core::clients::devpod::Patience::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::clients::devpod::Patience
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Patience
 pub enum devlaunch_core::clients::devpod::StatusUnreadable
 pub devlaunch_core::clients::devpod::StatusUnreadable::Failed
 pub devlaunch_core::clients::devpod::StatusUnreadable::Failed::exit: devlaunch_runner::Exit
@@ -844,6 +856,7 @@ pub fn devlaunch_core::flows::kill::ContainerRefusal::fmt(&self, &mut core::fmt:
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::ContainerRefusal
 pub enum devlaunch_core::flows::kill::Containers
 pub devlaunch_core::flows::kill::Containers::Killed(alloc::vec::Vec<alloc::string::String>)
+pub devlaunch_core::flows::kill::Containers::LeftForALiveBuild
 pub devlaunch_core::flows::kill::Containers::NoDocker
 pub devlaunch_core::flows::kill::Containers::NoneRunning
 pub devlaunch_core::flows::kill::Containers::Standing(devlaunch_core::flows::kill::ContainerRefusal)
@@ -871,6 +884,9 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Ending
 pub enum devlaunch_core::flows::kill::Holding
 pub devlaunch_core::flows::kill::Holding::Free
 pub devlaunch_core::flows::kill::Holding::StillHeld
+pub devlaunch_core::flows::kill::Holding::StillHeld::attended: alloc::vec::Vec<devlaunch_core::flows::kill::HostProcess>
+impl devlaunch_core::flows::kill::Holding
+pub fn devlaunch_core::flows::kill::Holding::attended(&self) -> &[devlaunch_core::flows::kill::HostProcess]
 impl core::clone::Clone for devlaunch_core::flows::kill::Holding
 pub fn devlaunch_core::flows::kill::Holding::clone(&self) -> devlaunch_core::flows::kill::Holding
 impl core::cmp::Eq for devlaunch_core::flows::kill::Holding
@@ -878,11 +894,10 @@ impl core::cmp::PartialEq for devlaunch_core::flows::kill::Holding
 pub fn devlaunch_core::flows::kill::Holding::eq(&self, &devlaunch_core::flows::kill::Holding) -> bool
 impl core::fmt::Debug for devlaunch_core::flows::kill::Holding
 pub fn devlaunch_core::flows::kill::Holding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for devlaunch_core::flows::kill::Holding
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Holding
 pub enum devlaunch_core::flows::kill::HostCannot
 pub devlaunch_core::flows::kill::HostCannot::ReadItsProcessTable(devlaunch_core::flows::kill::TableUnreadable)
-pub devlaunch_core::flows::kill::HostCannot::SendASignal
+pub devlaunch_core::flows::kill::HostCannot::SendASignal(devlaunch_core::flows::kill::NoSignal)
 impl core::clone::Clone for devlaunch_core::flows::kill::HostCannot
 pub fn devlaunch_core::flows::kill::HostCannot::clone(&self) -> devlaunch_core::flows::kill::HostCannot
 impl core::cmp::Eq for devlaunch_core::flows::kill::HostCannot
@@ -918,6 +933,17 @@ pub fn devlaunch_core::flows::kill::Marker::eq(&self, &devlaunch_core::flows::ki
 impl core::fmt::Debug for devlaunch_core::flows::kill::Marker
 pub fn devlaunch_core::flows::kill::Marker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Marker
+pub enum devlaunch_core::flows::kill::NoSignal
+pub devlaunch_core::flows::kill::NoSignal::NoKillHere
+pub devlaunch_core::flows::kill::NoSignal::NotRun(devlaunch_runner::OsFailure)
+impl core::clone::Clone for devlaunch_core::flows::kill::NoSignal
+pub fn devlaunch_core::flows::kill::NoSignal::clone(&self) -> devlaunch_core::flows::kill::NoSignal
+impl core::cmp::Eq for devlaunch_core::flows::kill::NoSignal
+impl core::cmp::PartialEq for devlaunch_core::flows::kill::NoSignal
+pub fn devlaunch_core::flows::kill::NoSignal::eq(&self, &devlaunch_core::flows::kill::NoSignal) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kill::NoSignal
+pub fn devlaunch_core::flows::kill::NoSignal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::NoSignal
 pub enum devlaunch_core::flows::kill::TableUnreadable
 pub devlaunch_core::flows::kill::TableUnreadable::NoPs
 pub devlaunch_core::flows::kill::TableUnreadable::NotStarted(devlaunch_runner::OsFailure)
@@ -956,7 +982,6 @@ impl core::fmt::Debug for devlaunch_core::flows::kill::Signalled
 pub fn devlaunch_core::flows::kill::Signalled::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Signalled
 pub struct devlaunch_core::flows::kill::Sweep
-pub devlaunch_core::flows::kill::Sweep::attended: alloc::vec::Vec<devlaunch_core::flows::kill::HostProcess>
 pub devlaunch_core::flows::kill::Sweep::containers: devlaunch_core::flows::kill::Containers
 pub devlaunch_core::flows::kill::Sweep::holding: devlaunch_core::flows::kill::Holding
 pub devlaunch_core::flows::kill::Sweep::marker: devlaunch_core::flows::kill::Marker
@@ -1256,7 +1281,7 @@ pub fn devlaunch_core::flows::launch::ColdMachinery::open(&mut self) -> core::re
 pub trait devlaunch_core::flows::launch::Provision
 pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<(), devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
-pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::lifecycle
 pub enum devlaunch_core::flows::lifecycle::Adoption
 pub devlaunch_core::flows::lifecycle::Adoption::Refused
@@ -1745,7 +1770,7 @@ pub fn devlaunch_core::flows::lifecycle::reconcile_plan(&devlaunch_core::flows::
 pub fn devlaunch_core::flows::lifecycle::sweep_repo_fetches(&devlaunch_core::flows::repo_manager::RepositoryManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage) -> devlaunch_core::flows::lifecycle::SweepReport
 pub fn devlaunch_core::flows::lifecycle::unsaved_work_in(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::clients::git::Git<'_>, &std::path::Path, &str, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::domain::workspace_state::Unsaved
 pub fn devlaunch_core::flows::lifecycle::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
-pub fn devlaunch_core::flows::lifecycle::workspace_state(&dyn devlaunch_runner::Runner, &str) -> core::result::Result<devlaunch_core::clients::devpod::ContainerState, devlaunch_core::clients::devpod::StatusUnreadable>
+pub fn devlaunch_core::flows::lifecycle::workspace_state(&dyn devlaunch_runner::Runner, &str, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::clients::devpod::ContainerState, devlaunch_core::clients::devpod::StatusUnreadable>
 pub fn devlaunch_core::flows::lifecycle::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::listing
 pub enum devlaunch_core::flows::listing::LastUsed

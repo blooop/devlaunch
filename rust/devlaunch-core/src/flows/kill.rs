@@ -42,7 +42,6 @@ use crate::clients::ps;
 
 pub use crate::clients::ps::HostProcess;
 use crate::domain::workspace_state::NonEmpty;
-use crate::osext::system_words;
 use crate::runner::{Exit, OsFailure, Runner};
 
 /// Whether anything is still waiting on a process that names this workspace.
@@ -63,9 +62,15 @@ enum Parentage {
 ///
 /// A record rather than two lists, because the two questions asked of it are
 /// asked of the same reading: what to signal is the orphans, and what to report
-/// as somebody's live build is the rest. Split into two vectors at the point of
-/// classification, one table read once could be filtered twice by rules that had
-/// drifted apart, and a process could end up in both or in neither.
+/// as somebody's live build is the holders with a parent still behind them. Were
+/// it split into two vectors at the point of classification, one table read once
+/// could be filtered twice by rules that had drifted apart, and a process could
+/// end up in both or in neither.
+///
+/// Neither list is the complement of the other once the sweep has run, and that
+/// is not a leak in the record: an orphan that outlived SIGKILL is reported as a
+/// [`Signalled`] and is in nobody's attended list, while still holding the
+/// workspace exactly as firmly. [`Holding`] is what counts it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Holder {
     process: HostProcess,
@@ -85,6 +90,16 @@ struct Holder {
 /// substring match on the shorter one would sweep up the longer one's live
 /// launch. A value after `=` counts as a word, because devpod's helpers pass the
 /// id that way.
+///
+/// **Any devpod subcommand**, where devlaunch#484 names three (`up`, `ssh`,
+/// `helper`). Deliberately wider than the issue, because the thing that wedges a
+/// workspace is devpod's `flock` and *every* subcommand that addresses a
+/// workspace takes it: an orphaned `devpod delete my-ws` blocks the next launch
+/// exactly as an orphaned `up` does, and a filter that named three subcommands
+/// would leave the reader of the wedge no verb at all. Nothing is killed for
+/// being a `delete` in any case — it is killed for having no parent, and an
+/// operation nobody is waiting on has already lost whatever it was mid-way
+/// through.
 fn holders(table: &[HostProcess], workspace_id: &str) -> Vec<Holder> {
     table
         .iter()
@@ -124,7 +139,7 @@ fn names(command: &str, workspace_id: &str) -> bool {
 /// a subreaper shows instead: there, a dead parent's children are reparented to
 /// the reaper rather than to init, so PPID 1 alone would find nothing.
 fn parentage(table: &[HostProcess], process: &HostProcess) -> Parentage {
-    let reparented = process.parent <= 1;
+    let reparented = process.parent == 1;
     let parent_gone = !table.iter().any(|other| other.pid == process.parent);
     if reparented || parent_gone {
         Parentage::Orphaned
@@ -137,21 +152,28 @@ fn parentage(table: &[HostProcess], process: &HostProcess) -> Parentage {
 // the sweep
 // ===========================================================================
 
-/// How long an orphan is given to unwind after SIGTERM.
+/// How long the host is given after `signal` before the table is read again.
 ///
-/// A `devpod up` that takes the signal drops the flock as it goes, and a second
-/// or two is the difference between a clean unwind and a SIGKILL that leaves the
-/// busy marker behind for this flow to sweep. Not longer, because the person
-/// typing this has already waited through the five-second loop that sent them
-/// here.
-const UNWIND: Duration = Duration::from_secs(2);
-
-/// How long the host is given to reap a process after SIGKILL.
+/// A function of the signal rather than a column of a table the loop iterates,
+/// which is [`Ending::under`]'s reason: the pairing is total, and a triple of
+/// signal, grace and ending makes `(Signal::Kill, UNWIND, Ending::Terminated)`
+/// writable — a SIGKILL reported as a SIGTERM, waited on for ten times as long.
 ///
-/// Not a grace period — nothing runs after SIGKILL — but the kernel still has
-/// to tear the process down and the parent still has to reap it, and a table read
-/// in the same instant can still show it.
-const REAP: Duration = Duration::from_millis(200);
+/// **SIGTERM: two seconds.** A `devpod up` that takes the signal drops the flock
+/// as it goes, and a second or two is the difference between a clean unwind and a
+/// SIGKILL that leaves the busy marker behind for this flow to sweep. Not longer,
+/// because the person typing this has already waited through the five-second loop
+/// that sent them here.
+///
+/// **SIGKILL: a fifth of one**, and not a grace period at all — nothing runs
+/// after SIGKILL. The kernel still has to tear the process down and the parent
+/// still has to reap it, and a table read in the same instant can still show it.
+fn grace(signal: Signal) -> Duration {
+    match signal {
+        Signal::Terminate => Duration::from_secs(2),
+        Signal::Kill => Duration::from_millis(200),
+    }
+}
 
 /// How far the escalation had to go before a process stopped holding the lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +186,20 @@ pub enum Ending {
     /// devlaunch has no privilege to add, and the report has to say so rather
     /// than let the next `dl up` walk back into the same wait.
     Survived,
+}
+
+impl Ending {
+    /// What a process that stopped holding the workspace under `signal` ended as.
+    ///
+    /// [`Ending::Survived`] is not reachable from here on purpose: it is not a
+    /// fact about a signal but about a process that took both and is still there,
+    /// so it is written once, where the escalation runs out.
+    fn under(signal: Signal) -> Self {
+        match signal {
+            Signal::Terminate => Self::Terminated,
+            Signal::Kill => Self::Killed,
+        }
+    }
 }
 
 /// One orphan and what became of it.
@@ -208,17 +244,32 @@ pub enum HostCannot {
     /// Nothing was read, so nothing was signalled and nothing was swept. Every
     /// step past the first is conditioned on knowing what is running.
     ReadItsProcessTable(TableUnreadable),
-    /// Orphans were found and there is no `kill(1)` here to signal them with.
-    SendASignal,
+    /// Orphans were found and nothing on this host would signal them.
+    SendASignal(NoSignal),
+}
+
+/// Why the signals could not be sent.
+///
+/// Two arms rather than one, for [`TableUnreadable`]'s reason: only the first is
+/// a sentence about the machine being unusual, and a reader told this host has no
+/// `kill` on it goes looking for a program that is already there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoSignal {
+    /// No `kill(1)` on this host, or one that could not be exec'd.
+    NoKillHere,
+    /// `kill` is here and would not run. `failure` is the OS's own reason.
+    NotRun(OsFailure),
 }
 
 /// What became of devpod's busy marker for this workspace.
 ///
-/// Five arms and not a bool, because four of them mean "the file is still there"
-/// for four unrelated reasons and only one of them is a problem. The one that
-/// matters is [`Marker::LeftForALiveHolder`]: a marker removed out from under a
-/// live build tells devpod's daemon that build has finished, which is a worse
-/// state than the wedge this verb was reached for.
+/// Five arms and not a bool, because "gone" is two of them and the other three
+/// are three different things to say. Two mean the file is still there —
+/// [`Marker::LeftForALiveHolder`] on purpose and [`Marker::Unremovable`] against
+/// its will — one means it was never there to begin with, and one means nobody
+/// could say where to look. The one that matters is `LeftForALiveHolder`: a
+/// marker removed out from under a live build tells devpod's daemon that build
+/// has finished, which is a worse state than the wedge this verb was reached for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Marker {
     /// Removed. Nothing was left holding the workspace, so the marker was stale:
@@ -254,6 +305,12 @@ pub enum Containers {
     NoDocker,
     /// docker was asked and would not deliver.
     Standing(ContainerRefusal),
+    /// docker was not asked at all: somebody's build is still running, and its
+    /// containers are the build's. The sweep leaves that `devpod up` standing
+    /// (see [`Holding::StillHeld`]), and killing what it is building underneath it
+    /// would break it just as surely — with the additional insult of not saying it
+    /// was a build that was broken.
+    LeftForALiveBuild,
 }
 
 /// Why a container this workspace has running is still running.
@@ -268,18 +325,41 @@ pub enum ContainerRefusal {
 /// Whether anything is holding the workspace now that the sweep has finished.
 ///
 /// **One fact, read once off the last process-table reading**, rather than
-/// assembled by each of its three readers from the lists below. It is what the
-/// exit code means, what the busy marker's removal hangs on, and what the closing
-/// line of the report says, and three derivations of one question are how those
-/// three come to disagree — a holder that arrived while the sweep ran is in
-/// neither list and holds the workspace all the same.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// assembled by each of its readers from the lists in [`Sweep`]. It is what the
+/// exit code means, what the busy marker's removal hangs on, whether the
+/// containers are the sweep's to kill, and what the closing line of the report
+/// says, and four derivations of one question are how those four come to
+/// disagree — a holder that arrived while the sweep ran is in no list and holds
+/// the workspace all the same.
+///
+/// **The live builds hang off `StillHeld` rather than sitting beside it**, which
+/// is that same argument taken one step further. `Sweep { attended: vec![p],
+/// holding: Holding::Free }` was constructible, and it is a nonsense: a process
+/// with a parent behind it is a holder, so an attended build is *why* the
+/// workspace is held. Hanging the vector off the arm makes the contradiction
+/// unwritable rather than merely unwritten, which is what the paragraph above
+/// was asking for.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Holding {
     /// Nothing on this host names this workspace any more.
     Free,
-    /// Something still does: a live build, a process that outlived SIGKILL, or
-    /// one that arrived after the signals went out.
-    StillHeld,
+    /// Something still does. `attended` is the live builds among them — reported
+    /// rather than passed over in silence, because "it killed nothing" and "it
+    /// found a build and left it alone" send the reader to two different places.
+    /// Empty means what still holds the workspace took both signals and stayed,
+    /// or arrived after they went out.
+    StillHeld { attended: Vec<HostProcess> },
+}
+
+impl Holding {
+    /// The live builds this sweep left standing, of which there are none on a
+    /// workspace nothing is holding.
+    pub fn attended(&self) -> &[HostProcess] {
+        match self {
+            Self::Free => &[],
+            Self::StillHeld { attended } => attended,
+        }
+    }
 }
 
 /// What one sweep found and what it did about it.
@@ -289,15 +369,11 @@ pub struct Sweep {
     /// nothing on this host is holding the workspace, so the hang is somewhere
     /// this verb does not reach.
     pub signalled: Vec<Signalled>,
-    /// Live builds left standing. Reported rather than passed over in silence,
-    /// because "it killed nothing" and "it found a build and left it alone" send
-    /// the reader to two different places.
-    pub attended: Vec<HostProcess>,
     /// What became of devpod's busy marker.
     pub marker: Marker,
     /// What became of the containers the workspace still had running.
     pub containers: Containers,
-    /// Whether anything is holding the workspace now.
+    /// Whether anything is holding the workspace now, and which builds those are.
     pub holding: Holding,
 }
 
@@ -323,46 +399,49 @@ pub fn workspace_kill(
         Err(why) => return Killed::Unavailable(HostCannot::ReadItsProcessTable(why)),
     };
     let mut signalled: Vec<Signalled> = Vec::new();
-    let mut last_pass: Vec<HostProcess> = Vec::new();
-    for (signal, grace, ending) in [
-        (Signal::Terminate, UNWIND, Ending::Terminated),
-        (Signal::Kill, REAP, Ending::Killed),
-    ] {
-        let orphans = orphaned(&current);
-        let Some(pids) = NonEmpty::of(orphans.iter().map(|process| process.pid)) else {
+    // The set the escalation carries forward, and it is *narrowed* between the
+    // passes rather than recomputed from the newest reading. Recomputing it is how
+    // a process that was attended when the sweep opened and lost its parent to the
+    // SIGTERM would take a SIGKILL as its first signal — which is not what
+    // devlaunch#484 asks for ("SIGTERM, then SIGKILL"), and is the one process on
+    // the table with the best claim to being asked first.
+    let mut remaining = orphaned(&current);
+    for signal in [Signal::Terminate, Signal::Kill] {
+        let Some(pids) = NonEmpty::of(remaining.iter().map(|process| process.pid)) else {
             break;
         };
-        if signals::signal(runner, signal, &pids) == Sent::NoKillOnThisHost {
-            return Killed::Unavailable(HostCannot::SendASignal);
+        match signals::signal(runner, signal, &pids) {
+            Sent::Attempted => {}
+            Sent::NoKillHere => {
+                return Killed::Unavailable(HostCannot::SendASignal(NoSignal::NoKillHere));
+            }
+            Sent::NotRun(failure) => {
+                return Killed::Unavailable(HostCannot::SendASignal(NoSignal::NotRun(failure)));
+            }
         }
-        wait(grace);
+        wait(grace(signal));
         // A reading that failed where the first one succeeded says nothing about
         // what is left, and "nothing is left" is the one thing it must not be
         // read as — that is a report claiming a kill that never happened. The
         // last good reading stands instead.
         current = look(runner, workspace_id).unwrap_or(current);
-        for process in &orphans {
-            if !still_there(&current, process) {
-                signalled.push(Signalled {
-                    process: process.clone(),
-                    ending,
-                });
-            }
-        }
-        last_pass = orphans;
+        let (survivors, gone): (Vec<HostProcess>, Vec<HostProcess>) = remaining
+            .into_iter()
+            .partition(|process| still_there(&current, process));
+        signalled.extend(gone.into_iter().map(|process| Signalled {
+            process,
+            ending: Ending::under(signal),
+        }));
+        remaining = survivors;
     }
-    // What the *last* pass signalled and did not shift, rather than everything
-    // orphaned in the final reading: a process that reparented while the sweep
-    // was running took neither signal, and "still running after SIGKILL" is a
-    // sentence about a signal it never got. [`Holding`] is what counts it.
-    for process in last_pass {
-        if still_there(&current, &process) {
-            signalled.push(Signalled {
-                process,
-                ending: Ending::Survived,
-            });
-        }
-    }
+    // Whatever sat through every signal it was sent. Not everything orphaned in
+    // the final reading: a process that reparented while the sweep was running
+    // took no signal at all, and "still running after SIGKILL" is a sentence about
+    // one it never got. [`Holding`] is what counts that one.
+    signalled.extend(remaining.into_iter().map(|process| Signalled {
+        process,
+        ending: Ending::Survived,
+    }));
     signalled.sort_by_key(|signalled| signalled.process.pid);
     // Every holder still standing, whatever its parentage: an orphan that sat
     // through SIGKILL is holding the workspace exactly as firmly as a live build
@@ -370,29 +449,38 @@ pub fn workspace_kill(
     let holding = if current.is_empty() {
         Holding::Free
     } else {
-        Holding::StillHeld
+        Holding::StillHeld {
+            attended: current
+                .into_iter()
+                .filter(|holder| holder.parentage == Parentage::Attended)
+                .map(|holder| holder.process)
+                .collect(),
+        }
     };
     Killed::Swept(Sweep {
         signalled,
-        attended: current
-            .into_iter()
-            .filter(|holder| holder.parentage == Parentage::Attended)
-            .map(|holder| holder.process)
-            .collect(),
-        marker: sweep_marker(devpod_home, workspace_id, holding),
-        containers: kill_containers(runner, workspace_id),
+        marker: sweep_marker(devpod_home, workspace_id, &holding),
+        containers: kill_containers(runner, workspace_id, &holding),
         holding,
     })
 }
 
 /// Kill whatever containers this workspace's compose project still has up.
 ///
-/// Unconditional, where the marker's removal is not: a container is not a claim
-/// about whether anything is building, so nothing here has to be true of the
-/// process table first. The listing comes first because a project with nothing
-/// running is the common case and a `docker kill` with no arguments is an error
-/// rather than a no-op.
-fn kill_containers(runner: &dyn Runner, workspace_id: &str) -> Containers {
+/// **Unless somebody is building it**, which is the one condition this shares
+/// with the marker's removal, and it is there because the alternative contradicts
+/// the sweep standing right above it: a `devpod up` whose `dl` is still running is
+/// left alone deliberately, and killing the containers it is in the middle of
+/// creating breaks that build just as effectively as signalling it would have. An
+/// orphan that outlived SIGKILL is *not* that case and its containers are killed:
+/// nothing is waiting on it, and the containers are as stale as it is.
+///
+/// The listing comes first because a project with nothing running is the common
+/// case and a `docker kill` with no arguments is an error rather than a no-op.
+fn kill_containers(runner: &dyn Runner, workspace_id: &str, holding: &Holding) -> Containers {
+    if !holding.attended().is_empty() {
+        return Containers::LeftForALiveBuild;
+    }
     let ids = match docker::running_for_project(runner, workspace_id) {
         docker::Running::These(ids) => ids,
         docker::Running::NotInstalled => return Containers::NoDocker,
@@ -429,22 +517,23 @@ fn kill_containers(runner: &dyn Runner, workspace_id: &str) -> Containers {
 /// a [`Holding`] rather than being worked out here: the marker is stale exactly
 /// when no process is left to remove it, which is the same fact the exit code and
 /// the closing line are reading, taken from the same place.
-fn sweep_marker(devpod_home: Option<&DevpodHome>, workspace_id: &str, holding: Holding) -> Marker {
-    if holding == Holding::StillHeld {
+///
+/// The unlink itself is [`devpod_home::remove_busy_marker`]'s, because the file
+/// is devpod's: that module owns devpod's layout on the way out as well as the
+/// way in, and it is where the *other* `workspace.lock` — the flock, which must
+/// never be unlinked — is named alongside this one. What is left here is the
+/// judgement, which is this flow's.
+fn sweep_marker(devpod_home: Option<&DevpodHome>, workspace_id: &str, holding: &Holding) -> Marker {
+    if matches!(holding, Holding::StillHeld { .. }) {
         return Marker::LeftForALiveHolder;
     }
-    let Some(path) = devpod_home::sole_busy_marker(devpod_home, workspace_id) else {
-        return Marker::Unlocatable;
-    };
-    match std::fs::remove_file(&path) {
-        Ok(()) => Marker::Removed(path),
-        // Already gone is the good ending, not a failure: a `devpod up` that took
-        // SIGTERM ran the `defer` that removes it.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Marker::Absent,
-        Err(error) => Marker::Unremovable {
-            path,
-            reason: system_words(&error),
-        },
+    match devpod_home::remove_busy_marker(devpod_home, workspace_id) {
+        devpod_home::MarkerRemoval::Removed(path) => Marker::Removed(path),
+        devpod_home::MarkerRemoval::AlreadyGone => Marker::Absent,
+        devpod_home::MarkerRemoval::Refused { path, reason } => {
+            Marker::Unremovable { path, reason }
+        }
+        devpod_home::MarkerRemoval::Unlocatable => Marker::Unlocatable,
     }
 }
 
@@ -760,7 +849,8 @@ mod tests {
         assert!(fake.args_to("kill").is_empty(), "nothing was signalled");
         assert_eq!(
             sweep
-                .attended
+                .holding
+                .attended()
                 .iter()
                 .map(|process| process.pid)
                 .collect::<Vec<u32>>(),
@@ -778,7 +868,7 @@ mod tests {
 
         assert!(fake.args_to("kill").is_empty());
         assert!(sweep.signalled.is_empty());
-        assert!(sweep.attended.is_empty());
+        assert!(sweep.holding.attended().is_empty());
     }
 
     /// Without a process table nothing here can be established, so nothing is
@@ -805,7 +895,7 @@ mod tests {
 
         assert_eq!(
             workspace_kill(&fake, None, "my-ws", &mut |_| {}),
-            Killed::Unavailable(HostCannot::SendASignal)
+            Killed::Unavailable(HostCannot::SendASignal(NoSignal::NoKillHere))
         );
     }
 
@@ -889,6 +979,38 @@ mod tests {
         assert_eq!(sweep.marker, Marker::Absent);
     }
 
+    /// A marker that will not go is the one ending the report has to spell out:
+    /// the workspace is free, so the next launch will run, and devpod's daemon
+    /// still has a file saying a build is in progress. Nothing else in the sweep
+    /// is affected by it, which is why it is a line rather than a refusal.
+    ///
+    /// The marker here is a *directory*, which `unlink` refuses whoever is running
+    /// the test — a permission bit would prove nothing on a runner that is root.
+    #[test]
+    fn a_marker_that_will_not_go_is_reported_and_stops_nothing_else() {
+        let home = home_for("my-ws");
+        let marker = sole_busy_marker(Some(&home), "my-ws").expect("a marker path");
+        std::fs::create_dir_all(&marker).expect("a marker that will not unlink");
+        let fake = host_showing(WEDGED);
+
+        let sweep = swept(workspace_kill(&fake, Some(&home), "my-ws", &mut |_| {
+            showing(&fake, NOTHING);
+        }));
+
+        match sweep.marker {
+            Marker::Unremovable { path, reason } => {
+                assert_eq!(path, marker);
+                assert!(!reason.is_empty(), "the OS's own words");
+            }
+            other => panic!("expected a marker that would not go, got {other:?}"),
+        }
+        assert_eq!(
+            sweep.holding,
+            Holding::Free,
+            "the workspace is free either way"
+        );
+    }
+
     /// The hazard this verb is built around avoiding. Unlinking an flock'd file
     /// leaves its holder holding an inode nobody else can see while the next
     /// caller locks a fresh one, and then two processes both believe they hold
@@ -965,6 +1087,65 @@ mod tests {
         );
     }
 
+    /// The containers of a build somebody is still watching are that build's, and
+    /// the sweep that leaves the `devpod up` standing has to leave them standing
+    /// too: killing what a build is in the middle of creating breaks it exactly as
+    /// surely as signalling it would have, and docker is not even asked.
+    #[test]
+    fn the_containers_of_a_live_build_are_left_alone_with_the_build() {
+        let fake = host_showing(
+            "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod up my-ws\n",
+        );
+        fake.script(["docker", "ps"], Response::stdout("abc123\n"));
+
+        let sweep = swept(workspace_kill(&fake, None, "my-ws", &mut |_| {}));
+
+        assert_eq!(sweep.containers, Containers::LeftForALiveBuild);
+        assert!(
+            fake.args_to("docker").is_empty(),
+            "docker was not asked at all"
+        );
+    }
+
+    /// An orphan that outlived SIGKILL holds the workspace, but nobody is waiting
+    /// on it, so its containers are as stale as it is and are killed. The guard
+    /// above is about a *build*, not about the workspace being held.
+    #[test]
+    fn the_containers_of_an_orphan_that_outlived_sigkill_are_still_killed() {
+        let fake = host_showing(WEDGED);
+        fake.script(["docker", "ps"], Response::stdout("abc123\n"));
+
+        let sweep = swept(workspace_kill(&fake, None, "my-ws", &mut |_| {}));
+
+        assert_eq!(
+            sweep.containers,
+            Containers::Killed(vec!["abc123".to_owned()])
+        );
+    }
+
+    /// A docker that refuses the kill leaves the containers standing, and the
+    /// report carries docker's own words: the sweep did what it could and the rest
+    /// is somebody's to look at.
+    #[test]
+    fn a_docker_that_refused_the_kill_leaves_the_containers_standing() {
+        let fake = host_showing(WEDGED);
+        fake.script(["docker", "ps"], Response::stdout("abc123\n"));
+        fake.script(
+            ["docker", "kill"],
+            Response::failed(1, "Error response from daemon: cannot kill\n"),
+        );
+
+        let sweep = swept(workspace_kill(&fake, None, "my-ws", &mut |_| {}));
+
+        assert_eq!(
+            sweep.containers,
+            Containers::Standing(ContainerRefusal::Refused {
+                exit: Exit::Code(1),
+                stderr: "Error response from daemon: cannot kill\n".to_owned(),
+            })
+        );
+    }
+
     /// Silent on a host with no docker, for the reason the volume sweep is: a
     /// machine with no docker started no containers.
     #[test]
@@ -995,7 +1176,12 @@ mod tests {
             }
         }));
 
-        assert_eq!(sweep.holding, Holding::StillHeld);
+        assert_eq!(
+            sweep.holding,
+            Holding::StillHeld {
+                attended: Vec::new()
+            }
+        );
         assert_eq!(
             sweep
                 .signalled
@@ -1004,6 +1190,63 @@ mod tests {
                 .collect::<Vec<(u32, Ending)>>(),
             [(732_721, Ending::Survived)],
             "a process the sweep never signalled is not one it reports a signal for"
+        );
+    }
+
+    /// devlaunch#484 asks for "SIGTERM, then SIGKILL", and that has to hold for a
+    /// process that *became* an orphan during the sweep: a `devpod helper` whose
+    /// parent took the SIGTERM is reparented to init a moment later, and the pass
+    /// that follows must not open on it with the signal nothing catches. The set
+    /// the escalation carries is narrowed between passes rather than re-derived
+    /// from the newest reading, which is what makes that true.
+    #[test]
+    fn a_process_orphaned_by_the_first_pass_is_not_sigkilled_without_being_asked() {
+        let held = "  400       1 devpod up my-ws\n  401     400 devpod helper my-ws\n";
+        let fake = host_showing(held);
+        let mut passes = 0;
+        let sweep = swept(workspace_kill(&fake, None, "my-ws", &mut |_| {
+            passes += 1;
+            if passes == 1 {
+                // The parent took SIGTERM; its helper is now init's.
+                showing(&fake, "  401       1 devpod helper my-ws\n");
+            }
+        }));
+
+        assert_eq!(
+            fake.args_to("kill"),
+            [["-TERM", "400"]],
+            "the helper the SIGTERM orphaned took no signal, and certainly not SIGKILL first"
+        );
+        assert_eq!(
+            sweep
+                .signalled
+                .iter()
+                .map(|signalled| (signalled.process.pid, signalled.ending))
+                .collect::<Vec<(u32, Ending)>>(),
+            [(400, Ending::Terminated)]
+        );
+    }
+
+    /// A `kill` that is on this host and would not run is not a host with no
+    /// `kill` on it. Two arms, because the sentence the binary writes for the
+    /// first sends its reader looking for a program that is already there.
+    #[test]
+    fn a_kill_that_would_not_run_is_not_reported_as_a_host_without_one() {
+        let fake = host_showing(WEDGED);
+        fake.script(
+            ["kill"],
+            Response::NotStarted(OsFailure {
+                kind: std::io::ErrorKind::PermissionDenied,
+                errno: None,
+            }),
+        );
+
+        assert_eq!(
+            workspace_kill(&fake, None, "my-ws", &mut |_| {}),
+            Killed::Unavailable(HostCannot::SendASignal(NoSignal::NotRun(OsFailure {
+                kind: std::io::ErrorKind::PermissionDenied,
+                errno: None,
+            })))
         );
     }
 }
