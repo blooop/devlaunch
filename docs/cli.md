@@ -231,6 +231,61 @@ still opening. `restart`, `recreate` and `reset` do end in a session and would w
 they are out too, because `--rm` is the throwaway workspace and not a cleanup modifier
 on every verb that ends in a shell.
 
+### `rme`: the delete, and then the shell
+
+`dl <ws> rme` is the `rm` verb with one thing added at the end: on a removal that
+worked, it sends SIGHUP to whatever started `dl`. For the line it exists for that is
+an interactive shell, so the shell ends and the terminal tab it was sitting in closes
+on its own.
+
+```bash
+dl blooop/devlaunch@fix/x rme        # delete it, and the tab goes with it
+dl rme                               # pick, TAB to mark several, then the tab goes
+```
+
+It is for the tab opened for one workspace. The delete is a container teardown, which
+is seconds and sometimes rather more; the `exit` after it is a keystroke you are only
+there to type. `rme` is the pair as one word.
+
+**The removal is `rm`'s, and so is everything that can stop it.** Same guard, same
+`--force`, same refusals, same exit codes. The hangup is reached only when the removal
+itself came back clean, and the reason is the one thing the terminal is still needed
+for: every way this can go wrong writes a sentence to stderr, and closing the window
+that sentence was written to is a guaranteed way for nobody to read it.
+
+```
+$ dl devlaunch-dirty rme
+devlaunch-dirty holds 1 uncommitted change(s) (scratch.txt). Push or commit it,
+or run: dl devlaunch-dirty rm --force
+$                                        # still here, and so is the workspace
+```
+
+A batch is one hangup. `dl rme` with five rows marked removes all five and then hangs
+the shell up once, when the last of them has gone, which is the wait the verb saves
+most of.
+
+**What it hangs up is `dl`'s parent process, whatever that is.** There is no way to
+ask whether a parent owns a terminal, so `dl` does not guess: it signals the process
+that started it and names the pid on the way past.
+
+```
+Hanging up the shell dl was called from (pid 48213).
+```
+
+That line is what explains the two runs where nothing closes. `$(dl <ws> rme)` hangs
+up the subshell that captured the output and leaves your terminal alone. Under
+`nohup`, or in a script, the thing that dies is the script. Neither is a failure and
+neither is silent, and in both the workspace is gone, which is what was asked for.
+Two more endings say so in as many words: a parent that had already exited by the
+time `dl` looked prints `rme: dl's parent process has already gone, so there is no
+shell to hang up. The removal is done.`, and a signal the OS refused prints the pid
+and the error beside it.
+
+One thing to know before reaching for it. A shell hung up this way takes its
+background jobs with it, because that is what a shell does on SIGHUP. Use `rme` in
+the tab that has nothing left in it, which is the tab it was written for, and `rm` in
+the one you are still working in.
+
 ### `--stop` and `--autorm` are retired
 
 Both moved because `--rm` changed meaning, and both are still recognised so that a

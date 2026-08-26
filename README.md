@@ -177,7 +177,7 @@ checked out in the clone right now, spelled in full. Pick the row rather than co
 carries the real id underneath. Where two rows would read alike, both gain a fourth column
 holding their whole id, so that picking one cannot delete the other.
 
-For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `code`, `dotfiles`) TAB marks any
+For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `rme`, `code`, `dotfiles`) TAB marks any
 number of rows and Enter applies the verb to each, and the line above the matches says so. The
 forms that end in a session (`dl`, `-- <command>`, `restart`, `recreate`, `reset`) take exactly
 one.
@@ -200,6 +200,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws> stop` | Stop it. Frees memory, keeps disk |
 | `dl <ws> kill` | Kill whatever is holding a workspace that will not answer |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
+| `dl <ws> rme` | The same delete, and then the shell: it closes the terminal it was typed in |
 | `dl <ws> code` | Open it in VS Code |
 | `dl <ws> restart` | Stop and start, no rebuild |
 | `dl <ws> recreate` | Recreate the container |
@@ -215,6 +216,14 @@ opens the selector.
 now; `dl <ws> --rm` deletes once the session ends, the way `docker run --rm` does. Both stop at
 work that exists nowhere else: a clone with uncommitted or unpushed changes is kept and named,
 and `dl <ws> rm --force` is how you override that.
+
+`rme` is neither of those. It deletes the workspace now, as `rm` does, and then hangs up the
+shell that asked, so the terminal tab you opened for that one workspace closes on its own
+instead of waiting out the delete and then wanting an `exit`. Only a removal that worked
+reaches the hangup: a guard that refused, or a devpod that would not finish, leaves the shell
+standing with the reason on screen. What it hangs up is `dl`'s parent process, so a subshell or
+a script gets the signal rather than your terminal, and `dl` names the pid it sent it to.
+[docs/cli.md](docs/cli.md) has the rest.
 
 `kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It
 sweeps the host instead of asking devpod: it kills the host processes still holding the

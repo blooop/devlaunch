@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl <ws> rme`: the delete, and then the shell.** A workspace tab reaches the
+  same end every time. You are done with the branch, you type `dl <ws> rm`, you
+  wait out a container teardown, and then you type `exit` to close a tab that has
+  had nothing left to do since the delete started. `rme` is that pair as one word:
+  the `rm` verb, and on a removal that worked a SIGHUP to whatever started `dl`,
+  which ends an interactive shell and takes its terminal with it.
+
+  ```
+  $ dl blooop/devlaunch@fix/x rme
+  Removing workspace devlaunch-fix-x-1a2b...
+  Removed workspace devlaunch-fix-x-1a2b.
+  Hanging up the shell dl was called from (pid 48213).
+  ```
+
+  The removal is `rm`'s, guard and `--force` and exit codes included, and the
+  hangup is reached only if it came back clean. That is the whole of the
+  ordering: every way a delete can stop writes a sentence to stderr, and closing
+  the window it was written to is a guaranteed way for nobody to read it. A guard
+  that refused, or a devpod that would not finish, leaves the shell standing with
+  the reason on screen and the workspace still there to retry. `dl rme` with five
+  rows marked removes all five and hangs the shell up once, when the last of them
+  has gone.
+
+  What it hangs up is `dl`'s parent process, because there is no way to ask
+  whether a parent owns a terminal. So `dl` names the pid instead of guessing:
+  `$(dl <ws> rme)` hangs up the subshell that captured the output, under `nohup`
+  it is the script that goes, and the line above says which it was. A shell hung
+  up this way takes its background jobs with it, which is what a shell does on
+  SIGHUP, so `rme` is for the tab that has nothing left in it and `rm` for the one
+  you are still working in.
+
+  Neither of the two spellings already there: `rm` deletes now, `--rm` deletes
+  when a session ends, and this one deletes now and then ends the *shell*.
+  [docs/cli.md](docs/cli.md) has the contract.
+
 ## [0.20.0] - 2026-08-26
 
 ### Added

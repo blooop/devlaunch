@@ -1268,6 +1268,44 @@ pub(crate) fn picked(verb: &str, picks: &NonEmpty<Chosen>) -> Vec<String> {
     }
 }
 
+/// `rme`: the shell is about to be hung up, said before the signal that does it.
+///
+/// **The pid is on the line because there is no way to check it beforehand.**
+/// `getppid()` names an interactive shell for the run this verb is for and
+/// something else entirely for every other run — a subshell that captured dl's
+/// output, a script, a `nohup` — and nothing in the answer tells the two apart. So
+/// the terminal that does not close after `$(dl ws rme)` has the reason on the line
+/// above: what went was the subshell, and this is its pid.
+///
+/// Before the signal rather than after, for [`removing`]'s reason taken to its
+/// limit: there is no "after" on the run that works. The shell reads this line or
+/// nothing.
+pub(crate) fn hanging_up(parent: i32) -> String {
+    format!("Hanging up the shell dl was called from (pid {parent}).")
+}
+
+/// `rme` on a run whose parent has already gone: the removal happened, the hangup
+/// has nobody to reach.
+///
+/// Says the removal is done, because this is the one `rme` line printed *instead*
+/// of the signal rather than beside it, and a sentence that only said what did not
+/// happen would read like a failed delete.
+pub(crate) fn nothing_to_hang_up() -> String {
+    "rme: dl's parent process has already gone, so there is no shell to hang up. The removal is \
+     done."
+        .to_owned()
+}
+
+/// `rme` whose signal was refused: a parent that exited in the meantime, or one
+/// this user may not signal.
+///
+/// The removal is named for [`nothing_to_hang_up`]'s reason, and the OS error is
+/// quoted because the two causes are told apart by nothing else — a terminal left
+/// standing looks the same either way.
+pub(crate) fn could_not_hang_up(parent: i32, why: &str) -> String {
+    format!("rme: could not hang up pid {parent} ({why}). The removal is done.")
+}
+
 /// devpod would not let go of the workspace, and the clone was kept.
 pub(crate) fn delete_refused(workspace: &str) -> String {
     format!(

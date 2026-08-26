@@ -115,6 +115,62 @@ impl World {
         Run::of(&output, &self.root)
     }
 
+    /// Run `dl` from inside a shell, and report what became of *the shell*.
+    ///
+    /// **The one thing `dl()` above cannot be asked, and it is a safety property
+    /// rather than an inconvenience.** `dl <ws> rme` sends SIGHUP to its parent
+    /// process, and the parent of a child this harness spawns is the test binary:
+    /// judging `rme` through `dl()` would hang up `cargo test` itself, taking every
+    /// other test in the run with it. So a shell is put in between to be the thing
+    /// that dies, and it is the only correct place to judge this verb from anyway —
+    /// what `rme` claims is about a shell, and nothing else in the suite has one.
+    ///
+    /// The shell prints its own pid **before** it runs `dl`, which does two jobs.
+    /// It is the value `dl`'s own line is checked against, so a test can say the
+    /// signal went to the shell and not to something else. And it forces the fork:
+    /// `sh -c` with a single simple command `exec`s it, which would make `dl`'s
+    /// parent the test binary after all — a compound list whose first word has
+    /// already run cannot.
+    ///
+    /// [`Hung`] is what comes back, because a shell that was hung up has no exit
+    /// code to report: it was killed by a signal, and the line it would have
+    /// printed afterwards is the evidence that it never got that far.
+    fn dl_inside_a_shell(&self, args: &[&str]) -> Hung {
+        use std::process::Stdio;
+
+        let root = self.root.display().to_string();
+        let quoted: Vec<String> = args.iter().map(|word| format!("\"{word}\"")).collect();
+        let script = format!(
+            // `still-here` is only reached by a shell the signal did not kill, and
+            // it carries dl's exit code so the ordinary endings are readable too.
+            "echo \"shell:$$\"; \"$DL\" {}; echo \"still-here:$?\"",
+            quoted.join(" ")
+        );
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .env_clear()
+            .keeping_coverage()
+            .env("DL", env!("CARGO_BIN_EXE_dl"))
+            .env("PATH", format!("{root}/bin:/usr/bin:/bin"))
+            .env("HOME", format!("{root}/home"))
+            .env("XDG_CACHE_HOME", format!("{root}/cache"))
+            .env("XDG_CONFIG_HOME", format!("{root}/config"))
+            .env("DEVPOD_HOME", format!("{root}/devpod"))
+            .env("DEVPOD_SHIM_STATE", format!("{root}/shim-state.json"))
+            .env("DEVPOD_SHIM_LOG", format!("{root}/shim-log.jsonl"))
+            .env("DEVPOD_SHIM_CONFIG", format!("{root}/shim-config.json"))
+            .env("GIT_SSH_COMMAND", "false")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("/bin/sh runs");
+        Hung::of(&output, &self.root)
+    }
+
     /// Make the fake devpod answer a call from the response table instead of from
     /// its state machine — the failure-injection channel.
     fn devpod_answers(&self, prefix: &[&str], code: i32, stderr: &str) {
@@ -342,6 +398,85 @@ fn without_sizes(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// One `dl` run and the shell it was run from, as [`World::dl_inside_a_shell`]
+/// leaves them.
+///
+/// The two streams are the shell's, which is to say both processes': `dl` inherits
+/// them, so its own lines and the shell's are in one order here, the order they
+/// were written in.
+struct Hung {
+    /// The shell's pid, from the line it printed before it forked.
+    shell: i32,
+    /// The signal that killed the shell, if one did.
+    killed_by: Option<i32>,
+    /// `dl`'s exit code, from the line the shell prints afterwards. `None` when the
+    /// shell never got that far.
+    dl_exit: Option<i32>,
+    out: String,
+    err: String,
+}
+
+impl Hung {
+    fn of(output: &Output, root: &Path) -> Self {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let Run { out, err, .. } = Run::of(output, root);
+        let shell = out
+            .lines()
+            .find_map(|line| line.strip_prefix("shell:"))
+            .and_then(|pid| pid.parse().ok())
+            .unwrap_or_else(|| panic!("the shell printed its own pid; it printed {out:?}"));
+        let dl_exit = out
+            .lines()
+            .find_map(|line| line.strip_prefix("still-here:"))
+            .and_then(|code| code.parse().ok());
+        Hung {
+            shell,
+            killed_by: output.status.signal(),
+            dl_exit,
+            out,
+            err,
+        }
+    }
+
+    /// The shell was hung up: killed by SIGHUP, having never reached the line after
+    /// the `dl` it was running.
+    ///
+    /// Both halves, because either alone would pass on the wrong thing. A SIGHUP
+    /// with the line printed would be a shell that died later, of something else;
+    /// the line missing with no signal would be a shell that died of anything at
+    /// all.
+    fn was_hung_up(&self) {
+        assert_eq!(
+            self.killed_by,
+            Some(libc::SIGHUP),
+            "the shell was not killed by SIGHUP; it said {:?} / {:?}",
+            self.out,
+            self.err
+        );
+        assert_eq!(
+            self.dl_exit, None,
+            "the shell ran the command after dl, so it was not hung up: {:?}",
+            self.out
+        );
+    }
+
+    /// The shell survived, and this is what `dl` exited with.
+    fn survived_with(&self, code: i32) {
+        assert_eq!(
+            self.killed_by, None,
+            "the shell was killed by a signal: {:?} / {:?}",
+            self.out, self.err
+        );
+        assert_eq!(
+            self.dl_exit,
+            Some(code),
+            "dl's exit code, as the surviving shell read it: {:?}",
+            self.out
+        );
+    }
 }
 
 // ===========================================================================
@@ -795,6 +930,156 @@ fn a_delete_devpod_refuses_keeps_the_clone_and_hands_the_status_back() {
     assert!(
         world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
         "the clone was removed even though the workspace is still there"
+    );
+}
+
+// ===========================================================================
+// dl <ws> rme
+// ===========================================================================
+
+#[test]
+fn rme_removes_the_workspace_and_hangs_up_the_shell_that_asked() {
+    // The whole verb, end to end: the same delete `rm` does — the same devpod
+    // calls, the same clone gone, the same lines — and then the shell it was typed
+    // in, killed by the signal `dl` sent it. Judged from inside a shell for the
+    // reason `dl_inside_a_shell` gives: there is nowhere else the claim exists.
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+    assert!(world.exists(clone), "the fixture's clean clone");
+
+    let hung = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rme"]);
+
+    hung.was_hung_up();
+    // The pid names the shell and not, say, whatever `dl`'s parent turned out to
+    // be: this is the line a `$(dl ws rme)` reads to find out that what went was
+    // the subshell, so it has to be the pid that really was signalled.
+    assert!(
+        hung.err.contains(&format!(
+            "Hanging up the shell dl was called from (pid {}).",
+            hung.shell
+        )),
+        "{}",
+        hung.err
+    );
+    // And the removal happened before any of that, with rm's own lines in rm's own
+    // order. The hangup line is last because it is the only thing that comes after
+    // the workspace has gone.
+    assert!(
+        hung.err.starts_with(
+            "Removing workspace devlaunch-main-legacy...\nRemoved workspace clone: \
+             {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy\nRemoved local \
+             clone for devlaunch-main-legacy\nRemoved workspace devlaunch-main-legacy.\n"
+        ),
+        "{}",
+        hung.err
+    );
+    assert!(!world.exists(clone), "the clone was left behind");
+    assert!(
+        !world
+            .read("cache/devlaunch/metadata.json")
+            .contains("devlaunch-main-legacy"),
+        "the record was left behind"
+    );
+    assert_eq!(
+        world.devpod_calls(),
+        [
+            "devpod status devlaunch-main-legacy --output json",
+            "devpod delete devlaunch-main-legacy",
+        ],
+        "rme asked devpod for something rm does not"
+    );
+}
+
+#[test]
+fn a_config_choice_rme_cannot_honour_is_said_in_the_word_the_line_used() {
+    // `rm` and `rme` are one arm of the dispatcher, so the notice has to read the
+    // verb to know which word to quote. Judged through the ordinary runner rather
+    // than through a shell: this line is printed on the way to a refusal, and a
+    // refusal hangs nothing up.
+    let world = World::base();
+    let run = world.dl(&["no-such-workspace", "rme", "--devcontainer", "gpu"]);
+    run.exited(1);
+    assert!(
+        run.err
+            .starts_with("Ignoring --devcontainer: it does not apply to 'rme'.\n"),
+        "{}",
+        run.err
+    );
+}
+
+#[test]
+fn rm_in_the_same_shell_leaves_it_standing() {
+    // The control, and the reason the assertion above is about a *shell* rather
+    // than about a signal reaching something: everything else being equal, the word
+    // without the `e` hands the shell back and the shell runs the next line.
+    let world = World::base();
+
+    let ran = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rm"]);
+
+    ran.survived_with(0);
+    assert!(
+        !ran.err.contains("Hanging up"),
+        "rm hung up the shell anyway: {}",
+        ran.err
+    );
+}
+
+#[test]
+fn a_refused_rme_leaves_the_shell_up_so_the_reason_can_be_read() {
+    // The refusal is the case the whole ordering exists for. `dl` writes why it
+    // would not delete the workspace to stderr, and hanging up the terminal that
+    // was written to is the one way to guarantee nobody reads it — so a guard that
+    // refuses ends the command and nothing else. The workspace is still there
+    // afterwards, which is what makes the sentence worth reading.
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta";
+
+    let refused = world.dl_inside_a_shell(&["devlaunch-dirty-fqta", "rme"]);
+
+    refused.survived_with(1);
+    assert!(
+        refused.err.contains(
+            "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
+             or run: dl devlaunch-dirty-fqta rm --force"
+        ),
+        "{}",
+        refused.err
+    );
+    assert!(
+        !refused.err.contains("Hanging up"),
+        "a refusal hung up the shell: {}",
+        refused.err
+    );
+    assert!(world.exists(clone), "the refusal deleted the clone anyway");
+}
+
+#[test]
+fn an_rme_devpod_would_not_finish_leaves_the_shell_up_too() {
+    // The other half of "only a removal that worked": this one got past the guard,
+    // said what it was about to do, and then devpod refused. The clone is kept and
+    // the delete stays retryable — which is a thing to retry *in this shell*, and
+    // the whole reason not to close it.
+    let world = World::base();
+    world.devpod_answers(&["delete"], 3, "devpod: cannot read devcontainer.json\n");
+
+    let refused = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rme"]);
+
+    refused.survived_with(3);
+    assert!(
+        refused
+            .err
+            .contains("devpod could not delete devlaunch-main-legacy"),
+        "{}",
+        refused.err
+    );
+    assert!(
+        !refused.err.contains("Hanging up"),
+        "a delete devpod refused hung up the shell: {}",
+        refused.err
+    );
+    assert!(
+        world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
+        "the clone went with a workspace that is still there"
     );
 }
 

@@ -35,11 +35,12 @@ use devlaunch_core::flows::listing::Sizes;
 ///
 /// One table, read by both the workspace-first and the verb-first arm, so a word
 /// cannot be a verb in one position and a workspace name in the other.
-const VERBS: [(&str, VerbWord); 9] = [
+const VERBS: [(&str, VerbWord); 10] = [
     ("up", VerbWord::Up),
     ("stop", VerbWord::Stop),
     ("kill", VerbWord::Kill),
     ("rm", VerbWord::Remove),
+    ("rme", VerbWord::RemoveAndExit),
     ("code", VerbWord::Code),
     ("recreate", VerbWord::Recreate),
     ("restart", VerbWord::Restart),
@@ -134,6 +135,7 @@ enum VerbWord {
     Stop,
     Kill,
     Remove,
+    RemoveAndExit,
     Code,
     Recreate,
     Restart,
@@ -154,7 +156,14 @@ impl VerbWord {
             Self::Up => Verb::Up,
             Self::Stop => Verb::Stop,
             Self::Kill => Verb::Kill,
-            Self::Remove => Verb::Remove { force },
+            Self::Remove => Verb::Remove {
+                force,
+                after: AfterRemoval::LeaveTheShell,
+            },
+            Self::RemoveAndExit => Verb::Remove {
+                force,
+                after: AfterRemoval::HangUpTheShell,
+            },
             Self::Code => Verb::Code,
             Self::Recreate => Verb::Recreate,
             Self::Restart => Verb::Restart,
@@ -193,6 +202,29 @@ pub(crate) enum RmOnExit {
     No,
 }
 
+/// What becomes of the shell that asked, once the removal is over.
+///
+/// A named pair rather than a bool, and it rides on [`Verb::Remove`] rather than
+/// beside it, because there is exactly one verb it is defined for: `rme` is `rm`
+/// and then the shell, and every other verb hands the shell back the way it found
+/// it.
+///
+/// **This is a third thing, and not a third spelling of the two above.**
+/// [`Verb::Remove`] deletes the workspace now, [`RmOnExit`] deletes it when a
+/// session ends, and this one deletes it now and then ends the *shell* — which is
+/// why it is the only one of the three that is not docker's. What it is for is the
+/// terminal tab opened for one workspace: the removal takes a while, and the tab
+/// has nothing left to do afterwards but be closed by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AfterRemoval {
+    /// `rm`: nothing. `dl` exits and the shell it was called from carries on.
+    LeaveTheShell,
+    /// `rme`: SIGHUP to the process that started `dl`, so an interactive shell
+    /// ends and the terminal it was sitting in goes with it. Only after a removal
+    /// that worked; see [`crate::hangup`], which owns both halves of that.
+    HangUpTheShell,
+}
+
 /// What is being asked of one workspace.
 ///
 /// [`Verb::Run`] carries a [`NonEmpty`] rather than a `Vec`, because `dl <ws> --`
@@ -217,9 +249,16 @@ pub(crate) enum Verb {
     /// left when it does not.
     Kill,
     /// `rm`. `force` is `--force`: delete despite unsaved work, and count an
-    /// already-absent workspace as deleted.
+    /// already-absent workspace as deleted. `after` is which of the two words
+    /// this was — `rm` or `rme` — and so what happens to the calling shell once
+    /// the removal is done.
+    ///
+    /// One arm for both words rather than two, because they ask for the same
+    /// removal: `rme` adds something *after* it, and a second arm would be a
+    /// second copy of every decision the delete makes.
     Remove {
         force: bool,
+        after: AfterRemoval,
     },
     Code,
     Recreate,
@@ -232,9 +271,12 @@ impl Verb {
     /// Whether the selector may hand this verb several workspaces at once.
     ///
     /// Yes for the verbs that finish on their own: `up`, `stop`, `kill`, `rm`,
-    /// `code` and `dotfiles` apply to each workspace in turn and return, so
+    /// `rme`, `code` and `dotfiles` apply to each workspace in turn and return, so
     /// `dl rm` can mark five dead workspaces and clear them in one visit — the
-    /// same TAB-to-mark batch `fzf --multi` taught everyone. `kill` is on that
+    /// same TAB-to-mark batch `fzf --multi` taught everyone. `rme` is on that list
+    /// because the batch is exactly what it is for: five removals is the longest
+    /// wait there is, and the shell it hangs up is hung up once, when the last of
+    /// them has gone. `kill` is on that
     /// list on its own evidence rather than by resemblance: a machine that has
     /// been suspended, or one whose `dl` was killed by an OOM, wedges every
     /// workspace that was open at the time, and clearing them one line at a time
@@ -271,12 +313,39 @@ impl Verb {
             Verb::Up => "up",
             Verb::Stop => "stop",
             Verb::Kill => "kill",
-            Verb::Remove { .. } => "rm",
+            // The word that was typed, because this is what the diagnostics quote:
+            // `dl <ws> rme --rm` has to be refused in the spelling the line used.
+            Verb::Remove { after, .. } => match after {
+                AfterRemoval::LeaveTheShell => "rm",
+                AfterRemoval::HangUpTheShell => "rme",
+            },
             Verb::Code => "code",
             Verb::Recreate => "recreate",
             Verb::Restart => "restart",
             Verb::Reset => "reset",
             Verb::Dotfiles => "dotfiles",
+        }
+    }
+
+    /// What this verb asks of the calling shell once it is done.
+    ///
+    /// Only `rme` asks for anything, and the question is asked of the *verb* rather
+    /// than read off the word, so a batch of picked rows and a named target answer
+    /// it the same way. Exhaustive over the one arm that can say yes: a second verb
+    /// that ends the shell would have to add itself here.
+    pub(crate) fn after_removal(&self) -> AfterRemoval {
+        match self {
+            Verb::Remove { after, .. } => *after,
+            Verb::Attach { .. }
+            | Verb::Run(..)
+            | Verb::Up
+            | Verb::Stop
+            | Verb::Kill
+            | Verb::Code
+            | Verb::Recreate
+            | Verb::Restart
+            | Verb::Reset
+            | Verb::Dotfiles => AfterRemoval::LeaveTheShell,
         }
     }
 }
@@ -541,6 +610,10 @@ Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
                                      --force to delete it anyway. --force also
                                      counts an already-absent workspace as
                                      deleted, like rm -f.
+  rme                                The same delete, and then the shell: on a
+                                     removal that worked it hangs up whatever
+                                     started dl, so the terminal tab it was typed
+                                     in closes on its own
   code                               Open it in VS Code
   restart                            Stop and start it (no rebuild)
   recreate                           Recreate the container
@@ -548,9 +621,9 @@ Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   dotfiles                           Refresh dotfiles (chezmoi update)
   -- <command>                       Run one command inside it
 
-A verb with no workspace named picks interactively. For up, stop, kill, rm, code
-and dotfiles, TAB marks several rows and the verb applies to each in turn — dl rm
-can clear five workspaces in one visit. The forms that end in a session (attach,
+A verb with no workspace named picks interactively. For up, stop, kill, rm, rme,
+code and dotfiles, TAB marks several rows and the verb applies to each in turn — dl
+rm can clear five workspaces in one visit. The forms that end in a session (attach,
 --, restart, recreate, reset) take exactly one.
 
 'prune' was a second spelling of the rm verb and is retired: it collided with the
@@ -571,6 +644,14 @@ connecting. --force does not compose with it either — use dl <ws> rm --force w
 mean to delete despite the work, which is where docker keeps its -f too. Best-effort
 by nature: a Ctrl-C during the build, or a closed terminal, ends dl before the session
 does and leaves the workspace behind.
+
+rme is neither of those two: it deletes the workspace now, as the rm verb does, and
+then ends the shell that asked rather than a session. It is for the terminal tab
+opened for one workspace, where the delete is a wait and the exit after it is a
+keystroke. The removal is the verb's, guard included, and the hangup is only reached
+if it worked — a refusal, or a devpod that would not finish, leaves the shell standing
+with the reason on screen. What is hung up is dl's parent process, so a subshell or a
+script gets the signal instead of your terminal, and dl says which it sent it to.
 
 --stop is retired, and --autorm is what --rm is now called. Both are still recognised
 and say so.";
@@ -993,6 +1074,22 @@ mod tests {
         Verb::Attach { rm: RmOnExit::No }
     }
 
+    /// `rm`, and `rme` beside it: the two words are one arm apart, and every
+    /// expectation below that names one is a claim about which.
+    fn remove(force: bool) -> Verb {
+        Verb::Remove {
+            force,
+            after: AfterRemoval::LeaveTheShell,
+        }
+    }
+
+    fn remove_and_exit(force: bool) -> Verb {
+        Verb::Remove {
+            force,
+            after: AfterRemoval::HangUpTheShell,
+        }
+    }
+
     fn run(words: &[&str]) -> Verb {
         run_with(words, RmOnExit::No)
     }
@@ -1070,7 +1167,99 @@ mod tests {
     fn rm_is_the_only_spelling_of_the_delete_verb() {
         assert_eq!(
             parse(&["ws", "rm", "--force"]),
-            Ok(workspace("ws", Verb::Remove { force: true }))
+            Ok(workspace("ws", remove(true)))
+        );
+    }
+
+    // ============================================================ rme: rm, and out
+
+    #[test]
+    fn rme_is_the_delete_verb_and_then_the_shell() {
+        // The same removal, from either position and with `--force` folded in the
+        // same way: everything that makes `rm` what it is is `rme`'s too, and the
+        // one difference is what the dispatcher does when the command is over.
+        assert_eq!(
+            parse(&["ws", "rme"]),
+            Ok(workspace("ws", remove_and_exit(false)))
+        );
+        assert_eq!(
+            parse(&["rme", "ws"]),
+            Ok(workspace("ws", remove_and_exit(false)))
+        );
+        assert_eq!(
+            parse(&["ws", "rme", "--force"]),
+            Ok(workspace("ws", remove_and_exit(true)))
+        );
+        // And with no target it is the picker, per verb rather than per word: the
+        // batch is what the wait it saves is longest for.
+        assert_eq!(
+            parse(&["rme"]),
+            Ok(Command::Select {
+                verb: remove_and_exit(false),
+                devcontainer: None
+            })
+        );
+        assert!(remove_and_exit(false).several_at_once());
+    }
+
+    #[test]
+    fn only_rme_asks_for_the_shell_and_it_asks_whatever_else_the_line_says() {
+        // The dispatcher reads this off the verb and acts on it once, so the two
+        // words have to be told apart here and nowhere else. `--force` is not part
+        // of the question: a forced `rme` is still an `rme`.
+        assert_eq!(
+            remove_and_exit(false).after_removal(),
+            AfterRemoval::HangUpTheShell
+        );
+        assert_eq!(
+            remove_and_exit(true).after_removal(),
+            AfterRemoval::HangUpTheShell
+        );
+        assert_eq!(remove(false).after_removal(), AfterRemoval::LeaveTheShell);
+        // Every other verb leaves the shell alone, including the two that end in a
+        // session of their own.
+        for verb in [
+            attach(),
+            run(&["make", "test"]),
+            Verb::Up,
+            Verb::Stop,
+            Verb::Kill,
+            Verb::Code,
+            Verb::Recreate,
+            Verb::Restart,
+            Verb::Reset,
+            Verb::Dotfiles,
+        ] {
+            assert_eq!(
+                verb.after_removal(),
+                AfterRemoval::LeaveTheShell,
+                "dl <ws> {} asked for the shell",
+                verb.word()
+            );
+        }
+    }
+
+    #[test]
+    fn rme_is_quoted_as_rme_in_a_diagnostic_about_it() {
+        // The two words share an arm, so the sentence has to read the arm's field
+        // to name the line it is about. `dl <ws> rme --rm` is the case: a refusal
+        // naming `rm` would quote a word that is not on the line.
+        assert_eq!(remove_and_exit(false).word(), "rme");
+        assert_eq!(remove(false).word(), "rm");
+        assert_eq!(
+            parse(&["ws", "rme", "--rm"]),
+            Err(GrammarError::RmNotAllowed { command: "rme" })
+        );
+    }
+
+    #[test]
+    fn rme_is_a_verb_and_not_a_workspace_of_that_name() {
+        // Row 1, for the word this change adds: the verb wins from either slot, so
+        // `dl rme rme` is the removal of a workspace called `rme`, and nothing here
+        // can be reached by naming a workspace after it.
+        assert_eq!(
+            parse(&["rme", "rme"]),
+            Ok(workspace("rme", remove_and_exit(false)))
         );
     }
 
@@ -1403,7 +1592,7 @@ mod tests {
         assert_eq!(parse(&["stop", "ws"]), Ok(workspace("ws", Verb::Stop)));
         assert_eq!(
             parse(&["rm", "ws", "--force"]),
-            Ok(workspace("ws", Verb::Remove { force: true }))
+            Ok(workspace("ws", remove(true)))
         );
         assert_eq!(
             parse(&["stop"]),
@@ -1627,7 +1816,7 @@ mod tests {
         // ends in a shell — a scope decision, which is why the sentence names the
         // two forms that work instead of claiming these hand over nothing.
         for word in [
-            "up", "stop", "rm", "code", "restart", "recreate", "reset", "dotfiles",
+            "up", "stop", "rm", "rme", "code", "restart", "recreate", "reset", "dotfiles",
         ] {
             assert_eq!(
                 parse(&["ws", word, "--rm"]),

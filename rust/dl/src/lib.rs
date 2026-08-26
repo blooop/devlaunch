@@ -25,6 +25,7 @@
 mod cli;
 mod cold;
 mod commands;
+mod hangup;
 mod launch;
 mod render;
 mod select;
