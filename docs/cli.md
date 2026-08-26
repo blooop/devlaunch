@@ -267,7 +267,7 @@ or drop `--force` and let the guard resolve it.
 ```
 $ dl devlaunch-dirty rme
 devlaunch-dirty holds 1 uncommitted change(s) (scratch.txt). Push or commit it,
-or run: dl devlaunch-dirty rm --force
+or run: dl devlaunch-dirty rme --force
 $                                        # still here, and so is the workspace
 ```
 

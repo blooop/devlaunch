@@ -73,10 +73,10 @@ never announced as a removal. The last line closes the block, which is what make
 batch legible: one block per workspace, each ending in the name of the workspace it
 was.
 
-**`rme` adds one line after the last of them**, naming the pid of the shell it is
-about to hang up. It is the last thing written to a terminal that is about to close,
-and the only thing that explains a run where nothing closed. See
-[`rme`](cli.md#rme-the-delete-and-then-the-shell).
+**`rme` adds one line after the last of them**, saying what became of the shell:
+the pid it hung up, or why it hung up nothing. It is the last thing written to a
+terminal that is about to close, and the only thing that explains a run where
+nothing closed. See [`rme`](cli.md#rme-the-delete-and-then-the-shell).
 
 **With `--force` that last line reads `Workspace <id> is gone.` instead**, and the
 difference is what the exit code proved rather than a change of tone. Without the

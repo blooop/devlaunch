@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
   $ dl blooop/devlaunch@fix/x rme
   Removing workspace devlaunch-fix-x-1a2b...
+  Removed workspace clone: ~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-fix-x-1a2b
+  Removed local clone for devlaunch-fix-x-1a2b
   Removed workspace devlaunch-fix-x-1a2b.
   Hanging up the shell dl was called from (pid 48213).
   ```

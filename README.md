@@ -219,13 +219,9 @@ and `dl <ws> rm --force` is how you override that.
 
 `rme` is neither of those. It deletes the workspace now, as `rm` does, and then hangs up the
 shell that asked, so the terminal tab you opened for that one workspace closes on its own
-instead of waiting out the delete and then wanting an `exit`. Only a removal that worked
-reaches the hangup: a guard that refused, or a devpod that would not finish, leaves the shell
-standing with the reason on screen. `--force` is the exception, since it asks for absence rather
-than for a removal, so a forced `rme` of a workspace that was never there still closes the
-shell. What it hangs up is `dl`'s parent process, which is not always
-the process you would guess, so `dl` names the pid it sent the signal to.
-[docs/cli.md](docs/cli.md) has the rest.
+instead of waiting out the delete and then wanting an `exit`. A delete that refused leaves the
+shell standing with the reason on screen. Which process it actually hangs up, what `--force`
+changes about that, and why `nohup` is refused are in [docs/cli.md](docs/cli.md).
 
 `kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It
 sweeps the host instead of asking devpod: it kills the host processes still holding the
