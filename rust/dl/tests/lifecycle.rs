@@ -81,8 +81,11 @@ impl World {
         use std::io::Write as _;
         use std::process::Stdio;
 
+        deaf_to_sighup();
         let root = self.root.display().to_string();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
+        child_hears_sighup(&mut command);
+        let mut child = command
             .args(args)
             .env_clear()
             .keeping_coverage()
@@ -152,7 +155,10 @@ impl World {
             "echo \"shell:$$\"; {prelude}\"$DL\" {}; echo \"still-here:$?\"",
             quoted.join(" ")
         );
-        let output = Command::new("/bin/sh")
+        deaf_to_sighup();
+        let mut command = Command::new("/bin/sh");
+        child_hears_sighup(&mut command);
+        let output = command
             .arg("-c")
             .arg(script)
             .env_clear()
@@ -323,6 +329,49 @@ impl World {
 /// directory shape all the same: the golden-capture harness makes `/tmp/dltXXXXXX`
 /// too, and a path length that varies between capture and comparison is one more
 /// thing to have to think about.
+/// Make this test binary deaf to SIGHUP, and hand every child the default back.
+///
+/// `rme` signals `dl`'s parent, and the parent of a child [`World::answering`]
+/// spawns is the test binary. So a test that runs a *successful* `rme` through the
+/// plain runner kills the entire run — `signal: 1, SIGHUP` out of the harness, with
+/// no failing test to point at. That is a one-word mistake to make, because the
+/// refusal cases genuinely do belong on the plain runner: `rme` there is correct
+/// right up until the removal succeeds.
+///
+/// Both halves are needed and the second is the easy one to miss. A `SIG_IGN` is
+/// inherited across `fork` *and* `exec`, so ignoring it here alone would hand every
+/// spawned `dl` an already-disarmed SIGHUP — which `dl` now reads as `nohup` and
+/// declines to hang anything up for, quietly turning every assertion about the
+/// hangup into a test of the declining path. `pre_exec` puts `SIG_DFL` back in the
+/// child, which is what a shell in a terminal would have given it.
+///
+/// Nothing is lost by ignoring it: every claim about the hangup is asserted on the
+/// wrapper shell in [`World::dl_inside_a_shell`], never on this process.
+fn deaf_to_sighup() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: setting a disposition on this process. Called before the first
+        // child is spawned, and `SIG_IGN` needs no handler to be safe.
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
+    });
+}
+
+/// Undo [`deaf_to_sighup`] in the child, between `fork` and `exec`.
+fn child_hears_sighup(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+
+    // SAFETY: `signal` is async-signal-safe and allocates nothing, which is the bar
+    // for a `pre_exec` closure.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+}
+
 fn scratch_dir() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("dlt")
@@ -1042,6 +1091,23 @@ fn a_config_choice_rme_cannot_honour_is_said_in_the_word_the_line_used() {
 /// have decided against, which is the run that most wants the tab closed. Telling
 /// the two apart would need the target resolution to carry whether devpod ever
 /// confirmed the workspace, which `target::Addressed` does not.
+#[test]
+fn a_successful_rme_through_the_plain_runner_does_not_end_the_run() {
+    // The harness guard, exercised rather than trusted. This is the shape that
+    // killed the suite once: `rme` on the plain runner, reaching a removal that
+    // works, signalling the test binary as its parent. It has to end as an ordinary
+    // passing test, and every other test in this file has to still be running
+    // afterwards — which is what the rest of the file passing asserts.
+    let world = World::base();
+
+    world.dl(&["devlaunch-main-legacy", "rme"]).exited(0);
+
+    assert!(
+        !world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
+        "the removal did not happen"
+    );
+}
+
 #[test]
 fn a_refused_rme_offers_the_way_past_in_the_word_that_was_typed() {
     // The guard's sentence ends in a command to run, and `rm --force` is the wrong
