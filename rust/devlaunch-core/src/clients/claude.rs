@@ -70,8 +70,18 @@ const ACCESS_TOKEN_KEY: &str = "accessToken";
 /// produces something that is not a token, and the difference between "no token"
 /// and "a token-shaped nothing" is the difference between a warning and a
 /// container that fails to authenticate for reasons nobody can see.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Token(String);
+
+/// Redacted, deliberately, exactly as [`super::gh::Token`] is. A credential must not
+/// reach a log line by any route, and a derived `Debug` is the route nobody writes
+/// on purpose -- [`TokenLookup`] and [`Forwarding`] both derive one and both hold
+/// this.
+impl std::fmt::Debug for Token {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Token(<redacted>)")
+    }
+}
 
 impl Token {
     /// `raw`, trimmed, if what is left is a token.
@@ -384,6 +394,46 @@ mod tests {
         assert_eq!(
             extended.env,
             EnvSpec::inherited().and(TOKEN_VAR, "sk-ant-oat01-secret")
+        );
+    }
+
+    #[test]
+    fn a_token_never_prints_itself() {
+        // The rule `gh::Token` states and tests, and this type had lost it to a
+        // derived `Debug`. `TokenLookup` and `Forwarding` both derive one and both
+        // hold a `Token`, so the derive was a live route to a log line.
+        let token = Token("sk-ant-oat01-secret".to_owned());
+        assert!(!format!("{token:?}").contains("secret"), "{token:?}");
+        let lookup = TokenLookup::Found(token);
+        assert!(!format!("{lookup:?}").contains("secret"), "{lookup:?}");
+    }
+
+    #[test]
+    fn the_openssh_transport_names_the_variable_and_keeps_the_value_out_of_argv() {
+        // The transport `dl <ws> -- claude` actually goes down, whose flags are bare
+        // variable names rather than `--send-env` pairs. It had no test at all.
+        let token = Token("sk-ant-oat01-secret".to_owned());
+        let extended = extend_openssh_forwarding(Forwarding::default(), Some(&token));
+        assert_eq!(extended.args, vec![TOKEN_VAR.to_owned()]);
+        assert!(!extended.args.iter().any(|arg| arg.contains("secret")));
+        assert_eq!(
+            extended.env,
+            EnvSpec::inherited().and(TOKEN_VAR, "sk-ant-oat01-secret")
+        );
+    }
+
+    #[test]
+    fn the_openssh_transport_leaves_a_session_with_nothing_to_send_alone() {
+        let base = Forwarding {
+            args: vec!["GH_TOKEN".to_owned()],
+            env: EnvSpec::inherited().and("GH_TOKEN", "gho_x"),
+        };
+        assert_eq!(extend_openssh_forwarding(base.clone(), None), base);
+        let token = Token("sk-ant-oat01-secret".to_owned());
+        let extended = extend_openssh_forwarding(base, Some(&token));
+        assert_eq!(
+            extended.args,
+            vec!["GH_TOKEN".to_owned(), TOKEN_VAR.to_owned()]
         );
     }
 
