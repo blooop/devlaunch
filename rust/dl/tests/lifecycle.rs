@@ -683,11 +683,17 @@ fn a_clone_whose_last_tag_the_remote_carries_too_is_deleted_like_any_other() {
 
 #[test]
 fn a_pushed_tag_does_not_hide_a_commit_that_really_is_nowhere_else() {
-    // The other half of #485, and the reason the exclusion is `refs/tags` alone:
-    // the same clone with one commit of its own is still refused, and still refused
-    // for the commit rather than for the tag. Excluding more of the ref set — or
-    // narrowing the question to the checked-out branch — passes the test above and
-    // fails this one.
+    // The other half of #485: the same clone with one commit of its own is still
+    // refused, and refused for the commit rather than for the tag, so the exclusion
+    // did not buy the test above by making the guard answer `NothingToLose` to
+    // everything.
+    //
+    // It does not pin the *width* of the ref set, and the comment here said it did
+    // until somebody checked: the commit lands on the checked-out branch, so every
+    // ref set down to the branch alone finds it. `--branches` passes both of these.
+    // The narrowing guards are at the clone-state seam, where the ref that would go
+    // is the one under test: `a_commit_on_a_detached_worktree_head_is_still_unsaved`
+    // and `a_stashed_change_is_unsaved_too` in `domain/workspace_state/tests.rs`.
     let world = World::with(&["--tagged-release"]);
     let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-tagged-release";
     world.commit_in(clone, "mine.txt", "an hour of work\n");
