@@ -347,6 +347,75 @@ fn a_stashed_change_is_unsaved_too() {
 }
 
 #[test]
+fn a_tag_no_remote_branch_reaches_any_more_is_not_unsaved_work() {
+    // devlaunch#485, and it is the shipped guard refusing every workspace of a
+    // real repository: tag a release, delete the branch it was on, and the tag is
+    // the only ref left reaching those commits. The remote carries the tag, the
+    // clone fetched it, nothing about it is unsaved — but no `refs/remotes/*`
+    // reaches it, so a ref set that spans `refs/tags` counts every commit under
+    // it as work that exists nowhere else. kinisi_ros has 265 of them, which is
+    // what six of eight workspaces on one host reported, each of them wrongly.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    git(&clone, &["checkout", "-q", "-b", "release"]);
+    write(&clone.join("release.txt"), "shipped\n");
+    commit(&clone, "release");
+    git(&clone, &["push", "-q", "origin", "release"]);
+    git(&clone, &["tag", "v1"]);
+    git(&clone, &["push", "-q", "origin", "v1"]);
+    // The branch goes, on the remote and here, exactly as a merged release
+    // branch does. The tag stays on both sides.
+    git(&clone, &["push", "-q", "origin", ":release"]);
+    git(&clone, &["checkout", "-q", "feature"]);
+    git(&clone, &["branch", "-qD", "release"]);
+    git(&clone, &["remote", "prune", "origin"]);
+
+    // The premise, asserted rather than assumed: the tag really is the only ref
+    // left in the clone reaching that commit, and the remote really does have it.
+    assert_eq!(
+        git(&clone, &["tag", "--points-at", "v1^{commit}"]),
+        "v1",
+        "the tag is here"
+    );
+    assert!(
+        !git(&clone, &["branch", "-a", "--contains", "v1^{commit}"]).contains("release"),
+        "and no branch, local or remote-tracking, is"
+    );
+
+    assert_eq!(held(&clone), Unsaved::NothingToLose);
+}
+
+#[test]
+fn a_commit_on_a_detached_worktree_head_is_still_unsaved() {
+    // The tags come out of the ref set by `--exclude`, which drops the tags and
+    // nothing else. This is the ref that would go with them if anybody ever
+    // narrowed the question to `--branches` instead: a linked worktree on a
+    // detached HEAD is on no branch at all, and `git worktree add --detach` is
+    // how an agent gets a second checkout of a clone.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    let linked = fixture.path("detached");
+    git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().expect("utf-8"),
+            "HEAD",
+        ],
+    );
+    write(&linked.join("agent.txt"), "an hour of work\n");
+    commit(&linked, "agent work");
+
+    // Asked of the clone, not of the worktree the commit was made in: one
+    // workspace is what `dl rm` deletes, and the commit is on no branch in it.
+    assert_eq!(git(&clone, &["status", "--porcelain"]), "");
+    assert_eq!(would_lose(&held(&clone)), "1 unpushed commit(s)");
+}
+
+#[test]
 fn a_clone_that_is_not_there_holds_nothing() {
     // A half-finished delete, or a directory removed by hand. There is no work in
     // it to lose, and nothing here may crash on it.

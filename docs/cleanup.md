@@ -527,11 +527,16 @@ the answer covers every local branch, every worktree's HEAD including detached
 ones, and the stash, which is one ref per clone and holds work that exists nowhere
 else either.
 
-It reaches local tags too, and that has a consequence worth knowing about: a tag
-your remote carries, but which no remote *branch* reaches any more, reads as
-unpushed. A repository that tags releases on branches it later deletes will see
-that. It is a clone kept when it could have gone, which costs disk; the other
-direction costs the work.
+It does **not** reach local tags, and that is the one exclusion (#485). A tag your
+remote carries, but which no remote *branch* reaches any more, would otherwise read
+as unpushed, and a repository that tags releases on branches it then deletes has
+those by the hundred. One does: 265 commits reachable only from its tags, reported
+as 265 unpushed commits against six of the eight workspaces on a host, none of it
+real. A guard in that state is not a clone kept for the price of some disk. It is a
+guard that has to be `--force`d past to delete anything, until `--force` is what you
+type without reading, over the clone that did hold an hour of work as readily as
+over this one. What the exclusion gives up is a commit reachable only from a local
+tag, with no branch, worktree HEAD or stash in the clone naming it too.
 
 The changed paths are named, not just counted, and that matters more than it
 looks: a devcontainer that runs a package install in its `postCreateCommand` can
