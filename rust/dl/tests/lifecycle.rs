@@ -144,6 +144,41 @@ impl World {
         self.path(relative).exists()
     }
 
+    /// Commit one file into a clone the fixture built, with the fixture's identity.
+    ///
+    /// The one thing a test does to a world after `lifecycle_scenario.py` hands it
+    /// over, and it is here rather than behind another fixture flag because it is
+    /// the *difference* between two worlds that a test wants to name: the same
+    /// clone, with and without a commit of its own. Every git variable the scenario
+    /// sets is set again, so the commit does not depend on the identity or the
+    /// config of the machine running the suite.
+    fn commit_in(&self, clone: &str, file: &str, contents: &str) {
+        std::fs::write(self.path(clone).join(file), contents).expect("a file in the clone");
+        for args in [
+            vec!["add", "-A"],
+            vec!["commit", "-q", "-m", "work nobody else has"],
+        ] {
+            let done = Command::new("git")
+                .args(&args)
+                .current_dir(self.path(clone))
+                .envs([
+                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
+                    ("GIT_AUTHOR_NAME", "t"),
+                    ("GIT_AUTHOR_EMAIL", "t@t"),
+                    ("GIT_COMMITTER_NAME", "t"),
+                    ("GIT_COMMITTER_EMAIL", "t@t"),
+                ])
+                .output()
+                .expect("git is installed");
+            assert!(
+                done.status.success(),
+                "git {args:?} in {clone}: {}",
+                String::from_utf8_lossy(&done.stderr)
+            );
+        }
+    }
+
     /// The whole cache, contents included, as a listing two runs can be compared by.
     ///
     /// The instrument for a command that must leave the cache **alone** — one
@@ -616,6 +651,62 @@ fn a_clone_holding_a_commit_no_remote_has_is_refused_and_named_as_that() {
         "devlaunch-unpushed-committed holds 1 unpushed commit(s). Push or commit it, or run: dl \
          devlaunch-unpushed-committed rm --force\n"
     );
+}
+
+#[test]
+fn a_clone_whose_last_tag_the_remote_carries_too_is_deleted_like_any_other() {
+    // devlaunch#485 at the binary boundary, and it is the guard refusing a clean
+    // clone rather than a dirty one — the failure that costs nothing visible until
+    // it has taught you to type `--force` without reading. The clone tags a
+    // release, the branch goes from both sides, and the tag is the last ref
+    // reaching those commits: the remote has all of it, the clone holds nothing of
+    // its own, and `dl rm` must delete it with no more ceremony than the clean one.
+    let world = World::with(&["--tagged-release"]);
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-tagged-release";
+    assert!(world.exists(clone), "the fixture's tagged clone");
+
+    let run = world.dl(&["devlaunch-tagged-release", "rm"]);
+
+    run.exited(0);
+    assert_eq!(
+        run.out,
+        "Successfully deleted workspace devlaunch-tagged-release\n"
+    );
+    assert!(!world.exists(clone), "the clone was kept for a pushed tag");
+    assert!(
+        !world
+            .read("cache/devlaunch/metadata.json")
+            .contains("devlaunch-tagged-release"),
+        "the record was left behind"
+    );
+}
+
+#[test]
+fn a_pushed_tag_does_not_hide_a_commit_that_really_is_nowhere_else() {
+    // The other half of #485: the same clone with one commit of its own is still
+    // refused, and refused for the commit rather than for the tag, so the exclusion
+    // did not buy the test above by making the guard answer `NothingToLose` to
+    // everything.
+    //
+    // It does not pin the *width* of the ref set, and the comment here said it did
+    // until somebody checked: the commit lands on the checked-out branch, so every
+    // ref set down to the branch alone finds it. `--branches` passes both of these.
+    // The narrowing guards are at the clone-state seam, where the ref that would go
+    // is the one under test: `a_commit_on_a_detached_worktree_head_is_still_unsaved`
+    // and `a_stashed_change_is_unsaved_too` in `domain/workspace_state/tests.rs`.
+    let world = World::with(&["--tagged-release"]);
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-tagged-release";
+    world.commit_in(clone, "mine.txt", "an hour of work\n");
+
+    let run = world.dl(&["devlaunch-tagged-release", "rm"]);
+
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "devlaunch-tagged-release holds 1 unpushed commit(s). Push or commit it, or run: dl \
+         devlaunch-tagged-release rm --force\n"
+    );
+    assert!(world.exists(clone), "the refusal deleted the clone anyway");
 }
 
 #[test]
