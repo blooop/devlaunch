@@ -61,11 +61,11 @@ enum Parentage {
 
 /// One process that names this workspace, and whether anything is behind it.
 ///
-/// A record rather than two lists, because both questions are answered off the
-/// same reading and a second list is how they come to disagree: what to signal
-/// is the orphans, and whether the busy marker may go is whether any *attended*
-/// holder is left. Split into two vectors, a table read once could be filtered
-/// twice by two different rules.
+/// A record rather than two lists, because the two questions asked of it are
+/// asked of the same reading: what to signal is the orphans, and what to report
+/// as somebody's live build is the rest. Split into two vectors at the point of
+/// classification, one table read once could be filtered twice by rules that had
+/// drifted apart, and a process could end up in both or in neither.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Holder {
     process: HostProcess,

@@ -1398,8 +1398,9 @@ fn container_refusal(refusal: &ContainerRefusal) -> String {
 /// Three endings and not two, because "nothing was holding it" and "what was
 /// holding it is gone" send a reader to different places: the first says the hang
 /// is somewhere this verb does not reach, and the second says to try the launch
-/// again. Which of the three is the sweep's own [`Holding`] and its own list, not
-/// a second derivation of either.
+/// again. Which of the three comes from the sweep's own [`Holding`], never from a
+/// second reading of the lists above: the exit code is that same value, and a
+/// line that disagreed with it would be the one a person believes.
 fn verdict(workspace_id: &str, sweep: &Sweep) -> String {
     match sweep.holding {
         Holding::StillHeld => format!("Workspace {workspace_id} is still held."),
