@@ -1154,13 +1154,19 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 /// `spec` is the target *as the user typed it*, because the sentence ends in a
 /// command they can run: a refusal that echoed the resolved id would print a line
 /// that works, but not the line they typed.
-pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
+///
+/// `word` is the verb, for the same reason and one more. `rm` and `rme` refuse
+/// identically, and the way past is `--force` on whichever was typed — so a line
+/// that always said `rm --force` would answer an `rme` by sending the reader back
+/// to the two-step `rme` exists to collapse: delete, wait, then close the tab by
+/// hand. Both words are offered the way past *they* asked for.
+pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
     match refused {
         RemovalRefused::WouldLose {
             workspace_id,
             losses,
         } => format!(
-            "{workspace_id} holds {}. Push or commit it, or run: dl {spec} rm --force",
+            "{workspace_id} holds {}. Push or commit it, or run: dl {spec} {word} --force",
             losses.describe()
         ),
         RemovalRefused::CouldNotTell {
@@ -1168,7 +1174,7 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
             cause,
         } => format!(
             "{workspace_id}: {}. devlaunch will not delete a clone it cannot check. Look at it, \
-             or run: dl {spec} rm --force",
+             or run: dl {spec} {word} --force",
             cause.describe()
         ),
     }

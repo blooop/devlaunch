@@ -1043,6 +1043,35 @@ fn a_config_choice_rme_cannot_honour_is_said_in_the_word_the_line_used() {
 /// the two apart would need the target resolution to carry whether devpod ever
 /// confirmed the workspace, which `target::Addressed` does not.
 #[test]
+fn a_refused_rme_offers_the_way_past_in_the_word_that_was_typed() {
+    // The guard's sentence ends in a command to run, and `rm --force` is the wrong
+    // one for a line that said `rme`: it deletes, leaves the tab open, and hands
+    // back the `exit` that `rme` exists to absorb. Both words refuse identically,
+    // so both are owed their own way past.
+    let world = World::base();
+
+    let run = world.dl(&["devlaunch-dirty-fqta", "rme"]);
+
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
+         or run: dl devlaunch-dirty-fqta rme --force\n"
+    );
+    // And the line it offers is one that works: `--force` composes with `rme`, and
+    // the shell goes as it would for any other removal. Through the shell harness
+    // and not `dl()`, because this one *succeeds*: a forced `rme` that reached the
+    // plain runner would hang up the test binary and take the whole run with it.
+    let forced = World::base();
+    let hung = forced.dl_inside_a_shell(&["devlaunch-dirty-fqta", "rme", "--force"]);
+    hung.was_hung_up();
+    assert!(
+        !forced.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta"),
+        "the way past the guard did not get past it"
+    );
+}
+
+#[test]
 fn a_forced_rme_closes_the_shell_over_an_absence_it_never_removed() {
     let world = World::base();
 
@@ -1138,7 +1167,7 @@ fn a_refused_rme_leaves_the_shell_up_so_the_reason_can_be_read() {
     assert!(
         refused.err.contains(
             "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
-             or run: dl devlaunch-dirty-fqta rm --force"
+             or run: dl devlaunch-dirty-fqta rme --force"
         ),
         "{}",
         refused.err

@@ -553,7 +553,7 @@ fn render_workspace<'r>(
                 Insistence::NotInsisted
             };
             render_remove(
-                runner, context, cache, refresh, &mut cold, target, insistence,
+                runner, context, cache, refresh, &mut cold, target, insistence, word,
             )
         }
         // Launch: clone, `devpod up`, fast attach, `-- <cmd>` through
@@ -651,6 +651,11 @@ fn after_the_session<'r>(
         cold,
         target,
         Insistence::NotInsisted,
+        // `rm`, not the flag: this removal is `--rm`'s, and the way past a guard
+        // that refuses it is the verb — the flag deliberately does not take
+        // `--force` (see the grammar's `RmForced`), so the line it offers must be
+        // one that does.
+        "rm",
     );
     ending
 }
@@ -765,6 +770,7 @@ fn render_remove<'r>(
     cold: &mut ColdPath<'r>,
     target: &str,
     insistence: Insistence,
+    word: &str,
 ) -> Ending {
     let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
         Err(refused) => return refuse_target(&refused),
@@ -798,7 +804,7 @@ fn render_remove<'r>(
         if let Guarded::Refused(refusal) =
             lifecycle::guard_removal(&workspace_id, unsaved, insistence)
         {
-            eprintln!("{}", render::removal_refusal(&refusal, target));
+            eprintln!("{}", render::removal_refusal(&refusal, target, word));
             return Ending::Refused;
         }
     }
