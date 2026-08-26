@@ -308,7 +308,8 @@ anything to its `devcontainer.json`.
   opens, so a `postCreateCommand` from a repo you did not write never sees it. Nothing is written
   to the container's disk. A repo whose own devcontainer bind-mounts `~/.claude` is detected and
   left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
-  needs one `dl <workspace> up` before it picks the login up; workspaces created since do not.
+  needs one `dl <workspace> up` before it picks the login up, and so does one a `devpod up`
+  devlaunch did not run has rebuilt; workspaces created since do not.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
   its own copies in over the ssh channel it already holds, with no download. A failed install
   costs the workspace its tools, never its launch.

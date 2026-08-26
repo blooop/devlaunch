@@ -59,8 +59,11 @@ stays in place, including one it was given before you set
 
 `claude` starts in every workspace `dl` opens without asking for a login. The
 host's access token is read from `~/.claude/.credentials.json` and forwarded as
-`CLAUDE_CODE_OAUTH_TOKEN`, through a private file for the same reason the GitHub
-token uses one: only the name of the variable is ever readable in `ps`.
+`CLAUDE_CODE_OAUTH_TOKEN`. Only the variable's name reaches a command line, which
+is the discipline the GitHub token keeps too, by a different route: that one is
+staged in a private file because `devpod up` needs it, and this one rides
+`--send-env` on the session, so the value travels in the environment and no file
+is written at either end.
 
 `dl` launches arbitrary repos, so this cannot depend on the image and no repo has
 to add anything to its `devcontainer.json`. It used to depend on exactly that. A
@@ -115,32 +118,46 @@ Claude Code prefers the variable over the file, so a mounted credential that can
 refresh itself would be replaced by one that cannot.
 
 So the setup pass asks. Its probe reports where the container's Claude config
-directory resolved to, what `$HOME` resolved to, and the source subpath of every
-mount at or under that directory. The host reads those and decides, in one place,
-exactly as it does for "is this a real `claude`": a mount whose root is not under
-this container's `$HOME` came from another home, and the login is not forwarded.
+directory resolved to, what `$HOME` resolved to, whether the mount table could be
+read at all, and the source subpath of every mount touching that directory. The
+host reads those and decides, in one place, exactly as it does for "is this a real
+`claude`".
+
+The rule needs both homes, and only the host has the second one. A mount's root is
+a path in the namespace it came *from*, so a bind of the host's `~/.claude` reports
+the host's own path. Compared against the container's `$HOME` alone that reads as
+the container's own the moment the two spell the same, which `remoteUser` set to
+your username does, and so does a container running as root on a host that is. So
+a root convicts if it falls outside the container's home or inside the host's.
 
 The scan reads `/proc/self/mountinfo` rather than asking `findmnt` about the
-directory, because `findmnt --target` answers for the nearest mount at or *above*
-a path and the shape that costs the most sits below one. Before it switched to
-mounting the directory, devlaunch's own claude-code feature mounted nine
+directory, and it looks both ways. `findmnt --target` answers for the nearest mount
+at or *above* a path, and one shape that matters sits below one: before it switched
+to mounting the directory, devlaunch's own claude-code feature mounted nine
 individual paths underneath `~/.claude`, `settings.json` read only and
-`.credentials.json` read write. A question about the directory reports nothing
-mounted there.
+`.credentials.json` read write, and a question about the directory reports nothing
+mounted there. The other direction matters just as much. A devcontainer that binds
+the host's whole `$HOME` onto the container's home puts nothing under `~/.claude`
+and owns every byte in it. So the scan matches a mount point that is the directory,
+one under it, and one above it.
 
 Two answers are spared, because neither is evidence of another home: a mount whose
 root is `/`, which is the whole of a separate filesystem and so a volume or a
 tmpfs, and a root that is not an absolute path.
 
-A pass that cannot find out forwards nothing. An image without `awk`, a kernel
-without `mountinfo`, a report cut off partway: none of them is evidence that the
-directory belongs to the container, and the cost of being wrong that way is a
-login prompt rather than a hijacked credential.
+A pass that cannot find out forwards nothing, and it says which it was. An image
+without `awk`, a kernel without `mountinfo`, a `$HOME` that will not resolve: the
+probe reports the scan as not having run, because an empty list of mounts otherwise
+reads the same from a container with none and from one nobody looked at. Neither is
+evidence that the directory belongs to the container, and the cost of being wrong
+that way is a login prompt rather than a hijacked credential.
 
 ### Workspaces that predate this
 
 The answer is recorded on the host, beside the verdict a top up trusts, so
-skipping the round trip does not skip the decision.
+skipping the round trip does not skip the decision. It is stamped with the
+container it was true of, the way that verdict is, so a `devpod up` devlaunch did
+not run leaves an answer that no longer applies and reads as no answer at all.
 
 A workspace that is already up and finished creating runs no pass at all, though,
 and one created before this existed has no recorded answer. Those get no Claude
@@ -151,7 +168,9 @@ dl <workspace> up
 ```
 
 Once, per workspace. A workspace created by a build that has this carries an
-answer from the pass that created it and never needs the step.
+answer from the pass that created it and never needs the step. The same step is
+what re-answers for a container somebody else's `devpod up` rebuilt, VS Code's or a
+hand typed one, since nothing about that touches the host's records.
 
 Paying for a pass on the attach instead was tried and reverted. It puts two
 setup-stage warnings on the terminal of every first attach, on the hottest path
