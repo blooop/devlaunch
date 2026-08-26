@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-08-26
+
+### Fixed
+
+- **The delete guard counted tags, so a repository that tags releases could not
+  have a workspace deleted at all.** `dl <ws> rm` asks git what the clone holds
+  that no remote does, and the question spanned every ref in the clone, `refs/tags`
+  included. Tag a release, merge the branch, delete it — the ordinary shape of a
+  release — and the tag is the last ref reaching those commits, so no
+  `refs/remotes/*` contains them and the guard reads them as work that exists
+  nowhere else. One repository carries 265 such commits. Six of the eight
+  workspaces on a host reported this, none of it real:
+
+  ```
+  kinisi-ros-feat-bt-with-wheels-on-brake-4ixn holds 265 unpushed commit(s).
+  Push or commit it, or run: dl ... rm --force
+  ```
+
+  Read once, that is a clone kept when it could have gone — disk against the cost
+  of the work, and the safe direction to fail in. Measured, it is a guard that
+  cannot be satisfied by pushing anything, on every workspace of that repository
+  forever, which teaches `--force` as the ordinary way to delete one. The clone
+  that does hold an unpushed hour of work goes the same way, unread.
+
+  `refs/tags` now comes out of the ref set and nothing else does, so local
+  branches, every worktree's HEAD including detached ones, and `refs/stash` are
+  asked about exactly as before (#485, and #471 keeps its answer). What is given up
+  is a commit reachable only from a local tag, with no branch, worktree HEAD or
+  stash in the clone naming it too.
+
 ## [0.19.0] - 2026-08-25
 
 ### Changed
