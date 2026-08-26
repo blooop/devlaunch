@@ -31,7 +31,9 @@
 //! `./x`" is one answer too many, so the naming is now core's for both, and it is
 //! the lexical one.
 
-use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
+use std::time::Duration;
+
+use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun, Patience};
 use devlaunch_core::domain::workspace_id::{UnsafeName, WorkspaceId};
 use devlaunch_core::flows::launch::{self, LaunchNotice, Plan, Resolution};
 use devlaunch_core::flows::lifecycle;
@@ -88,12 +90,56 @@ impl From<UnsafeName> for Unaddressable {
     }
 }
 
+/// How much devpod this resolution may need before it answers.
+///
+/// **One verb answers differently, and it is `dl <ws> kill`.** Every other
+/// lifecycle verb addresses devpod itself, so a devpod that will not answer is a
+/// verb that cannot run and a name devpod denies is a refusal worth printing.
+/// `kill` addresses the *host*: it sweeps by the workspace id, and the workspace
+/// somebody types it at is precisely the one whose `devpod status` may never come
+/// back. A resolution that waits on devpod there is the hang the verb exists to
+/// end, arriving one call early.
+///
+/// So `Vetting::Unnecessary` subtracts two things. A bare name is taken as the
+/// workspace id with no round trip at all, which is what it always was — the
+/// `status` and the `list` behind it only ever decided whether to *refuse*, and a
+/// name that names nothing sweeps nothing and is reported as a workspace nobody
+/// is holding. And the one call a triple genuinely needs, to say which workspace
+/// `owner/repo` resolved to, runs under [`KILL_MAY_WAIT`] and falls back to the
+/// derived id rather than refusing when it runs out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Vetting {
+    /// Ask devpod, wait as long as it takes, and refuse a name it does not know.
+    ByDevpod,
+    /// Ask devpod only what cannot be worked out without it, and not for long.
+    Unnecessary,
+}
+
+/// What the one devpod call `dl owner/repo kill` cannot avoid may cost.
+///
+/// The same five seconds `clients::ps` bounds its read of the process table at,
+/// and for its reason: the person who typed this has already sat through devpod's
+/// own five-second `Trying to lock workspace` loop, and a second wait on the
+/// program that was not answering is what they ran the verb to escape.
+const KILL_MAY_WAIT: Duration = Duration::from_secs(5);
+
+impl Vetting {
+    /// How long a `devpod status` this resolution makes may take.
+    fn patience(self) -> Patience {
+        match self {
+            Self::ByDevpod => Patience::AsLongAsItTakes,
+            Self::Unnecessary => Patience::UpTo(KILL_MAY_WAIT),
+        }
+    }
+}
+
 /// The workspace `target` names, asked of devpod first.
 pub(crate) fn resolve<'r>(
     runner: &'r dyn Runner,
     context: &mut CommandContext<'r>,
     cold: &mut ColdPath<'r>,
     target: &str,
+    vetting: Vetting,
 ) -> Result<Addressed, Unaddressable> {
     match launch::plan(target)? {
         // A path or a git source: devpod names the workspace after the source, and
@@ -105,13 +151,13 @@ pub(crate) fn resolve<'r>(
         }),
         // A bare name can only be a workspace devpod already has; everything
         // creatable is a path or a git spec and matched above.
-        Plan::Existing { name } => existing(runner, context, name),
+        Plan::Existing { name } => existing(runner, context, name, vetting),
         Plan::Triple {
             owner,
             repo,
             branch,
             ..
-        } => triple(context, cold, owner, repo, branch),
+        } => triple(context, cold, owner, repo, branch, vetting),
     }
 }
 
@@ -123,6 +169,7 @@ fn triple(
     owner: String,
     repo: String,
     branch: Option<String>,
+    vetting: Vetting,
 ) -> Result<Addressed, Unaddressable> {
     let mut notices: Vec<LaunchNotice> = Vec::new();
     let branch = match branch {
@@ -146,13 +193,22 @@ fn triple(
     // Constructing the WorkspaceId is the parse boundary: an unsafe owner, repo or
     // ref is rejected here, before it can name a container or a directory.
     let workspace = WorkspaceId::new(&owner, &repo, &branch)?;
-    let resolved = launch::resolve_triple(context, cold, &workspace, &mut notices)
-        .map_err(Unaddressable::DevpodNotRun)?;
+    let resolved =
+        launch::resolve_triple(context, cold, &workspace, &mut notices, vetting.patience());
     let workspace_id = match resolved {
-        Resolution::Warm { placement } => placement.workspace_id().to_owned(),
+        Ok(Resolution::Warm { placement }) => placement.workspace_id().to_owned(),
         // devpod knows nothing about it. The derived id is what the verb addresses,
         // and devpod's own refusal is what the user sees — no clone, no record.
-        Resolution::Cold { workspace } => workspace.value(),
+        Ok(Resolution::Cold { workspace }) => workspace.value(),
+        // A devpod that could not be run at all ends the command, because every
+        // other verb here goes on to address devpod itself. `kill` does not: it
+        // addresses the host, and a devpod that would not say which workspace this
+        // is has denied nothing — the derived id is what the triple is called
+        // unless devpod knew better, and it could not be asked. Refusing here
+        // would be the verb for a host that will not answer refusing because the
+        // host did not answer.
+        Err(_) if vetting == Vetting::Unnecessary => workspace.value(),
+        Err(not_run) => return Err(Unaddressable::DevpodNotRun(not_run)),
     };
     Ok(Addressed {
         workspace_id,
@@ -168,12 +224,23 @@ fn triple(
 /// provider is broken or gone still lists and cannot be described — and that is
 /// precisely the workspace somebody is about to run `dl <ws> rm` on. The listing
 /// gets the final word, at the price of one round trip on the failure path.
+///
+/// Both round trips are skipped under [`Vetting::Unnecessary`], and the answer is
+/// the same one they would have produced: a bare name *is* the workspace id, so
+/// devpod is being asked whether to refuse rather than which workspace this is.
 fn existing(
     runner: &dyn Runner,
     context: &mut CommandContext<'_>,
     name: String,
+    vetting: Vetting,
 ) -> Result<Addressed, Unaddressable> {
-    let described = lifecycle::workspace_state(runner, &name).is_ok();
+    if vetting == Vetting::Unnecessary {
+        return Ok(Addressed {
+            workspace_id: name,
+            notices: Vec::new(),
+        });
+    }
+    let described = lifecycle::workspace_state(runner, &name, vetting.patience()).is_ok();
     if !described {
         let listed = context.workspaces().map_err(Unaddressable::Listing)?;
         if !listed.iter().any(|workspace| workspace.id == name) {
@@ -184,4 +251,88 @@ fn existing(
         workspace_id: name,
         notices: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use devlaunch_test_support::FakeRunner;
+
+    use super::*;
+
+    /// The blocking property of `dl <ws> kill`: the verb somebody reaches for
+    /// because devpod has stopped answering must not open by asking devpod
+    /// anything. A bare workspace id is the workspace id, so there is nothing for
+    /// a round trip to settle — and the `devpod status` the other lifecycle verbs
+    /// open with carries no deadline, which on the host this verb exists for is a
+    /// wait with no end to it.
+    #[test]
+    fn a_bare_name_the_caller_will_not_vet_costs_no_spawn_at_all() {
+        let fake = FakeRunner::new();
+        let mut context = CommandContext::new(&fake);
+        let mut cold = ColdPath::new(&fake);
+
+        let addressed = resolve(
+            &fake,
+            &mut context,
+            &mut cold,
+            "my-ws",
+            Vetting::Unnecessary,
+        )
+        .unwrap_or_else(|_| panic!("a bare name resolves to itself"));
+
+        assert_eq!(addressed.workspace_id, "my-ws");
+        assert!(
+            fake.calls().is_empty(),
+            "nothing was spawned: {:?}",
+            fake.argvs()
+        );
+    }
+
+    /// The workspace this is typed at is the one devpod may not be able to
+    /// describe, and a verdict of "no such workspace" is the wrong answer for it:
+    /// the host still has processes naming that id, and they are what wants
+    /// sweeping. `stop` and `rm` do ask, which is the contrast.
+    #[test]
+    fn a_workspace_devpod_denies_is_still_addressable_without_vetting() {
+        let fake = FakeRunner::new();
+        let mut context = CommandContext::new(&fake);
+        let mut cold = ColdPath::new(&fake);
+
+        let addressed = resolve(
+            &fake,
+            &mut context,
+            &mut cold,
+            "never-heard-of-it",
+            Vetting::Unnecessary,
+        )
+        .unwrap_or_else(|_| panic!("the id is the id whatever devpod thinks"));
+
+        assert_eq!(addressed.workspace_id, "never-heard-of-it");
+    }
+
+    /// The one call `dl owner/repo kill` cannot do without, and it carries a
+    /// deadline. `stop` and `rm` ask the same question with none, which is right
+    /// for them: they are about to address devpod, so a devpod worth waiting for
+    /// is a devpod worth waiting on.
+    #[test]
+    fn the_one_devpod_call_a_triple_needs_is_bounded_for_the_kill_and_not_for_the_rest() {
+        let bound = |vetting| {
+            let fake = FakeRunner::new();
+            let mut context = CommandContext::new(&fake);
+            let mut cold = ColdPath::new(&fake);
+            let _ = resolve(
+                &fake,
+                &mut context,
+                &mut cold,
+                "blooop/devlaunch@main",
+                vetting,
+            );
+            fake.calls_to("devpod")
+                .first()
+                .and_then(|call| call.spec().and_then(|spec| spec.timeout))
+        };
+
+        assert_eq!(bound(Vetting::Unnecessary), Some(KILL_MAY_WAIT));
+        assert_eq!(bound(Vetting::ByDevpod), None);
+    }
 }
