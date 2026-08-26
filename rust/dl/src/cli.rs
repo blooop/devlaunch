@@ -35,9 +35,10 @@ use devlaunch_core::flows::listing::Sizes;
 ///
 /// One table, read by both the workspace-first and the verb-first arm, so a word
 /// cannot be a verb in one position and a workspace name in the other.
-const VERBS: [(&str, VerbWord); 8] = [
+const VERBS: [(&str, VerbWord); 9] = [
     ("up", VerbWord::Up),
     ("stop", VerbWord::Stop),
+    ("kill", VerbWord::Kill),
     ("rm", VerbWord::Remove),
     ("code", VerbWord::Code),
     ("recreate", VerbWord::Recreate),
@@ -131,6 +132,7 @@ impl RetiredWord {
 enum VerbWord {
     Up,
     Stop,
+    Kill,
     Remove,
     Code,
     Recreate,
@@ -151,6 +153,7 @@ impl VerbWord {
         match self {
             Self::Up => Verb::Up,
             Self::Stop => Verb::Stop,
+            Self::Kill => Verb::Kill,
             Self::Remove => Verb::Remove { force },
             Self::Code => Verb::Code,
             Self::Recreate => Verb::Recreate,
@@ -206,6 +209,13 @@ pub(crate) enum Verb {
     Run(NonEmpty<String>, RmOnExit),
     Up,
     Stop,
+    /// `kill` — the hammer for a workspace that will not answer.
+    ///
+    /// Carries nothing, because it is asked of the host rather than of devpod:
+    /// there is no `--force` to fold in and no state to consult first. `stop` is
+    /// the polite version and needs a devpod that answers; this one is what is
+    /// left when it does not.
+    Kill,
     /// `rm`. `force` is `--force`: delete despite unsaved work, and count an
     /// already-absent workspace as deleted.
     Remove {
@@ -221,10 +231,14 @@ pub(crate) enum Verb {
 impl Verb {
     /// Whether the selector may hand this verb several workspaces at once.
     ///
-    /// Yes for the verbs that finish on their own: `up`, `stop`, `rm`, `code` and
-    /// `dotfiles` apply to each workspace in turn and return, so `dl rm` can mark
-    /// five dead workspaces and clear them in one visit — the same TAB-to-mark
-    /// batch `fzf --multi` taught everyone. No for anything that ends in an
+    /// Yes for the verbs that finish on their own: `up`, `stop`, `kill`, `rm`,
+    /// `code` and `dotfiles` apply to each workspace in turn and return, so
+    /// `dl rm` can mark five dead workspaces and clear them in one visit — the
+    /// same TAB-to-mark batch `fzf --multi` taught everyone. `kill` is on that
+    /// list on its own evidence rather than by resemblance: a machine that has
+    /// been suspended, or one whose `dl` was killed by an OOM, wedges every
+    /// workspace that was open at the time, and clearing them one line at a time
+    /// is the visit this exists to save. No for anything that ends in an
     /// interactive session — attach, `--`, and the three rebuild verbs, whose
     /// launch attaches when it is done (`LaunchVerb::attaches`): several of those
     /// would be sessions run back to back, each waiting on the last one's exit,
@@ -233,7 +247,12 @@ impl Verb {
     /// get single-select by omission: whoever adds the arm answers the question.
     pub(crate) fn several_at_once(&self) -> bool {
         match self {
-            Verb::Up | Verb::Stop | Verb::Remove { .. } | Verb::Code | Verb::Dotfiles => true,
+            Verb::Up
+            | Verb::Stop
+            | Verb::Kill
+            | Verb::Remove { .. }
+            | Verb::Code
+            | Verb::Dotfiles => true,
             Verb::Attach { .. } | Verb::Run(..) | Verb::Recreate | Verb::Restart | Verb::Reset => {
                 false
             }
@@ -247,6 +266,7 @@ impl Verb {
             Verb::Run(..) => "--",
             Verb::Up => "up",
             Verb::Stop => "stop",
+            Verb::Kill => "kill",
             Verb::Remove { .. } => "rm",
             Verb::Code => "code",
             Verb::Recreate => "recreate",
@@ -504,6 +524,13 @@ const GRAMMAR: &str = "Examples:
 Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   up                                 Start it without attaching
   stop                               Stop it
+  kill                               Kill whatever is holding it, for a workspace
+                                     that will not answer and a stop that hangs
+                                     with it. Kills the host processes still
+                                     holding it whose parent has died, clears
+                                     devpod's stale busy marker once nothing is
+                                     building, kills any container it still has
+                                     running, and prints all of it
   rm                                 Delete it. Refuses if its clone holds
                                      uncommitted or unpushed work, or if git
                                      cannot read the clone to find out; add
@@ -517,10 +544,10 @@ Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   dotfiles                           Refresh dotfiles (chezmoi update)
   -- <command>                       Run one command inside it
 
-A verb with no workspace named picks interactively. For up, stop, rm, code and
-dotfiles, TAB marks several rows and the verb applies to each in turn — dl rm can
-clear five workspaces in one visit. The forms that end in a session (attach, --,
-restart, recreate, reset) take exactly one.
+A verb with no workspace named picks interactively. For up, stop, kill, rm, code
+and dotfiles, TAB marks several rows and the verb applies to each in turn — dl rm
+can clear five workspaces in one visit. The forms that end in a session (attach,
+--, restart, recreate, reset) take exactly one.
 
 'prune' was a second spelling of the rm verb and is retired: it collided with the
 --prune flag below, which removes clone directories and no workspace at all. Typing
@@ -1009,6 +1036,22 @@ mod tests {
         for (argv, expected) in cases {
             assert_eq!(parse(argv), Ok(expected), "dl {}", argv.join(" "));
         }
+    }
+
+    /// The hammer for a workspace that will not answer, and it reads from either
+    /// position like every other verb: `dl kill <ws>` is what somebody types while
+    /// the wedged `dl` is still hanging in another terminal.
+    #[test]
+    fn kill_is_a_verb_from_either_position() {
+        assert_eq!(parse(&["ws", "kill"]), Ok(workspace("ws", Verb::Kill)));
+        assert_eq!(parse(&["kill", "ws"]), Ok(workspace("ws", Verb::Kill)));
+    }
+
+    /// Several wedged workspaces in one visit, for the reason `rm` gets the same
+    /// answer: the verb finishes on its own and hands nothing over.
+    #[test]
+    fn kill_may_be_marked_for_several_workspaces_at_once() {
+        assert!(Verb::Kill.several_at_once());
     }
 
     #[test]

@@ -109,6 +109,29 @@ impl DevpodHome {
             .join("workspace.json")
     }
 
+    /// devpod's agent-side *busy marker* for one workspace.
+    ///
+    /// **The second file called `workspace.lock`, and the one that goes stale.**
+    /// It is a plain marker, not a lock: devpod's agent creates it on the way into
+    /// an `up` and removes it from a `defer` on the way out, and its daemon reads
+    /// it to know a build is running. A `defer` does not run under SIGKILL, so a
+    /// hard-killed `up` leaves this behind, which is what makes it worth sweeping.
+    ///
+    /// The *other* `workspace.lock` — the `flock` under `contexts/<ctx>/locks` —
+    /// is deliberately absent from this module and must stay absent: the kernel
+    /// releases it when its holder dies, and unlinking it is the hazard
+    /// [`crate::domain::locks`] argues against at length. Naming only the safe one
+    /// here is what keeps a caller from reaching for whichever it remembers.
+    fn busy_marker(&self, context: &str, workspace_id: &str) -> PathBuf {
+        self.root
+            .join("agent")
+            .join("contexts")
+            .join(context)
+            .join("workspaces")
+            .join(workspace_id)
+            .join("workspace.lock")
+    }
+
     /// devpod's record of a *completed* create for one workspace.
     ///
     /// devpod writes this beside [`Self::record`] on its way out of a successful
@@ -291,6 +314,24 @@ pub(crate) fn sole_workspace_result(
     result.is_file().then_some(result)
 }
 
+/// Where this workspace's busy marker would be, if the context is unambiguous.
+///
+/// The address rather than the file: whether anything is there is the caller's
+/// question, because "already gone" and "removed" are two different things to
+/// report and only the caller knows which it wanted.
+///
+/// Nothing for every ambiguity [`sole_workspace_result`] answers nothing to, and
+/// the reason is stronger here: this is a path a caller *deletes*, and the wrong
+/// context's marker belongs to a workspace nobody asked about.
+pub(crate) fn sole_busy_marker(
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+) -> Option<PathBuf> {
+    let home = devpod_home?;
+    let context = home.sole_context_holding(workspace_id)?;
+    Some(home.busy_marker(&context, workspace_id))
+}
+
 /// Why one devpod record could not be re-pointed.
 ///
 /// Unreadable and not-JSON are two arms where Python's one `except` clause caught
@@ -337,6 +378,27 @@ pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> ScratchH
     ScratchHome { _dir: dir, home }
 }
 
+/// The `flock` devpod blocks on, created empty, for the one test that has to
+/// assert it is still standing afterwards.
+///
+/// Not part of this adapter's real surface, and it must not become one: nothing
+/// in dl opens this file and nothing may unlink it — the kernel releases it when
+/// its holder dies, which is the entire reason `dl <ws> kill` kills the holder
+/// instead of tidying the file. It is spelled here for the layout guard's reason,
+/// so that the test asserting it survived does not become the ninth copy of
+/// devpod's directory convention.
+#[cfg(test)]
+pub(crate) fn untouchable_flock(home: &DevpodHome, context: &str, workspace_id: &str) -> PathBuf {
+    let path = home
+        .contexts()
+        .join(context)
+        .join("locks")
+        .join(format!("{workspace_id}.workspace.lock"));
+    std::fs::create_dir_all(path.parent().expect("a locks directory")).expect("a locks directory");
+    std::fs::write(&path, "").expect("a lock file");
+    path
+}
+
 /// A [`DevpodHome`] and the temporary directory keeping it alive.
 ///
 /// Derefs to the home, so a test that holds one reads as if it held the home
@@ -360,6 +422,36 @@ impl std::ops::Deref for ScratchHome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The second file called `workspace.lock`, and the whole reason both are
+    /// named here rather than at the one call site that removes one of them: the
+    /// flock under `contexts/<ctx>/locks` must never be unlinked, this one is
+    /// exactly what wants sweeping, and two paths a caller has to keep straight
+    /// are two paths it will one day mix up.
+    #[test]
+    fn the_busy_marker_is_the_agents_copy_and_not_the_flock() {
+        let home = devpod_home_with(&[("default", "myws", Some(()))]);
+
+        assert_eq!(
+            sole_busy_marker(Some(&home), "myws"),
+            Some(
+                home.path()
+                    .join("agent/contexts/default/workspaces/myws/workspace.lock")
+            )
+        );
+    }
+
+    /// The same ambiguities `sole_workspace_result` answers nothing to, for a
+    /// stronger reason: this address is one a caller *deletes*, and the wrong
+    /// context's marker belongs to a workspace nobody asked about.
+    #[test]
+    fn a_workspace_no_single_context_holds_has_no_marker_to_name() {
+        let home = devpod_home_with(&[("default", "myws", Some(())), ("work", "myws", None)]);
+
+        assert_eq!(sole_busy_marker(Some(&home), "myws"), None);
+        assert_eq!(sole_busy_marker(Some(&home), "other"), None);
+        assert_eq!(sole_busy_marker(None, "myws"), None);
+    }
 
     #[test]
     fn a_create_result_beside_the_record_reads_as_completed() {

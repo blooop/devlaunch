@@ -23,6 +23,9 @@ use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::branch_manager::BranchError;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
+use devlaunch_core::flows::kill::{
+    ContainerRefusal, Containers, Ending, Holding, HostCannot, Marker, Sweep, TableUnreadable,
+};
 use devlaunch_core::flows::launch::{
     BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
 };
@@ -1281,6 +1284,164 @@ pub(crate) fn unknown_workspace(target: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// dl <ws> kill
+// ---------------------------------------------------------------------------
+
+/// The line the kill opens with, before anything is signalled.
+///
+/// Before rather than after, for [`removing`]'s reason and one more: the person
+/// who typed this has just come from a `Trying to lock workspace` line repeating
+/// every five seconds, and the first thing they need to know is that something
+/// else is now happening.
+pub(crate) fn killing(workspace_id: &str) -> String {
+    format!("Killing whatever holds workspace {workspace_id}...")
+}
+
+/// Everything one sweep did, and whether the workspace is free at the end of it.
+///
+/// **The pid and the whole command line, per process.** The issue's author found
+/// the orphan with `ps`, read its argv, and killed it by hand; a report that said
+/// "killed 1 process" would ask them to do that again to check. The command line
+/// is also the only thing that distinguishes an `up` from an `ssh`, which is the
+/// difference between a build that was interrupted and a session that was.
+///
+/// **The last line is the verdict and it is always there**, because it is what
+/// the exit code means: `dl <ws> kill` exits 0 when nothing is left holding the
+/// workspace, and a script that reads `$?` is reading this sentence.
+pub(crate) fn killed(workspace_id: &str, sweep: &Sweep) -> Vec<String> {
+    let mut lines: Vec<String> = sweep
+        .signalled
+        .iter()
+        .map(|signalled| {
+            let what = match signalled.ending {
+                Ending::Terminated => "gone (SIGTERM)",
+                Ending::Killed => "gone (SIGKILL)",
+                Ending::Survived => "still running after SIGKILL",
+            };
+            format!(
+                "  {} {what}: {}",
+                signalled.process.pid, signalled.process.command
+            )
+        })
+        .collect();
+    lines.extend(sweep.attended.iter().map(|process| {
+        format!(
+            "  {} left alone, something is still watching it: {}",
+            process.pid, process.command
+        )
+    }));
+    lines.extend(busy_marker(&sweep.marker));
+    lines.extend(containers_killed(&sweep.containers));
+    lines.push(verdict(workspace_id, sweep));
+    lines
+}
+
+/// What became of devpod's busy marker, where there is anything to say.
+///
+/// Silent for the two arms that are neither an action nor a problem: a marker
+/// that was never left behind, and a host whose devpod records cannot address
+/// one. Both are ordinary, and a line about each would bury the two that matter.
+fn busy_marker(marker: &Marker) -> Vec<String> {
+    match marker {
+        Marker::Removed(path) => vec![format!(
+            "Removed devpod's stale busy marker: {}",
+            path.display()
+        )],
+        Marker::LeftForALiveHolder => {
+            vec![
+                "Left devpod's busy marker alone: something still holds this workspace.".to_owned(),
+            ]
+        }
+        Marker::Unremovable { path, reason } => vec![format!(
+            "Could not remove devpod's busy marker at {} ({reason})",
+            path.display()
+        )],
+        Marker::Absent | Marker::Unlocatable => Vec::new(),
+    }
+}
+
+/// What became of the containers, where there is anything to say.
+///
+/// Silent for a project with nothing running and for a host with no docker, for
+/// the reason the volume sweep is silent about the same two: neither is a fact
+/// about this workspace. The container is rarely what was stuck.
+fn containers_killed(containers: &Containers) -> Vec<String> {
+    match containers {
+        Containers::Killed(ids) => vec![format!(
+            "Killed {} container{}: {}",
+            ids.len(),
+            if ids.len() == 1 { "" } else { "s" },
+            ids.join(", ")
+        )],
+        Containers::Standing(refusal) => vec![format!(
+            "Could not kill this workspace's containers: {}",
+            container_refusal(refusal)
+        )],
+        Containers::NoneRunning | Containers::NoDocker => Vec::new(),
+    }
+}
+
+fn container_refusal(refusal: &ContainerRefusal) -> String {
+    match refusal {
+        ContainerRefusal::Refused { exit, stderr } => match stderr.trim() {
+            "" => format!("docker exited {}", exit_status(*exit)),
+            said => said.to_owned(),
+        },
+        ContainerRefusal::NotRun { failure } => {
+            format!("could not run docker ({})", os_error_phrase(failure))
+        }
+    }
+}
+
+/// Whether the workspace is free, in one sentence.
+///
+/// Three endings and not two, because "nothing was holding it" and "what was
+/// holding it is gone" send a reader to different places: the first says the hang
+/// is somewhere this verb does not reach, and the second says to try the launch
+/// again. Which of the three is the sweep's own [`Holding`] and its own list, not
+/// a second derivation of either.
+fn verdict(workspace_id: &str, sweep: &Sweep) -> String {
+    match sweep.holding {
+        Holding::StillHeld => format!("Workspace {workspace_id} is still held."),
+        Holding::Free if sweep.signalled.is_empty() => {
+            format!("Nothing on this host is holding workspace {workspace_id}.")
+        }
+        Holding::Free => format!("Workspace {workspace_id} is no longer held."),
+    }
+}
+
+/// A host `dl <ws> kill` cannot work on, and which tool is missing.
+///
+/// Its own sentence rather than an empty sweep, because the two would look alike
+/// and mean opposite things: a host with no `ps` has not established that nothing
+/// is holding the workspace, it has failed to look.
+pub(crate) fn kill_unavailable(cannot: &HostCannot) -> String {
+    match cannot {
+        HostCannot::ReadItsProcessTable(TableUnreadable::NoPs) => {
+            "error: `dl <workspace> kill` reads the host's process table with `ps`, and this \
+             host has none"
+                .to_owned()
+        }
+        HostCannot::ReadItsProcessTable(TableUnreadable::Refused { exit, stderr }) => {
+            let said = match stderr.trim() {
+                "" => format!("it exited {}", exit_status(*exit)),
+                said => said.to_owned(),
+            };
+            format!("error: `ps` would not read this host's process table: {said}")
+        }
+        HostCannot::ReadItsProcessTable(TableUnreadable::NotStarted(failure)) => format!(
+            "error: `ps` could not be run ({})",
+            os_error_phrase(failure)
+        ),
+        HostCannot::SendASignal => {
+            "error: something is holding this workspace and this host has no `kill` to signal \
+             it with"
+                .to_owned()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // the disk neither cleanup frees
 // ---------------------------------------------------------------------------
 
@@ -2376,6 +2537,7 @@ mod tests {
     use std::path::PathBuf;
 
     use devlaunch_core::flows::disk_usage::DiskUsage;
+    use devlaunch_core::flows::kill::{HostProcess, Signalled};
     use devlaunch_core::flows::launch::TerminalTitle;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
@@ -3420,6 +3582,131 @@ mod tests {
                  (a NaN cannot be JSON)"
                     .to_owned()
             )
+        );
+    }
+
+    // ---------------------------------------------------------- dl <ws> kill
+
+    fn held_by(pid: u32, command: &str) -> HostProcess {
+        HostProcess {
+            pid,
+            parent: 1,
+            command: command.to_owned(),
+        }
+    }
+
+    fn nothing_swept() -> Sweep {
+        Sweep {
+            signalled: Vec::new(),
+            attended: Vec::new(),
+            marker: Marker::Absent,
+            containers: Containers::NoneRunning,
+            holding: Holding::Free,
+        }
+    }
+
+    /// The whole point of the verb, printed. A hammer that swings silently is
+    /// worse than the hang it was reached for: what was killed is the only
+    /// evidence a person has that the workspace is free now.
+    #[test]
+    fn a_sweep_names_every_process_it_killed_and_how_far_it_had_to_go() {
+        let sweep = Sweep {
+            signalled: vec![
+                Signalled {
+                    process: held_by(732_721, "devpod up my-ws --ide none"),
+                    ending: Ending::Terminated,
+                },
+                Signalled {
+                    process: held_by(732_722, "devpod ssh my-ws"),
+                    ending: Ending::Killed,
+                },
+            ],
+            ..nothing_swept()
+        };
+
+        assert_eq!(
+            killed("my-ws", &sweep),
+            [
+                "  732721 gone (SIGTERM): devpod up my-ws --ide none",
+                "  732722 gone (SIGKILL): devpod ssh my-ws",
+                "Workspace my-ws is no longer held.",
+            ]
+        );
+    }
+
+    /// Nothing found is a finding: the hang is somewhere this verb does not
+    /// reach, and the line has to say so rather than print an empty report.
+    #[test]
+    fn a_sweep_that_found_nothing_says_so_rather_than_printing_nothing() {
+        assert_eq!(
+            killed("my-ws", &nothing_swept()),
+            ["Nothing on this host is holding workspace my-ws."]
+        );
+    }
+
+    /// A live build and a process that outlived SIGKILL both leave the workspace
+    /// held, and the closing line is what a script reads the exit code against.
+    #[test]
+    fn a_workspace_something_still_holds_is_reported_held() {
+        let sweep = Sweep {
+            signalled: vec![Signalled {
+                process: held_by(732_721, "devpod up my-ws"),
+                ending: Ending::Survived,
+            }],
+            attended: vec![HostProcess {
+                pid: 5001,
+                parent: 5000,
+                command: "devpod up my-ws".to_owned(),
+            }],
+            marker: Marker::LeftForALiveHolder,
+            containers: Containers::NoneRunning,
+            holding: Holding::StillHeld,
+        };
+
+        assert_eq!(
+            killed("my-ws", &sweep),
+            [
+                "  732721 still running after SIGKILL: devpod up my-ws",
+                "  5001 left alone, something is still watching it: devpod up my-ws",
+                "Left devpod's busy marker alone: something still holds this workspace.",
+                "Workspace my-ws is still held.",
+            ]
+        );
+    }
+
+    /// The stale file the issue is really about, and the path, because somebody
+    /// who has been deleting it by hand deserves to see which one dl took.
+    #[test]
+    fn a_removed_busy_marker_is_named_by_path() {
+        let sweep = Sweep {
+            marker: Marker::Removed(PathBuf::from("/home/x/.devpod/agent/w/workspace.lock")),
+            containers: Containers::Killed(vec!["abc123".to_owned()]),
+            ..nothing_swept()
+        };
+
+        assert_eq!(
+            killed("my-ws", &sweep),
+            [
+                "Removed devpod's stale busy marker: /home/x/.devpod/agent/w/workspace.lock",
+                "Killed 1 container: abc123",
+                "Nothing on this host is holding workspace my-ws.",
+            ]
+        );
+    }
+
+    /// A host this verb cannot work on says which tool it is missing, rather
+    /// than reporting a sweep that found nothing.
+    #[test]
+    fn a_host_this_verb_cannot_work_on_names_what_it_is_missing() {
+        assert_eq!(
+            kill_unavailable(&HostCannot::ReadItsProcessTable(TableUnreadable::NoPs)),
+            "error: `dl <workspace> kill` reads the host's process table with `ps`, and this \
+             host has none"
+        );
+        assert_eq!(
+            kill_unavailable(&HostCannot::SendASignal),
+            "error: something is holding this workspace and this host has no `kill` to signal \
+             it with"
         );
     }
 }

@@ -16,6 +16,7 @@ use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
+use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::LaunchNotice;
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteOutcome, Guarded, Insistence, LifecycleNotice, PruneError, PruneOutcome,
@@ -522,6 +523,10 @@ fn render_workspace<'r>(
             devcontainer_ignored(devcontainer.is_some(), "stop");
             render_stop(runner, context, refresh, &mut cold, target)
         }
+        Family::Kill => {
+            devcontainer_ignored(devcontainer.is_some(), "kill");
+            render_kill(runner, context, &mut cold, target)
+        }
         Family::Remove { force } => {
             devcontainer_ignored(devcontainer.is_some(), "rm");
             let insistence = if force {
@@ -661,6 +666,68 @@ fn render_stop<'r>(
         // inherits the streams — so a refusal has nothing to add but the status.
         Ok(StopOutcome::Stopped) => Ending::Done,
         Ok(StopOutcome::DevpodRefused { exit }) => Ending::Child(exit),
+    }
+}
+
+/// `dl <ws> kill` — the hammer for a workspace that will not answer.
+///
+/// **No [`Refresh`], unlike every other lifecycle verb.** The completion cache
+/// lists workspaces, and this creates none, removes none and changes no
+/// workspace's state as devpod records it: a kill that unwedges a workspace
+/// leaves devpod's own listing saying exactly what it said before. Asking for a
+/// refresh would spawn a background `devpod list` on a host somebody has just
+/// told us is wedged.
+///
+/// The target is resolved the way `stop` and `rm` resolve theirs, and that is a
+/// decision rather than a copy: the resolution asks devpod for a *status*, which
+/// devlaunch#484's own transcript shows returning on a wedged workspace — the
+/// hang there arrived at the `devpod up` afterwards, with the workspace already
+/// named. A resolution of its own would be a second answer to "which workspace is
+/// this", and the two could disagree about what is being killed.
+fn render_kill<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cold: &mut ColdPath<'r>,
+    target: &str,
+) -> Ending {
+    let addressed = match target::resolve(runner, context, cold, target) {
+        Err(refused) => return refuse_target(&refused),
+        Ok(addressed) => addressed,
+    };
+    say_launch(&addressed.notices);
+    let workspace_id = addressed.workspace_id;
+    eprintln!("{}", render::killing(&workspace_id));
+    let killed = kill::workspace_kill(
+        runner,
+        // Resolved here rather than in core, as every other environment answer
+        // is. `None` is a machine with no home directory, where devpod keeps no
+        // records and so addresses no busy marker.
+        DevpodHome::locate().as_ref(),
+        &workspace_id,
+        // The grace period, really spent. Core takes it as a function so its own
+        // tests do not have to.
+        &mut std::thread::sleep,
+    );
+    match killed {
+        kill::Killed::Unavailable(cannot) => {
+            eprintln!("{}", render::kill_unavailable(&cannot));
+            Ending::Refused
+        }
+        kill::Killed::Swept(sweep) => {
+            for line in render::killed(&workspace_id, &sweep) {
+                eprintln!("{line}");
+            }
+            // Exit 0 means the workspace is free, which is the only thing a script
+            // wrapping this verb can act on: a `dl <ws> kill && dl <ws>` that ran
+            // the launch into a lock somebody else still holds would be back where
+            // it started, with one more orphan behind it. The sweep's own
+            // [`kill::Holding`] rather than a reading of its lists, so the code and
+            // the closing line cannot disagree.
+            match sweep.holding {
+                kill::Holding::Free => Ending::Done,
+                kill::Holding::StillHeld => Ending::Refused,
+            }
+        }
     }
 }
 

@@ -3,7 +3,8 @@
 [README](../README.md) has the commands you need. This page is the rest: how the
 selector decides what you picked, which commands get a terminal, what `--rm`
 promises and where it stops, which exits fire it, the spellings that were retired
-and what they say now, and what happens when devpod is missing or will not answer.
+and what they say now, what `kill` does to a workspace that will not answer, and
+what happens when devpod is missing or will not answer.
 
 ## The selector
 
@@ -287,6 +288,52 @@ or 'dl --prune' to remove the clone directories no workspace opens any more.
 is never read as a workspace name. `dl prune <ws>` says what moved instead of
 reporting an unknown workspace called `prune`, and a workspace that really is called
 `prune` is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
+
+
+## `kill`: the workspace that will not answer
+
+`dl <ws> stop` asks devpod to stop a workspace, and it is the right thing to type
+right up to the moment devpod itself is the thing that is stuck. Then you get this,
+every five seconds, with no deadline behind it:
+
+```
+info Trying to lock workspace, seems like another process is running that blocks this workspace
+```
+
+That line is not a retry that will eventually give up. devpod takes a blocking
+`flock` on the workspace and logs the same string on a timer while it waits, so it
+waits for as long as whatever holds the lock lives. The usual holder is a `devpod
+up` that outlived the `dl` that started it: reparented to init, sleeping, no
+children, and nothing on the machine is ever going to reap it.
+
+`dl <ws> kill` is the way out. It asks devpod nothing, which is the point, and it
+does four things:
+
+- **Kills the host processes holding the workspace.** Only `devpod` processes, and
+  only ones that name this workspace and whose own parent has died. SIGTERM first,
+  then SIGKILL for whatever sat through it. A `devpod up` whose `dl` is still
+  running is somebody's build and is left alone, and the report says it was.
+- **Removes devpod's stale busy marker**, but only once nothing is left holding the
+  workspace. This is the file under devpod's `agent` directory, not the lock.
+- **Kills any container** the workspace's compose project still has running. Often
+  there is none: the container usually dies well before the lock does.
+- **Prints every one of them**, with the pid and the whole command line, so you can
+  see what went and how hard it had to be pushed.
+
+It exits `0` only when nothing is left holding the workspace, so
+`dl <ws> kill && dl <ws>` is safe to type: a live build or a process that outlived
+SIGKILL exits `1` and says which.
+
+**The lock file itself is never touched.** Killing the holder is what releases it,
+because the kernel drops an `flock` when its holder dies. Unlinking the file would
+be worse than the hang: the old holder keeps a lock on an inode nobody else can
+see, the next caller locks a fresh file, and two processes both believe they have
+the workspace. That is why there is no `--force` here and nothing to delete by
+hand.
+
+`kill` takes several workspaces from the selector, like `stop` and `rm` do. A
+machine that was suspended, or one whose `dl` was killed by the OOM killer, wedges
+every workspace that was open at the time.
 
 
 ## When devpod is missing or will not answer
