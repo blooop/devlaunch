@@ -650,7 +650,9 @@ then ends the shell that asked rather than a session. It is for the terminal tab
 opened for one workspace, where the delete is a wait and the exit after it is a
 keystroke. The removal is the verb's, guard included, and the hangup is only reached
 if it worked — a refusal, or a devpod that would not finish, leaves the shell standing
-with the reason on screen. What is hung up is dl's parent process, so a subshell or a
+with the reason on screen. `--force` is the exception, because it asks for absence
+rather than for a removal: a forced rme of a workspace that was never there succeeds
+and still closes the shell. What is hung up is dl's parent process, so a subshell or a
 script gets the signal instead of your terminal, and dl says which it sent it to.
 
 --stop is retired, and --autorm is what --rm is now called. Both are still recognised

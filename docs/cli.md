@@ -253,6 +253,17 @@ itself came back clean, and the reason is the one thing the terminal is still ne
 for: every way this can go wrong writes a sentence to stderr, and closing the window
 that sentence was written to is a guaranteed way for nobody to read it.
 
+**`--force` is the one exception, and it is `rm --force`'s hazard with the receipt's
+reader removed.** `--force` passes devpod's own `--ignore-not-found`, so a workspace
+that was never there counts as deleted, and a `./path` target is resolved without
+asking devpod anything. So `dl ./wrong-directory rme --force` deletes nothing,
+succeeds, and closes your terminal, taking with it the `Workspace <id> is gone.` line
+that `rm --force` prints instead of `Removed` for exactly this reason. It is left
+standing rather than special-cased: absence is what `--force` asks for, and the
+ordinary forced run is a real workspace whose uncommitted work you have decided
+against, which is the run most in need of the tab closing. Type the path carefully,
+or drop `--force` and let the guard resolve it.
+
 ```
 $ dl devlaunch-dirty rme
 devlaunch-dirty holds 1 uncommitted change(s) (scratch.txt). Push or commit it,

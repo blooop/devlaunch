@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 
   The removal is `rm`'s, guard and `--force` and exit codes included, and the
-  hangup is reached only if it came back clean. That is the whole of the
+  hangup is reached only if it came back clean. `--force` is the exception, since
+  it asks for absence rather than a removal: a forced `rme` of a workspace that
+  was never there succeeds and still closes the shell, which is `rm --force`'s
+  existing hazard with the receipt's reader removed. That is the whole of the
   ordering: every way a delete can stop writes a sentence to stderr, and closing
   the window it was written to is a guaranteed way for nobody to read it. A guard
   that refused, or a devpod that would not finish, leaves the shell standing with

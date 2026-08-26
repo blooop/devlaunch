@@ -1026,6 +1026,47 @@ fn a_config_choice_rme_cannot_honour_is_said_in_the_word_the_line_used() {
     );
 }
 
+/// The one run where the shell goes with no removal behind it, pinned so it is a
+/// decision rather than a surprise.
+///
+/// `--force` passes devpod's `--ignore-not-found` and a path spec is resolved
+/// without asking devpod anything, so a mistyped directory reaches the delete and
+/// succeeds. That is `rm --force`'s hazard already, and
+/// `a_forced_delete_says_the_workspace_is_gone_and_never_that_it_removed_one` pins
+/// the wording that exists to keep dl from affirming a delete that never happened.
+/// What `rme` adds is that the line has no reader: the terminal closes over it.
+///
+/// It stands rather than being special-cased because absence is what `--force` asks
+/// for, and the ordinary forced run is a real workspace whose uncommitted work you
+/// have decided against, which is the run that most wants the tab closed. Telling
+/// the two apart would need the target resolution to carry whether devpod ever
+/// confirmed the workspace, which `target::Addressed` does not.
+#[test]
+fn a_forced_rme_closes_the_shell_over_an_absence_it_never_removed() {
+    let world = World::base();
+
+    let hung = world.dl_inside_a_shell(&["./no-such-directory-here", "rme", "--force"]);
+
+    hung.was_hung_up();
+    // The receipt that says dl did not affirm a removal, and the reader it lost.
+    assert!(
+        hung.err
+            .contains("Workspace no-such-directory-here is gone."),
+        "{}",
+        hung.err
+    );
+    assert!(
+        !hung.err.contains("Removed workspace"),
+        "a workspace that never existed was reported as removed: {}",
+        hung.err
+    );
+    // Nothing was deleted, which is the whole of what makes this worth pinning.
+    assert_eq!(
+        world.devpod_calls(),
+        ["devpod delete no-such-directory-here --ignore-not-found"]
+    );
+}
+
 #[test]
 fn rme_under_nohup_leaves_the_terminal_it_was_told_to_outlive() {
     // `nohup dl <ws> rme` used to hang up the terminal, which is the one thing

@@ -20,6 +20,21 @@
 //!   sentence on stderr, and hanging up the terminal it was written to is the one
 //!   way to guarantee nobody reads it. A batch is `Done` only when every removal
 //!   in it was, since [`crate::commands`] keeps the first ending that was not.
+//!
+//!   **`--force` widens what `Done` means, and it is the one case where the shell
+//!   goes without a removal behind it.** `--force` passes devpod's own
+//!   `--ignore-not-found`, so "there was nothing there" succeeds; a path spec is
+//!   resolved without asking devpod anything at all. Between them,
+//!   `dl ./wrong-directory rme --force` deletes nothing, ends `Done`, and hangs the
+//!   shell up — taking with it the `Workspace <id> is gone.` line that
+//!   [`crate::render::removed`] words that way precisely because dl cannot tell an
+//!   absence from a removal here. That hazard is `rm --force`'s already and is
+//!   pinned for it; what `rme` adds is that the receipt has no reader. It stands
+//!   rather than being special-cased because absence is what `--force` asks for and
+//!   the common forced run is a real workspace whose scratch work you have decided
+//!   against, where closing the tab is the whole point. Telling the two apart needs
+//!   `target::resolve` to carry whether devpod ever confirmed the workspace, which
+//!   it does not.
 //! - **The parent process, whatever it is.** `getppid()` is the honest answer to
 //!   "which shell asked": it is the interactive one for the case this is for, and
 //!   a script, a subshell or a `nohup` for the cases it is not. There is no way to
@@ -45,10 +60,15 @@ use crate::render;
 pub(crate) fn wanted(after: AfterRemoval, ending: Ending) -> bool {
     match after {
         AfterRemoval::LeaveTheShell => false,
-        // `Done` and nothing else, including `Child(Exit::Code(0))`: a devpod that
-        // exited 0 is not a removal dl agreed happened — see `render::removed`,
-        // where `--force` makes an absent workspace exit 0 too. `Done` is the one
-        // ending the delete path returns when it did what it said.
+        // `Done` and nothing else, including `Child(Exit::Code(0))`: that arm is a
+        // `devpod delete` dl handed the status of back, which is the delete it
+        // refused, and a 0 there would still not be a workspace dl saw go.
+        //
+        // Without `--force`, `Done` is a removal: devpod fails on a workspace it
+        // does not have, so the delete path only reaches it having seen one go.
+        // With `--force` it is established *absence*, which may be a removal and
+        // may be a mistyped path — see the module docs, where that is named rather
+        // than special-cased.
         AfterRemoval::HangUpTheShell => matches!(ending, Ending::Done),
     }
 }
