@@ -1270,12 +1270,15 @@ pub(crate) fn picked(verb: &str, picks: &NonEmpty<Chosen>) -> Vec<String> {
 
 /// `rme`: the shell is about to be hung up, said before the signal that does it.
 ///
-/// **The pid is on the line because there is no way to check it beforehand.**
-/// `getppid()` names an interactive shell for the run this verb is for and
-/// something else entirely for every other run — a subshell that captured dl's
-/// output, a script, a `nohup` — and nothing in the answer tells the two apart. So
-/// the terminal that does not close after `$(dl ws rme)` has the reason on the line
-/// above: what went was the subshell, and this is its pid.
+/// **The pid is on the line because there is no way to check it beforehand, and no
+/// way to predict it either.** `getppid()` names an interactive shell for the run
+/// this verb is for and something else for others — a script, a surviving subshell —
+/// and nothing distinguishes them. Worse, which one it is depends on the shell
+/// rather than on the line: a subshell running a single command is usually replaced
+/// by it, so `$(dl <ws> rme)` signals the shell that typed it and the terminal does
+/// close, while the same line with a redirection leaves a subshell to die instead
+/// (both measured, bash 5 and dash). So this line reports what was signalled rather
+/// than claiming what it was.
 ///
 /// Before the signal rather than after, for [`removing`]'s reason taken to its
 /// limit: there is no "after" on the run that works. The shell reads this line or

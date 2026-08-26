@@ -223,8 +223,8 @@ instead of waiting out the delete and then wanting an `exit`. Only a removal tha
 reaches the hangup: a guard that refused, or a devpod that would not finish, leaves the shell
 standing with the reason on screen. `--force` is the exception, since it asks for absence rather
 than for a removal, so a forced `rme` of a workspace that was never there still closes the
-shell. What it hangs up is `dl`'s parent process, so a subshell or
-a script gets the signal rather than your terminal, and `dl` names the pid it sent it to.
+shell. What it hangs up is `dl`'s parent process, which is not always
+the process you would guess, so `dl` names the pid it sent the signal to.
 [docs/cli.md](docs/cli.md) has the rest.
 
 `kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It

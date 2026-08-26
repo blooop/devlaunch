@@ -652,8 +652,12 @@ keystroke. The removal is the verb's, guard included, and the hangup is only rea
 if it worked — a refusal, or a devpod that would not finish, leaves the shell standing
 with the reason on screen. `--force` is the exception, because it asks for absence
 rather than for a removal: a forced rme of a workspace that was never there succeeds
-and still closes the shell. What is hung up is dl's parent process, so a subshell or a
-script gets the signal instead of your terminal, and dl says which it sent it to.
+and still closes the shell. What is hung up is dl's parent process, and which process that is
+depends on the shell rather than on the line: a subshell running one command is
+usually replaced by it, so $(dl <ws> rme) closes your terminal too, while the same
+line with a redirection leaves a subshell to take the signal. dl prints the pid it
+signalled rather than guessing. A nohup is refused outright, since disarming SIGHUP
+is how a run outlives its terminal in the first place.
 
 --stop is retired, and --autorm is what --rm is now called. Both are still recognised
 and say so.";

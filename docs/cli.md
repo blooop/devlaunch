@@ -283,14 +283,27 @@ that started it and names the pid on the way past.
 Hanging up the shell dl was called from (pid 48213).
 ```
 
-That line is what explains the two runs where nothing closes. `$(dl <ws> rme)` hangs
-up the subshell that captured the output and leaves your terminal alone. Under
-`nohup`, or in a script, the thing that dies is the script. Neither is a failure and
-neither is silent, and in both the workspace is gone, which is what was asked for.
-Two more endings say so in as many words: a parent that had already exited by the
-time `dl` looked prints `rme: dl's parent process has already gone, so there is no
-shell to hang up. The removal is done.`, and a signal the OS refused prints the pid
-and the error beside it.
+**Which process that is depends on the shell, not on the line**, which is the reason
+the pid is printed at all. A shell running a single command in a subshell usually
+*replaces* the subshell with it rather than forking, so `$(dl <ws> rme)` signals the
+shell that typed the line and your terminal closes after all. Write the same line
+with a redirection, or with a `VAR=x` prefix, and the subshell survives to take the
+signal instead. Both measured, on bash 5 and dash. In a script it is the script's
+shell that goes, and your terminal is untouched.
+
+Two endings print instead of the signal, and both say the removal is done: a parent
+that had already exited by the time `dl` looked prints `rme: dl's parent process has
+already gone, so there is no shell to hang up. The removal is done.`, and a signal
+the OS refused prints the pid and the error beside it.
+
+**`nohup dl <ws> rme` is refused outright**, and prints `rme: SIGHUP was already
+ignored when dl started, so the shell stays. The removal is done.` A `nohup` sets
+SIGHUP to `SIG_IGN` and `exec`s in place, so the parent `rme` would signal is the
+terminal `nohup` was typed to outlive. `dl` already honours that inherited ignore
+for its own signal handling, which is what lets a `nohup dl …` survive a closed
+window at all (see [How you exit decides whether it
+fires](#how-you-exit-decides-whether-it-fires)), so sending the signal it refuses to
+act on would be `dl` arguing both sides. The removal still happens.
 
 One thing to know before reaching for it. A shell hung up this way takes its
 background jobs with it, because that is what a shell does on SIGHUP. Use `rme` in

@@ -969,9 +969,10 @@ fn rme_removes_the_workspace_and_hangs_up_the_shell_that_asked() {
     let hung = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rme"]);
 
     hung.was_hung_up();
-    // The pid names the shell and not, say, whatever `dl`'s parent turned out to
-    // be: this is the line a `$(dl ws rme)` reads to find out that what went was
-    // the subshell, so it has to be the pid that really was signalled.
+    // The pid is the shell's own, which is the whole claim of that line: which
+    // process `dl` signals depends on the shell rather than on the line, so a
+    // reader can only find out from the pid, and it has to be the one really
+    // signalled.
     assert!(
         hung.err.contains(&format!(
             "Hanging up the shell dl was called from (pid {}).",

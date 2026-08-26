@@ -36,12 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has gone.
 
   What it hangs up is `dl`'s parent process, because there is no way to ask
-  whether a parent owns a terminal. So `dl` names the pid instead of guessing:
-  `$(dl <ws> rme)` hangs up the subshell that captured the output, under `nohup`
-  it is the script that goes, and the line above says which it was. A shell hung
-  up this way takes its background jobs with it, which is what a shell does on
-  SIGHUP, so `rme` is for the tab that has nothing left in it and `rm` for the one
-  you are still working in.
+  whether a parent owns a terminal, and which process that is depends on the shell
+  rather than on the line: a subshell running one command is usually replaced by
+  it, so `$(dl <ws> rme)` closes your terminal too, while the same line with a
+  redirection leaves a subshell to take the signal. So `dl` names the pid instead
+  of guessing. `nohup dl <ws> rme` is refused outright and says so, because
+  disarming SIGHUP is how a run outlives its terminal in the first place and `dl`
+  already honours that for its own handlers. A shell hung up this way takes its
+  background jobs with it, which is what a shell does on SIGHUP, so `rme` is for
+  the tab that has nothing left in it and `rm` for the one you are still working
+  in.
 
   Neither of the two spellings already there: `rm` deletes now, `--rm` deletes
   when a session ends, and this one deletes now and then ends the *shell*.

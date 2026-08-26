@@ -35,12 +35,16 @@
 //!   against, where closing the tab is the whole point. Telling the two apart needs
 //!   `target::resolve` to carry whether devpod ever confirmed the workspace, which
 //!   it does not.
-//! - **The parent process, whatever it is.** `getppid()` is the honest answer to
-//!   "which shell asked": it is the interactive one for the case this is for, and
-//!   a script, a subshell or a `nohup` for the cases it is not. There is no way to
-//!   tell a terminal's shell from any other parent, so `dl` names the pid it
-//!   signalled instead of guessing — `$(dl ws rme)` hangs up the subshell that
-//!   captured it and leaves the terminal standing, and the line says so.
+//! - **The parent process, whatever it is, and that is less predictable than it
+//!   looks.** There is no way to ask whether a parent owns a terminal, so `dl`
+//!   names the pid it signalled instead of guessing. The reason it must is that a
+//!   shell often does not leave a process where you would expect one: a subshell
+//!   running a single command is usually *replaced* by it rather than forking, so
+//!   `$(dl <ws> rme)` signals the shell that typed the line and closes the
+//!   terminal (measured: bash 5 and dash both). Add a redirection or a
+//!   `VAR=x` prefix and the subshell survives to take the signal instead
+//!   (measured). Nothing in the line says which, so the pid is the only answer
+//!   there is. A `nohup` is the one form `dl` refuses outright, above.
 //!
 //! Nothing here is reachable from `rm`: [`crate::cli::AfterRemoval`] is the only
 //! way in, and the grammar builds `HangUpTheShell` for one word.
