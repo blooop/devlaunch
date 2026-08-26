@@ -353,8 +353,8 @@ fn a_tag_no_remote_branch_reaches_any_more_is_not_unsaved_work() {
     // the only ref left reaching those commits. The remote carries the tag, the
     // clone fetched it, nothing about it is unsaved — but no `refs/remotes/*`
     // reaches it, so a ref set that spans `refs/tags` counts every commit under
-    // it as work that exists nowhere else. kinisi_ros has 265 of them, which is
-    // what six of eight workspaces on one host reported, each of them wrongly.
+    // it as work that exists nowhere else. kinisi_ros has 265 of them, which is the
+    // floor under what six of eight workspaces on one host reported, all wrongly.
     let fixture = Fixture::new();
     let clone = fixture.clone();
     git(&clone, &["checkout", "-q", "-b", "release"]);

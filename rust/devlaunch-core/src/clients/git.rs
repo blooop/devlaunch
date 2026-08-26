@@ -503,8 +503,8 @@ impl<'r> Git<'r> {
     /// reads as unpushed, and that is the ordinary state of a repository which
     /// tags releases on branches it then deletes: one such repository carries 265
     /// commits reachable only from its tags, so six of the eight workspaces on a
-    /// host reported "265 unpushed commit(s)" each, and not one commit of it was
-    /// real. The first reading of that was a clone kept when it could have gone,
+    /// host refused to be deleted, reporting between 265 and 269 unpushed commits
+    /// apiece, and not one commit of it was real. The first reading of that was a clone kept when it could have gone,
     /// paid for in disk against the other direction's cost of the work — but a
     /// guard that fires on every clone of a repository forever is not paying disk
     /// for safety. It teaches `--force` as the ordinary way to delete a workspace,

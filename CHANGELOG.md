@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included. Tag a release, merge the branch, delete it — the ordinary shape of a
   release — and the tag is the last ref reaching those commits, so no
   `refs/remotes/*` contains them and the guard reads them as work that exists
-  nowhere else. One repository carries 265 such commits. Six of the eight
-  workspaces on a host reported this, none of it real:
+  nowhere else. One repository carries 265 such commits, and six of the eight
+  workspaces on a host would not be deleted because of them, reporting 265 to 269
+  apiece and none of it real:
 
   ```
   kinisi-ros-feat-bt-with-wheels-on-brake-4ixn holds 265 unpushed commit(s).

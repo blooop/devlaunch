@@ -530,9 +530,9 @@ else either.
 It does **not** reach local tags, and that is the one exclusion (#485). A tag your
 remote carries, but which no remote *branch* reaches any more, would otherwise read
 as unpushed, and a repository that tags releases on branches it then deletes has
-those by the hundred. One does: 265 commits reachable only from its tags, reported
-as 265 unpushed commits against six of the eight workspaces on a host, none of it
-real. A guard in that state is not a clone kept for the price of some disk. It is a
+those by the hundred. One does: 265 commits reachable only from its tags, which is
+what stood between six of the eight workspaces on a host and being deleted, at 265
+to 269 unpushed commits apiece and none of it real. A guard in that state is not a clone kept for the price of some disk. It is a
 guard that has to be `--force`d past to delete anything, until `--force` is what you
 type without reading, over the clone that did hold an hour of work as readily as
 over this one. What the exclusion gives up is a commit reachable only from a local
