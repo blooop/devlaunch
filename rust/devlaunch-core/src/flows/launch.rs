@@ -1105,6 +1105,21 @@ pub trait Provision {
         occasion: PassOccasion,
         title: Option<&str>,
     ) -> Result<Option<ClaudeConfig>, DevpodMissing>;
+
+    /// What the last pass saw of this workspace's Claude config directory, from the
+    /// host's own records and without a round trip.
+    ///
+    /// Asked on the one path that opens a session without provisioning anything:
+    /// attaching to a workspace that is already up and finished creating. That is
+    /// the common case, so answering `None` there would leave the credential working
+    /// only on the launch that created the workspace -- which is exactly the bug
+    /// this found.
+    ///
+    /// `None` by default, because an implementation with no host-side records has
+    /// nothing to remember and no login should be forwarded on a guess.
+    fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
+        None
+    }
 }
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
@@ -3245,6 +3260,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         placement: &Placement,
         command: Option<&str>,
     ) -> Result<Launched, LaunchAborted> {
+        // A warm attach runs no pass, so nothing has observed this container's Claude
+        // config directory during this launch. The host's own records are what stand
+        // in, and they are only consulted when the launch itself learned nothing:
+        // a pass that just ran is always the better answer.
+        if self.claude_seen.get().is_none() {
+            self.claude_seen
+                .set(self.provision.remembered_claude(placement.workspace_id()));
+        }
         let title = TerminalTitle::from_host(self.host, placement.title());
         let context = SessionContext::new(
             self.context.runner(),
@@ -3590,6 +3613,9 @@ mod tests {
         /// directory. `None` by default, which is what every test that is not about
         /// the Claude login wants: nothing forwarded.
         claude_seen: Option<ClaudeConfig>,
+        /// What the host's records say about a workspace no pass ran for, which is
+        /// what `dl`'s real implementation reads out of its verdict cache.
+        claude_remembered: Option<ClaudeConfig>,
     }
 
     impl RecordingProvision {
@@ -3639,6 +3665,10 @@ mod tests {
                 return Err(DevpodMissing);
             }
             Ok(self.claude_seen)
+        }
+
+        fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
+            self.claude_remembered
         }
     }
 
@@ -6249,6 +6279,121 @@ mod tests {
             chatter: nowhere,
             said: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_warm_attach_forwards_the_claude_login_the_host_remembers() {
+        // The path that runs no pass at all: a workspace that is up and finished
+        // creating goes straight to a session. Nothing observes its config directory
+        // during that launch, so without the host's own records the credential worked
+        // only on the launch that *created* the workspace. Found by launching a real
+        // workspace twice, which is the only place it shows.
+        let workspace =
+            WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        let home = tempfile::tempdir().expect("a scratch home");
+        std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
+        std::fs::write(
+            home.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-warm"}}"#,
+        )
+        .expect("a credential");
+        scene.host.home = Some(home.path().to_path_buf());
+
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        parts.provision.claude_remembered = Some(ClaudeConfig::Ours);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "octocat/Hello-World@master",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+
+        let ssh = scene
+            .runner
+            .calls_to("devpod")
+            .into_iter()
+            .find(|call| call.args().first().map(String::as_str) == Some("ssh"))
+            .expect("a session");
+        assert!(
+            ssh.argv().contains(&claude::TOKEN_VAR.to_owned()),
+            "{ssh:?}"
+        );
+        assert_eq!(
+            ssh.invocation()
+                .env
+                .entries
+                .get(claude::TOKEN_VAR)
+                .map(String::as_str),
+            Some("sk-ant-oat01-warm")
+        );
+    }
+
+    #[test]
+    fn a_warm_attach_with_nothing_remembered_forwards_nothing() {
+        // The default `RecordingProvision` remembers nothing, which is what a host
+        // that has never provisioned this workspace looks like.
+        let workspace =
+            WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        let home = tempfile::tempdir().expect("a scratch home");
+        std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
+        std::fs::write(
+            home.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-warm"}}"#,
+        )
+        .expect("a credential");
+        scene.host.home = Some(home.path().to_path_buf());
+
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+        let _ = launch.run(
+            "octocat/Hello-World@master",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        let ssh = scene
+            .runner
+            .calls_to("devpod")
+            .into_iter()
+            .find(|call| call.args().first().map(String::as_str) == Some("ssh"))
+            .expect("a session");
+        assert!(
+            !ssh.argv().contains(&claude::TOKEN_VAR.to_owned()),
+            "{ssh:?}"
+        );
     }
 
     #[test]

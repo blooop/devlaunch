@@ -2142,13 +2142,12 @@ fn provision(
     if let (PassOccasion::TopUp, Some(verdicts)) = (occasion, verdicts)
         && verdicts.trusted(workspace, switches)
     {
-        // The marker carries what the pass that wrote it saw of the Claude config
-        // directory, which is the whole reason it carries anything beyond a verdict:
-        // no probe ran here, and the session that follows still has to decide
-        // whether to forward the host's login.
+        // No probe ran here, and the session that follows still has to decide
+        // whether to forward the host's login, so the answer comes from what the
+        // last pass remembered.
         return Ok(Pass {
             provisioning: Provisioning::CachedProvisioned,
-            claude: verdicts.remembered(workspace),
+            claude: verdicts.remembered_claude(workspace),
         });
     }
 
@@ -2159,6 +2158,14 @@ fn provision(
         Ok(found) => found,
         Err(refusal) => return refused(workspace, refusal, events),
     };
+
+    // Before any of the branches below, and outside all of them, because every one
+    // of them ends in a session and the answer does not depend on which. A pass that
+    // could not tell writes that too, so a stale answer cannot outlive the container
+    // it was true of.
+    if let Some(verdicts) = verdicts {
+        verdicts.remember_claude(workspace, found.claude);
+    }
 
     if let ToolsSwitch::Skip = switches.tools {
         events.say(ProvisionEvent::ProvisioningDisabled {
@@ -2171,12 +2178,8 @@ fn provision(
         // The one outcome worth remembering, and the reasons the others are not are
         // in [`verdict_cache`]'s own note.
         //
-        // What the pass saw of the Claude config directory travels with it, `None`
-        // included: the marker has a word for "ran and could not tell", so a
-        // container whose probe cannot answer that question still gets its round
-        // trip saved and still has no login forwarded into it.
         if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
-            verdicts.record(workspace, observed, switches, found.claude);
+            verdicts.record(workspace, observed, switches);
         }
         return Ok(found.into_pass(Provisioning::AlreadyProvisioned));
     }

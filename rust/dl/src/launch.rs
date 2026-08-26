@@ -186,6 +186,10 @@ impl Provision for ToolProvisioning {
             pass.claude()
         })
     }
+
+    fn remembered_claude(&self, workspace_id: &str) -> Option<provision::ClaudeConfig> {
+        self.verdicts.remembered_claude(workspace_id)
+    }
 }
 
 /// One launch, rendered.
