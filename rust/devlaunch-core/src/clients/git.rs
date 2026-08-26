@@ -498,20 +498,45 @@ impl<'r> Git<'r> {
     /// `--remotes` rather than any branch's upstream, so work pushed under another
     /// name, or merged and fetched back, is correctly not counted as lost.
     ///
-    /// `--all` spans `refs/tags` too, and one consequence is worth naming because
-    /// it is a choice: a tag reachable from no remote *branch* reads as unpushed
-    /// even when the remote carries the tag itself, which is the ordinary state of
-    /// a repository that tags releases on branches it then deletes. That is a
-    /// report of work as unsaved when it is saved, and it is the direction this
-    /// answer is meant to fail in — a clone kept costs disk, a clone deleted costs
-    /// the work. Narrowing the ref set to buy a tidier report would trade the
-    /// first cost for the second.
+    /// **`refs/tags` is the one thing `--all` reaches that is excluded, and #485
+    /// is why.** A tag the remote carries but no remote *branch* reaches any more
+    /// reads as unpushed, and that is the ordinary state of a repository which
+    /// tags releases on branches it then deletes: one such repository carries 265
+    /// commits reachable only from its tags, so six of the eight workspaces on a
+    /// host refused to be deleted, reporting between 265 and 269 unpushed commits
+    /// apiece, and not one commit of it was real. The first reading of that was a clone kept when it could have gone,
+    /// paid for in disk against the other direction's cost of the work — but a
+    /// guard that fires on every clone of a repository forever is not paying disk
+    /// for safety. It teaches `--force` as the ordinary way to delete a workspace,
+    /// and a habit of `--force` is exactly the clone with real work in it going.
+    ///
+    /// `--exclude` binds to the `--all` that follows it and drops the tags out of
+    /// it alone, so every other ref `--all` reaches is still asked about: local
+    /// branches, every worktree's HEAD including detached ones, and `refs/stash`.
+    /// What is given up is one shape of work, and #487 is the ticket for it: a
+    /// commit reachable *only* from a local tag, with no branch, worktree HEAD or
+    /// stash in the clone naming it as well. Tag before a rewrite, move the branch
+    /// off it, and that clone now reads as nothing to lose. The two cases are not
+    /// distinguishable from inside the clone, because remote-tracking refs carry no
+    /// tags: there is no local mark saying which of `refs/tags/*` arrived in a
+    /// fetch. What does know is the bare cache this clone came from, which is a
+    /// path this seam is not given.
     ///
     /// Answers on a clone with no refs at all, where there is nothing to be
     /// unpushed: git exits 0 with no output rather than refusing, so a clone of an
     /// empty repository needs no gate here and does not get one.
     pub(crate) fn unpushed_commits(&self, clone: &Path) -> GitAnswer<String> {
-        self.about(clone, &["log", "--oneline", "--all", "--not", "--remotes"])
+        self.about(
+            clone,
+            &[
+                "log",
+                "--oneline",
+                "--exclude=refs/tags/*",
+                "--all",
+                "--not",
+                "--remotes",
+            ],
+        )
     }
 
     // ------------------------------------------------------- the bare cache

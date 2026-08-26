@@ -134,12 +134,21 @@ fn the_pinned_verbs_ask_exactly_what_python_asked() {
 
     fake.forget_calls();
     git.unpushed_commits(dir.path());
-    // Order is load-bearing: `--not` flips every ref after it, so `--all` comes
-    // first. `log --oneline --not --remotes --all` is silently always empty,
-    // which would report every clone as safe to delete.
+    // Order is load-bearing twice over. `--not` flips every ref after it, so
+    // `--all` comes first: `log --oneline --not --remotes --all` is silently
+    // always empty, which would report every clone as safe to delete. And
+    // `--exclude` binds to the *next* ref-set option, so it has to sit
+    // immediately before `--all` to take the tags out of it (#485).
     assert_eq!(
         strs(&argv(&fake))[3..],
-        ["log", "--oneline", "--all", "--not", "--remotes"]
+        [
+            "log",
+            "--oneline",
+            "--exclude=refs/tags/*",
+            "--all",
+            "--not",
+            "--remotes"
+        ]
     );
 }
 

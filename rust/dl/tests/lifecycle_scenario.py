@@ -95,6 +95,12 @@ UNWRITABLE_LEAF = "devlaunch-gone-locked"
 UNPUSHED_LEAF = "devlaunch-unpushed-committed"
 UNPUSHED_WS = "devlaunch-unpushed-committed"
 
+# --tagged-release: a recorded clone that is clean and fully pushed, holding a tag
+# the remote carries on a branch the remote no longer has. Nothing in it is
+# unsaved; the tag is simply the last ref reaching those commits.
+TAGGED_LEAF = "devlaunch-tagged-release"
+TAGGED_WS = "devlaunch-tagged-release"
+
 # --sealed-cache: the cache root itself refuses, so a purge removes what it can and
 # names what it could not. Skipped under root, which can unlink anything.
 
@@ -301,6 +307,30 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
             UNPUSHED_WS, {"localFolder": str(held)}, OLDER, "Stopped"
         )
 
+    if "tagged-release" in wanted:
+        # devlaunch#485. The clone tags a release, pushes branch and tag, and then
+        # the branch goes from both sides the way a merged release branch does. The
+        # tag is on the remote and in the clone, and no `refs/remotes/*` reaches the
+        # commit under it any more — so a guard that asks about `refs/tags` reads a
+        # clean, fully pushed clone as holding work that exists nowhere else.
+        tagged = _clone(root, origin, repos / "blooop" / "devlaunch" / TAGGED_LEAF, "release")
+        (tagged / "shipped.txt").write_text("released\n", encoding="utf-8")
+        git(tagged, "add", "-A")
+        git(tagged, "commit", "-q", "-m", "the release")
+        git(tagged, "push", "-q", "origin", "release")
+        git(tagged, "tag", "v1")
+        git(tagged, "push", "-q", "origin", "v1")
+        git(tagged, "push", "-q", "origin", ":release")
+        git(tagged, "checkout", "-q", "-B", "main", "origin/main")
+        git(tagged, "branch", "-qD", "release")
+        git(tagged, "remote", "prune", "origin")
+        worktrees["blooop/devlaunch/release"] = _record(
+            "blooop", "devlaunch", "release", tagged, TAGGED_WS
+        )
+        workspaces[TAGGED_WS] = _workspace(
+            TAGGED_WS, {"localFolder": str(tagged)}, OLDER, "Stopped"
+        )
+
     if "not-a-clone" in wanted:
         # A recorded clone directory that is there and is not a repository git can
         # read — an interrupted delete, or a `.git` a container wrote as another
@@ -471,6 +501,7 @@ if __name__ == "__main__":
             "usage: lifecycle_scenario.py <root> <devpod_shim.py> [--prunable] "
             "[--stale-record] [--orphan] [--unplaceable] [--unwritable] "
             "[--no-cache] [--no-workspaces] [--not-a-clone] [--unpushed] "
+            "[--tagged-release] "
             "[--sealed-cache] [--symlinked-cache] [--v1-cache] "
             "[--devcontainer-volumes]"
         )
@@ -485,6 +516,7 @@ if __name__ == "__main__":
         "no-workspaces",
         "not-a-clone",
         "unpushed",
+        "tagged-release",
         "sealed-cache",
         "symlinked-cache",
         "v1-cache",

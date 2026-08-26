@@ -16,6 +16,7 @@ use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
+use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::LaunchNotice;
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteOutcome, Guarded, Insistence, LifecycleNotice, PruneError, PruneOutcome,
@@ -31,7 +32,7 @@ use crate::launch::{self, Family, Reached};
 use crate::render;
 use crate::select;
 use crate::session::{self, Records, StartupError};
-use crate::target::{self, Unaddressable};
+use crate::target::{self, Unaddressable, Vetting};
 
 /// How a command ended, as an exit code.
 ///
@@ -522,6 +523,10 @@ fn render_workspace<'r>(
             devcontainer_ignored(devcontainer.is_some(), "stop");
             render_stop(runner, context, refresh, &mut cold, target)
         }
+        Family::Kill => {
+            devcontainer_ignored(devcontainer.is_some(), "kill");
+            render_kill(runner, context, &mut cold, target)
+        }
         Family::Remove { force } => {
             devcontainer_ignored(devcontainer.is_some(), "rm");
             let insistence = if force {
@@ -648,7 +653,7 @@ fn render_stop<'r>(
     cold: &mut ColdPath<'r>,
     target: &str,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, cold, target) {
+    let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };
@@ -664,6 +669,74 @@ fn render_stop<'r>(
     }
 }
 
+/// `dl <ws> kill` — the hammer for a workspace that will not answer.
+///
+/// **No [`Refresh`], unlike every other lifecycle verb.** The completion cache
+/// lists workspaces, and this creates none, removes none and changes no
+/// workspace's state as devpod records it: a kill that unwedges a workspace
+/// leaves devpod's own listing saying exactly what it said before. Asking for a
+/// refresh would spawn a background `devpod list` on a host somebody has just
+/// told us is wedged.
+///
+/// **The target is resolved without asking devpod anything, wherever it can be.**
+/// Everything else in the family resolves through a `devpod status`, and here
+/// that would be the one call the verb must not make: the workspace somebody
+/// types this at is the workspace whose devpod has stopped answering, and a
+/// `status` on it has no deadline behind it. A bare workspace id needs no round
+/// trip at all — the name *is* the id, and [`target::Vetting::Unnecessary`] is
+/// what says so — while `dl owner/repo kill` still has to ask devpod which
+/// workspace the triple resolved to, and that ask carries a deadline and falls
+/// back to the derived id rather than refusing when it runs out. The resolution
+/// is still the shared one, so it cannot disagree with `stop`'s about which
+/// workspace this is; what changed is only how long it may take and how much of
+/// it is worth a round trip.
+fn render_kill<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cold: &mut ColdPath<'r>,
+    target: &str,
+) -> Ending {
+    let addressed = match target::resolve(runner, context, cold, target, Vetting::Unnecessary) {
+        Err(refused) => return refuse_target(&refused),
+        Ok(addressed) => addressed,
+    };
+    say_launch(&addressed.notices);
+    let workspace_id = addressed.workspace_id;
+    eprintln!("{}", render::killing(&workspace_id));
+    let killed = kill::workspace_kill(
+        runner,
+        // Resolved here rather than in core, as every other environment answer
+        // is. `None` is a machine with no home directory, where devpod keeps no
+        // records and so addresses no busy marker.
+        DevpodHome::locate().as_ref(),
+        &workspace_id,
+        // The grace period, really spent. Core takes it as a function so its own
+        // tests do not have to.
+        &mut std::thread::sleep,
+    );
+    match killed {
+        kill::Killed::Unavailable(cannot) => {
+            eprintln!("{}", render::kill_unavailable(&cannot));
+            Ending::Refused
+        }
+        kill::Killed::Swept(sweep) => {
+            for line in render::killed(&workspace_id, &sweep) {
+                eprintln!("{line}");
+            }
+            // Exit 0 means the workspace is free, which is the only thing a script
+            // wrapping this verb can act on: a `dl <ws> kill && dl <ws>` that ran
+            // the launch into a lock somebody else still holds would be back where
+            // it started, with one more orphan behind it. The sweep's own
+            // [`kill::Holding`] rather than a reading of its lists, so the code and
+            // the closing line cannot disagree.
+            match sweep.holding {
+                kill::Holding::Free => Ending::Done,
+                kill::Holding::StillHeld { .. } => Ending::Refused,
+            }
+        }
+    }
+}
+
 /// `dl <ws> rm [--force]` — the guard, the delete, and the clone with it.
 #[allow(clippy::too_many_arguments)]
 fn render_remove<'r>(
@@ -675,7 +748,7 @@ fn render_remove<'r>(
     target: &str,
     insistence: Insistence,
 ) -> Ending {
-    let addressed = match target::resolve(runner, context, cold, target) {
+    let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
         Err(refused) => return refuse_target(&refused),
         Ok(addressed) => addressed,
     };

@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::clients::claude;
-use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun};
+use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun, Patience};
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::ssh;
@@ -1343,7 +1343,7 @@ fn up_under_stage(
 /// stage and [`crate::clients::devpod`] spans the round trip inside it, so the
 /// measurement is already the shape it should be wherever this is called from.
 fn is_running(runner: &dyn Runner, workspace_id: &str) -> bool {
-    lifecycle::workspace_state(runner, workspace_id)
+    lifecycle::workspace_state(runner, workspace_id, Patience::AsLongAsItTakes)
         .as_ref()
         .is_ok_and(ContainerState::is_running)
 }
@@ -2516,6 +2516,7 @@ pub fn resolve_triple(
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
     notices: &mut dyn Notices<LaunchNotice>,
+    patience: Patience,
 ) -> Result<Resolution, NotRun> {
     let derived = workspace.value();
     let triple = (workspace.owner(), workspace.repo(), workspace.git_ref());
@@ -2525,6 +2526,7 @@ pub fn resolve_triple(
         &derived,
         || recorded_id(cold, triple),
         &mut as_lifecycle(notices),
+        patience,
     )?;
     Ok(match known {
         KnownWorkspace::Known {
@@ -2926,7 +2928,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         &mut self,
         name: String,
     ) -> Result<Result<Placement, LaunchRefusal>, LaunchAborted> {
-        let state = lifecycle::workspace_state(self.context.runner(), &name);
+        let state =
+            lifecycle::workspace_state(self.context.runner(), &name, Patience::AsLongAsItTakes);
         if let Ok(state) = state {
             return Ok(Ok(Placement::Known {
                 title: self.recognised_title(&name),
@@ -2981,8 +2984,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         };
         // A devpod that could not be run ends the launch here, before the clone:
         // it is the probe Python raises `DevpodNotInstalled` out of.
-        let resolved = resolve_triple(self.context, self.cold, &workspace, &mut *self.notices)
-            .map_err(LaunchAborted::DevpodNotRun)?;
+        let resolved = resolve_triple(
+            self.context,
+            self.cold,
+            &workspace,
+            &mut *self.notices,
+            Patience::AsLongAsItTakes,
+        )
+        .map_err(LaunchAborted::DevpodNotRun)?;
         match resolved {
             Resolution::Warm { placement } => Ok(Ok(placement)),
             Resolution::Cold { workspace } => {
@@ -3172,9 +3181,13 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// for, and changing it here would be a behaviour change wearing a port's
     /// clothes.
     fn run_dotfiles(&mut self, placement: &Placement) -> Result<Launched, LaunchAborted> {
-        let running = lifecycle::workspace_state(self.context.runner(), placement.workspace_id())
-            .as_ref()
-            .is_ok_and(ContainerState::is_running);
+        let running = lifecycle::workspace_state(
+            self.context.runner(),
+            placement.workspace_id(),
+            Patience::AsLongAsItTakes,
+        )
+        .as_ref()
+        .is_ok_and(ContainerState::is_running);
         if !running {
             self.notices.say(LaunchNotice::StartingForDotfiles {
                 workspace_id: placement.workspace_id().to_owned(),
@@ -6140,8 +6153,13 @@ mod tests {
         let scene = Scene::new().with_running(&workspace.value());
         let mut context = CommandContext::new(&scene.runner);
 
-        let resolution =
-            resolve_triple(&mut context, &mut NeverCold, &workspace, &mut no_notices());
+        let resolution = resolve_triple(
+            &mut context,
+            &mut NeverCold,
+            &workspace,
+            &mut no_notices(),
+            Patience::AsLongAsItTakes,
+        );
 
         assert_eq!(
             resolution,
@@ -6196,7 +6214,13 @@ mod tests {
         let mut cold = RealCold::new(scene.cache_dir(), git);
         let mut context = CommandContext::new(&scene.runner);
 
-        let resolution = resolve_triple(&mut context, &mut cold, &workspace, &mut no_notices());
+        let resolution = resolve_triple(
+            &mut context,
+            &mut cold,
+            &workspace,
+            &mut no_notices(),
+            Patience::AsLongAsItTakes,
+        );
 
         assert_eq!(
             resolution,
@@ -6218,7 +6242,13 @@ mod tests {
         let mut cold = RealCold::new(scene.cache_dir(), git);
         let mut context = CommandContext::new(&scene.runner);
 
-        let resolution = resolve_triple(&mut context, &mut cold, &workspace, &mut no_notices());
+        let resolution = resolve_triple(
+            &mut context,
+            &mut cold,
+            &workspace,
+            &mut no_notices(),
+            Patience::AsLongAsItTakes,
+        );
 
         assert_eq!(
             resolution,

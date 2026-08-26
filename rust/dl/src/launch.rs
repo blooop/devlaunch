@@ -62,6 +62,12 @@ use crate::render;
 pub(crate) enum Family {
     /// `dl <ws> stop`.
     Stop,
+    /// `dl <ws> kill`.
+    ///
+    /// Its own family rather than a variant of [`Family::Stop`], because it asks
+    /// nothing of devpod at all: `stop` is a `devpod stop` and needs a devpod that
+    /// answers, and this is what is left when it does not.
+    Kill,
     /// `dl <ws> rm`, and whether `--force` was typed.
     Remove { force: bool },
     /// Everything that opens a workspace, and whether the workspace is to go once
@@ -83,6 +89,7 @@ pub(crate) enum Family {
 pub(crate) fn family(verb: &Verb) -> Family {
     let (launched, rm) = match verb {
         Verb::Stop => return Family::Stop,
+        Verb::Kill => return Family::Kill,
         Verb::Remove { force } => return Family::Remove { force: *force },
         Verb::Attach { rm } => (LaunchVerb::Attach { command: None }, *rm),
         // Python's `" ".join(args[2:])`: the words are rejoined with single spaces

@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.19.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.20.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -177,7 +177,7 @@ checked out in the clone right now, spelled in full. Pick the row rather than co
 carries the real id underneath. Where two rows would read alike, both gain a fourth column
 holding their whole id, so that picking one cannot delete the other.
 
-For the verbs that finish on their own (`up`, `stop`, `rm`, `code`, `dotfiles`) TAB marks any
+For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `code`, `dotfiles`) TAB marks any
 number of rows and Enter applies the verb to each, and the line above the matches says so. The
 forms that end in a session (`dl`, `-- <command>`, `restart`, `recreate`, `reset`) take exactly
 one.
@@ -198,6 +198,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws>` | Open a shell in it |
 | `dl <ws> up` | Start it without attaching, to prewarm a container |
 | `dl <ws> stop` | Stop it. Frees memory, keeps disk |
+| `dl <ws> kill` | Kill whatever is holding a workspace that will not answer |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
 | `dl <ws> code` | Open it in VS Code |
 | `dl <ws> restart` | Stop and start, no rebuild |
@@ -214,6 +215,13 @@ opens the selector.
 now; `dl <ws> --rm` deletes once the session ends, the way `docker run --rm` does. Both stop at
 work that exists nowhere else: a clone with uncommitted or unpushed changes is kept and named,
 and `dl <ws> rm --force` is how you override that.
+
+`kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It
+sweeps the host instead of asking devpod: it kills the host processes still holding the
+workspace whose own parent has died, clears devpod's stale busy marker once nothing is left
+building, kills any container the workspace still has running, and prints every one of them. It
+exits 0 only when nothing is left holding the workspace, and it never touches the lock file
+itself. Nothing it does waits on devpod without a deadline, which is the point of having it.
 
 `--stop` and the `prune` verb are retired. Both are still recognised and print what to use
 instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including which exits fire it.
@@ -238,7 +246,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.19.0
+dl 0.20.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means

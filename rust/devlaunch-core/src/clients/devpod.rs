@@ -138,9 +138,8 @@ impl Call {
         self
     }
 
-    /// Only this module's tests set a bound directly; each verb above carries
-    /// its own.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// One verb sets a bound: `dl <ws> kill`'s resolution, through
+    /// [`Patience::UpTo`]. Every other devpod call waits as long as devpod does.
     #[must_use]
     pub(crate) fn with_timeout(mut self, limit: Duration) -> Self {
         self.timeout = Some(limit);
@@ -508,12 +507,39 @@ pub enum StatusUnreadable {
     },
 }
 
+/// How long a caller will wait for one `devpod status` to answer.
+///
+/// A parameter rather than one bound written into the call, because the two
+/// callers want opposite things of it. A launch is asking devpod to *work*: a
+/// provider that takes half a minute to describe a machine on the other side of
+/// an ssh connection is slow rather than broken, and a deadline there would fail
+/// a launch that was going to succeed. `dl <ws> kill` runs *because* something on
+/// this host has stopped answering, so the call it opens with is exactly the one
+/// that must not join the wedge — [`super::ps`] bounds its own read of the
+/// process table on that argument, and the argument does not stop holding one
+/// call earlier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub enum Patience {
+    /// However long devpod takes. What every caller but the kill's resolution
+    /// wants.
+    AsLongAsItTakes,
+    /// Abandon the call after this long, which answers
+    /// [`StatusUnreadable::NotRun`] carrying [`std::io::ErrorKind::TimedOut`].
+    UpTo(Duration),
+}
+
 /// The container state devpod reports for one workspace.
 pub(crate) fn status(
     runner: &dyn Runner,
     workspace_id: &str,
+    patience: Patience,
 ) -> Result<ContainerState, StatusUnreadable> {
     let call = Call::new(["status", workspace_id, "--output", "json"]);
+    let call = match patience {
+        Patience::AsLongAsItTakes => call,
+        Patience::UpTo(limit) => call.with_timeout(limit),
+    };
     let answer = capture(runner, &call).map_err(StatusUnreadable::NotRun)?;
     if !answer.succeeded() {
         return Err(StatusUnreadable::Failed {
@@ -1278,7 +1304,7 @@ mod tests {
 
         let labels = spans_of(|| {
             let _ = list_workspaces(&fake);
-            let _ = status(&fake, "myws");
+            let _ = status(&fake, "myws", Patience::AsLongAsItTakes);
             let _ = run(&fake, &Call::new(["up", "myws", "--ide", "none"]));
             let _ = session(&fake, &Call::new(["ssh", "myws"]), &mut |_| {});
         });
@@ -1530,7 +1556,7 @@ mod tests {
         let fake = ScriptedRunner::new()
             .with_script(["devpod", "status"], Response::stdout(RUNNING_STATUS));
 
-        let state = status(&fake, "myws").expect("devpod answered");
+        let state = status(&fake, "myws", Patience::AsLongAsItTakes).expect("devpod answered");
 
         assert_eq!(state, ContainerState::Running);
         assert_eq!(
@@ -1557,7 +1583,10 @@ mod tests {
                 Response::stdout(format!("{{\"state\":\"{word}\"}}\n")),
             );
 
-            assert_eq!(status(&fake, "myws"), Ok(expected));
+            assert_eq!(
+                status(&fake, "myws", Patience::AsLongAsItTakes),
+                Ok(expected)
+            );
         }
     }
 
@@ -1571,7 +1600,7 @@ mod tests {
         );
 
         assert_eq!(
-            status(&fake, "myws"),
+            status(&fake, "myws", Patience::AsLongAsItTakes),
             Ok(ContainerState::Unknown("Hibernating".to_owned()))
         );
     }
@@ -1589,7 +1618,8 @@ mod tests {
             ),
         );
 
-        let refused = status(&fake, "never-heard-of-it").expect_err("no such workspace");
+        let refused = status(&fake, "never-heard-of-it", Patience::AsLongAsItTakes)
+            .expect_err("no such workspace");
 
         match refused {
             StatusUnreadable::Failed { exit, stderr } => {
@@ -1607,7 +1637,7 @@ mod tests {
             Response::stdout("Error: no context\n"),
         );
 
-        match status(&fake, "myws").expect_err("not readable") {
+        match status(&fake, "myws", Patience::AsLongAsItTakes).expect_err("not readable") {
             StatusUnreadable::NotJson { output, reason } => {
                 assert_eq!(output, "Error: no context\n");
                 assert!(!reason.is_empty(), "the parser said something");
@@ -1623,7 +1653,7 @@ mod tests {
             Response::stdout("{\"id\":\"myws\"}\n"),
         );
 
-        match status(&fake, "myws").expect_err("not readable") {
+        match status(&fake, "myws", Patience::AsLongAsItTakes).expect_err("not readable") {
             StatusUnreadable::NoState { output } => assert!(output.contains("myws")),
             other => panic!("expected a missing state, got {other:?}"),
         }
@@ -2297,7 +2327,7 @@ mod tests {
         let fake = ScriptedRunner::new().with_missing("devpod");
 
         assert_eq!(
-            status(&fake, "myws").expect_err("devpod is absent"),
+            status(&fake, "myws", Patience::AsLongAsItTakes).expect_err("devpod is absent"),
             StatusUnreadable::NotRun(NotRun::NotInstalled)
         );
     }
