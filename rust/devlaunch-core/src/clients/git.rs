@@ -513,9 +513,14 @@ impl<'r> Git<'r> {
     /// `--exclude` binds to the `--all` that follows it and drops the tags out of
     /// it alone, so every other ref `--all` reaches is still asked about: local
     /// branches, every worktree's HEAD including detached ones, and `refs/stash`.
-    /// What is given up is one shape of work — a commit reachable *only* from a
-    /// local tag, with no branch, worktree HEAD or stash in the clone naming it
-    /// as well.
+    /// What is given up is one shape of work, and #487 is the ticket for it: a
+    /// commit reachable *only* from a local tag, with no branch, worktree HEAD or
+    /// stash in the clone naming it as well. Tag before a rewrite, move the branch
+    /// off it, and that clone now reads as nothing to lose. The two cases are not
+    /// distinguishable from inside the clone, because remote-tracking refs carry no
+    /// tags: there is no local mark saying which of `refs/tags/*` arrived in a
+    /// fetch. What does know is the bare cache this clone came from, which is a
+    /// path this seam is not given.
     ///
     /// Answers on a clone with no refs at all, where there is nothing to be
     /// unpushed: git exits 0 with no output rather than refusing, so a clone of an

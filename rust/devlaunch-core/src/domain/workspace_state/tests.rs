@@ -386,6 +386,43 @@ fn a_tag_no_remote_branch_reaches_any_more_is_not_unsaved_work() {
 }
 
 #[test]
+fn a_commit_only_an_unpushed_local_tag_reaches_is_given_up() {
+    // The case the tag exclusion answers wrongly, and #487 is the ticket for it.
+    // It is asserted rather than left to the doc comment because it is a cost this
+    // module agreed to pay: a clone can hold a commit that exists nowhere else and
+    // still read as nothing to lose, so `dl rm` deletes it without asking and
+    // `--prune` without printing.
+    //
+    // Reached by the ordinary backup-tag habit, which is why it is worth a ticket:
+    // tag before a rewrite, then move the branch out from under the tag. Nothing
+    // in the clone but `refs/tags/backup` reaches the commit, and no remote has
+    // ever seen it. When #487 closes, this test is the one that changes.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("an-hour.txt"), "an hour of work\n");
+    commit(&clone, "about to be rewritten");
+    git(&clone, &["tag", "backup"]);
+    git(&clone, &["reset", "-q", "--hard", "origin/feature"]);
+
+    // The premise, asserted rather than assumed: the tag is the only ref left
+    // reaching that commit, and it is on no remote.
+    assert_eq!(
+        git(&clone, &["tag", "--points-at", "backup^{commit}"]),
+        "backup"
+    );
+    assert_eq!(
+        git(&clone, &["branch", "-a", "--contains", "backup^{commit}"]),
+        ""
+    );
+
+    assert_eq!(
+        held(&clone),
+        Unsaved::NothingToLose,
+        "the state #487 exists to fix: if this now reports a loss, delete the test"
+    );
+}
+
+#[test]
 fn a_commit_on_a_detached_worktree_head_is_still_unsaved() {
     // The tags come out of the ref set by `--exclude`, which drops the tags and
     // nothing else. This is the ref that would go with them if anybody ever
