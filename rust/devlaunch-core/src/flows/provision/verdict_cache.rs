@@ -134,7 +134,8 @@ impl VerdictCache {
         self.marker(workspace_id).with_extension("claude")
     }
 
-    /// Remember who owns this container's Claude config directory.
+    /// Remember who owns this container's Claude config directory, as the container
+    /// [`Self::observe`] identified before the pass ran.
     ///
     /// Deliberately *not* a field on the verdict marker, and the difference is the
     /// question each answers. A marker answers "may this launch skip the trip", so
@@ -145,22 +146,51 @@ impl VerdictCache {
     /// credential exists for. Folding the two together made a missing marker mean
     /// two different things, and the second one silently forwarded nothing.
     ///
-    /// Unanchored, unlike a marker: there is no container mtime paired with it. It
-    /// does not need one. The answer can only change when the container does, and
-    /// every route that changes a container -- `up`, `restart`, `recreate`, `reset`
-    /// -- runs a pass that rewrites this.
+    /// Anchored the way a marker is, and for the same reason rather than a weaker
+    /// one. It used to carry no container mtime, on the argument that every route
+    /// which changes a container runs a pass that rewrites this. That argument is
+    /// the one the module note above already refuses: a `devpod up` devlaunch did
+    /// not run -- VS Code's, a hand-typed one, an older `dl` -- rebuilds the
+    /// container without touching anything here, and the memo left standing then
+    /// described a container that no longer exists. `ours` outliving its container
+    /// is the direction that costs the host's credential, so this pays the same
+    /// stamp the marker does and a rebuilt container reads as unknown until
+    /// devlaunch itself passes over it again.
     ///
     /// Silent about every way of not working, exactly as [`Self::record`] is.
-    pub fn remember_claude(&self, workspace_id: &str, claude: Option<ClaudeConfig>) {
-        let word = match claude {
-            Some(ClaudeConfig::Ours) => ClaudeConfig::Ours.word(),
-            Some(ClaudeConfig::Foreign) => ClaudeConfig::Foreign.word(),
+    pub(crate) fn remember_claude(
+        &self,
+        workspace_id: &str,
+        claude: Option<ClaudeConfig>,
+        observed: Observed,
+    ) {
+        let Observed(result_mtime) = observed;
+        let memo = Memo {
             // Written, not skipped: "a pass ran and could not tell" is an answer,
             // and leaving the previous one in place would let a stale `ours` outlive
             // the container it was true of.
-            None => "unknown",
+            claude: match claude {
+                Some(ClaudeConfig::Ours) => MemoWord::Ours,
+                Some(ClaudeConfig::Foreign) => MemoWord::Foreign,
+                None => MemoWord::Unknown,
+            },
+            result_mtime,
         };
-        write_atomically(&self.memo(workspace_id), word);
+        let Ok(text) = serde_json::to_string(&memo) else {
+            return;
+        };
+        write_atomically(&self.memo(workspace_id), &text);
+    }
+
+    /// Whether any pass has recorded an answer for the container standing now.
+    ///
+    /// Distinct from [`Self::remembered_claude`] returning `None`, and the
+    /// difference is what keeps two opposite mistakes apart. A memo saying "a pass
+    /// ran and could not tell" must still let a launch skip its round trip; *no*
+    /// memo must not, or a workspace whose verdict was recorded before this existed
+    /// would skip the pass forever and never acquire one.
+    pub fn has_claude_memo(&self, workspace_id: &str) -> bool {
+        self.read_memo(workspace_id).is_some()
     }
 
     /// What the last pass saw of this workspace's Claude config directory.
@@ -169,26 +199,29 @@ impl VerdictCache {
     /// decision the credential turns on, and it is also what serves the launch that
     /// never runs a pass at all: attaching to a workspace that is already up and
     /// finished creating goes straight to a session.
-    /// Whether any pass has recorded an answer for this workspace at all.
     ///
-    /// Distinct from [`Self::remembered_claude`] returning `None`, and the
-    /// difference is what keeps two opposite mistakes apart. A memo saying "a pass
-    /// ran and could not tell" must still let a launch skip its round trip; *no
-    /// memo* must not, or a workspace whose verdict was recorded before this
-    /// existed would skip the pass forever and never acquire one.
-    pub fn has_claude_memo(&self, workspace_id: &str) -> bool {
-        self.memo(workspace_id).exists()
+    /// `None` for every doubt, which is the reading that forwards no login: no memo
+    /// yet, a truncated write, a word this build has never heard of, a memo whose
+    /// container is not the one standing, and the recorded `unknown` itself.
+    pub fn remembered_claude(&self, workspace_id: &str) -> Option<ClaudeConfig> {
+        match self.read_memo(workspace_id)? {
+            MemoWord::Ours => Some(ClaudeConfig::Ours),
+            MemoWord::Foreign => Some(ClaudeConfig::Foreign),
+            MemoWord::Unknown => None,
+        }
     }
 
-    /// `None` for anything unreadable, which is the reading that forwards no login:
-    /// no memo yet, a truncated write, a word this build has never heard of.
-    pub fn remembered_claude(&self, workspace_id: &str) -> Option<ClaudeConfig> {
-        let word = std::fs::read_to_string(self.memo(workspace_id)).ok()?;
-        match word.trim() {
-            "ours" => Some(ClaudeConfig::Ours),
-            "foreign" => Some(ClaudeConfig::Foreign),
-            _ => None,
-        }
+    /// This workspace's memo, if one parses and still describes the container that
+    /// is standing.
+    ///
+    /// The anchor check is [`Self::trusted`]'s, deliberately spelled the same way:
+    /// no `workspace_result.json` to compare against is itself a doubt, and doubt
+    /// reads as no memo.
+    fn read_memo(&self, workspace_id: &str) -> Option<MemoWord> {
+        let text = std::fs::read_to_string(self.memo(workspace_id)).ok()?;
+        let memo: Memo = serde_json::from_str(&text).ok()?;
+        let result = sole_workspace_result(self.devpod_home.as_ref(), workspace_id)?;
+        (Stamp::of(&result) == Some(memo.result_mtime)).then_some(memo.claude)
     }
 
     /// Which container a pass is about to be about, read **before** it runs.
@@ -232,7 +265,37 @@ impl VerdictCache {
 /// A type rather than a bare [`Stamp`] so that [`VerdictCache::record`] cannot be
 /// handed a timestamp read at the wrong moment: the only way to make one is to ask
 /// before the pass, which is the ordering the whole trust rule rests on.
+#[derive(Clone, Copy)]
 pub(crate) struct Observed(Stamp);
+
+/// What one Claude memo file says.
+///
+/// Its own file rather than a field on [`Marker`], for the reason
+/// [`VerdictCache::remember_claude`] gives, and its own anchor because a memo that
+/// outlives its container is the one misreading that costs something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct Memo {
+    claude: MemoWord,
+    result_mtime: Stamp,
+}
+
+/// The three things a pass can have concluded about the config directory.
+///
+/// An enum with serde's spelling rather than a `String` matched against three
+/// literals, for the reason [`Verdict`] is one: the check is the parse, so a word a
+/// later build writes, or a hand-edit, fails to deserialize and reads as no memo at
+/// all. `Unknown` is a recorded answer and not the absence of one --
+/// [`VerdictCache::has_claude_memo`] says why the two must stay apart -- which is
+/// why it is an arm here and `None` at the call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+enum MemoWord {
+    #[serde(rename = "ours")]
+    Ours,
+    #[serde(rename = "foreign")]
+    Foreign,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
 
 /// What one marker file says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -376,7 +439,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::clients::devpod_home::devpod_home_with;
+    use crate::clients::devpod_home::{ScratchHome, devpod_home_with};
 
     /// A cache directory nothing else writes to.
     fn cache() -> tempfile::TempDir {
@@ -405,6 +468,21 @@ mod tests {
         }
     }
 
+    /// A cache over a devpod home holding one workspace with a result file, which is
+    /// the anchor a memo needs.
+    fn anchored() -> (tempfile::TempDir, ScratchHome, VerdictCache) {
+        let home = devpod_home_with(&[("default", "ws", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+        (cache, home, verdicts)
+    }
+
+    /// Remember `seen` against the container standing now, as [`provision`] does.
+    fn remembered_under(verdicts: &VerdictCache, workspace_id: &str, seen: Option<ClaudeConfig>) {
+        let observed = verdicts.observe(workspace_id).expect("an anchor");
+        verdicts.remember_claude(workspace_id, seen, observed);
+    }
+
     #[test]
     fn what_the_pass_saw_of_the_claude_config_outlives_the_pass() {
         // What keeps a launch that skips the round trip, and a launch that runs no
@@ -414,10 +492,13 @@ mod tests {
             (Some(ClaudeConfig::Foreign), Some(ClaudeConfig::Foreign)),
             (None, None),
         ] {
-            let cache = cache();
-            let verdicts = VerdictCache::under(cache.path(), None);
-            verdicts.remember_claude("ws", seen);
+            let (_cache, _home, verdicts) = anchored();
+            remembered_under(&verdicts, "ws", seen);
             assert_eq!(verdicts.remembered_claude("ws"), expected, "{seen:?}");
+            assert!(
+                verdicts.has_claude_memo("ws"),
+                "a pass that could not tell still recorded an answer: {seen:?}"
+            );
         }
     }
 
@@ -427,11 +508,9 @@ mod tests {
         // container the host lent its binaries to never probes provisioned, so it has
         // no marker at all -- and it is the very container the credential exists for,
         // since a repo with no devcontainer of its own is what gets lent to.
-        let home = devpod_home_with(&[("default", "ws", Some(()))]);
-        let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+        let (_cache, _home, verdicts) = anchored();
 
-        verdicts.remember_claude("ws", Some(ClaudeConfig::Ours));
+        remembered_under(&verdicts, "ws", Some(ClaudeConfig::Ours));
 
         assert!(
             !verdicts.trusted("ws", Switches::INSTALLING),
@@ -449,21 +528,73 @@ mod tests {
         // Written rather than skipped: leaving the previous answer in place would let
         // a stale `ours` outlive the container it was true of, and forward a login
         // into a directory that had since been mounted from somewhere else.
-        let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), None);
-        verdicts.remember_claude("ws", Some(ClaudeConfig::Ours));
-        verdicts.remember_claude("ws", None);
+        let (_cache, _home, verdicts) = anchored();
+        remembered_under(&verdicts, "ws", Some(ClaudeConfig::Ours));
+        remembered_under(&verdicts, "ws", None);
         assert_eq!(verdicts.remembered_claude("ws"), None);
+        assert!(
+            verdicts.has_claude_memo("ws"),
+            "`unknown` is a recorded answer, so the top-up shortcut still holds"
+        );
+    }
+
+    #[test]
+    fn a_memo_does_not_outlive_the_container_it_was_true_of() {
+        // The anchor, and the reason it is here. A `devpod up` devlaunch did not run
+        // -- VS Code's, a hand-typed one, an older `dl` -- rebuilds the container
+        // without touching this cache. Unanchored, the `ours` written for the old
+        // container stood, and every warm attach afterwards forwarded the host's
+        // login into a directory the new container may well have mounted.
+        let home = devpod_home_with(&[("default", "ws", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+        remembered_under(&verdicts, "ws", Some(ClaudeConfig::Ours));
+        assert_eq!(verdicts.remembered_claude("ws"), Some(ClaudeConfig::Ours));
+
+        // Somebody else's `up`, which is a new result file and nothing else.
+        rebuild_result(&home, "ws");
+
+        assert_eq!(
+            verdicts.remembered_claude("ws"),
+            None,
+            "a memo whose container is gone is not an answer about the one standing"
+        );
+        assert!(
+            !verdicts.has_claude_memo("ws"),
+            "and the next top-up has to travel to write a new one"
+        );
+    }
+
+    /// Somebody else's `devpod up`: the same workspace, a result file written again.
+    fn rebuild_result(home: &ScratchHome, workspace_id: &str) {
+        let result = home.result("default", workspace_id);
+        let mtime = || {
+            std::fs::metadata(&result)
+                .expect("a result")
+                .modified()
+                .expect("an mtime")
+        };
+        // A rewrite alone can land inside one filesystem timestamp tick, and the
+        // stamp this compares is that mtime.
+        let was = mtime();
+        while mtime() == was {
+            std::fs::write(&result, "{}").expect("a result");
+        }
     }
 
     #[test]
     fn a_memo_this_build_cannot_read_forwards_nothing() {
-        let cache = cache();
-        let verdicts = VerdictCache::under(cache.path(), None);
+        let (cache, _home, verdicts) = anchored();
         assert_eq!(verdicts.remembered_claude("never-asked"), None);
-        verdicts.remember_claude("ws", Some(ClaudeConfig::Ours));
-        let memo = read_dir_one(cache.path());
-        for garbage in ["", "OURS", "a word from a later build", "ours\nand more"] {
+        remembered_under(&verdicts, "ws", Some(ClaudeConfig::Ours));
+        let memo = memo_file(cache.path());
+        for garbage in [
+            "",
+            "ours",
+            "OURS",
+            "a word from a later build",
+            r#"{"claude":"maybe","result_mtime":{"secs":1,"nanos":0}}"#,
+        ] {
             std::fs::write(&memo, garbage).expect("a write");
             assert_eq!(
                 verdicts.remembered_claude("ws"),
@@ -474,7 +605,7 @@ mod tests {
     }
 
     /// The one memo file under a scratch cache, wherever this module puts it.
-    fn read_dir_one(cache: &Path) -> PathBuf {
+    fn memo_file(cache: &Path) -> PathBuf {
         fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
                 return;
