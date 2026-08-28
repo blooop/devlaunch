@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Remote Control is on by default, so every `aid` claude session is one you can
+  pick up on your phone.** It shipped in 0.21.0 as `--remote-control`, and a flag
+  you have to remember is a flag you use once:
+
+  ```
+  aid blooop/devlaunch@fix/42 fix the flaky test
+  ```
+
+  now starts the session named `blooop/devlaunch@fix/42` on claude.ai/code and in
+  the Claude app, with nothing typed. **This changes what an existing `aid
+  <workspace>` does**, which is the point, and it is worth reading the next two
+  paragraphs before upgrading.
+
+  `--no-remote-control` is the way back to a plain local session, and
+  `DEVLAUNCH_AID_REMOTE_CONTROL=0` is the way back for every launch from a shell.
+  The variable takes `1`, `true`, `on` or `yes` and `0`, `false`, `off` or `no`,
+  and refuses anything else by name rather than guessing which you meant; a flag
+  on the command line beats it in both directions. `--remote` and `--no-remote`
+  are accepted as the short spellings, because the long one is four hyphenated
+  words and the guess at it used to fall through to `dl` and exit 2.
+
+  **`aid` runs claude with permissions skipped, so a default-on session is
+  drivable by the claude.ai account signed in inside the container.** That is the
+  whole of the change in one sentence, and the variable above is how to turn it
+  off globally.
+
+  A default is not a request, so `aid --codex` and `aid --gemini` start with no
+  Remote Control and say nothing: those two have not got the feature, and a
+  default that refused would have refused every launch of them. Typing
+  `--remote-control` beside either still exits 1 naming the agent, because that
+  is somebody asking for a thing by name.
+
 ## [0.21.0] - 2026-08-28
 
 ### Added

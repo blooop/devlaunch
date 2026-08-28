@@ -10,7 +10,8 @@
 //! is exactly
 //!
 //! ```text
-//! dl owner/repo@branch -- claude --dangerously-skip-permissions 'fix the flaky test'
+//! dl owner/repo@branch -- claude --dangerously-skip-permissions \
+//!     --remote-control=owner/repo@branch 'fix the flaky test'
 //! ```
 //!
 //! Everything that decides how a workspace is obtained — the bare repo cache, the
@@ -92,8 +93,17 @@ fn run(argv: &[String]) -> i32 {
     // no agent at all and quietly start the default one instead of being refused
     // by name. Core's reading is reached through dl, like `shell` and
     // `python_repr`, so aid still sees nothing of devlaunch but dl.
-    let parsed = match rewrite::parse_aid_args(argv, dl::env_str(rewrite::AGENT_ENV_VAR).as_deref())
-    {
+    //
+    // Read here rather than inside `rewrite`, which is one function from strings to
+    // strings and stays that way: an environment read down there is a fact its tests
+    // could not vary.
+    let agent = dl::env_str(rewrite::AGENT_ENV_VAR);
+    let remote_control = dl::env_str(rewrite::REMOTE_CONTROL_ENV_VAR);
+    let environment = rewrite::Environment {
+        agent: agent.as_deref(),
+        remote_control: remote_control.as_deref(),
+    };
+    let parsed = match rewrite::parse_aid_args(argv, environment) {
         Ok(parsed) => parsed,
         Err(refused) => {
             eprintln!("{}", refusal(&refused));
@@ -162,6 +172,15 @@ fn refusal(refused: &UsageError) -> String {
              Drop the flag or pick --claude.",
             rewrite::REMOTE_CONTROL_FLAG
         ),
+        // The values are listed for the same reason the agent names are: the
+        // variable is in somebody's profile, and the sentence has to be enough to
+        // fix it without reading the help.
+        UsageError::UnknownRemoteControlInEnvironment { value } => format!(
+            "{}={} is not a yes or a no. Choose one of: {}.",
+            rewrite::REMOTE_CONTROL_ENV_VAR,
+            dl::python_repr(value),
+            rewrite::remote_control_values().join(", ")
+        ),
     }
 }
 
@@ -181,6 +200,7 @@ fn help() -> String {
         .join(", ");
     let default = rewrite::DEFAULT_AGENT;
     let variable = rewrite::AGENT_ENV_VAR;
+    let remote_variable = rewrite::REMOTE_CONTROL_ENV_VAR;
     format!(
         "\
 aid - AI Develop: start a coding agent in a devlaunch workspace
@@ -212,21 +232,37 @@ Options:
                                      nowhere else and says so, leaving the workspace
                                      standing. To delete one now instead, that is
                                      dl's rm verb: dl <workspace> rm.
-    --remote-control                 Start claude with Remote Control on, named after
-                                     the workspace, so the session can be continued
-                                     from claude.ai/code or the Claude app. It is
-                                     claude only, and needs a claude.ai (Pro/Max/Team)
-                                     login inside the workspace.
+    --no-remote-control, --no-remote
+                                     Start a plain local session. Remote Control is
+                                     on by default: claude is started under the
+                                     workspace you typed as the session name, so the
+                                     session in this terminal is also readable and
+                                     steerable from claude.ai/code and the Claude
+                                     app. It is claude only, and it needs a
+                                     claude.ai (Pro/Max/Team) login inside the
+                                     workspace. The agent runs with permissions
+                                     skipped, so the account signed in there can
+                                     drive it.
+    --remote-control, --remote       Ask for Remote Control by name. Nothing changes
+                                     for claude, which has it on already. Beside
+                                     --codex or --gemini it says they have not got
+                                     it and stops, where the default is silently
+                                     absent.
     --help, -h                       Show this help
     --version                        Show version
 
 Environment:
     {variable}=<agent>       Change the default agent
+    {remote_variable}=0
+                                     Turn the Remote Control default off for every
+                                     launch. Takes 1/true/on/yes or 0/false/off/no,
+                                     and refuses anything else
 
 Examples:
     aid blooop/devlaunch                       # Start {default} in the workspace
     aid blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
     aid --gemini ./my-project explain this     # Pick a different agent
+    aid --no-remote blooop/devlaunch           # Nothing but the session in front of you
     aid blooop/devlaunch@fix/42 fix the bug --rm
                                                # The line above, recalled, with the
                                                # workspace deleted once the agent is
@@ -274,6 +310,34 @@ mod tests {
         // alone, and it wants a login the container may not have.
         assert!(help.contains("claude only"), "{help}");
         assert!(help.contains("claude.ai (Pro/Max/Team)"), "{help}");
+    }
+
+    #[test]
+    fn the_help_says_remote_control_is_on_and_names_both_ways_out() {
+        // It is on without anybody typing anything now, so the help's job here is
+        // the opposite of what it was: not how to ask for it, but that it is
+        // happening and how to stop it. Both switches are named because they turn
+        // it off at different scopes.
+        let help = help();
+
+        assert!(help.contains("on by default"), "{help}");
+        assert!(help.contains("--no-remote-control"), "{help}");
+        assert!(help.contains("--no-remote"), "{help}");
+        assert!(help.contains("DEVLAUNCH_AID_REMOTE_CONTROL"), "{help}");
+        // And the consequence of the default, said once: the agent already runs
+        // with permissions skipped, so a drivable session is a drivable agent.
+        assert!(help.contains("permissions"), "{help}");
+    }
+
+    #[test]
+    fn a_remote_control_variable_that_is_neither_a_yes_nor_a_no_lists_both() {
+        assert_eq!(
+            refusal(&UsageError::UnknownRemoteControlInEnvironment {
+                value: "maybe".to_owned()
+            }),
+            "DEVLAUNCH_AID_REMOTE_CONTROL='maybe' is not a yes or a no. \
+             Choose one of: 1, true, on, yes, 0, false, off, no."
+        );
     }
 
     #[test]

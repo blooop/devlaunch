@@ -3,8 +3,8 @@
 [README](../README.md) has the commands you need. This page is the rest: how the
 selector decides what you picked, which commands get a terminal, what `--rm`
 promises and where it stops, which exits fire it, the spellings that were retired
-and what they say now, what `aid --remote-control` starts and what it asks of the
-workspace, what `kill` does to a workspace that will not answer, and what happens
+and what they say now, what `aid`'s Remote Control default starts and how to turn
+it off, what `kill` does to a workspace that will not answer, and what happens
 when devpod is missing or will not answer.
 
 ## The selector
@@ -291,38 +291,61 @@ reporting an unknown workspace called `prune`, and a workspace that really is ca
 `prune` is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
 
-## `aid --remote-control`: picking the session up somewhere else
+## Remote Control: every `aid` session, on your phone too
 
-`aid --remote-control <workspace> [prompt...]` starts Claude Code with Remote Control
-on. The session is still the one in your terminal, running in the container on your
-machine; Remote Control is what also makes it readable and steerable from
+Every `aid` launch of claude starts with Claude Code's Remote Control on. There is no
+flag to type:
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test
+```
+
+The session is still the one in your terminal, running in the container on your
+machine. Remote Control is what also makes it readable and steerable from
 claude.ai/code and the Claude mobile app, so you can send it the next thing from a
 phone without the workspace being anywhere but where it was.
 
-```bash
-aid --remote-control blooop/devlaunch@fix/42 fix the flaky test
-```
-
-The flag goes before the workspace. Everything after the spec is prompt text, which
-is the rule that lets a prompt go unquoted, so a `--remote-control` typed there is
-handed to the agent as words rather than read as the flag.
-
-Four things worth knowing before you type it.
-
-**It is claude's and nothing else's.** Remote Control is a Claude Code feature, so
-`--codex` or `--gemini` beside the flag is refused by name rather than quietly
-dropped, and so is a `DEVLAUNCH_AID_AGENT` naming either of them. The refusal happens
-before anything is booted.
-
 **The session is named after the workspace you typed**, so the list on claude.ai reads
-as the workspaces you opened rather than as a row of untitled sessions. aid always
+as the workspaces you opened rather than as a row of untitled sessions. `aid` always
 sends a name, because `claude --remote-control [name]` takes an optional one and a bare
 flag would read the first word of your prompt as the name instead.
+
+### Turning it off
+
+```bash
+aid --no-remote-control blooop/devlaunch@fix/42    # this launch only
+aid --no-remote blooop/devlaunch@fix/42            # the same, shorter
+
+export DEVLAUNCH_AID_REMOTE_CONTROL=0              # every launch from this shell
+```
+
+The variable takes `1`, `true`, `on` or `yes` and `0`, `false`, `off` or `no`, and
+refuses anything else by name rather than guessing which you meant. A flag on the
+command line beats it in both directions, so `--remote-control` (or `--remote`) still
+turns one launch back on.
+
+Flags go before the workspace. Everything after the spec is prompt text, which is the
+rule that lets a prompt go unquoted, so a `--no-remote-control` typed there is handed
+to the agent as words rather than read as the flag.
+
+### Four things worth knowing
+
+**It is claude's and nothing else's.** Remote Control is a Claude Code feature, so
+`aid --codex` and `aid --gemini` start with no Remote Control and say nothing about
+it: a default that refused would refuse every launch of those two. Typing
+`--remote-control` beside either of them is different, because you asked for
+something by name, and that is refused by name before anything boots. So is a
+`--remote-control` on a line whose `DEVLAUNCH_AID_AGENT` names one of them.
 
 **It needs a claude.ai login inside the workspace.** Remote Control pairs the session
 with a Pro, Max or Team account, so a container whose `claude` is signed in with an API
 key, or not signed in at all, cannot start one. That login lives in the container along
 with the rest of the agent's state, which is what `aid` was already relying on.
+
+**A drivable session is a drivable agent.** `aid` runs claude with
+`--dangerously-skip-permissions`, so whoever is signed in to that claude.ai account
+can send the agent work and it will not stop to ask. `DEVLAUNCH_AID_REMOTE_CONTROL=0`
+is how to turn that off everywhere.
 
 **Nothing survives the workspace.** The session is a process in the container, so
 `dl <ws> stop`, `dl <ws> rm`, a `--rm` firing at the end of the line, or Ctrl-C out of
