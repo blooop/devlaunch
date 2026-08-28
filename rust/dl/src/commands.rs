@@ -635,22 +635,47 @@ impl Removal {
     /// clone, and `rm --force` has said in advance that it will not act on either.
     fn probe(self) -> Probe {
         match self {
-            Self::Guarded => Probe::AndRefuse,
+            Self::Guarded => Probe::Look(Finding::Refuses),
             Self::Insisted => Probe::Skip,
-            Self::Wedged => Probe::AndSayWhatIsGoing,
+            Self::Wedged => Probe::Look(Finding::Says),
+        }
+    }
+
+    /// Whether a sweep already ran in front of this delete.
+    ///
+    /// Read off the removal rather than passed beside it, because it is a total
+    /// function of one: `Wedged` *is* the removal that stands behind a sweep. As a
+    /// second argument it was a pair that could be written wrong in four ways, and
+    /// the wrong one produces a `kill` whose own refusal tells you to run `kill`.
+    fn swept(self) -> Swept {
+        match self {
+            Self::Guarded | Self::Insisted => Swept::NotYet,
+            Self::Wedged => Swept::Already,
         }
     }
 }
 
-/// What the delete does about work that exists nowhere else.
+/// Whether the delete looks for work that exists nowhere else.
+///
+/// Nested rather than three flat arms so that [`Finding`] is unreachable from the
+/// arm that never looks: a delete that skips the probe has no finding to act on,
+/// and a flat third arm left every `match` on the answer with a case its author
+/// had to invent a body for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Probe {
-    /// Look, and stop if there is any. `rm`'s.
-    AndRefuse,
-    /// Look, name what is about to be destroyed, and go. `kill`'s.
-    AndSayWhatIsGoing,
+    /// Look, and then do this with what is found.
+    Look(Finding),
     /// Do not look. `rm --force`'s.
     Skip,
+}
+
+/// What a delete does with work it found that exists nowhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Finding {
+    /// Stop, name it, and offer the way past. `rm`'s.
+    Refuses,
+    /// Name it, and delete it. `kill`'s.
+    Says,
 }
 
 /// The removal `--force` asks for, for the one verb the flag still reaches.
@@ -875,9 +900,6 @@ fn render_kill<'r>(
         target,
         Removal::Wedged,
         word,
-        // The sweep this delete is standing behind, which is what takes the
-        // "run kill" line off a refusal printed by `kill` itself.
-        Swept::Already,
     )
 }
 
@@ -907,7 +929,6 @@ fn render_remove<'r>(
         target,
         removal,
         word,
-        Swept::NotYet,
     )
 }
 
@@ -930,7 +951,6 @@ fn remove_addressed<'r>(
     target: &str,
     removal: Removal,
     word: &str,
-    swept: Swept,
 ) -> Ending {
     let insistence = removal.insistence();
     // The delete needs the records whatever the resolution needed, so a resolution
@@ -946,7 +966,7 @@ fn remove_addressed<'r>(
     // rather than refusing over. Skipped entirely only for `rm --force`, which has
     // said in advance that it will not act on the answer and so should not pay for
     // it: the probe is a `git status` and a `git log` per clone.
-    if let Probe::AndRefuse | Probe::AndSayWhatIsGoing = removal.probe() {
+    if let Probe::Look(finding) = removal.probe() {
         let unsaved = lifecycle::unsaved_work_in(
             &records.clones,
             &records.storage,
@@ -964,8 +984,8 @@ fn remove_addressed<'r>(
         if let Guarded::Refused(refusal) =
             lifecycle::guard_removal(workspace_id, unsaved, Insistence::NotInsisted)
         {
-            match removal.probe() {
-                Probe::AndRefuse => {
+            match finding {
+                Finding::Refuses => {
                     eprintln!("{}", render::removal_refusal(&refusal, target, word));
                     return Ending::Refused;
                 }
@@ -974,10 +994,7 @@ fn remove_addressed<'r>(
                 // failure the verb was rebuilt to stop having: a wedged workspace's
                 // clone is dirty almost by construction, since what wedged it
                 // interrupted whatever was being done in it.
-                Probe::AndSayWhatIsGoing => {
-                    eprintln!("{}", render::removing_over_work(&refusal));
-                }
-                Probe::Skip => {}
+                Finding::Says => eprintln!("{}", render::removing_over_work(&refusal)),
             }
         }
     }
@@ -1028,7 +1045,7 @@ fn remove_addressed<'r>(
             // The local clone is kept, so the delete stays retryable: devpod
             // re-parses the workspace's devcontainer.json to tear the container
             // down, and removing the clone regardless strands it for good.
-            eprintln!("{}", render::delete_refused(workspace_id, swept));
+            eprintln!("{}", render::delete_refused(workspace_id, removal.swept()));
             say(&notices);
             Ending::Child(exit)
         }
