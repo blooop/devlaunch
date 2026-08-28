@@ -7,14 +7,17 @@ Where a launch's seconds go, how to get that as JSON, and how the trend on
 
 Every `devpod` call costs about 0.45s, far more than `dl` itself spends on
 anything. That figure was measured on the Python build on 2026-08-07
-(`22afd52`) and no host has re-measured it since, but it is still the right
-order: `devpod status` on `dl 0.13.0`, nested inside this repo's devcontainer,
-measures 0.43s to 0.67s
-([#388](https://github.com/blooop/devlaunch/issues/388)). Read it as a floor
-rather than as a stopwatch reading. That one figure sets the shape of the whole
-program: a command reads the workspace list at most once, and everything a
-container needs on the way in, naming it and then the tools probe, rides a
-single setup pass. So an interactive `dl <ws>` and a one-shot
+(`22afd52`) and no host has re-measured it into this prose since, but it is
+still the right order: `devpod status` on `dl 0.13.0`, nested inside this
+repo's devcontainer, measures 0.43s to 0.67s
+([#388](https://github.com/blooop/devlaunch/issues/388)), and the trend's own
+Rust `warm / devpod-up` points, 47 of them on GitHub runners, run 0.23s to
+0.49s with all but one under 0.45s. So read it as an order rather than as a
+stopwatch reading, and not as a floor: the fastest of those points halves it.
+That one figure sets the shape of the whole program: a command reads the
+workspace list at most once, and everything a container needs on the way in,
+naming it and then the tools probe, rides a single setup pass. So an
+interactive `dl <ws>` and a one-shot
 `dl <ws> -- <cmd>` cost the same trips.
 
 ## Measuring launch time
@@ -38,9 +41,10 @@ docker-in-docker rather than a host, so what it carries across is the per-stage
 arithmetic and not anyone's wall clock.
 
 Current per-commit numbers come from [the trend on main](#the-trend-on-main),
-which has published a Rust point on every push since 2026-08-22. Read it forward
-from `03b7de2`, the first of them, and not across it: every point before that
-measures the Python build, and nothing on the chart says which is which.
+which has published a Rust point on nearly every push since 2026-08-22, two
+lost runs aside. Read it forward from `03b7de2`, the first of them, and not
+across it: every point before that measures the Python build, and nothing on
+the chart says which is which.
 
 Captured from a real warm launch (the launch's own output elided):
 
@@ -201,9 +205,15 @@ console script an editable Python install left in the environment. Publishing
 then stopped for two days, the retirement having put a bare `dl` on `PATH` with
 no `devpod` beside it, until
 [#373](https://github.com/blooop/devlaunch/pull/373) fixed it. The Rust series
-starts at `03b7de2` on 2026-08-22 and has a point per push since. A comparison
-within either run of points is therefore sound, and one that straddles the gap
-is not: it reads a whole change of implementation as a regression.
+starts at `03b7de2` on 2026-08-22 and has a point for nearly every push since.
+Two are missing, `5573f77` and `7be9986`: the workflow serialises on one
+concurrency group, GitHub keeps only one run queued behind the one it is
+running, and five merges landed inside four minutes that day, so the runs in
+the middle were cancelled before they benched anything. A missing point is
+therefore a cancelled run rather than a skipped commit, and the comparison
+across one spans two commits' worth of change. A comparison within either run
+of points is otherwise sound, and one that straddles the port is not: it reads
+a whole change of implementation as a regression.
 [#292](https://github.com/blooop/devlaunch/issues/292) is open on that, and on
 its record-keeping instruction rather than on a red workflow: the commit of the
 first Rust point has to be written into the map's decisions so nobody later
