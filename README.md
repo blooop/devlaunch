@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.22.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.23.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -266,7 +266,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.22.0
+dl 0.23.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -291,7 +291,7 @@ aid blooop/devlaunch@fix/42 fix the flaky test
 is exactly
 
 ```bash
-dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions 'fix the flaky test'
+dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=blooop/devlaunch@fix/42 'fix the flaky test'
 ```
 
 Same clone, same workspace, same container. Everything after the workspace is the prompt, flags
@@ -306,7 +306,8 @@ the question and launches one-shot, so scripts behave as they always have.
 |---|---|
 | `--claude`, `--codex`, `--gemini` | Pick the agent. Default `claude` |
 | `--rm` | Delete the workspace when the agent is done. Appendable to a recalled line |
-| `--remote-control` | Start `claude` with Remote Control on, named after the workspace, so the session can be continued from claude.ai/code or the Claude app. `claude` only, and it needs a claude.ai login in the container |
+| `--no-remote-control`, `--no-remote` | Start a plain local session. Remote Control is on by default for `claude`: the session is named after the workspace and can be read and steered from claude.ai/code or the Claude app. It needs a claude.ai login in the container |
+| `--remote-control`, `--remote` | Ask for Remote Control by name. `claude` has it already; beside `--codex` or `--gemini` this says they have not got it and stops |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
 
 **The trade, stated plainly.** `claude` starts with `--dangerously-skip-permissions`, because the
@@ -317,6 +318,10 @@ the agent process and is not exported into your shell.
 
 The agent cannot reach your host, but it can rewrite the checkout it is in. Review an `aid`
 workspace before pushing rather than treating it as a sandbox that will stop the agent for you.
+Because the agent runs with permissions skipped and Remote Control is on by default, the
+session is also drivable from the claude.ai account signed in inside the container.
+`DEVLAUNCH_AID_REMOTE_CONTROL=0` turns that off for every launch;
+[docs/cli.md](docs/cli.md) has the rest.
 
 This applies to `aid` starting `claude` and nothing else. `--codex` and `--gemini` are unaffected,
 and `dl <ws> -- claude` runs exactly what you typed.
@@ -391,14 +396,16 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before every interactive attach. Off by default |
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
+| `DEVLAUNCH_AID_REMOTE_CONTROL=0` | Start `aid` sessions without Claude Code's Remote Control, which is otherwise on |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Three
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Four
 rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SSH_CONFIG`
-take a value, and `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
-turn it on.
+take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+turn it on, and `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
+`0`/`false`/`off`/`no` and refuses anything else rather than guessing.
 
 Changes to what a container gets land on `devpod up`, so a workspace that is already running
 keeps what it was given. `dl <ws> restart` is what re-decides it, and `dl <ws> recreate` is what
@@ -408,7 +415,7 @@ re-decides a mount.
 
 | Page | What is in it |
 |---|---|
-| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `aid --remote-control`, retired spellings, devpod exit codes |
+| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `aid`'s Remote Control default, retired spellings, devpod exit codes |
 | [docs/workspaces.md](docs/workspaces.md) | How workspace ids are derived, and how fresh a launch is |
 | [docs/workspace-tools.md](docs/workspace-tools.md) | GitHub auth, `gh` and `claude`, zellij, terminal titles, the pixi cache |
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |

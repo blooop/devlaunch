@@ -272,6 +272,9 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     // The whole of aid, observed from outside: the rewritten command line on stderr,
     // dl's own launch of the workspace, and one `devpod ssh --command` carrying the
     // agent. Byte for byte Python's, quoting included — the payload travels in argv.
+    //
+    // Remote Control rides along with nothing typed, which is what it is now: the
+    // default. The name is the spec, which here is the workspace the line named.
     let world = World::with(&["--warm"]);
     let run = world.aid(&[MAIN, "fix", "the", "bug"]);
     run.exited(0);
@@ -279,11 +282,13 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
         run.err.lines().collect::<Vec<&str>>(),
         [
             "aid -> dl devlaunch-main-3j1t -- 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 \
-             IS_SANDBOX=1 claude --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
+             IS_SANDBOX=1 claude --dangerously-skip-permissions \
+             --remote-control=devlaunch-main-3j1t '\"'\"'fix the bug'\"'\"''",
             "Workspace devlaunch-main-3j1t is already running, attaching...",
             "SSH command: devpod ssh devlaunch-main-3j1t --command bash -lc \
              'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
-             --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''",
+             --dangerously-skip-permissions --remote-control=devlaunch-main-3j1t \
+             '\"'\"'fix the bug'\"'\"''",
         ]
     );
     assert_eq!(
@@ -293,10 +298,89 @@ fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
             format!(
                 "devpod ssh {MAIN} --command bash -lc \
                  'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
-                 --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''"
+                 --dangerously-skip-permissions --remote-control={MAIN} \
+                 '\"'\"'fix the bug'\"'\"''"
             ),
         ]
     );
+}
+
+#[test]
+fn no_remote_control_is_the_one_way_back_to_a_purely_local_session() {
+    // The off switch at the boundary, in both spellings, and the variable that turns
+    // the default off for every line. All three have to leave the payload with no
+    // `--remote-control` in it at all: a session half turned off is one published to
+    // claude.ai by somebody who thought they had said no.
+    for flag in ["--no-remote-control", "--no-remote"] {
+        let world = World::with(&["--warm"]);
+        world.aid(&[flag, MAIN, "hi"]).exited(0);
+        assert_eq!(
+            world.devpod_calls().last().expect("a session"),
+            &format!(
+                "devpod ssh {MAIN} --command bash -lc \
+                 'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions hi'"
+            ),
+            "{flag}"
+        );
+    }
+
+    let by_variable = World::with(&["--warm"]);
+    by_variable
+        .aid_with(
+            &[MAIN, "hi"],
+            &[("DEVLAUNCH_AID_REMOTE_CONTROL", OsStr::new("0"))],
+        )
+        .exited(0);
+    assert!(
+        !by_variable
+            .devpod_calls()
+            .last()
+            .expect("a session")
+            .contains("--remote-control"),
+        "{:?}",
+        by_variable.devpod_calls()
+    );
+}
+
+#[test]
+fn an_appended_off_switch_is_observed_from_outside_to_turn_it_off() {
+    // The position the off switch is actually typed in, watched at the boundary
+    // rather than in the parse. Appending to a recalled line is the cheap edit a
+    // shell offers, and this line used to publish a session to claude.ai anyway and
+    // hand claude `--no-remote` to read as its prompt.
+    let world = World::with(&["--warm"]);
+    world
+        .aid(&[MAIN, "fix", "the", "bug", "--no-remote"])
+        .exited(0);
+
+    assert_eq!(
+        world.devpod_calls().last().expect("a session"),
+        &format!(
+            "devpod ssh {MAIN} --command bash -lc \
+             'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''"
+        )
+    );
+}
+
+#[test]
+fn a_remote_control_variable_that_is_neither_a_yes_nor_a_no_is_refused() {
+    // Read where `DEVLAUNCH_AID_AGENT` is read and refused the same way, before
+    // anything opens: both readings of a value like this are a guess, and both leave
+    // somebody sure they set something they did not.
+    let world = World::with(&["--warm"]);
+    let run = world.aid_with(
+        &[MAIN, "hi"],
+        &[("DEVLAUNCH_AID_REMOTE_CONTROL", OsStr::new("maybe"))],
+    );
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "DEVLAUNCH_AID_REMOTE_CONTROL='maybe' is not a yes or a no. \
+         Choose one of: 1, true, on, yes, 0, false, off, no.\n"
+    );
+    assert!(world.devpod_calls().is_empty());
 }
 
 #[test]
@@ -313,7 +397,7 @@ fn no_prompt_starts_the_agents_plain_session() {
         &format!(
             "devpod ssh {MAIN} --command bash -lc \
              'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
-             --dangerously-skip-permissions'"
+             --dangerously-skip-permissions --remote-control={MAIN}'"
         )
     );
     // `Command::output()` gives aid no terminal, and off a terminal the promptless

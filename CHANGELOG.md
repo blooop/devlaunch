@@ -7,39 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **`claude` in a workspace starts logged in.** A workspace whose image carries no
-  Claude credential of its own used to open on a login prompt, every time, and the
-  login it asked for was one the host already had. `dl` now forwards the host's
-  access token as `CLAUDE_CODE_OAUTH_TOKEN`, read from `~/.claude/.credentials.json`
-  or from an inherited variable of the same name.
-
-  What it forwards and where is deliberately narrower than the `GH_TOKEN` flow
-  beside it. The refresh token stays on the host, so what travels is short-lived
-  and cannot be renewed from inside. It rides `--send-env` on the two session
-  transports `dl` itself opens, so only the variable's name ever reaches a command
-  line, nothing is written to the container's disk or to devpod's persisted
-  workspace config, and a `postCreateCommand` from a repo you did not write never
-  sees it.
-
-  It also declines rather than guesses. A probe reads `/proc/self/mountinfo` for
-  mounts at, under or above the container's Claude config directory, honouring
-  `CLAUDE_CONFIG_DIR`, and the token is forwarded only when that comes back an
-  affirmative "nothing of anyone else's is mounted here". A devcontainer that binds
-  its own `~/.claude` in, as this repo's does, is left alone, because Claude Code
-  prefers the variable to the file and forwarding would shadow a refreshable
-  credential with an expiring one. Every reading that is not affirmative, including
-  every way the probe can fail to tell, forwards nothing: the failure direction is
-  a login prompt, never a leaked or clobbered credential.
-
-  The answer is memoized per workspace and anchored to the container's result-file
-  mtime, so a rebuild re-asks. A workspace that predates this needs one
-  `dl <ws> up` before it picks the login up. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips
-  the whole thing, and
-  [docs/workspace-tools.md](docs/workspace-tools.md) has the trust model, including
-  who gets the token when the repo is a stranger's.
-
 ### Changed
 
 - **`dl <ws> kill` deletes the workspace it just unwedged.** The sweep and the
@@ -100,6 +67,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and answers the first of those lines while the command is still blocked, naming
   the `dl <ws> kill` to run in another terminal. Once, however many times devpod
   says it.
+
+## [0.23.0] - 2026-08-28
+
+### Added
+
+- **`claude` in a workspace starts logged in.** A workspace whose image carries no
+  Claude credential of its own used to open on a login prompt, every time, and the
+  login it asked for was one the host already had. `dl` now forwards the host's
+  access token as `CLAUDE_CODE_OAUTH_TOKEN`, read from `~/.claude/.credentials.json`
+  or from an inherited variable of the same name.
+
+  What it forwards and where is deliberately narrower than the `GH_TOKEN` flow
+  beside it. The refresh token stays on the host, so what travels is short-lived
+  and cannot be renewed from inside. It rides `--send-env` on the two session
+  transports `dl` itself opens, so only the variable's name ever reaches a command
+  line, nothing is written to the container's disk or to devpod's persisted
+  workspace config, and a `postCreateCommand` from a repo you did not write never
+  sees it.
+
+  It also declines rather than guesses. A probe reads `/proc/self/mountinfo` for
+  mounts at, under or above the container's Claude config directory, honouring
+  `CLAUDE_CONFIG_DIR`, and the token is forwarded only when that comes back an
+  affirmative "nothing of anyone else's is mounted here". A devcontainer that binds
+  its own `~/.claude` in, as this repo's does, is left alone, because Claude Code
+  prefers the variable to the file and forwarding would shadow a refreshable
+  credential with an expiring one. Every reading that is not affirmative, including
+  every way the probe can fail to tell, forwards nothing: the failure direction is
+  a login prompt, never a leaked or clobbered credential.
+
+  The answer is memoized per workspace and anchored to the container's result-file
+  mtime, so a rebuild re-asks. A workspace that predates this needs one
+  `dl <ws> up` before it picks the login up. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips
+  the whole thing, and
+  [docs/workspace-tools.md](docs/workspace-tools.md) has the trust model, including
+  who gets the token when the repo is a stranger's.
+
+### Changed
+
+- **Remote Control is on by default, so every `aid` claude session is one you can
+  pick up on your phone.** It shipped in 0.21.0 as `--remote-control`, and a flag
+  you have to remember is a flag you use once:
+
+  ```
+  aid blooop/devlaunch@fix/42 fix the flaky test
+  ```
+
+  now starts the session named `blooop/devlaunch@fix/42` on claude.ai/code and in
+  the Claude app, with nothing typed. **This changes what an existing `aid
+  <workspace>` does**, which is the point, and it is worth reading the next two
+  paragraphs before upgrading.
+
+  `--no-remote-control` is the way back to a plain local session, and
+  `DEVLAUNCH_AID_REMOTE_CONTROL=0` is the way back for every launch from a shell.
+  The variable takes `1`, `true`, `on` or `yes` and `0`, `false`, `off` or `no`,
+  and refuses anything else by name rather than guessing which you meant; a flag
+  on the command line beats it in both directions. `--remote` and `--no-remote`
+  are accepted as the short spellings, because the long one is four hyphenated
+  words and the guess at it used to fall through to `dl` and exit 2. Either switch
+  can be appended to the end of a line the way `--rm` can, so a recalled line can be
+  turned off without retyping the front of it, and the prompt survives it.
+
+  **`aid` runs claude with permissions skipped, so a default-on session is
+  drivable by the claude.ai account signed in inside the container.** That is the
+  whole of the change in one sentence, and the variable above is how to turn it
+  off globally.
+
+  A default is not a request, so `aid --codex` and `aid --gemini` start with no
+  Remote Control and say nothing: those two have not got the feature, and a
+  default that refused would have refused every launch of them. Typing
+  `--remote-control` beside either still exits 1 naming the agent, because that
+  is somebody asking for a thing by name.
 
 ## [0.22.0] - 2026-08-28
 
