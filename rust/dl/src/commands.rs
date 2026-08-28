@@ -794,12 +794,14 @@ fn render_stop<'r>(
 /// nothing at all and the second one deleted the workspace unaided, which is two
 /// commands to reach the state either of them was asked for.
 ///
-/// **Withheld over one thing only: a process that outlived SIGKILL**
-/// ([`kill::Sweep::outlived_the_signals`]). Not over an attended holder, which the
-/// sweep spares on purpose and which devpod deletes straight through. The
-/// distinction is the difference between a delete that works and a delete that
-/// joins the five-second lock line, which is the one ending this verb exists to
-/// spare somebody.
+/// **Withheld over whatever still holds the workspace's lock**
+/// ([`kill::Sweep::blocks_a_delete`]), which is a question about the host rather
+/// than about what this sweep managed to signal. A session with somebody behind it
+/// is not that: it takes the flock and gives it back, which is why `dl <ws> rm`
+/// deletes a workspace somebody is sitting in. A live `devpod up` and an orphan
+/// both are. [`kill::Standing`] is where that judgement lives, and it lives there
+/// rather than here because the sweep above already acts on the same distinction
+/// when it decides what to signal.
 ///
 /// **A [`Refresh`], which this verb used not to carry.** It removes a workspace
 /// now, so the completion cache's listing goes stale on it exactly as `rm`'s does.
@@ -856,12 +858,7 @@ fn render_kill<'r>(
     for line in render::killed(&workspace_id, &sweep) {
         eprintln!("{line}");
     }
-    // Asked of the sweep rather than of [`kill::Holding`], and the two disagree on
-    // exactly the case that matters: an attended holder makes the workspace held and
-    // does not stand in the delete's way. Gating on `Holding` instead is the run
-    // that prompted this verb's second half, where one live `devpod ssh` was enough
-    // to make `kill` do nothing at all.
-    if sweep.outlived_the_signals() {
+    if sweep.blocks_a_delete() {
         eprintln!("{}", render::kill_delete_withheld(&workspace_id));
         return Ending::Refused;
     }

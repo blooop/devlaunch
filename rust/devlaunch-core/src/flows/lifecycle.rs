@@ -1206,11 +1206,13 @@ fn delete_call(workspace_id: &str, insistence: Insistence, persistence: Persiste
 /// acquire with nothing behind it — so the one ending this call must not have is
 /// the one they came here to escape.
 ///
-/// A minute rather than a few seconds, because the sweep that ran immediately
-/// before this already killed the workspace's containers: what is left for devpod
-/// to do is unlink records and remove volumes, and a delete still going after
-/// sixty seconds of that is waiting on something rather than working. The measured
-/// delete in devlaunch#484's own report took one second.
+/// A minute rather than a few seconds, and it has to cover the case where the
+/// sweep in front of it killed no containers at all: it leaves a live build's
+/// alone, it kills nothing on a host with no docker, and it kills nothing when
+/// docker refuses. So the budget is a real `devpod delete` from a standing start,
+/// stopping containers and removing volumes, and not merely the record unlinking
+/// that is left when the sweep did clear them. The measured delete in
+/// devlaunch#484's own report took one second.
 const WEDGED_DELETE: Duration = Duration::from_secs(60);
 
 /// How hard devpod is pushed to let go of the workspace.

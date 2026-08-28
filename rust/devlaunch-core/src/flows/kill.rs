@@ -332,33 +332,97 @@ pub enum ContainerRefusal {
 /// disagree — a holder that arrived while the sweep ran is in no list and holds
 /// the workspace all the same.
 ///
-/// **The live builds hang off `StillHeld` rather than sitting beside it**, which
-/// is that same argument taken one step further. `Sweep { attended: vec![p],
-/// holding: Holding::Free }` was constructible, and it is a nonsense: a process
-/// with a parent behind it is a holder, so an attended build is *why* the
-/// workspace is held. Hanging the vector off the arm makes the contradiction
-/// unwritable rather than merely unwritten, which is what the paragraph above
-/// was asking for.
+/// **The holders hang off `StillHeld` rather than sitting beside it**, which is
+/// that same argument taken one step further. `Sweep { attended: vec![p], holding:
+/// Holding::Free }` was constructible, and it is a nonsense: a process naming the
+/// workspace is a holder, so the standing processes are *why* the workspace is
+/// held. Hanging the vector off the arm makes the contradiction unwritable rather
+/// than merely unwritten, which is what the paragraph above was asking for.
+///
+/// **One vector of classified holders rather than a vector per class**, for the
+/// same reason again: the classes are answers to questions asked of one reading,
+/// and two vectors filled by two filters can put a process in both or in neither.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Holding {
     /// Nothing on this host names this workspace any more.
     Free,
-    /// Something still does. `attended` is the live builds among them — reported
-    /// rather than passed over in silence, because "it killed nothing" and "it
-    /// found a build and left it alone" send the reader to two different places.
-    /// Empty means what still holds the workspace took both signals and stayed,
-    /// or arrived after they went out.
-    StillHeld { attended: Vec<HostProcess> },
+    /// Something still does, and this is every one of them.
+    StillHeld { holders: Vec<Standing> },
+}
+
+/// One process the sweep left holding the workspace, and what kind of holder it is.
+///
+/// Three arms because three different things are done with them, and the middle
+/// one is the distinction a delete standing behind the sweep turns on.
+///
+/// The classification is over the *last* process-table reading, so a process can
+/// change arm between the sweep opening and it closing: a `devpod up` whose `dl`
+/// exits while the signals are going out to somebody else opens as
+/// [`Standing::ABuild`] and closes as [`Standing::AnOrphan`]. That is the reading
+/// that matters, because it is the one that describes the host the delete is about
+/// to run against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// An attended `devpod up`: somebody's build, mid-flight. Spared by the sweep
+    /// and **in a delete's way**, which is the pair that makes this its own arm.
+    /// It holds the flock for as long as it builds, which is the wedge this module
+    /// exists for seen from the other side, so a delete over it either destroys
+    /// the build or blocks on it. Either way the answer is to leave it standing
+    /// and say so.
+    ABuild(HostProcess),
+    /// Attended and not a build: an editor's `ssh`, a helper, somebody's `stop`.
+    /// Spared by the sweep and **not** in a delete's way. It takes the workspace's
+    /// flock and gives it straight back, which is why `dl <ws> rm` deletes a
+    /// workspace somebody is sitting in without ever noticing them.
+    ASession(HostProcess),
+    /// Nothing is waiting on it: it took both signals and stayed, or it lost its
+    /// parent while the sweep was running and was never signalled at all. In a
+    /// delete's way, and the one holder nothing on this host can take the flock
+    /// from.
+    AnOrphan(HostProcess),
+}
+
+impl Standing {
+    pub fn process(&self) -> &HostProcess {
+        match self {
+            Self::ABuild(process) | Self::ASession(process) | Self::AnOrphan(process) => process,
+        }
+    }
+
+    /// Whether a `devpod delete` would have to get past this holder.
+    fn in_a_deletes_way(&self) -> bool {
+        match self {
+            Self::ABuild(_) | Self::AnOrphan(_) => true,
+            Self::ASession(_) => false,
+        }
+    }
+
+    /// Whether the sweep spared this holder because somebody is behind it.
+    fn attended(&self) -> bool {
+        match self {
+            Self::ABuild(_) | Self::ASession(_) => true,
+            Self::AnOrphan(_) => false,
+        }
+    }
 }
 
 impl Holding {
-    /// The live builds this sweep left standing, of which there are none on a
-    /// workspace nothing is holding.
-    pub fn attended(&self) -> &[HostProcess] {
+    /// Every holder the sweep left standing, whatever kind.
+    pub fn holders(&self) -> &[Standing] {
         match self {
             Self::Free => &[],
-            Self::StillHeld { attended } => attended,
+            Self::StillHeld { holders } => holders,
         }
+    }
+
+    /// Whether anything with somebody behind it is still holding the workspace.
+    ///
+    /// What the busy marker and the containers hang on, and deliberately wider
+    /// than [`Standing::in_a_deletes_way`]: a session's containers are the
+    /// container somebody's shell is *in*, so killing them is as rude as killing
+    /// a build's, whatever a delete could have got past.
+    pub fn any_attended(&self) -> bool {
+        self.holders().iter().any(Standing::attended)
     }
 }
 
@@ -378,24 +442,32 @@ pub struct Sweep {
 }
 
 impl Sweep {
-    /// Whether anything took every signal this sweep had and is still holding on.
+    /// Whether anything still standing would stop a `devpod delete`.
     ///
-    /// The one question a removal standing after the sweep has to ask, and the
-    /// reason it is asked of the *signals* rather than of [`Holding`]: the two
-    /// kinds of holder left standing are in devpod's way to completely different
-    /// degrees. An attended one is spared on purpose and is not in its way at all
-    /// — an idle `devpod ssh` takes the workspace's flock and gives it back, which
-    /// is why `dl <ws> rm` deletes a workspace somebody is sitting in without ever
-    /// noticing them. A process that sat through SIGKILL is the other case
-    /// entirely: it holds the flock, there is no privilege left to take it away,
-    /// and devpod's acquire has no deadline behind it. A delete attempted over one
-    /// of those does not fail. It joins the five-second log line that sent
-    /// somebody here in the first place, which is the one ending this verb exists
-    /// to spare them.
-    pub fn outlived_the_signals(&self) -> bool {
-        self.signalled
+    /// The one question a removal standing behind the sweep has to ask, and it is
+    /// asked of the final process-table reading rather than of the signal list.
+    /// Both of the readings the signal list gives are wrong, in opposite
+    /// directions, and each one was a live defect:
+    ///
+    /// - **It misses a holder no signal was sent to.** A `devpod up` attended when
+    ///   the sweep opened and orphaned by the time it closed is in no
+    ///   [`Signalled`] at all, and holds the flock as firmly as a survivor.
+    /// - **It misses a live build.** An attended holder is never signalled, so a
+    ///   gate reading the signal list calls the workspace clear and deletes the
+    ///   workspace out from under somebody's `devpod up` — which the sweep
+    ///   directly above has just spared, along with its containers and its busy
+    ///   marker.
+    ///
+    /// A delete over any of those does not fail. It joins the five-second log line
+    /// that sent somebody here in the first place, which is the one ending this
+    /// verb exists to spare them, and in the build's case it destroys the build
+    /// first. [`Standing`] is where the per-holder judgement lives; this is only
+    /// its `any`.
+    pub fn blocks_a_delete(&self) -> bool {
+        self.holding
+            .holders()
             .iter()
-            .any(|signalled| signalled.ending == Ending::Survived)
+            .any(Standing::in_a_deletes_way)
     }
 }
 
@@ -465,18 +537,16 @@ pub fn workspace_kill(
         ending: Ending::Survived,
     }));
     signalled.sort_by_key(|signalled| signalled.process.pid);
-    // Every holder still standing, whatever its parentage: an orphan that sat
-    // through SIGKILL is holding the workspace exactly as firmly as a live build
-    // is, so both are reasons to leave the marker where it is.
+    // Every holder still standing, classified, and none of them dropped: an orphan
+    // that sat through SIGKILL is holding the workspace exactly as firmly as a live
+    // build is, so both are reasons to leave the marker where it is — and the
+    // delete behind this needs to tell them apart from a session, which is the
+    // third arm.
     let holding = if current.is_empty() {
         Holding::Free
     } else {
         Holding::StillHeld {
-            attended: current
-                .into_iter()
-                .filter(|holder| holder.parentage == Parentage::Attended)
-                .map(|holder| holder.process)
-                .collect(),
+            holders: current.into_iter().map(standing).collect(),
         }
     };
     Killed::Swept(Sweep {
@@ -500,7 +570,7 @@ pub fn workspace_kill(
 /// The listing comes first because a project with nothing running is the common
 /// case and a `docker kill` with no arguments is an error rather than a no-op.
 fn kill_containers(runner: &dyn Runner, workspace_id: &str, holding: &Holding) -> Containers {
-    if !holding.attended().is_empty() {
+    if holding.any_attended() {
         return Containers::LeftForALiveBuild;
     }
     let ids = match docker::running_for_project(runner, workspace_id) {
@@ -567,6 +637,31 @@ fn look(runner: &dyn Runner, workspace_id: &str) -> Result<Vec<Holder>, TableUnr
         ps::Answer::Refused { exit, stderr } => Err(TableUnreadable::Refused { exit, stderr }),
         ps::Answer::NotStarted(failure) => Err(TableUnreadable::NotStarted(failure)),
     }
+}
+
+/// What kind of holder this is, in the reading it was taken from.
+///
+/// The `up` test is on the devpod subcommand and nothing else. It is the narrowest
+/// thing that distinguishes "somebody is building this workspace right now" from
+/// "somebody has a shell in it", and those are the two attended cases that want
+/// opposite answers from the delete standing behind the sweep. Every other
+/// subcommand an attended process could be running — `ssh`, `helper`, `stop`,
+/// `delete` — holds the flock for a moment and lets go, so none of them is a
+/// reason to leave a workspace standing.
+fn standing(holder: Holder) -> Standing {
+    match holder.parentage {
+        Parentage::Orphaned => Standing::AnOrphan(holder.process),
+        Parentage::Attended if subcommand(&holder.process.command) == Some("up") => {
+            Standing::ABuild(holder.process)
+        }
+        Parentage::Attended => Standing::ASession(holder.process),
+    }
+}
+
+/// The devpod subcommand this command line runs, which is its first word after
+/// the program.
+fn subcommand(command: &str) -> Option<&str> {
+    command.split_whitespace().nth(1)
 }
 
 fn orphaned(holders: &[Holder]) -> Vec<HostProcess> {
@@ -870,42 +965,94 @@ mod tests {
 
         assert!(fake.args_to("kill").is_empty(), "nothing was signalled");
         assert_eq!(
-            sweep
-                .holding
-                .attended()
-                .iter()
-                .map(|process| process.pid)
-                .collect::<Vec<u32>>(),
-            [5001]
+            sweep.holding.holders(),
+            [Standing::ABuild(HostProcess {
+                pid: 5001,
+                parent: 5000,
+                command: "devpod up my-ws".to_owned(),
+            })]
         );
     }
 
-    /// The question the delete standing after the sweep asks, and the two holders
-    /// it separates. Both leave the workspace [`Holding::StillHeld`], and asking
-    /// *that* instead is the bug this exists to avoid: one live `devpod ssh` was
-    /// enough to make the whole verb do nothing, on a workspace `dl <ws> rm` then
-    /// deleted without noticing the ssh at all.
+    /// The question the delete standing after the sweep asks, over every holder
+    /// the sweep can leave behind. All four leave the workspace
+    /// [`Holding::StillHeld`], so asking *that* is the bug at one end — one live
+    /// `devpod ssh` was enough to make the whole verb do nothing, on a workspace
+    /// `dl <ws> rm` then deleted without noticing the ssh at all — and asking only
+    /// the signal list is the bug at the other, which is the two rows below it.
     #[test]
-    fn only_a_process_that_outlived_the_signals_stands_in_a_deletes_way() {
-        let outlived = swept(workspace_kill(
-            &host_showing(WEDGED),
-            None,
-            "my-ws",
-            &mut |_| {},
-        ));
-        let attended = swept(workspace_kill(
-            &host_showing(
-                "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod ssh my-ws\n",
-            ),
-            None,
-            "my-ws",
-            &mut |_| {},
-        ));
+    fn a_delete_is_blocked_by_every_holder_that_holds_the_lock_and_no_others() {
+        // A session with somebody behind it. Takes the flock and gives it back, so
+        // a delete goes straight past it: this is the row `dl <ws> rm` already
+        // demonstrates, by deleting a workspace somebody is sitting in.
+        let session = "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod ssh \
+                       my-ws\n";
+        // Somebody's build. Attended too, and spared by the sweep for that reason,
+        // but it holds the flock for as long as it builds — which this module's own
+        // header is about — so a delete over it either destroys the build or blocks
+        // on it until the deadline.
+        let build = "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod up \
+                     my-ws\n";
+        // Orphaned before the sweep, and it sat through both signals.
+        let survivor = WEDGED;
 
-        assert!(matches!(outlived.holding, Holding::StillHeld { .. }));
-        assert!(matches!(attended.holding, Holding::StillHeld { .. }));
-        assert!(outlived.outlived_the_signals());
-        assert!(!attended.outlived_the_signals());
+        assert!(!blocks_a_delete(session), "a session blocked the delete");
+        assert!(
+            blocks_a_delete(build),
+            "a live build did not block the delete"
+        );
+        assert!(
+            blocks_a_delete(survivor),
+            "a survivor did not block the delete"
+        );
+    }
+
+    /// The holder no signal was ever sent to: attended when the sweep opened,
+    /// orphaned by the time it finished, because the `dl` behind it exited while
+    /// the signals were going out to somebody else. It is in no [`Signalled`] at
+    /// all, so a gate that read the signal list called the workspace clear and ran
+    /// the delete straight into its flock.
+    #[test]
+    fn a_holder_orphaned_while_the_sweep_ran_blocks_the_delete_it_never_took_a_signal_from() {
+        // The orphan in the first reading is what makes the sweep signal at all,
+        // and so what makes it read the table a second time. By that second
+        // reading the `dl` behind 5001 has exited, which is the whole case: 5001
+        // was attended when the signals were chosen and is orphaned when the
+        // holders are counted.
+        let fake = host_showing(
+            "    1       0 /sbin/init\n 4000       1 devpod ssh my-ws\n 5000       1 dl my-ws\n \
+             5001    5000 devpod up my-ws\n",
+        );
+        let sweep = swept(workspace_kill(&fake, None, "my-ws", &mut |_| {
+            showing(
+                &fake,
+                "    1       0 /sbin/init\n 5001       1 devpod up my-ws\n",
+            );
+        }));
+
+        assert!(
+            sweep
+                .signalled
+                .iter()
+                .all(|signalled| signalled.process.pid != 5001),
+            "5001 was signalled, so this is not the case under test"
+        );
+        assert!(
+            sweep.blocks_a_delete(),
+            "an unsignalled orphan let the delete through: {:?}",
+            sweep.holding
+        );
+    }
+
+    /// Whether a sweep of this process table would stop the delete behind it.
+    fn blocks_a_delete(table: &str) -> bool {
+        swept(workspace_kill(
+            &host_showing(table),
+            None,
+            "my-ws",
+            &mut |_| {},
+        ))
+        .blocks_a_delete()
     }
 
     /// Nothing holding the workspace is a finding, not a failure: it says the
@@ -918,7 +1065,7 @@ mod tests {
 
         assert!(fake.args_to("kill").is_empty());
         assert!(sweep.signalled.is_empty());
-        assert!(sweep.holding.attended().is_empty());
+        assert!(sweep.holding.holders().is_empty());
     }
 
     /// Without a process table nothing here can be established, so nothing is
@@ -1227,10 +1374,19 @@ mod tests {
         }));
 
         assert_eq!(
-            sweep.holding,
-            Holding::StillHeld {
-                attended: Vec::new()
-            }
+            sweep.holding.holders().iter().collect::<Vec<&Standing>>(),
+            [
+                &Standing::AnOrphan(HostProcess {
+                    pid: 732_721,
+                    parent: 1,
+                    command: "devpod up my-ws --ide none".to_owned(),
+                }),
+                &Standing::AnOrphan(HostProcess {
+                    pid: 999,
+                    parent: 1,
+                    command: "devpod ssh my-ws".to_owned(),
+                }),
+            ]
         );
         assert_eq!(
             sweep
