@@ -64,9 +64,16 @@ pub(crate) enum Family {
     Stop,
     /// `dl <ws> kill`.
     ///
-    /// Its own family rather than a variant of [`Family::Stop`], because it asks
-    /// nothing of devpod at all: `stop` is a `devpod stop` and needs a devpod that
+    /// Its own family rather than a variant of [`Family::Stop`], because the sweep
+    /// asks devpod nothing at all: `stop` is a `devpod stop` and needs a devpod that
     /// answers, and this is what is left when it does not.
+    ///
+    /// Not a variant of [`Family::Remove`] either, though it ends in that family's
+    /// delete. The order is the whole verb: what the sweep does first is what lets
+    /// the delete through, so a dispatcher that treated this as a removal with an
+    /// extra step would have the two halves the wrong way round. It carries no
+    /// `--force` for the same reason [`Verb::Kill`] does not: the delete it reaches
+    /// is already the insisting one.
     Kill,
     /// `dl <ws> rm`, and whether `--force` was typed.
     ///

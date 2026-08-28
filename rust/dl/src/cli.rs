@@ -241,12 +241,20 @@ pub(crate) enum Verb {
     Run(NonEmpty<String>, RmOnExit),
     Up,
     Stop,
-    /// `kill` — the hammer for a workspace that will not answer.
+    /// `kill` — the hammer for a workspace that will not answer, and then the
+    /// workspace itself.
     ///
-    /// Carries nothing, because it is asked of the host rather than of devpod:
-    /// there is no `--force` to fold in and no state to consult first. `stop` is
-    /// the polite version and needs a devpod that answers; this one is what is
-    /// left when it does not.
+    /// Carries nothing, and that is a statement about what the word means rather
+    /// than a gap. There is no `--force` to fold in because there is nothing left
+    /// for one to override: a process is signalled for having no parent behind it,
+    /// which is not a thing anybody can insist on, and the delete underneath is
+    /// already the insisting kind. `kill` is what somebody types about a workspace
+    /// that is stuck and finished with, so it stops at nothing and says what it
+    /// destroyed instead of asking.
+    ///
+    /// The sweep is still asked of the host rather than of devpod, and that is what
+    /// separates this from `stop`: `stop` is the polite version and needs a devpod
+    /// that answers, and this is what is left when it does not.
     Kill,
     /// `rm`. `force` is `--force`: delete despite unsaved work, and count an
     /// already-absent workspace as deleted. `after` is which of the two words
@@ -284,7 +292,13 @@ impl Verb {
     /// makes it safe is narrower, and it is the sweep's own scope: each one only
     /// signals processes naming *its* workspace and spares anything with a live
     /// parent behind it, so five at once is five independent sweeps rather than
-    /// one wider one. No for anything that ends in an
+    /// one wider one. What the batch means changed when the verb gained its
+    /// delete, and the change is worth being explicit about: five marked rows are
+    /// now five workspaces deleted, and `kill` does not stop at unsaved work, so
+    /// five is five. That is the verb doing what it says rather than a hazard the
+    /// picker introduces — the same five rows marked for `rm` delete five
+    /// workspaces too — but it is the reason `kill` names what each one held on the
+    /// way past. No for anything that ends in an
     /// interactive session — attach, `--`, and the three rebuild verbs, whose
     /// launch attaches when it is done (`LaunchVerb::attaches`): several of those
     /// would be sessions run back to back, each waiting on the last one's exit,
@@ -597,13 +611,22 @@ const GRAMMAR: &str = "Examples:
 Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   up                                 Start it without attaching
   stop                               Stop it
-  kill                               Kill whatever is holding it, for a workspace
-                                     that will not answer and a stop that hangs
-                                     with it. Kills the host processes still
+  kill                               Kill whatever is holding it, and then delete
+                                     it, for a workspace that is wedged and
+                                     finished with. Kills the host processes still
                                      holding it whose parent has died, clears
                                      devpod's stale busy marker once nothing is
                                      building, kills any container it still has
-                                     running, and prints all of it
+                                     running, prints all of it, and then deletes
+                                     the workspace. Nothing here refuses: work that
+                                     is nowhere else is named and destroyed rather
+                                     than stopping the delete, so there is no
+                                     --force to type. Nothing here waits forever
+                                     either. The delete carries a deadline and asks
+                                     devpod to force it, and it is withheld only
+                                     for a process that outlived SIGKILL, which is
+                                     the one thing devpod's own delete would hang
+                                     on too
   rm                                 Delete it. Refuses if its clone holds
                                      uncommitted or unpushed work, or if git
                                      cannot read the clone to find out; add
@@ -625,6 +648,15 @@ A verb with no workspace named picks interactively. For up, stop, kill, rm, rme,
 code and dotfiles, TAB marks several rows and the verb applies to each in turn — dl
 rm can clear five workspaces in one visit. The forms that end in a session (attach,
 --, restart, recreate, reset) take exactly one.
+
+kill ends in a delete rather than sending you to type one: the sweep is what clears
+the lock, and clearing the lock is what lets the delete through, so the two halves
+were never independently useful. It is the rm verb's delete with the guard turned
+into a report, which is what makes --force meaningless on kill rather than merely
+absent: a workspace wedged badly enough to want the hammer has a dirty clone almost
+by construction, so stopping there would refuse in the one case the verb is for.
+Use rm, which stops and offers --force, whenever the workspace might still be
+wanted.
 
 'prune' was a second spelling of the rm verb and is retired: it collided with the
 --prune flag below, which removes clone directories and no workspace at all. Typing
@@ -1153,6 +1185,19 @@ mod tests {
     fn kill_is_a_verb_from_either_position() {
         assert_eq!(parse(&["ws", "kill"]), Ok(workspace("ws", Verb::Kill)));
         assert_eq!(parse(&["kill", "ws"]), Ok(workspace("ws", Verb::Kill)));
+    }
+
+    /// `--force` has nothing to say to this verb and does not change it: the
+    /// delete `kill` ends in already insists, so the flag is the no-op it is on
+    /// `up` and `stop` rather than a second mode. Pinned because the alternative
+    /// is somebody adding a `--force` arm here and quietly giving `kill` a gentler
+    /// default to be forced out of.
+    #[test]
+    fn force_asks_kill_for_nothing_it_was_not_already_doing() {
+        assert_eq!(
+            parse(&["ws", "kill", "--force"]),
+            Ok(workspace("ws", Verb::Kill))
+        );
     }
 
     /// Several wedged workspaces in one visit, for the reason `rm` gets the same

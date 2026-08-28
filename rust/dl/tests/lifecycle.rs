@@ -990,14 +990,191 @@ fn a_delete_devpod_refuses_keeps_the_clone_and_hands_the_status_back() {
         // The announcement stands even though the delete then failed: it says what
         // was attempted, and the refusal under it says what came of it. No
         // `Removed workspace` line, which is the whole point of that one being last.
+        //
+        // The `kill` sentence is on the end because a devpod that refuses a delete
+        // has two causes behind it and this run cannot tell which: the file that
+        // moved, which the shim is standing in for here, and the workspace something
+        // on the host is still holding. `dl <ws> kill` is the whole way out of the
+        // second, sweep and delete together.
         "Removing workspace devlaunch-main-legacy...\ndevpod: cannot read \
          devcontainer.json\ndevpod could not delete devlaunch-main-legacy; keeping the local clone \
          so it stays retryable. If its devcontainer.json moved, restore the path or run: devpod \
-         delete devlaunch-main-legacy --force\n"
+         delete devlaunch-main-legacy --force. If something on this host is holding it instead, \
+         run: dl devlaunch-main-legacy kill\n"
     );
     assert!(
         world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
         "the clone was removed even though the workspace is still there"
+    );
+}
+
+// ===========================================================================
+// dl <ws> kill
+// ===========================================================================
+
+/// The verb's second half, at the boundary: a sweep that found nothing to kill
+/// still ends in the delete, because "nothing is holding it" is not a reason to
+/// leave the workspace standing. This is the shape the issue behind it asked for,
+/// where the sweep printed a refusal and the `rm` typed after it deleted the
+/// workspace unaided.
+///
+/// **No `devpod status` in the calls, and that is load-bearing rather than
+/// incidental.** The delete `kill` reuses is `rm`'s, and `rm` resolves its target
+/// through a status call with no deadline behind it; `kill` must not, because the
+/// workspace it is typed at is the one whose devpod has stopped answering. So the
+/// one call here is the delete.
+#[test]
+fn a_kill_that_found_nothing_holding_the_workspace_still_removes_it() {
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+    assert!(world.exists(clone), "the fixture's clean clone");
+
+    let run = world.dl(&["devlaunch-main-legacy", "kill"]);
+
+    run.exited(0);
+    assert!(
+        run.err.contains(
+            "Nothing on this host is holding workspace devlaunch-main-legacy.\nRemoving workspace \
+             devlaunch-main-legacy..."
+        ),
+        "the sweep's verdict did not hand over to the delete: {}",
+        run.err
+    );
+    // The insisted delete's wording: `kill` asks for absence rather than for a
+    // removal, so the closing line is `is gone` rather than `Removed workspace`.
+    assert!(
+        run.err.contains("Workspace devlaunch-main-legacy is gone."),
+        "the kill did not remove the workspace: {}",
+        run.err
+    );
+    assert!(!world.exists(clone), "the clone was left behind");
+    // Both flags, and they answer two different questions: `--ignore-not-found` is
+    // dl's, so a workspace devpod never heard of counts as deleted, and `--force`
+    // is devpod's, so one whose container it can no longer reach goes anyway. A
+    // wedged workspace is routinely both.
+    assert_eq!(
+        world.devpod_calls(),
+        ["devpod delete devlaunch-main-legacy --ignore-not-found --force"]
+    );
+}
+
+/// The whole point of the verb having no `--force`: a wedged workspace's clone is
+/// dirty almost by construction, because whatever wedged it interrupted the work
+/// that was going on in it. A `kill` that stopped there would refuse in exactly the
+/// case it exists for, so it names the work and deletes it.
+#[test]
+fn a_kill_names_the_work_it_is_about_to_destroy_and_destroys_it() {
+    let world = World::base();
+
+    let run = world.dl(&["devlaunch-dirty-fqta", "kill"]);
+
+    run.exited(0);
+    assert!(
+        run.err.contains(
+            "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt), and kill is \
+             deleting it anyway."
+        ),
+        "the work destroyed was not named: {}",
+        run.err
+    );
+    assert!(
+        run.err.contains("Workspace devlaunch-dirty-fqta is gone."),
+        "the kill did not remove the workspace: {}",
+        run.err
+    );
+    // And the sentence is said *before* the delete it is about, which is the only
+    // place it is worth anything: after the delete it would be a receipt for
+    // something already gone.
+    let named = run.err.find("holds 1 uncommitted").expect("the naming");
+    let removing = run.err.find("Removing workspace").expect("the delete");
+    assert!(named < removing, "the work was named after the delete ran");
+}
+
+/// The failure the transcript behind this feature actually hit, and the one an
+/// exit code cannot carry: `devpod delete` blocked on the workspace's lock, which
+/// it waits on with no deadline, logging the same line every five seconds. There
+/// is no exit to inspect and no timeout on `rm`'s delete, so dl said nothing at
+/// all and the run had to be Ctrl-C'd. Now the line is read as it arrives and
+/// answered while the command is still blocked.
+#[test]
+fn an_rm_devpod_cannot_get_the_lock_for_names_the_kill_that_clears_it() {
+    let world = World::base();
+    world.devpod_answers(
+        &["delete"],
+        0,
+        "info Trying to lock workspace, seems like another process is running that blocks this \
+         workspace machine_client.go:311\n",
+    );
+
+    let run = world.dl(&["devlaunch-main-legacy", "rm"]);
+
+    // devpod's own line is still forwarded verbatim: reading it must not consume
+    // it, or the reader loses the evidence the advice is about.
+    assert!(
+        run.err.contains("info Trying to lock workspace"),
+        "devpod's line was swallowed: {}",
+        run.err
+    );
+    assert!(
+        run.err.contains(
+            "dl: devpod is waiting for another process to let go of devlaunch-main-legacy"
+        ) && run
+            .err
+            .contains("'dl devlaunch-main-legacy kill' clears whatever is holding it"),
+        "the blocked delete offered no way out: {}",
+        run.err
+    );
+}
+
+/// `rm` is untouched by all of it. The guard is still the thing dl refuses on its
+/// own account, and the way past is still `--force`, because `rm` is the happy
+/// path and the happy path does not destroy work to save a keystroke.
+#[test]
+fn rm_still_stops_where_kill_no_longer_does() {
+    let world = World::base();
+
+    let run = world.dl(&["devlaunch-dirty-fqta", "rm"]);
+
+    run.exited(1);
+    assert!(
+        run.err.contains("run: dl devlaunch-dirty-fqta rm --force"),
+        "the refusal did not offer the way past: {}",
+        run.err
+    );
+    // Not "no devpod calls": `rm` resolves its target through a `devpod status`,
+    // which `kill` deliberately skips. No *delete* is the claim.
+    assert!(
+        !world
+            .devpod_calls()
+            .iter()
+            .any(|call| call.starts_with("devpod delete")),
+        "a refused rm deleted something: {:?}",
+        world.devpod_calls()
+    );
+}
+
+/// The advice `rm` gained does not come back round at the person already taking
+/// it. A `kill` whose delete devpod refuses has swept the host in the lines
+/// directly above, so "run: dl <ws> kill" would be telling somebody to re-run the
+/// command they are reading the output of.
+#[test]
+fn a_kill_whose_delete_is_refused_does_not_tell_you_to_run_kill() {
+    let world = World::base();
+    world.devpod_answers(&["delete"], 3, "devpod: cannot read devcontainer.json\n");
+
+    let run = world.dl(&["devlaunch-main-legacy", "kill"]);
+
+    run.exited(3);
+    assert!(
+        run.err
+            .contains("devpod could not delete devlaunch-main-legacy"),
+        "the delete was not attempted: {}",
+        run.err
+    );
+    assert!(
+        !run.err.contains("run: dl devlaunch-main-legacy kill"),
+        "the kill told the reader to run kill: {}",
+        run.err
     );
 }
 

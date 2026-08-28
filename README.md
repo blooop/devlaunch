@@ -198,7 +198,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws>` | Open a shell in it |
 | `dl <ws> up` | Start it without attaching, to prewarm a container |
 | `dl <ws> stop` | Stop it. Frees memory, keeps disk |
-| `dl <ws> kill` | Kill whatever is holding a workspace that will not answer |
+| `dl <ws> kill` | Kill whatever is holding a workspace that will not answer, then delete it |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
 | `dl <ws> rme` | The same delete, and then the shell: it closes the terminal it was typed in |
 | `dl <ws> code` | Open it in VS Code |
@@ -227,8 +227,21 @@ changes about that, and why `nohup` is refused are in [docs/cli.md](docs/cli.md)
 sweeps the host instead of asking devpod: it kills the host processes still holding the
 workspace whose own parent has died, clears devpod's stale busy marker once nothing is left
 building, kills any container the workspace still has running, and prints every one of them. It
-exits 0 only when nothing is left holding the workspace, and it never touches the lock file
-itself. Nothing it does waits on devpod without a deadline, which is the point of having it.
+never touches the lock file itself, and nothing it does waits on devpod without a deadline,
+which is the point of having it.
+
+Then it deletes the workspace. Clearing the lock is what lets `devpod delete` through, so the
+two halves were never independently useful. That delete does not stop for work that exists
+nowhere else: it names it and destroys it, which is why there is no `dl <ws> kill --force` to
+type. It only stands down for a holder it could not clear, a live build or a process that
+outlived SIGKILL, and it says which.
+
+`rm` is the happy path and keeps its guard and its `--force`: use it whenever the workspace
+might still be wanted, and `kill` when it is stuck and finished with. An `rm` that devpod cannot
+get the workspace's lock for now says so while it waits, and names the `kill` that clears it.
+
+[docs/cli.md](docs/cli.md) has the rest: what the delete asks of devpod, what stands it down,
+and why `kill` is the one command in dl with a deadline on it.
 
 `--stop` and the `prune` verb are retired. Both are still recognised and print what to use
 instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including which exits fire it.
