@@ -4247,7 +4247,10 @@ fi
             ),
             Some(ClaudeConfig::Ours)
         );
-        assert!(!is_under("/home/hostuser/.claude-backup", "/home/hostuser/.claude"));
+        assert!(!is_under(
+            "/home/hostuser/.claude-backup",
+            "/home/hostuser/.claude"
+        ));
         assert!(is_under("/home/hostuser/.claude", "/home/hostuser/.claude"));
         assert!(is_under(
             "/home/hostuser/.claude/settings.json",
@@ -4363,7 +4366,10 @@ fi
         // descendants alone saw no mounts and called the directory ours; the shape
         // `findmnt --target` would have caught and a descendants scan cannot.
         assert_eq!(
-            ClaudeConfig::parse(&claude_report("/home/vscode", &["/home/hostuser"]), ELSEWHERE),
+            ClaudeConfig::parse(
+                &claude_report("/home/vscode", &["/home/hostuser"]),
+                ELSEWHERE
+            ),
             Some(ClaudeConfig::Foreign)
         );
     }
