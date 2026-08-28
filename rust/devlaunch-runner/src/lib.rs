@@ -43,12 +43,24 @@
 //! here would name argv fragments and would time the `git` calls Python does not
 //! time. The registry is `timing`'s, and the spans are the callers'.
 //!
+//! # The terminal is part of what an inherited stream carries
+//!
+//! [`Runner::passthrough`] and [`Runner::session`] hand the child this process's
+//! stdout, which is to say they hand it the *terminal*, and a terminal carries
+//! modes as well as bytes. A child that is killed rather than exited leaves its
+//! modes switched on with nobody left to switch them off, so both methods write a
+//! restore as soon as they reap the child. The `terminal` module is that string
+//! and the argument for why writing it after a clean session costs nothing.
+//!
 //! # No English
 //!
 //! Nothing here holds a message meant for a person (#251 §5). An outcome
 //! carries what the child wrote, how it ended, and — when it never ran — an
 //! [`std::io::ErrorKind`] and an errno. Turning any of that into a diagnostic
 //! and an exit code is the `dl` binary's rendering.
+//!
+//! The restore above is not an exception to that rule so much as a thing the
+//! rule does not cover: it says nothing to anyone, it puts a device back.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -61,6 +73,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub mod interrupt;
+mod terminal;
 
 #[cfg(test)]
 mod tests;
@@ -511,7 +524,7 @@ impl Runner for ProcessRunner {
         // session hangs. It stays in this process's group, which is also what
         // the Python original did — as do `session`'s and `capture`'s children,
         // for the same reason.
-        if spec.own_group {
+        let ending = if spec.own_group {
             let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
                 Ok(child) => child,
                 Err(outcome) => return outcome.retyped(),
@@ -529,7 +542,7 @@ impl Runner for ProcessRunner {
             let ending = wait(&mut child, spec.timeout);
             // Reaped now, so the handler must not signal a possibly-recycled pgid.
             interrupt::clear_foreground_child();
-            ending.into()
+            ending
         } else {
             // The child stays in this process's group. Its "pgid" would be this
             // process's own group, so it must NOT be noted for the interrupt
@@ -539,8 +552,20 @@ impl Runner for ProcessRunner {
                 Ok(child) => child,
                 Err(outcome) => return outcome.retyped(),
             };
-            wait(&mut child, spec.timeout).into()
-        }
+            wait(&mut child, spec.timeout)
+        };
+        // The child had this process's stdout, so it had the terminal, so it may
+        // have left modes switched on that only it was ever going to switch off —
+        // and if it was killed rather than exited, it certainly did. Undone here,
+        // as soon as it is reaped, rather than on the way out of the process: a
+        // session that stranded the alternate screen would otherwise have every
+        // notice `dl` prints after it drawn into a buffer the user cannot see.
+        // See [`terminal`] for why doing this after a *clean* exit costs nothing.
+        //
+        // A child that never started is not reached: those paths return above,
+        // and a child that never ran never had the terminal.
+        terminal::restore();
+        ending.into()
     }
 
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
@@ -624,6 +649,11 @@ impl Runner for ProcessRunner {
         if !timed_out && let Some(reader) = reader {
             let _ = reader.join();
         }
+        // As in `passthrough`, and for the same reason: this child had stdin and
+        // stdout, which is to say it had the terminal. `devpod ssh` is the other
+        // way into a workspace, so the agent that gets killed in there strands
+        // exactly the same modes as the one reached over `ssh -t`.
+        terminal::restore();
         ending.into()
     }
 

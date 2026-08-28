@@ -116,6 +116,39 @@ writes to that same file, so a notice that comes back means `DEVPOD_SSH_CONFIG` 
 one of devpod's ssh-config context options names a different one. Set
 `DEVLAUNCH_NO_TTY=1` to force the fallback everywhere.
 
+### Getting the terminal back when a session dies badly
+
+A terminal is not only a stream. A full screen program switches modes on in the
+emulator for its own use, the kitty keyboard protocol, bracketed paste, mouse
+reporting, the alternate screen, and is expected to switch them off again on the
+way out. One that is killed never gets the chance, and those modes live in your
+terminal rather than in the connection, so nothing between the program and the
+glass undoes them.
+
+That is the failure you see when a container goes away underneath a live session.
+devpod reports `error tunneling to container: exit status 137`, the agent inside
+dies unceremoniously, and what is left behind is baffling rather than obviously
+broken: ssh restores the tty settings on its way out, so the shell still echoes
+and still edits lines, and yet Ctrl-C does nothing and ordinary keys print things
+like `9;133u` at the prompt. Those are kitty keyboard protocol key reports, still
+switched on. Ctrl-C is one of them, arriving as an escape sequence instead of as
+the byte that raises SIGINT.
+
+`dl` is the last process holding that terminal, so `dl` repairs it. Every session
+ends with a short restore written to the terminal, over either transport, and the
+interrupt handler writes the same thing before it exits. It goes out after a
+clean session too, because ssh's exit status does not say whether the far end
+cleaned up after itself. That costs nothing: every sequence in it is chosen for
+doing nothing when the mode it names is already off. The one obvious candidate
+that is not, `ESC [ ? 1049 l`, is left out on purpose, because it restores the
+cursor as well as the screen and would scramble the display on every ordinary
+exit.
+
+Nothing is written when `dl` is not talking to a terminal, so `dl <ws> -- ls >
+files.txt` keeps its output free of escape sequences. If you are ever left with a
+wrecked terminal some other way, `printf '\033[<u'` undoes this particular one
+and `reset` undoes everything.
+
 ### `--rm`: the throwaway workspace
 
 `--rm` deletes the workspace once the session ends, the way `docker run --rm` does. It

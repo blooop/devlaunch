@@ -165,7 +165,13 @@ pub unsafe fn cleanup_and_exit(code: i32) -> ! {
 /// Same contract as [`cleanup_and_exit`]: async-signal-safe, reads only
 /// lock-free atomics and calls only async-signal-safe syscalls.
 unsafe fn drain() {
-    // The child first: killing the `devpod up` group before unlinking means the
+    // The terminal first, and before the kill rather than after it: `dl` is about
+    // to `_exit` without unwinding, so a session child holding modes on this
+    // terminal has no one left to undo them. `restore` is async-signal-safe on
+    // the same terms as everything below it — `isatty`, `write`, and no
+    // allocation (see [`crate::terminal::restore`]).
+    crate::terminal::restore();
+    // The child next: killing the `devpod up` group before unlinking means the
     // build is already on its way down by the time the token it was handed is
     // gone, closing the window in which an orphan could still read it.
     let pgid = FOREGROUND_PGID.load(Ordering::SeqCst);

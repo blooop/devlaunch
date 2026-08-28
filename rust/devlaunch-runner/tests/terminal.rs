@@ -67,6 +67,38 @@ fn capture_beside_the_terminal(role: &str) {
     println!("outcome: {:?}", ProcessRunner.capture(&what.into()));
 }
 
+/// The bytes a killed child leaves switched on, and the bytes that undo them.
+///
+/// The push is the kitty keyboard protocol's, because that is the mode whose
+/// absence is silent: with it stranded, echo and line editing still work and yet
+/// Ctrl-C arrives at the shell as `ESC [ 99;5 u` rather than as the byte the line
+/// discipline turns into SIGINT.
+const KEYBOARD_PUSH: &str = "\x1b[>1u";
+const KEYBOARD_POP: &str = "\x1b[<u";
+
+/// What the child says before it dies, so the test can tell "the restore came
+/// after the child" from "the restore came instead of it".
+const CHILD_DONE: &str = "CHILD-DONE";
+
+/// The passthrough side: a child that takes the terminal, switches a mode on, and
+/// is then killed without ever switching it off.
+///
+/// `kill -9 $$` rather than a plain exit, because that is the case from the
+/// report: the container goes away underneath an `ssh -t` session and the agent
+/// inside it dies with no chance to clean up. A child that exits normally would
+/// prove the restore runs, but not that it runs when it is the only thing left to
+/// run.
+fn passthrough_beside_the_terminal() {
+    // `\033[>1u` spelled the way `printf` reads it: the same bytes as
+    // [`KEYBOARD_PUSH`], which is what the assertions look for.
+    let what = sh(&format!(
+        "printf '\\033[>1u'; printf '{CHILD_DONE}\\n'; kill -9 $$"
+    ));
+    println!("started");
+    let outcome = ProcessRunner.passthrough(&what.into());
+    println!("outcome: {outcome:?}");
+}
+
 /// This binary on a pty: the child, a way to type at it, and everything it said.
 struct Pty {
     child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -242,5 +274,91 @@ fn a_terminal_interrupt_reaches_a_captured_child() {
     assert!(
         !marker.exists(),
         "the captured child outlived the terminal's Ctrl-C: nothing else kills it"
+    );
+}
+
+/// A child that is killed while holding the terminal leaves modes switched on
+/// that only it was ever going to switch off, so `passthrough` switches them off
+/// as soon as it reaps the child.
+///
+/// This is the reported failure in miniature: `dl` attaches over `ssh -t`, the
+/// container goes away underneath the session (`error tunneling to container:
+/// exit status 137`), and the agent inside dies without popping the kitty
+/// keyboard protocol it pushed on the way in. ssh restores the tty *settings* on
+/// its way out, so the terminal still echoes and still edits lines, and Ctrl-C
+/// still does nothing.
+///
+/// The ordering is the assertion, not just the presence: the restore has to land
+/// after the child's own output and before anything `dl` prints next, or a
+/// session that stranded the alternate screen would have `dl`'s closing notices
+/// drawn into a buffer nobody can see.
+#[test]
+fn a_killed_child_does_not_leave_the_terminal_switched_into_its_own_modes() {
+    if std::env::var(ROLE).is_ok() {
+        return passthrough_beside_the_terminal();
+    }
+    let mut pty = Pty::spawn(
+        "a_killed_child_does_not_leave_the_terminal_switched_into_its_own_modes",
+        "restore-after-passthrough",
+        None,
+    );
+    pty.expect("started", "the child never started its passthrough");
+    pty.expect(
+        "outcome: ",
+        "the passthrough never returned after the child was killed",
+    );
+    pty.wait_for_exit("after the passthrough returned");
+
+    let said = pty.text();
+    let pushed = said.find(KEYBOARD_PUSH).unwrap_or_else(|| {
+        panic!("the child never switched the mode on, so this proves nothing:\n{said:?}")
+    });
+    let done = said.find(CHILD_DONE).expect("the child's own output");
+    let popped = said.find(KEYBOARD_POP).unwrap_or_else(|| {
+        panic!(
+            "the terminal was left in the killed child's keyboard mode: nothing \
+             wrote {KEYBOARD_POP:?}, so Ctrl-C at this terminal would arrive as an \
+             escape sequence rather than as SIGINT.\nThe pty saw:\n{said:?}"
+        )
+    });
+    let printed_after = said.find("outcome: ").expect("the parent's next line");
+    assert!(
+        pushed < done && done < popped && popped < printed_after,
+        "the restore is out of order: push at {pushed}, child output at {done}, \
+         pop at {popped}, the next thing dl printed at {printed_after}.\nThe pty \
+         saw:\n{said:?}"
+    );
+}
+
+/// With stdout on a pipe there is no terminal to repair, and writing the restore
+/// anyway would corrupt whatever is reading — `dl <ws> -- ls > out.txt` is a real
+/// invocation, and its output has to stay free of escape sequences.
+///
+/// Same child as the pty test, run with no terminal anywhere near it.
+#[test]
+fn nothing_is_written_when_the_streams_are_not_a_terminal() {
+    if std::env::var(ROLE).is_ok() {
+        return passthrough_beside_the_terminal();
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "nothing_is_written_when_the_streams_are_not_a_terminal",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ROLE, "restore-after-passthrough")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("this binary runs off a terminal too");
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        said.contains(CHILD_DONE),
+        "the child never ran, so this proves nothing:\n{said:?}"
+    );
+    assert!(
+        !said.contains(KEYBOARD_POP),
+        "a restore was written to a pipe, where there is no terminal to restore \
+         and no one who wants escape sequences in their output:\n{said:?}"
     );
 }
