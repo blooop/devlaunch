@@ -372,6 +372,41 @@ fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
 }
 
 #[test]
+fn remote_control_reaches_claude_as_one_named_flag_and_dl_never_sees_it() {
+    // Both halves observed from outside. dl has never heard of `--remote-control`,
+    // so a version of this that passed the flag through as an unknown leading
+    // option would exit 2 here rather than open anything; and the session name has
+    // to arrive as one argv word, since `--remote-control [name]` would otherwise
+    // read the prompt as the name.
+    let world = World::with(&["--warm"]);
+    let run = world.aid(&["--remote-control", MAIN, "fix", "the", "bug"]);
+    run.exited(0);
+    assert_eq!(
+        world.devpod_calls().last().expect("a session"),
+        &format!(
+            "devpod ssh {MAIN} --command bash -lc \
+             'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions --remote-control={MAIN} '\"'\"'fix the bug'\"'\"''"
+        )
+    );
+}
+
+#[test]
+fn remote_control_beside_an_agent_that_has_none_is_refused_before_anything_opens() {
+    // The refusal is aid's, and it lands where every other usage refusal does:
+    // ahead of the boot, so nothing is created for a line that cannot run.
+    let world = World::with(&["--warm"]);
+    let run = world.aid(&["--codex", "--remote-control", MAIN, "hi"]);
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "--remote-control starts Claude Code's Remote Control, which only the claude agent has, \
+         not codex. Drop the flag or pick --claude.\n"
+    );
+    assert!(world.devpod_calls().is_empty());
+}
+
+#[test]
 fn a_dl_option_is_passed_through_and_a_flag_after_the_spec_is_prompt() {
     // `--devcontainer` reaches dl, which says what it thinks of it for a workspace
     // that is already running; `--verbose` after the spec is a word of the prompt,

@@ -3,8 +3,9 @@
 [README](../README.md) has the commands you need. This page is the rest: how the
 selector decides what you picked, which commands get a terminal, what `--rm`
 promises and where it stops, which exits fire it, the spellings that were retired
-and what they say now, what `kill` does to a workspace that will not answer, and
-what happens when devpod is missing or will not answer.
+and what they say now, what `aid --remote-control` starts and what it asks of the
+workspace, what `kill` does to a workspace that will not answer, and what happens
+when devpod is missing or will not answer.
 
 ## The selector
 
@@ -289,6 +290,45 @@ is never read as a workspace name. `dl prune <ws>` says what moved instead of
 reporting an unknown workspace called `prune`, and a workspace that really is called
 `prune` is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
+
+## `aid --remote-control`: picking the session up somewhere else
+
+`aid --remote-control <workspace> [prompt...]` starts Claude Code with Remote Control
+on. The session is still the one in your terminal, running in the container on your
+machine; Remote Control is what also makes it readable and steerable from
+claude.ai/code and the Claude mobile app, so you can send it the next thing from a
+phone without the workspace being anywhere but where it was.
+
+```bash
+aid --remote-control blooop/devlaunch@fix/42 fix the flaky test
+```
+
+The flag goes before the workspace. Everything after the spec is prompt text, which
+is the rule that lets a prompt go unquoted, so a `--remote-control` typed there is
+handed to the agent as words rather than read as the flag.
+
+Four things worth knowing before you type it.
+
+**It is claude's and nothing else's.** Remote Control is a Claude Code feature, so
+`--codex` or `--gemini` beside the flag is refused by name rather than quietly
+dropped, and so is a `DEVLAUNCH_AID_AGENT` naming either of them. The refusal happens
+before anything is booted.
+
+**The session is named after the workspace you typed**, so the list on claude.ai reads
+as the workspaces you opened rather than as a row of untitled sessions. aid always
+sends a name, because `claude --remote-control [name]` takes an optional one and a bare
+flag would read the first word of your prompt as the name instead.
+
+**It needs a claude.ai login inside the workspace.** Remote Control pairs the session
+with a Pro, Max or Team account, so a container whose `claude` is signed in with an API
+key, or not signed in at all, cannot start one. That login lives in the container along
+with the rest of the agent's state, which is what `aid` was already relying on.
+
+**Nothing survives the workspace.** The session is a process in the container, so
+`dl <ws> stop`, `dl <ws> rm`, a `--rm` firing at the end of the line, or Ctrl-C out of
+claude all take it offline immediately. The entry can sit in the claude.ai list for
+roughly 4 hours after that before it clears, which is the web side timing out rather
+than anything still running on your machine.
 
 ## `kill`: the workspace that will not answer
 
