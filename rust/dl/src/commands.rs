@@ -19,8 +19,8 @@ use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::LaunchNotice;
 use devlaunch_core::flows::lifecycle::{
-    self, ChildWork, DeleteOutcome, Guarded, Insistence, LifecycleNotice, Persistence, PruneError,
-    PruneOutcome, Refresh, RefreshReason, StopOutcome,
+    self, ChildWork, DeleteOutcome, DeleteStalled, Guarded, Insistence, LifecycleNotice,
+    Persistence, PruneError, PruneOutcome, Refresh, RefreshReason, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::repo_manager::CacheNotice;
@@ -1004,6 +1004,11 @@ fn remove_addressed<'r>(
         workspace_id,
         insistence,
         removal.persistence(),
+        // Printed from inside the call rather than collected with the notices
+        // below it, because the whole value of the sentence is its timing: the
+        // delete it is about has not returned and, until somebody acts on this,
+        // is not going to.
+        &mut |DeleteStalled::OnTheLock| eprintln!("{}", render::delete_blocked(workspace_id, word)),
         &mut notices,
     );
     match deleted {

@@ -1090,6 +1090,42 @@ fn a_kill_names_the_work_it_is_about_to_destroy_and_destroys_it() {
     assert!(named < removing, "the work was named after the delete ran");
 }
 
+/// The failure the transcript behind this feature actually hit, and the one an
+/// exit code cannot carry: `devpod delete` blocked on the workspace's lock, which
+/// it waits on with no deadline, logging the same line every five seconds. There
+/// is no exit to inspect and no timeout on `rm`'s delete, so dl said nothing at
+/// all and the run had to be Ctrl-C'd. Now the line is read as it arrives and
+/// answered while the command is still blocked.
+#[test]
+fn an_rm_devpod_cannot_get_the_lock_for_names_the_kill_that_clears_it() {
+    let world = World::base();
+    world.devpod_answers(
+        &["delete"],
+        0,
+        "info Trying to lock workspace, seems like another process is running that blocks this \
+         workspace machine_client.go:311\n",
+    );
+
+    let run = world.dl(&["devlaunch-main-legacy", "rm"]);
+
+    // devpod's own line is still forwarded verbatim: reading it must not consume
+    // it, or the reader loses the evidence the advice is about.
+    assert!(
+        run.err.contains("info Trying to lock workspace"),
+        "devpod's line was swallowed: {}",
+        run.err
+    );
+    assert!(
+        run.err.contains(
+            "dl: devpod is waiting for another process to let go of devlaunch-main-legacy"
+        ) && run
+            .err
+            .contains("'dl devlaunch-main-legacy kill' clears whatever is holding it"),
+        "the blocked delete offered no way out: {}",
+        run.err
+    );
+}
+
 /// `rm` is untouched by all of it. The guard is still the thing dl refuses on its
 /// own account, and the way past is still `--force`, because `rm` is the happy
 /// path and the happy path does not destroy work to save a keystroke.

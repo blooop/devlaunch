@@ -439,6 +439,27 @@ pub(crate) fn devpod_not_run(call: &str, refused: &NotRun) -> String {
     }
 }
 
+/// devpod, mid-delete, waiting on a lock it is never told to give up on.
+///
+/// Printed while the command is still running, which is the only time it is worth
+/// anything: this is the one failure with no downstream to report it, because
+/// devpod's acquire returns when the holder dies and not before. Somebody watching
+/// the five-second line repeat has two choices, wait or intervene, and until now
+/// dl said nothing about either.
+///
+/// **It names another terminal**, because this one is busy holding the command the
+/// advice is about, and Ctrl-C is the alternative it saves people from finding on
+/// their own. `word` is the verb that was typed, so a `--rm` firing at the end of a
+/// session offers the same `kill` the `rm` verb does rather than a word that is not
+/// on the line.
+pub(crate) fn delete_blocked(workspace_id: &str, word: &str) -> String {
+    format!(
+        "dl: devpod is waiting for another process to let go of {workspace_id}, and it will wait \
+         for as long as that takes. In another terminal, 'dl {workspace_id} kill' clears whatever \
+         is holding it and deletes it. (This {word} is still waiting.)"
+    )
+}
+
 /// The delete that was still running when its deadline ran out.
 ///
 /// Only `kill`'s delete carries one, so this only ever follows that verb, and what

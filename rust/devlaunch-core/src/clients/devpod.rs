@@ -225,6 +225,40 @@ pub(crate) fn run(runner: &dyn Runner, call: &Call) -> Result<Exit, NotRun> {
     ran(runner.passthrough(&call.spec())).map(|(exit, ())| exit)
 }
 
+/// The same call, with devpod's stderr read a line at a time as it arrives.
+///
+/// stdin and stdout are still this process's, so a caller that was a passthrough
+/// stays one from the outside: every line handed over is written straight back to
+/// stderr, in order, and the only thing that changed is that dl has seen it.
+///
+/// For the calls where a line devpod prints is worth *acting* on rather than only
+/// showing. That is a narrow set and deliberately so: it is the lines that mean
+/// the call is not going to finish, which nothing downstream of it can report,
+/// because there is no downstream.
+pub(crate) fn run_watching_stderr(
+    runner: &dyn Runner,
+    call: &Call,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<Exit, NotRun> {
+    let _span = timing::span(call.round_trip());
+    let mut forward = |line: &str| {
+        eprintln!("{line}");
+        on_line(line);
+    };
+    ran(runner.session(&call.spec(), &mut forward)).map(|(exit, ())| exit)
+}
+
+/// Whether this is devpod saying it is blocked on a workspace's lock.
+///
+/// devpod's `initLock` is a *blocking* `flock` acquire with no deadline behind it,
+/// and it logs this on a five-second timer while it waits — so the line does not
+/// mean "slow", it means "for as long as whatever holds the lock lives". Matched
+/// on the stable half of the sentence: the tail names a source file and a line
+/// number that move between devpod releases.
+pub(crate) fn says_it_is_blocked(line: &str) -> bool {
+    line.contains("Trying to lock workspace")
+}
+
 /// An outcome, split into "it ran, this is what came back" and "it did not".
 ///
 /// One function over all four arms rather than a `_ =>` at each call site: the
