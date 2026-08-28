@@ -300,8 +300,12 @@ claude.ai/code and the Claude mobile app, so you can send it the next thing from
 phone without the workspace being anywhere but where it was.
 
 ```bash
-aid blooop/devlaunch@fix/42 --remote-control fix the flaky test
+aid --remote-control blooop/devlaunch@fix/42 fix the flaky test
 ```
+
+The flag goes before the workspace. Everything after the spec is prompt text, which
+is the rule that lets a prompt go unquoted, so a `--remote-control` typed there is
+handed to the agent as words rather than read as the flag.
 
 Four things worth knowing before you type it.
 

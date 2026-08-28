@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from claude.ai/code and the Claude app, and `aid` now has a flag for it:
 
   ```
-  aid blooop/devlaunch@fix/42 --remote-control fix the flaky test
+  aid --remote-control blooop/devlaunch@fix/42 fix the flaky test
   ```
 
   The session is named after the workspace you typed, so the list on claude.ai
