@@ -324,9 +324,12 @@ refuses anything else by name rather than guessing which you meant. A flag on th
 command line beats it in both directions, so `--remote-control` (or `--remote`) still
 turns one launch back on.
 
-Flags go before the workspace. Everything after the spec is prompt text, which is the
-rule that lets a prompt go unquoted, so a `--no-remote-control` typed there is handed
-to the agent as words rather than read as the flag.
+Either switch can also be appended to the end of the line, the way `--rm` can, so a
+recalled line can be turned off without retyping the front of it: `aid owner/repo fix
+the bug --no-remote` starts a purely local session and the prompt survives. That is
+bounded the way `--rm` is, to the exact word as a whole argument in the run at the very
+end, so a prompt that merely mentions a switch is still a prompt. `aid owner/repo
+explain --remote-control please` ends on `please` and asks the agent what you typed.
 
 ### Four things worth knowing
 

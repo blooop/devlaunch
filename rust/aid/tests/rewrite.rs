@@ -344,6 +344,27 @@ fn no_remote_control_is_the_one_way_back_to_a_purely_local_session() {
 }
 
 #[test]
+fn an_appended_off_switch_is_observed_from_outside_to_turn_it_off() {
+    // The position the off switch is actually typed in, watched at the boundary
+    // rather than in the parse. Appending to a recalled line is the cheap edit a
+    // shell offers, and this line used to publish a session to claude.ai anyway and
+    // hand claude `--no-remote` to read as its prompt.
+    let world = World::with(&["--warm"]);
+    world
+        .aid(&[MAIN, "fix", "the", "bug", "--no-remote"])
+        .exited(0);
+
+    assert_eq!(
+        world.devpod_calls().last().expect("a session"),
+        &format!(
+            "devpod ssh {MAIN} --command bash -lc \
+             'CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+             --dangerously-skip-permissions '\"'\"'fix the bug'\"'\"''"
+        )
+    );
+}
+
+#[test]
 fn a_remote_control_variable_that_is_neither_a_yes_nor_a_no_is_refused() {
     // Read where `DEVLAUNCH_AID_AGENT` is read and refused the same way, before
     // anything opens: both readings of a value like this are a guess, and both leave

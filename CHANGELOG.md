@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and refuses anything else by name rather than guessing which you meant; a flag
   on the command line beats it in both directions. `--remote` and `--no-remote`
   are accepted as the short spellings, because the long one is four hyphenated
-  words and the guess at it used to fall through to `dl` and exit 2.
+  words and the guess at it used to fall through to `dl` and exit 2. Either switch
+  can be appended to the end of a line the way `--rm` can, so a recalled line can be
+  turned off without retyping the front of it, and the prompt survives it.
 
   **`aid` runs claude with permissions skipped, so a default-on session is
   drivable by the claude.ai account signed in inside the container.** That is the

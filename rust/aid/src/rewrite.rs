@@ -469,6 +469,26 @@ fn names_a_retired_spelling(options: &[String]) -> bool {
         .any(|word| SUFFIX_RETIRED.contains(&word.as_str()))
 }
 
+/// A peeled trailing run, split by whose flag each word is.
+///
+/// The split is the point. [`Self::options`] rides on to dl, and the remote-control
+/// request does not: dl has never heard of `--no-remote-control` and exits 2 on
+/// contact, so a run carrying one has to be read here and dropped rather than
+/// forwarded whole.
+struct Suffix<'a> {
+    /// The line with the run taken off, which is what the prompt is built from.
+    line: &'a [String],
+    /// dl's own, forwarded after the spec.
+    options: Vec<String>,
+    /// What the run asked of Remote Control, or `None` if it said nothing.
+    ///
+    /// An `Option` rather than a [`RemoteControlRequest::Default`], because "said
+    /// nothing" has to leave an earlier flag standing: `aid --no-remote <ws> fix it
+    /// --rm` turned it off before the spec and the `--rm` run must not turn it back
+    /// on.
+    remote_control: Option<RemoteControlRequest>,
+}
+
 /// Split a trailing run of dl flags off the end of a command line.
 ///
 /// The one exception to "everything after the spec is prompt", and bounded three
@@ -499,11 +519,13 @@ fn names_a_retired_spelling(options: &[String]) -> bool {
 /// **Divergence row 30**, aid's half: Python joined every post-spec word into the
 /// prompt with no exception, so `aid <ws> <prompt> --rm` asked an agent to read
 /// `--rm`.
-fn peel_suffix(argv: &[String]) -> Option<(&[String], Vec<String>)> {
+fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
     let is_suffix = |word: &str| {
         SUFFIX_OPTIONS.contains(&word)
             || SUFFIX_RETIRED.contains(&word)
             || SUFFIX_MODIFIERS.contains(&word)
+            || REMOTE_CONTROL_FLAGS.contains(&word)
+            || NO_REMOTE_CONTROL_FLAGS.contains(&word)
     };
     let mut at = argv.len();
     while at > 0 && is_suffix(argv[at - 1].as_str()) {
@@ -513,22 +535,35 @@ fn peel_suffix(argv: &[String]) -> Option<(&[String], Vec<String>)> {
     let names = |list: &[&str]| run.iter().any(|word| list.contains(&word.as_str()));
     // A run of nothing but modifiers is prompt text, which is the rule `--force`
     // alone has always been read by.
-    if !names(SUFFIX_OPTIONS) && !names(SUFFIX_RETIRED) {
+    if !names(SUFFIX_OPTIONS)
+        && !names(SUFFIX_RETIRED)
+        && !names(REMOTE_CONTROL_FLAGS)
+        && !names(NO_REMOTE_CONTROL_FLAGS)
+    {
         return None;
     }
     // Modifiers held back and appended, so an option always precedes one — see the
     // positional argument above. Typed order is kept *within* each group.
     let mut options: Vec<String> = Vec::new();
     let mut modifiers: Vec<String> = Vec::new();
+    let mut remote_control = None;
     for word in run {
-        if SUFFIX_MODIFIERS.contains(&word.as_str()) {
+        if REMOTE_CONTROL_FLAGS.contains(&word.as_str()) {
+            remote_control = Some(RemoteControlRequest::Insisted);
+        } else if NO_REMOTE_CONTROL_FLAGS.contains(&word.as_str()) {
+            remote_control = Some(RemoteControlRequest::Off);
+        } else if SUFFIX_MODIFIERS.contains(&word.as_str()) {
             modifiers.push(word.clone());
         } else {
             options.push(word.clone());
         }
     }
     options.append(&mut modifiers);
-    Some((&argv[..at], options))
+    Some(Suffix {
+        line: &argv[..at],
+        options,
+        remote_control,
+    })
 }
 
 /// Split an aid command line into agent, dl options, workspace spec, and the task.
@@ -551,9 +586,9 @@ pub(crate) fn parse_aid_args(
     // `DEVLAUNCH_AID_REMOTE_CONTROL` that is neither a yes nor a no.
     let mut agent = default_agent(environment.agent)?;
     let mut remote_control = default_remote_control(environment.remote_control)?;
-    let (line, trailing) = match peel_suffix(argv) {
-        Some((line, trailing)) => (line, trailing),
-        None => (argv, Vec::new()),
+    let (line, trailing, trailing_remote_control) = match peel_suffix(argv) {
+        Some(suffix) => (suffix.line, suffix.options, suffix.remote_control),
+        None => (argv, Vec::new(), None),
     };
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
@@ -599,6 +634,13 @@ pub(crate) fn parse_aid_args(
     let Some(spec) = spec else {
         return Err(UsageError::NoWorkspace);
     };
+    // A run at the end of the line was typed after everything before it, so it wins
+    // for the same reason the last of two leading flags does. This is the position
+    // the off switch is actually typed in: appending to a recalled line is the cheap
+    // edit a shell offers, and rewriting the front of one is not.
+    if let Some(asked) = trailing_remote_control {
+        remote_control = asked;
+    }
     // Settled after the workspace, because a line missing both is missing a
     // workspace first: that is the sentence which tells somebody what an aid line
     // looks like. Settled before the task is built, so the `RemoteControl` the task
@@ -1128,6 +1170,67 @@ mod tests {
     }
 
     #[test]
+    fn the_off_switch_works_at_the_end_of_the_line_where_it_is_typed() {
+        // The position it is actually typed in. Appending to a recalled line is the
+        // cheap edit a shell offers, so an off switch that only worked ahead of the
+        // spec was an off switch nobody could reach without retyping the line: it
+        // started the session anyway *and* handed claude `--no-remote` to read.
+        for spelling in ["--no-remote-control", "--no-remote"] {
+            let chosen = parsed(&["owner/repo", "fix the bug", spelling]);
+
+            assert_eq!(remote_control(&chosen), RemoteControl::Off, "{spelling}");
+            assert_eq!(prompt(&chosen), "fix the bug", "{spelling}");
+            // And it is aid's flag, so it must not ride on to dl, which has never
+            // heard of it and exits 2 on contact.
+            assert!(chosen.spec_options.is_empty(), "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_off_switch_beats_a_leading_on_one() {
+        // Left to right, the same way two leading flags are read: the run at the end
+        // was typed last, so it is the one that counts.
+        let chosen = parsed(&["--remote-control", "owner/repo", "fix it", "--no-remote"]);
+
+        assert_eq!(remote_control(&chosen), RemoteControl::Off);
+        assert_eq!(prompt(&chosen), "fix it");
+    }
+
+    #[test]
+    fn a_trailing_rm_leaves_an_earlier_off_switch_where_it_was() {
+        // The reason the peel reports "said nothing" rather than "asked for the
+        // default": a `--rm` run must not turn back on what a leading `--no-remote`
+        // turned off.
+        let chosen = parsed(&["--no-remote", "owner/repo", "fix it", "--rm"]);
+
+        assert_eq!(remote_control(&chosen), RemoteControl::Off);
+        assert_eq!(chosen.spec_options, ["--rm"]);
+        assert_eq!(prompt(&chosen), "fix it");
+    }
+
+    #[test]
+    fn the_on_switch_also_works_appended() {
+        // Both directions, because the whole point of the peel is that appending
+        // means what appending looks like it means.
+        let chosen = parsed(&["--no-remote", "owner/repo", "fix it", "--remote"]);
+
+        assert_eq!(remote_control(&chosen), RemoteControl::On);
+        assert_eq!(prompt(&chosen), "fix it");
+        assert!(chosen.spec_options.is_empty());
+    }
+
+    #[test]
+    fn an_appended_off_switch_rides_beside_rm_without_reaching_dl() {
+        // The two suffixes together, which is the line somebody recalls and adds to
+        // twice. dl gets its flag and only its flag.
+        let chosen = parsed(&["owner/repo", "fix it", "--rm", "--no-remote"]);
+
+        assert_eq!(remote_control(&chosen), RemoteControl::Off);
+        assert_eq!(chosen.spec_options, ["--rm"]);
+        assert_eq!(prompt(&chosen), "fix it");
+    }
+
+    #[test]
     fn a_prompt_that_merely_mentions_rm_is_still_a_prompt() {
         // The bound the peel is worth having: only the exact word, only at the very
         // end, only as a whole argv word.
@@ -1382,26 +1485,33 @@ mod tests {
     }
 
     #[test]
-    fn remote_control_after_the_spec_is_prompt_text() {
-        // Everything after the spec is prompt, flags and all — the rule that lets a
-        // prompt go unquoted. These flags buy no exception to it: only `--rm` and the
-        // retired spellings are peeled off the end, and asking an agent about Remote
-        // Control is a thing somebody may well want to do.
-        let chosen = parsed(&["owner/repo", "explain", "--remote-control"]);
+    fn a_prompt_that_merely_mentions_the_switches_is_still_a_prompt() {
+        // The bound that survives the peel, and the whole of it: only the exact word,
+        // only as a whole argv word, and only in the run at the very *end* of the
+        // line. Asking an agent about Remote Control is a thing somebody may well
+        // want to do, and everything here is still the prompt it reads.
+        for mentioned in [
+            // Not at the end: the run stops at `please`, so nothing is peeled.
+            vec!["owner/repo", "explain", "--remote-control", "please"],
+            vec!["owner/repo", "explain", "--no-remote", "please"],
+            // One argv word the host's shell already unquoted, which is not the flag.
+            vec!["owner/repo", "explain --remote-control"],
+            vec!["owner/repo", "why is --no-remote off"],
+        ] {
+            let chosen = parsed(&mentioned);
 
-        assert_eq!(prompt(&chosen), "explain --remote-control");
-        assert_eq!(
-            remote_control(&chosen),
-            RemoteControl::On,
-            "the default should still stand"
-        );
-        assert!(chosen.spec_options.is_empty());
-        // The off switch too, which is the one that would be silently ignored: a
-        // `--no-remote-control` typed after the spec does not turn anything off.
-        let late = parsed(&["owner/repo", "explain", "--no-remote-control"]);
-
-        assert_eq!(prompt(&late), "explain --no-remote-control");
-        assert_eq!(remote_control(&late), RemoteControl::On);
+            assert!(
+                prompt(&chosen).contains("remote"),
+                "{mentioned:?} lost its prompt: {:?}",
+                prompt(&chosen)
+            );
+            assert_eq!(
+                remote_control(&chosen),
+                RemoteControl::On,
+                "{mentioned:?} moved the default"
+            );
+            assert!(chosen.spec_options.is_empty(), "{mentioned:?}");
+        }
     }
 
     #[test]

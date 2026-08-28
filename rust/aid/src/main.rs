@@ -243,8 +243,9 @@ Options:
                                      workspace. The agent runs with permissions
                                      skipped, so the account signed in there can
                                      drive it.
-    --remote-control, --remote       Ask for Remote Control by name. Nothing changes
-                                     for claude, which has it on already. Beside
+    --remote-control, --remote       Ask for Remote Control by name, which is what
+                                     turns one launch back on when the variable
+                                     below has turned the default off. Beside
                                      --codex or --gemini it says they have not got
                                      it and stops, where the default is silently
                                      absent.
