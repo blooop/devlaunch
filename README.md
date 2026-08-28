@@ -286,6 +286,7 @@ the question and launches one-shot, so scripts behave as they always have.
 |---|---|
 | `--claude`, `--codex`, `--gemini` | Pick the agent. Default `claude` |
 | `--rm` | Delete the workspace when the agent is done. Appendable to a recalled line |
+| `--remote-control` | Start `claude` with Remote Control on, named after the workspace, so the session can be continued from claude.ai/code or the Claude app. `claude` only, and it needs a claude.ai login in the container |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
 
 **The trade, stated plainly.** `claude` starts with `--dangerously-skip-permissions`, because the
@@ -379,7 +380,7 @@ re-decides a mount.
 
 | Page | What is in it |
 |---|---|
-| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, retired spellings, devpod exit codes |
+| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `aid --remote-control`, retired spellings, devpod exit codes |
 | [docs/workspaces.md](docs/workspaces.md) | How workspace ids are derived, and how fresh a launch is |
 | [docs/workspace-tools.md](docs/workspace-tools.md) | GitHub auth, `gh` and `claude`, zellij, terminal titles, the pixi cache |
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`aid --remote-control`, for a session you can carry on from your phone.**
+  Claude Code's Remote Control makes a running session readable and steerable
+  from claude.ai/code and the Claude app, and `aid` now has a flag for it:
+
+  ```
+  aid blooop/devlaunch@fix/42 --remote-control fix the flaky test
+  ```
+
+  The session is named after the workspace you typed, so the list on claude.ai
+  reads as the workspaces you opened. That name is not optional here even though
+  claude's flag makes it so: `claude --remote-control [name]` would take the
+  first word of the prompt as the name, so `aid` always sends
+  `--remote-control=<workspace>` as one word.
+
+  Nothing about where the work happens changes. The agent is still the process
+  in the container on your machine, so stopping or removing the workspace takes
+  the session offline; the entry lingers in the claude.ai list for roughly
+  4 hours afterwards, which is the web side timing out and not something still
+  running.
+
+  It is claude's feature alone, so `--codex` or `--gemini` beside it is refused
+  by name before anything boots, as is a `DEVLAUNCH_AID_AGENT` naming either of
+  them. It also wants a claude.ai (Pro, Max or Team) login inside the workspace:
+  an API key cannot pair a session.
+
 ## [0.20.0] - 2026-08-26
 
 ### Added

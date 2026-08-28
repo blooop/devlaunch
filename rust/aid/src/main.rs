@@ -153,6 +153,15 @@ fn refusal(refused: &UsageError) -> String {
             dl::python_repr(name),
             rewrite::agent_names().join(", ")
         ),
+        // The agent is named because the flag is not always what picked it: with
+        // `DEVLAUNCH_AID_AGENT=codex` set, nothing on the command line says codex,
+        // and a sentence that only said "pick --claude" would be answering a
+        // question the person did not ask.
+        UsageError::RemoteControlUnsupported { agent } => format!(
+            "{} starts Claude Code's Remote Control, which only the claude agent has, not {agent}. \
+             Drop the flag or pick --claude.",
+            rewrite::REMOTE_CONTROL_FLAG
+        ),
     }
 }
 
@@ -203,6 +212,11 @@ Options:
                                      nowhere else and says so, leaving the workspace
                                      standing. To delete one now instead, that is
                                      dl's rm verb: dl <workspace> rm.
+    --remote-control                 Start claude with Remote Control on, named after
+                                     the workspace, so the session can be continued
+                                     from claude.ai/code or the Claude app. It is
+                                     claude only, and needs a claude.ai (Pro/Max/Team)
+                                     login inside the workspace.
     --help, -h                       Show this help
     --version                        Show version
 
@@ -249,6 +263,30 @@ mod tests {
         );
         assert!(help.contains("empty Enter"), "{help}");
         assert!(help.contains("DEVLAUNCH_NO_TTY=1"), "{help}");
+    }
+
+    #[test]
+    fn the_help_names_remote_control_and_what_it_needs() {
+        let help = help();
+
+        assert!(help.contains("--remote-control"), "{help}");
+        // The two things somebody finds out the hard way otherwise: it is claude's
+        // alone, and it wants a login the container may not have.
+        assert!(help.contains("claude only"), "{help}");
+        assert!(help.contains("claude.ai (Pro/Max/Team)"), "{help}");
+    }
+
+    #[test]
+    fn remote_control_beside_an_agent_that_has_none_says_which_agent() {
+        // The agent is named because the flag is not always what chose it: with
+        // DEVLAUNCH_AID_AGENT set there is nothing on the command line saying codex.
+        assert_eq!(
+            refusal(&UsageError::RemoteControlUnsupported {
+                agent: "codex".to_owned()
+            }),
+            "--remote-control starts Claude Code's Remote Control, which only the claude agent \
+             has, not codex. Drop the flag or pick --claude."
+        );
     }
 
     #[test]
