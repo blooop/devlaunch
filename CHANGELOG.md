@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-28
+
 ### Changed
 
 - **`dl <ws> kill` deletes the workspace it just unwedged.** The sweep and the
