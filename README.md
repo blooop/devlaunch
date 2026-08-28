@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.21.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.22.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -177,7 +177,7 @@ checked out in the clone right now, spelled in full. Pick the row rather than co
 carries the real id underneath. Where two rows would read alike, both gain a fourth column
 holding their whole id, so that picking one cannot delete the other.
 
-For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `code`, `dotfiles`) TAB marks any
+For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `rme`, `code`, `dotfiles`) TAB marks any
 number of rows and Enter applies the verb to each, and the line above the matches says so. The
 forms that end in a session (`dl`, `-- <command>`, `restart`, `recreate`, `reset`) take exactly
 one.
@@ -200,6 +200,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws> stop` | Stop it. Frees memory, keeps disk |
 | `dl <ws> kill` | Kill whatever is holding a workspace that will not answer |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
+| `dl <ws> rme` | The same delete, and then the shell: it closes the terminal it was typed in |
 | `dl <ws> code` | Open it in VS Code |
 | `dl <ws> restart` | Stop and start, no rebuild |
 | `dl <ws> recreate` | Recreate the container |
@@ -215,6 +216,12 @@ opens the selector.
 now; `dl <ws> --rm` deletes once the session ends, the way `docker run --rm` does. Both stop at
 work that exists nowhere else: a clone with uncommitted or unpushed changes is kept and named,
 and `dl <ws> rm --force` is how you override that.
+
+`rme` is neither of those. It deletes the workspace now, as `rm` does, and then hangs up the
+shell that asked, so the terminal tab you opened for that one workspace closes on its own
+instead of waiting out the delete and then wanting an `exit`. A delete that refused leaves the
+shell standing with the reason on screen. Which process it actually hangs up, what `--force`
+changes about that, and why `nohup` is refused are in [docs/cli.md](docs/cli.md).
 
 `kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It
 sweeps the host instead of asking devpod: it kills the host processes still holding the
@@ -246,7 +253,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.21.0
+dl 0.22.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
