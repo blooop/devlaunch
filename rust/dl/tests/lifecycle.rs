@@ -322,13 +322,6 @@ impl World {
     }
 }
 
-/// A scratch directory whose path is always the same *length*.
-///
-/// `read_side.rs` needs this because the `--ls` table's column widths are measured
-/// from the paths in it. Nothing here measures a column, and it is the same
-/// directory shape all the same: the golden-capture harness makes `/tmp/dltXXXXXX`
-/// too, and a path length that varies between capture and comparison is one more
-/// thing to have to think about.
 /// Make this test binary deaf to SIGHUP, and hand every child the default back.
 ///
 /// `rme` signals `dl`'s parent, and the parent of a child [`World::answering`]
@@ -372,6 +365,13 @@ fn child_hears_sighup(command: &mut Command) {
     }
 }
 
+/// A scratch directory whose path is always the same *length*.
+///
+/// `read_side.rs` needs this because the `--ls` table's column widths are measured
+/// from the paths in it. Nothing here measures a column, and it is the same
+/// directory shape all the same: the golden-capture harness makes `/tmp/dltXXXXXX`
+/// too, and a path length that varies between capture and comparison is one more
+/// thing to have to think about.
 fn scratch_dir() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("dlt")
