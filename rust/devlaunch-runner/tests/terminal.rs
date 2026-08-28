@@ -99,6 +99,26 @@ fn passthrough_beside_the_terminal() {
     println!("outcome: {outcome:?}");
 }
 
+/// Point one of *this* process's own descriptors at `path`, leaving the others on
+/// the pty.
+///
+/// The two asymmetric roles need a process with a terminal on one standard
+/// descriptor and not on the other, and a pty spawn gives all three or none. So
+/// the role re-points one of them from the inside, before it runs anything.
+fn redirect(fd: i32, path: &str, flags: i32) {
+    let path = std::ffi::CString::new(path).expect("no NUL in the path");
+    // SAFETY: `open` on a NUL-terminated path, then `dup2` of the descriptor it
+    // returned onto a standard one. Both are ordinary syscalls; the process is
+    // single-threaded at this point (the role runs before any thread is spawned),
+    // so nothing else is using the descriptor being replaced.
+    unsafe {
+        let opened = libc::open(path.as_ptr(), flags, 0o644);
+        assert!(opened >= 0, "could not open {path:?}");
+        assert!(libc::dup2(opened, fd) >= 0, "could not redirect fd {fd}");
+        libc::close(opened);
+    }
+}
+
 /// This binary on a pty: the child, a way to type at it, and everything it said.
 struct Pty {
     child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -330,35 +350,82 @@ fn a_killed_child_does_not_leave_the_terminal_switched_into_its_own_modes() {
     );
 }
 
-/// With stdout on a pipe there is no terminal to repair, and writing the restore
-/// anyway would corrupt whatever is reading — `dl <ws> -- ls > out.txt` is a real
-/// invocation, and its output has to stay free of escape sequences.
+/// A child that is handed the terminal on stdout had the terminal, whatever its
+/// stdin was, so a redirected stdin must not suppress the repair.
 ///
-/// Same child as the pty test, run with no terminal anywhere near it.
+/// `dl owner/repo < /dev/null` is the invocation: run from a script, still drawn
+/// on the terminal. `devpod up` goes through the same `passthrough`, hides the
+/// cursor for its progress display, and leaves it hidden if the build is killed.
+/// Descriptor 0 says nothing about any of that; the both-descriptors question
+/// belongs to `ssh::terminal_usable`, which decides whether to give a *child* a
+/// pty, and is a different question from whether there is a device here to fix.
 #[test]
-fn nothing_is_written_when_the_streams_are_not_a_terminal() {
+fn a_redirected_stdin_does_not_suppress_the_repair() {
     if std::env::var(ROLE).is_ok() {
+        redirect(0, "/dev/null", libc::O_RDONLY);
         return passthrough_beside_the_terminal();
     }
-    let output = std::process::Command::new(std::env::current_exe().expect("this test binary"))
-        .args([
-            "--exact",
-            "nothing_is_written_when_the_streams_are_not_a_terminal",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(ROLE, "restore-after-passthrough")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("this binary runs off a terminal too");
-    let said = String::from_utf8_lossy(&output.stdout);
+    let mut pty = Pty::spawn(
+        "a_redirected_stdin_does_not_suppress_the_repair",
+        "restore-after-passthrough",
+        None,
+    );
+    pty.expect("started", "the child never started its passthrough");
+    pty.expect("outcome: ", "the passthrough never returned");
+    pty.wait_for_exit("after the passthrough returned");
+
+    let said = pty.text();
+    assert!(
+        said.contains(KEYBOARD_PUSH),
+        "the child never switched the mode on, so this proves nothing:\n{said:?}"
+    );
+    assert!(
+        said.contains(KEYBOARD_POP),
+        "stdin was /dev/null and stdout was the terminal, and the terminal was \
+         left in the killed child's keyboard mode:\n{said:?}"
+    );
+}
+
+/// With stdout on a pipe there is no terminal to repair, and writing the restore
+/// anyway would corrupt whatever is reading. `dl <ws> -- ls > out.txt` is a real
+/// invocation, its stdin is still the terminal, and its output has to stay free of
+/// escape sequences.
+///
+/// So this is the asymmetric case the other way round, and it is asymmetric on
+/// purpose: with *both* descriptors redirected the test passes under a stdin-only
+/// guard too, which is exactly the regression it is here to catch. The markers go
+/// to stderr because stdout is the descriptor under test.
+#[test]
+fn nothing_is_written_when_the_output_is_not_a_terminal() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let captured = scratch.path().join("stdout");
+    if std::env::var(ROLE).is_ok() {
+        let path = std::env::var(MARKER).expect("a capture path");
+        redirect(1, &path, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC);
+        eprintln!("started");
+        let outcome = ProcessRunner.passthrough(
+            &sh(&format!("printf '\\033[>1u'; printf '{CHILD_DONE}\\n'; kill -9 $$")).into(),
+        );
+        eprintln!("outcome: {outcome:?}");
+        return;
+    }
+    let mut pty = Pty::spawn(
+        "nothing_is_written_when_the_output_is_not_a_terminal",
+        "piped-stdout",
+        Some(&captured.display().to_string()),
+    );
+    pty.expect("started", "the child never started its passthrough");
+    pty.expect("outcome: ", "the passthrough never returned");
+    pty.wait_for_exit("after the passthrough returned");
+
+    let said = std::fs::read_to_string(&captured).expect("the redirected stdout");
     assert!(
         said.contains(CHILD_DONE),
         "the child never ran, so this proves nothing:\n{said:?}"
     );
     assert!(
         !said.contains(KEYBOARD_POP),
-        "a restore was written to a pipe, where there is no terminal to restore \
+        "a restore was written to a file, where there is no terminal to restore \
          and no one who wants escape sequences in their output:\n{said:?}"
     );
 }
