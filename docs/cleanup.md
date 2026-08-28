@@ -22,7 +22,7 @@ Removing a workspace removes three things: the devpod workspace, the local clone
 (unless it holds work that exists nowhere else, see [cleaning up
 workspaces](#cleaning-up-workspaces)), and **the named Docker volumes that
 workspace's devcontainer created**. Every path that removes a workspace does all three:
-`dl <ws> rm`, `dl <ws> --rm`, and `--purge`.
+`dl <ws> rm`, `dl <ws> rme`, `dl <ws> --rm`, and `--purge`.
 
 Two volumes per workspace, both named from what devpod recorded substituting into
 the devcontainer:
@@ -72,6 +72,11 @@ is asked, so a teardown that takes a while has a name attached to it and a refus
 never announced as a removal. The last line closes the block, which is what makes a
 batch legible: one block per workspace, each ending in the name of the workspace it
 was.
+
+**`rme` adds one line after the last of them**, saying what became of the shell:
+the pid it hung up, or why it hung up nothing. It is the last thing written to a
+terminal that is about to close, and the only thing that explains a run where
+nothing closed. See [`rme`](cli.md#rme-the-delete-and-then-the-shell).
 
 **With `--force` that last line reads `Workspace <id> is gone.` instead**, and the
 difference is what the exit code proved rather than a change of tone. Without the

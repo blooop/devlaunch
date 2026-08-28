@@ -1154,13 +1154,19 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 /// `spec` is the target *as the user typed it*, because the sentence ends in a
 /// command they can run: a refusal that echoed the resolved id would print a line
 /// that works, but not the line they typed.
-pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
+///
+/// `word` is the verb, for the same reason and one more. `rm` and `rme` refuse
+/// identically, and the way past is `--force` on whichever was typed — so a line
+/// that always said `rm --force` would answer an `rme` by sending the reader back
+/// to the two-step `rme` exists to collapse: delete, wait, then close the tab by
+/// hand. Both words are offered the way past *they* asked for.
+pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
     match refused {
         RemovalRefused::WouldLose {
             workspace_id,
             losses,
         } => format!(
-            "{workspace_id} holds {}. Push or commit it, or run: dl {spec} rm --force",
+            "{workspace_id} holds {}. Push or commit it, or run: dl {spec} {word} --force",
             losses.describe()
         ),
         RemovalRefused::CouldNotTell {
@@ -1168,7 +1174,7 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str) -> String {
             cause,
         } => format!(
             "{workspace_id}: {}. devlaunch will not delete a clone it cannot check. Look at it, \
-             or run: dl {spec} rm --force",
+             or run: dl {spec} {word} --force",
             cause.describe()
         ),
     }
@@ -1266,6 +1272,59 @@ pub(crate) fn picked(verb: &str, picks: &NonEmpty<Chosen>) -> Vec<String> {
             lines
         }
     }
+}
+
+/// `rme`: the shell is about to be hung up, said before the signal that does it.
+///
+/// **The pid is on the line because there is no way to check it beforehand, and no
+/// way to predict it either.** `getppid()` names an interactive shell for the run
+/// this verb is for and something else for others — a script, a surviving subshell —
+/// and nothing distinguishes them. Worse, which one it is depends on the shell
+/// rather than on the line: a subshell running a single command is usually replaced
+/// by it, so `$(dl <ws> rme)` signals the shell that typed it and the terminal does
+/// close, while the same line with a redirection leaves a subshell to die instead
+/// (both measured, bash 5 and dash). So this line reports what was signalled rather
+/// than claiming what it was.
+///
+/// Before the signal rather than after, for [`removing`]'s reason taken to its
+/// limit: there is no "after" on the run that works. The shell reads this line or
+/// nothing.
+pub(crate) fn hanging_up(parent: i32) -> String {
+    format!("Hanging up the shell dl was called from (pid {parent}).")
+}
+
+/// `rme` on a run that inherited an ignored SIGHUP: the removal happened, and the
+/// signal is the one thing this run was told not to deal in.
+///
+/// Names the removal for [`nothing_to_hang_up`]'s reason. It does not name `nohup`
+/// as the cause, because it is not the only one: `setsid` sets no `SIG_IGN` and does
+/// not reach this, but a wrapper script or a supervisor that disarmed the signal
+/// does, and a sentence naming the wrong tool is worse than one naming none.
+pub(crate) fn hangup_disarmed() -> String {
+    "rme: SIGHUP was already ignored when dl started, so the shell stays. The removal is done."
+        .to_owned()
+}
+
+/// `rme` on a run whose parent has already gone: the removal happened, the hangup
+/// has nobody to reach.
+///
+/// Says the removal is done, because this is the one `rme` line printed *instead*
+/// of the signal rather than beside it, and a sentence that only said what did not
+/// happen would read like a failed delete.
+pub(crate) fn nothing_to_hang_up() -> String {
+    "rme: dl's parent process has already gone, so there is no shell to hang up. The removal is \
+     done."
+        .to_owned()
+}
+
+/// `rme` whose signal was refused: a parent that exited in the meantime, or one
+/// this user may not signal.
+///
+/// The removal is named for [`nothing_to_hang_up`]'s reason, and the OS error is
+/// quoted because the two causes are told apart by nothing else — a terminal left
+/// standing looks the same either way.
+pub(crate) fn could_not_hang_up(parent: i32, why: &str) -> String {
+    format!("rme: could not hang up pid {parent} ({why}). The removal is done.")
 }
 
 /// devpod would not let go of the workspace, and the clone was kept.
