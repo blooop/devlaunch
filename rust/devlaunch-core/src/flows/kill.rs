@@ -377,6 +377,28 @@ pub struct Sweep {
     pub holding: Holding,
 }
 
+impl Sweep {
+    /// Whether anything took every signal this sweep had and is still holding on.
+    ///
+    /// The one question a removal standing after the sweep has to ask, and the
+    /// reason it is asked of the *signals* rather than of [`Holding`]: the two
+    /// kinds of holder left standing are in devpod's way to completely different
+    /// degrees. An attended one is spared on purpose and is not in its way at all
+    /// — an idle `devpod ssh` takes the workspace's flock and gives it back, which
+    /// is why `dl <ws> rm` deletes a workspace somebody is sitting in without ever
+    /// noticing them. A process that sat through SIGKILL is the other case
+    /// entirely: it holds the flock, there is no privilege left to take it away,
+    /// and devpod's acquire has no deadline behind it. A delete attempted over one
+    /// of those does not fail. It joins the five-second log line that sent
+    /// somebody here in the first place, which is the one ending this verb exists
+    /// to spare them.
+    pub fn outlived_the_signals(&self) -> bool {
+        self.signalled
+            .iter()
+            .any(|signalled| signalled.ending == Ending::Survived)
+    }
+}
+
 /// Kill whatever is holding this workspace, and say what was killed.
 ///
 /// `wait` is the grace period, passed in rather than slept, for the reason
@@ -856,6 +878,34 @@ mod tests {
                 .collect::<Vec<u32>>(),
             [5001]
         );
+    }
+
+    /// The question the delete standing after the sweep asks, and the two holders
+    /// it separates. Both leave the workspace [`Holding::StillHeld`], and asking
+    /// *that* instead is the bug this exists to avoid: one live `devpod ssh` was
+    /// enough to make the whole verb do nothing, on a workspace `dl <ws> rm` then
+    /// deleted without noticing the ssh at all.
+    #[test]
+    fn only_a_process_that_outlived_the_signals_stands_in_a_deletes_way() {
+        let outlived = swept(workspace_kill(
+            &host_showing(WEDGED),
+            None,
+            "my-ws",
+            &mut |_| {},
+        ));
+        let attended = swept(workspace_kill(
+            &host_showing(
+                "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod ssh my-ws\n",
+            ),
+            None,
+            "my-ws",
+            &mut |_| {},
+        ));
+
+        assert!(matches!(outlived.holding, Holding::StillHeld { .. }));
+        assert!(matches!(attended.holding, Holding::StillHeld { .. }));
+        assert!(outlived.outlived_the_signals());
+        assert!(!attended.outlived_the_signals());
     }
 
     /// Nothing holding the workspace is a finding, not a failure: it says the

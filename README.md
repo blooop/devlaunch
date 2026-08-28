@@ -198,7 +198,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws>` | Open a shell in it |
 | `dl <ws> up` | Start it without attaching, to prewarm a container |
 | `dl <ws> stop` | Stop it. Frees memory, keeps disk |
-| `dl <ws> kill` | Kill whatever is holding a workspace that will not answer |
+| `dl <ws> kill` | Kill whatever is holding a workspace that will not answer, then delete it |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
 | `dl <ws> rme` | The same delete, and then the shell: it closes the terminal it was typed in |
 | `dl <ws> code` | Open it in VS Code |
@@ -227,8 +227,24 @@ changes about that, and why `nohup` is refused are in [docs/cli.md](docs/cli.md)
 sweeps the host instead of asking devpod: it kills the host processes still holding the
 workspace whose own parent has died, clears devpod's stale busy marker once nothing is left
 building, kills any container the workspace still has running, and prints every one of them. It
-exits 0 only when nothing is left holding the workspace, and it never touches the lock file
-itself. Nothing it does waits on devpod without a deadline, which is the point of having it.
+never touches the lock file itself, and nothing it does waits on devpod without a deadline,
+which is the point of having it.
+
+Then it deletes the workspace. A wedged workspace is one you are throwing away, and the sweep is
+what makes the delete possible rather than a second thing to remember: clearing the lock is what
+lets `devpod delete` through.
+
+Nothing about that delete refuses or waits. It names work that exists nowhere else and destroys
+it rather than stopping, which is why there is no `dl <ws> kill --force` to type: a workspace
+wedged badly enough to want the hammer has a dirty clone almost by construction, so a guard
+there would refuse in the one case the verb is for. It asks devpod to force the delete, so a
+workspace whose container devpod can no longer reach still goes, and it carries a deadline, so
+it cannot join the five second lock loop you typed `kill` to escape. The one holder that stops
+it is a process that outlived SIGKILL, because that is what devpod's own delete would hang on as
+well, and `kill` says so rather than joining the hang.
+
+`rm` is the happy path and keeps its guard: use it whenever the workspace might still be wanted,
+and `kill` when it is stuck and finished with.
 
 `--stop` and the `prune` verb are retired. Both are still recognised and print what to use
 instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including which exits fire it.

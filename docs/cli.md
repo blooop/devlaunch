@@ -427,7 +427,7 @@ children, and nothing on the machine is ever going to reap it.
 
 `dl <ws> kill` is the way out. The sweep asks devpod nothing, which is the point:
 it reads the host's own process table and acts on what is there. It does four
-things:
+things, and then deletes the workspace:
 
 - **Kills the host processes holding the workspace.** Only `devpod` processes, and
   only ones that name this workspace and whose own parent has died. SIGTERM first,
@@ -448,16 +448,45 @@ things:
   deadlines for that reason: a daemon that never answers must not swallow the
   report of a SIGKILL that has already landed.
 
-It exits `0` only when nothing is left holding the workspace, so
-`dl <ws> kill && dl <ws>` is safe to type: a live build or a process that outlived
-SIGKILL exits `1` and says which.
+**And then it deletes the workspace.** The sweep and the delete were never
+independently useful: clearing the lock is precisely what lets a `devpod delete`
+through, and a workspace wedged badly enough to need the hammer is one you are
+throwing away. So `dl <ws> kill` is the whole thing, and the exit code is the
+delete's.
+
+**Nothing in that delete refuses, and there is no `--force` to type.** It is `rm`'s
+delete with the guard turned into a report: work that exists nowhere else is named
+and then destroyed. That is not the guard being dropped for convenience. A wedged
+workspace has a dirty clone almost by construction, because whatever wedged it
+interrupted the work that was going on in it, so a guard here would refuse in
+precisely the case the verb exists for. `rm` is the happy path and keeps its guard
+and its `--force`; reach for it whenever the workspace might still be wanted.
+
+**And nothing in it waits indefinitely.** Two things buy that. The call carries
+devpod's own `--force`, so a workspace whose container or machine devpod can no
+longer reach is deleted rather than refused, which is the flag dl's error message
+has always told people to type by hand. And it carries a deadline, which no other
+delete in dl does: `rm`'s is allowed to take as long as it takes, because a
+container that is slow to come down is a container that is coming down, while this
+one is being run by somebody who has just sat through the five second lock line
+above and must not be put back into it by a holder that arrived after the sweep.
+
+**The delete is withheld for exactly one holder: a process that outlived SIGKILL.**
+Not for the attended ones the sweep spares, which is a distinction worth being
+precise about, because they look alike in the report above and are not alike at
+all. An idle `devpod ssh` takes the workspace's flock and gives it straight back,
+which is why `dl <ws> rm` deletes a workspace somebody is sitting in without ever
+noticing them. A process that took a SIGKILL and stayed is holding that flock with
+nothing left on this machine able to take it away, and devpod's acquire has no
+deadline behind it, so a delete attempted over one would not fail. It would join
+the five second log line at the top of this section. `kill` says that instead, and
+names the `rm` to run once the process is gone.
 
 **The lock file itself is never touched.** Killing the holder is what releases it,
 because the kernel drops an `flock` when its holder dies. Unlinking the file would
 be worse than the hang: the old holder keeps a lock on an inode nobody else can
 see, the next caller locks a fresh file, and two processes both believe they have
-the workspace. That is why there is no `--force` here and nothing to delete by
-hand.
+the workspace. There is nothing here to delete by hand.
 
 **Naming the workspace is the one place devpod could come into it, and by
 workspace id it does not.** Every other lifecycle verb resolves its target through
@@ -471,7 +500,17 @@ rather than refusing.
 
 `kill` takes several workspaces from the selector, like `stop` and `rm` do. A
 machine that was suspended, or one whose `dl` was killed by the OOM killer, wedges
-every workspace that was open at the time.
+every workspace that was open at the time. Now that the verb ends in a delete,
+marking five rows deletes five workspaces, and none of the five stops for unsaved
+work: each one names what it held on the way past. Marking five rows for `rm`
+deletes five workspaces too, so this is the verb doing what it says rather than
+something the picker adds, but it is worth knowing before the first TAB.
+
+The advice runs the other way too. A `dl <ws> rm` that devpod refuses cannot tell a
+devcontainer.json that moved from a workspace something on this host is still
+holding, so it now names `dl <ws> kill` alongside the `devpod delete --force` it
+always named. A `kill` whose own delete is refused does not print that line, since
+the sweep it would be asking for is already on screen above it.
 
 
 ## When devpod is missing or will not answer

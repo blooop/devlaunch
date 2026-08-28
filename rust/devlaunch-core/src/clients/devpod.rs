@@ -138,8 +138,12 @@ impl Call {
         self
     }
 
-    /// One verb sets a bound: `dl <ws> kill`'s resolution, through
-    /// [`Patience::UpTo`]. Every other devpod call waits as long as devpod does.
+    /// One verb sets a bound, and both of its calls do: `dl <ws> kill`'s
+    /// resolution, through [`Patience::UpTo`], and the delete it ends in, through
+    /// `lifecycle::WEDGED_DELETE`. Every other devpod call waits as long as devpod
+    /// does. The two are the same argument twice: `kill` is typed by somebody who
+    /// has just sat through devpod's own five-second lock loop, so no call it makes
+    /// may be capable of joining it.
     #[must_use]
     pub(crate) fn with_timeout(mut self, limit: Duration) -> Self {
         self.timeout = Some(limit);

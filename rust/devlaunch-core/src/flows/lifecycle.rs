@@ -62,6 +62,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use indexmap::IndexMap;
 
@@ -980,6 +981,7 @@ pub fn workspace_delete(
     devpod_home: Option<&DevpodHome>,
     workspace_id: &str,
     insistence: Insistence,
+    persistence: Persistence,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<DeleteOutcome, NotRun> {
     // Named *before* the delete, and that ordering is the whole of why this is two
@@ -988,7 +990,10 @@ pub fn workspace_delete(
     // names live. Named afterwards, this would find nothing every time and look
     // like a working cleanup.
     let named = devcontainer_volumes(devpod_home, workspace_id);
-    let exit = devpod::run(context.runner(), &delete_call(workspace_id, insistence))?;
+    let exit = devpod::run(
+        context.runner(),
+        &delete_call(workspace_id, insistence, persistence),
+    )?;
     // Unconditionally: a delete that reports failure may still have got far enough
     // to change what devpod lists.
     context.forget_workspaces();
@@ -1167,12 +1172,61 @@ fn non_empty_string(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// `devpod delete <id> [--ignore-not-found]` — argv-exact.
-fn delete_call(workspace_id: &str, insistence: Insistence) -> Call {
-    match insistence {
-        Insistence::Insisted => Call::new(["delete", workspace_id, "--ignore-not-found"]),
-        Insistence::NotInsisted => Call::new(["delete", workspace_id]),
+/// `devpod delete <id> [--ignore-not-found] [--force]` — argv-exact.
+///
+/// The two flags answer two different questions and are not two spellings of one.
+/// `--ignore-not-found` is [`Insistence`]'s, and it is about *dl's* verdict: a
+/// workspace devpod never heard of counts as deleted, so `rm --force` is "ensure
+/// absent" the way `rm -f` is. `--force` is [`Persistence`]'s, and it is about
+/// devpod's: delete the record even for a workspace whose container or machine
+/// devpod can no longer reach. A wedged workspace is exactly that case, which is
+/// why dl's own refusal already told people to type this flag by hand.
+fn delete_call(workspace_id: &str, insistence: Insistence, persistence: Persistence) -> Call {
+    let mut args = vec!["delete".to_owned(), workspace_id.to_owned()];
+    if let Insistence::Insisted = insistence {
+        args.push("--ignore-not-found".to_owned());
     }
+    if let Persistence::Wedged = persistence {
+        args.push("--force".to_owned());
+    }
+    let call = Call::new(args);
+    match persistence {
+        Persistence::Ordinary => call,
+        Persistence::Wedged => call.with_timeout(WEDGED_DELETE),
+    }
+}
+
+/// How long `kill`'s delete may take before dl abandons it.
+///
+/// **A deadline exists on this call and on no other delete**, and the asymmetry is
+/// the point rather than an oversight. `rm`'s delete is allowed to take as long as
+/// it takes, because a container that is slow to come down is a container that is
+/// coming down. `kill`'s is reached for by somebody who has just sat through
+/// devpod's five-second `Trying to lock workspace` line, which is a *blocking*
+/// acquire with nothing behind it — so the one ending this call must not have is
+/// the one they came here to escape.
+///
+/// A minute rather than a few seconds, because the sweep that ran immediately
+/// before this already killed the workspace's containers: what is left for devpod
+/// to do is unlink records and remove volumes, and a delete still going after
+/// sixty seconds of that is waiting on something rather than working. The measured
+/// delete in devlaunch#484's own report took one second.
+const WEDGED_DELETE: Duration = Duration::from_secs(60);
+
+/// How hard devpod is pushed to let go of the workspace.
+///
+/// A named pair rather than a `bool` for [`Insistence`]'s reason, and kept
+/// separate from it for a sharper one: the two are read together at exactly one
+/// call site and mean opposite-facing things there. [`Insistence`] is what dl will
+/// *accept* as a delete, and this is what devpod is *asked* for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Persistence {
+    /// `rm`'s delete: devpod's defaults, and devpod's own patience.
+    Ordinary,
+    /// `kill`'s: `--force`, so a workspace devpod can no longer reach goes anyway,
+    /// and a deadline, so the delete cannot join the lock loop the sweep that runs
+    /// in front of it was reached for.
+    Wedged,
 }
 
 // ===========================================================================
@@ -4563,6 +4617,7 @@ mod tests {
             None,
             "myws",
             Insistence::NotInsisted,
+            Persistence::Ordinary,
             &mut ignoring(),
         )
         .expect("devpod ran");
@@ -4596,6 +4651,7 @@ mod tests {
             None,
             "myws",
             Insistence::Insisted,
+            Persistence::Ordinary,
             &mut ignoring(),
         )
         .expect("devpod ran");
@@ -4604,6 +4660,82 @@ mod tests {
             world.devpod.devpod_argvs(),
             [vec!["delete", "myws", "--ignore-not-found"]]
         );
+    }
+
+    /// `kill`'s delete, argv-exact, and it is the flags rather than the count that
+    /// matter: `--ignore-not-found` is dl's verdict about absence and `--force` is
+    /// devpod's about reach, and a wedged workspace routinely needs both. This is
+    /// also the flag dl's own refusal has always told people to type by hand.
+    #[test]
+    fn a_wedged_delete_asks_devpod_to_force_it() {
+        let world = a_stopping_world();
+        let mut world_cache = World::empty();
+        let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+        workspace_delete(
+            &mut context,
+            &mut refresh,
+            &clones,
+            &mut world_cache.storage,
+            None,
+            "myws",
+            Insistence::Insisted,
+            Persistence::Wedged,
+            &mut ignoring(),
+        )
+        .expect("devpod ran");
+
+        assert_eq!(
+            world.devpod.devpod_argvs(),
+            [vec!["delete", "myws", "--ignore-not-found", "--force"]]
+        );
+    }
+
+    /// And it carries a deadline where no other delete does. The asymmetry is the
+    /// whole robustness claim: `devpod delete` takes the workspace's flock with a
+    /// *blocking* acquire and nothing behind it, so a holder that arrives between
+    /// the sweep and the delete would otherwise put `kill` back in the five second
+    /// loop somebody typed it to escape. `rm`'s delete keeps its patience, because
+    /// a container that is slow to come down is a container that is coming down.
+    #[test]
+    fn only_the_wedged_delete_gives_devpod_a_deadline() {
+        assert_eq!(
+            deadline_on_a_delete(Persistence::Wedged),
+            Some(WEDGED_DELETE)
+        );
+        assert_eq!(deadline_on_a_delete(Persistence::Ordinary), None);
+    }
+
+    /// The timeout the spawned `devpod delete` actually carried, read off the call
+    /// the runner recorded rather than off the [`Call`] builder: what is being
+    /// pinned is that the bound survives the whole path to the child, which is
+    /// where an earlier version of this could have dropped it silently.
+    fn deadline_on_a_delete(persistence: Persistence) -> Option<Duration> {
+        let world = a_stopping_world();
+        let mut world_cache = World::empty();
+        let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+        workspace_delete(
+            &mut context,
+            &mut refresh,
+            &clones,
+            &mut world_cache.storage,
+            None,
+            "myws",
+            Insistence::Insisted,
+            persistence,
+            &mut ignoring(),
+        )
+        .expect("devpod ran");
+
+        match world.devpod.fake.calls().first() {
+            Some(devlaunch_test_support::Call::Passthrough(spec)) => spec.timeout,
+            other => panic!("the delete was not a passthrough: {other:?}"),
+        }
     }
 
     #[test]
@@ -4631,6 +4763,7 @@ mod tests {
             None,
             "r-main-aa",
             Insistence::NotInsisted,
+            Persistence::Ordinary,
             &mut ignoring(),
         )
         .expect("devpod ran");
@@ -4669,6 +4802,7 @@ mod tests {
             None,
             "r-main-aa",
             Insistence::NotInsisted,
+            Persistence::Ordinary,
             &mut notices,
         )
         .expect("devpod ran");
@@ -4715,6 +4849,7 @@ mod tests {
             None,
             "r-main-aa",
             Insistence::NotInsisted,
+            Persistence::Ordinary,
             &mut notices,
         )
         .expect("devpod ran");
@@ -4824,6 +4959,7 @@ mod tests {
                 Some(&self.home),
                 "r-main-aa",
                 Insistence::NotInsisted,
+                Persistence::Ordinary,
                 &mut notices,
             )
             .expect("devpod ran");
