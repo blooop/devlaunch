@@ -1007,7 +1007,18 @@ fn remove_addressed<'r>(
         &mut notices,
     );
     match deleted {
-        Err(not_run) => refuse_devpod("delete", &not_run),
+        Err(not_run) => {
+            let ending = refuse_devpod("delete", &not_run);
+            // The one refusal whose own sentence describes nothing: `devpod delete
+            // did not answer in time` is true of a deadline that only this
+            // removal sets, and it leaves unsaid the two things somebody has to
+            // know next — that the workspace and its clone are still there, and
+            // that a devpod killed a minute in may have got part of the way.
+            if let NotRun::TimedOut = not_run {
+                eprintln!("{}", render::delete_timed_out(workspace_id));
+            }
+            ending
+        }
         Ok(DeleteOutcome::DevpodRefused { exit }) => {
             // The local clone is kept, so the delete stays retryable: devpod
             // re-parses the workspace's devcontainer.json to tear the container

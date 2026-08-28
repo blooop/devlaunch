@@ -439,6 +439,22 @@ pub(crate) fn devpod_not_run(call: &str, refused: &NotRun) -> String {
     }
 }
 
+/// The delete that was still running when its deadline ran out.
+///
+/// Only `kill`'s delete carries one, so this only ever follows that verb, and what
+/// it has to say is the state it left rather than the fact of the timeout, which
+/// the line above it already gives. Both halves are load-bearing: the clone is
+/// still on disk, so nothing has been lost; and the workspace may be *partly*
+/// deleted, because a devpod killed a minute into the job is not a devpod that did
+/// nothing. Running it again is the only way to find out which, and it is safe,
+/// which is what the last sentence is for.
+pub(crate) fn delete_timed_out(workspace_id: &str) -> String {
+    format!(
+        "{workspace_id} and its clone are still here, and devpod may have got part of the way \
+         through. Run 'dl {workspace_id} kill' again to pick up where it stopped."
+    )
+}
+
 /// Whether this refusal is the one that means "devpod is not installed", which is
 /// the only one that exits 127.
 pub(crate) fn is_devpod_missing(refused: &ListingUnreadable) -> bool {
@@ -3936,6 +3952,19 @@ mod tests {
     #[test]
     fn a_refused_delete_that_a_sweep_already_preceded_offers_no_kill() {
         assert!(!delete_refused("my-ws", Swept::Already).contains("kill"));
+    }
+
+    /// The deadline firing, said as the state it left rather than as the timeout,
+    /// which the line above it already gives. The clone being named is the half a
+    /// reader most needs: a delete that stopped in the middle is alarming exactly
+    /// until you know nothing on disk went with it.
+    #[test]
+    fn a_delete_that_ran_out_of_time_says_what_is_still_there() {
+        assert_eq!(
+            delete_timed_out("my-ws"),
+            "my-ws and its clone are still here, and devpod may have got part of the way through. \
+             Run 'dl my-ws kill' again to pick up where it stopped."
+        );
     }
 
     /// The stale file the issue is really about, and the path, because somebody

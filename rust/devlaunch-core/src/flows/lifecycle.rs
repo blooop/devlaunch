@@ -990,10 +990,24 @@ pub fn workspace_delete(
     // names live. Named afterwards, this would find nothing every time and look
     // like a working cleanup.
     let named = devcontainer_volumes(devpod_home, workspace_id);
-    let exit = devpod::run(
+    let exit = match devpod::run(
         context.runner(),
         &delete_call(workspace_id, insistence, persistence),
-    )?;
+    ) {
+        Ok(exit) => exit,
+        // A devpod killed at [`WEDGED_DELETE`] is a devpod that *ran*, for a whole
+        // minute, and may have unlinked the workspace record before the signal
+        // reached it. So it is on the same side of this line as a non-zero exit,
+        // and only the two ways of never starting are on the other. The
+        // distinction matters because it did not exist before the deadline did:
+        // `NotRun` here used to mean devpod was missing or would not exec.
+        Err(NotRun::TimedOut) => {
+            context.forget_workspaces();
+            refresh.ask(context.runner(), RefreshReason::Forced);
+            return Err(NotRun::TimedOut);
+        }
+        Err(never_ran) => return Err(never_ran),
+    };
     // Unconditionally: a delete that reports failure may still have got far enough
     // to change what devpod lists.
     context.forget_workspaces();
@@ -4738,6 +4752,75 @@ mod tests {
             Some(devlaunch_test_support::Call::Passthrough(spec)) => spec.timeout,
             other => panic!("the delete was not a passthrough: {other:?}"),
         }
+    }
+
+    /// The deadline firing is a devpod that *ran* — for a minute, and was then
+    /// SIGKILLed by the runner — so it may have got far enough to unlink the
+    /// workspace record before it went. The two lines that answer for that are
+    /// marked "Unconditionally" and sit below an early return that this deadline
+    /// made reachable: before `Persistence::Wedged` there was no timeout on this
+    /// call, so `NotRun` here could only mean devpod never started.
+    ///
+    /// Left unfixed, the completion cache goes on offering a workspace that is
+    /// gone until some later command happens to refresh it.
+    #[test]
+    fn a_delete_killed_at_its_deadline_still_invalidates_the_listing() {
+        let world = a_stopping_world();
+        world
+            .devpod
+            .fake
+            .script(["devpod", "delete"], Response::TimedOut);
+        let mut world_cache = World::empty();
+        let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+        let outcome = workspace_delete(
+            &mut context,
+            &mut refresh,
+            &clones,
+            &mut world_cache.storage,
+            None,
+            "myws",
+            Insistence::Insisted,
+            Persistence::Wedged,
+            &mut ignoring(),
+        );
+
+        assert_eq!(outcome, Err(NotRun::TimedOut));
+        assert_eq!(
+            world.devpod.detached(),
+            [vec!["dl", "--update-cache", "--force"]],
+            "the completion cache was left offering a workspace that may be gone"
+        );
+    }
+
+    /// And a devpod that never started leaves the listing alone, which is the
+    /// distinction the arm above turns on: nothing ran, so nothing changed, and a
+    /// forced refresh would be a background `devpod list` bought for nothing.
+    #[test]
+    fn a_delete_devpod_would_not_run_at_all_invalidates_nothing() {
+        let world = a_stopping_world();
+        world.devpod.fake.script_missing("devpod");
+        let mut world_cache = World::empty();
+        let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+        let outcome = workspace_delete(
+            &mut context,
+            &mut refresh,
+            &clones,
+            &mut world_cache.storage,
+            None,
+            "myws",
+            Insistence::Insisted,
+            Persistence::Wedged,
+            &mut ignoring(),
+        );
+
+        assert_eq!(outcome, Err(NotRun::NotInstalled));
+        assert_eq!(world.devpod.detached(), Vec::<Vec<String>>::new());
     }
 
     #[test]
