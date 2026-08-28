@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A session that dies badly no longer takes your terminal with it.** A terminal
+  is not only a stream: a full screen program switches modes on in the emulator for
+  its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
+  alternate screen, and undoes them on the way out. One that is *killed* never
+  gets to, and those modes live in the emulator rather than in the connection, so
+  nothing between the program and the glass undoes them.
+
+  That is what you were seeing when a container went away underneath a live
+  session. devpod says `error tunneling to container: exit status 137`, the agent
+  inside dies unceremoniously, and what is left behind is baffling rather than
+  obviously broken: ssh restores the tty settings on its way out, so the shell
+  still echoes and still edits lines, and yet Ctrl-C does nothing and ordinary keys
+  print things like `9;133u` at the prompt. Those are kitty keyboard protocol key
+  reports, still switched on. Ctrl-C is one of them, arriving as an escape sequence
+  instead of as the byte that raises SIGINT.
+
+  `dl` is the last process holding that terminal, so `dl` now repairs it. Every
+  session ends with a short restore written to the terminal, over either transport,
+  and the interrupt handler writes the same thing before it exits. It goes out
+  after a clean session too, because ssh's exit status does not say whether the far
+  end cleaned up after itself, and that costs nothing: every sequence in it is
+  chosen for doing nothing when the mode it names is already off. Nothing is
+  written when `dl`'s own output is not a terminal, so `dl <ws> -- ls > files.txt`
+  keeps its output free of escape sequences.
+  [docs/cli.md](docs/cli.md) has the detail, including the one sequence that is
+  deliberately not in the set.
+
+## [0.24.0] - 2026-08-28
+
+### Changed
+
+- **`dl <ws> kill` deletes the workspace it just unwedged.** The sweep and the
+  `rm` typed after it were never independently useful: clearing the lock is
+  precisely what lets a `devpod delete` through, and a workspace wedged badly
+  enough to need the hammer is one you are throwing away. So `kill` now ends in the
+  `rm` verb's delete.
+
+  **And that delete neither refuses nor waits, which is what the word is for.**
+  There is no `dl <ws> kill --force`, because the guard would refuse in exactly the
+  case the verb exists for: a wedged workspace's clone is dirty almost by
+  construction, since whatever wedged it interrupted the work going on in it. So
+  the guard still runs and its finding is *reported* rather than acted on, and the
+  line naming what is about to be destroyed is printed before the delete rather
+  than after it. `rm` is untouched and remains the happy path, guard, `--force` and
+  all. Alongside that, `kill`'s call passes devpod's own `--force`, so a workspace
+  whose container devpod can no longer reach is deleted rather than refused, and it
+  is the one delete in dl that carries a deadline, so a holder arriving between the
+  sweep and the delete cannot put the verb back into the lock loop it was typed to
+  escape. If that deadline fires, dl says the workspace and its clone are still
+  there and that running `kill` again picks up where it stopped.
+
+  **What withholds the delete is a holder the sweep could not clear**, which is a
+  question about the host rather than about what the sweep managed to signal. A
+  live `devpod up` is one: the sweep spares somebody's build on purpose, along with
+  its containers and its busy marker, and a delete over it would undo all three.
+  A process with nothing waiting on it is the other, whether it sat through SIGKILL
+  or lost its parent while the sweep was running. Both hold the flock, and devpod's
+  acquire has no deadline behind it, so a delete attempted anyway would answer a
+  hang with a hang.
+
+  A session is neither, and that is the reported failure: an attended `devpod ssh`
+  takes the flock and gives it straight back, which is why `dl <ws> rm` deletes a
+  workspace somebody is sitting in without ever noticing them. One live ssh session
+  was enough to make `kill` do nothing at all, and the `rm` typed next deleted the
+  workspace unaided. The report now names every holder left standing and which of
+  the three it is, and sends you back to `kill` once they are gone.
+
+  The exit code is now the delete's rather than the sweep's, which is the stronger
+  reading of the same thing: a `dl <ws> kill && ...` that used to mean "the
+  workspace is free" now means "the workspace is gone". `dl kill` from the picker
+  deletes every row marked with TAB, the way `dl rm` over the same rows does.
+
+- **An `rm` that meets the wedge points at `kill`**, in both of the ways it can
+  meet one.
+
+  A delete devpod *refuses* cannot, from outside, tell a devcontainer.json that
+  moved from a workspace something on this host is still holding, so the sentence
+  now offers both ways out instead of the first one alone. A `kill` whose own
+  delete is refused prints no such line: the sweep it would be asking for is
+  already on screen above it.
+
+  A delete devpod cannot get the lock for is the harder half, and the one the
+  report that prompted this actually hit. It never refuses. devpod waits on that
+  lock with no deadline, logging `Trying to lock workspace` every five seconds for
+  as long as the holder lives, so there is no exit code for anything downstream to
+  read and the run has to be Ctrl-C'd. dl now reads devpod's stderr as it arrives
+  and answers the first of those lines while the command is still blocked, naming
+  the `dl <ws> kill` to run in another terminal. Once, however many times devpod
+  says it.
+
+## [0.23.0] - 2026-08-28
+
 ### Added
 
 - **`claude` in a workspace starts logged in.** A workspace whose image carries no
@@ -40,34 +134,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [docs/workspace-tools.md](docs/workspace-tools.md) has the trust model, including
   who gets the token when the repo is a stranger's.
 
-### Fixed
+### Changed
 
-- **A session that dies badly no longer takes your terminal with it.** A terminal
-  is not only a stream: a full screen program switches modes on in the emulator for
-  its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
-  alternate screen, and undoes them on the way out. One that is *killed* never
-  gets to, and those modes live in the emulator rather than in the connection, so
-  nothing between the program and the glass undoes them.
+- **Remote Control is on by default, so every `aid` claude session is one you can
+  pick up on your phone.** It shipped in 0.21.0 as `--remote-control`, and a flag
+  you have to remember is a flag you use once:
 
-  That is what you were seeing when a container went away underneath a live
-  session. devpod says `error tunneling to container: exit status 137`, the agent
-  inside dies unceremoniously, and what is left behind is baffling rather than
-  obviously broken: ssh restores the tty settings on its way out, so the shell
-  still echoes and still edits lines, and yet Ctrl-C does nothing and ordinary keys
-  print things like `9;133u` at the prompt. Those are kitty keyboard protocol key
-  reports, still switched on. Ctrl-C is one of them, arriving as an escape sequence
-  instead of as the byte that raises SIGINT.
+  ```
+  aid blooop/devlaunch@fix/42 fix the flaky test
+  ```
 
-  `dl` is the last process holding that terminal, so `dl` now repairs it. Every
-  session ends with a short restore written to the terminal, over either transport,
-  and the interrupt handler writes the same thing before it exits. It goes out
-  after a clean session too, because ssh's exit status does not say whether the far
-  end cleaned up after itself, and that costs nothing: every sequence in it is
-  chosen for doing nothing when the mode it names is already off. Nothing is
-  written when `dl`'s own output is not a terminal, so `dl <ws> -- ls > files.txt`
-  keeps its output free of escape sequences.
-  [docs/cli.md](docs/cli.md) has the detail, including the one sequence that is
-  deliberately not in the set.
+  now starts the session named `blooop/devlaunch@fix/42` on claude.ai/code and in
+  the Claude app, with nothing typed. **This changes what an existing `aid
+  <workspace>` does**, which is the point, and it is worth reading the next two
+  paragraphs before upgrading.
+
+  `--no-remote-control` is the way back to a plain local session, and
+  `DEVLAUNCH_AID_REMOTE_CONTROL=0` is the way back for every launch from a shell.
+  The variable takes `1`, `true`, `on` or `yes` and `0`, `false`, `off` or `no`,
+  and refuses anything else by name rather than guessing which you meant; a flag
+  on the command line beats it in both directions. `--remote` and `--no-remote`
+  are accepted as the short spellings, because the long one is four hyphenated
+  words and the guess at it used to fall through to `dl` and exit 2. Either switch
+  can be appended to the end of a line the way `--rm` can, so a recalled line can be
+  turned off without retyping the front of it, and the prompt survives it.
+
+  **`aid` runs claude with permissions skipped, so a default-on session is
+  drivable by the claude.ai account signed in inside the container.** That is the
+  whole of the change in one sentence, and the variable above is how to turn it
+  off globally.
+
+  A default is not a request, so `aid --codex` and `aid --gemini` start with no
+  Remote Control and say nothing: those two have not got the feature, and a
+  default that refused would have refused every launch of them. Typing
+  `--remote-control` beside either still exits 1 naming the agent, because that
+  is somebody asking for a thing by name.
 
 ## [0.22.0] - 2026-08-28
 

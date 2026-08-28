@@ -24,7 +24,7 @@ use devlaunch_core::flows::branch_manager::BranchError;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::kill::{
-    ContainerRefusal, Containers, Ending, Holding, HostCannot, Marker, NoSignal, Sweep,
+    ContainerRefusal, Containers, Ending, Holding, HostCannot, Marker, NoSignal, Standing, Sweep,
     TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
@@ -437,6 +437,43 @@ pub(crate) fn devpod_not_run(call: &str, refused: &NotRun) -> String {
             )
         }
     }
+}
+
+/// devpod, mid-delete, waiting on a lock it is never told to give up on.
+///
+/// Printed while the command is still running, which is the only time it is worth
+/// anything: this is the one failure with no downstream to report it, because
+/// devpod's acquire returns when the holder dies and not before. Somebody watching
+/// the five-second line repeat has two choices, wait or intervene, and until now
+/// dl said nothing about either.
+///
+/// **It names another terminal**, because this one is busy holding the command the
+/// advice is about, and Ctrl-C is the alternative it saves people from finding on
+/// their own. `word` is the verb that was typed, so a `--rm` firing at the end of a
+/// session offers the same `kill` the `rm` verb does rather than a word that is not
+/// on the line.
+pub(crate) fn delete_blocked(workspace_id: &str, word: &str) -> String {
+    format!(
+        "dl: devpod is waiting for another process to let go of {workspace_id}, and it will wait \
+         for as long as that takes. In another terminal, 'dl {workspace_id} kill' clears whatever \
+         is holding it and deletes it. (This {word} is still waiting.)"
+    )
+}
+
+/// The delete that was still running when its deadline ran out.
+///
+/// Only `kill`'s delete carries one, so this only ever follows that verb, and what
+/// it has to say is the state it left rather than the fact of the timeout, which
+/// the line above it already gives. Both halves are load-bearing: the clone is
+/// still on disk, so nothing has been lost; and the workspace may be *partly*
+/// deleted, because a devpod killed a minute into the job is not a devpod that did
+/// nothing. Running it again is the only way to find out which, and it is safe,
+/// which is what the last sentence is for.
+pub(crate) fn delete_timed_out(workspace_id: &str) -> String {
+    format!(
+        "{workspace_id} and its clone are still here, and devpod may have got part of the way \
+         through. Run 'dl {workspace_id} kill' again to pick up where it stopped."
+    )
 }
 
 /// Whether this refusal is the one that means "devpod is not installed", which is
@@ -1191,6 +1228,37 @@ pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
     format!("--rm: the session has ended, removing {spec}.")
 }
 
+/// What `kill` is about to destroy, said and then done anyway.
+///
+/// The same finding `removal_refusal` renders and the opposite sentence, built
+/// from the same [`RemovalRefused`] so the two cannot come to describe the work
+/// differently. What changes is only the verb's answer to it: `rm` stops and hands
+/// over `--force`, and `kill` is `--force` already, so the only thing left worth
+/// doing with the finding is putting it on screen where somebody can read it
+/// before their terminal scrolls.
+///
+/// No way past is offered, because there is nothing to offer: this is the last
+/// line before the delete, and the workspace is gone by the next one.
+pub(crate) fn removing_over_work(refused: &RemovalRefused) -> String {
+    match refused {
+        RemovalRefused::WouldLose {
+            workspace_id,
+            losses,
+        } => format!(
+            "{workspace_id} holds {}, and kill is deleting it anyway.",
+            losses.describe()
+        ),
+        RemovalRefused::CouldNotTell {
+            workspace_id,
+            cause,
+        } => format!(
+            "{workspace_id}: {}, so there may be work here that is nowhere else. kill is deleting \
+             it anyway.",
+            cause.describe()
+        ),
+    }
+}
+
 /// The workspace a removal is about to ask devpod for, said before the round trip.
 ///
 /// The delete is the one place where "which workspace" was a question dl's own
@@ -1327,11 +1395,42 @@ pub(crate) fn could_not_hang_up(parent: i32, why: &str) -> String {
     format!("rme: could not hang up pid {parent} ({why}). The removal is done.")
 }
 
+/// Whether the delete that was refused had `kill`'s sweep standing in front of it.
+///
+/// Carried into [`delete_refused`] rather than decided there, because the sentence
+/// it settles is a piece of advice and the advice is only worth giving once: `dl
+/// <ws> rm` that devpod refuses has a hammer left to reach for, and `dl <ws> kill`
+/// that devpod refuses has already swung it. A message telling somebody to run the
+/// command they are reading the output of is worse than no message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Swept {
+    /// This delete is `kill`'s, so the sweep's report is already on screen above.
+    Already,
+    /// This delete is `rm`'s or `--rm`'s. Nothing has looked at the host yet.
+    NotYet,
+}
+
 /// devpod would not let go of the workspace, and the clone was kept.
-pub(crate) fn delete_refused(workspace: &str) -> String {
+///
+/// **Two causes and now two ways out.** The devcontainer.json that moved is the
+/// one the sentence has always named, and it is the tidy failure: devpod parses
+/// the file to tear the container down, and a delete that cannot find it refuses
+/// promptly and says so. The other is the wedge, where devpod is refusing because
+/// something on this host still holds the workspace, and the person reading this
+/// has no way to tell the two apart from the outside. `kill` is the answer to the
+/// second one and does the delete itself once it has cleared the first half, which
+/// is why it is offered as a whole command rather than as a step to take first.
+pub(crate) fn delete_refused(workspace: &str, swept: Swept) -> String {
+    let hammer = match swept {
+        Swept::NotYet => {
+            format!(". If something on this host is holding it instead, run: dl {workspace} kill")
+        }
+        Swept::Already => String::new(),
+    };
     format!(
         "devpod could not delete {workspace}; keeping the local clone so it stays retryable. If \
-         its devcontainer.json moved, restore the path or run: devpod delete {workspace} --force"
+         its devcontainer.json moved, restore the path or run: devpod delete {workspace} \
+         --force{hammer}"
     )
 }
 
@@ -1384,16 +1483,48 @@ pub(crate) fn killed(workspace_id: &str, sweep: &Sweep) -> Vec<String> {
             )
         })
         .collect();
-    lines.extend(sweep.holding.attended().iter().map(|process| {
-        format!(
-            "  {} left alone, something is still watching it: {}",
-            process.pid, process.command
-        )
-    }));
+    let already_named: Vec<u32> = lines_named(sweep);
+    lines.extend(
+        sweep
+            .holding
+            .holders()
+            .iter()
+            .filter(|standing| !already_named.contains(&standing.process().pid))
+            .map(|standing| {
+                let why = match standing {
+                    // Named as a build rather than as "something is watching it",
+                    // because the two ask different things of the reader: a session
+                    // is somebody to ignore, and a build is somebody to wait for.
+                    Standing::ABuild(_) => "left alone, this is a live build",
+                    Standing::ASession(_) => "left alone, something is still watching it",
+                    // The holder that took no signal, because it lost its parent
+                    // while the sweep was running. Without this line it is the one
+                    // thing on the report that stops the delete and is nowhere on
+                    // the report.
+                    Standing::AnOrphan(_) => "still holding it, and nothing is waiting on it",
+                };
+                let process = standing.process();
+                format!("  {} {why}: {}", process.pid, process.command)
+            }),
+    );
     lines.extend(busy_marker(&sweep.marker));
     lines.extend(containers_killed(&sweep.containers));
     lines.push(verdict(workspace_id, sweep));
     lines
+}
+
+/// The pids the signal lines above have already accounted for.
+///
+/// A survivor is in both lists by construction — it is a holder in the final
+/// reading and it is the thing `still running after SIGKILL` is said about — and
+/// one report saying it twice, in two different phrasings, reads as two processes.
+/// The signal line wins because it says more: how far the escalation got.
+fn lines_named(sweep: &Sweep) -> Vec<u32> {
+    sweep
+        .signalled
+        .iter()
+        .map(|signalled| signalled.process.pid)
+        .collect()
 }
 
 /// What became of devpod's busy marker, where there is anything to say.
@@ -1466,8 +1597,15 @@ fn container_refusal(refusal: &ContainerRefusal) -> String {
 /// holding it is gone" send a reader to different places: the first says the hang
 /// is somewhere this verb does not reach, and the second says to try the launch
 /// again. Which of the three comes from the sweep's own [`Holding`], never from a
-/// second reading of the lists above: the exit code is that same value, and a
-/// line that disagreed with it would be the one a person believes.
+/// second reading of the lists above, so that no two lines of one report can
+/// disagree about what was left standing.
+///
+/// **This closes the sweep and no longer closes the command.** It used to be the
+/// exit code's sentence, back when the sweep was the whole verb; the delete that
+/// follows it now is what `$?` answers for. The distinction is worth keeping in
+/// view when editing either: "still held" above a workspace that was then deleted
+/// is not a contradiction, it is the sweep saying what it left and the delete
+/// stepping past it.
 fn verdict(workspace_id: &str, sweep: &Sweep) -> String {
     match sweep.holding {
         Holding::StillHeld { .. } => format!("Workspace {workspace_id} is still held."),
@@ -1476,6 +1614,27 @@ fn verdict(workspace_id: &str, sweep: &Sweep) -> String {
         }
         Holding::Free => format!("Workspace {workspace_id} is no longer held."),
     }
+}
+
+/// Why the delete that `kill` ends in was not attempted.
+///
+/// Said rather than silently skipped, because the verb advertises the removal and
+/// somebody who typed it and got no delete is owed which half stopped. The second
+/// sentence is the part that is not obvious: a `devpod delete` over a lock it
+/// cannot take does not *fail*, it blocks on the same five-second line that sent
+/// this person here, so attempting it would answer a hang with a hang.
+///
+/// **It sends the reader back to `kill`, not on to `rm`.** `rm`'s delete carries
+/// devpod's defaults and devpod's patience, which on a workspace whose lock is
+/// still held is the unbounded wait this whole verb exists to avoid — so naming it
+/// here would hand somebody the exact command the transcript behind this feature
+/// had to be Ctrl-C'd out of. The lines above already name what is holding it.
+pub(crate) fn kill_delete_withheld(workspace_id: &str) -> String {
+    format!(
+        "Not deleting {workspace_id}: it is still held, and devpod's delete would wait on the \
+         lock with no deadline behind it. Deal with what is named above, then run 'dl \
+         {workspace_id} kill' again."
+    )
 }
 
 /// A host `dl <ws> kill` cannot work on, and which tool is missing.
@@ -3718,23 +3877,44 @@ mod tests {
         );
     }
 
-    /// A live build and a process that outlived SIGKILL both leave the workspace
-    /// held, and the closing line is what a script reads the exit code against.
+    /// Every kind of holder leaves the workspace held, and the closing line says so
+    /// for all of them. What each one means for the delete underneath differs, and
+    /// that is not this line's to say: [`Standing`] is where it is said.
+    ///
+    /// Every kind of holder at once, and each with its own phrasing, because the
+    /// three ask the reader for three different things: wait for the build, ignore
+    /// the session, go and look at the orphan. The survivor appears once, in the
+    /// signal line that says how far the escalation got, rather than a second time
+    /// as the orphan it also is.
     #[test]
     fn a_workspace_something_still_holds_is_reported_held() {
+        let survivor = held_by(732_721, "devpod up my-ws");
         let sweep = Sweep {
             signalled: vec![Signalled {
-                process: held_by(732_721, "devpod up my-ws"),
+                process: survivor.clone(),
                 ending: Ending::Survived,
             }],
             marker: Marker::LeftForALiveHolder,
             containers: Containers::LeftForALiveBuild,
             holding: Holding::StillHeld {
-                attended: vec![HostProcess {
-                    pid: 5001,
-                    parent: 5000,
-                    command: "devpod up my-ws".to_owned(),
-                }],
+                holders: vec![
+                    Standing::AnOrphan(survivor),
+                    Standing::ABuild(HostProcess {
+                        pid: 5001,
+                        parent: 5000,
+                        command: "devpod up my-ws".to_owned(),
+                    }),
+                    Standing::ASession(HostProcess {
+                        pid: 6001,
+                        parent: 6000,
+                        command: "devpod ssh my-ws".to_owned(),
+                    }),
+                    Standing::AnOrphan(HostProcess {
+                        pid: 7001,
+                        parent: 1,
+                        command: "devpod helper my-ws".to_owned(),
+                    }),
+                ],
             },
         };
 
@@ -3742,11 +3922,69 @@ mod tests {
             killed("my-ws", &sweep),
             [
                 "  732721 still running after SIGKILL: devpod up my-ws",
-                "  5001 left alone, something is still watching it: devpod up my-ws",
+                "  5001 left alone, this is a live build: devpod up my-ws",
+                "  6001 left alone, something is still watching it: devpod ssh my-ws",
+                "  7001 still holding it, and nothing is waiting on it: devpod helper my-ws",
                 "Left devpod's busy marker alone: something still holds this workspace.",
                 "Left this workspace's containers alone: they belong to that build.",
                 "Workspace my-ws is still held.",
             ]
+        );
+    }
+
+    /// The delete the verb ends in, withheld, and it has to say why the thing that
+    /// stopped it would not have been fixed by trying: a `devpod delete` over a
+    /// lock it cannot take blocks rather than fails, so a reader who sees no delete
+    /// and no reason would reasonably just run one.
+    ///
+    /// And what it sends them back to is `kill`, asserted rather than left to
+    /// wording, because `rm` is the one thing it must not name: `rm`'s delete has
+    /// no deadline, so on a workspace whose lock is still held it is the unbounded
+    /// wait this verb exists to avoid.
+    #[test]
+    fn a_withheld_delete_sends_the_reader_back_to_kill_and_never_to_rm() {
+        let said = kill_delete_withheld("my-ws");
+
+        assert_eq!(
+            said,
+            "Not deleting my-ws: it is still held, and devpod's delete would wait on the lock \
+             with no deadline behind it. Deal with what is named above, then run 'dl my-ws kill' \
+             again."
+        );
+        assert!(!said.contains("rm"), "the reader was sent to rm: {said}");
+    }
+
+    /// A `devpod delete` that refused is the one failure with a hammer left to
+    /// reach for, so it names it. The wedge and the devcontainer.json that moved
+    /// look identical from out here, which is why both ways out are offered rather
+    /// than one of them guessed at.
+    #[test]
+    fn a_refused_delete_offers_the_kill_that_would_clear_a_wedge() {
+        assert_eq!(
+            delete_refused("my-ws", Swept::NotYet),
+            "devpod could not delete my-ws; keeping the local clone so it stays retryable. If its \
+             devcontainer.json moved, restore the path or run: devpod delete my-ws --force. If \
+             something on this host is holding it instead, run: dl my-ws kill"
+        );
+    }
+
+    /// And not when the sweep is already on screen above it, which is `kill`'s own
+    /// delete: the advice would be to re-run the command being read.
+    #[test]
+    fn a_refused_delete_that_a_sweep_already_preceded_offers_no_kill() {
+        assert!(!delete_refused("my-ws", Swept::Already).contains("kill"));
+    }
+
+    /// The deadline firing, said as the state it left rather than as the timeout,
+    /// which the line above it already gives. The clone being named is the half a
+    /// reader most needs: a delete that stopped in the middle is alarming exactly
+    /// until you know nothing on disk went with it.
+    #[test]
+    fn a_delete_that_ran_out_of_time_says_what_is_still_there() {
+        assert_eq!(
+            delete_timed_out("my-ws"),
+            "my-ws and its clone are still here, and devpod may have got part of the way through. \
+             Run 'dl my-ws kill' again to pick up where it stopped."
         );
     }
 

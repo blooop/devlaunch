@@ -3,8 +3,8 @@
 [README](../README.md) has the commands you need. This page is the rest: how the
 selector decides what you picked, which commands get a terminal, what `--rm`
 promises and where it stops, which exits fire it, the spellings that were retired
-and what they say now, what `aid --remote-control` starts and what it asks of the
-workspace, what `kill` does to a workspace that will not answer, and what happens
+and what they say now, what `aid`'s Remote Control default starts and how to turn
+it off, what `kill` does to a workspace that will not answer, and what happens
 when devpod is missing or will not answer.
 
 ## The selector
@@ -403,38 +403,64 @@ reporting an unknown workspace called `prune`, and a workspace that really is ca
 `prune` is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
 
-## `aid --remote-control`: picking the session up somewhere else
+## Remote Control: every `aid` session, on your phone too
 
-`aid --remote-control <workspace> [prompt...]` starts Claude Code with Remote Control
-on. The session is still the one in your terminal, running in the container on your
-machine; Remote Control is what also makes it readable and steerable from
+Every `aid` launch of claude starts with Claude Code's Remote Control on. There is no
+flag to type:
+
+```bash
+aid blooop/devlaunch@fix/42 fix the flaky test
+```
+
+The session is still the one in your terminal, running in the container on your
+machine. Remote Control is what also makes it readable and steerable from
 claude.ai/code and the Claude mobile app, so you can send it the next thing from a
 phone without the workspace being anywhere but where it was.
 
-```bash
-aid --remote-control blooop/devlaunch@fix/42 fix the flaky test
-```
-
-The flag goes before the workspace. Everything after the spec is prompt text, which
-is the rule that lets a prompt go unquoted, so a `--remote-control` typed there is
-handed to the agent as words rather than read as the flag.
-
-Four things worth knowing before you type it.
-
-**It is claude's and nothing else's.** Remote Control is a Claude Code feature, so
-`--codex` or `--gemini` beside the flag is refused by name rather than quietly
-dropped, and so is a `DEVLAUNCH_AID_AGENT` naming either of them. The refusal happens
-before anything is booted.
-
 **The session is named after the workspace you typed**, so the list on claude.ai reads
-as the workspaces you opened rather than as a row of untitled sessions. aid always
+as the workspaces you opened rather than as a row of untitled sessions. `aid` always
 sends a name, because `claude --remote-control [name]` takes an optional one and a bare
 flag would read the first word of your prompt as the name instead.
+
+### Turning it off
+
+```bash
+aid --no-remote-control blooop/devlaunch@fix/42    # this launch only
+aid --no-remote blooop/devlaunch@fix/42            # the same, shorter
+
+export DEVLAUNCH_AID_REMOTE_CONTROL=0              # every launch from this shell
+```
+
+The variable takes `1`, `true`, `on` or `yes` and `0`, `false`, `off` or `no`, and
+refuses anything else by name rather than guessing which you meant. A flag on the
+command line beats it in both directions, so `--remote-control` (or `--remote`) still
+turns one launch back on.
+
+Either switch can also be appended to the end of the line, the way `--rm` can, so a
+recalled line can be turned off without retyping the front of it: `aid owner/repo fix
+the bug --no-remote` starts a purely local session and the prompt survives. That is
+bounded the way `--rm` is, to the exact word as a whole argument in the run at the very
+end, so a prompt that merely mentions a switch is still a prompt. `aid owner/repo
+explain --remote-control please` ends on `please` and asks the agent what you typed.
+
+### Four things worth knowing
+
+**It is claude's and nothing else's.** Remote Control is a Claude Code feature, so
+`aid --codex` and `aid --gemini` start with no Remote Control and say nothing about
+it: a default that refused would refuse every launch of those two. Typing
+`--remote-control` beside either of them is different, because you asked for
+something by name, and that is refused by name before anything boots. So is a
+`--remote-control` on a line whose `DEVLAUNCH_AID_AGENT` names one of them.
 
 **It needs a claude.ai login inside the workspace.** Remote Control pairs the session
 with a Pro, Max or Team account, so a container whose `claude` is signed in with an API
 key, or not signed in at all, cannot start one. That login lives in the container along
 with the rest of the agent's state, which is what `aid` was already relying on.
+
+**A drivable session is a drivable agent.** `aid` runs claude with
+`--dangerously-skip-permissions`, so whoever is signed in to that claude.ai account
+can send the agent work and it will not stop to ask. `DEVLAUNCH_AID_REMOTE_CONTROL=0`
+is how to turn that off everywhere.
 
 **Nothing survives the workspace.** The session is a process in the container, so
 `dl <ws> stop`, `dl <ws> rm`, a `--rm` firing at the end of the line, or Ctrl-C out of
@@ -460,7 +486,7 @@ children, and nothing on the machine is ever going to reap it.
 
 `dl <ws> kill` is the way out. The sweep asks devpod nothing, which is the point:
 it reads the host's own process table and acts on what is there. It does four
-things:
+things, and then deletes the workspace:
 
 - **Kills the host processes holding the workspace.** Only `devpod` processes, and
   only ones that name this workspace and whose own parent has died. SIGTERM first,
@@ -477,20 +503,55 @@ things:
   what it is in the middle of creating would break it as surely as signalling it
   would, so they are left alone with it and the report says so.
 - **Prints every one of them**, with the pid and the whole command line, so you can
-  see what went and how hard it had to be pushed. The two docker calls carry
-  deadlines for that reason: a daemon that never answers must not swallow the
-  report of a SIGKILL that has already landed.
+  see what went and how hard it had to be pushed. Every holder it left standing is
+  named too, and each says which kind it is: a live build to wait for, a session to
+  ignore, or an orphan to go and look at. The two docker calls carry deadlines for
+  that reason: a daemon that never answers must not swallow the report of a SIGKILL
+  that has already landed.
 
-It exits `0` only when nothing is left holding the workspace, so
-`dl <ws> kill && dl <ws>` is safe to type: a live build or a process that outlived
-SIGKILL exits `1` and says which.
+**And then it deletes the workspace.** The sweep and the delete were never
+independently useful: clearing the lock is precisely what lets a `devpod delete`
+through, and a workspace wedged badly enough to need the hammer is one you are
+throwing away. So `dl <ws> kill` is the whole thing, and the exit code is the
+delete's.
+
+**Nothing in that delete refuses, and there is no `--force` to type.** It is `rm`'s
+delete with the guard turned into a report: work that exists nowhere else is named
+and then destroyed. That is not the guard being dropped for convenience. A wedged
+workspace has a dirty clone almost by construction, because whatever wedged it
+interrupted the work that was going on in it, so a guard here would refuse in
+precisely the case the verb exists for. `rm` is the happy path and keeps its guard
+and its `--force`; reach for it whenever the workspace might still be wanted.
+
+**It does stand down for a holder the sweep could not clear**, and there are two of
+those. A live `devpod up` is one: the sweep spares somebody's build on purpose,
+along with its containers and its busy marker, and deleting the workspace out from
+under it would undo all three. A process with nothing waiting on it is the other,
+whether it sat through SIGKILL or lost its parent while the sweep was running.
+Both hold the flock, so a delete over either would block on it rather than fail.
+Neither is a session: an idle `devpod ssh` takes the lock and gives it straight
+back, which is why `dl <ws> rm` deletes a workspace somebody is sitting in without
+noticing them, and it is why one such session used to be enough to make this verb
+do nothing at all. The report names every holder it left and which kind it was,
+and the closing line sends you back to `kill` once they are gone.
+
+**And nothing in it waits indefinitely.** Two things buy that. The call carries
+devpod's own `--force`, so a workspace whose container or machine devpod can no
+longer reach is deleted rather than refused, which is the flag dl's error message
+has always told people to type by hand. And it carries a deadline, which no other
+delete in dl does: `rm`'s is allowed to take as long as it takes, because a
+container that is slow to come down is a container that is coming down, while this
+one is being run by somebody who has just sat through the five second lock line
+above and must not be put back into it by a holder that arrived after the sweep.
+If it does run out, dl says the workspace and its clone are still there and that
+running `kill` again picks up where it stopped: devpod is killed a minute into the
+job, so it may have got part of the way through.
 
 **The lock file itself is never touched.** Killing the holder is what releases it,
 because the kernel drops an `flock` when its holder dies. Unlinking the file would
 be worse than the hang: the old holder keeps a lock on an inode nobody else can
 see, the next caller locks a fresh file, and two processes both believe they have
-the workspace. That is why there is no `--force` here and nothing to delete by
-hand.
+the workspace. There is nothing here to delete by hand.
 
 **Naming the workspace is the one place devpod could come into it, and by
 workspace id it does not.** Every other lifecycle verb resolves its target through
@@ -504,7 +565,28 @@ rather than refusing.
 
 `kill` takes several workspaces from the selector, like `stop` and `rm` do. A
 machine that was suspended, or one whose `dl` was killed by the OOM killer, wedges
-every workspace that was open at the time.
+every workspace that was open at the time. Now that the verb ends in a delete,
+marking five rows deletes five workspaces, and none of the five stops for unsaved
+work: each one names what it held on the way past. Marking five rows for `rm`
+deletes five workspaces too, so this is the verb doing what it says rather than
+something the picker adds, but it is worth knowing before the first TAB.
+
+The advice runs the other way too, in two places, because a plain `rm` can meet the
+wedge without knowing it.
+
+A `dl <ws> rm` that devpod *refuses* cannot tell a devcontainer.json that moved from
+a workspace something on this host is still holding, so it now names `dl <ws> kill`
+alongside the `devpod delete --force` it always named. A `kill` whose own delete is
+refused does not print that line, since the sweep it would be asking for is already
+on screen above it.
+
+A `dl <ws> rm` that devpod cannot get the lock for is the harder half, because it
+never refuses: devpod waits on that lock with no deadline, logging the five second
+line at the top of this section for as long as the holder lives, so there is no
+exit code for anything downstream to read. dl reads devpod's stderr as it arrives
+instead, and answers the first of those lines while the command is still blocked,
+naming the `dl <ws> kill` to run in another terminal. It says it once, however many
+times devpod says it.
 
 
 ## When devpod is missing or will not answer
