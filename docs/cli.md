@@ -144,7 +144,7 @@ that is not, `ESC [ ? 1049 l`, is left out on purpose, because it restores the
 cursor as well as the screen and would scramble the display on every ordinary
 exit.
 
-Nothing is written when `dl` is not talking to a terminal, so `dl <ws> -- ls >
+Nothing is written when `dl`'s own output is not a terminal, so `dl <ws> -- ls >
 files.txt` keeps its output free of escape sequences. If you are ever left with a
 wrecked terminal some other way, `printf '\033[<u'` undoes this particular one
 and `reset` undoes everything.

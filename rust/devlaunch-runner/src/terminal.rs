@@ -95,13 +95,17 @@ pub(crate) const RESTORE: &str = concat!(
 /// `isatty` and `write`, all three of which POSIX lists as safe in a handler, and
 /// it allocates nothing — the bytes are a `const`, not a formatted string.
 pub(crate) fn restore() {
-    // Both descriptors, matching the question `dl` asks before it treats itself
-    // as talking to a person: a piped stdout has no terminal to repair, and a
-    // piped stdin means the child was never given the terminal to break.
+    // Descriptor 1 alone, and deliberately not the both-descriptors question
+    // `ssh::terminal_usable` asks. That one decides whether to give a *child* a
+    // pty, which a program with nobody typing at it does not need. This one asks
+    // whether there is a device here to repair, and the child was handed
+    // descriptor 1 whatever its stdin was: `dl owner/repo < /dev/null` still lets
+    // `devpod up` hide the cursor on the terminal and still leaves it hidden if
+    // the build is killed.
     //
     // SAFETY: `isatty` reads a property of a descriptor, touches nothing else,
     // and is on POSIX's async-signal-safe list.
-    if unsafe { libc::isatty(0) != 1 || libc::isatty(1) != 1 } {
+    if unsafe { libc::isatty(1) != 1 } {
         return;
     }
     write_all(RESTORE.as_bytes());
