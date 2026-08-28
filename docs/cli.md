@@ -444,9 +444,11 @@ things, and then deletes the workspace:
   what it is in the middle of creating would break it as surely as signalling it
   would, so they are left alone with it and the report says so.
 - **Prints every one of them**, with the pid and the whole command line, so you can
-  see what went and how hard it had to be pushed. The two docker calls carry
-  deadlines for that reason: a daemon that never answers must not swallow the
-  report of a SIGKILL that has already landed.
+  see what went and how hard it had to be pushed. Every holder it left standing is
+  named too, and each says which kind it is: a live build to wait for, a session to
+  ignore, or an orphan to go and look at. The two docker calls carry deadlines for
+  that reason: a daemon that never answers must not swallow the report of a SIGKILL
+  that has already landed.
 
 **And then it deletes the workspace.** The sweep and the delete were never
 independently useful: clearing the lock is precisely what lets a `devpod delete`
@@ -462,6 +464,18 @@ interrupted the work that was going on in it, so a guard here would refuse in
 precisely the case the verb exists for. `rm` is the happy path and keeps its guard
 and its `--force`; reach for it whenever the workspace might still be wanted.
 
+**It does stand down for a holder the sweep could not clear**, and there are two of
+those. A live `devpod up` is one: the sweep spares somebody's build on purpose,
+along with its containers and its busy marker, and deleting the workspace out from
+under it would undo all three. A process with nothing waiting on it is the other,
+whether it sat through SIGKILL or lost its parent while the sweep was running.
+Both hold the flock, so a delete over either would block on it rather than fail.
+Neither is a session: an idle `devpod ssh` takes the lock and gives it straight
+back, which is why `dl <ws> rm` deletes a workspace somebody is sitting in without
+noticing them, and it is why one such session used to be enough to make this verb
+do nothing at all. The report names every holder it left and which kind it was,
+and the closing line sends you back to `kill` once they are gone.
+
 **And nothing in it waits indefinitely.** Two things buy that. The call carries
 devpod's own `--force`, so a workspace whose container or machine devpod can no
 longer reach is deleted rather than refused, which is the flag dl's error message
@@ -470,17 +484,9 @@ delete in dl does: `rm`'s is allowed to take as long as it takes, because a
 container that is slow to come down is a container that is coming down, while this
 one is being run by somebody who has just sat through the five second lock line
 above and must not be put back into it by a holder that arrived after the sweep.
-
-**The delete is withheld for exactly one holder: a process that outlived SIGKILL.**
-Not for the attended ones the sweep spares, which is a distinction worth being
-precise about, because they look alike in the report above and are not alike at
-all. An idle `devpod ssh` takes the workspace's flock and gives it straight back,
-which is why `dl <ws> rm` deletes a workspace somebody is sitting in without ever
-noticing them. A process that took a SIGKILL and stayed is holding that flock with
-nothing left on this machine able to take it away, and devpod's acquire has no
-deadline behind it, so a delete attempted over one would not fail. It would join
-the five second log line at the top of this section. `kill` says that instead, and
-names the `rm` to run once the process is gone.
+If it does run out, dl says the workspace and its clone are still there and that
+running `kill` again picks up where it stopped: devpod is killed a minute into the
+job, so it may have got part of the way through.
 
 **The lock file itself is never touched.** Killing the holder is what releases it,
 because the kernel drops an `flock` when its holder dies. Unlinking the file would
@@ -506,11 +512,22 @@ work: each one names what it held on the way past. Marking five rows for `rm`
 deletes five workspaces too, so this is the verb doing what it says rather than
 something the picker adds, but it is worth knowing before the first TAB.
 
-The advice runs the other way too. A `dl <ws> rm` that devpod refuses cannot tell a
-devcontainer.json that moved from a workspace something on this host is still
-holding, so it now names `dl <ws> kill` alongside the `devpod delete --force` it
-always named. A `kill` whose own delete is refused does not print that line, since
-the sweep it would be asking for is already on screen above it.
+The advice runs the other way too, in two places, because a plain `rm` can meet the
+wedge without knowing it.
+
+A `dl <ws> rm` that devpod *refuses* cannot tell a devcontainer.json that moved from
+a workspace something on this host is still holding, so it now names `dl <ws> kill`
+alongside the `devpod delete --force` it always named. A `kill` whose own delete is
+refused does not print that line, since the sweep it would be asking for is already
+on screen above it.
+
+A `dl <ws> rm` that devpod cannot get the lock for is the harder half, because it
+never refuses: devpod waits on that lock with no deadline, logging the five second
+line at the top of this section for as long as the holder lives, so there is no
+exit code for anything downstream to read. dl reads devpod's stderr as it arrives
+instead, and answers the first of those lines while the command is still blocked,
+naming the `dl <ws> kill` to run in another terminal. It says it once, however many
+times devpod says it.
 
 
 ## When devpod is missing or will not answer

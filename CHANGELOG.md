@@ -59,30 +59,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose container devpod can no longer reach is deleted rather than refused, and it
   is the one delete in dl that carries a deadline, so a holder arriving between the
   sweep and the delete cannot put the verb back into the lock loop it was typed to
-  escape.
+  escape. If that deadline fires, dl says the workspace and its clone are still
+  there and that running `kill` again picks up where it stopped.
 
-  The delete is withheld for exactly one holder, and it is not the one the sweep
-  spares. An attended `devpod ssh` is somebody's session and is left unsignalled on
-  purpose, but it is not in a delete's way at all: it takes the workspace's flock
-  and gives it straight back, which is why `dl <ws> rm` deletes a workspace
-  somebody is sitting in without ever noticing them. Gating the delete on "anything
-  still holds this" instead was the reported failure, where one live ssh session
-  was enough to make `kill` do nothing at all and the `rm` typed next deleted the
-  workspace unaided. What does withhold it is a process that outlived SIGKILL:
-  nothing on the machine can take that flock away, devpod's acquire has no deadline
-  behind it, and a delete attempted anyway would answer a hang with a hang. `kill`
-  says so and names the `rm` to run once it is gone.
+  **What withholds the delete is a holder the sweep could not clear**, which is a
+  question about the host rather than about what the sweep managed to signal. A
+  live `devpod up` is one: the sweep spares somebody's build on purpose, along with
+  its containers and its busy marker, and a delete over it would undo all three.
+  A process with nothing waiting on it is the other, whether it sat through SIGKILL
+  or lost its parent while the sweep was running. Both hold the flock, and devpod's
+  acquire has no deadline behind it, so a delete attempted anyway would answer a
+  hang with a hang.
+
+  A session is neither, and that is the reported failure: an attended `devpod ssh`
+  takes the flock and gives it straight back, which is why `dl <ws> rm` deletes a
+  workspace somebody is sitting in without ever noticing them. One live ssh session
+  was enough to make `kill` do nothing at all, and the `rm` typed next deleted the
+  workspace unaided. The report now names every holder left standing and which of
+  the three it is, and sends you back to `kill` once they are gone.
 
   The exit code is now the delete's rather than the sweep's, which is the stronger
   reading of the same thing: a `dl <ws> kill && ...` that used to mean "the
   workspace is free" now means "the workspace is gone". `dl kill` from the picker
   deletes every row marked with TAB, the way `dl rm` over the same rows does.
 
-- **A `dl <ws> rm` that devpod refuses points at `kill`.** From outside, a refused
-  delete cannot tell a devcontainer.json that moved from a workspace something on
-  this host is still holding, so the sentence now offers both ways out instead of
-  the first one alone. A `kill` whose own delete is refused prints no such line: the
-  sweep it would be asking for is already on screen above it.
+- **An `rm` that meets the wedge points at `kill`**, in both of the ways it can
+  meet one.
+
+  A delete devpod *refuses* cannot, from outside, tell a devcontainer.json that
+  moved from a workspace something on this host is still holding, so the sentence
+  now offers both ways out instead of the first one alone. A `kill` whose own
+  delete is refused prints no such line: the sweep it would be asking for is
+  already on screen above it.
+
+  A delete devpod cannot get the lock for is the harder half, and the one the
+  report that prompted this actually hit. It never refuses. devpod waits on that
+  lock with no deadline, logging `Trying to lock workspace` every five seconds for
+  as long as the holder lives, so there is no exit code for anything downstream to
+  read and the run has to be Ctrl-C'd. dl now reads devpod's stderr as it arrives
+  and answers the first of those lines while the command is still blocked, naming
+  the `dl <ws> kill` to run in another terminal. Once, however many times devpod
+  says it.
 
 ## [0.22.0] - 2026-08-28
 
