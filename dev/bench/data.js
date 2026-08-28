@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787949941115,
+  "lastUpdate": 1787951469353,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -7907,6 +7907,93 @@ window.BENCHMARK_DATA = {
             "range": "± 1.024634",
             "unit": "s",
             "extra": "runs=5/5 wall=9.614353s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "669df0373ac7105d4385e57b9e4183082715d881",
+          "message": "Merge pull request #495 from blooop/fix/restore-terminal-after-session\n\nPut the terminal back when a session's child is killed",
+          "timestamp": "2026-08-28T22:08:19+01:00",
+          "tree_id": "854bb444f6af723cf0a878f38c26a588782b2a49",
+          "url": "https://github.com/blooop/devlaunch/commit/669df0373ac7105d4385e57b9e4183082715d881"
+        },
+        "date": 1787951468619,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.121391,
+            "range": "± 0.118149",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.244583,
+            "range": "± 0.16837",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000048,
+            "range": "± 0.000004",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.455586,
+            "range": "± 0.154497",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.457771s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.065173,
+            "range": "± 0.047556",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.030957,
+            "range": "± 0.443409",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.240289,
+            "range": "± 0.013092",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.351594,
+            "range": "± 0.282053",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 7.758243,
+            "range": "± 0.428458",
+            "unit": "s",
+            "extra": "runs=5/5 wall=7.760633s v0.26.1, Linux-X64"
           }
         ]
       }
