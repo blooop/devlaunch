@@ -40,6 +40,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [docs/workspace-tools.md](docs/workspace-tools.md) has the trust model, including
   who gets the token when the repo is a stranger's.
 
+### Fixed
+
+- **A session that dies badly no longer takes your terminal with it.** A terminal
+  is not only a stream: a full screen program switches modes on in the emulator for
+  its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
+  alternate screen, and undoes them on the way out. One that is *killed* never
+  gets to, and those modes live in the emulator rather than in the connection, so
+  nothing between the program and the glass undoes them.
+
+  That is what you were seeing when a container went away underneath a live
+  session. devpod says `error tunneling to container: exit status 137`, the agent
+  inside dies unceremoniously, and what is left behind is baffling rather than
+  obviously broken: ssh restores the tty settings on its way out, so the shell
+  still echoes and still edits lines, and yet Ctrl-C does nothing and ordinary keys
+  print things like `9;133u` at the prompt. Those are kitty keyboard protocol key
+  reports, still switched on. Ctrl-C is one of them, arriving as an escape sequence
+  instead of as the byte that raises SIGINT.
+
+  `dl` is the last process holding that terminal, so `dl` now repairs it. Every
+  session ends with a short restore written to the terminal, over either transport,
+  and the interrupt handler writes the same thing before it exits. It goes out
+  after a clean session too, because ssh's exit status does not say whether the far
+  end cleaned up after itself, and that costs nothing: every sequence in it is
+  chosen for doing nothing when the mode it names is already off. Nothing is
+  written when `dl`'s own output is not a terminal, so `dl <ws> -- ls > files.txt`
+  keeps its output free of escape sequences.
+  [docs/cli.md](docs/cli.md) has the detail, including the one sequence that is
+  deliberately not in the set.
+
 ## [0.22.0] - 2026-08-28
 
 ### Added
