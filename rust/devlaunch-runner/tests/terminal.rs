@@ -88,14 +88,17 @@ const CHILD_DONE: &str = "CHILD-DONE";
 /// inside it dies with no chance to clean up. A child that exits normally would
 /// prove the restore runs, but not that it runs when it is the only thing left to
 /// run.
-fn passthrough_beside_the_terminal() {
+fn a_child_that_strands_a_mode() -> Invocation {
     // `\033[>1u` spelled the way `printf` reads it: the same bytes as
     // [`KEYBOARD_PUSH`], which is what the assertions look for.
-    let what = sh(&format!(
+    sh(&format!(
         "printf '\\033[>1u'; printf '{CHILD_DONE}\\n'; kill -9 $$"
-    ));
+    ))
+}
+
+fn passthrough_beside_the_terminal() {
     println!("started");
-    let outcome = ProcessRunner.passthrough(&what.into());
+    let outcome = ProcessRunner.passthrough(&a_child_that_strands_a_mode().into());
     println!("outcome: {outcome:?}");
 }
 
@@ -403,9 +406,7 @@ fn nothing_is_written_when_the_output_is_not_a_terminal() {
         let path = std::env::var(MARKER).expect("a capture path");
         redirect(1, &path, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC);
         eprintln!("started");
-        let outcome = ProcessRunner.passthrough(
-            &sh(&format!("printf '\\033[>1u'; printf '{CHILD_DONE}\\n'; kill -9 $$")).into(),
-        );
+        let outcome = ProcessRunner.passthrough(&a_child_that_strands_a_mode().into());
         eprintln!("outcome: {outcome:?}");
         return;
     }
