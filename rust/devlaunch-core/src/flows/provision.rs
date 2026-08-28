@@ -1220,8 +1220,8 @@ fn unescape_mount(root: &str) -> String {
 
 /// Whether `path` is `parent` or sits inside it, compared component-wise.
 ///
-/// Component-wise rather than `str::starts_with`, so `/home/ags/.claude-backup` is
-/// not read as living under `/home/ags/.claude`. That is the whole of the trap: a
+/// Component-wise rather than `str::starts_with`, so `/home/hostuser/.claude-backup` is
+/// not read as living under `/home/hostuser/.claude`. That is the whole of the trap: a
 /// prefix test on strings convicts a sibling directory whose name merely begins
 /// the same way, and clears nothing it should.
 fn is_under(path: &str, parent: &str) -> bool {
@@ -4188,7 +4188,7 @@ fi
     }
 
     /// A host whose home is somewhere the container's could not be mistaken for.
-    const ELSEWHERE: Option<&str> = Some("/home/ags");
+    const ELSEWHERE: Option<&str> = Some("/home/hostuser");
 
     #[test]
     fn a_config_directory_nothing_is_mounted_into_is_ours() {
@@ -4204,7 +4204,7 @@ fi
         // which is what devlaunch's claude-code feature does today.
         assert_eq!(
             ClaudeConfig::parse(
-                &claude_report("/home/vscode", &["/home/ags/.claude"]),
+                &claude_report("/home/vscode", &["/home/hostuser/.claude"]),
                 ELSEWHERE
             ),
             Some(ClaudeConfig::Foreign)
@@ -4222,9 +4222,9 @@ fi
         let report = claude_report(
             "/home/vscode",
             &[
-                "/home/ags/.claude/settings.json",
-                "/home/ags/.claude/.credentials.json",
-                "/home/ags/.claude/agents",
+                "/home/hostuser/.claude/settings.json",
+                "/home/hostuser/.claude/.credentials.json",
+                "/home/hostuser/.claude/agents",
             ],
         );
         assert_eq!(
@@ -4236,7 +4236,7 @@ fi
 
     #[test]
     fn a_sibling_that_merely_shares_the_prefix_is_not_underneath_it() {
-        // `/home/ags/.claude-backup` begins with `/home/ags/.claude`. A prefix test
+        // `/home/hostuser/.claude-backup` begins with `/home/hostuser/.claude`. A prefix test
         // on strings convicts it; a component-wise one does not. The probe only
         // reports mounts it found at or under the directory, so this arrives as a
         // root under *this* home and has to read as ours.
@@ -4247,11 +4247,11 @@ fi
             ),
             Some(ClaudeConfig::Ours)
         );
-        assert!(!is_under("/home/ags/.claude-backup", "/home/ags/.claude"));
-        assert!(is_under("/home/ags/.claude", "/home/ags/.claude"));
+        assert!(!is_under("/home/hostuser/.claude-backup", "/home/hostuser/.claude"));
+        assert!(is_under("/home/hostuser/.claude", "/home/hostuser/.claude"));
         assert!(is_under(
-            "/home/ags/.claude/settings.json",
-            "/home/ags/.claude"
+            "/home/hostuser/.claude/settings.json",
+            "/home/hostuser/.claude"
         ));
     }
 
@@ -4282,7 +4282,7 @@ fi
         // Not provably ours, so not ours. The cost is a login prompt; the cost of the
         // other reading is a login forwarded into a directory nobody checked.
         assert_eq!(
-            ClaudeConfig::parse(&claude_report("", &["/home/ags/.claude"]), ELSEWHERE),
+            ClaudeConfig::parse(&claude_report("", &["/home/hostuser/.claude"]), ELSEWHERE),
             Some(ClaudeConfig::Foreign)
         );
     }
@@ -4363,7 +4363,7 @@ fi
         // descendants alone saw no mounts and called the directory ours; the shape
         // `findmnt --target` would have caught and a descendants scan cannot.
         assert_eq!(
-            ClaudeConfig::parse(&claude_report("/home/vscode", &["/home/ags"]), ELSEWHERE),
+            ClaudeConfig::parse(&claude_report("/home/vscode", &["/home/hostuser"]), ELSEWHERE),
             Some(ClaudeConfig::Foreign)
         );
     }
@@ -4380,7 +4380,7 @@ fi
         );
         assert_eq!(
             ClaudeConfig::parse(
-                &claude_report("/home/my dir", &["/home/ags/.claude"]),
+                &claude_report("/home/my dir", &["/home/hostuser/.claude"]),
                 ELSEWHERE
             ),
             Some(ClaudeConfig::Foreign)
@@ -4502,9 +4502,9 @@ fi
     /// A container's mount table: the host's home bound onto the container's, one
     /// file bound underneath the config directory, and a tmpfs beside it.
     const FIXTURE_MOUNTS: &[(&str, &str)] = &[
-        ("/host/ags", "/home/vscode"),
+        ("/host/hostuser", "/home/vscode"),
         (
-            "/host/ags/.claude/settings.json",
+            "/host/hostuser/.claude/settings.json",
             "/home/vscode/.claude/settings.json",
         ),
         ("/host/cache", "/home/vscode/.cache"),
@@ -4520,7 +4520,7 @@ fi
         // against itself, and the `.cache` mount is a sibling and no business of ours.
         assert_eq!(
             scan_against(FIXTURE_MOUNTS, "/home/vscode/.claude"),
-            vec!["/host/ags", "/host/ags/.claude/settings.json"]
+            vec!["/host/hostuser", "/host/hostuser/.claude/settings.json"]
         );
     }
 
@@ -4560,7 +4560,7 @@ fi
         );
         assert_eq!(found.get("claudemounts").map(String::as_str), Some(""));
         assert_eq!(found.get("claudescan").map(String::as_str), Some("no"));
-        assert_eq!(ClaudeConfig::parse(&report, Some("/home/ags")), None);
+        assert_eq!(ClaudeConfig::parse(&report, Some("/home/hostuser")), None);
         assert!(
             answered.status.success(),
             "the probe exits 0 in every state"
