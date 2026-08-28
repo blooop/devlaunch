@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`claude` in a workspace starts logged in.** A workspace whose image carries no
+  Claude credential of its own used to open on a login prompt, every time, and the
+  login it asked for was one the host already had. `dl` now forwards the host's
+  access token as `CLAUDE_CODE_OAUTH_TOKEN`, read from `~/.claude/.credentials.json`
+  or from an inherited variable of the same name.
+
+  What it forwards and where is deliberately narrower than the `GH_TOKEN` flow
+  beside it. The refresh token stays on the host, so what travels is short-lived
+  and cannot be renewed from inside. It rides `--send-env` on the two session
+  transports `dl` itself opens, so only the variable's name ever reaches a command
+  line, nothing is written to the container's disk or to devpod's persisted
+  workspace config, and a `postCreateCommand` from a repo you did not write never
+  sees it.
+
+  It also declines rather than guesses. A probe reads `/proc/self/mountinfo` for
+  mounts at, under or above the container's Claude config directory, honouring
+  `CLAUDE_CONFIG_DIR`, and the token is forwarded only when that comes back an
+  affirmative "nothing of anyone else's is mounted here". A devcontainer that binds
+  its own `~/.claude` in, as this repo's does, is left alone, because Claude Code
+  prefers the variable to the file and forwarding would shadow a refreshable
+  credential with an expiring one. Every reading that is not affirmative, including
+  every way the probe can fail to tell, forwards nothing: the failure direction is
+  a login prompt, never a leaked or clobbered credential.
+
+  The answer is memoized per workspace and anchored to the container's result-file
+  mtime, so a rebuild re-asks. A workspace that predates this needs one
+  `dl <ws> up` before it picks the login up. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips
+  the whole thing, and
+  [docs/workspace-tools.md](docs/workspace-tools.md) has the trust model, including
+  who gets the token when the repo is a stranger's.
+
 ## [0.22.0] - 2026-08-28
 
 ### Added

@@ -169,7 +169,7 @@ impl Provision for ToolProvisioning {
         workspace_id: &str,
         occasion: PassOccasion,
         title: Option<&str>,
-    ) -> Result<(), DevpodMissing> {
+    ) -> Result<Option<provision::ClaudeConfig>, DevpodMissing> {
         // The events stream through the same sink as the launch's own notices —
         // one line on stderr at the moment core says it, which is Python's order:
         // a cold install streams hundreds of megabytes, and a warning about it is
@@ -195,9 +195,15 @@ impl Provision for ToolProvisioning {
         // would put a sentence on the terminal of every prewarm to announce that
         // nothing happened. `DEVLAUNCH_TIMING=1` is where a missing round trip is
         // worth reading, and it shows there as the trip that is not in the list.
-        provisioned.map(|outcome| {
-            let _: Provisioning = outcome;
+        // The Claude fact travels; every arm of `Provisioning` still says nothing.
+        provisioned.map(|pass| {
+            let _: Provisioning = pass.provisioning;
+            pass.claude()
         })
+    }
+
+    fn remembered_claude(&self, workspace_id: &str) -> Option<provision::ClaudeConfig> {
+        self.verdicts.remembered_claude(workspace_id)
     }
 }
 

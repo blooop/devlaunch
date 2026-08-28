@@ -669,6 +669,7 @@ and say so.";
 const ENVIRONMENT: &str = "Environment:
   DEVLAUNCH_TIMING=1|json            Write a timing summary to stderr
   DEVLAUNCH_NO_GH_TOKEN=1            Do not forward the host's gh login
+  DEVLAUNCH_NO_CLAUDE_TOKEN=1        Do not forward the host's Claude login
   DEVLAUNCH_DOTFILES_ON_ATTACH=1     Refresh dotfiles before every attach
   DEVLAUNCH_NO_TITLE=1               Do not name the terminal after the workspace";
 

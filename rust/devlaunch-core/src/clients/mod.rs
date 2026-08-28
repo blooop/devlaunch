@@ -1,3 +1,7 @@
+// Crate-private, like `docker` and unlike the rest: nothing outside core names
+// the Claude login, and what it produces reaches a caller as flags and an
+// environment through `flows::launch`.
+pub(crate) mod claude;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod devpod;
 // devpod-the-filesystem, where `devpod` above is devpod-the-command.

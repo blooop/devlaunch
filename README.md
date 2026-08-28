@@ -319,6 +319,13 @@ anything to its `devcontainer.json`.
   `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token`, whichever answers first, and is passed through a
   private file rather than a command line. Everything in the container can read it, including a
   `postCreateCommand` from a repo you did not write, so `DEVLAUNCH_NO_GH_TOKEN=1` skips it.
+- **Your Claude login.** `claude` starts in the container without asking you to log in again. The
+  host's access token is forwarded as `CLAUDE_CODE_OAUTH_TOKEN`, only into the sessions `dl` itself
+  opens, so a `postCreateCommand` from a repo you did not write never sees it. Nothing is written
+  to the container's disk. A repo whose own devcontainer bind-mounts `~/.claude` is detected and
+  left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
+  needs one `dl <workspace> up` before it picks the login up, and so does a workspace rebuilt by
+  a `devpod up` devlaunch did not run; workspaces created since do not.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
   its own copies in over the ssh channel it already holds, with no download. A failed install
   costs the workspace its tools, never its launch.
@@ -364,6 +371,7 @@ Images are yours: `docker system df` is what shows those.
 | Variable | Effect |
 |---|---|
 | `DEVLAUNCH_NO_GH_TOKEN=1` | Do not forward the host's GitHub login into workspaces |
+| `DEVLAUNCH_NO_CLAUDE_TOKEN=1` | Do not forward the host's Claude login into workspaces |
 | `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude`. The setup pass still names the container |
 | `DEVLAUNCH_ZELLIJ=1` | Install zellij, and create the session a command can open panes into. Off by default |
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace |

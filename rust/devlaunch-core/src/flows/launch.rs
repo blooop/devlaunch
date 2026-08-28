@@ -57,11 +57,12 @@
 //! *is* a string here is a remote payload — `bash -lc <quoted>` — because those
 //! bytes are a contract with a shell rather than prose for a person.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::clients::claude;
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun, Patience};
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
@@ -74,7 +75,7 @@ use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
 use crate::flows::listing::CommandContext;
-use crate::flows::provision::{DevpodMissing, PassOccasion, ZellijSwitch};
+use crate::flows::provision::{ClaudeConfig, DevpodMissing, PassOccasion, ZellijSwitch};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
 use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
@@ -162,6 +163,9 @@ pub(crate) const LAUNCH_LOCK_DIR: &str = "launch-locks";
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Host {
     pub(crate) gh: gh::HostEnv,
+    /// `DEVLAUNCH_NO_CLAUDE_TOKEN`, and any `CLAUDE_CODE_OAUTH_TOKEN` the host
+    /// already exported. A host value like [`Host::gh`], read the same way.
+    pub(crate) claude: claude::HostEnv,
     /// `DEVLAUNCH_DOTFILES_ON_ATTACH`.
     pub(crate) dotfiles_on_attach: Option<String>,
     /// `DEVLAUNCH_ZELLIJ`.
@@ -203,6 +207,7 @@ impl Host {
     pub fn from_process(cache_dir: impl Into<PathBuf>) -> Self {
         Self {
             gh: gh::HostEnv::from_process(),
+            claude: claude::HostEnv::from_process(),
             dotfiles_on_attach: crate::osext::env_str(DOTFILES_ON_ATTACH_VAR),
             zellij: crate::osext::env_str(ZELLIJ_VAR),
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
@@ -698,6 +703,39 @@ pub(crate) struct HostToken {
     asked: OnceCell<TokenLookup>,
 }
 
+/// What a provisioning pass saw of the container's Claude config directory, held
+/// where both ends of the launch can reach it.
+///
+/// A sibling of [`HostToken`] and for the same structural reason: the two ends
+/// never meet. Only a probe inside the container can read that container's mount
+/// table, so the pass is the only thing that can learn this; and the session that
+/// follows is the only thing that spends it. Between them sit `workspace_up` and
+/// every caller of it.
+///
+/// Deliberately *not* a field on [`Host`]. `Host` is a value -- `Clone`, `Eq`,
+/// `Default`, and shared across threads by tests that spawn a scope around it --
+/// and interior mutability in it would cost that type its `Sync`. This is an
+/// observation about one container, which is not a value the host has.
+///
+/// Empty until a pass answers. Empty is not [`ClaudeConfig::Ours`]: it forwards no
+/// login at all. See [`crate::clients::claude`] for why that is the safe direction.
+#[derive(Debug, Default)]
+pub(crate) struct ClaudeSeen(Cell<Option<ClaudeConfig>>);
+
+impl ClaudeSeen {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn set(&self, seen: Option<ClaudeConfig>) {
+        self.0.set(seen);
+    }
+
+    fn get(&self) -> Option<ClaudeConfig> {
+        self.0.get()
+    }
+}
+
 impl HostToken {
     pub fn new() -> Self {
         Self::default()
@@ -1054,13 +1092,34 @@ fn lock_reason(error: &LockError) -> String {
 /// operation — every implementation does the same thing with it, and one of them
 /// (a host-side verdict cache) is the only reason it is asked at all.
 pub trait Provision {
+    /// The pass, and what it saw of the container's Claude config directory.
+    ///
+    /// `Ok(None)` from a pass that could not tell — a trip that did not get
+    /// through, a report without the keys, a remembered verdict from before the
+    /// marker carried the fact. It is not a synonym for "nobody else owns it": the
+    /// caller forwards the host's Claude login only on `Ok(Some(Ours))`.
     fn provision_tools(
         &self,
         runner: &dyn Runner,
         workspace_id: &str,
         occasion: PassOccasion,
         title: Option<&str>,
-    ) -> Result<(), DevpodMissing>;
+    ) -> Result<Option<ClaudeConfig>, DevpodMissing>;
+
+    /// What the last pass saw of this workspace's Claude config directory, from the
+    /// host's own records and without a round trip.
+    ///
+    /// Asked on the one path that opens a session without provisioning anything:
+    /// attaching to a workspace that is already up and finished creating. That is
+    /// the common case, so answering `None` there would leave the credential working
+    /// only on the launch that created the workspace -- which is exactly the bug
+    /// this found.
+    ///
+    /// `None` by default, because an implementation with no host-side records has
+    /// nothing to remember and no login should be forwarded on a guess.
+    fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
+        None
+    }
 }
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
@@ -1080,8 +1139,8 @@ impl Provision for NoProvisioning {
         _workspace_id: &str,
         _occasion: PassOccasion,
         _title: Option<&str>,
-    ) -> Result<(), DevpodMissing> {
-        Ok(())
+    ) -> Result<Option<ClaudeConfig>, DevpodMissing> {
+        Ok(None)
     }
 }
 
@@ -1134,24 +1193,42 @@ impl UpOutcome {
 /// Charged to the `devpod-up` stage, as Python's `@timing.staged("devpod-up")`
 /// charges it, and failed only when devpod never ran: a devpod that answered with
 /// a refusal completed the stage.
+// Eight parameters, one over clippy's line, and the eighth is the reason: a pass
+// learns who owns the container's Claude config directory and the session that
+// follows spends it, so the slot has to travel with the launch. Bundling these into
+// a context struct would gather values with three different lifetimes and one
+// `&mut` for the sake of the count.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn workspace_up(
     context: &mut CommandContext<'_>,
     host: &Host,
     token: &HostToken,
+    claude_seen: &ClaudeSeen,
     provision: &dyn Provision,
     request: &UpRequest<'_>,
     title: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<UpOutcome, NotRun> {
     timing::stage_result(timing::Stage::DevpodUp, || {
-        up_under_stage(context, host, token, provision, request, title, notices)
+        up_under_stage(
+            context,
+            host,
+            token,
+            claude_seen,
+            provision,
+            request,
+            title,
+            notices,
+        )
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn up_under_stage(
     context: &mut CommandContext<'_>,
     host: &Host,
     token: &HostToken,
+    claude_seen: &ClaudeSeen,
     provision: &dyn Provision,
     request: &UpRequest<'_>,
     title: Option<&str>,
@@ -1207,9 +1284,10 @@ fn up_under_stage(
         // before devpod wrote that file: the stale result still matches, and the
         // hostname nobody set stays unset. Nothing the host can read tells that
         // apart from a container that never stopped.
-        provision
+        let seen = provision
             .provision_tools(context.runner(), identity, PassOccasion::TopUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
+        claude_seen.set(seen);
         return Ok(UpOutcome::SkippedSiblingWon);
     }
 
@@ -1250,9 +1328,10 @@ fn up_under_stage(
         // from the container's config — the hostname stage has to run again before
         // the session reads a prompt, whatever any remembered verdict says about
         // the tools.
-        provision
+        let seen = provision
             .provision_tools(context.runner(), identity, PassOccasion::AfterUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
+        claude_seen.set(seen);
     }
     drop(serialization);
     Ok(UpOutcome::Started)
@@ -1614,20 +1693,49 @@ pub(crate) struct SessionContext<'a> {
     pub(crate) runner: &'a dyn Runner,
     pub(crate) host: &'a Host,
     pub(crate) token: &'a HostToken,
+    pub(crate) claude_seen: &'a ClaudeSeen,
 }
 
 impl<'a> SessionContext<'a> {
-    pub fn new(runner: &'a dyn Runner, host: &'a Host, token: &'a HostToken) -> Self {
+    pub fn new(
+        runner: &'a dyn Runner,
+        host: &'a Host,
+        token: &'a HostToken,
+        claude_seen: &'a ClaudeSeen,
+    ) -> Self {
         Self {
             runner,
             host,
             token,
+            claude_seen,
         }
     }
 
     /// The host's token, asked for at most once across the whole launch.
     fn forwarded_token(&self, notices: &mut dyn Notices<LaunchNotice>) -> Option<&'a Token> {
         self.token.token(self.runner, &self.host.gh, notices)
+    }
+
+    /// The host's Claude login, if this container's config directory is its own.
+    ///
+    /// Resolved per session rather than once per launch, unlike
+    /// [`Self::forwarded_token`], and the difference is the cost: that one may spawn
+    /// `gh auth token`, this one reads a small file. Reading it again is what makes
+    /// a token refreshed on the host reach the next session without a relaunch.
+    ///
+    /// `Foreign` and `None` both forward nothing. `Foreign` is a repo's own
+    /// devcontainer having mounted its Claude config from somewhere, and forwarding
+    /// into that would override a credential that can refresh itself with one that
+    /// cannot -- Claude Code prefers the variable over the file. `None` is not
+    /// knowing, which gets the same answer for the same reason.
+    fn forwarded_claude(&self) -> Option<claude::Token> {
+        if self.claude_seen.get() != Some(ClaudeConfig::Ours) {
+            return None;
+        }
+        match claude::resolve_token(self.host.home.as_deref(), &self.host.claude) {
+            claude::TokenLookup::Found(token) => Some(token),
+            claude::TokenLookup::Missing(_) => None,
+        }
     }
 }
 
@@ -1705,7 +1813,10 @@ fn devpod_session(
         args.push("--command".to_owned());
         args.push(payload.as_str().to_owned());
     }
-    let forwarding = gh::ssh_forwarding(session.forwarded_token(notices));
+    let forwarding = claude::extend_ssh_forwarding(
+        gh::ssh_forwarding(session.forwarded_token(notices)),
+        session.forwarded_claude().as_ref(),
+    );
     args.extend(forwarding.args.iter().cloned());
 
     let call = Call::new(args).with_env(forwarding.env);
@@ -1743,7 +1854,10 @@ fn ssh_with_terminal(
     workdir: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
-    let forwarding = gh::openssh_forwarding(session.forwarded_token(notices));
+    let forwarding = claude::extend_openssh_forwarding(
+        gh::openssh_forwarding(session.forwarded_token(notices)),
+        session.forwarded_claude().as_ref(),
+    );
     let args = ssh::command_args(
         config,
         workspace_id,
@@ -2707,6 +2821,9 @@ pub struct Launch<'a, 'r, 'l> {
     /// stderr in production; core writes to nobody's stream.
     forward: &'a mut dyn FnMut(&str),
     token: HostToken,
+    /// What this launch's provisioning pass saw of the container's Claude config
+    /// directory. Written by the pass, read by the session it hands over to.
+    claude_seen: ClaudeSeen,
     /// Where this launch's notices go, as they happen. A `Vec` in a test that wants
     /// the sequence, the binary's printer in production.
     notices: &'a mut dyn Notices<LaunchNotice>,
@@ -2733,6 +2850,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             host,
             forward,
             token: HostToken::new(),
+            claude_seen: ClaudeSeen::new(),
             notices,
             recognised: None,
         }
@@ -3035,7 +3153,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             // The top-up, and the one this cache was built for: `dl <ws> up` is the
             // prewarm, run repeatedly against a workspace that is already up, and
             // the round trip it pays here is the whole of what it costs.
-            self.provision
+            let seen = self
+                .provision
                 .provision_tools(
                     self.context.runner(),
                     placement.workspace_id(),
@@ -3043,6 +3162,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                     self.container_title(placement.title()).as_deref(),
                 )
                 .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
+            self.claude_seen.set(seen);
             return Ok(Launched::AlreadyRunning);
         }
         if let Some(refused) = self.bring_up(&LaunchVerb::Up, devcontainer, placement)? {
@@ -3082,6 +3202,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 self.context,
                 self.host,
                 &self.token,
+                &self.claude_seen,
                 self.provision,
                 &request,
                 title.as_deref(),
@@ -3092,7 +3213,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 return Ok(Launched::Refused(LaunchRefusal::UpRefused { exit }));
             }
         }
-        let session = SessionContext::new(self.context.runner(), self.host, &self.token);
+        let session = SessionContext::new(
+            self.context.runner(),
+            self.host,
+            &self.token,
+            &self.claude_seen,
+        );
         let refreshed = dotfiles_update(
             &session,
             placement.workspace_id(),
@@ -3119,6 +3245,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.context,
             self.host,
             &self.token,
+            &self.claude_seen,
             self.provision,
             &request,
             title.as_deref(),
@@ -3146,8 +3273,32 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         placement: &Placement,
         command: Option<&str>,
     ) -> Result<Launched, LaunchAborted> {
+        // A warm attach runs no pass, so nothing has observed this container's Claude
+        // config directory during this launch. The host's own records stand in, and
+        // they are consulted only when the launch itself learned nothing: a pass that
+        // just ran is always the better answer.
+        //
+        // No records and no pass means no login forwarded, which is a real limit and
+        // the least bad of three. Paying a pass here to find out was tried: it puts
+        // two setup-stage warnings on the terminal of every first attach, on the
+        // hottest path dl has, and an aid test caught it. Forwarding anyway was the
+        // other option, and it would override a mounted credential that can refresh
+        // itself, on every warm attach, for as long as no pass ran.
+        //
+        // So a workspace created by this build carries an answer from the pass that
+        // created it and never reaches this at all. A workspace that predates it
+        // acquires one on its next `up`, `restart` or `recreate`.
+        if self.claude_seen.get().is_none() {
+            self.claude_seen
+                .set(self.provision.remembered_claude(placement.workspace_id()));
+        }
         let title = TerminalTitle::from_host(self.host, placement.title());
-        let context = SessionContext::new(self.context.runner(), self.host, &self.token);
+        let context = SessionContext::new(
+            self.context.runner(),
+            self.host,
+            &self.token,
+            &self.claude_seen,
+        );
         let session = attach_workspace(
             &context,
             placement.workspace_id(),
@@ -3482,6 +3633,13 @@ mod tests {
         /// A devpod that goes missing when the pass is asked for, which is the one
         /// thing a pass can answer.
         lost_devpod: bool,
+        /// What the pass reports having seen of the container's Claude config
+        /// directory. `None` by default, which is what every test that is not about
+        /// the Claude login wants: nothing forwarded.
+        claude_seen: Option<ClaudeConfig>,
+        /// What the host's records say about a workspace no pass ran for, which is
+        /// what `dl`'s real implementation reads out of its verdict cache.
+        claude_remembered: Option<ClaudeConfig>,
     }
 
     impl RecordingProvision {
@@ -3522,7 +3680,7 @@ mod tests {
             workspace_id: &str,
             occasion: PassOccasion,
             title: Option<&str>,
-        ) -> Result<(), DevpodMissing> {
+        ) -> Result<Option<ClaudeConfig>, DevpodMissing> {
             self.passes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -3530,7 +3688,11 @@ mod tests {
             if self.lost_devpod {
                 return Err(DevpodMissing);
             }
-            Ok(())
+            Ok(self.claude_seen)
+        }
+
+        fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
+            self.claude_remembered
         }
     }
 
@@ -3554,7 +3716,8 @@ mod tests {
         command: Option<&str>,
         notices: &mut Vec<LaunchNotice>,
     ) -> Result<Session, SessionRefused> {
-        let session = SessionContext::new(&scene.runner, &scene.host, token);
+        let claude_seen = ClaudeSeen::new();
+        let session = SessionContext::new(&scene.runner, &scene.host, token, &claude_seen);
         let title = TerminalTitle::from_host(&scene.host, workspace_id);
         attach_workspace(
             &session,
@@ -3748,6 +3911,7 @@ mod tests {
                     &mut context,
                     &scene.host,
                     &token,
+                    &ClaudeSeen::new(),
                     provision,
                     request,
                     None,
@@ -3998,6 +4162,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &NoProvisioning,
             &request,
             None,
@@ -4036,6 +4201,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &provision,
             &request,
             None,
@@ -4069,6 +4235,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &provision,
             &request,
             None,
@@ -4100,6 +4267,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &provision,
             &request,
             None,
@@ -4132,6 +4300,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &NoProvisioning,
             &request,
             None,
@@ -5014,6 +5183,141 @@ mod tests {
 
     /// One session over `scene`: what it ended as, what it reported, and what
     /// devpod said on its own stderr along the way.
+    /// A scratch home holding a Claude credential, and the `Host` that points at it.
+    fn with_claude_login(mut scene: Scene, token: &str) -> (Scene, tempfile::TempDir) {
+        let home = tempfile::tempdir().expect("a scratch home");
+        std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
+        std::fs::write(
+            home.path().join(".claude/.credentials.json"),
+            format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}"}}}}"#),
+        )
+        .expect("a credential");
+        scene.host.home = Some(home.path().to_path_buf());
+        (scene, home)
+    }
+
+    /// [`a_session`], with the Claude config ownership the pass would have observed.
+    fn a_session_seeing(
+        scene: &Scene,
+        command: Option<&str>,
+        seen: Option<ClaudeConfig>,
+    ) -> Vec<String> {
+        let token = HostToken::new();
+        let mut notices = no_notices();
+        let mut said = Vec::new();
+        let claude_seen = ClaudeSeen::new();
+        claude_seen.set(seen);
+        let context = SessionContext::new(&scene.runner, &scene.host, &token, &claude_seen);
+        let _ = workspace_ssh(
+            &context,
+            "myws",
+            command,
+            None,
+            &mut |line| said.push(line.to_owned()),
+            &mut notices,
+        );
+        scene
+            .runner
+            .calls_to("devpod")
+            .into_iter()
+            .find(|call| call.args().first().map(String::as_str) == Some("ssh"))
+            .map(|call| {
+                let mut argv = call.argv();
+                // The value, so a test can assert it is *not* in argv and *is* in the
+                // environment, without two helpers.
+                argv.push(format!(
+                    "env:{}",
+                    call.invocation()
+                        .env
+                        .entries
+                        .get(claude::TOKEN_VAR)
+                        .cloned()
+                        .unwrap_or_default()
+                ));
+                argv
+            })
+            .expect("a session")
+    }
+
+    #[test]
+    fn a_container_whose_claude_config_is_its_own_gets_the_hosts_login() {
+        // The reported bug, in one assertion: `dl kinisi-robotics/team-tracker` has no
+        // devcontainer, so nothing mounts ~/.claude, so nothing carried a credential
+        // and `claude` asked for a fresh login on every launch.
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
+        let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Ours));
+        assert!(argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
+        assert!(
+            argv.contains(&"env:not-a-real-token".to_owned()),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn the_value_never_reaches_argv() {
+        // The discipline this shares with the gh token: `ps` shows which variable is
+        // being sent and never what is in it.
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-secret-token");
+        let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Ours));
+        assert!(
+            !argv
+                .iter()
+                .filter(|arg| !arg.starts_with("env:"))
+                .any(|arg| arg.contains("secret")),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn a_container_that_mounted_the_hosts_claude_config_is_left_alone() {
+        // A repo whose own devcontainer bind-mounts ~/.claude has a credential that
+        // can refresh itself. Claude Code prefers the variable over the file, so
+        // forwarding here would *replace* that with a short-lived token -- worse than
+        // doing nothing, in the one case devlaunch has nothing to add.
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
+        let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Foreign));
+        assert!(!argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
+        assert!(argv.contains(&"env:".to_owned()), "{argv:?}");
+    }
+
+    #[test]
+    fn a_pass_that_learned_nothing_forwards_nothing() {
+        // `None` is not `Ours`. A probe that could not answer is not evidence that the
+        // directory is the container's.
+        let (scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
+        let argv = a_session_seeing(&scene, None, None);
+        assert!(!argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
+    }
+
+    #[test]
+    fn the_opt_out_reaches_a_workspace_with_no_login_rather_than_failing() {
+        // DEVLAUNCH_NO_CLAUDE_TOKEN=1 is a choice, and the session still opens.
+        let (mut scene, _home) =
+            with_claude_login(Scene::new().with_running("myws"), "not-a-real-token");
+        scene.host.claude = claude::HostEnv {
+            disable: Some("1".to_owned()),
+            ..claude::HostEnv::default()
+        };
+        let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Ours));
+        assert!(!argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
+    }
+
+    #[test]
+    fn a_host_that_never_logged_in_still_opens_the_session() {
+        // No credential file at all: the macOS case and the never-ran-claude case. The
+        // workspace opens, with no Claude login and no failure.
+        let mut scene = Scene::new().with_running("myws");
+        let home = tempfile::tempdir().expect("a scratch home");
+        scene.host.home = Some(home.path().to_path_buf());
+        let argv = a_session_seeing(&scene, None, Some(ClaudeConfig::Ours));
+        assert!(!argv.contains(&claude::TOKEN_VAR.to_owned()), "{argv:?}");
+        assert!(argv.contains(&"ssh".to_owned()), "{argv:?}");
+    }
+
     fn a_session(
         scene: &Scene,
         command: Option<&str>,
@@ -5025,7 +5329,8 @@ mod tests {
         let token = HostToken::new();
         let mut notices = no_notices();
         let mut said = Vec::new();
-        let context = SessionContext::new(&scene.runner, &scene.host, &token);
+        let claude_seen = ClaudeSeen::new();
+        let context = SessionContext::new(&scene.runner, &scene.host, &token, &claude_seen);
         let session = workspace_ssh(
             &context,
             "myws",
@@ -5090,7 +5395,8 @@ mod tests {
         ] {
             scene.runner.forget_calls();
 
-            let context = SessionContext::new(&scene.runner, &scene.host, &token);
+            let claude_seen = ClaudeSeen::new();
+            let context = SessionContext::new(&scene.runner, &scene.host, &token, &claude_seen);
             let _ = workspace_ssh(
                 &context,
                 "myws",
@@ -5276,6 +5582,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &NoProvisioning,
             &request,
             None,
@@ -5309,6 +5616,7 @@ mod tests {
             &mut context,
             &scene.host,
             &token,
+            &ClaudeSeen::new(),
             &NoProvisioning,
             &UpRequest::new(
                 "myws",
@@ -5434,6 +5742,7 @@ mod tests {
             &mut context,
             &logged_in.host,
             &token,
+            &ClaudeSeen::new(),
             &NoProvisioning,
             &UpRequest::new(
                 "myws",
@@ -6017,6 +6326,132 @@ mod tests {
             chatter: nowhere,
             said: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_warm_attach_forwards_the_claude_login_the_host_remembers() {
+        // The path that runs no pass at all: a workspace that is up and finished
+        // creating goes straight to a session. Nothing observes its config directory
+        // during that launch, so without the host's own records the credential worked
+        // only on the launch that *created* the workspace. Found by launching a real
+        // workspace twice, which is the only place it shows.
+        let workspace =
+            WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        let home = tempfile::tempdir().expect("a scratch home");
+        std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
+        std::fs::write(
+            home.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-warm-token"}}"#,
+        )
+        .expect("a credential");
+        scene.host.home = Some(home.path().to_path_buf());
+
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        parts.provision.claude_remembered = Some(ClaudeConfig::Ours);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "octocat/Hello-World@master",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+
+        let ssh = scene
+            .runner
+            .calls_to("devpod")
+            .into_iter()
+            .find(|call| call.args().first().map(String::as_str) == Some("ssh"))
+            .expect("a session");
+        assert!(
+            ssh.argv().contains(&claude::TOKEN_VAR.to_owned()),
+            "{ssh:?}"
+        );
+        assert_eq!(
+            ssh.invocation()
+                .env
+                .entries
+                .get(claude::TOKEN_VAR)
+                .map(String::as_str),
+            Some("not-a-real-warm-token")
+        );
+    }
+
+    #[test]
+    fn a_warm_attach_with_nothing_remembered_forwards_nothing_and_costs_nothing() {
+        // A workspace this build has never provisioned. No login is forwarded, and
+        // no round trip is spent finding out: the attach path stays exactly as
+        // cheap and as quiet as it was. Such a workspace acquires an answer on its
+        // next `up`, and a workspace created by this build has one from the start.
+        let workspace =
+            WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
+        let mut scene = Scene::new().with_running(&workspace.value());
+        let home = tempfile::tempdir().expect("a scratch home");
+        std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
+        std::fs::write(
+            home.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-warm-token"}}"#,
+        )
+        .expect("a credential");
+        scene.host.home = Some(home.path().to_path_buf());
+
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+        let _ = launch.run(
+            "octocat/Hello-World@master",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        let ssh = scene
+            .runner
+            .calls_to("devpod")
+            .into_iter()
+            .find(|call| call.args().first().map(String::as_str) == Some("ssh"))
+            .expect("a session");
+        assert!(
+            !ssh.argv().contains(&claude::TOKEN_VAR.to_owned()),
+            "{ssh:?}"
+        );
+        assert!(
+            parts
+                .provision
+                .passes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "a warm attach must not start paying for a round trip it never paid for"
+        );
     }
 
     #[test]
@@ -7324,6 +7759,7 @@ mod tests {
                 &mut context,
                 &scene.host,
                 &token,
+                &ClaudeSeen::new(),
                 &NoProvisioning,
                 &UpRequest::new(
                     "brand-new",
@@ -7390,6 +7826,7 @@ mod tests {
                 &mut context,
                 &scene.host,
                 &token,
+                &ClaudeSeen::new(),
                 &NoProvisioning,
                 &UpRequest::new(
                     "brand-new",
