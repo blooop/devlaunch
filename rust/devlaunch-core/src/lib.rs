@@ -141,7 +141,7 @@ pub mod api {
     pub use crate::flows::listing::{CommandContext, enriched_listing, json_document};
 
     // remove / stop: the two lifecycle verbs that take a workspace away.
-    pub use crate::flows::lifecycle::{Persistence, workspace_delete, workspace_stop};
+    pub use crate::flows::lifecycle::{workspace_delete, workspace_stop};
 
     // spec and branch helpers: parsing `owner/repo@branch` and friends, the
     // identity a safe name derives, and the `--devcontainer` reference.
