@@ -59,9 +59,18 @@
 ///   one unmatched push. A pop on an empty stack is defined as doing nothing, and
 ///   a terminal that does not know the protocol sees a CSI sequence with a
 ///   private-parameter byte and an unknown final byte, which every conformant
-///   parser swallows. Exactly one, because exactly one was stranded: popping
-///   further would unwind a push belonging to whatever was running *before*
-///   `dl`.
+///   parser swallows.
+///
+///   One pop per restore, which is **not** one pop per run: a launch reaps
+///   several of these children (`devpod up`, two `git lfs` fetches, then the
+///   session), so a run writes two to five of them. Only the first can do
+///   anything, because the stack is empty after it. The reason that is safe is
+///   not the arithmetic but the contract: a program that hands its terminal to a
+///   child is expected to pop its own flags first, or the child's keys reach it
+///   CSI-encoded and the child is already broken. So the entry standing when a
+///   child of `dl`'s is reaped is that child's, and nobody else's to lose. A
+///   caller that violates the contract is damaged by the first pop and no further
+///   by the rest, which is why counting them buys nothing.
 /// - `ESC [ ? 2004 l` — bracketed paste off, or a paste arrives wrapped in
 ///   `ESC [ 200 ~` markers that the shell prints instead of obeying.
 /// - `ESC [ ? 1000 l` … `ESC [ ? 1015 l` — the mouse tracking modes and the three
@@ -162,13 +171,14 @@ mod tests {
     /// The reported bug, named directly: without this pop, Ctrl-C reaches the
     /// shell as `ESC [ 99;5 u` instead of as the byte that raises SIGINT.
     #[test]
-    fn the_restore_pops_the_kitty_keyboard_stack_exactly_once() {
+    fn the_restore_carries_one_kitty_keyboard_pop() {
         assert!(RESTORE.contains("\x1b[<u"), "{RESTORE:?}");
         assert_eq!(
             RESTORE.matches("\x1b[<u").count(),
             1,
-            "one unmatched push is what a killed child leaves; a second pop would \
-             unwind whatever was running before dl: {RESTORE:?}"
+            "one unmatched push is what a killed child leaves, so one pop is what \
+             undoes it. This pins the string, not the run: the run writes one of \
+             these per reaped child. {RESTORE:?}"
         );
     }
 
