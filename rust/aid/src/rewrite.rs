@@ -22,6 +22,14 @@ struct Agent {
     /// Variables set for the agent's process and nothing else, sorted by name —
     /// Python sorts them, and the order is in the payload's bytes.
     env: &'static [(&'static str, &'static str)],
+    /// The flag this agent starts a remotely drivable session with, if it has one.
+    ///
+    /// `None` is the honest answer for codex and gemini: Remote Control is Claude
+    /// Code's feature and there is nothing to map it onto. Read as a capability
+    /// rather than hard-coded as `agent == "claude"` so the refusal below and the
+    /// command built here read the same table, and adding an agent that grows one
+    /// is a row rather than a search.
+    remote_control: Option<&'static str>,
 }
 
 /// The agent this build starts when nothing picks one.
@@ -83,6 +91,7 @@ const AGENTS: &[(&str, Agent)] = &[
                 ("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1"),
                 ("IS_SANDBOX", "1"),
             ],
+            remote_control: Some("--remote-control"),
         },
     ),
     (
@@ -91,6 +100,7 @@ const AGENTS: &[(&str, Agent)] = &[
             command: &["codex"],
             prompt_flags: &[],
             env: &[],
+            remote_control: None,
         },
     ),
     (
@@ -99,9 +109,17 @@ const AGENTS: &[(&str, Agent)] = &[
             command: &["gemini"],
             prompt_flags: &["--prompt-interactive"],
             env: &[],
+            remote_control: None,
         },
     ),
 ];
+
+/// aid's own flag for Claude Code's Remote Control, which is not dl's and must not
+/// reach it.
+///
+/// It has to be intercepted ahead of the "unknown leading flag goes to dl" rule for
+/// that reason alone: dl has never heard of it and would exit 2 on contact.
+pub(crate) const REMOTE_CONTROL_FLAG: &str = "--remote-control";
 
 /// `dl` options whose value is a separate argument.
 ///
@@ -159,7 +177,7 @@ pub(crate) fn agent_names() -> Vec<&'static str> {
 
 /// The aid command line could not be understood.
 ///
-/// Two arms, one per thing a person can get wrong. Python's `UsageError` carries the
+/// One arm per thing a person can get wrong. Python's `UsageError` carries the
 /// sentence; here the sentence is [`crate::render`]'s and this is what happened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UsageError {
@@ -169,6 +187,12 @@ pub(crate) enum UsageError {
     /// environment can reach this: a `--flag` that is not an agent's is passed
     /// through to dl, as any other unknown flag is.
     UnknownAgentInEnvironment { name: String },
+    /// `--remote-control` on a line that starts an agent with no Remote Control.
+    ///
+    /// Carries the agent so the sentence can name it, because the flag is not
+    /// always what chose it: `DEVLAUNCH_AID_AGENT=codex` reaches this with nothing
+    /// on the command line saying codex.
+    RemoteControlUnsupported { agent: String },
 }
 
 /// An aid command line, split into the pieces the dl one is built from.
@@ -200,7 +224,25 @@ pub(crate) struct AidArgs {
 pub(crate) enum Task {
     /// Start an agent, with this prompt. Empty is a session with no prompt rather
     /// than a prompt that is empty.
-    Agent { agent: String, prompt: String },
+    Agent {
+        agent: String,
+        prompt: String,
+        /// Whether the session is started with Claude Code's Remote Control on.
+        ///
+        /// A bool, and it lives here rather than on [`AidArgs`], because those two
+        /// choices are what keep the illegal states out. On the task, because a
+        /// [`Task::Retired`] line starts no agent at all, and a remote-control bool
+        /// beside it would be a flag on a session nobody opens. A bool rather than
+        /// a session name, because the name is not a second thing to decide: it is
+        /// always the spec the person typed, which [`AidArgs`] already holds, and
+        /// two fields that must agree are two fields that can disagree.
+        ///
+        /// `true` implies the agent has Remote Control: [`parse_aid_args`] refuses
+        /// the pairing outright ([`UsageError::RemoteControlUnsupported`]), so no
+        /// parsed line reaches [`build_agent_command`] asking codex for a feature
+        /// it has never had.
+        remote_control: bool,
+    },
     /// A line spelling a flag this build has retired ([`SUFFIX_RETIRED`]).
     ///
     /// Carries nothing: what it asks dl for is the *refusal*, which is dl's sentence
@@ -360,11 +402,21 @@ pub(crate) fn parse_aid_args(
     };
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
+    let mut remote_control = false;
     let mut at = 0;
     while at < line.len() {
         let word = line[at].as_str();
         if let Some(named) = agent_flag(word) {
             agent = named.to_owned();
+            at += 1;
+            continue;
+        }
+        // Ahead of the pass-through below, because dl has never heard of this one:
+        // left to fall through it would reach dl as an unknown option and exit 2.
+        // After the spec it is prompt text like any other word, which is the rule
+        // every flag on this line is read by.
+        if word == REMOTE_CONTROL_FLAG {
+            remote_control = true;
             at += 1;
             continue;
         }
@@ -387,6 +439,13 @@ pub(crate) fn parse_aid_args(
     let Some(spec) = spec else {
         return Err(UsageError::NoWorkspace);
     };
+    // Checked after the workspace, because a line missing both is missing a
+    // workspace first: that is the sentence which tells somebody what an aid line
+    // looks like. Checked before the task is built, so a `true` in
+    // `Task::Agent::remote_control` can only ever sit beside an agent that has it.
+    if remote_control && !starts_remote_control(&agent) {
+        return Err(UsageError::RemoteControlUnsupported { agent });
+    }
     let prompt = line[at.min(line.len())..].join(" ");
     let retired = names_a_retired_spelling(&trailing);
     Ok(AidArgs {
@@ -396,9 +455,25 @@ pub(crate) fn parse_aid_args(
         task: if retired {
             Task::Retired
         } else {
-            Task::Agent { agent, prompt }
+            Task::Agent {
+                agent,
+                prompt,
+                remote_control,
+            }
         },
     })
+}
+
+/// Whether this agent can be started with Remote Control on.
+///
+/// Read off the table's `remote_control` entry rather than compared against
+/// `"claude"`, so the one place that decides is the row. An agent no table entry
+/// knows cannot start it either, which is the answer a name the environment
+/// invented deserves.
+fn starts_remote_control(agent: &str) -> bool {
+    AGENTS
+        .iter()
+        .any(|(name, started)| *name == agent && started.remote_control.is_some())
 }
 
 /// Which agent `--gemini` and friends name.
@@ -418,11 +493,30 @@ fn agent_flag(word: &str) -> Option<&'static str> {
 ///
 /// `None` is an agent this build has no entry for, which only a caller inventing a
 /// name can produce — [`parse_aid_args`] answers with a name from the table.
-pub(crate) fn build_agent_command(agent: &str, prompt: &str) -> Option<String> {
+///
+/// `remote_control` is the session name to start Claude Code's Remote Control under,
+/// or `None` for the ordinary local session. A name rather than a bool because
+/// claude's `--remote-control [name]` takes an *optional* one, so a bare flag ahead
+/// of a prompt would eat the prompt as the session's name; passing the name always,
+/// `=`-joined into one argv word, is what makes that impossible. An agent whose table
+/// row has no Remote Control flag ignores the name rather than inventing one — a
+/// state [`parse_aid_args`] refuses before it can be built.
+pub(crate) fn build_agent_command(
+    agent: &str,
+    prompt: &str,
+    remote_control: Option<&str>,
+) -> Option<String> {
     let (_, started) = AGENTS.iter().find(|(name, _)| *name == agent)?;
     // No prompt to be interactive about: start the agent's plain session, without
     // the flags that only make sense alongside one.
     let mut words: Vec<&str> = started.command.to_vec();
+    let named_session = started
+        .remote_control
+        .zip(remote_control)
+        .map(|(flag, name)| format!("{flag}={name}"));
+    if let Some(named_session) = &named_session {
+        words.push(named_session.as_str());
+    }
     if !prompt.is_empty() {
         words.extend(started.prompt_flags.iter().copied());
         words.push(prompt);
@@ -460,9 +554,16 @@ pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
     // modifiers rather than as the workspace's name.
     args.extend(parsed.spec_options.iter().cloned());
     match &parsed.task {
-        Task::Agent { agent, prompt } => {
+        Task::Agent {
+            agent,
+            prompt,
+            remote_control,
+        } => {
             args.push("--".to_owned());
-            args.push(build_agent_command(agent, prompt)?);
+            // The session is named after the spec the person typed, so the list on
+            // claude.ai reads as the workspaces they opened.
+            let session = remote_control.then(|| parsed.spec.as_str());
+            args.push(build_agent_command(agent, prompt, session)?);
         }
         Task::Retired => {}
     }
@@ -491,6 +592,15 @@ mod tests {
         match &parsed.task {
             Task::Agent { prompt, .. } => prompt,
             Task::Retired => panic!("a retired-spelling line has no prompt"),
+        }
+    }
+
+    /// Whether the line asks for Remote Control. Panics on a retired-spelling line,
+    /// which starts no session to drive.
+    fn remote_control(parsed: &AidArgs) -> bool {
+        match &parsed.task {
+            Task::Agent { remote_control, .. } => *remote_control,
+            Task::Retired => panic!("a retired-spelling line starts no agent"),
         }
     }
 
@@ -675,14 +785,14 @@ mod tests {
         // --dangerously-skip-permissions under uid 0, and a devcontainer running as
         // root is ordinary.
         assert_eq!(
-            build_agent_command("claude", "fix the bug").as_deref(),
+            build_agent_command("claude", "fix the bug", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions 'fix the bug'"
             )
         );
         assert_eq!(
-            build_agent_command("claude", "").as_deref(),
+            build_agent_command("claude", "", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions"
@@ -693,7 +803,7 @@ mod tests {
     #[test]
     fn an_agent_that_needs_no_variable_gets_none() {
         for agent in ["codex", "gemini"] {
-            let command = build_agent_command(agent, "hi").expect("a known agent");
+            let command = build_agent_command(agent, "hi", None).expect("a known agent");
             assert!(!command.contains("IS_SANDBOX"), "{command}");
         }
     }
@@ -701,10 +811,13 @@ mod tests {
     #[test]
     fn gemini_gets_its_interactive_flag_only_beside_a_prompt() {
         assert_eq!(
-            build_agent_command("gemini", "hi").as_deref(),
+            build_agent_command("gemini", "hi", None).as_deref(),
             Some("gemini --prompt-interactive hi")
         );
-        assert_eq!(build_agent_command("gemini", "").as_deref(), Some("gemini"));
+        assert_eq!(
+            build_agent_command("gemini", "", None).as_deref(),
+            Some("gemini")
+        );
     }
 
     #[test]
@@ -712,14 +825,14 @@ mod tests {
         // Python's `shlex.quote` spelling, byte for byte: the payload travels in
         // argv, and a second command cannot be smuggled into it.
         assert_eq!(
-            build_agent_command("claude", "don't break \"this\"").as_deref(),
+            build_agent_command("claude", "don't break \"this\"", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions 'don'\"'\"'t break \"this\"'"
             )
         );
         assert_eq!(
-            build_agent_command("claude", "hi; rm -rf /").as_deref(),
+            build_agent_command("claude", "hi; rm -rf /", None).as_deref(),
             Some(
                 "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
              --dangerously-skip-permissions 'hi; rm -rf /'"
@@ -729,7 +842,7 @@ mod tests {
 
     #[test]
     fn an_agent_nothing_knows_has_no_command() {
-        assert_eq!(build_agent_command("clippy", "hi"), None);
+        assert_eq!(build_agent_command("clippy", "hi", None), None);
     }
 
     // ------------------------------------------- the dl command line
@@ -785,7 +898,7 @@ mod tests {
                 .expect("a usable command line");
 
             assert_eq!(chosen.agent(), Some(name));
-            assert!(build_agent_command(name, "hi").is_some(), "{name}");
+            assert!(build_agent_command(name, "hi", None).is_some(), "{name}");
         }
     }
 
@@ -932,6 +1045,157 @@ mod tests {
         assert!(help.contains("dl <workspace> rm"), "{help}");
     }
 
+    // ------------------------------------------------- remote control
+
+    #[test]
+    fn remote_control_is_aids_own_flag_and_never_reaches_dl() {
+        // dl has never heard of it, so falling through to the "unknown leading flag
+        // goes to dl" rule would exit 2 rather than start anything. It is read
+        // wherever the agent flags are read, and in either order beside them.
+        for argv in [
+            vec!["--remote-control", "owner/repo", "fix", "it"],
+            vec!["--remote-control", "--claude", "owner/repo", "fix", "it"],
+            vec!["--claude", "--remote-control", "owner/repo", "fix", "it"],
+        ] {
+            let chosen = parsed(&argv);
+
+            assert!(remote_control(&chosen), "{argv:?}");
+            assert!(chosen.dl_options.is_empty(), "{argv:?}");
+            assert_eq!(chosen.spec, "owner/repo", "{argv:?}");
+            assert_eq!(prompt(&chosen), "fix it", "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn remote_control_after_the_spec_is_prompt_text() {
+        // Everything after the spec is prompt, flags and all — the rule that lets a
+        // prompt go unquoted. This flag buys no exception to it: only `--rm` and the
+        // retired spellings are peeled off the end, and asking an agent about Remote
+        // Control is a thing somebody may well want to do.
+        let chosen = parsed(&["owner/repo", "explain", "--remote-control"]);
+
+        assert_eq!(prompt(&chosen), "explain --remote-control");
+        assert!(!remote_control(&chosen));
+        assert!(chosen.spec_options.is_empty());
+    }
+
+    #[test]
+    fn remote_control_with_no_workspace_is_still_no_workspace() {
+        // The missing workspace is the first thing wrong with the line, and its
+        // sentence is the one that says what an aid line looks like.
+        for argv in [
+            vec!["--remote-control"],
+            vec!["--remote-control", "--codex"],
+        ] {
+            assert_eq!(
+                parse_aid_args(&words(&argv), None),
+                Err(UsageError::NoWorkspace),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_control_names_the_session_after_the_workspace() {
+        // `--remote-control [name]` takes an *optional* name, so a bare flag ahead of
+        // a prompt would swallow the prompt as the session's name. The name is
+        // therefore always emitted, and `=`-joined so no following word can be read
+        // as it.
+        assert_eq!(
+            build_dl_args(&parsed(&[
+                "--remote-control",
+                "owner/repo@fix/x",
+                "fix",
+                "it"
+            ]))
+            .expect("a known agent"),
+            [
+                "owner/repo@fix/x",
+                "--",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions --remote-control=owner/repo@fix/x 'fix it'",
+            ]
+        );
+        // And with no prompt: the flag is not one of the ones that only make sense
+        // beside one, so it is there either way.
+        assert_eq!(
+            build_dl_args(&parsed(&["--remote-control", "owner/repo@fix/x"]))
+                .expect("a known agent"),
+            [
+                "owner/repo@fix/x",
+                "--",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions --remote-control=owner/repo@fix/x",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_name_that_needs_quoting_is_still_one_word() {
+        // The name travels through the same `shlex.quote` the prompt does, and the
+        // whole `--flag=<name>` is what gets quoted — a name broken across two words
+        // would leave claude reading the rest of the line as its own arguments.
+        assert_eq!(
+            build_agent_command("claude", "", Some("./my project")).as_deref(),
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions '--remote-control=./my project'"
+            )
+        );
+        assert_eq!(
+            build_agent_command("claude", "hi", Some("owner/repo@it's-mine")).as_deref(),
+            Some(
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions '--remote-control=owner/repo@it'\"'\"'s-mine' hi"
+            )
+        );
+    }
+
+    #[test]
+    fn an_agent_without_remote_control_is_refused_rather_than_started_without_it() {
+        // Silently dropping the flag would start a session nobody can reach from
+        // claude.ai, and passing it on would hand codex an argument it has no
+        // meaning for. Refusing names the problem while the line can still be
+        // retyped, and before a workspace is booted.
+        for flag in ["--codex", "--gemini"] {
+            let refused = parse_aid_args(&words(&[flag, "--remote-control", "owner/repo"]), None);
+
+            assert_eq!(
+                refused,
+                Err(UsageError::RemoteControlUnsupported {
+                    agent: flag.trim_start_matches('-').to_owned()
+                }),
+                "{flag}"
+            );
+        }
+        // And the agent the *environment* picked, which is the case with nothing on
+        // the command line naming an agent at all.
+        assert_eq!(
+            parse_aid_args(&words(&["--remote-control", "owner/repo"]), Some("codex")),
+            Err(UsageError::RemoteControlUnsupported {
+                agent: "codex".to_owned()
+            })
+        );
+        // A `--claude` after it still wins, so the refusal is about the agent the
+        // line settles on rather than the order the flags were typed in.
+        assert!(
+            parse_aid_args(
+                &words(&["--remote-control", "--claude", "owner/repo"]),
+                Some("codex")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_boot_line_carries_no_remote_control() {
+        // `build_boot_args` is dl options and `up`: it starts no agent, so there is
+        // no session for a name to belong to.
+        let chosen = parsed(&["--remote-control", "owner/repo@fix/x"]);
+
+        assert_eq!(build_boot_args(&chosen), ["owner/repo@fix/x", "up"]);
+    }
+
     // ------------------------------------------------ the interactive line
 
     #[test]
@@ -997,6 +1261,26 @@ mod tests {
                 "owner/repo",
                 "--",
                 "gemini --prompt-interactive 'explain this'"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_typed_prompt_lands_beside_remote_control_rather_than_instead_of_it() {
+        // The interactive path is where a `--remote-control` line most often goes:
+        // it is the promptless launch. The flag has to survive the editor, or the
+        // session that comes back is a local one nobody can pick up elsewhere.
+        let chosen =
+            parsed(&["--remote-control", "owner/repo@fix/x"]).with_prompt("fix the bug".to_owned());
+
+        assert!(remote_control(&chosen));
+        assert_eq!(
+            build_dl_args(&chosen).expect("an agent line"),
+            [
+                "owner/repo@fix/x",
+                "--",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude \
+                 --dangerously-skip-permissions --remote-control=owner/repo@fix/x 'fix the bug'",
             ]
         );
     }
