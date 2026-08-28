@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.21.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.22.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -177,7 +177,7 @@ checked out in the clone right now, spelled in full. Pick the row rather than co
 carries the real id underneath. Where two rows would read alike, both gain a fourth column
 holding their whole id, so that picking one cannot delete the other.
 
-For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `code`, `dotfiles`) TAB marks any
+For the verbs that finish on their own (`up`, `stop`, `kill`, `rm`, `rme`, `code`, `dotfiles`) TAB marks any
 number of rows and Enter applies the verb to each, and the line above the matches says so. The
 forms that end in a session (`dl`, `-- <command>`, `restart`, `recreate`, `reset`) take exactly
 one.
@@ -200,6 +200,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws> stop` | Stop it. Frees memory, keeps disk |
 | `dl <ws> kill` | Kill whatever is holding a workspace that will not answer |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
+| `dl <ws> rme` | The same delete, and then the shell: it closes the terminal it was typed in |
 | `dl <ws> code` | Open it in VS Code |
 | `dl <ws> restart` | Stop and start, no rebuild |
 | `dl <ws> recreate` | Recreate the container |
@@ -215,6 +216,12 @@ opens the selector.
 now; `dl <ws> --rm` deletes once the session ends, the way `docker run --rm` does. Both stop at
 work that exists nowhere else: a clone with uncommitted or unpushed changes is kept and named,
 and `dl <ws> rm --force` is how you override that.
+
+`rme` is neither of those. It deletes the workspace now, as `rm` does, and then hangs up the
+shell that asked, so the terminal tab you opened for that one workspace closes on its own
+instead of waiting out the delete and then wanting an `exit`. A delete that refused leaves the
+shell standing with the reason on screen. Which process it actually hangs up, what `--force`
+changes about that, and why `nohup` is refused are in [docs/cli.md](docs/cli.md).
 
 `kill` is the one to reach for when a workspace stops responding and `stop` hangs with it. It
 sweeps the host instead of asking devpod: it kills the host processes still holding the
@@ -246,7 +253,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.21.0
+dl 0.22.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -317,6 +324,13 @@ anything to its `devcontainer.json`.
   `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token`, whichever answers first, and is passed through a
   private file rather than a command line. Everything in the container can read it, including a
   `postCreateCommand` from a repo you did not write, so `DEVLAUNCH_NO_GH_TOKEN=1` skips it.
+- **Your Claude login.** `claude` starts in the container without asking you to log in again. The
+  host's access token is forwarded as `CLAUDE_CODE_OAUTH_TOKEN`, only into the sessions `dl` itself
+  opens, so a `postCreateCommand` from a repo you did not write never sees it. Nothing is written
+  to the container's disk. A repo whose own devcontainer bind-mounts `~/.claude` is detected and
+  left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
+  needs one `dl <workspace> up` before it picks the login up, and so does a workspace rebuilt by
+  a `devpod up` devlaunch did not run; workspaces created since do not.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
   its own copies in over the ssh channel it already holds, with no download. A failed install
   costs the workspace its tools, never its launch.
@@ -362,6 +376,7 @@ Images are yours: `docker system df` is what shows those.
 | Variable | Effect |
 |---|---|
 | `DEVLAUNCH_NO_GH_TOKEN=1` | Do not forward the host's GitHub login into workspaces |
+| `DEVLAUNCH_NO_CLAUDE_TOKEN=1` | Do not forward the host's Claude login into workspaces |
 | `DEVLAUNCH_NO_TOOLS=1` | Do not install `gh` or `claude`. The setup pass still names the container |
 | `DEVLAUNCH_ZELLIJ=1` | Install zellij, and create the session a command can open panes into. Off by default |
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace |

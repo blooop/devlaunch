@@ -55,6 +55,129 @@ that is *already running* skips that step, and the token it was given at startup
 stays in place, including one it was given before you set
 `DEVLAUNCH_NO_GH_TOKEN`. Run `dl <workspace> restart` to replace it.
 
+## Claude authentication
+
+`claude` starts in every workspace `dl` opens without asking for a login. The
+host's access token is read from `~/.claude/.credentials.json` and forwarded as
+`CLAUDE_CODE_OAUTH_TOKEN`. Only the variable's name reaches a command line, which
+is the discipline the GitHub token keeps too, by a different route: that one is
+staged in a private file because `devpod up` needs it, and this one rides
+`--send-env` on the session, so the value travels in the environment and no file
+is written at either end.
+
+`dl` launches arbitrary repos, so this cannot depend on the image and no repo has
+to add anything to its `devcontainer.json`. It used to depend on exactly that. A
+repo whose own devcontainer bind-mounts `~/.claude` had a working `claude` and a
+working status line; a repo with no `.devcontainer/` at all had neither, and the
+reported symptom was a blank status bar in a workspace where `claude-statusline`
+was installed and the `settings.json` naming it had never been applied.
+
+### A variable, not the credential file
+
+Claude Code authenticates from `CLAUDE_CODE_OAUTH_TOKEN` alone, with an otherwise
+empty `$HOME`. Writing `~/.claude/.credentials.json` into the container would work
+too, and it is the worse trade twice over. It leaves a secret on the container's
+disk. And that file carries the *refresh* token as well as the access token, so a
+container that refreshed it could rotate the host's own login away. A variable
+carries one short-lived access token and nothing else.
+
+The cost is that the access token is short-lived, hours rather than days, and a
+variable cannot be refreshed in place. This is the same caveat the GitHub token
+has, for the same reason: see "When the token changes" above.
+
+### Who gets the Claude token
+
+Fewer things than get the GitHub one, deliberately. The GitHub token goes into
+devpod's workspace environment at `up`, which is what makes it available to a
+repo's `postCreateCommand`. This one does not. It rides `--send-env` on the
+sessions `dl` itself opens, so `dl someone/repo` does not run a stranger's
+`postCreateCommand` with your Claude login in reach, and nothing is left behind in
+devpod's workspace configuration.
+
+It is still a wider trust boundary than not forwarding it. Everything running in
+the session can read the variable, and a Claude login is not scoped the way a
+GitHub token is. Skip it for a repo you have not read:
+
+```bash
+DEVLAUNCH_NO_CLAUDE_TOKEN=1 dl someone/repo
+```
+
+A session `dl` did not open does not get it: `devpod ssh` by hand, or the VS Code
+window `dl <workspace> code` hands over to. Widening it to reach those would mean
+widening it to reach `postCreateCommand` too.
+
+| Variable | Description |
+|----------|-------------|
+| `DEVLAUNCH_NO_CLAUDE_TOKEN=1` | Do not forward the host's Claude login into workspaces |
+
+### The repo that arranged its own
+
+Some devcontainers mount `~/.claude` from the host themselves. devlaunch's own is
+one of them. Forwarding into those would make things worse rather than better:
+Claude Code prefers the variable over the file, so a mounted credential that can
+refresh itself would be replaced by one that cannot.
+
+So the setup pass asks. Its probe reports where the container's Claude config
+directory resolved to, what `$HOME` resolved to, whether the mount table could be
+read at all, and the source subpath of every mount touching that directory. The
+host reads those and decides, in one place, exactly as it does for "is this a real
+`claude`".
+
+The rule needs both homes, and only the host has the second one. A mount's root is
+a path in the namespace it came *from*, so a bind of the host's `~/.claude` reports
+the host's own path. Compared against the container's `$HOME` alone that reads as
+the container's own the moment the two spell the same, which `remoteUser` set to
+your username does, and so does a container running as root on a host that is. So
+a root convicts if it falls outside the container's home or inside the host's.
+
+The scan reads `/proc/self/mountinfo` rather than asking `findmnt` about the
+directory, and it looks both ways. `findmnt --target` answers for the nearest mount
+at or *above* a path, and one shape that matters sits below one: before it switched
+to mounting the directory, devlaunch's own claude-code feature mounted nine
+individual paths underneath `~/.claude`, `settings.json` read only and
+`.credentials.json` read write, and a question about the directory reports nothing
+mounted there. The other direction matters just as much. A devcontainer that binds
+the host's whole `$HOME` onto the container's home puts nothing under `~/.claude`
+and owns every byte in it. So the scan matches a mount point that is the directory,
+one under it, and one above it.
+
+Two answers are spared, because neither is evidence of another home: a mount whose
+root is `/`, which is the whole of a separate filesystem and so a volume or a
+tmpfs, and a root that is not an absolute path.
+
+A pass that cannot find out forwards nothing, and it says which it was. An image
+without `awk`, a kernel without `mountinfo`, a `$HOME` that will not resolve: the
+probe reports the scan as not having run, because an empty list of mounts otherwise
+reads the same from a container with none and from one nobody looked at. Neither is
+evidence that the directory belongs to the container, and the cost of being wrong
+that way is a login prompt rather than a hijacked credential.
+
+### Workspaces that predate this
+
+The answer is recorded on the host, beside the verdict a top up trusts, so
+skipping the round trip does not skip the decision. It is stamped with the
+container it was true of, the way that verdict is, so a `devpod up` devlaunch did
+not run leaves an answer that no longer applies and reads as no answer at all.
+
+A workspace that is already up and finished creating runs no pass at all, though,
+and one created before this existed has no recorded answer. Those get no Claude
+login, and they pick one up on their next `up`, `restart` or `recreate`:
+
+```bash
+dl <workspace> up
+```
+
+Once, per workspace. A workspace created by a build that has this carries an
+answer from the pass that created it and never needs the step. The same step is
+what re-answers for a container somebody else's `devpod up` rebuilt, VS Code's or a
+hand typed one, since nothing about that touches the host's records.
+
+Paying for a pass on the attach instead was tried and reverted. It puts two
+setup-stage warnings on the terminal of every first attach, on the hottest path
+`dl` has. Forwarding anyway when nothing is known was the other candidate, and it
+would override a mounted credential that can refresh itself, on every warm attach,
+for as long as no pass had run.
+
 ## Tools in every workspace
 
 `gh` and `claude` are available in every workspace `dl` opens, in every kind of

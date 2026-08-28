@@ -28,6 +28,7 @@ use devlaunch_core::runner::{Exit, Runner};
 
 use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
 use crate::cold::ColdPath;
+use crate::hangup;
 use crate::launch::{self, Family, Reached};
 use crate::render;
 use crate::select;
@@ -110,30 +111,42 @@ pub(crate) fn dispatch(
         Command::Prune { yes, force } => render_prune(runner, &mut context, yes, force),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
-        Command::Select { verb, devcontainer } => render_select(
-            runner,
-            &mut context,
-            cache,
-            refresh,
-            verb,
-            devcontainer.as_ref(),
-        ),
+        // The two arms that name a verb are the two that can be `rme`, and the
+        // hangup is asked *here* rather than inside either of them: a picked batch
+        // is one command over several workspaces, and the shell it was typed in is
+        // hung up once, when the last of them has gone. See [`crate::hangup`].
+        Command::Select { verb, devcontainer } => {
+            let after = verb.after_removal();
+            let ending = render_select(
+                runner,
+                &mut context,
+                cache,
+                refresh,
+                verb,
+                devcontainer.as_ref(),
+            );
+            hangup::after_the_command(after, ending)
+        }
         Command::Workspace {
             target,
             verb,
             devcontainer,
-        } => render_workspace(
-            runner,
-            &mut context,
-            cache,
-            refresh,
-            &target,
-            verb,
-            devcontainer.as_ref(),
-            // A target named on the command line is resolved by the launch itself;
-            // only the picker arrives knowing more than it says.
-            None,
-        ),
+        } => {
+            let after = verb.after_removal();
+            let ending = render_workspace(
+                runner,
+                &mut context,
+                cache,
+                refresh,
+                &target,
+                verb,
+                devcontainer.as_ref(),
+                // A target named on the command line is resolved by the launch
+                // itself; only the picker arrives knowing more than it says.
+                None,
+            );
+            hangup::after_the_command(after, ending)
+        }
     }
 }
 
@@ -518,24 +531,29 @@ fn render_workspace<'r>(
     recognised: Option<WorkspaceId>,
 ) -> Ending {
     let mut cold = ColdPath::new(runner);
+    // The word the line used, asked of the verb rather than written out per arm.
+    // Two of the three arms are one word each and could be spelled here, but
+    // `Family::Remove` covers both `rm` and `rme`, and a notice that quotes a word
+    // the line does not carry explains nothing about the line.
+    let word = verb.word();
     match launch::family(&verb) {
         Family::Stop => {
-            devcontainer_ignored(devcontainer.is_some(), "stop");
+            devcontainer_ignored(devcontainer.is_some(), word);
             render_stop(runner, context, refresh, &mut cold, target)
         }
         Family::Kill => {
-            devcontainer_ignored(devcontainer.is_some(), "kill");
+            devcontainer_ignored(devcontainer.is_some(), word);
             render_kill(runner, context, &mut cold, target)
         }
         Family::Remove { force } => {
-            devcontainer_ignored(devcontainer.is_some(), "rm");
+            devcontainer_ignored(devcontainer.is_some(), word);
             let insistence = if force {
                 Insistence::Insisted
             } else {
                 Insistence::NotInsisted
             };
             render_remove(
-                runner, context, cache, refresh, &mut cold, target, insistence,
+                runner, context, cache, refresh, &mut cold, target, insistence, word,
             )
         }
         // Launch: clone, `devpod up`, fast attach, `-- <cmd>` through
@@ -633,6 +651,11 @@ fn after_the_session<'r>(
         cold,
         target,
         Insistence::NotInsisted,
+        // `rm`, not the flag: this removal is `--rm`'s, and the way past a guard
+        // that refuses it is the verb — the flag deliberately does not take
+        // `--force` (see the grammar's `RmForced`), so the line it offers must be
+        // one that does.
+        "rm",
     );
     ending
 }
@@ -747,6 +770,7 @@ fn render_remove<'r>(
     cold: &mut ColdPath<'r>,
     target: &str,
     insistence: Insistence,
+    word: &str,
 ) -> Ending {
     let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
         Err(refused) => return refuse_target(&refused),
@@ -780,7 +804,7 @@ fn render_remove<'r>(
         if let Guarded::Refused(refusal) =
             lifecycle::guard_removal(&workspace_id, unsaved, insistence)
         {
-            eprintln!("{}", render::removal_refusal(&refusal, target));
+            eprintln!("{}", render::removal_refusal(&refusal, target, word));
             return Ending::Refused;
         }
     }

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`claude` in a workspace starts logged in.** A workspace whose image carries no
+  Claude credential of its own used to open on a login prompt, every time, and the
+  login it asked for was one the host already had. `dl` now forwards the host's
+  access token as `CLAUDE_CODE_OAUTH_TOKEN`, read from `~/.claude/.credentials.json`
+  or from an inherited variable of the same name.
+
+  What it forwards and where is deliberately narrower than the `GH_TOKEN` flow
+  beside it. The refresh token stays on the host, so what travels is short-lived
+  and cannot be renewed from inside. It rides `--send-env` on the two session
+  transports `dl` itself opens, so only the variable's name ever reaches a command
+  line, nothing is written to the container's disk or to devpod's persisted
+  workspace config, and a `postCreateCommand` from a repo you did not write never
+  sees it.
+
+  It also declines rather than guesses. A probe reads `/proc/self/mountinfo` for
+  mounts at, under or above the container's Claude config directory, honouring
+  `CLAUDE_CONFIG_DIR`, and the token is forwarded only when that comes back an
+  affirmative "nothing of anyone else's is mounted here". A devcontainer that binds
+  its own `~/.claude` in, as this repo's does, is left alone, because Claude Code
+  prefers the variable to the file and forwarding would shadow a refreshable
+  credential with an expiring one. Every reading that is not affirmative, including
+  every way the probe can fail to tell, forwards nothing: the failure direction is
+  a login prompt, never a leaked or clobbered credential.
+
+  The answer is memoized per workspace and anchored to the container's result-file
+  mtime, so a rebuild re-asks. A workspace that predates this needs one
+  `dl <ws> up` before it picks the login up. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips
+  the whole thing, and
+  [docs/workspace-tools.md](docs/workspace-tools.md) has the trust model, including
+  who gets the token when the repo is a stranger's.
+
 ### Changed
 
 - **Remote Control is on by default, so every `aid` claude session is one you can
@@ -42,6 +75,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default that refused would have refused every launch of them. Typing
   `--remote-control` beside either still exits 1 naming the agent, because that
   is somebody asking for a thing by name.
+
+## [0.22.0] - 2026-08-28
+
+### Added
+
+- **`dl <ws> rme`: the delete, and then the shell.** A workspace tab reaches the
+  same end every time. You are done with the branch, you type `dl <ws> rm`, you
+  wait out a container teardown, and then you type `exit` to close a tab that has
+  had nothing left to do since the delete started. `rme` is that pair as one word:
+  the `rm` verb, and on a removal that worked a SIGHUP to whatever started `dl`,
+  which ends an interactive shell and takes its terminal with it.
+
+  ```
+  $ dl blooop/devlaunch@fix/x rme
+  Removing workspace devlaunch-fix-x-1a2b...
+  Removed workspace clone: ~/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-fix-x-1a2b
+  Removed local clone for devlaunch-fix-x-1a2b
+  Removed workspace devlaunch-fix-x-1a2b.
+  Hanging up the shell dl was called from (pid 48213).
+  ```
+
+  The removal is `rm`'s, guard and `--force` and exit codes included, and the
+  hangup is reached only if it came back clean. `--force` is the exception, since
+  it asks for absence rather than a removal: a forced `rme` of a workspace that
+  was never there succeeds and still closes the shell, which is `rm --force`'s
+  existing hazard with the receipt's reader removed. That is the whole of the
+  ordering: every way a delete can stop writes a sentence to stderr, and closing
+  the window it was written to is a guaranteed way for nobody to read it. A guard
+  that refused, or a devpod that would not finish, leaves the shell standing with
+  the reason on screen and the workspace still there to retry. `dl rme` with five
+  rows marked removes all five and hangs the shell up once, when the last of them
+  has gone.
+
+  What it hangs up is `dl`'s parent process, because there is no way to ask
+  whether a parent owns a terminal, and which process that is depends on the shell
+  rather than on the line: a subshell running one command is usually replaced by
+  it, so `$(dl <ws> rme)` closes your terminal too, while the same line with a
+  redirection leaves a subshell to take the signal. So `dl` names the pid instead
+  of guessing. `nohup dl <ws> rme` is refused outright and says so, because
+  disarming SIGHUP is how a run outlives its terminal in the first place and `dl`
+  already honours that for its own handlers. A shell hung up this way takes its
+  background jobs with it, which is what a shell does on SIGHUP, so `rme` is for
+  the tab that has nothing left in it and `rm` for the one you are still working
+  in.
+
+  Neither of the two spellings already there: `rm` deletes now, `--rm` deletes
+  when a session ends, and this one deletes now and then ends the *shell*.
+  [docs/cli.md](docs/cli.md) has the contract.
 
 ## [0.21.0] - 2026-08-28
 

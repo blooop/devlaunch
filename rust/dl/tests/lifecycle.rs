@@ -81,8 +81,11 @@ impl World {
         use std::io::Write as _;
         use std::process::Stdio;
 
+        deaf_to_sighup();
         let root = self.root.display().to_string();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_dl"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
+        child_hears_sighup(&mut command);
+        let mut child = command
             .args(args)
             .env_clear()
             .keeping_coverage()
@@ -113,6 +116,84 @@ impl World {
             .expect("stdin is writable");
         let output = child.wait_with_output().expect("dl finishes");
         Run::of(&output, &self.root)
+    }
+
+    /// Run `dl` from inside a shell, and report what became of *the shell*.
+    ///
+    /// **The one thing `dl()` above cannot be asked, and it is a safety property
+    /// rather than an inconvenience.** `dl <ws> rme` sends SIGHUP to its parent
+    /// process, and the parent of a child this harness spawns is the test binary:
+    /// judging `rme` through `dl()` would hang up `cargo test` itself, taking every
+    /// other test in the run with it. So a shell is put in between to be the thing
+    /// that dies, and it is the only correct place to judge this verb from anyway —
+    /// what `rme` claims is about a shell, and nothing else in the suite has one.
+    ///
+    /// The shell prints its own pid **before** it runs `dl`, which does two jobs.
+    /// It is the value `dl`'s own line is checked against, so a test can say the
+    /// signal went to the shell and not to something else. And it forces the fork:
+    /// `sh -c` with a single simple command `exec`s it, which would make `dl`'s
+    /// parent the test binary after all — a compound list whose first word has
+    /// already run cannot.
+    ///
+    /// [`Hung`] is what comes back, because a shell that was hung up has no exit
+    /// code to report: it was killed by a signal, and the line it would have
+    /// printed afterwards is the evidence that it never got that far.
+    fn dl_inside_a_shell(&self, args: &[&str]) -> Hung {
+        self.shell_run("", args)
+    }
+
+    /// `prelude` runs in the shell before `dl` does, and is where a test disarms a
+    /// signal or sets a variable the run is about to inherit.
+    fn shell_run(&self, prelude: &str, args: &[&str]) -> Hung {
+        use std::process::Stdio;
+
+        let root = self.root.display().to_string();
+        let quoted: Vec<String> = args.iter().map(|word| format!("\"{word}\"")).collect();
+        let script = format!(
+            // `still-here` is only reached by a shell the signal did not kill, and
+            // it carries dl's exit code so the ordinary endings are readable too.
+            "echo \"shell:$$\"; {prelude}\"$DL\" {}; echo \"still-here:$?\"",
+            quoted.join(" ")
+        );
+        deaf_to_sighup();
+        let mut command = Command::new("/bin/sh");
+        child_hears_sighup(&mut command);
+        let output = command
+            .arg("-c")
+            .arg(script)
+            .env_clear()
+            .keeping_coverage()
+            .env("DL", env!("CARGO_BIN_EXE_dl"))
+            .env("PATH", format!("{root}/bin:/usr/bin:/bin"))
+            .env("HOME", format!("{root}/home"))
+            .env("XDG_CACHE_HOME", format!("{root}/cache"))
+            .env("XDG_CONFIG_HOME", format!("{root}/config"))
+            .env("DEVPOD_HOME", format!("{root}/devpod"))
+            .env("DEVPOD_SHIM_STATE", format!("{root}/shim-state.json"))
+            .env("DEVPOD_SHIM_LOG", format!("{root}/shim-log.jsonl"))
+            .env("DEVPOD_SHIM_CONFIG", format!("{root}/shim-config.json"))
+            .env("GIT_SSH_COMMAND", "false")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("/bin/sh runs");
+        Hung::of(&output, &self.root)
+    }
+
+    /// The same, from a shell that has already disarmed SIGHUP.
+    ///
+    /// `trap "" HUP` sets `SIG_IGN`, and a `SIG_IGN` survives `exec` and is
+    /// inherited by every child — which is precisely what `nohup` does and the only
+    /// thing `dl` can observe about it. So this is a faithful stand-in for
+    /// `nohup dl <ws> rme` in the one respect that decides the behaviour, and a
+    /// better test than `nohup` itself would be: under real `nohup` the shell also
+    /// ignores the signal, so it would survive whether or not `dl` sent one, and
+    /// the assertion would pass on the bug.
+    fn dl_inside_a_shell_that_ignores_sighup(&self, args: &[&str]) -> Hung {
+        self.shell_run("trap \"\" HUP; ", args)
     }
 
     /// Make the fake devpod answer a call from the response table instead of from
@@ -241,6 +322,49 @@ impl World {
     }
 }
 
+/// Make this test binary deaf to SIGHUP, and hand every child the default back.
+///
+/// `rme` signals `dl`'s parent, and the parent of a child [`World::answering`]
+/// spawns is the test binary. So a test that runs a *successful* `rme` through the
+/// plain runner kills the entire run — `signal: 1, SIGHUP` out of the harness, with
+/// no failing test to point at. That is a one-word mistake to make, because the
+/// refusal cases genuinely do belong on the plain runner: `rme` there is correct
+/// right up until the removal succeeds.
+///
+/// Both halves are needed and the second is the easy one to miss. A `SIG_IGN` is
+/// inherited across `fork` *and* `exec`, so ignoring it here alone would hand every
+/// spawned `dl` an already-disarmed SIGHUP — which `dl` now reads as `nohup` and
+/// declines to hang anything up for, quietly turning every assertion about the
+/// hangup into a test of the declining path. `pre_exec` puts `SIG_DFL` back in the
+/// child, which is what a shell in a terminal would have given it.
+///
+/// Nothing is lost by ignoring it: every claim about the hangup is asserted on the
+/// wrapper shell in [`World::dl_inside_a_shell`], never on this process.
+fn deaf_to_sighup() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: setting a disposition on this process. Called before the first
+        // child is spawned, and `SIG_IGN` needs no handler to be safe.
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
+    });
+}
+
+/// Undo [`deaf_to_sighup`] in the child, between `fork` and `exec`.
+fn child_hears_sighup(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+
+    // SAFETY: `signal` is async-signal-safe and allocates nothing, which is the bar
+    // for a `pre_exec` closure.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+}
+
 /// A scratch directory whose path is always the same *length*.
 ///
 /// `read_side.rs` needs this because the `--ls` table's column widths are measured
@@ -342,6 +466,85 @@ fn without_sizes(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// One `dl` run and the shell it was run from, as [`World::dl_inside_a_shell`]
+/// leaves them.
+///
+/// The two streams are the shell's, which is to say both processes': `dl` inherits
+/// them, so its own lines and the shell's are in one order here, the order they
+/// were written in.
+struct Hung {
+    /// The shell's pid, from the line it printed before it forked.
+    shell: i32,
+    /// The signal that killed the shell, if one did.
+    killed_by: Option<i32>,
+    /// `dl`'s exit code, from the line the shell prints afterwards. `None` when the
+    /// shell never got that far.
+    dl_exit: Option<i32>,
+    out: String,
+    err: String,
+}
+
+impl Hung {
+    fn of(output: &Output, root: &Path) -> Self {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let Run { out, err, .. } = Run::of(output, root);
+        let shell = out
+            .lines()
+            .find_map(|line| line.strip_prefix("shell:"))
+            .and_then(|pid| pid.parse().ok())
+            .unwrap_or_else(|| panic!("the shell printed its own pid; it printed {out:?}"));
+        let dl_exit = out
+            .lines()
+            .find_map(|line| line.strip_prefix("still-here:"))
+            .and_then(|code| code.parse().ok());
+        Hung {
+            shell,
+            killed_by: output.status.signal(),
+            dl_exit,
+            out,
+            err,
+        }
+    }
+
+    /// The shell was hung up: killed by SIGHUP, having never reached the line after
+    /// the `dl` it was running.
+    ///
+    /// Both halves, because either alone would pass on the wrong thing. A SIGHUP
+    /// with the line printed would be a shell that died later, of something else;
+    /// the line missing with no signal would be a shell that died of anything at
+    /// all.
+    fn was_hung_up(&self) {
+        assert_eq!(
+            self.killed_by,
+            Some(libc::SIGHUP),
+            "the shell was not killed by SIGHUP; it said {:?} / {:?}",
+            self.out,
+            self.err
+        );
+        assert_eq!(
+            self.dl_exit, None,
+            "the shell ran the command after dl, so it was not hung up: {:?}",
+            self.out
+        );
+    }
+
+    /// The shell survived, and this is what `dl` exited with.
+    fn survived_with(&self, code: i32) {
+        assert_eq!(
+            self.killed_by, None,
+            "the shell was killed by a signal: {:?} / {:?}",
+            self.out, self.err
+        );
+        assert_eq!(
+            self.dl_exit,
+            Some(code),
+            "dl's exit code, as the surviving shell read it: {:?}",
+            self.out
+        );
+    }
 }
 
 // ===========================================================================
@@ -795,6 +998,281 @@ fn a_delete_devpod_refuses_keeps_the_clone_and_hands_the_status_back() {
     assert!(
         world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
         "the clone was removed even though the workspace is still there"
+    );
+}
+
+// ===========================================================================
+// dl <ws> rme
+// ===========================================================================
+
+#[test]
+fn rme_removes_the_workspace_and_hangs_up_the_shell_that_asked() {
+    // The whole verb, end to end: the same delete `rm` does — the same devpod
+    // calls, the same clone gone, the same lines — and then the shell it was typed
+    // in, killed by the signal `dl` sent it. Judged from inside a shell for the
+    // reason `dl_inside_a_shell` gives: there is nowhere else the claim exists.
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+    assert!(world.exists(clone), "the fixture's clean clone");
+
+    let hung = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rme"]);
+
+    hung.was_hung_up();
+    // The pid is the shell's own, which is the whole claim of that line: which
+    // process `dl` signals depends on the shell rather than on the line, so a
+    // reader can only find out from the pid, and it has to be the one really
+    // signalled.
+    assert!(
+        hung.err.contains(&format!(
+            "Hanging up the shell dl was called from (pid {}).",
+            hung.shell
+        )),
+        "{}",
+        hung.err
+    );
+    // And the removal happened before any of that, with rm's own lines in rm's own
+    // order. The hangup line is last because it is the only thing that comes after
+    // the workspace has gone.
+    assert!(
+        hung.err.starts_with(
+            "Removing workspace devlaunch-main-legacy...\nRemoved workspace clone: \
+             {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy\nRemoved local \
+             clone for devlaunch-main-legacy\nRemoved workspace devlaunch-main-legacy.\n"
+        ),
+        "{}",
+        hung.err
+    );
+    assert!(!world.exists(clone), "the clone was left behind");
+    assert!(
+        !world
+            .read("cache/devlaunch/metadata.json")
+            .contains("devlaunch-main-legacy"),
+        "the record was left behind"
+    );
+    assert_eq!(
+        world.devpod_calls(),
+        [
+            "devpod status devlaunch-main-legacy --output json",
+            "devpod delete devlaunch-main-legacy",
+        ],
+        "rme asked devpod for something rm does not"
+    );
+}
+
+#[test]
+fn a_config_choice_rme_cannot_honour_is_said_in_the_word_the_line_used() {
+    // `rm` and `rme` are one arm of the dispatcher, so the notice has to read the
+    // verb to know which word to quote. Judged through the ordinary runner rather
+    // than through a shell: this line is printed on the way to a refusal, and a
+    // refusal hangs nothing up.
+    let world = World::base();
+    let run = world.dl(&["no-such-workspace", "rme", "--devcontainer", "gpu"]);
+    run.exited(1);
+    assert!(
+        run.err
+            .starts_with("Ignoring --devcontainer: it does not apply to 'rme'.\n"),
+        "{}",
+        run.err
+    );
+}
+
+/// The one run where the shell goes with no removal behind it, pinned so it is a
+/// decision rather than a surprise.
+///
+/// `--force` passes devpod's `--ignore-not-found` and a path spec is resolved
+/// without asking devpod anything, so a mistyped directory reaches the delete and
+/// succeeds. That is `rm --force`'s hazard already, and
+/// `a_forced_delete_says_the_workspace_is_gone_and_never_that_it_removed_one` pins
+/// the wording that exists to keep dl from affirming a delete that never happened.
+/// What `rme` adds is that the line has no reader: the terminal closes over it.
+///
+/// It stands rather than being special-cased because absence is what `--force` asks
+/// for, and the ordinary forced run is a real workspace whose uncommitted work you
+/// have decided against, which is the run that most wants the tab closed. Telling
+/// the two apart would need the target resolution to carry whether devpod ever
+/// confirmed the workspace, which `target::Addressed` does not.
+#[test]
+fn a_successful_rme_through_the_plain_runner_does_not_end_the_run() {
+    // The harness guard, exercised rather than trusted. This is the shape that
+    // killed the suite once: `rme` on the plain runner, reaching a removal that
+    // works, signalling the test binary as its parent. It has to end as an ordinary
+    // passing test, and every other test in this file has to still be running
+    // afterwards — which is what the rest of the file passing asserts.
+    let world = World::base();
+
+    world.dl(&["devlaunch-main-legacy", "rme"]).exited(0);
+
+    assert!(
+        !world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
+        "the removal did not happen"
+    );
+}
+
+#[test]
+fn a_refused_rme_offers_the_way_past_in_the_word_that_was_typed() {
+    // The guard's sentence ends in a command to run, and `rm --force` is the wrong
+    // one for a line that said `rme`: it deletes, leaves the tab open, and hands
+    // back the `exit` that `rme` exists to absorb. Both words refuse identically,
+    // so both are owed their own way past.
+    let world = World::base();
+
+    let run = world.dl(&["devlaunch-dirty-fqta", "rme"]);
+
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
+         or run: dl devlaunch-dirty-fqta rme --force\n"
+    );
+    // And the line it offers is one that works: `--force` composes with `rme`, and
+    // the shell goes as it would for any other removal. Through the shell harness
+    // and not `dl()`, because this one *succeeds*: a forced `rme` that reached the
+    // plain runner would hang up the test binary and take the whole run with it.
+    let forced = World::base();
+    let hung = forced.dl_inside_a_shell(&["devlaunch-dirty-fqta", "rme", "--force"]);
+    hung.was_hung_up();
+    assert!(
+        !forced.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta"),
+        "the way past the guard did not get past it"
+    );
+}
+
+#[test]
+fn a_forced_rme_closes_the_shell_over_an_absence_it_never_removed() {
+    let world = World::base();
+
+    let hung = world.dl_inside_a_shell(&["./no-such-directory-here", "rme", "--force"]);
+
+    hung.was_hung_up();
+    // The receipt that says dl did not affirm a removal, and the reader it lost.
+    assert!(
+        hung.err
+            .contains("Workspace no-such-directory-here is gone."),
+        "{}",
+        hung.err
+    );
+    assert!(
+        !hung.err.contains("Removed workspace"),
+        "a workspace that never existed was reported as removed: {}",
+        hung.err
+    );
+    // Nothing was deleted, which is the whole of what makes this worth pinning.
+    assert_eq!(
+        world.devpod_calls(),
+        ["devpod delete no-such-directory-here --ignore-not-found"]
+    );
+}
+
+#[test]
+fn rme_under_nohup_leaves_the_terminal_it_was_told_to_outlive() {
+    // `nohup dl <ws> rme` used to hang up the terminal, which is the one thing
+    // `nohup` is typed to prevent. Two things make it that rather than a curiosity.
+    // A shell runs `nohup dl …` by `exec`ing it in place, so dl's parent is the
+    // interactive shell itself and not some intermediate the signal could stop at.
+    // And dl already has a position on an inherited `SIG_IGN`: `install_signal_handlers`
+    // treats it as a deliberate statement and leaves SIGHUP disarmed for the whole
+    // run, because that is how `nohup` outlives a terminal at all. Sending the
+    // signal dl itself refuses to act on is dl disagreeing with itself.
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+
+    let ran = world.dl_inside_a_shell_that_ignores_sighup(&["devlaunch-main-legacy", "rme"]);
+
+    // The removal still happens: `nohup` is about what outlives the terminal, not
+    // about doing less work.
+    ran.survived_with(0);
+    assert!(!world.exists(clone), "the removal did not happen");
+    assert!(
+        ran.err.contains(
+            "rme: SIGHUP was already ignored when dl started, so the shell stays. The removal is \
+             done."
+        ),
+        "{}",
+        ran.err
+    );
+    // Asserted separately from the survival, because a shell that ignores SIGHUP
+    // survives a signal that was sent: the line is the only evidence of which
+    // happened.
+    assert!(
+        !ran.err.contains("Hanging up"),
+        "dl sent the signal it had itself been told to ignore: {}",
+        ran.err
+    );
+}
+
+#[test]
+fn rm_in_the_same_shell_leaves_it_standing() {
+    // The control, and the reason the assertion above is about a *shell* rather
+    // than about a signal reaching something: everything else being equal, the word
+    // without the `e` hands the shell back and the shell runs the next line.
+    let world = World::base();
+
+    let ran = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rm"]);
+
+    ran.survived_with(0);
+    assert!(
+        !ran.err.contains("Hanging up"),
+        "rm hung up the shell anyway: {}",
+        ran.err
+    );
+}
+
+#[test]
+fn a_refused_rme_leaves_the_shell_up_so_the_reason_can_be_read() {
+    // The refusal is the case the whole ordering exists for. `dl` writes why it
+    // would not delete the workspace to stderr, and hanging up the terminal that
+    // was written to is the one way to guarantee nobody reads it — so a guard that
+    // refuses ends the command and nothing else. The workspace is still there
+    // afterwards, which is what makes the sentence worth reading.
+    let world = World::base();
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-dirty-fqta";
+
+    let refused = world.dl_inside_a_shell(&["devlaunch-dirty-fqta", "rme"]);
+
+    refused.survived_with(1);
+    assert!(
+        refused.err.contains(
+            "devlaunch-dirty-fqta holds 1 uncommitted change(s) (scratch.txt). Push or commit it, \
+             or run: dl devlaunch-dirty-fqta rme --force"
+        ),
+        "{}",
+        refused.err
+    );
+    assert!(
+        !refused.err.contains("Hanging up"),
+        "a refusal hung up the shell: {}",
+        refused.err
+    );
+    assert!(world.exists(clone), "the refusal deleted the clone anyway");
+}
+
+#[test]
+fn an_rme_devpod_would_not_finish_leaves_the_shell_up_too() {
+    // The other half of "only a removal that worked": this one got past the guard,
+    // said what it was about to do, and then devpod refused. The clone is kept and
+    // the delete stays retryable — which is a thing to retry *in this shell*, and
+    // the whole reason not to close it.
+    let world = World::base();
+    world.devpod_answers(&["delete"], 3, "devpod: cannot read devcontainer.json\n");
+
+    let refused = world.dl_inside_a_shell(&["devlaunch-main-legacy", "rme"]);
+
+    refused.survived_with(3);
+    assert!(
+        refused
+            .err
+            .contains("devpod could not delete devlaunch-main-legacy"),
+        "{}",
+        refused.err
+    );
+    assert!(
+        !refused.err.contains("Hanging up"),
+        "a delete devpod refused hung up the shell: {}",
+        refused.err
+    );
+    assert!(
+        world.exists("cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy"),
+        "the clone went with a workspace that is still there"
     );
 }
 

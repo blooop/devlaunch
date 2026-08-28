@@ -78,7 +78,7 @@ use crate::timing;
 
 pub mod verdict_cache;
 
-use verdict_cache::VerdictCache;
+use verdict_cache::{Observed, VerdictCache};
 
 // ===========================================================================
 // the constants both ends of the pipe are written against
@@ -154,6 +154,32 @@ pub(crate) const BLOOOP_CHANNEL: &str = "https://prefix.dev/blooop";
 /// in [`is_official_claude`], for the same reason this string lives here: two
 /// copies of a definition are two probes with different opinions.
 pub(crate) const CLAUDE_VERSIONS_RELPATH: &str = ".local/share/claude/versions";
+
+/// Where Claude Code keeps its configuration, relative to `$HOME`, when
+/// `CLAUDE_CONFIG_DIR` does not say otherwise.
+pub(crate) const CLAUDE_CONFIG_RELPATH: &str = ".claude";
+
+/// The report keys the Claude config facts travel under.
+const CLAUDE_HOME_KEY: &str = "claudehome";
+const CLAUDE_DIR_KEY: &str = "claudedir";
+const CLAUDE_MOUNTS_KEY: &str = "claudemounts";
+const CLAUDE_SCAN_KEY: &str = "claudescan";
+
+/// Whether the mount scan ran at all, which is the one thing an empty mount list
+/// cannot say for itself.
+///
+/// Every `echo` in the probe runs whatever else failed, so `claudemounts` arrives
+/// present and empty from a container with no mounts under the directory *and*
+/// from one whose image ships no `awk`, whose `/proc/self/mountinfo` cannot be
+/// read, or whose `$HOME` would not resolve. An empty list convicts nobody, so
+/// without this key the second group read as [`ClaudeConfig::Ours`] and the host's
+/// login went into a container whose mount table was never looked at.
+///
+/// Deliberately not "present"/"absent". `absent` is one of [`ProbeResult`]'s own
+/// words, and the container may never print one of those: a verdict on the wire
+/// would mean it had decided. A test asserts exactly that, and it caught this.
+const CLAUDE_SCAN_OK: &str = "ok";
+const CLAUDE_SCAN_NO: &str = "no";
 
 /// Where a lent `gh` lands under the container's home — a tar arcname, so the
 /// same payload works whatever the container's username is.
@@ -789,8 +815,17 @@ pub(crate) fn zellij_script() -> String {
 /// that never set it would otherwise abort the script under `set -u`, and a path
 /// that will not resolve is reported empty, which reads as lendable.
 pub(crate) fn probe_script() -> String {
-    [
-        "set -u".to_owned(),
+    let mut lines = vec!["set -u".to_owned()];
+    // Ahead of the tools gate below, and that ordering is the whole of what these
+    // four lines are worth. The gate's `exit 0` is everything a container with
+    // neither binary prints, and a container with neither binary is the one the
+    // Claude login exists for: a repo with no devcontainer of its own is one the
+    // host lends both to. Composed after the gate, these ran only where the image
+    // already carried `gh` and `claude`, so the launch that created such a
+    // workspace forwarded no login and left a memo reading `unknown` until some
+    // later `up` probed the binaries the first one had lent it.
+    lines.extend(claude_config_lines());
+    lines.extend([
         format!("if ! {{ {} ; }}; then", all_present(&REQUIRED_TOOLS)),
         format!("  echo \"{PROBE_MARK} tools missing\""),
         "  exit 0".to_owned(),
@@ -810,8 +845,94 @@ pub(crate) fn probe_script() -> String {
         format!(
             "echo \"{PROBE_MARK} claude $(readlink -f \"$(command -v claude)\" 2>/dev/null || true)\""
         ),
+    ]);
+    lines.join("\n")
+}
+
+/// The lines that describe the container's Claude config directory.
+///
+/// Facts, and no verdict: where the directory resolved to, what `$HOME` resolved
+/// to, whether the mount table could be scanned at all, and the source subpath of
+/// every mount at, under, or above the directory. [`ClaudeConfig::parse`] is what turns those into
+/// "somebody else owns this", on the host, once — the shape
+/// [`is_official_claude`] set for the tools question.
+///
+/// `CLAUDE_CONFIG_DIR` first, because Claude Code honours it and a devcontainer
+/// feature may set it: devlaunch's own claude-code feature pins it to a hardcoded
+/// `/home/vscode/.claude`, which equals `$HOME/.claude` only while the container
+/// user happens to be vscode. Reading `$HOME/.claude` regardless would inspect a
+/// directory Claude Code does not use while the one it does use sits mounted from
+/// the host.
+///
+/// Both paths are fully resolved, for the reason the two lines above them are: the
+/// mount points in `/proc/self/mountinfo` are real paths, and a home reached
+/// through a symlink would compare unequal against every one of them.
+///
+/// The mount scan reads `mountinfo` rather than asking `findmnt`, and it looks
+/// both ways. `findmnt --target` answers for the *nearest* mount at or **above** a
+/// path, and one shape that matters sits below one: this repo's own claude-code
+/// feature mounted nine individual paths under `~/.claude` before it switched to
+/// mounting the directory — `settings.json` read-only and `.credentials.json`
+/// read-write — and against that shape a question about the directory reports
+/// nothing mounted. But the other direction matters just as much and a descendants
+/// scan is blind to it: a devcontainer that binds the host's whole `$HOME` onto the
+/// container's home puts nothing under `~/.claude` and owns every byte in it. So
+/// the scan matches a mount point that *is* the directory, one **under** it, and
+/// one **above** it. Field 4 of a `mountinfo` line is the mount's root within its
+/// source filesystem, which is the same subpath `findmnt` prints in brackets.
+///
+/// `/` is not among the ancestors an `index` test can match — `$5 "/"` is `//`,
+/// which no absolute path has as a prefix — and that is the right answer rather
+/// than luck: the container's own root filesystem is what "ours" is measured
+/// against, so it cannot be evidence against itself.
+///
+/// Every line reports rather than failing, and `claudescan` is what tells the two
+/// kinds of nothing apart: `ok` only where the `awk` ran to completion, so an image
+/// without one, an unreadable `mountinfo` and a `$HOME` that would not resolve all
+/// report `no` and [`ClaudeConfig::parse`] refuses to call the directory anybody's.
+///
+/// Mount points are compared with `mountinfo`'s escapes undone, because the kernel
+/// writes a space as `\040` and a tab as `\011`: a config directory whose path
+/// held one would otherwise match no line at all and read as nobody else's. Roots
+/// travel still escaped, which is what makes one space-joined value a sound wire
+/// format — an escaped path carries no literal space to split on — and
+/// [`unescape_mount`] undoes them on the host. A literal backslash is left alone:
+/// undoing `\134` here would need a gsub replacement awk spells three ways, and
+/// leaving it escaped can only fail towards [`ClaudeConfig::Foreign`], which
+/// forwards nothing.
+fn claude_config_lines() -> Vec<String> {
+    vec![
+        "cfg_home=$(readlink -f \"${HOME-}\" 2>/dev/null || true)".to_owned(),
+        format!(
+            "cfg_dir=$(readlink -f \"${{CLAUDE_CONFIG_DIR:-${{HOME-}}/{CLAUDE_CONFIG_RELPATH}}}\" 2>/dev/null || true)"
+        ),
+        format!("echo \"{PROBE_MARK} {CLAUDE_HOME_KEY} $cfg_home\""),
+        format!("echo \"{PROBE_MARK} {CLAUDE_DIR_KEY} $cfg_dir\""),
+        format!("cfg_scan={CLAUDE_SCAN_NO}"),
+        "cfg_mounts=".to_owned(),
+        "if [ -n \"$cfg_dir\" ] && [ -r /proc/self/mountinfo ]; then".to_owned(),
+        // One space-joined value, because a report is a map and a repeated key
+        // would keep only the last mount. Roots stay in `mountinfo`'s escaped
+        // spelling, so none of them carries a literal space to split on.
+        //
+        // `ORS` rather than a pipe into `tr`, because the exit status wanted here is
+        // the awk's and a pipeline's is the last command's: `tr` succeeds cheerfully
+        // in an image where `awk` was never installed, which is exactly the case
+        // `cfg_scan` exists to notice.
+        "  if cfg_mounts=$(awk -v d=\"$cfg_dir\" -v ORS=' ' '".to_owned(),
+        "        { p = $5".to_owned(),
+        "          gsub(/\\\\040/, \" \", p)".to_owned(),
+        "          gsub(/\\\\011/, \"\\t\", p)".to_owned(),
+        "          if (p == d || index(p, d \"/\") == 1 || index(d \"/\", p \"/\") == 1)"
+            .to_owned(),
+        "            print $4".to_owned(),
+        "        }' /proc/self/mountinfo 2>/dev/null); then".to_owned(),
+        format!("    cfg_scan={CLAUDE_SCAN_OK}"),
+        "  fi".to_owned(),
+        "fi".to_owned(),
+        format!("echo \"{PROBE_MARK} {CLAUDE_SCAN_KEY} $cfg_scan\""),
+        format!("echo \"{PROBE_MARK} {CLAUDE_MOUNTS_KEY} $cfg_mounts\""),
     ]
-    .join("\n")
 }
 
 // ===========================================================================
@@ -880,6 +1001,62 @@ impl ProbeResult {
     }
 }
 
+/// Everything one pass learned, which is more than one question's worth.
+///
+/// A struct rather than a wider `ProbeResult`, because the tools question and the
+/// Claude config question are independent: a container can be fully provisioned
+/// with a config directory somebody else owns, or carry no tools at all in one that
+/// is its own. Folding them into one enum would need an arm per combination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PassReport {
+    /// What the container still needs, which is what the flow branches on.
+    pub(crate) tools: ProbeResult,
+    /// Who owns its Claude config directory, or `None` when the report did not say.
+    pub(crate) claude: Option<ClaudeConfig>,
+}
+
+impl PassReport {
+    /// This report's Claude facts, under the outcome the flow reached.
+    fn into_pass(self, provisioning: Provisioning) -> Pass {
+        Pass {
+            provisioning,
+            claude: self.claude,
+        }
+    }
+}
+
+/// What a whole provisioning pass came to.
+///
+/// Two answers to two different callers: `provisioning` is what the pass did, which
+/// is what a timing report and a test read, and `claude` is what the container said
+/// about its Claude config directory, which is what the session that follows needs
+/// in order to decide whether to forward the host's login.
+///
+/// `claude` is `None` for every pass that did not learn it -- a trip that did not
+/// get through, a report without the keys, and a workspace whose remembered verdict
+/// predates the marker field. `None` means "do not forward", never "forward
+/// anyway": see [`crate::clients::claude`] for why the difference costs something.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pass {
+    pub provisioning: Provisioning,
+    claude: Option<ClaudeConfig>,
+}
+
+impl Pass {
+    /// A pass that learned nothing about the Claude config directory.
+    fn bare(provisioning: Provisioning) -> Self {
+        Self {
+            provisioning,
+            claude: None,
+        }
+    }
+
+    /// Who owns the container's Claude config directory, as far as this pass knows.
+    pub fn claude(&self) -> Option<ClaudeConfig> {
+        self.claude
+    }
+}
+
 /// The `key value` pairs a report carries, last value per key winning.
 ///
 /// Exactly Python's dict comprehension over `line.strip().partition(" ")`: an
@@ -940,6 +1117,120 @@ pub(crate) fn is_official_claude(versions_dir: &str, claude_binary: &str) -> boo
     // the root rather than a missing answer.
     let parent = binary.split_last().map_or(&[][..], |(_, parent)| parent);
     parent == posix_parts(versions_dir).as_slice()
+}
+
+/// Who owns the Claude config directory in a container.
+///
+/// Two arms and no third, because the question has two answers and the absence of
+/// an answer is `Option::None` at the call site rather than a state something could
+/// match on and forget. `Foreign` is not a failure: it is a repo's devcontainer
+/// having arranged Claude's identity itself, which is an arrangement devlaunch has
+/// nothing better to offer than.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaudeConfig {
+    /// Nothing outside the container is mounted there, so what devlaunch puts in
+    /// the environment is the only login the container has.
+    Ours,
+    /// Something is mounted at or under it from outside, and whatever mounted it
+    /// owns what is in there.
+    Foreign,
+}
+
+impl ClaudeConfig {
+    /// Read the Claude config facts out of a probe's report.
+    ///
+    /// `host_home` is this machine's home directory, which the container cannot
+    /// know and which [`cfg_dir_is_foreign`] needs; `None` where the host could not
+    /// say, and the rule below then rests on the container's `$HOME` alone.
+    ///
+    /// `None` when the report does not carry the facts: a garbled or truncated
+    /// report, an image whose `awk` is missing, a kernel with no `mountinfo`.
+    /// Unknown is its own answer here and not a synonym for `Ours`, because the two
+    /// differ in exactly the case that costs something — forwarding the host's
+    /// short-lived token over a mounted credential that can refresh itself, which
+    /// is worse than forwarding nothing. See [`crate::clients::claude`].
+    pub(crate) fn parse(report: &str, host_home: Option<&str>) -> Option<Self> {
+        let found = marked_lines(report);
+        // A scan that did not happen is not evidence of ownership. Without this the
+        // empty `claudemounts` an `awk`-less image prints convicted nobody and the
+        // directory read as this container's own: see [`CLAUDE_SCAN_OK`].
+        if found.get(CLAUDE_SCAN_KEY).map(String::as_str) != Some(CLAUDE_SCAN_OK) {
+            return None;
+        }
+        let home = found.get(CLAUDE_HOME_KEY)?;
+        let mounts = found.get(CLAUDE_MOUNTS_KEY)?;
+        Some(if cfg_dir_is_foreign(home, host_home, mounts) {
+            Self::Foreign
+        } else {
+            Self::Ours
+        })
+    }
+}
+
+/// Whether any mount touching the config directory came from outside the container.
+///
+/// The one definition, asked on the host of what the container reported, exactly as
+/// [`is_official_claude`] is. The container prints paths; this says what they mean.
+///
+/// `container_home` is `$HOME` as the container resolved it. `host_home` is this
+/// machine's, which is the half the container cannot supply and the half that makes
+/// the rule sound. A mount's root is a path in its *source* namespace, so a bind of
+/// the host's `~/.claude` reports the host's path — and comparing that against the
+/// container's home alone reads it as this container's own the moment the two homes
+/// spell the same. `remoteUser` set to the host's username does that; so does a
+/// container running as root on a host that is. The directory was somebody else's
+/// in exactly that case and the login went in over it, which is the one outcome
+/// [`crate::clients::claude`] says is worse than doing nothing.
+///
+/// So a root convicts if it is outside the container's home **or** inside the
+/// host's. Where `host_home` is `None` only the first half is available, which is
+/// the reading this had before and is why the caller passes it wherever it can.
+/// Two cases are spared, and both because they are not evidence of another home:
+///
+/// - **Root `/`.** The whole of a separate filesystem, which is a volume or a
+///   tmpfs. A devcontainer caching `~/.claude` in a named volume gets `Ours` and
+///   the volume keeps whatever devlaunch's environment variable leads Claude Code
+///   to write, which is nothing.
+/// - **A relative or empty root.** Not a path, so not proof of anything.
+///
+/// An empty `container_home` is *not* spared where a mount was found: a container
+/// that could not say where its home is cannot be shown to own the directory
+/// either, and `Foreign` costs a login prompt where the other reading costs the
+/// host's credential.
+fn cfg_dir_is_foreign(container_home: &str, host_home: Option<&str>, mount_roots: &str) -> bool {
+    mount_roots.split_whitespace().any(|root| {
+        let root = unescape_mount(root);
+        root.starts_with('/')
+            && root != "/"
+            && (!is_under(&root, container_home)
+                || host_home.is_some_and(|host_home| is_under(&root, host_home)))
+    })
+}
+
+/// A `mountinfo` path with the kernel's octal escapes undone.
+///
+/// The kernel writes a space as `\040` and a tab as `\011` in the mount point and
+/// the root alike, which is what lets one space-joined report carry a list of them.
+/// `\134` — a literal backslash — is deliberately left as it is, matching the probe:
+/// a path holding one compares unequal against both homes and reads
+/// [`ClaudeConfig::Foreign`], which forwards nothing.
+fn unescape_mount(root: &str) -> String {
+    root.replace("\\040", " ").replace("\\011", "\t")
+}
+
+/// Whether `path` is `parent` or sits inside it, compared component-wise.
+///
+/// Component-wise rather than `str::starts_with`, so `/home/hostuser/.claude-backup` is
+/// not read as living under `/home/hostuser/.claude`. That is the whole of the trap: a
+/// prefix test on strings convicts a sibling directory whose name merely begins
+/// the same way, and clears nothing it should.
+fn is_under(path: &str, parent: &str) -> bool {
+    if parent.is_empty() {
+        return false;
+    }
+    let path = posix_parts(path);
+    let parent = posix_parts(parent);
+    path.len() >= parent.len() && path[..parent.len()] == parent[..]
 }
 
 /// The components of an absolute POSIX path, as `PurePosixPath` reads them: empty
@@ -1873,7 +2164,7 @@ pub fn provision_tools(
     host: Option<&HostLayout>,
     verdicts: Option<&VerdictCache>,
     events: &mut dyn Notices<ProvisionEvent>,
-) -> Result<Provisioning, DevpodMissing> {
+) -> Result<Pass, DevpodMissing> {
     timing::stage_result(timing::Stage::Tools, || {
         provision(
             runner, workspace, occasion, switches, title, host, verdicts, events,
@@ -1892,7 +2183,7 @@ fn provision(
     host: Option<&HostLayout>,
     verdicts: Option<&VerdictCache>,
     events: &mut dyn Notices<ProvisionEvent>,
-) -> Result<Provisioning, DevpodMissing> {
+) -> Result<Pass, DevpodMissing> {
     // Before the trip, because a trip is the whole of what this saves; and before
     // the opt-out check below, because that check exists to report what the pass
     // did with the stages it carried, and here there is no pass. On a top-up there
@@ -1900,37 +2191,65 @@ fn provision(
     // hostname the `up` that started it set is still the one it has.
     if let (PassOccasion::TopUp, Some(verdicts)) = (occasion, verdicts)
         && verdicts.trusted(workspace, switches)
+        // And it has an answer about the Claude config directory to give. A verdict
+        // recorded before this build existed does not, and trusting it would skip
+        // the one pass that could ever write one: the shortcut would hold forever
+        // and the memo would never appear. One redundant round trip on the first
+        // launch after upgrading, which is the trade `switches` made too.
+        && verdicts.has_claude_memo(workspace)
     {
-        return Ok(Provisioning::CachedProvisioned);
+        // No probe ran here, and the session that follows still has to decide
+        // whether to forward the host's login, so the answer comes from what the
+        // last pass remembered.
+        return Ok(Pass {
+            provisioning: Provisioning::CachedProvisioned,
+            claude: verdicts.remembered_claude(workspace),
+        });
     }
 
     // Before the pass, not after it: see [`VerdictCache::observe`].
     let observed = verdicts.and_then(|verdicts| verdicts.observe(workspace));
+    let host_home = host.and_then(|layout| layout.home.to_str());
 
-    let found = match setup_pass(runner, workspace, switches, title, events) {
+    let found = match setup_pass(runner, workspace, switches, title, host_home, events) {
         Ok(found) => found,
-        Err(refusal) => return refused(workspace, refusal, events),
+        Err(refusal) => {
+            // On this route out too, and that was the defect: a trip devpod refused
+            // told us nothing about the container, and returning without saying so
+            // left the *previous* pass's answer standing. A container recreated with
+            // a `~/.claude` mount plus one refused trip kept an `ours` that every
+            // warm attach afterwards believed.
+            remember(verdicts, workspace, None, observed);
+            return refused(workspace, refusal, events);
+        }
     };
+
+    // Before any of the branches below, and outside all of them, because every one
+    // of them ends in a session and the answer does not depend on which. A pass that
+    // could not tell writes that too, so a stale answer cannot outlive the container
+    // it was true of.
+    remember(verdicts, workspace, found.claude, observed);
 
     if let ToolsSwitch::Skip = switches.tools {
         events.say(ProvisionEvent::ProvisioningDisabled {
             workspace: workspace.to_owned(),
         });
-        return Ok(Provisioning::Disabled);
+        return Ok(found.into_pass(Provisioning::Disabled));
     }
 
-    if let ProbeResult::Provisioned = found {
+    if let ProbeResult::Provisioned = found.tools {
         // The one outcome worth remembering, and the reasons the others are not are
         // in [`verdict_cache`]'s own note.
+        //
         if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
             verdicts.record(workspace, observed, switches);
         }
-        return Ok(Provisioning::AlreadyProvisioned);
+        return Ok(found.into_pass(Provisioning::AlreadyProvisioned));
     }
 
     if let Some(payload) = host.and_then(host_payload) {
         match transfer(runner, workspace, &payload) {
-            Ok(()) => return Ok(Provisioning::Lent),
+            Ok(()) => return Ok(found.into_pass(Provisioning::Lent)),
             Err(TransferFailed::Bundle(failure)) => {
                 events.say(ProvisionEvent::PayloadNotBundled { failure });
             }
@@ -1941,7 +2260,7 @@ fn provision(
         }
     }
 
-    if let ProbeResult::Lendable = found {
+    if let ProbeResult::Lendable = found.tools {
         // Accepted residual: a container that keeps rejecting the lend while
         // carrying a shim re-attempts one failing transfer on every `devpod up`,
         // paying for the tar and the stream before the arch/libc gate refuses the
@@ -1949,7 +2268,7 @@ fn provision(
         // somewhere, which is more machinery than the case is worth — and this
         // never runs on the fast-attach path: it only ever rides an `up` that
         // already took seconds to minutes.
-        return Ok(Provisioning::ShimKept);
+        return Ok(found.into_pass(Provisioning::ShimKept));
     }
 
     // ProbeResult::Absent: the cold flow, with a tool genuinely missing.
@@ -1961,14 +2280,14 @@ fn provision(
         &format!("bash -lc {}", quote(&script)),
     ]);
     match devpod::run(runner, &call) {
-        Ok(exit) if exit.is_success() => Ok(Provisioning::Installed),
+        Ok(exit) if exit.is_success() => Ok(found.into_pass(Provisioning::Installed)),
         Ok(exit) => {
             events.say(ProvisionEvent::NotInstalled {
                 workspace: workspace.to_owned(),
                 tools: REQUIRED_TOOLS.iter().map(|tool| tool.command).collect(),
                 exit,
             });
-            Ok(Provisioning::InstallRefused { exit })
+            Ok(found.into_pass(Provisioning::InstallRefused { exit }))
         }
         Err(refusal) => refused(workspace, refusal, events),
     }
@@ -1982,7 +2301,7 @@ fn refused(
     workspace: &str,
     refusal: NotRun,
     events: &mut dyn Notices<ProvisionEvent>,
-) -> Result<Provisioning, DevpodMissing> {
+) -> Result<Pass, DevpodMissing> {
     match refusal {
         NotRun::NotInstalled => Err(DevpodMissing),
         // Timeouts included, though no trip here carries a deadline: a trip this
@@ -1993,7 +2312,7 @@ fn refused(
                 workspace: workspace.to_owned(),
                 refusal,
             });
-            Ok(Provisioning::TripRefused { refusal })
+            Ok(Pass::bare(Provisioning::TripRefused { refusal }))
         }
     }
 }
@@ -2020,8 +2339,11 @@ fn setup_pass(
     workspace: &str,
     switches: Switches,
     title: Option<&str>,
+    // This machine's home directory, which only the host knows and
+    // `cfg_dir_is_foreign` needs.
+    host_home: Option<&str>,
     events: &mut dyn Notices<ProvisionEvent>,
-) -> Result<ProbeResult, NotRun> {
+) -> Result<PassReport, NotRun> {
     let stages = setup_stages(workspace, switches.tools, switches.zellij, title);
     let call = Call::new([
         "ssh",
@@ -2035,9 +2357,36 @@ fn setup_pass(
         report_outcome(workspace, &stages, outcome, events);
     }
     if !answer.succeeded() {
-        return Ok(ProbeResult::Absent);
+        // No claude facts either: a trip that did not get through observed nothing,
+        // and `None` is what says so.
+        return Ok(PassReport {
+            tools: ProbeResult::Absent,
+            claude: None,
+        });
     }
-    Ok(ProbeResult::parse(report))
+    Ok(PassReport {
+        tools: ProbeResult::parse(report),
+        claude: ClaudeConfig::parse(report, host_home),
+    })
+}
+
+/// Write down what a pass concluded about the Claude config directory.
+///
+/// A function rather than two call sites, because there are two routes out of
+/// [`provision`] that have to write and the second one -- a trip devpod refused --
+/// is the one that did not. Nothing to write it with is not a failure: a launch with
+/// no verdict cache, or a workspace devpod has no result file for, is one that pays
+/// a round trip and forwards no login, which is the direction that is allowed to be
+/// wrong.
+fn remember(
+    verdicts: Option<&VerdictCache>,
+    workspace: &str,
+    claude: Option<ClaudeConfig>,
+    observed: Option<Observed>,
+) {
+    if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
+        verdicts.remember_claude(workspace, claude, observed);
+    }
 }
 
 /// Say what became of one stage, unless what became of it was nothing.
@@ -2268,6 +2617,30 @@ fi
 echo "devlaunch-probe tools present"
 echo "devlaunch-probe versions $(readlink -f "${HOME-}/.local/share/claude/versions" 2>/dev/null || true)"
 echo "devlaunch-probe claude $(readlink -f "$(command -v claude)" 2>/dev/null || true)""#;
+
+    /// The Claude config facts, which Python never asked for. Kept as its own
+    /// fixture so the parity claim above stays a claim about the part that *was*
+    /// carried over: the probe is Python's script with this spliced in, and the test
+    /// says so -- including where, which is the half that had a defect in it.
+    const CLAUDE_CONFIG_LINES: &str = r#"cfg_home=$(readlink -f "${HOME-}" 2>/dev/null || true)
+cfg_dir=$(readlink -f "${CLAUDE_CONFIG_DIR:-${HOME-}/.claude}" 2>/dev/null || true)
+echo "devlaunch-probe claudehome $cfg_home"
+echo "devlaunch-probe claudedir $cfg_dir"
+cfg_scan=no
+cfg_mounts=
+if [ -n "$cfg_dir" ] && [ -r /proc/self/mountinfo ]; then
+  if cfg_mounts=$(awk -v d="$cfg_dir" -v ORS=' ' '
+        { p = $5
+          gsub(/\\040/, " ", p)
+          gsub(/\\011/, "\t", p)
+          if (p == d || index(p, d "/") == 1 || index(d "/", p "/") == 1)
+            print $4
+        }' /proc/self/mountinfo 2>/dev/null); then
+    cfg_scan=ok
+  fi
+fi
+echo "devlaunch-probe claudescan $cfg_scan"
+echo "devlaunch-probe claudemounts $cfg_mounts""#;
 
     const PYTHON_TRANSFER_SCRIPT: &str = r#"set -eu
 exec >&2
@@ -2672,7 +3045,9 @@ fi
             None,
             &mut events,
         );
-        (outcome, events)
+        // The Claude facts have tests of their own below; every assertion here is
+        // about what the pass *did*.
+        (outcome.map(|pass| pass.provisioning), events)
     }
 
     /// The flow, with the tools switch on and nothing to lend — the shape most of
@@ -3092,8 +3467,26 @@ fi
     }
 
     #[test]
-    fn the_probe_script_is_the_one_python_ships() {
-        assert_eq!(probe_script(), PYTHON_PROBE_SCRIPT);
+    fn the_probe_script_is_pythons_with_the_claude_config_facts_ahead_of_the_gate() {
+        // Where they sit is the point. Python's script opens with `set -u` and then
+        // gates on the tools, and that gate's `exit 0` is everything a container with
+        // neither binary prints. Appended after Python's script, as these were, the
+        // Claude facts reached only containers that already had both -- and a
+        // container that has neither is the one the forwarded login is for.
+        let (set_u, gated) = PYTHON_PROBE_SCRIPT
+            .split_once('\n')
+            .expect("Python's probe opens with `set -u`");
+        assert_eq!(set_u, "set -u");
+        assert_eq!(
+            probe_script(),
+            format!("{set_u}\n{CLAUDE_CONFIG_LINES}\n{gated}")
+        );
+        let facts = probe_script();
+        assert!(
+            facts.find("claudescan").expect("the scan fact")
+                < facts.find("exit 0").expect("the gate"),
+            "{facts}"
+        );
     }
 
     #[test]
@@ -3114,7 +3507,10 @@ fi
         ));
         assert_eq!(
             with_zellij,
-            format!("{PYTHON_HOSTNAME_STAGE}\n{PYTHON_ZELLIJ_STAGE}\n{PYTHON_PROBE_SCRIPT}")
+            format!(
+                "{PYTHON_HOSTNAME_STAGE}\n{PYTHON_ZELLIJ_STAGE}\n{}",
+                probe_script()
+            )
         );
         let opted_out = setup_script(&setup_stages(
             "myws",
@@ -3124,7 +3520,7 @@ fi
         ));
         assert_eq!(
             opted_out,
-            format!("{PYTHON_HOSTNAME_STAGE}\n{PYTHON_PROBE_SCRIPT}")
+            format!("{PYTHON_HOSTNAME_STAGE}\n{}", probe_script())
         );
     }
 
@@ -3772,9 +4168,490 @@ fi
         let scrubbed = script
             .replace("command -v claude", "")
             .replace(CLAUDE_VERSIONS_RELPATH, "")
+            .replace(CLAUDE_CONFIG_RELPATH, "")
             .replace("devlaunch-probe claude", "");
         assert!(!scrubbed.contains("claude"), "{scrubbed}");
         assert!(!script.contains("--version"));
+    }
+
+    /// A `mountinfo` report, as the probe joins it: the roots of the mounts at,
+    /// under or above the config directory, space separated, from a scan that ran.
+    fn claude_report(home: &str, mounts: &[&str]) -> String {
+        format!(
+            "devlaunch-probe tools present\n\
+             devlaunch-probe claudehome {home}\n\
+             devlaunch-probe claudedir {home}/.claude\n\
+             devlaunch-probe claudescan ok\n\
+             devlaunch-probe claudemounts {}",
+            mounts.join(" ")
+        )
+    }
+
+    /// A host whose home is somewhere the container's could not be mistaken for.
+    const ELSEWHERE: Option<&str> = Some("/home/hostuser");
+
+    #[test]
+    fn a_config_directory_nothing_is_mounted_into_is_ours() {
+        assert_eq!(
+            ClaudeConfig::parse(&claude_report("/home/vscode", &[]), ELSEWHERE),
+            Some(ClaudeConfig::Ours)
+        );
+    }
+
+    #[test]
+    fn the_directory_mount_this_repos_own_feature_makes_is_foreign() {
+        // `source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind`,
+        // which is what devlaunch's claude-code feature does today.
+        assert_eq!(
+            ClaudeConfig::parse(
+                &claude_report("/home/vscode", &["/home/hostuser/.claude"]),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Foreign)
+        );
+    }
+
+    #[test]
+    fn a_feature_that_mounts_only_paths_underneath_is_still_foreign() {
+        // The shape a check on the directory alone cannot see, and the one that costs
+        // real host state: before it switched to mounting the directory, this repo's
+        // own feature bound nine individual paths under `~/.claude` -- among them
+        // `settings.json` read-only and `.credentials.json` read-write. `findmnt
+        // --target` on the directory answers for the container's own filesystem and
+        // reports nothing, so the probe scans descendants instead.
+        let report = claude_report(
+            "/home/vscode",
+            &[
+                "/home/hostuser/.claude/settings.json",
+                "/home/hostuser/.claude/.credentials.json",
+                "/home/hostuser/.claude/agents",
+            ],
+        );
+        assert_eq!(
+            ClaudeConfig::parse(&report, ELSEWHERE),
+            Some(ClaudeConfig::Foreign),
+            "a credential mounted from the host must never be written over"
+        );
+    }
+
+    #[test]
+    fn a_sibling_that_merely_shares_the_prefix_is_not_underneath_it() {
+        // `/home/hostuser/.claude-backup` begins with `/home/hostuser/.claude`. A prefix test
+        // on strings convicts it; a component-wise one does not. The probe only
+        // reports mounts it found at or under the directory, so this arrives as a
+        // root under *this* home and has to read as ours.
+        assert_eq!(
+            ClaudeConfig::parse(
+                &claude_report("/home/vscode", &["/home/vscode/.claude-backup"]),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Ours)
+        );
+        assert!(!is_under(
+            "/home/hostuser/.claude-backup",
+            "/home/hostuser/.claude"
+        ));
+        assert!(is_under("/home/hostuser/.claude", "/home/hostuser/.claude"));
+        assert!(is_under(
+            "/home/hostuser/.claude/settings.json",
+            "/home/hostuser/.claude"
+        ));
+    }
+
+    #[test]
+    fn a_volume_or_a_tmpfs_at_the_config_directory_is_ours() {
+        // The whole of a separate filesystem, whose root is `/`. A devcontainer
+        // caching the directory that way owns nothing of anybody else's, and Claude
+        // Code writes nothing there anyway when it reads the variable.
+        assert_eq!(
+            ClaudeConfig::parse(&claude_report("/home/vscode", &["/"]), ELSEWHERE),
+            Some(ClaudeConfig::Ours)
+        );
+    }
+
+    #[test]
+    fn a_mount_of_this_containers_own_home_is_ours() {
+        assert_eq!(
+            ClaudeConfig::parse(
+                &claude_report("/home/vscode", &["/home/vscode/dotfiles/claude"]),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Ours)
+        );
+    }
+
+    #[test]
+    fn a_container_that_cannot_say_where_its_home_is_gets_no_login() {
+        // Not provably ours, so not ours. The cost is a login prompt; the cost of the
+        // other reading is a login forwarded into a directory nobody checked.
+        assert_eq!(
+            ClaudeConfig::parse(&claude_report("", &["/home/hostuser/.claude"]), ELSEWHERE),
+            Some(ClaudeConfig::Foreign)
+        );
+    }
+
+    #[test]
+    fn a_report_that_does_not_carry_the_facts_answers_nothing() {
+        // Not `Ours`. A report cut off partway, one from a build that never carried
+        // these keys: neither is evidence that the directory is this container's, and
+        // `None` forwards no login.
+        assert_eq!(ClaudeConfig::parse(REPORT_PROVISIONED, ELSEWHERE), None);
+        assert_eq!(ClaudeConfig::parse("", ELSEWHERE), None);
+        assert_eq!(
+            ClaudeConfig::parse("devlaunch-probe claudehome /home/vscode", ELSEWHERE),
+            None,
+            "the home without the mounts is half an answer, which is not one"
+        );
+    }
+
+    #[test]
+    fn a_scan_that_did_not_run_is_not_evidence_of_ownership() {
+        // The defect this key exists for. Every `echo` in the probe runs whatever
+        // else failed, so an image with no `awk`, an unreadable `/proc/self/mountinfo`
+        // and a `$HOME` that would not resolve all print the keys with empty values.
+        // An empty mount list convicts nobody, so without `claudescan` all three read
+        // as this container's own and the host's login went in over whatever was
+        // mounted there unlooked at.
+        let unscanned = "devlaunch-probe tools present\n\
+                         devlaunch-probe claudehome \n\
+                         devlaunch-probe claudedir \n\
+                         devlaunch-probe claudescan no\n\
+                         devlaunch-probe claudemounts ";
+        assert_eq!(ClaudeConfig::parse(unscanned, ELSEWHERE), None);
+        // And the same report from a scan that did run: nothing is mounted there, so
+        // the directory really is the container's own.
+        assert_eq!(
+            ClaudeConfig::parse(
+                &unscanned.replace("claudescan no", "claudescan ok"),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Ours),
+            "a scan that ran and found nothing is an answer"
+        );
+    }
+
+    #[test]
+    fn a_host_home_that_spells_the_container_home_is_still_the_hosts() {
+        // A mount root is a path in its *source* namespace, so a bind of the host's
+        // `~/.claude` reports the host's own path. Compared against the container's
+        // home alone it reads as this container's the moment the two spell the same:
+        // `remoteUser` set to the host's username does that, and so does a container
+        // running as root on a host that is. The directory was the host's in exactly
+        // that case, and the login went in over a credential that can refresh itself.
+        for home in ["/home/vscode", "/root"] {
+            assert_eq!(
+                ClaudeConfig::parse(
+                    &claude_report(home, &[&format!("{home}/.claude")]),
+                    Some(home)
+                ),
+                Some(ClaudeConfig::Foreign),
+                "{home}"
+            );
+            // The same mount on a host whose home is elsewhere is the container's own.
+            assert_eq!(
+                ClaudeConfig::parse(
+                    &claude_report(home, &[&format!("{home}/dotfiles/claude")]),
+                    ELSEWHERE
+                ),
+                Some(ClaudeConfig::Ours),
+                "{home}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mount_above_the_config_directory_owns_what_is_under_it() {
+        // A devcontainer that binds the host's whole `$HOME` onto the container's
+        // home puts nothing under `~/.claude` and owns every byte in it. A scan of
+        // descendants alone saw no mounts and called the directory ours; the shape
+        // `findmnt --target` would have caught and a descendants scan cannot.
+        assert_eq!(
+            ClaudeConfig::parse(
+                &claude_report("/home/vscode", &["/home/hostuser"]),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Foreign)
+        );
+    }
+
+    #[test]
+    fn a_config_directory_whose_path_holds_a_space_is_still_compared() {
+        // `mountinfo` writes a space as `\040` in the mount point and in the root
+        // alike, which is what lets one space-joined value carry a list of roots.
+        // Undone here, so a home with a space in it compares against its own mounts
+        // rather than matching nothing and reading as nobody else's.
+        assert_eq!(
+            unescape_mount("/home/my\\040dir/.claude"),
+            "/home/my dir/.claude"
+        );
+        assert_eq!(
+            ClaudeConfig::parse(
+                &claude_report("/home/my dir", &["/home/hostuser/.claude"]),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Foreign)
+        );
+        assert_eq!(
+            ClaudeConfig::parse(
+                &claude_report("/home/my dir", &["/home/my\\040dir/dotfiles"]),
+                ELSEWHERE
+            ),
+            Some(ClaudeConfig::Ours),
+            "the container's own path, escaped on the wire"
+        );
+    }
+
+    #[test]
+    fn the_probe_reports_the_config_facts_when_it_actually_runs() {
+        // The behavioural half: the script above is composed on the host, and this
+        // runs it. A quoting mistake in the awk or the `tr` shows up here and nowhere
+        // else.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let home = scratch.path().join("home");
+        std::fs::create_dir_all(&home).expect("a home");
+        let answered = std::process::Command::new("bash")
+            .arg("-lc")
+            .arg(probe_script())
+            .env("HOME", &home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        let report = String::from_utf8_lossy(&answered.stdout);
+        let found = marked_lines(&report);
+        assert_eq!(
+            found.get("claudedir").map(String::as_str),
+            Some(
+                home.canonicalize()
+                    .expect("a real home")
+                    .join(".claude")
+                    .to_str()
+                    .expect("utf-8")
+            ),
+            "{report}"
+        );
+        // A scratch home on the test machine's own filesystem: nothing is mounted
+        // into it, so the scan runs, finds nothing, and the directory reads as ours.
+        assert_eq!(found.get("claudescan").map(String::as_str), Some("ok"));
+        assert_eq!(found.get("claudemounts").map(String::as_str), Some(""));
+        assert_eq!(
+            ClaudeConfig::parse(&report, Some("/nowhere")),
+            Some(ClaudeConfig::Ours)
+        );
+        assert!(
+            answered.status.success(),
+            "the probe exits 0 in every state"
+        );
+    }
+
+    /// The probe's own mount scan, run against a `mountinfo` this test wrote.
+    ///
+    /// The awk is composed on the host and reads one hardcoded path, so pointing it
+    /// at a fixture is a `str::replace` on the script this module built. That is the
+    /// only way to state what the scan matches without a bind mount and a root
+    /// shell, and what it matches is the whole of the ownership question.
+    ///
+    /// `mounts` are `(root, mount point)` pairs relative to a scratch directory, and
+    /// the mount points are created for real: the probe resolves the config
+    /// directory with `readlink -f` before scanning, so a table of paths that do not
+    /// exist is a table it never reaches. Returns the roots the scan printed, with
+    /// the scratch prefix taken back off so the assertion reads as a path.
+    fn scan_against(mounts: &[(&str, &str)], cfg_dir: &str) -> Vec<String> {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let root = scratch
+            .path()
+            .canonicalize()
+            .expect("a real scratch dir")
+            .to_str()
+            .expect("utf-8")
+            .to_owned();
+        let mut table = "25 1 0:24 / / rw - overlay overlay rw\n".to_owned();
+        for (index, (source, point)) in mounts.iter().enumerate() {
+            std::fs::create_dir_all(format!("{root}{point}")).expect("a mount point");
+            // The kernel's spelling, which is what the awk has to undo.
+            let escaped = format!("{root}{point}").replace(' ', "\\040");
+            let id = index + 30;
+            table.push_str(&format!(
+                "{id} 25 8:1 {root}{source} {escaped} rw - ext4 /dev/sda1 rw\n"
+            ));
+        }
+        let mountinfo = scratch.path().join("mountinfo");
+        std::fs::write(&mountinfo, &table).expect("a mount table");
+        std::fs::create_dir_all(format!("{root}{cfg_dir}")).expect("a config dir");
+
+        let script = claude_config_lines()
+            .join("\n")
+            .replace("/proc/self/mountinfo", mountinfo.to_str().expect("utf-8"));
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .env("CLAUDE_CONFIG_DIR", format!("{root}{cfg_dir}"))
+            .output()
+            .expect("bash ran");
+        let report = String::from_utf8_lossy(&answered.stdout).into_owned();
+        let found = marked_lines(&report);
+        assert_eq!(
+            found.get(CLAUDE_SCAN_KEY).map(String::as_str),
+            Some(CLAUDE_SCAN_OK),
+            "{report}"
+        );
+        found
+            .get(CLAUDE_MOUNTS_KEY)
+            .map(|roots| {
+                roots
+                    .split_whitespace()
+                    .map(|found| found.replace(&root, ""))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A container's mount table: the host's home bound onto the container's, one
+    /// file bound underneath the config directory, and a tmpfs beside it.
+    const FIXTURE_MOUNTS: &[(&str, &str)] = &[
+        ("/host/hostuser", "/home/vscode"),
+        (
+            "/host/hostuser/.claude/settings.json",
+            "/home/vscode/.claude/settings.json",
+        ),
+        ("/host/cache", "/home/vscode/.cache"),
+    ];
+
+    #[test]
+    fn the_scan_sees_a_mount_above_the_config_directory_as_well_as_under_it() {
+        // The shape a descendants-only scan is blind to, and the reason `findmnt` was
+        // rejected in the first place cuts both ways: a devcontainer that binds the
+        // host's whole `$HOME` onto the container's home puts nothing under
+        // `~/.claude` and owns every byte in it. `/` is not among the ancestors and
+        // must not be, since the container's own root filesystem cannot be evidence
+        // against itself, and the `.cache` mount is a sibling and no business of ours.
+        assert_eq!(
+            scan_against(FIXTURE_MOUNTS, "/home/vscode/.claude"),
+            vec!["/host/hostuser", "/host/hostuser/.claude/settings.json"]
+        );
+    }
+
+    #[test]
+    fn the_scan_matches_a_mount_point_whose_path_holds_a_space() {
+        // `mountinfo` writes it as `\040`, so a config directory with a space in its
+        // path matched no line at all and the report said nothing was mounted there.
+        assert_eq!(
+            scan_against(
+                &[("/host/data", "/opt/my dir/.claude")],
+                "/opt/my dir/.claude"
+            ),
+            vec!["/host/data"]
+        );
+    }
+
+    #[test]
+    fn the_probe_says_so_when_the_config_dir_will_not_resolve() {
+        // The other half of the same defect, and the one that needs no PATH surgery
+        // to reach: `readlink -f` answers empty for a path whose parents do not
+        // exist, the scan is skipped, and the report carries `claudemounts` present
+        // and empty. Read without `claudescan` that was an empty mount list, which
+        // convicts nobody, so the directory read as this container's own.
+        let answered = std::process::Command::new("bash")
+            .arg("-lc")
+            .arg(probe_script())
+            .env("HOME", "/nonexistent/deeper/still")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        let report = String::from_utf8_lossy(&answered.stdout);
+        let found = marked_lines(&report);
+        assert_eq!(
+            found.get("claudedir").map(String::as_str),
+            Some(""),
+            "{report}"
+        );
+        assert_eq!(found.get("claudemounts").map(String::as_str), Some(""));
+        assert_eq!(found.get("claudescan").map(String::as_str), Some("no"));
+        assert_eq!(ClaudeConfig::parse(&report, Some("/home/hostuser")), None);
+        assert!(
+            answered.status.success(),
+            "the probe exits 0 in every state"
+        );
+    }
+
+    #[test]
+    fn a_trip_devpod_refused_does_not_leave_the_last_answer_standing() {
+        // The route out of `provision` that did not write. A trip devpod refused
+        // learned nothing about the container, and returning without saying so left
+        // the *previous* pass's word in place: a container recreated with a
+        // `~/.claude` mount plus one refused trip kept an `ours` that every warm
+        // attach afterwards believed.
+        let home = crate::clients::devpod_home::devpod_home_with(&[("default", "myws", Some(()))]);
+        let cache = tempfile::tempdir().expect("a scratch cache");
+        let verdicts = VerdictCache::under(
+            cache.path(),
+            Some(crate::clients::devpod_home::DevpodHome::at(home.path())),
+        );
+        let observed = verdicts.observe("myws").expect("an anchor");
+        verdicts.remember_claude("myws", Some(ClaudeConfig::Ours), observed);
+        assert_eq!(
+            verdicts.remembered_claude("myws"),
+            Some(ClaudeConfig::Ours),
+            "the state a previous pass left"
+        );
+
+        let runner = Trips::answering(&[Answer::Blocked]);
+        let mut events = Vec::new();
+        let outcome = provision_tools(
+            &runner,
+            "myws",
+            PassOccasion::AfterUp,
+            Switches::INSTALLING,
+            None,
+            Some(&nothing_to_lend()),
+            Some(&verdicts),
+            &mut events,
+        )
+        .expect("not a devpod that went missing");
+
+        assert!(matches!(
+            outcome.provisioning,
+            Provisioning::TripRefused { .. }
+        ));
+        assert_eq!(outcome.claude(), None, "the pass itself learned nothing");
+        assert_eq!(
+            verdicts.remembered_claude("myws"),
+            None,
+            "and it said so, rather than leaving `ours` to be read again"
+        );
+        assert!(
+            verdicts.has_claude_memo("myws"),
+            "`unknown` is still a recorded answer"
+        );
+    }
+
+    #[test]
+    fn the_probe_honours_the_config_dir_a_feature_pinned() {
+        // devlaunch's own feature sets `CLAUDE_CONFIG_DIR=/home/vscode/.claude`, a
+        // hardcoded path that equals `$HOME/.claude` only while the container user is
+        // vscode. Reading `$HOME/.claude` regardless would inspect a directory Claude
+        // Code does not use.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let elsewhere = scratch.path().join("pinned");
+        std::fs::create_dir_all(&elsewhere).expect("a config dir");
+        let answered = std::process::Command::new("bash")
+            .arg("-lc")
+            .arg(probe_script())
+            .env("HOME", scratch.path())
+            .env("CLAUDE_CONFIG_DIR", &elsewhere)
+            .output()
+            .expect("bash ran");
+        let report = String::from_utf8_lossy(&answered.stdout);
+        assert_eq!(
+            marked_lines(&report).get("claudedir").map(String::as_str),
+            Some(
+                elsewhere
+                    .canonicalize()
+                    .expect("a real dir")
+                    .to_str()
+                    .expect("utf-8")
+            ),
+            "{report}"
+        );
     }
 
     #[test]
@@ -4365,7 +5242,10 @@ fi
             &mut events,
         );
 
-        assert_eq!(outcome, Ok(Provisioning::Installed));
+        assert_eq!(
+            outcome.map(|pass| pass.provisioning),
+            Ok(Provisioning::Installed)
+        );
         assert_eq!(runner.count(), 2);
     }
 
@@ -5171,6 +6051,15 @@ fi
         occasion: PassOccasion,
         verdicts: &VerdictCache,
     ) -> Result<Provisioning, DevpodMissing> {
+        full_pass_of(runner, occasion, verdicts).map(|pass| pass.provisioning)
+    }
+
+    /// [`pass_of`], keeping what it saw of the Claude config directory.
+    fn full_pass_of(
+        runner: &Trips,
+        occasion: PassOccasion,
+        verdicts: &VerdictCache,
+    ) -> Result<Pass, DevpodMissing> {
         provision_tools(
             runner,
             "myws",
@@ -5302,7 +6191,10 @@ fi
             Some(&verdicts),
             &mut Vec::new(),
         );
-        assert_eq!(outcome, Ok(Provisioning::AlreadyProvisioned));
+        assert_eq!(
+            outcome.map(|pass| pass.provisioning),
+            Ok(Provisioning::AlreadyProvisioned)
+        );
 
         let next = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
         assert_eq!(
@@ -5389,7 +6281,7 @@ fi
                 &mut Vec::new(),
             );
             assert_eq!(
-                outcome,
+                outcome.map(|pass| pass.provisioning),
                 Ok(Provisioning::AlreadyProvisioned),
                 "{occasion:?}"
             );

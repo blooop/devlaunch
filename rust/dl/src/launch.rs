@@ -69,6 +69,12 @@ pub(crate) enum Family {
     /// answers, and this is what is left when it does not.
     Kill,
     /// `dl <ws> rm`, and whether `--force` was typed.
+    ///
+    /// `dl <ws> rme` is this family too, and carries nothing extra: the hangup is
+    /// not part of removing a workspace, it is what happens when the whole command
+    /// is over. One picked batch is many passes through here and one shell, so a
+    /// field on this would be read once per workspace by a dispatcher that must act
+    /// on it once — see [`crate::hangup`], which is asked at the other end.
     Remove { force: bool },
     /// Everything that opens a workspace, and whether the workspace is to go once
     /// the session does.
@@ -90,7 +96,9 @@ pub(crate) fn family(verb: &Verb) -> Family {
     let (launched, rm) = match verb {
         Verb::Stop => return Family::Stop,
         Verb::Kill => return Family::Kill,
-        Verb::Remove { force } => return Family::Remove { force: *force },
+        // `after` is deliberately not read here: it belongs to the command's
+        // ending rather than to this pass over one workspace.
+        Verb::Remove { force, after: _ } => return Family::Remove { force: *force },
         Verb::Attach { rm } => (LaunchVerb::Attach { command: None }, *rm),
         // Python's `" ".join(args[2:])`: the words are rejoined with single spaces
         // and the result is one shell command, quoted whole into the remote
@@ -161,7 +169,7 @@ impl Provision for ToolProvisioning {
         workspace_id: &str,
         occasion: PassOccasion,
         title: Option<&str>,
-    ) -> Result<(), DevpodMissing> {
+    ) -> Result<Option<provision::ClaudeConfig>, DevpodMissing> {
         // The events stream through the same sink as the launch's own notices —
         // one line on stderr at the moment core says it, which is Python's order:
         // a cold install streams hundreds of megabytes, and a warning about it is
@@ -187,9 +195,15 @@ impl Provision for ToolProvisioning {
         // would put a sentence on the terminal of every prewarm to announce that
         // nothing happened. `DEVLAUNCH_TIMING=1` is where a missing round trip is
         // worth reading, and it shows there as the trip that is not in the list.
-        provisioned.map(|outcome| {
-            let _: Provisioning = outcome;
+        // The Claude fact travels; every arm of `Provisioning` still says nothing.
+        provisioned.map(|pass| {
+            let _: Provisioning = pass.provisioning;
+            pass.claude()
         })
+    }
+
+    fn remembered_claude(&self, workspace_id: &str) -> Option<provision::ClaudeConfig> {
+        self.verdicts.remembered_claude(workspace_id)
     }
 }
 
