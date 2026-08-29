@@ -4,7 +4,8 @@
 Stands on PATH under the name `devpod`, in front of *any* dl implementation —
 it must know nothing about which one is calling, so it is a standalone,
 stdlib-only program: no devlaunch imports, no pytest, no test helpers. It
-re-homes `test/fixtures/devpod_mock.py`'s proven design as a separate process:
+re-homes the proven design of the Python `devpod_mock` fixture (retired with
+that tree in #267) as a separate process:
 
 - **workspace state machine**, persisted to the JSON file named by
   ``DEVPOD_SHIM_STATE`` so it survives across the many short-lived processes a

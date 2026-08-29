@@ -88,7 +88,7 @@ impl Scripted {
 /// What to do about a spawn nothing scripted and no state machine owns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Unscripted {
-    /// Exit 0 with no output, as `devpod_mock.py` does.
+    /// Exit 0 with no output, as the Python `devpod_mock` fixture did.
     #[default]
     Succeed,
     /// Fail the test, naming the argv. For a test that means to account for

@@ -45,6 +45,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   died before any of this existed, and no route reaches them that is not the
   pattern above. `docs/cleanup.md` carries the whole of it.
 
+### Fixed
+
+- **Sixty-six citations that pointed at nothing now point at something, and a
+  guard keeps it that way.** Comments across `rust/` name the test that pins the
+  behaviour they describe, which is most of what makes them worth reading.
+  Retiring the Python implementation (#267) deleted about forty of the files
+  those names referred to, in one commit, and the names stayed. A pointer into
+  nothing is worse than no pointer: it still reads as evidence, so the reader
+  goes looking and cannot tell whether the guard moved, was renamed, or never
+  existed.
+
+  Every one of them now names a suite that retired rather than a file to open,
+  and says so, in the form the surviving comments had already settled on. Two
+  were not merely stale but false. The bench workflow told a reader that a named
+  Python spawn-count guard "keeps the gating role" in `ci.yml`, when the counts
+  it meant have been argv assertions in the cargo suite since the port; and the
+  divergence table's row 30 claimed two pins it no longer has, an allowance in
+  the parity harness's case list and a set of `suffix_verb` tests, the first
+  retired with the harness and the second deleted with the behaviour itself. That
+  row is superseded, so nothing pins it, and it now says so.
+
+  `test/test_citations_resolve.py` is what stops it happening again: a token
+  spelled the way a Python test file is spelled has to resolve to a file, a path
+  as written and a bare name against the test tree. `CHANGELOG.md` and
+  `docs/rust-port-scope.md` are out of scope, being records of what was true when
+  they were written.
+
 ## [0.25.0] - 2026-08-28
 
 ### Fixed

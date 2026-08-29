@@ -8,8 +8,11 @@ name: Launch benchmark
 # never fail a build on a slow point. One quiet host's five identical
 # cold-recreate runs spread 15.2-20.0s; a shared runner is worse, so a hard
 # wall-clock gate would be either too loose to fire or flaky. Deterministic
-# structural guards (test_devpod_spawn_counts.py and its kin) keep the gating
-# role, and they live in ci.yml where a gate belongs.
+# structural guards keep the gating role: the devpod spawn counts a launch is
+# allowed, asserted argv by argv in `flows::launch`'s tests, and their kin
+# across the cargo suite. Those run in ci.yml, where a gate belongs. (The
+# spawn-count guard was `test_devpod_spawn_counts` in Python until the Python
+# tree retired in #267, and the counts came across with it.)
 #
 # It is a separate file for exactly that reason: house convention is that a new
 # job in ci.yml joins `gate`'s `needs` in the same pull request, and `needs`
