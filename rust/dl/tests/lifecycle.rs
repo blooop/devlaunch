@@ -8,6 +8,11 @@
 //! not come from Python — the `--stop`/`--rm` flag spellings, which Python parsed
 //! as a workspace name — the divergence row is cited beside it.
 //!
+//! The case comments below name the Python suite each case came from. Every one of
+//! those retired with the Python tree (#267), so they are provenance to grep the
+//! history for rather than files to open; what pins the behaviour now is the case
+//! the name sits on.
+//!
 //! Python's diagnostics go to stderr as the bare message: `dl.py` configures
 //! `logging.basicConfig(level=logging.INFO, format="%(message)s")`, so `info`,
 //! `warning` and `error` all arrive with no level, no logger name and no prefix.
@@ -569,7 +574,7 @@ fn a_stop_addresses_the_workspace_and_says_nothing() {
 
 #[test]
 fn a_stop_reaches_the_workspace_the_record_names() {
-    // devlaunch#88, and `test_stored_workspace_id.py`'s
+    // devlaunch#88, and the Python `test_stored_workspace_id`'s
     // TestTheSubcommandsAddressWhatWasResolved at the boundary: the record holds a
     // devpod workspace id this build does not derive, devpod has only that one, and
     // the stop has to reach it. The derived id is in the line because the two are
@@ -843,7 +848,7 @@ fn a_clone_git_cannot_be_asked_about_is_refused_for_not_knowing() {
 
 #[test]
 fn a_clone_holding_a_commit_no_remote_has_is_refused_and_named_as_that() {
-    // `test_workspace_state.py`'s guard texts: uncommitted work and unpushed commits
+    // The Python `test_workspace_state`'s guard texts: uncommitted work and unpushed commits
     // are different losses, and the refusal says which — a user who reads
     // "uncommitted" for a committed change would go looking in the wrong place.
     let world = World::with(&["--unpushed"]);
@@ -1459,7 +1464,7 @@ fn an_rme_devpod_would_not_finish_leaves_the_shell_up_too() {
 
 #[test]
 fn a_command_that_changed_the_workspace_list_refreshes_the_completions_behind_it() {
-    // `test_dl.py`'s refresh classes, spawn half: the child is this build, run as
+    // The Python `test_dl`'s refresh classes, spawn half: the child is this build, run as
     // `<program> --update-cache --force`, detached — so what can be observed from
     // out here is that a completion cache appears without this process waiting for
     // one, and that the child asked devpod for the list.
@@ -1528,7 +1533,7 @@ fn the_refresh_child_writes_the_cache_and_sweeps_the_bare_clones() {
 
 #[test]
 fn the_child_migrates_the_cache_like_every_other_run() {
-    // `test_updater_fetch_sweep.py`'s TestTheChildMigratesLikeEveryOtherRun: a
+    // The Python `test_updater_fetch_sweep`'s TestTheChildMigratesLikeEveryOtherRun: a
     // detached child is the worst place to skip the one-shot id-scheme migration,
     // because nobody is watching it write records in a shape the rest of dl no
     // longer reads. It reaches metadata through the same construction point every
@@ -1686,7 +1691,7 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
 
 #[test]
 fn a_purge_that_could_not_remove_everything_says_which_paths_refused() {
-    // `test_purge_partial_removal.py`'s TestTheReportIsActionable and
+    // The Python `test_purge_partial_removal`'s TestTheReportIsActionable and
     // TestThePurgeSaysWhichOfTheThreeHappened, at the boundary: the headline says
     // *which* of the three endings this was, the paths and their reasons are what
     // somebody acts on, and the `sudo rm -rf` line is quoted.
@@ -1779,7 +1784,7 @@ fn a_purge_that_deleted_workspaces_and_found_no_cache_says_nothing_about_the_cac
 
 #[test]
 fn a_purge_that_cannot_read_the_workspace_list_refuses_rather_than_purging_nothing() {
-    // `test_workspace_listing.py`'s purge-will-not-act half: a purge that quietly
+    // The Python `test_workspace_listing`'s purge-will-not-act half: a purge that quietly
     // did nothing used to look exactly like a purge that had nothing to do.
     let world = World::base();
     world.devpod_answers(&["list"], 1, "context not found: default\n");
@@ -1840,7 +1845,7 @@ Dropping 1 record(s) of directories already gone.
 
 #[test]
 fn a_prune_answered_no_removes_nothing_and_the_report_is_the_read_only_view() {
-    // `test_prune_orphaned_clones.py`'s report and input classes, and
+    // The Python `test_prune_orphaned_clones`'s report and input classes, and
     // TestTheDiskThisCommandDoesNotFree: the plan names what is going, what is
     // staying and why, and the run ends on the boundary sentence whichever way it
     // ends.
@@ -2055,7 +2060,7 @@ Nothing here is deleted. `dl <workspace> rm` is how one goes, if it should.
 
 #[test]
 fn a_reconcile_answered_no_changes_nothing() {
-    // `test_reconcile_orphaned_workspaces.py`'s report and confirm classes: the
+    // The Python `test_reconcile_orphaned_workspaces`'s report and confirm classes: the
     // repair the migration's notice promises is stated before it is consented to,
     // and nothing here is deleted.
     let world = World::with(&["--orphan"]);

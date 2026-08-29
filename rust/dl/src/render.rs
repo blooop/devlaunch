@@ -33,8 +33,8 @@ use devlaunch_core::flows::launch::{
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
-    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, Unlocatable,
-    VolumeRefusal,
+    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, SweepOccasion,
+    Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
@@ -933,8 +933,9 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         }
         LifecycleNotice::VolumesNotRemoved {
             workspace_id,
+            occasion,
             refusal,
-        } => volumes_not_removed(workspace_id, refusal),
+        } => volumes_not_removed(workspace_id, *occasion, refusal),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -1145,11 +1146,32 @@ fn not_removed(refusal: &RemoveWorkspaceError) -> String {
 /// a notice and `--purge` as a step, the vocabularies differ but the sentence does
 /// not, and two copies each pinned by its own test is how they come to differ by a
 /// word.
-fn volumes_not_removed(workspace_id: &str, refusal: &VolumeRefusal) -> String {
+fn volumes_not_removed(
+    workspace_id: &str,
+    occasion: SweepOccasion,
+    refusal: &VolumeRefusal,
+) -> String {
     format!(
-        "Failed to remove the Docker volumes for {workspace_id}: {}",
+        "Failed to remove the {} for {workspace_id}: {}",
+        named_volumes(occasion),
         volumes_refused(refusal)
     )
+}
+
+/// Which read named the volumes a sweep was about, as the noun phrase in the
+/// sentence about them.
+///
+/// The one place the two-arm occasion becomes English, and a match rather than a
+/// field on the name: a third read would be a compile error here, which is the
+/// refusal enforced by exhaustiveness rather than by prose. The wording differs
+/// because where to look differs. devpod's record is gone with the workspace; a
+/// kept copy is a file under devlaunch's cache, and a volume this could not release
+/// is one something on the machine is still holding.
+fn named_volumes(occasion: SweepOccasion) -> &'static str {
+    match occasion {
+        SweepOccasion::DevpodResult => "Docker volumes",
+        SweepOccasion::KeptCopy => "Docker volumes devlaunch recorded",
+    }
 }
 
 /// Why a deleted workspace's Docker volumes are still on this machine.
@@ -1784,8 +1806,9 @@ pub(crate) fn purge_step(step: &PurgeStep) -> Line {
         )),
         PurgeStep::VolumesNotRemoved {
             workspace_id,
+            occasion,
             refusal,
-        } => Line::Err(volumes_not_removed(workspace_id, refusal)),
+        } => Line::Err(volumes_not_removed(workspace_id, *occasion, refusal)),
     }
 }
 
@@ -1918,6 +1941,28 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         }
         lines.push(String::new());
     }
+    if !plan.reclaiming().is_empty() {
+        // Every name, not a count. These are volumes, and a volume is not an image:
+        // deleting one that still matters is data loss rather than a rebuild, so
+        // what is about to be removed is on the screen before the question is asked.
+        lines.push(format!(
+            "Reclaiming the Docker volumes of {} workspace(s) devpod no longer lists:",
+            plan.reclaiming().len()
+        ));
+        for reclaimable in plan.reclaiming() {
+            lines.push(format!(
+                "  - {}: {}",
+                reclaimable.workspace_id,
+                reclaimable
+                    .names
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        lines.push(String::new());
+    }
     if !plan.stale_records().is_empty() {
         lines.push(format!(
             "Dropping {} record(s) of directories already gone.",
@@ -2004,6 +2049,27 @@ pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
             withheld.path.display(),
             kept_because(&withheld.because)
         ));
+    }
+    if !report.reclaimed.is_empty() {
+        lines.push(format!(
+            "Reclaimed the Docker volumes of {} workspace(s) devpod no longer lists.",
+            report.reclaimed.len()
+        ));
+    }
+    for kept in &report.volumes_kept {
+        lines.push(match &kept.because {
+            // Said in the plan's own words, because the plan is what promised it:
+            // a workspace back in devpod's listing is the volume half of the
+            // withheld line above, and for the same reason.
+            VolumesKeptBecause::ListedAgain => format!(
+                "Left the Docker volumes of {}: devpod lists that workspace again. That was \
+                 not so when the plan above was printed.",
+                kept.workspace_id
+            ),
+            VolumesKeptBecause::Refused(refusal) => {
+                volumes_not_removed(&kept.workspace_id, SweepOccasion::KeptCopy, refusal)
+            }
+        });
     }
     if !report.refused.is_empty() {
         let by_hand: Vec<std::path::PathBuf> = report
@@ -3857,6 +3923,7 @@ mod tests {
         assert_eq!(
             lifecycle_notice(&LifecycleNotice::VolumesNotRemoved {
                 workspace_id: "ws".to_owned(),
+                occasion: SweepOccasion::DevpodResult,
                 refusal: VolumeRefusal::Docker {
                     exit: Exit::Code(1),
                     stderr: "Error response from daemon: remove ws-pixi: volume is in use\n"
@@ -3874,6 +3941,7 @@ mod tests {
         assert_eq!(
             lifecycle_notice(&LifecycleNotice::VolumesNotRemoved {
                 workspace_id: "ws".to_owned(),
+                occasion: SweepOccasion::DevpodResult,
                 refusal: VolumeRefusal::Docker {
                     exit: Exit::Signal(9),
                     stderr: String::new(),
@@ -3884,6 +3952,7 @@ mod tests {
         assert_eq!(
             lifecycle_notice(&LifecycleNotice::VolumesNotRemoved {
                 workspace_id: "ws".to_owned(),
+                occasion: SweepOccasion::DevpodResult,
                 refusal: VolumeRefusal::NotRun {
                     failure: OsFailure {
                         kind: std::io::ErrorKind::PermissionDenied,
@@ -3907,6 +3976,7 @@ mod tests {
         assert_eq!(
             purge_step(&PurgeStep::VolumesNotRemoved {
                 workspace_id: "ws".to_owned(),
+                occasion: SweepOccasion::DevpodResult,
                 refusal: VolumeRefusal::Docker {
                     exit: Exit::Code(1),
                     stderr: "volume is in use\n".to_owned(),

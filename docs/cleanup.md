@@ -55,6 +55,48 @@ be made worse by it:
   frees](#the-disk-neither-command-frees). That boundary is about images now, and
   deliberately stays there.
 
+### The volumes of a workspace devpod has already forgotten
+
+The read above happens at delete time, immediately before `devpod delete` takes
+devpod's record away with the workspace. That closes the leak for every delete
+that goes through `dl`. It does nothing for a workspace deleted some other way: a
+bare `devpod delete`, or a devpod home that was cleared out. devpod removes its
+own record and leaves the volumes, and after that there is nothing on the machine
+that names them.
+
+So `dl` keeps its own copy. At the end of every `up` that completed, it reads the
+same two fields out of the same `workspace_result.json` and writes them to a small
+per workspace file under its cache, beside the tool verdict markers:
+`~/.cache/devlaunch/workspace-copies/<workspace>.json`. `dl --prune` reclaims from
+those copies, and the whole of what it asks per copy is: does any workspace
+`devpod list` returns carry that id? Where none does, the workspace is gone and
+its volumes are leftovers.
+
+Nothing is invented at either read. Every name `dl` hands `docker volume rm` still
+came out of a substitution devpod performed and wrote down, which is the rule
+above and is unchanged. The alternative, matching `<basename>-pixi` and
+`dind-var-lib-docker-<id>` against `docker volume ls`, stays refused: the
+`docker-in-docker` feature writes that second name in every devcontainer tool that
+runs it, so the candidates `dl` cannot attribute are exactly the ones that belong
+to somebody else, and a volume is not an image. The wrong answer there is data
+loss, not a rebuild.
+
+A copy can still be wrong, and it can be wrong in exactly two ways. It can name a
+volume that is already gone, which `docker volume rm --force` treats as a success
+and says nothing about. It can name a volume something else now holds, which
+Docker refuses: `volume is in use`, reported, nothing removed, and the copy kept so
+the retry is still there. Neither is caught by trusting the file. A copy is dropped
+once, when a removal came back removed for a workspace devpod does not list, which
+is the one moment it is provably pointless.
+
+Two consequences worth knowing. A run pointed at a scratch cache
+(`XDG_CACHE_HOME=...`) finds no copies at all, so it names no volume and removes
+none, which is what makes the scratch convention safe here by construction. And the
+**39 orphaned volumes measured on the reference host are out of scope**: their
+records died before any of this existed, no route reaches them that is not the
+pattern above, and they stay. See [the disk neither command
+frees](#the-disk-neither-command-frees).
+
 ### What a delete says while it does it
 
 `dl <ws> rm` names the workspace going in and again once it has gone, both on
@@ -224,8 +266,9 @@ until now nothing removed them: measured on one host, **52 clone directories for
 all-or-nothing: the only way to get the 4 GB back was to destroy the 7.86 GB
 too, and every bare cache with it.
 
-`dl --prune` removes exactly the clone directories no live workspace opens. It
-never deletes a devpod workspace, a container, an image or a volume, never
+`dl --prune` removes exactly the clone directories no live workspace opens, and
+reclaims the Docker volumes of workspaces devpod no longer lists. It never
+deletes a devpod workspace, a container or an image, never
 touches a repo's `.bare` cache (0.08 GB for seven repos, and it is what makes
 the next clone of a repo fast), and never looks outside
 `<cache>/devlaunch/repos`. Every directory it finds is one of three things:
@@ -331,10 +374,11 @@ exception: that is where somebody is deciding what is worth deleting.
 (devlaunch#325). Deleting a workspace now removes the named volumes its
 devcontainer created, see [what a delete takes with
 it](#what-a-delete-takes-with-it), so a disclaimer that still covered them would
-be describing a leak that has been fixed. The `--prune` half of the pair still
-frees no volume at all, and that is not an oversight either: it removes clone
-*directories* and never deletes a workspace, so there is no workspace whose
-volumes it could be taking.
+be describing a leak that has been fixed. The `--prune` half of the pair frees
+volumes too, and its reason changed rather than disappeared: it still never
+deletes a workspace, it reclaims the volumes of one devpod has already forgotten,
+from [the copy `dl` keeps](#the-volumes-of-a-workspace-devpod-has-already-forgotten).
+The 39 orphans above are not among them. Nothing reaches those but a pattern.
 
 **It is a sentence, not a measurement.** `dl` runs no `docker` command to print
 it, so there is nothing to be slow and nothing to fail where Docker is absent,

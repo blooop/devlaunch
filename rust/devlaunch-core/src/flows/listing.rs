@@ -1220,10 +1220,10 @@ pub(crate) use crate::json::as_python_writes_it as json_as_python_writes_it;
 
 #[cfg(test)]
 mod tests {
-    //! Ported from `test/unit/test_workspace_listing.py`,
-    //! `test/unit/test_workspace_source.py`'s discovery and description classes,
-    //! `test/unit/test_purge_ownership.py`'s classification classes,
-    //! `test/test_workspace_state.py::TestTheJsonListing`, and `test/test_dl.py`'s
+    //! Ported from these Python suites, all retired with the Python tree (#267):
+    //! `test_workspace_listing`, `test_workspace_source`'s discovery and
+    //! description classes, `test_purge_ownership`'s classification classes,
+    //! `test_workspace_state::TestTheJsonListing`, and `test_dl`'s
     //! `TestListWorkspaces`, `TestGetWorkspaceIds`, `TestParseOwnerRepoFromUrl`,
     //! `TestDiscoverReposFromWorkspaces`, `TestDiscoverReposFromCacheDir`,
     //! `TestGetKnownRepos` and `TestPrintFunctions`.

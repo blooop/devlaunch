@@ -149,6 +149,14 @@ working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside t
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
 [AGENTS.md](../AGENTS.md).
 
+One thing to know about pointing a run at a scratch cache (`XDG_CACHE_HOME=/tmp/...`), which
+AGENTS.md recommends for anything near storage. A run that *creates* a workspace writes its copy
+of that workspace's volume names into the cache it is about to throw away, and that copy is the
+only record of those names once devpod's own record goes. Remove such workspaces with `dl <ws> rm`
+before discarding the scratch cache, or their volumes outlive everything that could name them. See
+[the volumes of a workspace devpod has already
+forgotten](cleanup.md#the-volumes-of-a-workspace-devpod-has-already-forgotten).
+
 ### The Quickstart's demo GIFs
 
 The four GIFs in the Quickstart come from VHS tapes in `docs/demo/`:

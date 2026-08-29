@@ -16,6 +16,7 @@ use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
+use devlaunch_core::flows::kept_copies::KeptCopies;
 use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
 use devlaunch_core::flows::lifecycle::{
@@ -108,7 +109,7 @@ pub(crate) fn dispatch(
         Command::UpdateCache { force } => render_update_cache(runner, &mut context, cache, force),
         Command::Refresh => render_refresh(&mut context, cache),
         Command::Install { rc } => render_install(&mut context, cache, rc.as_deref()),
-        Command::Prune { yes, force } => render_prune(runner, &mut context, yes, force),
+        Command::Prune { yes, force } => render_prune(runner, &mut context, cache, yes, force),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
         // The two arms that name a verb are the two that can be `rme`, and the
@@ -1021,6 +1022,9 @@ fn remove_addressed<'r>(
         // answer down. `None` is a machine with no home directory, where devpod has
         // no records to read and so no volume names to derive.
         DevpodHome::locate().as_ref(),
+        // The same cache directory everything else here hangs off, so the copy this
+        // delete drops is the one a launch of this workspace wrote.
+        &KeptCopies::under(cache),
         workspace_id,
         insistence,
         removal.persistence(),
@@ -1179,15 +1183,17 @@ fn announce_lock_waits(records: &mut Records<'_>) {
 fn render_prune(
     runner: &dyn Runner,
     context: &mut CommandContext<'_>,
+    cache: &Path,
     yes: bool,
     force: bool,
 ) -> Ending {
-    prune_clone_directories(runner, context, yes, force).with_the_boundary()
+    prune_clone_directories(runner, context, cache, yes, force).with_the_boundary()
 }
 
 fn prune_clone_directories(
     runner: &dyn Runner,
     context: &mut CommandContext<'_>,
+    cache: &Path,
     yes: bool,
     force: bool,
 ) -> Cleanup {
@@ -1216,10 +1222,15 @@ fn prune_clone_directories(
         Insistence::NotInsisted
     };
     let mut notices: Vec<LifecycleNotice> = Vec::new();
+    // devlaunch's copies of what devpod substituted, under the cache the binary
+    // already resolved. This is what makes a run pointed at a scratch
+    // `XDG_CACHE_HOME` find no copies and so remove no volume.
+    let copies = KeptCopies::under(cache);
     let plan = match lifecycle::prune_plan(
         &records.clones,
         &records.storage,
         &workspaces,
+        &copies,
         &placement,
         insistence,
         &mut notices,
@@ -1240,7 +1251,7 @@ fn prune_clone_directories(
     let Records {
         storage, clones, ..
     } = &mut records;
-    let acted = lifecycle::prune_clones(context, clones, storage, &plan, &mut notices);
+    let acted = lifecycle::prune_clones(context, clones, storage, &copies, &plan, &mut notices);
     say(&notices);
     match acted {
         Err(refused) => Cleanup::Raised(refuse_prune(&refused)),
