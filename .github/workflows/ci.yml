@@ -470,12 +470,22 @@ jobs:
   # devlaunch-core/public-api.rest.txt the tripwire over the binary surface, and
   # devlaunch-runner/public-api.txt the process seam.
   #
-  # "As a path match can see it" is the honest scope, and it is narrower than it
-  # reads: cargo public-api renders methods and impls only at a type's canonical
-  # path, so a promised type's constructors, methods and derived impls are in
-  # the rest file, and renaming `api::Launch::run` leaves the promise file
-  # byte-identical. A diff in the rest file touching a promised type is a
-  # contract change too. Widening the classifier is #352.
+  # "As a path match can see it" was the honest scope until #352 and is no
+  # longer the scope at all. cargo public-api renders methods and impls only at
+  # a type's canonical path, so matching the `api` path alone kept the promised
+  # types' names and left every one of their constructors, methods and derived
+  # impls in the rest file — renaming `api::Launch::run` diffed neither file
+  # where a reader would look. The classifier now resolves each `api` re-export
+  # back to the path it names and claims that item's rows too, which is why most
+  # of the promise file is written at `flows::` and `domain::` paths.
+  #
+  # What is left over is still real and is not one type: 39 types that a
+  # promised signature hands back but `api` never re-exports own over six
+  # hundred rows in the rest file, `domain::spec::DevcontainerRefError` — the
+  # error type of the promised `api::resolve_devcontainer_ref` — among them.
+  # So a rest-file diff is routine for a row whose subject nothing promised
+  # names and a contract change for a row whose subject is one of those;
+  # `--print-residual` tells them apart.
   #
   # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crates
   # themselves still build on the stable pin everywhere else. The pinned
@@ -526,8 +536,9 @@ jobs:
               "scripts/public-api-snapshots.sh (needs a nightly toolchain and the" \
               "cargo-public-api the script pins; see 'The public-API snapshots' in" \
               "docs/development.md). A diff in devlaunch-core/public-api.api.txt is a change" \
-              "to the promised API — say which, and note that a promised type's" \
-              "methods and impls diff in the rest file instead (#352)."
+              "to the promised API — say which. A promised type's methods and impls are" \
+              "in there too, under the canonical path they are rendered at, so a diff" \
+              "that names a flows:: or domain:: path in that file is still a promise."
             exit 1
           fi
 

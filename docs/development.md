@@ -49,19 +49,51 @@ because they are not one promise:
 
 | File | What a diff means |
 | --- | --- |
-| `devlaunch-core/public-api.api.txt` | **A change to the promised contract.** A removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 126 declarations written *at* the `devlaunch_core::api` path, and only those. |
-| `devlaunch-core/public-api.rest.txt` | Mostly routine. The binary API (`flows::`, `domain::`, `clients::`) is reachable but never promised, so read it for the accidental `pub`. **But** the promised types' methods and impls are in here too (see below), and a diff touching one of those is a contract change. |
+| `devlaunch-core/public-api.api.txt` | **A change to the promised contract.** A removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 813 rows that declare what `devlaunch_core::api` re-exports, wherever `cargo public-api` chose to render them. |
+| `devlaunch-core/public-api.rest.txt` | Mostly routine. The binary API (`flows::`, `domain::`, `clients::`) is reachable but never promised, so read it for the accidental `pub`. **But** see the limit below before reading a diff as routine. |
 | `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementer writes against. |
 
-**The promise file holds declarations, not behaviour.** `cargo public-api` renders inherent methods
-and trait impls only at a type's *canonical* path, never at the path it is re-exported under, so
-the classifier cannot see them. `api::Launch`'s only constructor and only method are rendered
-`flows::launch::Launch::{new, run}` and land in the rest file, along with `CommandContext::new`,
-`DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on the promised types: 133
-of the 259 rows the generator emits for the `api` section. Measured consequence: renaming
-`api::Launch::run` leaves `public-api.api.txt` byte-identical. The guard is therefore one-way. A
-diff in the promise file is a change to the promise, but not every change to the promise diffs it.
-Widening the classifier is [#352](https://github.com/blooop/devlaunch/issues/352).
+**Why the promise file is full of `flows::` and `domain::` paths.** `cargo public-api` renders an
+item's own declaration at every path it is reachable by, so `api::Launch` gets a row of its own. It
+renders inherent methods and trait impls at the type's *canonical* path only, never at the path it
+is re-exported under, so `api::Launch::run` is rendered `flows::launch::Launch::run`. A classifier
+that matched the `api` path alone therefore kept the promised types' names and dropped all of their
+behaviour, and renaming `api::Launch::run` left the file byte-identical. So the classifier resolves
+each `api` re-export back to the path it names and claims that item's rows too
+([#352](https://github.com/blooop/devlaunch/issues/352)), which moved 631 rows across: `Launch::new`
+and `Launch::run`, `CommandContext::new`, `DevcontainerPath::as_str`, and every derived
+`Clone`/`Debug`/`PartialEq` on a promised type. Those paths are the promise and not strays. The
+cost is real and worth knowing before you see it: moving a promised type between modules now churns
+the file where churn is expensive. Some rows appear twice, because the generator emits them twice,
+once under the `api` section and once under the module that owns them.
+
+**What it still does not reach, and it is not one type.** A type `api` never re-exports but a
+promised signature hands back is reachable from outside and classified as binary surface. Counted
+on the checked-in files rather than guessed at, that is **39 types owning over six hundred rows** in
+`public-api.rest.txt`, and the command that lists them needs no toolchain:
+
+```bash
+scripts/public-api-snapshots.sh --print-residual
+```
+
+`domain::spec::DevcontainerRefError` is the one to hold the limit against. `api` promises
+`resolve_devcontainer_ref`, whose row sits in the promise file at the `api` path itself, and it
+returns that error: rename a variant of it and every consumer matching on it breaks, while the only
+file that moves is the one this page calls freely regenerated.
+`domain::metadata::MetadataError` is the same shape, carried by the promised
+`StartupError::Metadata`. `flows::launch::Launched`, returned by `Launch::run`, is the example this
+section used to give on its own, which made six hundred rows read as one.
+
+So a diff in `public-api.rest.txt` is routine for a row whose subject nothing promised names, and a
+contract change for a row whose subject is one of the 39. `--print-residual` is how you tell the two
+apart, and `test/test_public_api_snapshots_doc.py` diffs the count of types in this paragraph
+against it, so the sentence goes red rather than stale. The row total is left round on purpose: it
+moves whenever anything is added to any one of the 39 and says nothing about the scale of the
+limit, where the count of types moves only when the residual really grows.
+
+The `-ss` flag also omits blanket and auto-trait impls from both files,
+deliberately: those rows move when rustdoc moves, and a tripwire that fires on toolchain drift
+teaches people to update snapshots unread.
 
 The runner had no snapshot of its own until #338: its whole API entered core's as the single
 unexpanded row `pub use devlaunch_core::runner::<<devlaunch_runner::*>>`, so removing a trait
@@ -89,15 +121,19 @@ cargo install cargo-public-api --locked --version "$(scripts/public-api-snapshot
 ```
 
 Committing a regenerated `public-api.api.txt` is committing a change to the promised contract, so
-say which one in the pull request. If the change was to a promised type's methods or impls,
-the diff to point at is in `public-api.rest.txt`. `rust/devlaunch-core/tests/public_api_snapshots.rs`
-holds the two core files to the split itself, every promised row an `api` declaration and none
-of the others one, so a hand-edit that files a row in the wrong tier fails in the Rust suite.
-Ordering is not a partition property and nothing local checks it, so a block written in the
-wrong position satisfies every one of those assertions and is caught only by CI's `public-api`
-job, which regenerates the files and diffs them. A hand-edited snapshot is therefore provisional
-until that job agrees, and in this repository's devcontainer, which has neither prerequisite
-above, hand-editing is the only route there is.
+say which one in the pull request. `rust/devlaunch-core/tests/public_api_snapshots.rs` holds the two
+core files to the split itself: feed it both and the classifier has to hand back the same two files,
+each row on the side it is already on. So a hand-edit that files a row in the wrong tier, or a pair
+regenerated by different rules, fails in the Rust suite rather than in review. That test reaches the
+classifier through `scripts/public-api-snapshots.sh --classify`, which filters rows on stdin and
+needs no toolchain at all, so the rule has one definition rather than a Rust copy of a shell one.
+
+What that fixed point does not pin is where a row sits *within* its file. The classifier preserves
+the order it is fed, so a block moved to the wrong position inside `public-api.api.txt` comes back
+in the position it was moved to and satisfies every assertion. Only CI's `public-api` job, which
+regenerates both files and diffs them, catches that. A hand-edited snapshot is therefore provisional
+until that job agrees, and in this repository's devcontainer, which has neither prerequisite above,
+hand-editing is the only route there is.
 
 **What a failed run leaves behind**, precisely, because "nothing" would be a claim rather than a
 fact. The script checks every destination is writable before it generates anything, then writes

@@ -43,23 +43,46 @@
 //! item, and by two `cargo public-api` snapshots that CI diffs on every pull
 //! request: any change to the crate's public surface is a committed, reviewed
 //! diff or a red tick. The two tiers get a file each — `public-api.api.txt`
-//! for declarations at the [`api`] path, `public-api.rest.txt` for the rest —
-//! so that a change to the promised tier's *declarations* is a diff in a
-//! 126-row file rather than one row inside two thousand.
+//! for the promised tier, `public-api.rest.txt` for the rest — so that a change
+//! to what [`api`] promises is a diff in an 813-row file rather than one row
+//! inside two thousand.
 //!
-//! **What that file does not cover, and it is not a small gap.**
-//! `cargo public-api` renders inherent methods and trait impls only at a
-//! type's canonical path, never at the path it is re-exported under. So
-//! [`api::Launch`]'s only constructor and only method are rendered
-//! `flows::launch::Launch::{new, run}` and land in `public-api.rest.txt`, as do
-//! `CommandContext::new`, `DevcontainerPath::as_str` and every derived
-//! `Clone`/`Debug`/`PartialEq` on the promised types: 133 of the 259 rows the
-//! generator emits for the `api` section. Renaming `api::Launch::run` — an
-//! unambiguous break — leaves `public-api.api.txt` byte-identical. So the
-//! sound direction is one-way: a diff in the promise file *is* a change to the
-//! promise, but a change to the promise need not diff it, and a diff in the
-//! rest file that touches a promised type is a contract change too. Widening
-//! the classifier is <https://github.com/blooop/devlaunch/issues/352>.
+//! **How the promise file is filled, because the `api` path is not the whole
+//! answer.** `cargo public-api` renders an item's own declaration at every path
+//! it is reachable by, so [`api::Launch`] gets a row — but it renders inherent
+//! methods and trait impls at the type's *canonical* path only, never at the
+//! path it is re-exported under, so `api::Launch::run` is rendered
+//! `flows::launch::Launch::run`. Matching the `api` path alone therefore kept
+//! the promised types' names and dropped all of their behaviour, and renaming
+//! `api::Launch::run` — an unambiguous break — left the file byte-identical.
+//! So the classifier resolves each of [`api`]'s re-exports back to the path it
+//! names and claims that item's rows too (#352), which moved 631 rows out of
+//! the rest file: `Launch::{new, run}`, `CommandContext::new`,
+//! `DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on
+//! a promised type. A `flows::` or `domain::` path inside `public-api.api.txt`
+//! is the promise and not a stray, and the cost of that is real: moving a
+//! promised type between modules now churns the file where churn is expensive.
+//!
+//! **What it still does not reach, and it is not one type.** A type [`api`]
+//! never re-exports but a promised signature names is reachable from outside
+//! and classified as binary surface, so a break in it diffs
+//! `public-api.rest.txt` alone. Counted rather than guessed at: **39 such types
+//! own over six hundred rows over there**, and `scripts/public-api-snapshots.sh
+//! --print-residual` lists them.
+//!
+//! The pointed one is `domain::spec::DevcontainerRefError`. [`api`] promises
+//! `resolve_devcontainer_ref`, which returns it, so the *function* is a
+//! promise-file row at the `api` path itself while the error it hands you is
+//! not: rename one of that error's variants and every consumer matching on it
+//! breaks, with the only diff in the file this doc calls freely regenerated.
+//! `domain::metadata::MetadataError` is the same shape, carried by the promised
+//! `StartupError::Metadata`. `flows::launch::Launched`, returned by
+//! `Launch::run`, is the example this paragraph used to give as though it were
+//! the whole of the residual, which is what made six hundred rows read as one.
+//!
+//! So a `public-api.rest.txt` diff is routine for a row whose subject nothing
+//! promised names, and a contract change for a row whose subject is one of the
+//! 39. `--print-residual` is how you tell which you are looking at.
 //!
 //! `scripts/public-api-snapshots.sh` regenerates both; see "The public-API
 //! snapshots" in docs/development.md.

@@ -40,9 +40,27 @@ RUST = REPO_ROOT / "rust"
 CI_CHECK_STEP = "The public surface is the snapshots the repo carries"
 # The classification itself: the pattern that decides "promise" from "rest".
 API_ROW_PATTERN = "devlaunch_core::api\\b"
-# The ticket that widens the classifier to cover a promised type's methods and
-# impls. Named in the docs so the gap is a known follow-up rather than folklore.
-WIDENING_TICKET = "352"
+# The other snapshot, named in the docs because the widened classifier still does
+# not reach everything a promised signature does: a type the `api` module never
+# re-exports but a promised method returns is reachable from outside and lives
+# only here, so a diff in it can still be a contract change.
+REST_SNAPSHOT = "public-api.rest.txt"
+
+# The residual caveat, pinned by the phrases only it uses. Naming the file was
+# not enough on its own and it is worth saying why, because the weak version of
+# this guard looked exactly like the strong one: `REST_SNAPSHOT` alone is
+# satisfied by `REST_FILE=devlaunch-core/public-api.rest.txt` in the script, by
+# the sentence describing the split in lib.rs, and by a table row in the doc, so
+# a reviewer deleted the entire caveat from two of the three sites and all
+# fourteen tests passed. Each of these appears only in the caveat:
+#
+#   the mechanism -- a type that is handed back but never re-exported;
+#   the example that makes the scale land, since it is the error type of a
+#     function that is itself a promise-file row at the `api` path;
+#   the command that recomputes the scale, so the prose stays checkable.
+RESIDUAL_MECHANISM = "never re-exports"
+RESIDUAL_EXAMPLE = "DevcontainerRefError"
+RESIDUAL_COMMAND = "--print-residual"
 
 
 def script_files() -> list[str]:
@@ -177,26 +195,191 @@ def test_the_ci_error_string_sends_a_reader_to_the_document_that_has_the_section
     )
 
 
+def residual() -> tuple[int, int]:
+    """The limit, as the script counts it: (types, rows).
+
+    Types a promised signature hands back that `api` never re-exports, and the
+    rows they own in the tripwire file. Asked of the script for the same reason
+    the file list is: a figure this test kept itself would be a third copy, and
+    the copy that never goes stale is the one nobody wrote down.
+    """
+    printed = subprocess.run(
+        [str(SCRIPT), "--print-residual"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    counts = [int(line.split("\t")[0]) for line in printed.stdout.splitlines() if line.strip()]
+    assert counts, "--print-residual found no residual types at all; the split cannot be that clean"
+    return len(counts), sum(counts)
+
+
 @pytest.mark.unit
-def test_the_docs_say_what_the_promise_file_does_not_cover():
+def test_the_docs_say_how_the_promise_file_is_filled_and_what_it_still_misses():
     """The overclaim this section is one edit away from becoming again.
 
     `cargo public-api` renders methods and impls only at a type's canonical
-    path, so `api::Launch::run` is in the *rest* file and renaming it leaves the
-    promise file byte-identical. A guard that is trusted and silently does not
-    fire is worse than no guard, so the limit is documented where the guard is,
-    and the ticket that closes it is named.
+    path, so the classifier reaches `api::Launch::run` by resolving each `api`
+    re-export back to the path it names (#352). Two things a reader has to be
+    told, and both live wherever the promise file is described: that the
+    canonical-path rows in it are there on purpose and are not strays, and that
+    the rest file can still carry a contract change, because a type the `api`
+    module never re-exports but a promised signature hands back is reachable
+    from outside and is classified as binary surface.
+
+    The second half is what this asserts properly now. It used to be spelled as
+    "the text names public-api.rest.txt", which every one of these files does
+    for reasons that have nothing to do with the caveat, so the caveat could be
+    deleted outright and this stayed green.
     """
     for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
         text = path.read_text(encoding="utf-8")
         assert "canonical" in text, (
-            f"{path.name} describes the promise file without the canonical-path limit "
-            "that decides what it can see"
+            f"{path.name} describes the promise file without the canonical-path "
+            "rendering that decides how it is filled"
         )
-        assert WIDENING_TICKET in text, (
-            f"{path.name} states the limit without naming issue #{WIDENING_TICKET}, "
-            "which is what turns a known gap into a tracked one"
+        assert REST_SNAPSHOT in text, (
+            f"{path.name} describes the promise file without naming {REST_SNAPSHOT}, "
+            "which is where a promised signature's own types are still classified"
         )
+        assert RESIDUAL_MECHANISM in text, (
+            f"{path.name} describes the promise file and not the limit on it: no "
+            f"sentence saying a type the api module {RESIDUAL_MECHANISM} but a "
+            "promised signature hands back is still classified as binary surface"
+        )
+        assert RESIDUAL_EXAMPLE in text, (
+            f"{path.name} states the limit without naming {RESIDUAL_EXAMPLE}, which "
+            "is the case that shows what it costs: the error type of "
+            "api::resolve_devcontainer_ref, a promise-file row at the api path, "
+            "while renaming one of its variants diffs only the tripwire file"
+        )
+        assert RESIDUAL_COMMAND in text, (
+            f"{path.name} states the limit without naming {RESIDUAL_COMMAND}, so a "
+            "reader is told the residual exists and given no way to see what is "
+            "in it today"
+        )
+
+
+@pytest.mark.unit
+def test_the_documented_scale_of_the_limit_is_the_measured_one():
+    """The number, because naming one type made six hundred rows read as one.
+
+    Every site above described the residual as `flows::launch::Launched` and
+    nothing else. It is 39 types, and a reviewer who has been told the limit is
+    one type reads the other 38's diffs as routine churn. So the figure is
+    written down, and written down means diffed: this recomputes it from the
+    checked-in snapshots and holds the prose to it. A surface change that moves
+    the count turns this red in the same run that regenerates the snapshots,
+    which is when the sentence is cheapest to fix.
+
+    The count of *types* and not of rows, deliberately. The row total moves
+    whenever anything is added to any one of the 39, which is often and says
+    nothing about the scale of the limit; the type count is what a reader is
+    calibrating on and it moves only when the residual genuinely grows. The
+    prose gives rows as a round number for that reason, and
+    ``--print-residual`` is where an exact one lives.
+    """
+    types, _rows = residual()
+    for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
+        text = path.read_text(encoding="utf-8")
+        # The number *and* the noun it counts. A bare `\b39\b` was satisfied
+        # twice over by things that are not this: `395 rows moved` two
+        # paragraphs up, and "39 of them" about orphaned Docker volumes five
+        # hundred lines away in the same document. Matching "39 types" and "39
+        # such types" is what makes deleting the caveat show up here.
+        assert re.search(rf"\b{types}\b(?: \w+)? types", text), (
+            f"{path.name} does not carry the current number of types in the "
+            f"residual ({types}). Regenerating the snapshots moved it; update the "
+            f"sentence there, or run {SCRIPT.name} {RESIDUAL_COMMAND} to see what "
+            "changed"
+        )
+
+
+def classify(kind: str, rows: list[str]) -> list[str]:
+    """One side of the split, as the script itself decides it.
+
+    The classification is a filter over rows, and the script is the only place
+    it exists -- so this exercises the real one on rows chosen to be awkward,
+    rather than restating the pattern here where the restatement is what would
+    be tested.
+    """
+    done = subprocess.run(
+        [str(SCRIPT), "--classify", kind],
+        input="".join(f"{row}\n" for row in rows),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.splitlines()
+
+
+# Rows in the shape `cargo public-api` renders, naming types this crate really
+# has, so the classifier is exercised against the `api` module as it stands
+# rather than against a fiction. `Launch` and `Host` are re-exported; the branch
+# manager is not.
+PROMISED_ROWS = [
+    "pub struct devlaunch_core::api::Launch<'a, 'r, 'l>",
+    "impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>",
+    "pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self) -> ()",
+    # More than one keyword between `pub` and the path. No row of this shape
+    # exists yet, and the point is that one can be added without noticing: a
+    # `const fn` constructor on a promised type is an ordinary thing to write,
+    # and the pattern used to allow exactly one keyword, so it went to the
+    # tripwire file where a rename of it reads as routine churn.
+    "pub const fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::konst() -> ()",
+    "impl core::fmt::Debug for devlaunch_core::flows::launch::Host",
+]
+UNPROMISED_ROWS = [
+    "pub mod devlaunch_core",
+    "pub struct devlaunch_core::flows::branch_manager::BranchManager<'a>",
+    # The trap the whole rule turns on: a promised type in an argument, on a
+    # method of something that is not promised at all.
+    "pub fn devlaunch_core::flows::branch_manager::BranchManager<'a>::adopt"
+    "(&self, &devlaunch_core::flows::launch::Host) -> ()",
+    # And the boundary the `\b` is for.
+    "pub mod devlaunch_core::apiary",
+]
+
+
+@pytest.mark.unit
+def test_a_promised_types_canonical_rows_are_classified_as_promise():
+    """The finding this ticket is about, at the seam that decides it.
+
+    `Launch::run` is rendered at `flows::launch::Launch`, never at the `api`
+    path it is re-exported under, so a classifier that matches the `api` path
+    alone keeps the type's declaration and drops its only method.
+    """
+    kept = classify("api", PROMISED_ROWS + UNPROMISED_ROWS)
+    assert kept == PROMISED_ROWS, (
+        "the classifier does not claim a promised type's canonical-path rows, so "
+        "renaming Launch::run leaves the promise file byte-identical"
+    )
+
+
+@pytest.mark.unit
+def test_naming_a_promised_type_in_a_signature_does_not_promise_the_signature():
+    """The control, and the reason the rule is anchored rather than a substring.
+
+    Promised types are arguments and return types all over this crate. Claiming
+    every row that mentions one would pull most of the binary surface into the
+    promise file, which is the failure the split exists to prevent, wearing the
+    other hat.
+    """
+    left = classify("rest", PROMISED_ROWS + UNPROMISED_ROWS)
+    assert left == UNPROMISED_ROWS, (
+        "the classifier claimed a row that only mentions a promised type, or "
+        "dropped one that mentions nothing promised at all"
+    )
+
+
+@pytest.mark.unit
+def test_the_two_sides_of_the_classification_are_a_partition():
+    rows = PROMISED_ROWS + UNPROMISED_ROWS
+    kept, left = classify("api", rows), classify("rest", rows)
+    assert sorted(kept + left) == sorted(rows), (
+        "a row was dropped by both sides or kept by both; the two files are "
+        "complements or they are not a split at all"
+    )
 
 
 def ci_step_script(job: str, step_name: str) -> str:

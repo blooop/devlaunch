@@ -206,6 +206,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `json.dumps` printed for it. `wf` parses that document, so the bar was
   byte-identity and not equivalence.
 
+- **The frozen-API snapshot now covers the promised types' behaviour, not just their
+  names (#352).** `cargo public-api` renders inherent methods and trait impls at a
+  type's canonical path only, never at the path it is re-exported under, so
+  `api::Launch::run` was rendered `flows::launch::Launch::run` and a filter matching
+  the `api` path could not see it. `public-api.api.txt` held 182 rows and not one
+  `::new(` or `::run(`, which means renaming `Launch::run` left the file that exists
+  to catch exactly that byte-identical. Measured, not inferred: the rename was done
+  and the file did not move.
+
+  The classifier now reads the `api` module's own re-exports, resolves each back to
+  the path it names, and claims that item's rows too. 631 rows moved from
+  `public-api.rest.txt` to `public-api.api.txt`, none appeared from nowhere, and the
+  same rename now diffs the promise file. Two things follow for a reader of these
+  files. Most of the promise file is written at `flows::` and `domain::` paths now,
+  and that is the promise rather than strays. And moving a promised type between
+  modules churns it, which is the price of the guard working at all.
+
+  What the widened classifier still does not reach is written down as a number
+  rather than as an example, because the example was doing the work of the number.
+  Every place describing the promise file named `flows::launch::Launched` and
+  stopped, which reads as one type; the residual is 39 types owning over six
+  hundred rows in `public-api.rest.txt`, and one of them is
+  `DevcontainerRefError`, the error type of `api::resolve_devcontainer_ref`,
+  whose own row is in the promise file at the `api` path. Rename a variant of it
+  and every consumer matching on it breaks while the only diff is in the file the
+  docs call freely regenerated. `scripts/public-api-snapshots.sh
+  --print-residual` lists them from the checked-in snapshots with no toolchain,
+  and `test/test_public_api_snapshots_doc.py` holds the count in all three
+  descriptions to what it prints, so the sentence goes red rather than stale.
+
+### Fixed
+
 ### Fixed
 
 - **A captured command no longer pays the drain grace twice.** When a command
