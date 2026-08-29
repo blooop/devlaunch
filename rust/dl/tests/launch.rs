@@ -1615,7 +1615,7 @@ fn a_refused_launch_asks_for_no_refresh_because_nothing_changed() {
 
 #[test]
 fn the_prose_timing_summary_names_a_launchs_round_trips() {
-    // `test_timing.py`'s prose mode at the boundary. The labels are Python's
+    // The Python `test_timing`'s prose mode at the boundary. The labels are Python's
     // `" ".join(cmd[:2])` for every devpod call, and the vocabulary is read from
     // outside this repo (a trend job that decomposes a launch), so a name here is
     // renamed only deliberately.
