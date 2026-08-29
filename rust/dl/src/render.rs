@@ -29,7 +29,8 @@ use devlaunch_core::flows::kill::{
     TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
-    BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
+    BranchNotNamed, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared,
+    SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
@@ -41,6 +42,7 @@ use devlaunch_core::flows::listing::{
 };
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
+use devlaunch_core::flows::records::{RecordsNotice, StartupError};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
@@ -56,7 +58,6 @@ use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
 
 use crate::select::Chosen;
-use crate::session::StartupError;
 
 // ---------------------------------------------------------------------------
 // the `dl --ls` table
@@ -228,8 +229,10 @@ fn widest<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
 ///
 /// Grade A: `wf` parses `dl --ls --json`, so this is a wire format and not a
 /// rendering choice. Two-space indentation, `": "` after a key, and — the part
-/// `serde_json` does not do on its own — every non-ASCII character escaped as
-/// `\uXXXX`, which is Python's `ensure_ascii=True`.
+/// `serde_json` does not do on its own — every character outside `' '..'~'`
+/// escaped as `\uXXXX`, which is Python's `ensure_ascii=True`. That range is
+/// CPython's, and it is one character narrower than "ASCII": DEL is ASCII and
+/// Python escapes it.
 pub(crate) fn python_json_document(value: &Value) -> String {
     let mut out = Vec::new();
     let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonPretty::default());
@@ -246,8 +249,8 @@ pub(crate) fn python_json_document(value: &Value) -> String {
 ///
 /// Delegates the whole of the indentation to `serde_json`'s own pretty formatter,
 /// which lays a document out exactly as Python's `indent=2` does, and overrides
-/// only the one thing Python does differently: it escapes every character above
-/// ASCII, as the surrogate pair for anything outside the basic plane.
+/// only the one thing Python does differently: it escapes every character outside
+/// `' '..'~'`, as the surrogate pair for anything outside the basic plane.
 #[derive(Default)]
 struct PythonPretty {
     pretty: PrettyFormatter<'static>,
@@ -327,16 +330,28 @@ impl Formatter for PythonPretty {
     /// The run of string bytes `serde_json` did not have to escape, which includes
     /// every non-ASCII one — it escapes only the control characters, `"` and `\`.
     /// Python escapes the rest too, and this is where that happens.
+    ///
+    /// "The rest" is everything outside `' '..'~'`, which is CPython's `S_CHAR`
+    /// and is one character wider than `is_ascii()`: DEL (`U+007F`) is ASCII and
+    /// Python still escapes it. This is the third copy of core's
+    /// `write_ensure_ascii` (devlaunch#346 collapses it), so it carried the same
+    /// wrong gate and is corrected in step with it.
     fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
     where
         W: ?Sized + io::Write,
     {
-        if fragment.is_ascii() {
+        // CPython's `S_CHAR`, spelled exactly as core's `python_writes_it_bare`
+        // spells it, quote and backslash excluded: serde escapes those before a
+        // fragment is cut, and excluding them is the arm that stays valid JSON if
+        // it ever stops.
+        let written_bare =
+            |character: char| matches!(character, ' '..='~') && !matches!(character, '"' | '\\');
+        if fragment.bytes().map(char::from).all(written_bare) {
             return writer.write_all(fragment.as_bytes());
         }
         let mut units = [0u16; 2];
         for character in fragment.chars() {
-            if character.is_ascii() {
+            if written_bare(character) {
                 writer.write_all(character.encode_utf8(&mut [0u8; 4]).as_bytes())?;
                 continue;
             }
@@ -831,7 +846,7 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
             "this machine names no home directory, so dl cannot find its config".to_owned()
         }
         config::ConfigError::Unreadable { path, source } => {
-            format!("could not read {} ({source})", path.display())
+            format!("could not read {} ({})", path.display(), source.message)
         }
         // One sentence for both parse arms: the reason already says whether the
         // parser or the typed read refused, and the arms exist for callers.
@@ -864,6 +879,24 @@ pub(crate) fn retired_keys(keys: &[config::RetiredKey]) -> Vec<String> {
             ),
         })
         .collect()
+}
+
+/// One thing the records' open had to say, as the lines it reads as.
+///
+/// A list because one arm is many lines: [`RecordsNotice::Migrated`] carries a whole
+/// report, and Python's `_announce` printed up to nine separate warnings out of it.
+/// Everything else is the one line its own renderer already produced — this is the
+/// dispatch, not a new vocabulary.
+pub(crate) fn records_notice(notice: &RecordsNotice) -> Vec<String> {
+    match notice {
+        RecordsNotice::RetiredKey(key) => retired_keys(std::slice::from_ref(key)),
+        RecordsNotice::Metadata(notice) => metadata_notices(std::slice::from_ref(notice)),
+        RecordsNotice::Migrated(report) => migration_notices(report),
+        RecordsNotice::MigrationRefused(refused) => vec![format!(
+            "Could not migrate the workspace cache: {}",
+            metadata_error(refused)
+        )],
+    }
 }
 
 /// Why a metadata write or open failed, in one line.
@@ -2476,6 +2509,19 @@ impl Notices<ProvisionEvent> for Saying {
     }
 }
 
+/// The records' open reports through the same sink, at the moment it opens them.
+///
+/// Which is once per command, because the open is: a `ColdPath` that has already
+/// been asked answers from what it holds, so a damaged `metadata.json` is described
+/// once however many verbs go looking at it.
+impl Notices<RecordsNotice> for Saying {
+    fn say(&mut self, notice: RecordsNotice) {
+        for line in records_notice(&notice) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 /// Why this workspace opens without a GitHub login.
 ///
 /// The `Refused` arm names the directory gh read its config from, because that is
@@ -2736,15 +2782,28 @@ fn or_list(items: &[String]) -> String {
 
 fn branch_not_named(error: &BranchNotNamed) -> String {
     match error {
-        BranchNotNamed::Cold(refused) => refused.reason.clone(),
+        BranchNotNamed::Cold(refused) => cold_refused(refused),
         BranchNotNamed::Repository(refused) => ensure_repo_failure(refused),
     }
 }
 
 fn not_prepared(error: &NotPrepared) -> String {
     match error {
-        NotPrepared::Cold(refused) => refused.reason.clone(),
+        NotPrepared::Cold(refused) => cold_refused(refused),
         NotPrepared::Preparation(refused) => prepare_cold_failure(refused),
+    }
+}
+
+/// Why the cold path could not be opened, without the `error: ` prefix.
+///
+/// Quoted inside core's own refusals — `Repository 'owner/repo': <this>` — which is
+/// why the prefix is the caller's, the way [`startup_reason`] is. The words are here
+/// and not in core: `ColdRefused` is a sum over the reasons since #340, and this is
+/// the match that turns each arm into the sentence Python printed for it.
+fn cold_refused(refused: &ColdRefused) -> String {
+    match refused {
+        ColdRefused::Startup(error) => startup_reason(error),
+        ColdRefused::NoColdPath => "the cold path is not available to this caller".to_owned(),
     }
 }
 
@@ -2999,6 +3058,95 @@ mod tests {
             size,
             last_used: when,
         }
+    }
+
+    // ------------------------------------------- the cold path's typed refusal
+
+    /// The other half of devlaunch#339: core carries the reason, and this module
+    /// is where it becomes a sentence.
+    ///
+    /// Every arm is asserted whole rather than by substring, because the claim the
+    /// typing was made under is that the words did not move: `ColdRefused` used to
+    /// arrive here already rendered, and these are the exact strings it used to
+    /// arrive with. A `contains` would pass while a rewrite quietly changed the
+    /// line a user reads.
+    #[test]
+    fn every_arm_of_a_cold_refusal_renders_the_sentence_it_used_to_carry() {
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::NoHomeDirectory)),
+            "this machine names no home directory, so dl cannot find its cache"
+        );
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::Config(
+                config::ConfigError::NotToml {
+                    path: PathBuf::from("/cfg/devlaunch/config.toml"),
+                    reason: "expected `.`, `=`".to_owned(),
+                }
+            ))),
+            "/cfg/devlaunch/config.toml is not usable: expected `.`, `=`"
+        );
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::Metadata(
+                metadata::MetadataError::CreateDir {
+                    path: PathBuf::from("/cache/devlaunch"),
+                    failure: metadata::OsFailure {
+                        kind: std::io::ErrorKind::NotADirectory,
+                        message: "Not a directory (os error 20)".to_owned(),
+                    },
+                }
+            ))),
+            "could not create the directory for dl's records at /cache/devlaunch \
+             (Not a directory (os error 20))"
+        );
+        // The arm that replaced a literal written in core. Same words, said here.
+        assert_eq!(
+            cold_refused(&ColdRefused::NoColdPath),
+            "the cold path is not available to this caller"
+        );
+    }
+
+    /// And the refusal reaches the user inside the line the launch refuses with.
+    ///
+    /// `Repository '{owner}/{repo}': …` is Python's sentence and the reason it is a
+    /// reason phrase rather than a sentence of its own: the prefix belongs to the
+    /// caller, so the two must compose exactly here.
+    #[test]
+    fn a_cold_refusal_is_quoted_into_the_launch_refusal_that_carries_it() {
+        let line = launch_refusal(&LaunchRefusal::BranchNotNamed {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            error: BranchNotNamed::Cold(ColdRefused::Startup(StartupError::NoHomeDirectory)),
+        });
+
+        assert_eq!(
+            line.as_deref(),
+            Some(
+                "Repository 'blooop/devlaunch': this machine names no home directory, \
+                 so dl cannot find its cache"
+            )
+        );
+    }
+
+    /// A `config.toml` that could not be read reports the OS's own words.
+    ///
+    /// Pinned because #340 changed what carries them: `ConfigError::Unreadable` held
+    /// an `io::Error` and now holds an `OsFailure`, so that the refusal can be
+    /// cloned into `ColdRefused`. `OsFailure::message` is `io::Error::to_string()`,
+    /// and this is what says the line did not move.
+    #[test]
+    fn an_unreadable_config_still_reads_as_the_os_error_it_was() {
+        let refused: config::ConfigError = config::ConfigError::Unreadable {
+            path: PathBuf::from("/cfg/devlaunch/config.toml"),
+            source: std::io::Error::from_raw_os_error(13).into(),
+        };
+
+        assert_eq!(
+            config_error(&refused),
+            format!(
+                "could not read /cfg/devlaunch/config.toml ({})",
+                std::io::Error::from_raw_os_error(13)
+            )
+        );
     }
 
     // ------------------------------------------------------- the retired keys
@@ -3342,6 +3490,37 @@ mod tests {
         assert_eq!(
             python_json_document(&serde_json::json!("héllo 🚀")),
             r#""h\u00e9llo \ud83d\ude80""#
+        );
+    }
+
+    /// DEL, the one non-printable ASCII character serde hands to this formatter
+    /// rather than escaping itself.
+    ///
+    /// `--ls --json` is a wire format `wf` parses, so the third live copy of the
+    /// escaping (devlaunch#346 collapses it onto core's) carried the same
+    /// divergence core's did and is closed here alongside it. Expectation from
+    /// `json.dumps`.
+    #[test]
+    fn del_is_escaped_as_python_escapes_it() {
+        assert_eq!(
+            python_json_document(&serde_json::json!("a\u{7f}b")),
+            r#""a\u007fb""#
+        );
+    }
+
+    /// The whole ASCII range at once, against the line Python wrote for it.
+    ///
+    /// This copy of the escaping and core's are supposed to be spelled the same
+    /// until devlaunch#346 merges them, so it gets core's sweep too: nothing bare
+    /// that `json.dumps` escapes, nothing escaped that it leaves bare. Expectation
+    /// is the literal `json.dumps` printed for
+    /// `''.join(chr(c) for c in range(0x80))`.
+    #[test]
+    fn every_ascii_character_is_spelled_the_way_python_spells_it() {
+        let all_of_ascii: String = (0u8..=0x7f).map(char::from).collect();
+        assert_eq!(
+            python_json_document(&serde_json::json!(all_of_ascii)),
+            r##""\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u007f""##
         );
     }
 

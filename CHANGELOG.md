@@ -89,6 +89,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the only mention a stranded tree gets when no workspace opens it any
   more.
 
+- **`devlaunch_core::api` can now build a launcher, not just name one.** The two
+  implementations that decide whether a launch can go cold at all lived in the `dl`
+  binary: the one that opens devlaunch's records (config, `metadata.json`, the cache
+  migration, the clone manager) and the one that lends the host's tools into a
+  container. Both are core types plumbed together, and both are now in core, as
+  `flows::launch::ColdPath` and `flows::launch::ToolProvisioning`. What kept them in
+  the binary was where their events were *printed*, so each now takes an event sink
+  as a constructor argument and `dl` supplies the printer and the words. The records
+  themselves moved with them, to a new `flows::records`.
+
+  `api` re-exports every one of `Launch::new`'s parameter types as a result. Five of
+  the seven used to live outside it, so a second consumer could name the launcher and
+  had nothing to hand it. No behaviour changes: the same notices are said, in the same
+  order, in the same words.
+
+- **`ColdRefused` is a sum over the reasons rather than a rendered sentence.** It
+  carried `reason: String`, which was the one place `dl`'s own prose travelled back
+  *through* core, and the move above made that untenable: core would have had to write
+  the words. It is now `Startup(StartupError)` or `NoColdPath`, and `dl` renders each
+  arm. `domain::config::ConfigError` became clonable and comparable for the same
+  reason, its OS side spelled as `OsFailure` the way `MetadataError`'s already was.
+  The sentences a user sees are unchanged, and are held to that rather than inspected:
+  every arm is asserted against the exact line it used to arrive already rendered
+  with, and a real run whose records will not open is judged from outside the binary.
+
+
 ### Fixed
 
 - **Sixty-six citations that pointed at nothing now point at something, and a
@@ -136,6 +162,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minutes. A guard in the test suite holds both halves in place, and a second one
   holds every job in the workflow to a timeout: three had none, among them the job
   that polls a remote API in a sleep loop.
+
+- **The JSON writers now escape DEL, as CPython does.** `metadata.json`,
+  `completions.json` and `dl --ls --json` are all written to agree byte for byte
+  with what the Python build wrote, and one character disagreed: `U+007F`. The
+  escaper's gate was `is_ascii()` where CPython's is `' '` through `'~'`, so DEL
+  went out as a raw byte where `json.dumps` writes the six characters `\u007f`.
+  It is the only non-printable ASCII character serde hands to the escaper instead
+  of escaping itself, which is how it stayed wrong through three copies of the
+  loop.
+  No branch name can carry a DEL (git rejects control characters in ref names),
+  so nothing in the wild hit it going out. Coming back in did: the metadata loader
+  parses and re-encodes, so a `metadata.json` written by the Python build with an
+  escaped DEL in it re-saved as a raw byte, quietly breaking the round-trip the
+  file's own contract asserts. That load-and-re-save is now pinned on a real file,
+  and each of the three writers is pinned against the line `json.dumps` printed
+  for every ASCII character at once, which says the same thing in the other
+  direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
+
+- **`--force`'s placement rule is now held over the whole argument space rather
+  than over the lines somebody thought to list.** The grammar decides whether a
+  `--force` is the modifier or a word in the workspace slot by counting its
+  position, and that reading was covered by hand-written examples that between
+  them never once named `rm` or `rme`, which are the only two verbs a misplaced
+  `--force` could actually destroy something with. A single test now walks every ordering
+  of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
+  checks each one against the rule as Python stated it, so an ordering nobody
+  thought of is covered by construction.
+  **The slot is now counted over the words of the line rather than over its
+  tokens**, which is the one behaviour change and closes the leading half of the
+  same defect. A flag clap has consumed is gone from the words and still sitting in
+  argv, so counting tokens shifted every slot up by one: `dl <flag> ws --force rm`
+  read the verb-slot `--force` as trailing and force-deleted `ws`, where
+  `dl ws --force rm` refuses. No spelling of `<flag>` existed, but only because five
+  unrelated rules each happened to refuse or strip one first, and `aid` hands `dl`
+  every leading `-` word it is given without knowing what any of them mean. A slot
+  is a place a word goes, so it is words that are counted. Every line anybody can
+  type today reads exactly as it did.
+  It turned up one thing that was believed and is not true: clap's two-word cap on
+  the positionals holds only while the words are contiguous. `dl a b c` is refused,
+  but `dl a b --force c` opens a second occurrence and hands the grammar three
+  words. Nothing forced escapes through it, because the third word is refused
+  first, but it is that refusal doing the work and not the cap.
 
 - **The devpod conformance corpus can no longer lose a row quietly.** The corpus
   is the one place the two fake devpods' expectations live, and its guard checked
