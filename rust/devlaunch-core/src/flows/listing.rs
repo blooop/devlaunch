@@ -65,7 +65,9 @@ use crate::clients::devpod::{
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::{SweepNote, WorktreeInfo};
-use crate::domain::workspace_state::{self, CloneState, CouldNotTell, NonEmpty, Unsaved};
+use crate::domain::workspace_state::{
+    self, BareCache, CloneState, CouldNotTell, NonEmpty, Unsaved,
+};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
 use crate::timing;
@@ -772,6 +774,24 @@ fn file_name(path: &Path) -> Option<String> {
 /// empty answer.
 pub trait ClonePathResolver {
     fn clone_path(&self, record: &WorktreeInfo) -> Option<PathBuf>;
+
+    /// The bare cache this record's clone was made from, when dl can name one.
+    ///
+    /// Asked for one thing: which of the clone's tags came off the remote and
+    /// which were typed in the clone (#487). A clone's own refs cannot say — no
+    /// remote-tracking ref carries a tag — so the mirror dl fetched them into is
+    /// the only local record of it.
+    ///
+    /// Named off the record's repository rather than off the clone directory,
+    /// because the clone may sit at a recorded path from an older layout while
+    /// `.bare` has not moved, and because the repository is the thing the mirror
+    /// belongs to.
+    ///
+    /// A required method rather than one defaulting to `None`: `None` counts every
+    /// tag as unpushed, which is the safe direction but also the one #486 was
+    /// filed about, so a resolver that cannot name a bare should say so on
+    /// purpose.
+    fn bare_path(&self, record: &WorktreeInfo) -> Option<PathBuf>;
 }
 
 /// Everything the enriched listing reads besides devpod.
@@ -960,8 +980,11 @@ fn enriched_row(
         let path = record
             .and_then(|record| view.clones.clone_path(record))
             .unwrap_or_else(|| measured.clone());
+        // No record is no repository to name a mirror for, and the row falls back
+        // to the safe reading: every tag in that clone counts as local.
+        let bare = record.and_then(|record| view.clones.bare_path(record));
         DevlaunchClone {
-            state: workspace_state::read_clone(git, &path),
+            state: workspace_state::read_clone(git, &path, BareCache::of(bare.as_deref())),
             path,
             recorded: record.map(Recorded::of),
         }
@@ -1079,7 +1102,11 @@ pub(crate) fn unsaved_work_in(git: &Git<'_>, view: &DlView<'_>, workspace_id: &s
         return Unsaved::NothingToLose;
     };
     match view.clones.clone_path(record) {
-        Some(clone) => workspace_state::holds_unsaved_work(git, &clone),
+        Some(clone) => workspace_state::holds_unsaved_work(
+            git,
+            &clone,
+            BareCache::of(view.clones.bare_path(record).as_deref()),
+        ),
         None => Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown {
             workspace_id: workspace_id.to_owned(),
         }),
@@ -1429,6 +1456,18 @@ mod tests {
                     .join(id.value()),
             )
         }
+
+        /// The mirror is named off the repository, as `resolve_bare_path` names
+        /// it: a sibling of every clone of that repository, wherever the clone
+        /// itself was recorded.
+        fn bare_path(&self, record: &WorktreeInfo) -> Option<PathBuf> {
+            Some(
+                self.repos_dir
+                    .join(&record.owner)
+                    .join(&record.repo)
+                    .join(".bare"),
+            )
+        }
     }
 
     fn established_absent(path: &Path) -> bool {
@@ -1448,6 +1487,10 @@ mod tests {
 
     impl ClonePathResolver for NamesNothing {
         fn clone_path(&self, _record: &WorktreeInfo) -> Option<PathBuf> {
+            None
+        }
+
+        fn bare_path(&self, _record: &WorktreeInfo) -> Option<PathBuf> {
             None
         }
     }
