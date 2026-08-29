@@ -351,14 +351,12 @@ impl WorkspaceId {
         validate_ref_name(owner, NamePart::Owner)?;
         validate_ref_name(repo, NamePart::Repo)?;
         validate_ref_name(git_ref, NamePart::Ref)?;
-        let mut parsed = Self {
+        Ok(Self {
+            value: join_parts(&parts_of(owner, repo, git_ref)),
             owner: owner.to_string(),
             repo: repo.to_string(),
             git_ref: git_ref.to_string(),
-            value: String::new(),
-        };
-        parsed.value = parsed.derive();
-        Ok(parsed)
+        })
     }
 
     pub(crate) fn owner(&self) -> &str {
@@ -390,13 +388,15 @@ impl WorkspaceId {
     ///
     /// Lowercasing does not move ids for input that was already lowercase, which
     /// is every id this project has published.
+    ///
+    /// Only this module's tests read it, and they read it a great deal: the golden
+    /// vectors pin the suffix beside the id, and a dozen tests assert that an id
+    /// ends in its own. Nothing outside asks for a suffix on its own -- an id is
+    /// what addresses a workspace -- so this is the frozen half of the derivation
+    /// exposed for the tests that freeze it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn suffix(&self) -> String {
-        let Identity {
-            owner,
-            repo,
-            git_ref,
-        } = self.identity();
-        hashed_suffix(&[&owner, &repo, &git_ref])
+        suffix_of(&self.identity())
     }
 
     /// The derived id, at most [`TARGET_LENGTH`] characters.
@@ -405,16 +405,6 @@ impl WorkspaceId {
     /// at the parse instead.
     pub fn value(&self) -> &str {
         &self.value
-    }
-
-    /// Run the derivation. Called once, by [`Self::new`].
-    fn derive(&self) -> String {
-        let Parts {
-            repo,
-            git_ref,
-            suffix,
-        } = self.parts();
-        join(&[&repo, &git_ref, &suffix])
     }
 
     /// The same id read as `repo@ref`: no suffix, and an `@` where the id has a
@@ -446,49 +436,60 @@ impl WorkspaceId {
     /// slugs to nothing, `_` being the shortest of them. There is nothing for the
     /// `@` to sit between there, and the id is the one name that is never empty.
     pub fn label(&self) -> String {
-        let Parts {
-            repo,
-            git_ref,
-            suffix,
-        } = self.parts();
-        if repo.is_empty() || git_ref.is_empty() {
-            return join(&[&repo, &git_ref, &suffix]);
+        let parts = parts_of(&self.owner, &self.repo, &self.git_ref);
+        if parts.repo.is_empty() || parts.git_ref.is_empty() {
+            return join_parts(&parts);
         }
-        format!("{repo}@{git_ref}")
+        format!("{}@{}", parts.repo, parts.git_ref)
     }
+}
 
-    /// The three pieces an id is joined from, each already cut to its budget.
-    ///
-    /// One derivation for [`value`](Self::value) and [`label`](Self::label) rather
-    /// than two that agree by inspection: the label is the id with the suffix
-    /// dropped and one separator changed, and that claim only stays true while a
-    /// single function decides where the cuts fall.
-    fn parts(&self) -> Parts {
-        let suffix = self.suffix();
-        let mut repo_part = slug(&self.repo);
-        // Cut the repo slug only when the id would otherwise overflow. Whenever the
-        // cut does fire, the ref is left TARGET_LENGTH - 20 - 1 - 1 - 4 = 21
-        // characters, so it can never come out of that branch with nothing to spend
-        // — the hole that let a 47-char repo name skip truncation altogether.
-        let untruncated = join(&[&repo_part, &fit_ref(&self.git_ref, TARGET_LENGTH), &suffix]);
-        if untruncated.len() > TARGET_LENGTH {
-            repo_part = head(&repo_part, REPO_SLUG_LENGTH)
-                .trim_matches('-')
-                .to_string();
-        }
-        let separators = if repo_part.is_empty() { 1 } else { 2 };
-        // Saturating because the *other* branch can reach zero, and reaches it
-        // legitimately: a repo slug of 42 with a ref that slugs to nothing fits
-        // inside the budget untruncated, so the cut never fires and the arithmetic
-        // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
-        // the empty string, `join` drops it, and the id lands exactly on the cap.
-        let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
-        Parts {
-            git_ref: fit_ref(&self.git_ref, room),
-            repo: repo_part,
-            suffix,
-        }
+/// The [`SUFFIX_LENGTH`]-character identity suffix for a folded triple.
+fn suffix_of(identity: &Identity) -> String {
+    hashed_suffix(&[&identity.owner, &identity.repo, &identity.git_ref])
+}
+
+/// The three pieces an id is joined from, each already cut to its budget.
+///
+/// One derivation for [`WorkspaceId::value`] and [`WorkspaceId::label`] rather
+/// than two that agree by inspection: the label is the id with the suffix dropped
+/// and one separator changed, and that claim only stays true while a single
+/// function decides where the cuts fall.
+///
+/// A free function over the triple rather than a method, so [`WorkspaceId::new`]
+/// can derive the id it stores *before* there is a value to call a method on --
+/// which is what keeps the stored id from having a moment of being the empty
+/// string.
+fn parts_of(owner: &str, repo: &str, git_ref: &str) -> Parts {
+    let suffix = suffix_of(&identity_of(owner, repo, git_ref));
+    let mut repo_part = slug(repo);
+    // Cut the repo slug only when the id would otherwise overflow. Whenever the
+    // cut does fire, the ref is left TARGET_LENGTH - 20 - 1 - 1 - 4 = 21
+    // characters, so it can never come out of that branch with nothing to spend
+    // — the hole that let a 47-char repo name skip truncation altogether.
+    let untruncated = join(&[&repo_part, &fit_ref(git_ref, TARGET_LENGTH), &suffix]);
+    if untruncated.len() > TARGET_LENGTH {
+        repo_part = head(&repo_part, REPO_SLUG_LENGTH)
+            .trim_matches('-')
+            .to_string();
     }
+    let separators = if repo_part.is_empty() { 1 } else { 2 };
+    // Saturating because the *other* branch can reach zero, and reaches it
+    // legitimately: a repo slug of 42 with a ref that slugs to nothing fits
+    // inside the budget untruncated, so the cut never fires and the arithmetic
+    // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
+    // the empty string, `join` drops it, and the id lands exactly on the cap.
+    let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
+    Parts {
+        git_ref: fit_ref(git_ref, room),
+        repo: repo_part,
+        suffix,
+    }
+}
+
+/// The id these [`Parts`] spell: the three of them, dashed, absent ones dropped.
+fn join_parts(parts: &Parts) -> String {
+    join(&[&parts.repo, &parts.git_ref, &parts.suffix])
 }
 
 /// The pieces [`WorkspaceId::parts`] cuts, in the order an id joins them.
