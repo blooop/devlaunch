@@ -22,10 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so nothing in the wild hit it going out. Coming back in did: the metadata loader
   parses and re-encodes, so a `metadata.json` written by the Python build with an
   escaped DEL in it re-saved as a raw byte, quietly breaking the round-trip the
-  file's own contract asserts. Each of the three writers is now pinned against the
-  line `json.dumps` printed for every ASCII character at once, which says the same
-  thing in the other direction too: nothing in `' '..'~'` is escaped that Python
-  leaves bare.
+  file's own contract asserts. That load-and-re-save is now pinned on a real file,
+  and each of the three writers is pinned against the line `json.dumps` printed
+  for every ASCII character at once, which says the same thing in the other
+  direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
 
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for

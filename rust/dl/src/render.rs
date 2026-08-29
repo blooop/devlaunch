@@ -182,8 +182,10 @@ fn widest<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
 ///
 /// Grade A: `wf` parses `dl --ls --json`, so this is a wire format and not a
 /// rendering choice. Two-space indentation, `": "` after a key, and — the part
-/// `serde_json` does not do on its own — every non-ASCII character escaped as
-/// `\uXXXX`, which is Python's `ensure_ascii=True`.
+/// `serde_json` does not do on its own — every character outside `' '..'~'`
+/// escaped as `\uXXXX`, which is Python's `ensure_ascii=True`. That range is
+/// CPython's, and it is one character narrower than "ASCII": DEL is ASCII and
+/// Python escapes it.
 pub(crate) fn python_json_document(value: &Value) -> String {
     let mut out = Vec::new();
     let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonPretty::default());
@@ -200,8 +202,8 @@ pub(crate) fn python_json_document(value: &Value) -> String {
 ///
 /// Delegates the whole of the indentation to `serde_json`'s own pretty formatter,
 /// which lays a document out exactly as Python's `indent=2` does, and overrides
-/// only the one thing Python does differently: it escapes every character above
-/// ASCII, as the surrogate pair for anything outside the basic plane.
+/// only the one thing Python does differently: it escapes every character outside
+/// `' '..'~'`, as the surrogate pair for anything outside the basic plane.
 #[derive(Default)]
 struct PythonPretty {
     pretty: PrettyFormatter<'static>,
@@ -291,7 +293,12 @@ impl Formatter for PythonPretty {
     where
         W: ?Sized + io::Write,
     {
-        let written_bare = |character: char| matches!(character, ' '..='~');
+        // CPython's `S_CHAR`, spelled exactly as core's `python_writes_it_bare`
+        // spells it, quote and backslash excluded: serde escapes those before a
+        // fragment is cut, and excluding them is the arm that stays valid JSON if
+        // it ever stops.
+        let written_bare =
+            |character: char| matches!(character, ' '..='~') && !matches!(character, '"' | '\\');
         if fragment.bytes().map(char::from).all(written_bare) {
             return writer.write_all(fragment.as_bytes());
         }

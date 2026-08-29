@@ -61,8 +61,10 @@ impl JsonKind {
 /// Three differences from `serde_json::to_string`, all of them Python's defaults:
 ///
 /// - separators are `", "` and `": "`, not `","` and `":"`;
-/// - non-ASCII is escaped (`ensure_ascii=True`), as `\uXXXX` in lowercase hex,
-///   with astral characters written as the surrogate pair Python writes;
+/// - everything outside `' '..'~'` is escaped (`ensure_ascii=True`), as `\uXXXX`
+///   in lowercase hex, with astral characters written as the surrogate pair
+///   Python writes. Note the rule is CPython's printable range and not "non-ASCII":
+///   DEL is ASCII and Python escapes it ([`python_writes_it_bare`]);
 /// - floats are spelled the way `repr()` spells them
 ///   ([`PythonFormatter::write_f64`]).
 pub(crate) fn as_python_writes_it(value: &serde_json::Value) -> String {
@@ -125,9 +127,11 @@ impl serde_json::ser::Formatter for PythonFormatter {
         writer.write_all(python_repr(value).as_bytes())
     }
 
-    /// The run of string bytes serde did not have to escape — which includes every
-    /// non-ASCII byte, since serde escapes only the control characters, `"` and
-    /// `\`. Python escapes the rest too, which is [`write_ensure_ascii`]'s job.
+    /// The run of string bytes serde did not have to escape, since it escapes only
+    /// the control characters under `0x20`, `"` and `\`. Everything Python escapes
+    /// and serde does not arrives here: every non-ASCII byte, and DEL, which is
+    /// ASCII and is above serde's control range. Escaping the rest is
+    /// [`write_ensure_ascii`]'s job.
     fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
     where
         W: ?Sized + io::Write,
@@ -182,18 +186,26 @@ where
 
 /// Whether `json.dumps` writes this character as itself.
 ///
-/// CPython's `S_CHAR`, and the whole of the rule: space through `~`, and nothing
-/// else. `is_ascii()` is the tempting spelling and the wrong one by exactly one
-/// character — **DEL (`U+007F`)**, which is ASCII, is not printable, and is the
-/// single non-printable ASCII character serde hands to the fragment writer rather
-/// than escaping from its own table. Three copies of this escaper spelled the gate
-/// `is_ascii()` and all three wrote a raw `0x7f` where Python wrote six characters
-/// (devlaunch#349). The other two members of `S_CHAR`'s exclusion list, `"` and
-/// `\`, never reach here — serde has already escaped them — so testing for them
-/// would be dead code, and leaving them out of the range would double-escape them
-/// if serde ever stopped.
+/// CPython's `S_CHAR`, transcribed: space through `~`, less the quote and the
+/// backslash. `is_ascii()` is the tempting spelling and the wrong one by exactly
+/// one character — **DEL (`U+007F`)**, which is ASCII, is not printable, and is
+/// the single non-printable ASCII character serde hands to the fragment writer
+/// rather than escaping from its own table. Three copies of this escaper spelled
+/// the gate `is_ascii()` and all three wrote a raw `0x7f` where Python wrote six
+/// characters (devlaunch#349).
+///
+/// The quote and the backslash are unreachable either way, because serde's own
+/// table escapes both before a fragment is cut, so the two arms of that choice are
+/// only distinguishable if serde ever stops. They are excluded anyway, because
+/// that is the arm that fails safe: excluded, a stray `"` comes out as `\u0022` —
+/// valid JSON, spelled differently from Python's `\"`, and never doubled, since
+/// this loop only ever sees a character once. Included, it comes out raw, which
+/// terminates the string early and writes a document nothing can parse. Costing
+/// two comparisons per byte to turn "silently invalid" into "valid and slightly
+/// oddly spelled" is worth it, and it also makes the predicate answer its own
+/// question honestly: `json.dumps` does not write a bare quote.
 fn python_writes_it_bare(character: char) -> bool {
-    matches!(character, ' '..='~')
+    matches!(character, ' '..='~') && character != '"' && character != '\\'
 }
 
 /// Anything `Serialize`, spelled the same way.
