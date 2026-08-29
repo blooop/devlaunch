@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Eight tests that CI was not running.** The Rust job names its test suites one
+  step at a time, which buys real things: a per-suite timeout, so a wedged binary
+  fails its own short step instead of holding the runner until it loses contact,
+  and a step title that names the culprit even when the runner dies before it can
+  upload logs. What it costs is that the list, rather than the workspace, decides
+  what runs. A test binary nobody wrote a step for is compiled by the build step
+  and run by nothing, and no tick anywhere goes red to say so.
+
+  That had happened twice. `devlaunch-test-support` came off the list once and was
+  put back with a note about it; `dl`'s `picker` and `terminal` suites were still
+  off it, eight tests, one of them the test written to prove the terminal-restore
+  fix in this same release. The one test standing behind that repair had never run
+  in CI.
+
+  So the job now runs `cargo test --workspace` after the named steps. The list
+  stays, because the list is what triage reads; the workspace is what decides. It
+  costs about two minutes, in a job that takes two and a quarter and is allowed
+  thirty. A guard in the test suite holds both halves in place, and a second one
+  holds every job in the workflow to a timeout: three had none, among them the job
+  that polls a remote API in a sleep loop.
+
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for
   its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
