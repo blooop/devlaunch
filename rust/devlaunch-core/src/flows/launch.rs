@@ -71,7 +71,9 @@ use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
-use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
+use crate::domain::workspace_id::{
+    NamePart, UnsafeName, WorkspaceId, identity_of, validate_ref_name,
+};
 use crate::flows::kept_copies::KeptCopies;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
@@ -2898,23 +2900,29 @@ fn recorded_id(cold: &mut dyn ColdMachinery<'_>, triple: (&str, &str, &str)) -> 
 /// such records as `unusable` rather than stopping. A guard that refused every
 /// launch on the machine because one old record will not parse would be worse than
 /// the collision it is looking for.
+///
+/// **"A different triple" means [`Identity`](crate::domain::workspace_id::Identity),
+/// not a different pair of strings.**
+/// `NVIDIA/cuda-samples@main` and `nvidia/cuda-samples@main` derive one id
+/// deliberately -- GitHub's owners and repos are case-insensitive, and
+/// [`identity_of`] is the rule that makes both spellings one workspace instead of
+/// one repository cloned twice. Comparing the raw strings here would read the
+/// second spelling as an intruder holding the first one's id and refuse it, with a
+/// message telling the reader to rename a branch when both branches are `main`.
+/// Since the comparison and the derivation have to agree, they read the same rule.
 fn colliding_record(
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
 ) -> Option<(String, String, String)> {
     let derived = workspace.value();
-    let mine = (workspace.owner(), workspace.repo(), workspace.git_ref());
+    let mine = workspace.identity();
     let storage = cold.recorded()?;
     storage
         .worktrees()
         .values()
         .find(|record| {
-            let theirs = (
-                record.owner.as_str(),
-                record.repo.as_str(),
-                record.branch.as_str(),
-            );
-            theirs != mine && holds_id(record, &derived)
+            identity_of(&record.owner, &record.repo, &record.branch) != mine
+                && holds_id(record, &derived)
         })
         .map(|record| {
             (
@@ -7267,6 +7275,128 @@ mod tests {
             cold.opens.get(),
             0,
             "a warm launch still brings no clone manager, config or migration up"
+        );
+    }
+
+    #[test]
+    fn a_repository_spelled_in_another_case_is_the_same_workspace_and_is_not_refused() {
+        // The convergence `suffix` exists to guarantee, seen from the guard's side.
+        // GitHub's owners are case-insensitive, so `NVIDIA/cuda-samples` and
+        // `nvidia/cuda-samples` are one repository and derive one id on purpose --
+        // the alternative is one repo cloned twice into two containers. A guard that
+        // compared the triples as raw strings read the second spelling as a
+        // *different* triple holding the first one's id and refused it, and the
+        // refusal it printed told the reader to rename one of the two branches when
+        // both branches are `main`: a message naming no way out that exists, in
+        // front of a workspace the reader already has running.
+        let recorded = WorkspaceId::new("nvidia", "cuda-samples", "main").expect("a safe triple");
+        let typed = WorkspaceId::new("NVIDIA", "cuda-samples", "main").expect("a safe triple");
+        assert_eq!(
+            typed.value(),
+            recorded.value(),
+            "the two spellings are one workspace, which is what makes this a trap"
+        );
+        let scene = Scene::new().with_running(&recorded.value());
+        record_worktree(
+            scene.cache_dir(),
+            "nvidia",
+            "cuda-samples",
+            "main",
+            &recorded.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "NVIDIA/cuda-samples@main",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 })),
+            "the other spelling of a repository is not an intruder holding its id"
+        );
+    }
+
+    #[test]
+    fn a_ref_that_differs_only_in_case_is_a_different_workspace_and_does_collide() {
+        // The other half of the rule, and the reason the fix folds two of the three
+        // parts rather than all of them. Git refs are case-sensitive: `Main` and
+        // `main` can both exist in one repository, so they are two workspaces. Were
+        // the ref folded along with the owner, this launch would be waved through to
+        // attach to the other branch's container -- the exact silent wrong-checkout
+        // this guard exists to stop.
+        let typed = WorkspaceId::new("owner", "repo", "Main").expect("a safe triple");
+        let other = WorkspaceId::new("owner", "repo", "main").expect("a safe triple");
+        assert_ne!(
+            typed.value(),
+            other.value(),
+            "the two refs hash apart, which is why the collision below has to be staged"
+        );
+        let scene = Scene::new().with_running(&typed.value());
+        record_worktree(
+            scene.cache_dir(),
+            "owner",
+            "repo",
+            "main",
+            // The `main` record is put on the id `Main` derives. Two refs differing
+            // only in case do not collide on their own -- they hash apart by design
+            // -- so a real collision between them cannot be produced, only staged.
+            // What is under test is the comparison, not the hash: the guard has to
+            // read these two as different triples.
+            &typed.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "owner/repo@Main",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Refused(LaunchRefusal::IdCollision {
+                workspace_id: typed.value(),
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                branch: "Main".to_owned(),
+                recorded_owner: "owner".to_owned(),
+                recorded_repo: "repo".to_owned(),
+                recorded_branch: "main".to_owned(),
+            })),
+            "a ref differing only in case is a different branch, not the same one"
         );
     }
 

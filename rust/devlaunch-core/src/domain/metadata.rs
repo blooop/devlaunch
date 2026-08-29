@@ -428,7 +428,7 @@ impl MetadataStorage {
     /// it was found.
     ///
     /// **That is what lets a read sit on the warm launch path at all**
-    /// (devlaunch#145): `a_warm_triple_launch_does_no_metadata_io_at_all` seeds the
+    /// (devlaunch#145): `a_warm_triple_launch_writes_nothing_to_the_cache` seeds the
     /// cache with a corrupt document and asserts the launch leaves it and its two
     /// siblings exactly as they were. A file that cannot be read or parsed loads as
     /// an empty store here, silently -- there is nobody to tell, and the command

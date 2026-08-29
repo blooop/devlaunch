@@ -175,6 +175,38 @@ pub enum NamePart {
     Ref,
 }
 
+/// A triple reduced to the parts that decide *which workspace it is*.
+///
+/// Owner and repo are folded to lower case; the ref is left exactly as it is.
+/// GitHub treats owner and repo case-insensitively, so `NVIDIA/cuda-samples` and
+/// `nvidia/cuda-samples` are one repository and must derive one id -- giving each
+/// spelling its own would clone one repo twice into two containers. Git refs are
+/// case-sensitive, so `Main` and `main` really are two branches and must not fold.
+///
+/// **One rule, one place, because two callers now depend on agreeing.**
+/// [`WorkspaceId::suffix`] hashes this, and `flows::launch`'s collision guard
+/// compares it to decide whether a record holding the derived id belongs to the
+/// launch in front of it. A guard that compared raw strings instead would read the
+/// second spelling of a repository as a *different* triple holding the id and
+/// refuse it -- telling the user to rename a branch when both branches are `main`
+/// and the spelling of the owner is the only difference, which is a refusal with no
+/// way out of it. The convergence is the feature; the guard has to know that.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Identity {
+    pub(crate) owner: String,
+    pub(crate) repo: String,
+    pub(crate) git_ref: String,
+}
+
+/// Reduce a triple to its [`Identity`]. See there for the rule and why it is one.
+pub(crate) fn identity_of(owner: &str, repo: &str, git_ref: &str) -> Identity {
+    Identity {
+        owner: owner.to_lowercase(),
+        repo: repo.to_lowercase(),
+        git_ref: git_ref.to_owned(),
+    }
+}
+
 /// A name that is not safe as a git ref or a path component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 // binary surface — not part of the frozen wf API (#251 §7)
@@ -308,22 +340,30 @@ impl WorkspaceId {
         &self.git_ref
     }
 
+    /// This triple as [`identity_of`] reads it.
+    ///
+    /// Held here so a caller comparing a stored triple against this one compares
+    /// it by the rule the id was derived under, rather than by a second rule that
+    /// looks the same until a repository is spelled `NVIDIA`.
+    pub(crate) fn identity(&self) -> Identity {
+        identity_of(&self.owner, &self.repo, &self.git_ref)
+    }
+
     /// The [`SUFFIX_LENGTH`]-character identity suffix. Never truncated.
     ///
-    /// Owner and repo are lowercased before hashing because GitHub treats them
-    /// case-insensitively: `NVIDIA/cuda-samples` and `nvidia/cuda-samples` are
-    /// one repository, and giving each spelling its own id means one repo cloned
-    /// twice into two containers. The ref is hashed verbatim — git refs really
-    /// are case-sensitive, and `Main` and `main` can both exist in one repo.
+    /// The hash is taken over [`identity_of`] rather than over the raw triple, so
+    /// the rule that decides which spellings are one workspace lives in exactly one
+    /// place. See that function for why owner and repo fold and the ref does not.
     ///
     /// Lowercasing does not move ids for input that was already lowercase, which
     /// is every id this project has published.
     pub(crate) fn suffix(&self) -> String {
-        hashed_suffix(&[
-            &self.owner.to_lowercase(),
-            &self.repo.to_lowercase(),
-            &self.git_ref,
-        ])
+        let Identity {
+            owner,
+            repo,
+            git_ref,
+        } = self.identity();
+        hashed_suffix(&[&owner, &repo, &git_ref])
     }
 
     /// The derived id, at most [`TARGET_LENGTH`] characters.
@@ -1628,6 +1668,53 @@ mod tests {
             source_workspace_id("github.com/Blooop/DevLaunch"),
             source_workspace_id("github.com/blooop/devlaunch")
         );
+    }
+
+    #[test]
+    fn identity_folds_the_owner_and_the_repo_and_never_the_ref() {
+        // The rule two callers depend on agreeing about: `suffix` hashes it, and
+        // `flows::launch`'s collision guard compares it. It is one function so that
+        // they cannot drift, and this is the test that pins what it says.
+        let folded = identity_of("NVIDIA", "CUDA-Samples", "Main");
+
+        assert_eq!(folded.owner, "nvidia");
+        assert_eq!(folded.repo, "cuda-samples");
+        assert_eq!(
+            folded.git_ref, "Main",
+            "git refs are case-sensitive, so the ref is never folded"
+        );
+    }
+
+    #[test]
+    fn the_guard_and_the_derivation_agree_about_which_spellings_are_one_workspace() {
+        // Stated as the property rather than as two separate assertions, because the
+        // defect this pins was exactly the two disagreeing: the derivation folded the
+        // owner and the guard did not, so the second spelling of a repository derived
+        // the first one's id and was then refused for holding it.
+        let cases = [
+            (
+                ("NVIDIA", "cuda-samples", "main"),
+                ("nvidia", "cuda-samples", "main"),
+            ),
+            (
+                ("blooop", "DevLaunch", "main"),
+                ("blooop", "devlaunch", "main"),
+            ),
+        ];
+        for (left, right) in cases {
+            let a = WorkspaceId::new(left.0, left.1, left.2).expect("a safe triple");
+            let b = WorkspaceId::new(right.0, right.1, right.2).expect("a safe triple");
+            assert_eq!(
+                a.value() == b.value(),
+                a.identity() == b.identity(),
+                "{left:?} and {right:?}: the id and the identity disagree"
+            );
+        }
+        // And the ref, which must part them both ways.
+        let upper = WorkspaceId::new("owner", "repo", "Main").expect("a safe triple");
+        let lower = WorkspaceId::new("owner", "repo", "main").expect("a safe triple");
+        assert_ne!(upper.value(), lower.value());
+        assert_ne!(upper.identity(), lower.identity());
     }
 
     #[test]

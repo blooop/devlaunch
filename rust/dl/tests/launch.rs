@@ -449,12 +449,20 @@ fn a_devcontainer_choice_a_running_workspace_cannot_honour_is_said_not_discarded
 }
 
 #[test]
-fn a_warm_triple_launch_does_no_metadata_io_at_all() {
+fn a_warm_triple_launch_writes_nothing_to_the_cache() {
     // devlaunch#145, observed on disk rather than through a mock. The cache is
-    // seeded with an unparsable `metadata.json`: any path that *reads* it
+    // seeded with an unparsable `metadata.json`: any path that *opens* it
     // quarantines it to `metadata.json.corrupt` and says so, and any path that takes
-    // the metadata lock leaves `metadata.json.lock` behind. A launch that did no
-    // metadata I/O leaves the garbage byte-identical and creates neither sibling.
+    // the metadata lock leaves `metadata.json.lock` behind. A launch that wrote
+    // nothing leaves the garbage byte-identical and creates neither sibling.
+    //
+    // **A warm launch does read the file**, and this test is deliberately not about
+    // that. The collision guard (blooop/devlaunch#438) reads it through
+    // `MetadataStorage::look`, which takes no lock, runs no migration and writes
+    // nothing -- so every assertion below still holds, and holds honestly. What #145
+    // bought was that a user waiting on an attach does not pay for the *machinery*;
+    // the name of this test used to say "no I/O at all", which claimed more than the
+    // assertions do and would send a reader looking to undo that read.
     let world = World::with(&["--warm"]);
     std::fs::write(world.path("cache/devlaunch/metadata.json"), "not json")
         .expect("a corrupt document");
