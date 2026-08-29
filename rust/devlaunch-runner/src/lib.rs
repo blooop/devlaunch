@@ -488,16 +488,28 @@ impl Runner for ProcessRunner {
         match ending {
             // Bounded, not joined (see [`collect`] and [`DRAIN_GRACE`]): the
             // child has exited, but a descendant it forked into a session of its
-            // own — git's ssh ControlMaster is the production case — can hold
-            // the pipe open with no EOF ever coming, and this is the path that
-            // reaches that far the more often of the two.
-            Ending::Ended(exit) => Outcome::Ran {
-                exit,
-                io: CapturedText {
-                    stdout: collect(stdout),
-                    stderr: collect(stderr),
-                },
-            },
+            // own — ssh's ControlMaster is the production case, and dl's own
+            // pty transport now opens one per workspace — can hold the pipe open
+            // with no EOF ever coming, and this is the path that reaches that far
+            // the more often of the two.
+            //
+            // **One deadline, computed here and shared by both drains**, so that
+            // [`DRAIN_GRACE`] bounds the drain rather than each pipe. A descendant
+            // that inherited the write ends holds *both*, so a per-pipe bound is
+            // paid twice for one stuck child — 1s of dead wait on a 500ms grace,
+            // on the hot path (devlaunch#501). Nothing is lost by sharing it: the
+            // stderr drain starts when the stdout one does, so its grace has been
+            // running all along.
+            Ending::Ended(exit) => {
+                let deadline = Instant::now() + DRAIN_GRACE;
+                Outcome::Ran {
+                    exit,
+                    io: CapturedText {
+                        stdout: collect(stdout, deadline),
+                        stderr: collect(stderr, deadline),
+                    },
+                }
+            }
             // The same bound, at zero: a timed-out outcome drops whatever was
             // written (see [`Outcome::TimedOut`]), so there is nothing here to
             // wait even a moment for. The drains are dropped mid-read and the
@@ -921,12 +933,17 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
     })
 }
 
-/// What a drain has read, waiting up to [`DRAIN_GRACE`] for it to reach EOF.
+/// What a drain has read, waiting until `deadline` for it to reach EOF.
 ///
 /// Called once the child is gone, so the wait is for the pipe to close rather
 /// than for anything more to be written; when it expires the reading thread is
 /// abandoned with the pipe it will never see the end of, and the bytes it did
 /// read are the answer.
+///
+/// The deadline arrives from the caller rather than being computed here, and that
+/// is what makes [`DRAIN_GRACE`] a bound on the *drain* instead of on each pipe:
+/// one stuck descendant holds both write ends, so a grace computed per call is
+/// spent once per pipe for a single stuck child.
 ///
 /// A condvar rather than a poll of `JoinHandle::is_finished`, because this is on
 /// the hot path: every capture ends here, and the drain thread usually reaches
@@ -935,12 +952,11 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<Drain> {
 /// twice, against a `capture` that otherwise costs well under a millisecond —
 /// where waiting to be woken costs the microseconds it actually takes. The bound
 /// is the same; only the waiting is exact.
-fn collect(drain: Option<Drain>) -> String {
+fn collect(drain: Option<Drain>, deadline: Instant) -> String {
     let Some(drain) = drain else {
         return String::new();
     };
     let (reading, ended) = &*drain.read;
-    let deadline = Instant::now() + DRAIN_GRACE;
     let mut read = held(reading);
     while !read.ended {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -1012,8 +1028,17 @@ fn kill(child: &mut Child) -> Ending {
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// How long [`collect`] gives a drained pipe to reach EOF once the child has
+/// How long a capture gives its pipes, together, to reach EOF once the child has
 /// exited.
+///
+/// The whole drain and not each pipe of it. [`ProcessRunner::capture`] takes this
+/// deadline once and hands the same instant to both [`collect`] calls, because the
+/// case the bound exists for holds *both* write ends: a descendant in a session of
+/// its own inherited the child's stdout and stderr together, so a grace charged
+/// per pipe is charged twice for one stuck child and the drain costs 1s where it
+/// was meant to cost 500ms (devlaunch#501). The second drain loses nothing by it —
+/// both threads started before the wait for the child did, so both have had the
+/// same grace to reach EOF in.
 ///
 /// A bound rather than an unbounded join, and this is the whole of #302's fix.
 /// The child is gone by the time it is waited on, so everything it wrote is

@@ -149,6 +149,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A captured command no longer pays the drain grace twice.** When a command
+  exits while a descendant it forked still holds the pipes open, `dl` waits a
+  short grace for the last of the output rather than waiting for an end of file
+  that is never coming. That grace was charged per pipe and the two pipes were
+  drained one after the other, so a single stuck descendant, which holds stdout
+  and stderr together, cost 1s of dead waiting on a 500ms grace. It is now one
+  deadline shared by both drains, so the grace bounds the drain. Nothing is given
+  up by sharing it: both drains start before the wait for the command does, so
+  both have had the same grace to finish in. The shape used to be an occasional
+  `git fetch` over ssh; with a connection master now open on `dl`'s own hottest
+  path it is the common one.
+
 - **Sixty-six citations that pointed at nothing now point at something, and a
   guard keeps it that way.** Comments across `rust/` name the test that pins the
   behaviour they describe, which is most of what makes them worth reading.
