@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI now refuses a pull request that files a new entry inside an already
+  released section of this file.** `## [Unreleased]` is a stable heading that a
+  release cut renames: it becomes `## [0.25.0] - 2026-08-28`, and a fresh empty
+  `[Unreleased]` is inserted above it. A branch cut before that release carries
+  its entry anchored by context under the old heading, which is now the release.
+  Git sees lines added below a heading that still exists, resolves the merge with
+  no conflict, and the pull request reports mergeable with every check green while
+  a shipped version quietly grows bullets describing fixes it never contained.
+
+  It is not a lapse of attention. Over one afternoon it happened four times
+  independently to three people who did not know of each other, and twice inside a
+  single build. Every instance was caught by someone reading the diff, because
+  until now there was nothing else that could catch it.
+
+  The rule is that a version section already present on the base branch must be
+  byte identical on the branch. Phrased that way it permits the one commit that
+  legitimately rewrites this file: a release cut adds a heading that was not there
+  and modifies none that was. The tempting phrasing, that the released portion of
+  the file is unchanged, is wrong on its own terms rather than merely
+  inconvenient, since it fails every release and so would be switched off before
+  it ever caught anything.
+
 - **`dl --prune` now reclaims the Docker volumes of workspaces devpod has already
   forgotten.** Deleting a workspace through `dl` has removed its two named volumes
   since devlaunch#325, and the names come from devpod's own record of what it
