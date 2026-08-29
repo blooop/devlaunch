@@ -580,7 +580,9 @@ pub fn devlaunch_core::domain::workspace_state::CouldNotTell::fmt(&self, &mut co
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_state::CouldNotTell
 pub enum devlaunch_core::domain::workspace_state::Loss
 pub devlaunch_core::domain::workspace_state::Loss::Uncommitted(devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>)
-pub devlaunch_core::domain::workspace_state::Loss::Unpushed(devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>)
+pub devlaunch_core::domain::workspace_state::Loss::Unpushed
+pub devlaunch_core::domain::workspace_state::Loss::Unpushed::by_tags: core::option::Option<devlaunch_core::domain::workspace_state::ByLocalTags>
+pub devlaunch_core::domain::workspace_state::Loss::Unpushed::commits: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
 impl core::clone::Clone for devlaunch_core::domain::workspace_state::Loss
 pub fn devlaunch_core::domain::workspace_state::Loss::clone(&self) -> devlaunch_core::domain::workspace_state::Loss
 impl core::cmp::Eq for devlaunch_core::domain::workspace_state::Loss
@@ -601,6 +603,15 @@ pub fn devlaunch_core::domain::workspace_state::Unsaved::eq(&self, &devlaunch_co
 impl core::fmt::Debug for devlaunch_core::domain::workspace_state::Unsaved
 pub fn devlaunch_core::domain::workspace_state::Unsaved::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_state::Unsaved
+pub struct devlaunch_core::domain::workspace_state::ByLocalTags
+impl core::clone::Clone for devlaunch_core::domain::workspace_state::ByLocalTags
+pub fn devlaunch_core::domain::workspace_state::ByLocalTags::clone(&self) -> devlaunch_core::domain::workspace_state::ByLocalTags
+impl core::cmp::Eq for devlaunch_core::domain::workspace_state::ByLocalTags
+impl core::cmp::PartialEq for devlaunch_core::domain::workspace_state::ByLocalTags
+pub fn devlaunch_core::domain::workspace_state::ByLocalTags::eq(&self, &devlaunch_core::domain::workspace_state::ByLocalTags) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::workspace_state::ByLocalTags
+pub fn devlaunch_core::domain::workspace_state::ByLocalTags::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_state::ByLocalTags
 pub struct devlaunch_core::domain::workspace_state::NonEmpty<T>
 impl devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>
 pub fn devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>::describe(&self) -> alloc::string::String
@@ -1396,6 +1407,7 @@ impl<'a, 'r> devlaunch_core::flows::lifecycle::CloneDirectories<'a, 'r>
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'a, 'r>::of(&'a devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>) -> Self
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'a, 'r>::take_notices(&self) -> alloc::vec::Vec<devlaunch_core::flows::repo_manager::CacheNotice>
 impl devlaunch_core::flows::listing::ClonePathResolver for devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>
+pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::bare_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::clone_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub struct devlaunch_core::flows::lifecycle::ClonePlacement
 impl devlaunch_core::flows::lifecycle::ClonePlacement
@@ -1729,8 +1741,10 @@ impl core::fmt::Debug for devlaunch_core::flows::listing::WorkspaceOwnership
 pub fn devlaunch_core::flows::listing::WorkspaceOwnership::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::WorkspaceOwnership
 pub trait devlaunch_core::flows::listing::ClonePathResolver
+pub fn devlaunch_core::flows::listing::ClonePathResolver::bare_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::listing::ClonePathResolver::clone_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 impl devlaunch_core::flows::listing::ClonePathResolver for devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>
+pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::bare_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::clone_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::listing::describe_source(&devlaunch_core::clients::devpod::WorkspaceSource) -> devlaunch_core::flows::listing::SourceDescription
 pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch_core::clients::git::Git<'_>, &[devlaunch_core::clients::devpod::Workspace]) -> devlaunch_core::flows::listing::RepoDiscovery
@@ -2307,6 +2321,7 @@ impl core::fmt::Debug for devlaunch_core::json::JsonKind
 pub fn devlaunch_core::json::JsonKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::json::JsonKind
 impl core::marker::StructuralPartialEq for devlaunch_core::json::JsonKind
+pub fn devlaunch_core::json::as_python_writes_it_indented(&serde_json::value::Value) -> alloc::string::String
 pub mod devlaunch_core::notices
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
 pub mod devlaunch_core::osext

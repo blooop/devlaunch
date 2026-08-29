@@ -99,7 +99,7 @@ fn every_pinned_verb_names_its_repository_twice_and_keeps_the_clone_as_cwd() {
     let verbs: [&dyn Fn() -> GitAnswer<String>; 3] = [
         &|| git.head_branch(dir.path()),
         &|| git.status_porcelain(dir.path()),
-        &|| git.unpushed_commits(dir.path()),
+        &|| git.unpushed_commits(dir.path(), &[]),
     ];
     for verb in verbs {
         fake.forget_calls();
@@ -133,7 +133,7 @@ fn the_pinned_verbs_ask_exactly_what_python_asked() {
     assert_eq!(strs(&argv(&fake))[3..], ["status", "--porcelain"]);
 
     fake.forget_calls();
-    git.unpushed_commits(dir.path());
+    git.unpushed_commits(dir.path(), &[]);
     // Order is load-bearing twice over. `--not` flips every ref after it, so
     // `--all` comes first: `log --oneline --not --remotes --all` is silently
     // always empty, which would report every clone as safe to delete. And
@@ -148,6 +148,156 @@ fn the_pinned_verbs_ask_exactly_what_python_asked() {
             "--all",
             "--not",
             "--remotes"
+        ]
+    );
+
+    // And a local tag goes back in by name, between the ref set it was excluded
+    // from and the `--not` that would flip it (#487). Full refnames, so neither
+    // git nor a branch of the same name can read them as anything else.
+    fake.forget_calls();
+    git.unpushed_commits(dir.path(), &["refs/tags/backup".to_owned()]);
+    assert_eq!(
+        strs(&argv(&fake))[3..],
+        [
+            "log",
+            "--oneline",
+            "--exclude=refs/tags/*",
+            "--all",
+            "refs/tags/backup",
+            "--not",
+            "--remotes"
+        ]
+    );
+}
+
+#[test]
+fn the_attribution_query_is_the_unpushed_one_with_the_sides_swapped() {
+    // The tags are the whole positive set and everything else is subtracted, so a
+    // commit it returns is on no remote, no branch, no worktree HEAD and no stash.
+    // `--exclude` still binds to the `--all` that follows it, which is why that
+    // pair stays adjacent on the negative side rather than being split up.
+    let (dir, _root) = a_clone();
+    let fake = ScriptedRunner::new();
+    let git = Git::new(&fake);
+
+    git.commits_only_tags_reach(dir.path(), &["refs/tags/backup".to_owned()]);
+
+    assert_eq!(
+        strs(&argv(&fake))[3..],
+        [
+            "log",
+            "--oneline",
+            "refs/tags/backup",
+            "--not",
+            "--remotes",
+            "--exclude=refs/tags/*",
+            "--all"
+        ]
+    );
+}
+
+#[test]
+fn the_two_tag_queries_ask_the_same_question_of_each_side() {
+    // The clone's tags and the bare's are compared to each other, so the two
+    // spellings have to be one: a format that drifted would read as "every tag is
+    // local", which is safe but permanently noisy (#485's shape).
+    let (dir, root) = a_clone();
+    let fake = ScriptedRunner::new();
+    let git = Git::new(&fake);
+
+    git.tags_in_clone(dir.path());
+    assert_eq!(
+        strs(&argv(&fake))[1..],
+        [
+            format!("--git-dir={}", root.join(".git").display()).as_str(),
+            format!("--work-tree={}", root.display()).as_str(),
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/tags/",
+        ]
+    );
+
+    // The bare is named by `--git-dir` alone: it has no work tree, and no cwd is
+    // set, so a directory that is not there refuses rather than letting git
+    // discover whatever repository dl happens to be standing in.
+    fake.forget_calls();
+    git.tags_in_bare(Path::new("/cache/.bare"));
+    assert_eq!(
+        strs(&argv(&fake))[1..],
+        [
+            "--git-dir=/cache/.bare",
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/tags/",
+        ]
+    );
+    assert_eq!(cwd(&fake), None);
+    assert_eq!(timeout(&fake), Some(Duration::from_secs(30)));
+}
+
+#[test]
+fn a_tag_is_its_object_as_well_as_its_name() {
+    // `vouched_for` in the delete guard is `fetched.iter().any(|cached| cached ==
+    // tag)`, so this equality *is* the safety rule: derived on the name alone it
+    // would degrade to "the mirror has heard of this name", which silently excuses
+    // a tag the clone moved onto a commit that exists nowhere else. That failure
+    // has no test of its own that could catch it, because every fixture where the
+    // two agree passes either way. Hence one here, on the equality itself.
+    let same = TagRef {
+        name: "refs/tags/v1".to_owned(),
+        object: "aaa".to_owned(),
+    };
+    let moved = TagRef {
+        name: "refs/tags/v1".to_owned(),
+        object: "bbb".to_owned(),
+    };
+    let renamed = TagRef {
+        name: "refs/tags/v2".to_owned(),
+        object: "aaa".to_owned(),
+    };
+
+    assert_eq!(same, same.clone());
+    assert_ne!(
+        same, moved,
+        "the same name at another object is another tag"
+    );
+    assert_ne!(
+        same, renamed,
+        "and the same object under another name is too"
+    );
+}
+
+#[test]
+fn a_tag_listing_is_read_as_the_pairs_it_is() {
+    let fake = ScriptedRunner::new().with_script(
+        ["git"],
+        Response::stdout(concat!(
+            "aaa refs/tags/v1\n",
+            "bbb refs/tags/release/2\n",
+            "\n",
+            "not-a-tag-line\n",
+            "ccc refs/heads/main\n",
+        )),
+    );
+    let git = Git::new(&fake);
+
+    let GitAnswer::Said(tags) = git.tags_in_bare(Path::new("/cache/.bare")) else {
+        panic!("git answered");
+    };
+
+    // The two tag lines, and nothing else: a blank line, a line in another shape
+    // and a ref that is not a tag are all dropped rather than guessed at.
+    assert_eq!(
+        tags,
+        [
+            TagRef {
+                name: "refs/tags/v1".to_owned(),
+                object: "aaa".to_owned(),
+            },
+            TagRef {
+                name: "refs/tags/release/2".to_owned(),
+                object: "bbb".to_owned(),
+            },
         ]
     );
 }
@@ -1016,9 +1166,12 @@ fn nothing_here_spawns_more_than_once_per_verb() {
     git.ls_remote("url", &[]);
     git.head_branch(Path::new("/ws"));
     git.status_porcelain(Path::new("/ws"));
-    git.unpushed_commits(Path::new("/ws"));
+    git.unpushed_commits(Path::new("/ws"), &[]);
+    git.tags_in_clone(Path::new("/ws"));
+    git.tags_in_bare(Path::new("/cache/.bare"));
+    git.commits_only_tags_reach(Path::new("/ws"), &[]);
 
-    assert_eq!(fake.call_count(), 28, "one spawn per verb, 28 verbs");
+    assert_eq!(fake.call_count(), 31, "one spawn per verb, 31 verbs");
     assert!(
         fake.calls()
             .iter()

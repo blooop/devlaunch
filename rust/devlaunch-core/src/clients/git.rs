@@ -81,6 +81,17 @@ const READ_LOCAL_REFS: Duration = Duration::from_secs(2);
 /// Every git-lfs pointer file starts with this; see the git-lfs pointer spec.
 const LFS_POINTER_PREFIX: &[u8] = b"version https://git-lfs";
 
+/// The one tag query, asked of a clone and of a bare in turn.
+///
+/// Written once because the answers are compared to each other: two spellings of
+/// the same question would be two formats to keep in step, and a mismatch reads
+/// as "every tag is local" rather than as a bug.
+const TAG_REFS_QUERY: [&str; 3] = [
+    "for-each-ref",
+    "--format=%(objectname) %(refname)",
+    "refs/tags/",
+];
+
 /// What git answered, or that it did not.
 ///
 /// `Said` carries the output shaped the way the verb that asked for it needs —
@@ -513,30 +524,102 @@ impl<'r> Git<'r> {
     /// `--exclude` binds to the `--all` that follows it and drops the tags out of
     /// it alone, so every other ref `--all` reaches is still asked about: local
     /// branches, every worktree's HEAD including detached ones, and `refs/stash`.
-    /// What is given up is one shape of work, and #487 is the ticket for it: a
-    /// commit reachable *only* from a local tag, with no branch, worktree HEAD or
-    /// stash in the clone naming it as well. Tag before a rewrite, move the branch
-    /// off it, and that clone now reads as nothing to lose. The two cases are not
-    /// distinguishable from inside the clone, because remote-tracking refs carry no
-    /// tags: there is no local mark saying which of `refs/tags/*` arrived in a
-    /// fetch. What does know is the bare cache this clone came from, which is a
-    /// path this seam is not given.
+    ///
+    /// **The tags that are local come back in by name, and #487 is why.** A
+    /// blanket exclusion gives up one shape of work: a commit reachable *only*
+    /// from a tag typed in this clone, with no branch, worktree HEAD or stash
+    /// naming it as well. Tag before a rewrite, move the branch off it, and that
+    /// clone read as nothing to lose. The two cases are not distinguishable from
+    /// inside the clone, because remote-tracking refs carry no tags: there is no
+    /// local mark saying which of `refs/tags/*` arrived in a fetch. What knows is
+    /// the bare cache the clone came from, so *local_tags* is the answer to that
+    /// comparison — see [`Git::tags_in_clone`] — and each one is named as an
+    /// ordinary positive ref.
+    ///
+    /// Naming them *after* `--all` and *before* `--not` is the same argument-order
+    /// rule as above: they are refs being asked about, so they belong on the
+    /// positive side. Every name is a full `refs/tags/…`, which is unambiguous
+    /// against a branch of the same name and cannot be read as an option.
     ///
     /// Answers on a clone with no refs at all, where there is nothing to be
     /// unpushed: git exits 0 with no output rather than refusing, so a clone of an
     /// empty repository needs no gate here and does not get one.
-    pub(crate) fn unpushed_commits(&self, clone: &Path) -> GitAnswer<String> {
-        self.about(
-            clone,
-            &[
-                "log",
-                "--oneline",
-                "--exclude=refs/tags/*",
-                "--all",
-                "--not",
-                "--remotes",
-            ],
-        )
+    pub(crate) fn unpushed_commits(
+        &self,
+        clone: &Path,
+        local_tags: &[String],
+    ) -> GitAnswer<String> {
+        let mut args: Vec<&str> = vec!["log", "--oneline", "--exclude=refs/tags/*", "--all"];
+        args.extend(local_tags.iter().map(String::as_str));
+        args.extend(["--not", "--remotes"]);
+        self.about(clone, &args)
+    }
+
+    /// Every tag in *clone*, with the object each one names.
+    ///
+    /// Half of #487's comparison. The other half is [`Git::tags_in_bare`], and a
+    /// tag that appears in both at the same object is a tag the remote had at the
+    /// last sweep — [`Git::fetch_all`] copies `refs/tags/*` into the bare forced
+    /// and pruned, and `git clone` copies them from there into the workspace, so
+    /// the two agree by construction for everything that came off the remote.
+    ///
+    /// `%(objectname)` rather than a peeled commit, so an annotated tag is
+    /// compared as the tag object it is. A fetch copies that object whole, so the
+    /// two sides match; a tag *retyped* here at the same commit does not, and
+    /// counts as local — which is the safe direction.
+    ///
+    /// Pinned to the clone by [`Git::about`] like every other question asked of a
+    /// workspace, so an unusable `.git` refuses rather than answering about an
+    /// ancestor repository (devlaunch#171).
+    pub(crate) fn tags_in_clone(&self, clone: &Path) -> GitAnswer<Vec<TagRef>> {
+        self.about(clone, &TAG_REFS_QUERY).map(tag_refs_in)
+    }
+
+    /// Of the commits [`Git::unpushed_commits`] counted, the ones *only* these
+    /// local tags reach.
+    ///
+    /// The same ref algebra as that query with the sides swapped: the tags are the
+    /// whole positive set, and everything else — the remotes and every local ref
+    /// that is not a tag — is subtracted. So a commit here is on no remote, on no
+    /// branch, in no worktree HEAD and in no stash, and the only thing naming it
+    /// is a tag this clone's mirror does not vouch for.
+    ///
+    /// It is asked for the *sentence*, not for the decision: the refusal is
+    /// already decided by the query above, and this says which tags to name in it.
+    /// "1 unpushed commit(s)" tells someone to push or commit something they have
+    /// already committed, and where the mirror is merely behind, already pushed
+    /// too; "reachable only from local tag(s) (backup)" is the same fact said in
+    /// a way that can be acted on.
+    ///
+    /// The result is a subset of the other query's by construction, which is what
+    /// lets the two counts be reported in one sentence without either being a
+    /// second measurement of the same thing.
+    pub(crate) fn commits_only_tags_reach(
+        &self,
+        clone: &Path,
+        local_tags: &[String],
+    ) -> GitAnswer<String> {
+        let mut args: Vec<&str> = vec!["log", "--oneline"];
+        args.extend(local_tags.iter().map(String::as_str));
+        args.extend(["--not", "--remotes", "--exclude=refs/tags/*", "--all"]);
+        self.about(clone, &args)
+    }
+
+    /// Every tag in the bare cache at *bare*, with the object each one names.
+    ///
+    /// `--git-dir` and no work tree, because a bare has none, and no cwd, because
+    /// the directory may not be there: a bare that is missing, half-removed or not
+    /// a repository is `fatal: not a git repository` — a refusal — rather than git
+    /// discovering some other repository from wherever dl happens to be standing.
+    /// The caller reads that refusal as "nothing to compare against", which counts
+    /// every tag in the clone as local.
+    pub(crate) fn tags_in_bare(&self, bare: &Path) -> GitAnswer<Vec<TagRef>> {
+        let mut argv = vec![format!("--git-dir={}", bare.display())];
+        argv.extend(TAG_REFS_QUERY.iter().map(|arg| (*arg).to_owned()));
+        let spec =
+            SpawnSpec::new(Invocation::new(PROGRAM).with_args(argv)).with_timeout(ABOUT_ONE_REPO);
+        self.captured("for-each-ref", &spec)
+            .map(|stdout| tag_refs_in(stdout.trim_end_matches('\n').to_owned()))
     }
 
     // ------------------------------------------------------- the bare cache
@@ -1279,6 +1362,38 @@ fn nul_separated(output: &str) -> Vec<String> {
         .split('\0')
         .filter(|entry| !entry.is_empty())
         .map(str::to_owned)
+        .collect()
+}
+
+/// One tag, as the ref it is: the full refname and the object that ref names.
+///
+/// A pair rather than a name alone, because #487's question is not "does the bare
+/// have a tag of this name" but "does it have *this* tag": a name the two sides
+/// hold at different objects is a tag that was moved or retyped here, and what it
+/// used to reach may exist nowhere else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TagRef {
+    /// The full refname, `refs/tags/v1` — never the short name, so it is
+    /// unambiguous as a revision argument and can never read as an option.
+    pub(crate) name: String,
+    pub(crate) object: String,
+}
+
+/// The tags in [`TAG_REFS_QUERY`] output, one per `<object> <refname>` line.
+///
+/// A line in any other shape is dropped rather than guessed at, and a dropped
+/// line costs nothing here: the tag it named is then absent from *both* readings
+/// where the sides agree, and absent from the bare's alone where they do not,
+/// which counts the clone's tag as local. Both are the safe direction.
+fn tag_refs_in(output: String) -> Vec<TagRef> {
+    output
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(object, name)| !object.is_empty() && name.starts_with("refs/tags/"))
+        .map(|(object, name)| TagRef {
+            name: name.to_owned(),
+            object: object.to_owned(),
+        })
         .collect()
 }
 

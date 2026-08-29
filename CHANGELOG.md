@@ -189,6 +189,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every arm is asserted against the exact line it used to arrive already rendered
   with, and a real run whose records will not open is judged from outside the binary.
 
+- **One writer spells `dl --ls --json` and `metadata.json` now, not two.** Both
+  are `json.dumps(..., indent=2)` documents that have to agree with the Python
+  build byte for byte, and each was produced by a hundred-line formatter of its
+  own: the same nine layout methods forwarded to `serde_json`'s pretty printer,
+  and the same `ensure_ascii` loop, in two files that had to stay
+  character-for-character equal without anything holding them there. What that
+  cost is on the record directly above this entry, since the escaping gate was
+  wrong about DEL in both copies and closing it meant closing it twice. `dl` now
+  calls core's, and the tree has one indented spelling.
+
+  Nothing about either document moves. The pins on `--ls --json` are the same
+  assertions against the same call they were written against, with the formatter
+  behind them deleted rather than edited: the shaped listing, the empty document,
+  an emoji as its surrogate pair, DEL, and the whole of ASCII against the line
+  `json.dumps` printed for it. `wf` parses that document, so the bar was
+  byte-identity and not equivalence.
+
 - **The frozen-API snapshot now covers the promised types' behaviour, not just their
   names (#352).** `cargo public-api` renders inherent methods and trait impls at a
   type's canonical path only, never at the path it is re-exported under, so
@@ -221,6 +238,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+### Fixed
+
 - **A captured command no longer pays the drain grace twice.** When a command
   exits while a descendant it forked still holds the pipes open, `dl` waits a
   short grace for the last of the output rather than waiting for an end of file
@@ -232,6 +251,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both have had the same grace to finish in. The shape used to be an occasional
   `git fetch` over ssh; with a connection master now open on `dl`'s own hottest
   path it is the common one.
+
+- **A commit that only an unpushed local tag reaches is no longer read as nothing
+  to lose.** The delete guard asks what a clone holds that exists nowhere else,
+  and it excluded `refs/tags/*` from the question outright, because a tag your
+  remote carries on a branch it no longer has would otherwise read as hundreds of
+  unpushed commits on every clone of that repository, forever. That exclusion was
+  right about the case it was written for and silently wrong about its neighbour:
+  tag before a rewrite, move the branch off the tag, and the commit under
+  `backup-before-rebase` exists in exactly one place on earth while `dl rm`
+  deletes the clone without asking and `dl --prune` without printing.
+
+  Nothing inside a clone can tell those two apart, because no remote-tracking ref
+  carries a tag: `refs/tags/` holds no mark saying which name arrived in a fetch.
+  What knows is the bare mirror `dl` keeps under `repos/<owner>/<repo>/.bare`,
+  which fetches tags forced and pruned and is what every workspace clone is made
+  from. So the guard compares the two. A tag the mirror holds at the same object
+  came off the remote and still costs nothing; a tag it has not got, or holds at
+  another object, was typed here, and the commits only that tag reaches are
+  counted like any other unpushed work. A local tag pointing at a commit the
+  remote already has is asked about and counts for nothing, which is the whole
+  point of asking rather than counting.
+
+  No network, one extra local `for-each-ref` per clone, and none at all for a
+  repository with no tags. Where there is no mirror to ask, every tag counts,
+  which keeps the clone: a clone kept costs disk, and the other direction costs
+  the only copy of somebody's work. [docs/cleanup.md](docs/cleanup.md) has the
+  table.
+
+  **And where a tag is the reason, the refusal now names it**, because "push or
+  commit it" is advice you have already taken for a commit that is under a tag:
+  `holds 1 unpushed commit(s), 1 reachable only from local tag(s)
+  (backup-before-rebase)`. Both counts, since the smaller one is how much of the
+  refusal pushing cannot clear. It matters in the case where the mirror is merely
+  *behind* the remote, which is otherwise baffling: a release you did push, on a
+  branch that has since gone, reads as unpushed until the next sweep, and now the
+  name in the message is the thing that tells you so. A commit on a branch is not
+  blamed on a tag, and a tag reaching nothing a branch does not reach is named
+  nowhere.
 
 - **Sixty-six citations that pointed at nothing now point at something, and a
   guard keeps it that way.** Comments across `rust/` name the test that pins the

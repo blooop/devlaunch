@@ -71,7 +71,41 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::clients::git::{Git, GitAnswer};
+use crate::clients::git::{Git, GitAnswer, TagRef};
+
+/// The bare cache a clone was made from, when there is one to consult.
+///
+/// The one thing on the host that can say which of a clone's `refs/tags/*` came
+/// off the remote: dl's mirror fetches `+refs/tags/*:refs/tags/*` forced and
+/// pruned, `git clone` copies those tags into the workspace, so a tag in both at
+/// the same object is a tag the remote had at the last sweep. A tag the bare has
+/// not got is one somebody typed here.
+///
+/// Two arms rather than an `Option<&Path>`, because the absent case is an
+/// *answer* with a direction and not a missing argument. [`Self::Unknown`] counts
+/// every tag in the clone as local, which is the fail-towards-keeping side: a
+/// clone kept costs disk, and the other way costs the only copy of somebody's
+/// work. Every caller that cannot name a bare has to write the word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BareCache<'a> {
+    /// dl's mirror of this clone's repository is at this path.
+    At(&'a Path),
+    /// There is no mirror to compare against — no record, an unusable one, or a
+    /// clone dl did not make.
+    Unknown,
+}
+
+impl<'a> BareCache<'a> {
+    /// The one conversion from "a path, or not" — the shape every resolver
+    /// answers in — so the direction the absent case fails in is decided here
+    /// rather than at each call site.
+    pub(crate) fn of(bare: Option<&'a Path>) -> Self {
+        match bare {
+            Some(path) => Self::At(path),
+            None => Self::Unknown,
+        }
+    }
+}
 
 /// What deleting a clone would destroy, as far as git can be made to say.
 ///
@@ -214,8 +248,70 @@ pub enum Loss {
     Uncommitted(NonEmpty<String>),
     /// Commits no remote-tracking ref contains, one `git log --oneline` line
     /// each.
-    Unpushed(NonEmpty<String>),
+    Unpushed {
+        commits: NonEmpty<String>,
+        /// The share of those commits that nothing but a local tag reaches, when
+        /// there is such a share.
+        ///
+        /// `None` is "no tag is why this clone is being kept", and it is the
+        /// ordinary case: an unpushed commit on a branch needs no explaining,
+        /// because the sentence the reader gets already tells them what to do
+        /// about it. `Some` is the case where that sentence is wrong, so the
+        /// answer carries what makes it right instead of the reader guessing.
+        by_tags: Option<ByLocalTags>,
+    },
 }
+
+/// The local tags an unpushed count is owed to, and the commits owed to them.
+///
+/// Both halves are [`NonEmpty`], so this value cannot say "some tags reached no
+/// commits" or "some commits were reached by no tags": it exists exactly when a
+/// tag this clone's mirror does not vouch for is the only thing naming a commit,
+/// which is the one case where "push or commit it" is advice the reader cannot
+/// act on. Where nothing is owed to a tag there is no value, not an empty one.
+///
+/// Two shapes reach it and the sentence does not distinguish them, deliberately.
+/// The mirror has never heard of the tag (#487's own case: tagged here, never
+/// pushed) and the mirror is simply behind the remote (the tag was pushed from
+/// this clone and no sweep has run since). Naming the tag settles both without
+/// this having to know which: a reader who recognises `v0.26.0` as a release they
+/// pushed learns the cache is stale, and a reader who sees `backup-before-rebase`
+/// learns the thing that saves their work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub struct ByLocalTags {
+    /// Short tag names, `backup` rather than `refs/tags/backup`, because this is
+    /// what a person types and reads.
+    tags: NonEmpty<String>,
+    /// The `git log --oneline` lines only those tags reach.
+    commits: NonEmpty<String>,
+}
+
+impl ByLocalTags {
+    /// The attribution, or nothing when no commit is owed to a tag.
+    ///
+    /// Takes both sides through [`NonEmpty::of`], so the empty case is the absent
+    /// value rather than a value that describes nothing. *tags* arrive as full
+    /// refnames, which is what the query names them by, and are shortened here so
+    /// there is one place that knows the prefix.
+    pub(crate) fn of(
+        tags: impl IntoIterator<Item = String>,
+        commits: impl IntoIterator<Item = String>,
+    ) -> Option<Self> {
+        Some(Self {
+            tags: NonEmpty::of(tags.into_iter().map(|reference| {
+                reference
+                    .strip_prefix(REFS_TAGS)
+                    .unwrap_or(&reference)
+                    .to_owned()
+            }))?,
+            commits: NonEmpty::of(commits)?,
+        })
+    }
+}
+
+/// The prefix every tag refname carries, stripped for display.
+const REFS_TAGS: &str = "refs/tags/";
 
 impl Loss {
     /// Python's phrasing, exactly: this text reaches a person through
@@ -228,7 +324,23 @@ impl Loss {
                 changed.len(),
                 name_a_few(changed, NAME_AT_MOST)
             ),
-            Self::Unpushed(commits) => format!("{} unpushed commit(s)", commits.len()),
+            Self::Unpushed {
+                commits,
+                by_tags: None,
+            } => format!("{} unpushed commit(s)", commits.len()),
+            // Both counts, because they are different facts and the smaller one is
+            // the actionable half: it says how much of the refusal "push it" cannot
+            // clear. Where every unpushed commit is a tag's, the two numbers agree
+            // and the sentence is merely emphatic rather than wrong.
+            Self::Unpushed {
+                commits,
+                by_tags: Some(by_tags),
+            } => format!(
+                "{} unpushed commit(s), {} reachable only from local tag(s) ({})",
+                commits.len(),
+                by_tags.commits.len(),
+                first_few(&by_tags.tags, NAME_AT_MOST),
+            ),
         }
     }
 }
@@ -348,7 +460,11 @@ pub(crate) struct CloneState {
 /// fewer thing to remember. Uncaught, either takes down the whole of
 /// `dl --ls --json` for one bad record, which is the exact harm this guard exists
 /// to stop.
-pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
+///
+/// *bare* is dl's mirror of the repository this clone came from, and it is here
+/// for one question only: which of the clone's tags arrived in a fetch (#487).
+/// See [`BareCache`] for why not naming one is safe and what it costs.
+pub(crate) fn read_clone(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> CloneState {
     let present = match std::fs::metadata(clone) {
         Ok(metadata) => metadata.is_dir(),
         // No directory there, so nothing in it to lose. ENOTDIR is a parent
@@ -387,7 +503,7 @@ pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
         GitAnswer::Said(head) if !head.is_empty() => Some(head),
         _ => None,
     };
-    let unsaved = unsaved(git, clone);
+    let unsaved = unsaved(git, clone, bare);
     CloneState { branch, unsaved }
 }
 
@@ -396,8 +512,8 @@ pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
 /// The guard `dl <ws> rm` consults. Thin on purpose: the interesting behaviour is
 /// in [`read_clone`], and this is the name the guard reads by. Total — every path
 /// returns one of the three arms, and none of them means "go ahead" by default.
-pub(crate) fn holds_unsaved_work(git: &Git<'_>, clone: &Path) -> Unsaved {
-    read_clone(git, clone).unsaved
+pub(crate) fn holds_unsaved_work(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> Unsaved {
+    read_clone(git, clone, bare).unsaved
 }
 
 /// Name the first few changed paths from `git status --porcelain` lines.
@@ -412,15 +528,28 @@ pub(crate) fn holds_unsaved_work(git: &Git<'_>, clone: &Path) -> Unsaved {
 /// path starts at offset 3; a rename reads `old -> new`, and the whole field is
 /// kept rather than split, because both halves are the news.
 fn name_a_few(changed: &NonEmpty<String>, limit: usize) -> String {
-    let mut names: Vec<&str> = changed
-        .iter()
-        .take(limit)
-        .filter_map(|line| path_in(line))
-        .collect();
-    if changed.len() > limit {
-        names.push("…");
+    let named = changed.iter().filter_map(|line| path_in(line));
+    // Counted from the porcelain lines rather than from `named`, so a line too
+    // short to hold a path still counts towards "there are more than these".
+    cut_short(named, changed.len(), limit)
+}
+
+/// The first few of *names*, with an ellipsis when there were more.
+///
+/// The tag half of the same rule [`name_a_few`] applies to changed paths, sharing
+/// its one implementation: two truncation rules that drifted would be two
+/// sentences claiming to elide the same way.
+fn first_few(names: &NonEmpty<String>, limit: usize) -> String {
+    cut_short(names.iter().map(String::as_str), names.len(), limit)
+}
+
+/// *limit* of the names, then `…` when *total* is larger.
+fn cut_short<'a>(names: impl Iterator<Item = &'a str>, total: usize, limit: usize) -> String {
+    let mut kept: Vec<&str> = names.take(limit).collect();
+    if total > limit {
+        kept.push("…");
     }
-    names.join(", ")
+    kept.join(", ")
 }
 
 /// The path field of one porcelain line, or nothing when the line is too short to
@@ -451,7 +580,7 @@ fn path_in(line: &str) -> Option<&str> {
 /// clone with no refs at all git exits 0 with no output, so the gate bought
 /// nothing, and on a clone whose HEAD is unborn but which carries an orphan branch
 /// it hid the one thing there was to find.
-fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
+fn unsaved(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> Unsaved {
     let status = match git.status_porcelain(clone) {
         GitAnswer::Said(status) => status,
         GitAnswer::Refused(refused) => {
@@ -466,10 +595,20 @@ fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
     if let Some(changed) = NonEmpty::of(status.lines().map(str::to_owned)) {
         losses.push(Loss::Uncommitted(changed));
     }
-    match git.unpushed_commits(clone) {
+    let local_tags = match local_tags(git, clone, bare) {
+        GitAnswer::Said(tags) => tags,
+        GitAnswer::Refused(refused) => {
+            return Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
+                clone: clone.to_path_buf(),
+                reason: refused.reason().to_owned(),
+            });
+        }
+    };
+    match git.unpushed_commits(clone, &local_tags) {
         GitAnswer::Said(unpushed) => {
             if let Some(commits) = NonEmpty::of(unpushed.lines().map(str::to_owned)) {
-                losses.push(Loss::Unpushed(commits));
+                let by_tags = owed_to_tags(git, clone, &local_tags);
+                losses.push(Loss::Unpushed { commits, by_tags });
             }
         }
         GitAnswer::Refused(refused) => {
@@ -483,6 +622,87 @@ fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
         Some(losses) => Unsaved::WouldLose(losses),
         None => Unsaved::NothingToLose,
     }
+}
+
+/// Which of the unpushed commits nothing but a local tag reaches, if any.
+///
+/// Asked only once there is a refusal to explain, and only when a local tag was
+/// named in the question that produced it, so a clone with nothing to lose pays
+/// nothing and a clone with no tags pays nothing.
+///
+/// **A refusal here is not a [`Unsaved::CouldNotTell`], and that is the one place
+/// this module bends its own rule.** Everywhere else a git command that fails
+/// after the repository has been shown readable takes the whole answer with it,
+/// because the alternative is accounting for the failure as "nothing to lose" —
+/// permission, granted by a question that did not work. Nothing of the sort is
+/// available here: the loss is already established and the clone is already being
+/// kept. All that is lost is the half of the sentence that says which tag, so the
+/// answer degrades to the sentence it had before (#487) rather than to a worse
+/// arm. Failing the whole reading would trade a plainer refusal for a vaguer one.
+fn owed_to_tags(git: &Git<'_>, clone: &Path, local_tags: &[String]) -> Option<ByLocalTags> {
+    if local_tags.is_empty() {
+        return None;
+    }
+    let GitAnswer::Said(only_tags) = git.commits_only_tags_reach(clone, local_tags) else {
+        return None;
+    };
+    ByLocalTags::of(
+        local_tags.iter().cloned(),
+        only_tags.lines().map(str::to_owned),
+    )
+}
+
+/// The clone's tags that the bare cache does not vouch for, as full refnames.
+///
+/// #487's whole answer. The unpushed question excludes `refs/tags/*` wholesale
+/// because a tag the remote carries is not work in danger (#485/#486); these are
+/// the tags it should not have excluded, and they go back into the question by
+/// name.
+///
+/// Three things decide a tag is local, and all three fail towards keeping:
+///
+/// - the bare has not got a tag by that name;
+/// - it has one by that name pointing at a different object, which means this one
+///   was moved or retyped here and what it used to reach may be nowhere else;
+/// - there is no bare to ask — [`BareCache::Unknown`], or a bare that refused —
+///   in which case every tag in the clone is local as far as anything here has
+///   established.
+///
+/// The bare is asked only when the clone has a tag to ask about, so a repository
+/// with no tags pays one `for-each-ref` and a missing bare costs it nothing.
+///
+/// A refusal from the *clone* is a refusal of the whole answer, for the reason
+/// [`unsaved`] gives: the repository has already been shown readable by
+/// `git status`, so a question it then refuses has failed for a reason nobody
+/// here can account for, and "no local tags" would be accounting for it.
+fn local_tags(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> GitAnswer<Vec<String>> {
+    let here = match git.tags_in_clone(clone) {
+        GitAnswer::Said(tags) => tags,
+        GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+    };
+    if here.is_empty() {
+        return GitAnswer::Said(Vec::new());
+    }
+    let fetched = match bare {
+        BareCache::At(bare) => match git.tags_in_bare(bare) {
+            GitAnswer::Said(tags) => tags,
+            // The bare is gone, half-removed, or not a repository. Nothing has
+            // established that any of these tags came off a remote.
+            GitAnswer::Refused(_) => Vec::new(),
+        },
+        BareCache::Unknown => Vec::new(),
+    };
+    GitAnswer::Said(
+        here.into_iter()
+            .filter(|tag| !vouched_for(tag, &fetched))
+            .map(|tag| tag.name)
+            .collect(),
+    )
+}
+
+/// Whether the bare holds *tag* under the same name at the same object.
+fn vouched_for(tag: &TagRef, fetched: &[TagRef]) -> bool {
+    fetched.iter().any(|cached| cached == tag)
 }
 
 #[cfg(test)]

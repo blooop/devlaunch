@@ -117,9 +117,13 @@ pub mod osext;
 // Leaf like `runner`: the env-gated span registry everything above may use
 // (even `locks` spans a contended wait), depending on nothing itself.
 //
-// `json` is pub only for [`json::JsonKind`], which the typed refusals above
-// carry and the `dl` binary renders; the Python-spelling writers stay
-// `pub(crate)`.
+// `json` is pub for [`json::JsonKind`], which the typed refusals above carry and
+// the `dl` binary renders, and for one writer: `as_python_writes_it_indented`,
+// which spells `dl --ls --json`. That document is a wire format `wf` parses, and
+// the binary spelled it with a formatter of its own until the two copies were
+// collapsed onto this one (#346); the rest of the Python-spelling writers stay
+// `pub(crate)`, because nothing outside the crate composes a document a piece at
+// a time.
 //
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod json;
