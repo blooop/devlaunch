@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The frozen-API snapshot now covers the promised types' behaviour, not just their
+  names (#352).** `cargo public-api` renders inherent methods and trait impls at a
+  type's canonical path only, never at the path it is re-exported under, so
+  `api::Launch::run` was rendered `flows::launch::Launch::run` and a filter matching
+  the `api` path could not see it. `public-api.api.txt` held 126 rows and not one
+  `::new(` or `::run(`, which means renaming `Launch::run` left the file that exists
+  to catch exactly that byte-identical. Measured, not inferred: the rename was done
+  and the file did not move.
+
+  The classifier now reads the `api` module's own re-exports, resolves each back to
+  the path it names, and claims that item's rows too. 395 rows moved from
+  `public-api.rest.txt` to `public-api.api.txt`, none appeared from nowhere, and the
+  same rename now diffs the promise file. Two things follow for a reader of these
+  files. Most of the promise file is written at `flows::` and `domain::` paths now,
+  and that is the promise rather than strays. And moving a promised type between
+  modules churns it, which is the price of the guard working at all.
+
 - **`devlaunch_core::api` can now build a launcher, not just name one.** The two
   implementations that decide whether a launch can go cold at all lived in the `dl`
   binary: the one that opens devlaunch's records (config, `metadata.json`, the cache

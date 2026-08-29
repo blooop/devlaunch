@@ -5,49 +5,55 @@
 #
 # There are three files because there are three different promises:
 #
-#   rust/devlaunch-core/public-api.api.txt   the promise, as far as a path match
-#       can see it: every row is a declaration *at* `devlaunch_core::api`, the
-#       tier an external consumer is entitled to depend on. A diff here is a
-#       deliberate change to that tier -- a removal or a changed signature is a
-#       break -- and wants a reviewer who reads it that way. The converse does
-#       not hold; see the limit below.
-#   rust/devlaunch-core/public-api.rest.txt  the tripwire, and today also the
-#       promised types' behaviour. Mostly the binary surface -- `flows::`,
-#       `domain::`, `clients::` -- which is reachable but never promised, so
-#       most of a diff here is routine and read for the accidental `pub`. But
-#       see the limit below before reading a diff that touches a promised type
-#       as routine.
+#   rust/devlaunch-core/public-api.api.txt   the promise: every row declares
+#       something `devlaunch_core::api` re-exports, the tier an external
+#       consumer is entitled to depend on. A diff here is a deliberate change to
+#       that tier -- a removal or a changed signature is a break -- and wants a
+#       reviewer who reads it that way. Most of its rows are written at a
+#       `flows::` or `domain::` path rather than at `api`, which is not a bug in
+#       the filter; see how it is filled, below.
+#   rust/devlaunch-core/public-api.rest.txt  the tripwire. The binary surface --
+#       `flows::`, `domain::`, `clients::` -- which is reachable but never
+#       promised, so most of a diff here is routine and read for the accidental
+#       `pub`. But see the limit below before reading one as routine.
 #   rust/devlaunch-runner/public-api.txt     the process seam, as an external
 #       `Runner` implementer sees it. It had no snapshot until the split: the
 #       whole crate entered core's as one unexpanded glob row, so a removed
 #       trait method moved nothing and passed CI.
 #
-# The limit, measured rather than assumed: `cargo public-api` renders inherent
-# methods and trait impls only at a type's *canonical* path, never at the path
-# it is re-exported under. So `api::Launch::run` is rendered
-# `devlaunch_core::flows::launch::Launch::run` and this classifier cannot see
-# it. Of the 259 rows the generator emits for the `api` section, the match keeps
-# 126; the other 133 -- `Launch::new`, `Launch::run`, `CommandContext::new`,
-# `DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on
-# the promised types -- land in the rest file. Renaming `Launch::run` therefore
-# leaves the promise file byte-identical. Two consequences worth carrying:
-# a diff in the rest file that touches a promised type is a contract change
-# too, and this classifier is not the whole guard. Widening it is
-# https://github.com/blooop/devlaunch/issues/352.
+# How the promise file is filled, measured rather than assumed. `cargo
+# public-api` renders an item's own declaration at every path it is reachable
+# by, so `api::Launch` gets a row -- but it renders inherent methods and trait
+# impls at the type's *canonical* path only, never at the path it is re-exported
+# under, so `api::Launch::run` is rendered
+# `devlaunch_core::flows::launch::Launch::run`. Matching the `api` path alone
+# kept 126 rows and left 395 in the rest file, `Launch::new` and `Launch::run`
+# among them, so renaming `Launch::run` left the promise file byte-identical
+# (#352). So the classifier resolves each `api` re-export back to the path it
+# names and claims that item's rows too, which is what `promised_row_pattern`
+# below does. Some rows are in the file twice, because the generator emits them
+# twice: once under the `api` section and once under the module that owns them.
 #
-# The classification is one `grep` and it lives here, in the script CI runs,
-# because the alternative is two copies of it -- one in the workflow, one in
-# whatever regenerates the files -- drifting until the promise file quietly
-# stops holding even what it does hold. `.github/workflows/ci.yml`'s
-# `public-api` job runs this into a scratch tree and diffs the result against
-# what the repo carries; a developer runs it with no argument to accept a
-# deliberate change.
+# The limit that is left. A type `api` never re-exports but a promised signature
+# hands back -- `flows::launch::Launched`, which `Launch::run` returns -- is
+# reachable from outside and is classified as binary surface, so a break in it
+# diffs public-api.rest.txt alone.
+#
+# The classification lives here, in the script CI runs, because the alternative
+# is two copies of it -- one in the workflow, one in whatever regenerates the
+# files -- drifting until the promise file quietly stops holding even what it
+# does hold. `.github/workflows/ci.yml`'s `public-api` job runs this into a
+# scratch tree and diffs the result against what the repo carries; a developer
+# runs it with no argument to accept a deliberate change; and the tests over the
+# checked-in files reach it through `--classify` rather than restating it.
 #
 # Usage:
 #   scripts/public-api-snapshots.sh            # rewrite the checked-in files
 #   scripts/public-api-snapshots.sh DEST       # write them under DEST instead
 #   scripts/public-api-snapshots.sh --print-pin
 #   scripts/public-api-snapshots.sh --print-files
+#   scripts/public-api-snapshots.sh --print-promised
+#   scripts/public-api-snapshots.sh --classify api|rest   # rows on stdin
 #
 # Needs a nightly toolchain (cargo-public-api's rustdoc-JSON backend is
 # nightly-only; the crates themselves still build on the stable pin) and the
@@ -70,7 +76,7 @@ PIN=0.52.0
 # moves -- `UnsafeUnpin` appeared with a nightly, not with a crate change -- and
 # a tripwire that fires on toolchain drift teaches people to update snapshots
 # unread. Derived impls (Clone, Debug, serde) stay in: losing one is a real
-# break. Note where they stay -- the rest file, per the limit above.
+# break, and a promised type's are in the promise file with the rest of it.
 FLAGS=(-ss)
 
 # The boundary matters: `\b` is what keeps a future `devlaunch_core::apiary`
@@ -87,6 +93,97 @@ REST_FILE=devlaunch-core/public-api.rest.txt
 RUNNER_FILE=devlaunch-runner/public-api.txt
 FILES=("$API_FILE" "$REST_FILE" "$RUNNER_FILE")
 
+# Where the promised tier is declared, and so where the canonical paths behind
+# it are read from. The `api` module is a wall of `pub use crate::...`, which is
+# exactly the mapping the renderer throws away.
+CORE_LIB=devlaunch-core/src/lib.rs
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The canonical path of every item the `api` module re-exports, spelled the way
+# `cargo public-api` spells one.
+#
+# Reading Rust with awk is not free, and the alternative was worse: a list of
+# paths kept here by hand is a second declaration of what is promised, and the
+# day it falls behind `api` the promise file quietly stops covering whatever was
+# added. This reads the one declaration there is. It understands the two forms
+# the module uses -- `pub use crate::a::b::Name;` and `pub use crate::a::b::{X,
+# Y};`, either wrapped across lines -- and refuses anything else rather than
+# guessing, because a form it half-understands is a path it gets wrong.
+promised_paths() {
+  awk '
+    /^pub mod api \{/ { inside = 1; next }
+    inside && /^\}/   { inside = 0 }
+    inside            { sub(/\/\/.*/, ""); body = body " " $0 }
+    END {
+      n = split(body, statements, ";")
+      for (i = 1; i <= n; i++) {
+        if (statements[i] !~ /pub[ \t]+use[ \t]+crate::/) continue
+        item = statements[i]
+        sub(/^.*pub[ \t]+use[ \t]+crate::/, "", item)
+        gsub(/[ \t]/, "", item)
+        if (match(item, /\{/)) {
+          module = substr(item, 1, RSTART - 1)
+          names = substr(item, RSTART + 1)
+          sub(/\}.*$/, "", names)
+          m = split(names, list, ",")
+          for (j = 1; j <= m; j++) if (list[j] != "") print "devlaunch_core::" module list[j]
+        } else {
+          print "devlaunch_core::" item
+        }
+      }
+    }
+  ' "$repo_root/rust/$CORE_LIB" | while read -r path; do
+    if [[ ! "$path" =~ ^devlaunch_core(::[A-Za-z_][A-Za-z0-9_]*)+$ ]]; then
+      echo "cannot read '$path' as a path: the api module uses a re-export form this script does not parse." >&2
+      exit 1
+    fi
+    echo "$path"
+  done
+}
+
+# The rule that decides which file a row belongs in, as one extended regex.
+#
+# Two clauses, and the second is what #352 added. `cargo public-api` renders an
+# item's own declaration at every path it is reachable by, so `api::Launch` gets
+# a row -- but it renders inherent methods and trait impls at the type's
+# *canonical* path only, so `api::Launch::run` is rendered
+# `devlaunch_core::flows::launch::Launch::run` and the first clause cannot see
+# it. The second clause claims those by resolving the re-export back to the path
+# it names.
+#
+# The anchors are the whole difficulty. A promised type appears in a signature
+# somewhere in most of this crate, so claiming any row that *mentions* one would
+# drag the binary surface into the promise file. A row's subject is what is
+# claimed: the path right after `pub` and its item keyword, or -- for an impl,
+# where the subject is either side of `for` -- any path in the header that
+# follows a space, which a path nested in generics (`From<...>`, `Vec<...>`)
+# never does.
+#
+# Note what this costs, and it is not nothing: the canonical path is now part of
+# the promise file, so moving a promised type between modules diffs it. That is
+# churn in the file where churn is expensive. It is still the better trade,
+# because the alternative is a promise file that a rename of the promise does
+# not touch.
+promised_row_pattern() {
+  local paths
+  paths="$(promised_paths | paste -sd'|' -)"
+  if [[ -z "$paths" ]]; then
+    echo "the api module re-exports nothing: rust/$CORE_LIB no longer declares 'pub mod api'?" >&2
+    exit 1
+  fi
+  printf '%s|^pub ([a-z]+ )?(%s)\\b|^impl.* (%s)\\b' "$API_ROW" "$paths" "$paths"
+}
+
+# One side of the split, over rows on stdin. `grep` says "no match" with status
+# 1, which is not an error for a filter -- an empty side is only wrong when a
+# whole snapshot is being generated, and the generation path checks it there.
+classify() {
+  local status=0
+  grep -E "$@" || status=$?
+  [[ "$status" -le 1 ]] || exit "$status"
+}
+
 case "${1:-}" in
 --print-pin)
   echo "$PIN"
@@ -96,9 +193,27 @@ case "${1:-}" in
   printf '%s\n' "${FILES[@]}"
   exit 0
   ;;
+--print-promised)
+  promised_paths
+  exit 0
+  ;;
+--classify)
+  # The classification, reachable without a nightly toolchain and without
+  # generating anything -- so the rule above can be exercised on rows chosen to
+  # be awkward. `test/test_public_api_snapshots_doc.py` is what does that.
+  pattern="$(promised_row_pattern)"
+  case "${2:-}" in
+  api) classify "$pattern" ;;
+  rest) classify -v "$pattern" ;;
+  *)
+    echo "--classify takes 'api' or 'rest'" >&2
+    exit 2
+    ;;
+  esac
+  exit 0
+  ;;
 esac
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="${1:-$repo_root/rust}"
 for file in "${FILES[@]}"; do
   mkdir -p "$dest/$(dirname "$file")"
@@ -155,18 +270,38 @@ done
 cd "$repo_root/rust"
 
 core="$(cargo public-api -p devlaunch-core "${FLAGS[@]}")"
+pattern="$(promised_row_pattern)"
 
 # Two greps rather than one pass with a fallthrough, so the two files are
 # complements by construction. Either coming out empty means the filter no
 # longer matches the crate, which is a broken split rather than a small API.
-if ! printf '%s\n' "$core" | grep -E "$API_ROW" >"$staging/$API_FILE"; then
-  echo "no rows matched $API_ROW: devlaunch-core no longer declares an 'api' module?" >&2
+if ! printf '%s\n' "$core" | grep -E "$pattern" >"$staging/$API_FILE"; then
+  echo "no rows matched the promise: devlaunch-core no longer declares an 'api' module?" >&2
   exit 1
 fi
-if ! printf '%s\n' "$core" | grep -Ev "$API_ROW" >"$staging/$REST_FILE"; then
-  echo "every row matched $API_ROW: the split has nothing left to classify?" >&2
+if ! printf '%s\n' "$core" | grep -Ev "$pattern" >"$staging/$REST_FILE"; then
+  echo "every row matched the promise: the split has nothing left to classify?" >&2
   exit 1
 fi
+
+# Every promised path has to claim something. Without this the parse above can
+# drift silently: `api` grows a re-export form awk reads as a shorter path, or
+# a rename leaves a path nothing is rendered at, and the promise file loses the
+# rows for it while every test over the two files still passes -- they check the
+# split is a partition, not that it is the right one.
+#
+# A here-string rather than a pipe into `grep -q`: `grep -q` stops reading at
+# the first match, `printf` takes a SIGPIPE for the rest, and `pipefail` reports
+# that as the pipeline failing -- so every path that *did* claim a row was
+# reported as one that had not.
+while read -r path; do
+  if ! grep -qE "^pub ([a-z]+ )?$path\\b|^impl.* $path\\b" <<<"$core"; then
+    echo "the api module re-exports $path and no rendered row declares it." >&2
+    echo "Either that item is gone, or --print-promised is reading the module wrongly." >&2
+    exit 1
+  fi
+done < <(promised_paths)
+
 cargo public-api -p devlaunch-runner "${FLAGS[@]}" >"$staging/$RUNNER_FILE"
 
 for file in "${FILES[@]}"; do

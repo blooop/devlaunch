@@ -40,9 +40,11 @@ RUST = REPO_ROOT / "rust"
 CI_CHECK_STEP = "The public surface is the snapshots the repo carries"
 # The classification itself: the pattern that decides "promise" from "rest".
 API_ROW_PATTERN = "devlaunch_core::api\\b"
-# The ticket that widens the classifier to cover a promised type's methods and
-# impls. Named in the docs so the gap is a known follow-up rather than folklore.
-WIDENING_TICKET = "352"
+# The other snapshot, named in the docs because the widened classifier still does
+# not reach everything a promised signature does: a type the `api` module never
+# re-exports but a promised method returns is reachable from outside and lives
+# only here, so a diff in it can still be a contract change.
+REST_SNAPSHOT = "public-api.rest.txt"
 
 
 def script_files() -> list[str]:
@@ -178,25 +180,109 @@ def test_the_ci_error_string_sends_a_reader_to_the_document_that_has_the_section
 
 
 @pytest.mark.unit
-def test_the_docs_say_what_the_promise_file_does_not_cover():
+def test_the_docs_say_how_the_promise_file_is_filled_and_what_it_still_misses():
     """The overclaim this section is one edit away from becoming again.
 
     `cargo public-api` renders methods and impls only at a type's canonical
-    path, so `api::Launch::run` is in the *rest* file and renaming it leaves the
-    promise file byte-identical. A guard that is trusted and silently does not
-    fire is worse than no guard, so the limit is documented where the guard is,
-    and the ticket that closes it is named.
+    path, so the classifier reaches `api::Launch::run` by resolving each `api`
+    re-export back to the path it names (#352). Two things a reader has to be
+    told, and both live wherever the promise file is described: that the
+    canonical-path rows in it are there on purpose and are not strays, and that
+    the rest file can still carry a contract change, because a type the `api`
+    module never re-exports but a promised signature hands back is reachable
+    from outside and is classified as binary surface.
     """
     for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
         text = path.read_text(encoding="utf-8")
         assert "canonical" in text, (
-            f"{path.name} describes the promise file without the canonical-path limit "
-            "that decides what it can see"
+            f"{path.name} describes the promise file without the canonical-path "
+            "rendering that decides how it is filled"
         )
-        assert WIDENING_TICKET in text, (
-            f"{path.name} states the limit without naming issue #{WIDENING_TICKET}, "
-            "which is what turns a known gap into a tracked one"
+        assert REST_SNAPSHOT in text, (
+            f"{path.name} describes the promise file without naming {REST_SNAPSHOT}, "
+            "which is where a promised signature's own types are still classified"
         )
+
+
+def classify(kind: str, rows: list[str]) -> list[str]:
+    """One side of the split, as the script itself decides it.
+
+    The classification is a filter over rows, and the script is the only place
+    it exists -- so this exercises the real one on rows chosen to be awkward,
+    rather than restating the pattern here where the restatement is what would
+    be tested.
+    """
+    done = subprocess.run(
+        [str(SCRIPT), "--classify", kind],
+        input="".join(f"{row}\n" for row in rows),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.splitlines()
+
+
+# Rows in the shape `cargo public-api` renders, naming types this crate really
+# has, so the classifier is exercised against the `api` module as it stands
+# rather than against a fiction. `Launch` and `Host` are re-exported; the branch
+# manager is not.
+PROMISED_ROWS = [
+    "pub struct devlaunch_core::api::Launch<'a, 'r, 'l>",
+    "impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>",
+    "pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self) -> ()",
+    "impl core::fmt::Debug for devlaunch_core::flows::launch::Host",
+]
+UNPROMISED_ROWS = [
+    "pub mod devlaunch_core",
+    "pub struct devlaunch_core::flows::branch_manager::BranchManager<'a>",
+    # The trap the whole rule turns on: a promised type in an argument, on a
+    # method of something that is not promised at all.
+    "pub fn devlaunch_core::flows::branch_manager::BranchManager<'a>::adopt"
+    "(&self, &devlaunch_core::flows::launch::Host) -> ()",
+    # And the boundary the `\b` is for.
+    "pub mod devlaunch_core::apiary",
+]
+
+
+@pytest.mark.unit
+def test_a_promised_types_canonical_rows_are_classified_as_promise():
+    """The finding this ticket is about, at the seam that decides it.
+
+    `Launch::run` is rendered at `flows::launch::Launch`, never at the `api`
+    path it is re-exported under, so a classifier that matches the `api` path
+    alone keeps the type's declaration and drops its only method.
+    """
+    kept = classify("api", PROMISED_ROWS + UNPROMISED_ROWS)
+    assert kept == PROMISED_ROWS, (
+        "the classifier does not claim a promised type's canonical-path rows, so "
+        "renaming Launch::run leaves the promise file byte-identical"
+    )
+
+
+@pytest.mark.unit
+def test_naming_a_promised_type_in_a_signature_does_not_promise_the_signature():
+    """The control, and the reason the rule is anchored rather than a substring.
+
+    Promised types are arguments and return types all over this crate. Claiming
+    every row that mentions one would pull most of the binary surface into the
+    promise file, which is the failure the split exists to prevent, wearing the
+    other hat.
+    """
+    left = classify("rest", PROMISED_ROWS + UNPROMISED_ROWS)
+    assert left == UNPROMISED_ROWS, (
+        "the classifier claimed a row that only mentions a promised type, or "
+        "dropped one that mentions nothing promised at all"
+    )
+
+
+@pytest.mark.unit
+def test_the_two_sides_of_the_classification_are_a_partition():
+    rows = PROMISED_ROWS + UNPROMISED_ROWS
+    kept, left = classify("api", rows), classify("rest", rows)
+    assert sorted(kept + left) == sorted(rows), (
+        "a row was dropped by both sides or kept by both; the two files are "
+        "complements or they are not a split at all"
+    )
 
 
 def ci_step_script(job: str, step_name: str) -> str:

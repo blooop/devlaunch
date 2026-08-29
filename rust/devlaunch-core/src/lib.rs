@@ -43,23 +43,30 @@
 //! item, and by two `cargo public-api` snapshots that CI diffs on every pull
 //! request: any change to the crate's public surface is a committed, reviewed
 //! diff or a red tick. The two tiers get a file each — `public-api.api.txt`
-//! for declarations at the [`api`] path, `public-api.rest.txt` for the rest —
-//! so that a change to the promised tier's *declarations* is a diff in a
-//! 126-row file rather than one row inside two thousand.
+//! for the promised tier, `public-api.rest.txt` for the rest — so that a change
+//! to what [`api`] promises is a diff in a 521-row file rather than one row
+//! inside two thousand.
 //!
-//! **What that file does not cover, and it is not a small gap.**
-//! `cargo public-api` renders inherent methods and trait impls only at a
-//! type's canonical path, never at the path it is re-exported under. So
-//! [`api::Launch`]'s only constructor and only method are rendered
-//! `flows::launch::Launch::{new, run}` and land in `public-api.rest.txt`, as do
-//! `CommandContext::new`, `DevcontainerPath::as_str` and every derived
-//! `Clone`/`Debug`/`PartialEq` on the promised types: 133 of the 259 rows the
-//! generator emits for the `api` section. Renaming `api::Launch::run` — an
-//! unambiguous break — leaves `public-api.api.txt` byte-identical. So the
-//! sound direction is one-way: a diff in the promise file *is* a change to the
-//! promise, but a change to the promise need not diff it, and a diff in the
-//! rest file that touches a promised type is a contract change too. Widening
-//! the classifier is <https://github.com/blooop/devlaunch/issues/352>.
+//! **How the promise file is filled, because the `api` path is not the whole
+//! answer.** `cargo public-api` renders an item's own declaration at every path
+//! it is reachable by, so [`api::Launch`] gets a row — but it renders inherent
+//! methods and trait impls at the type's *canonical* path only, never at the
+//! path it is re-exported under, so `api::Launch::run` is rendered
+//! `flows::launch::Launch::run`. Matching the `api` path alone therefore kept
+//! the promised types' names and dropped all of their behaviour, and renaming
+//! `api::Launch::run` — an unambiguous break — left the file byte-identical.
+//! So the classifier resolves each of [`api`]'s re-exports back to the path it
+//! names and claims that item's rows too (#352), which moved 395 rows out of
+//! the rest file: `Launch::{new, run}`, `CommandContext::new`,
+//! `DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on
+//! a promised type. A `flows::` or `domain::` path inside `public-api.api.txt`
+//! is the promise and not a stray, and the cost of that is real: moving a
+//! promised type between modules now churns the file where churn is expensive.
+//!
+//! What it still does not reach is a type [`api`] never re-exports but a
+//! promised signature hands back — `flows::launch::Launched`, which
+//! `Launch::run` returns. That is reachable from outside and classified as
+//! binary surface, so a break in it diffs `public-api.rest.txt` alone.
 //!
 //! `scripts/public-api-snapshots.sh` regenerates both; see "The public-API
 //! snapshots" in docs/development.md.
