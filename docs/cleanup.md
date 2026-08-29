@@ -166,7 +166,8 @@ created, meaning the clones it made under its own cache directory (`$XDG_CACHE_H
 directory the purge is about to remove anyway. Everything else keeps working
 afterwards, because nothing a purge touches backs it.
 
-Anything it is leaving is named before it asks:
+Anything it is leaving is named before it asks, by where it came from and not
+only by its id:
 
 ```
 $ dl --purge
@@ -175,11 +176,22 @@ This will remove all devlaunch data:
   - /home/you/.cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
 
 Leaving 2 workspace(s) devlaunch did not create:
-  - pythontemplate
-  - my-hand-made-workspace
+  - pythontemplate: https://github.com/blooop/pythontemplate
+  - my-hand-made-workspace: /home/you/projects/thing
+
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
+A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
 
 Are you sure? [y/N]
 ```
+
+The source is the half you can decide on. An id is what devpod addresses a
+workspace by and says nothing about where it came from, so `pythontemplate` reads
+the same whether it is a `dl <git-url>` of yours, a `dl ./project`, or something
+somebody else's tool made. It is the same string `dl --ls` shows in its `SOURCE`
+column, read the same way, so the two never describe one workspace differently.
+A source `dl` cannot read at all, which is devpod's own object rather than a path
+or a URL, is printed as that object and said to be one.
 
 Three things `dl` does create can land in that second list rather than the first.
 `dl ./some/path` and `dl <git-url>` open a source `dl` did not clone, so it
@@ -191,6 +203,32 @@ three with `dl <workspace> rm`.
 Erring this way is deliberate: a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
+
+That third one is what the two sentences under the list are about. The workspace
+stays, and the record naming its clone was in the cache that has just gone, so a
+`dl <workspace> rm` afterwards deletes the workspace and leaves the directory
+standing with nothing on the machine pointing at it. Removing it before the purge
+is what takes the clone too. If `config.toml` still sets `worktree.repos_dir`,
+`--purge` now says so as well, before the plan: where no workspace opens such a
+clone any more there is no line in any list for it, and that notice is the only
+mention that tree will get.
+
+Under `-y` the second sentence is the same fact in the tense that run has earned.
+"Remove such a workspace now" is an action only somebody who still has the
+question in front of them can take, and printing it into a run that deletes the
+records three lines later would be advice arriving after the door shut, so what
+`-y` says instead is what will be true of `dl <workspace> rm` from then on.
+
+The volume names are part of that loss, and this is the one place it shows.
+Deleting a survivor with `dl <workspace> rm` still takes its volumes: that read
+happens at delete time, out of devpod's own record under `DEVPOD_HOME`, which a
+purge does not touch. What goes is [the copy `dl`
+keeps](#the-volumes-of-a-workspace-devpod-has-already-forgotten), which is what
+`--prune` reclaims from once devpod has forgotten a workspace. So a survivor
+deleted with a bare `devpod delete` after a purge leaves both its volumes with
+nothing on the machine naming them, where before the purge `dl --prune` would
+have reclaimed them. Deleting such a workspace through `dl` is what avoids that,
+and it is the same advice the sentence above gives for its clone.
 
 #### When part of the cache will not go
 
