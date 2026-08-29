@@ -41,9 +41,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Files whose every impl is test code but which do not say so in the file: the
-/// module is declared `#[cfg(test)] mod ...` somewhere else. One entry today, and
-/// a new one arrives as a failure here rather than as silence.
-const TEST_ONLY_FILES: &[&str] = &["devlaunch-core/src/testing.rs"];
+/// module is declared `#[cfg(test)] mod ...` somewhere else. Each one arrived as
+/// a failure here rather than as silence, which is the point of the list.
+///
+/// `agent_worktrees/tests.rs` holds a wrapper that does real work on purpose:
+/// the sweep's answers come out of real `git worktree list` output, and it keeps
+/// every argv so a test can assert an invocation was *never* made.
+const TEST_ONLY_FILES: &[&str] = &[
+    "devlaunch-core/src/testing.rs",
+    "devlaunch-core/src/flows/agent_worktrees/tests.rs",
+];
 
 /// The one implementation that may do real work.
 const PRODUCTION: &str = "ProcessRunner";

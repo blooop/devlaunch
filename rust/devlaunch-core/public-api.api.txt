@@ -188,21 +188,20 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Removal
 pub fn devlaunch_core::flows::lifecycle::Removal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::Removal
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Removal
-pub enum devlaunch_core::api::RemovalRefused
-pub devlaunch_core::api::RemovalRefused::CouldNotTell
-pub devlaunch_core::api::RemovalRefused::CouldNotTell::cause: devlaunch_core::domain::workspace_state::CouldNotTell
-pub devlaunch_core::api::RemovalRefused::CouldNotTell::workspace_id: alloc::string::String
-pub devlaunch_core::api::RemovalRefused::WouldLose
-pub devlaunch_core::api::RemovalRefused::WouldLose::losses: devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>
-pub devlaunch_core::api::RemovalRefused::WouldLose::workspace_id: alloc::string::String
-impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalRefused
-pub fn devlaunch_core::flows::lifecycle::RemovalRefused::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalRefused
-impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemovalRefused
-impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
-pub fn devlaunch_core::flows::lifecycle::RemovalRefused::eq(&self, &devlaunch_core::flows::lifecycle::RemovalRefused) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalRefused
-pub fn devlaunch_core::flows::lifecycle::RemovalRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
+pub enum devlaunch_core::api::RemovalGrounds
+pub devlaunch_core::api::RemovalGrounds::BothAtOnce
+pub devlaunch_core::api::RemovalGrounds::BothAtOnce::could_not_tell: alloc::string::String
+pub devlaunch_core::api::RemovalGrounds::BothAtOnce::would_lose: alloc::string::String
+pub devlaunch_core::api::RemovalGrounds::CouldNotTell(alloc::string::String)
+pub devlaunch_core::api::RemovalGrounds::WouldLose(alloc::string::String)
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalGrounds
+pub fn devlaunch_core::flows::lifecycle::RemovalGrounds::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalGrounds
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemovalGrounds
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemovalGrounds
+pub fn devlaunch_core::flows::lifecycle::RemovalGrounds::eq(&self, &devlaunch_core::flows::lifecycle::RemovalGrounds) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalGrounds
+pub fn devlaunch_core::flows::lifecycle::RemovalGrounds::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalGrounds
 pub enum devlaunch_core::api::RemoveOutcome
 pub devlaunch_core::api::RemoveOutcome::Deleted
 pub devlaunch_core::api::RemoveOutcome::Deleted::clone: core::result::Result<devlaunch_core::flows::workspace_clone::Removed, devlaunch_core::flows::workspace_clone::RemoveWorkspaceError>
@@ -354,6 +353,17 @@ pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::ask(&mut self, &dyn devlau
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::new(&'a devlaunch_core::flows::lifecycle::SelfInvocation, &'a std::path::Path) -> Self
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::rearm(&mut self)
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::spawned(&self) -> bool
+pub struct devlaunch_core::api::RemovalRefused
+pub devlaunch_core::api::RemovalRefused::because: devlaunch_core::flows::lifecycle::RemovalGrounds
+pub devlaunch_core::api::RemovalRefused::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalRefused
+pub fn devlaunch_core::flows::lifecycle::RemovalRefused::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalRefused
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemovalRefused
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
+pub fn devlaunch_core::flows::lifecycle::RemovalRefused::eq(&self, &devlaunch_core::flows::lifecycle::RemovalRefused) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalRefused
+pub fn devlaunch_core::flows::lifecycle::RemovalRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
 pub struct devlaunch_core::api::SelfInvocation
 impl devlaunch_core::flows::lifecycle::SelfInvocation
 pub fn devlaunch_core::flows::lifecycle::SelfInvocation::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -679,21 +689,20 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Removal
 pub fn devlaunch_core::flows::lifecycle::Removal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::Removal
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Removal
-pub enum devlaunch_core::flows::lifecycle::RemovalRefused
-pub devlaunch_core::flows::lifecycle::RemovalRefused::CouldNotTell
-pub devlaunch_core::flows::lifecycle::RemovalRefused::CouldNotTell::cause: devlaunch_core::domain::workspace_state::CouldNotTell
-pub devlaunch_core::flows::lifecycle::RemovalRefused::CouldNotTell::workspace_id: alloc::string::String
-pub devlaunch_core::flows::lifecycle::RemovalRefused::WouldLose
-pub devlaunch_core::flows::lifecycle::RemovalRefused::WouldLose::losses: devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>
-pub devlaunch_core::flows::lifecycle::RemovalRefused::WouldLose::workspace_id: alloc::string::String
-impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalRefused
-pub fn devlaunch_core::flows::lifecycle::RemovalRefused::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalRefused
-impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemovalRefused
-impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
-pub fn devlaunch_core::flows::lifecycle::RemovalRefused::eq(&self, &devlaunch_core::flows::lifecycle::RemovalRefused) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalRefused
-pub fn devlaunch_core::flows::lifecycle::RemovalRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
+pub enum devlaunch_core::flows::lifecycle::RemovalGrounds
+pub devlaunch_core::flows::lifecycle::RemovalGrounds::BothAtOnce
+pub devlaunch_core::flows::lifecycle::RemovalGrounds::BothAtOnce::could_not_tell: alloc::string::String
+pub devlaunch_core::flows::lifecycle::RemovalGrounds::BothAtOnce::would_lose: alloc::string::String
+pub devlaunch_core::flows::lifecycle::RemovalGrounds::CouldNotTell(alloc::string::String)
+pub devlaunch_core::flows::lifecycle::RemovalGrounds::WouldLose(alloc::string::String)
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalGrounds
+pub fn devlaunch_core::flows::lifecycle::RemovalGrounds::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalGrounds
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemovalGrounds
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemovalGrounds
+pub fn devlaunch_core::flows::lifecycle::RemovalGrounds::eq(&self, &devlaunch_core::flows::lifecycle::RemovalGrounds) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalGrounds
+pub fn devlaunch_core::flows::lifecycle::RemovalGrounds::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalGrounds
 pub enum devlaunch_core::flows::lifecycle::RemoveOutcome
 pub devlaunch_core::flows::lifecycle::RemoveOutcome::Deleted
 pub devlaunch_core::flows::lifecycle::RemoveOutcome::Deleted::clone: core::result::Result<devlaunch_core::flows::workspace_clone::Removed, devlaunch_core::flows::workspace_clone::RemoveWorkspaceError>
@@ -715,6 +724,17 @@ pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::ask(&mut self, &dyn devlau
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::new(&'a devlaunch_core::flows::lifecycle::SelfInvocation, &'a std::path::Path) -> Self
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::rearm(&mut self)
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::spawned(&self) -> bool
+pub struct devlaunch_core::flows::lifecycle::RemovalRefused
+pub devlaunch_core::flows::lifecycle::RemovalRefused::because: devlaunch_core::flows::lifecycle::RemovalGrounds
+pub devlaunch_core::flows::lifecycle::RemovalRefused::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalRefused
+pub fn devlaunch_core::flows::lifecycle::RemovalRefused::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalRefused
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemovalRefused
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
+pub fn devlaunch_core::flows::lifecycle::RemovalRefused::eq(&self, &devlaunch_core::flows::lifecycle::RemovalRefused) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemovalRefused
+pub fn devlaunch_core::flows::lifecycle::RemovalRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemovalRefused
 pub struct devlaunch_core::flows::lifecycle::SelfInvocation
 impl devlaunch_core::flows::lifecycle::SelfInvocation
 pub fn devlaunch_core::flows::lifecycle::SelfInvocation::new(impl core::convert::Into<alloc::string::String>) -> Self

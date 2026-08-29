@@ -387,6 +387,173 @@ It also drops the `metadata.json` records of directories that are already gone.
 That file was append-only in practice, 49 records for 17 live workspaces on the
 same host, and this is the first thing that prunes it.
 
+#### The agent worktrees inside a clone it keeps
+
+An agent harness working inside a workspace makes its own git worktrees under
+`<clone>/.claude/worktrees/<name>/`, one per task, and nothing ever collected
+them. Measured on one host: **72 of them, 104.5 GB, 18 carrying a whole
+`.pixi/envs/default`, about 82% of everything under `repos/`.** One clone held
+55 GB on its own. Every one of them was inside a clone belonging to a **live**
+workspace, so the rule above not only missed them, it must never fire on them:
+firing would delete a live workspace's checkout. So this is a second rule, and
+it runs only on the clones the first one is keeping. A clone that is going
+already accounts for everything inside it.
+
+The word "worktree" is git's here, not `dl`'s. These are real registered
+worktrees, made from inside the container, so the path git holds for one is
+`/workspaces/<id>/.claude/worktrees/<name>`, which does not resolve on the host
+at all. That non-resolution is what makes the metadata operation work rather
+than what stops it: `git worktree remove <the path git printed>` drops exactly
+that one registration when the path does not resolve, and refuses when it
+resolves to something unrelated, which `--force` cannot argue it out of.
+
+##### The unit is a site and everything nested in it
+
+A **site** is a place inside the clone of the shape
+`.claude/worktrees/<leaf>`, nested as deep as the harness nested it. A site is
+collectable only when it **and every site nested inside it** are, decided
+bottom-up. That is the whole of what makes a nested worktree safe, and it is
+structural rather than a check: the removal is a subtree removal, so a unit
+narrower than the operation would leave the difference unprotected, which is how
+a nested worktree holding an afternoon of work, an unpushed commit, or a lock
+used to be deleted with its parent with no flag typed.
+
+Containment comes from the filesystem walk, never from comparing the paths git
+recorded. On a host every recorded path is a string about another machine, and a
+worktree of a different repository has no entry in this clone's listing at all.
+Recorded paths are used for exactly two things, neither of which resolves them:
+matching a registration to a place, and naming the registration to forget.
+
+There is no `git worktree prune` here, and its absence is the design rather than
+an omission. That command's domain is a directory read **at the moment it runs**,
+so a registration created after the plan was printed is inside its blast radius
+and no plan can name it. Three registration states it reaches never appear in any
+listing either. An operation whose domain `dl` cannot enumerate is one it cannot
+fail towards keeping with, so the sweep drops registrations one at a time, by
+name, and every name came out of a listing it read. Those unlisted states are
+reclaimed by `git gc`'s own `worktree prune --expire`, on `gc.worktreePruneExpire`,
+three months by default: a named third party rather than a straggler.
+
+##### What proves one safe
+
+A site's verdict is **collectable, with a proof, or standing, with at least one
+reason**. A reason is either work that was found or a question that could not be
+put, and reasons accumulate up the subtree, so a site that is both dirty and
+locked reports both and a parent's line names the child that caused it. There is
+no third value and no way to reach the collectable arm by nothing having
+objected: the proof is a witness that only a probe which actually answered can
+mint, so "nothing objected" and "nothing was asked" are different answers.
+
+Four questions, and their scopes are not the same. What is at the site at all is
+per site. **Whether the working tree holds anything that exists nowhere else is
+per working tree**, which is why the clone's own `git status` cannot answer for
+what is nested in it: `.claude/worktrees/` is ordinarily gitignored, and a nested
+worktree has an index of its own. **Whether the commits exist somewhere else is
+per repository**, and
+it is asked of the sibling `.bare` cache first: a workspace clone is cut from the
+bare and then repointed at the forge with no fetch of its own, so its
+`refs/remotes/origin/*` is as of clone time and asking it alone reports
+pushed-and-merged branches as unpushed. Whether a third party claims the site is
+the lock, and a lock is an *unproved*, never a loss: git documents it as saying
+nothing about whether anybody is working in there, so reporting it as work would
+be inventing work that may not exist.
+
+**One limit, stated because it is a limit and not an oversight: gitignored
+content is not weighed.** `git worktree remove` deletes a worktree whose only
+content is gitignored, exit 0 and silent, and so does the removal here. It is
+left that way because a clone's own ignored bytes have never been weighed either
+- `dl <workspace> rm` and the orphan rule above both `rm -rf` past them - and one
+conjunction wants one definition of what makes a tree dirty rather than two that
+disagree about the same bytes.
+
+Weighing it at the site alone was tried and taken back out, and the cost is worth
+recording. An installed `.pixi/envs/default` is ignored content; it is 18 of the
+72 directories on the reference host and the difference between 104 GB and about
+10. Weighing it put every one of them behind `--force-worktrees`, which is also
+the flag that carries past a lock and past another repository's worktree, so
+getting the disk back would have meant typing the flag that switches off every
+protection described here. Whether ignored bytes should be weighed is a real
+question and it is one question for both scopes, not a special case for this one.
+
+Stashes need no probe. A `git stash push` from inside a linked worktree writes
+the clone's own `refs/stash`, survives the directory, and is reached by
+`rev-list --all`; nothing here removes the shared ref store.
+
+`--force-worktrees` is the one flag that carries a site past any of this, and it
+is deliberately not `--force`: `--force` is a word people already type at
+`--prune`, and widening it would turn it into permission to remove a worktree
+somebody may be working in.
+
+##### A worktree of another repository
+
+A directory in the worktrees place whose registration is not in **this** clone's
+listing is not `dl`'s to remove. That covers a worktree of a different
+repository, a plain directory, an unreadable gitfile and a symbolic link. Each
+stands, is named, and pins everything above it, and none of them is ever probed.
+
+Ownership is the registration join and not the `.git` gitfile: a gitfile tail
+says a directory is a worktree of *some* repository, and reading it as this one's
+is how a live worktree of another repository, holding uncommitted work, was once
+offered for removal unopposed under the printed reason "git has already forgotten
+it". That was false: the repository that registered it had forgotten nothing. git contributes nothing to that case, so nothing here leans on it: its
+one unforceable refusal fires on a recorded path handed to `git worktree remove`,
+an invocation `dl` never makes for a foreign worktree, and it says nothing at all
+about a directory removal.
+
+`dl` will never reclaim those, and says so with the owning repository named.
+`--force-worktrees` is what removes one, and the honest thing to do first is
+usually to take it back from the repository that owns it.
+
+##### In a container
+
+Nothing here detects containers and no arm exists to protect one. Two properties
+do that instead. `--prune`'s domain is enumerated from the cache directory alone,
+and `dl` never mounts a cache clone into a container at a path inside that
+container's own cache, so a container's own clone is never in the domain. And the
+directory goes before the forget, with nothing forgotten on a partial removal, so
+the recorded path does not resolve at the moment the forget runs even where it
+resolved a moment earlier.
+
+```
+$ dl --prune
+Clone directories under /home/you/.cache/devlaunch/repos:
+
+Leaving 1:
+  - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovo: workspace devlaunch-main-zovo still opens it
+
+Agent git worktrees inside the clones above -- 6.0 GiB:
+
+  /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovo:
+    - removing .../.claude/worktrees/agent-a49a (5.8 GiB), and dropping its 1 registration(s)
+    - removing .../.claude/worktrees/agent-a8da (204.0 MiB), and dropping its 2 registration(s)
+    - leaving .../.claude/worktrees/agent-b120: git is holding it locked (claude session) -- add --force-worktrees to remove it anyway
+
+Whether a worktree's commits are anywhere else is as of the last fetch into the repository cache; --prune does not fetch.
+
+Are you sure? [y/N]
+```
+
+The plan states two byte figures and they are two different claims: what removing
+the clone directories would free, and what the worktrees inside the clones it is
+keeping would free. Folding the second into the first made the headline number
+describe directories that are not going, and then said the same bytes twice. The
+bytes are also attributed in `dl --ls --size`, as a part of the clone's figure and
+never an addition, because the worktrees are inside it. They were invisible there
+on the host above, which is how it reached 100%.
+
+For an **orphan** clone that has agent worktrees in it, reclaiming takes two runs.
+The clone's own verdict conjoins every site inside it, correctly, because removing
+the clone destroys whatever they hold. So run one keeps the clone and sweeps the
+worktrees; run two finds the clone empty of them and reclaims it with no flag.
+
+The 18 duplicated `.pixi/envs/default` copies are the reason the figure is 104 GB
+rather than about 10, and they cannot be pointed at the shared package cache: only
+the pixi *download* cache is shared, because installed environments bake absolute
+paths (see "The shared pixi package cache" in
+[workspace-tools.md](workspace-tools.md)). Removing the worktree is the way those
+bytes come back, which is what this does: an env is gitignored content, and by
+the limit above it does not by itself keep a finished worktree standing.
+
 #### The disk neither command frees
 
 Both commands end on the same line, in the same words:

@@ -65,9 +65,8 @@ use crate::clients::devpod::{
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::{SweepNote, WorktreeInfo};
-use crate::domain::workspace_state::{
-    self, BareCache, CloneState, CouldNotTell, NonEmpty, Unsaved,
-};
+use crate::domain::workspace_state::{BareCache, CouldNotTell, NonEmpty};
+use crate::flows::agent_worktrees::{self, Verdict};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
 use crate::timing;
@@ -861,7 +860,11 @@ pub(crate) struct DevlaunchClone {
     /// to call it.
     pub(crate) path: PathBuf,
     pub(crate) recorded: Option<Recorded>,
-    pub(crate) state: CloneState,
+    /// What the clone has checked out, or `None` when git could not say.
+    pub(crate) checked_out: Option<String>,
+    /// What deleting it would destroy — the clone's own probes and every agent
+    /// worktree nested in it, one verdict (devlaunch#446).
+    pub(crate) holds: Verdict,
 }
 
 /// The `disk` field: absent unless `--size` was asked for, null where dl has no
@@ -882,7 +885,7 @@ pub(crate) struct DevlaunchClone {
 pub(crate) enum DiskField {
     NotAsked,
     NothingOfOurs,
-    Freed(DiskUsage),
+    Freed(CloneDisk),
 }
 
 impl DiskField {
@@ -890,7 +893,73 @@ impl DiskField {
         match (sizes, measurable) {
             (Sizes::Skip, _) => Self::NotAsked,
             (Sizes::Measure, None) => Self::NothingOfOurs,
-            (Sizes::Measure, Some(clone)) => Self::Freed(disk_usage::exclusive_usage(clone)),
+            (Sizes::Measure, Some(clone)) => Self::Freed(CloneDisk::of(clone)),
+        }
+    }
+}
+
+/// What deleting one clone would free, and how much of that is agent git
+/// worktrees (devlaunch#426).
+///
+/// The second figure is a **part of** the first and never an addition: the
+/// worktrees are inside the clone, so their bytes are already in what deleting
+/// it would free. It is here because on the reference host they were 82% of a
+/// whole cache while being invisible in `--ls --size`, which is how the disk
+/// filled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloneDisk {
+    freed: DiskUsage,
+    /// `None` when the clone has no `.claude/worktrees/` at all, which is nearly
+    /// every clone — and a different fact from "it has some and they cost
+    /// nothing", which is a `Some` of zero.
+    ///
+    /// Boxed because this value rides inside `WorkspaceTable`, which is one
+    /// variant against an empty one and is measured for exactly that: a second
+    /// inline `DiskUsage` here pushes the whole table enum past the size a
+    /// `Nothing` arm should have to carry. The allocation happens only on a
+    /// clone that has agent worktrees in it, which is where there is something
+    /// to say.
+    in_worktrees: Option<Box<DiskUsage>>,
+}
+
+impl CloneDisk {
+    fn of(clone: &Path) -> Self {
+        Self {
+            freed: disk_usage::exclusive_usage(clone),
+            in_worktrees: agent_worktrees::bytes_in(clone).map(Box::new),
+        }
+    }
+
+    /// What deleting the whole clone would free.
+    pub fn freed(&self) -> &DiskUsage {
+        &self.freed
+    }
+
+    /// How much of that is agent git worktrees, or nothing when there are none.
+    pub fn in_worktrees(&self) -> Option<&DiskUsage> {
+        self.in_worktrees.as_deref()
+    }
+
+    /// The same figure, but only when it is worth a person's attention: a clone
+    /// with an empty `.claude/worktrees/` has a measurement and nothing to say,
+    /// and a table cell that said "0 B in worktrees" would be noise in every row
+    /// on a host that has ever run one agent.
+    ///
+    /// Here rather than in the binary because the comparison needs the bytes,
+    /// which a usage does not hand out: printing them stripped of which arm they
+    /// are is what turns a floor into a total.
+    pub fn worktrees_worth_naming(&self) -> Option<&DiskUsage> {
+        self.in_worktrees
+            .as_deref()
+            .filter(|usage| usage.known_bytes() > 0)
+    }
+
+    /// `pub` for the binary's rendering tests, which have no reachable
+    /// measurement to borrow. Binary surface, not part of the frozen `wf` API.
+    pub fn measured(freed: u64, in_worktrees: Option<u64>) -> Self {
+        Self {
+            freed: DiskUsage::measured(freed),
+            in_worktrees: in_worktrees.map(|bytes| Box::new(DiskUsage::measured(bytes))),
         }
     }
 }
@@ -983,8 +1052,10 @@ fn enriched_row(
         // No record is no repository to name a mirror for, and the row falls back
         // to the safe reading: every tag in that clone counts as local.
         let bare = record.and_then(|record| view.clones.bare_path(record));
+        let account = agent_worktrees::account_of(git, &path, BareCache::of(bare.as_deref()));
         DevlaunchClone {
-            state: workspace_state::read_clone(git, &path, BareCache::of(bare.as_deref())),
+            checked_out: account.branch,
+            holds: account.holds,
             path,
             recorded: record.map(Recorded::of),
         }
@@ -1097,17 +1168,17 @@ fn container_state(runner: &dyn Runner, workspace_id: &str) -> Option<ContainerS
 /// this signature: a [`MetadataStorage`] exists only if it was opened, and an open
 /// that failed is a typed error its caller already has to handle. The refusal
 /// moved earlier; it did not disappear.
-pub(crate) fn unsaved_work_in(git: &Git<'_>, view: &DlView<'_>, workspace_id: &str) -> Unsaved {
+pub(crate) fn unsaved_work_in(git: &Git<'_>, view: &DlView<'_>, workspace_id: &str) -> Verdict {
     let Some(record) = view.storage.get_worktree_by_workspace_id(workspace_id) else {
-        return Unsaved::NothingToLose;
+        return agent_worktrees::nothing_of_ours();
     };
     match view.clones.clone_path(record) {
-        Some(clone) => workspace_state::holds_unsaved_work(
+        Some(clone) => agent_worktrees::clone_verdict(
             git,
             &clone,
             BareCache::of(view.clones.bare_path(record).as_deref()),
         ),
-        None => Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown {
+        None => agent_worktrees::could_not_prove(CouldNotTell::DirectoryUnknown {
             workspace_id: workspace_id.to_owned(),
         }),
     }
@@ -1164,7 +1235,7 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
         checked_out: row
             .clone
             .as_ref()
-            .and_then(|clone| clone.state.branch.clone()),
+            .and_then(|clone| clone.checked_out.clone()),
         path: row
             .clone
             .as_ref()
@@ -1174,10 +1245,7 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
             .as_ref()
             .map(|state| state.as_devpod_word().to_owned()),
         last_used: row.last_used.clone(),
-        unsaved: row
-            .clone
-            .as_ref()
-            .map(|clone| clone.state.unsaved.as_json()),
+        unsaved: row.clone.as_ref().map(|clone| clone.holds.unsaved_json()),
     };
     let mut value = serde_json::to_value(&wire).unwrap_or_else(|_| serde_json::json!({}));
     match &row.disk {
@@ -1187,7 +1255,7 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
         // Null where there is no clone of dl's own, the same way `repo` and
         // `branch` already say "not mine".
         DiskField::NothingOfOurs => insert(&mut value, "disk", serde_json::Value::Null),
-        DiskField::Freed(usage) => insert(&mut value, "disk", disk_usage::usage_as_json(usage)),
+        DiskField::Freed(disk) => insert(&mut value, "disk", disk_as_json(disk)),
     }
     // Appended, and absent unless there is a note. Both halves are the contract
     // (#251 §7): `wf` parses this document, so every key it already reads keeps
@@ -1197,6 +1265,26 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
     // there is then one thing the key's presence means and only one.
     if let Some(note) = &row.sweep {
         insert(&mut value, "lastSweep", sweep_as_json(note));
+    }
+    value
+}
+
+/// The `disk` object: what the clone would free, plus a `worktrees` key when
+/// any of it is agent git worktrees.
+///
+/// The key is **absent when there are none**, and that is unambiguous here in a
+/// way it would not be one level up: `disk` itself is already absent unless
+/// `--size` was asked for, so a `disk` object that has no `worktrees` key has
+/// been measured and found none. Present-and-zero stays available for the clone
+/// that has an empty `.claude/worktrees/`.
+fn disk_as_json(disk: &CloneDisk) -> serde_json::Value {
+    let mut value = disk_usage::usage_as_json(disk.freed());
+    if let Some(in_worktrees) = disk.in_worktrees() {
+        insert(
+            &mut value,
+            "worktrees",
+            disk_usage::usage_as_json(in_worktrees),
+        );
     }
     value
 }
@@ -1230,7 +1318,7 @@ fn insert(object: &mut serde_json::Value, key: &str, field: serde_json::Value) {
 pub enum SizeCell {
     NoColumn,
     NotOurs,
-    Measured(DiskUsage),
+    Measured(CloneDisk),
 }
 
 /// The `LAST USED` cell: devpod's stamp, cut to its date and time, or that there
@@ -1309,7 +1397,7 @@ fn size_cell(workspace: &Workspace, cache_dir: &Path, sizes: Sizes) -> SizeCell 
     match DiskField::of(sizes, measurable_clone(workspace, cache_dir).as_deref()) {
         DiskField::NotAsked => SizeCell::NoColumn,
         DiskField::NothingOfOurs => SizeCell::NotOurs,
-        DiskField::Freed(usage) => SizeCell::Measured(usage),
+        DiskField::Freed(disk) => SizeCell::Measured(disk),
     }
 }
 
@@ -2740,7 +2828,10 @@ mod tests {
             .expect("the dirty row");
 
         let clone = dirty.clone.as_ref().expect("dl's own clone");
-        assert!(matches!(clone.state.unsaved, Unsaved::WouldLose(_)));
+        let Verdict::Stands(standing) = &clone.holds else {
+            panic!("expected a refusal, got {:?}", clone.holds);
+        };
+        assert!(standing.would_lose().is_some(), "{standing:?}");
         assert_eq!(clone.path, scene.dirty);
     }
 
@@ -3049,10 +3140,10 @@ mod tests {
         let scene = Scene::build();
         let git = Git::new(&scene.runner);
 
-        assert_eq!(
+        assert!(matches!(
             unsaved_work_in(&git, &scene.view(), "someone-elses"),
-            Unsaved::NothingToLose
-        );
+            Verdict::Collectable(_)
+        ));
     }
 
     #[test]
@@ -3060,10 +3151,11 @@ mod tests {
         let scene = Scene::build();
         let git = Git::new(&scene.runner);
 
-        assert!(matches!(
-            unsaved_work_in(&git, &scene.view(), scene.id("dirty")),
-            Unsaved::WouldLose(_)
-        ));
+        let Verdict::Stands(standing) = unsaved_work_in(&git, &scene.view(), scene.id("dirty"))
+        else {
+            panic!("expected a refusal");
+        };
+        assert!(standing.would_lose().is_some(), "{standing:?}");
     }
 
     #[test]
@@ -3079,8 +3171,10 @@ mod tests {
         let git = Git::new(&scene.runner);
 
         match unsaved_work_in(&git, &view, scene.id("clean")) {
-            Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown { workspace_id }) => {
-                assert_eq!(workspace_id, scene.id("clean"));
+            Verdict::Stands(standing) => {
+                let words = standing.could_not_tell().expect("an unproved, not a loss");
+                let id = scene.id("clean");
+                assert!(words.contains(id), "{words}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }

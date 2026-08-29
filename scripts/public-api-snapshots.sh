@@ -37,7 +37,7 @@
 # The limit that is left, and it is not one type. A type `api` never re-exports
 # but a promised signature names is reachable from outside and is classified as
 # binary surface, so a break in it diffs public-api.rest.txt alone. Measured on
-# the checked-in files rather than guessed at: 39 such types own over six
+# the checked-in files rather than guessed at: 36 such types own close to six
 # hundred rows over there. `--print-residual` lists them, needs no toolchain,
 # and prints the exact row count; the type count above is the figure
 # `test/test_public_api_snapshots_doc.py` diffs against it, because that is the

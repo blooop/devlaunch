@@ -90,6 +90,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, and a `metadata.json` written by an older `dl` reads exactly as it did.
   [docs/cleanup.md](docs/cleanup.md) has the detail.
 
+- **`dl --prune` reclaims the agent git worktrees stranded inside the clones it
+  keeps, and `--force-worktrees` is the one flag that carries one past a
+  refusal.** An agent harness working inside a workspace makes its own git
+  worktrees under `<clone>/.claude/worktrees/<name>/`, one per task, and nothing
+  ever collected them: 72 of them on the reference host, 104.5 GB, about 82% of
+  everything under `repos/`. Every one sat inside a clone belonging to a live
+  workspace, so the orphan rule not only missed them, it must never fire there.
+
+  The unit is a **site and everything nested inside it**, decided bottom-up and
+  conjunctively, so a worktree nested inside one being removed cannot be lost
+  with it: the collectable arm of a verdict is reachable only when every nested
+  site handed one back. What decides it is a verdict rather than a boolean,
+  `Collectable(Proof) | Stands(NonEmpty<Reason>)`, where the proof is a witness
+  only a probe that answered can mint and reasons accumulate up the subtree, so
+  a site that is both dirty and locked reports both and a parent's line names
+  the child that caused it. Dirt is asked per working tree and reachability per
+  repository, which closes the clone-level guard's blindness to nested worktrees.
+
+  The metadata operation is `git worktree remove <the path git printed>`, per
+  registration, by name, and the clone-wide `git worktree prune` is deleted
+  rather than gated: its domain is a directory read at act time, so a
+  registration created after the plan was printed was inside its blast radius and
+  no plan could name it. Every name the sweep forgets came out of a listing it
+  read, the acting pass acts only on units whose registrations the plan named,
+  and the forget only ever follows a directory removal that completed.
+
+  **`api::RemovalRefused` changes shape, and it is a break.** It was two arms
+  that each named one thing -- `WouldLose` or `CouldNotTell` -- and a clone can
+  be both at once: a dirty tree beside a reachability probe that was refused, or
+  a nested agent worktree's loss beside the clone's own. Picking one to report
+  was telling half the truth. It is now a `workspace_id` and a
+  `RemovalGrounds`, which has an arm for each and a third for both.
+
+  `RemovalGrounds` is made of `String`. The standing that decides it stays
+  inside `flows` and is rendered at the seam, the way the `--ls --json` payload
+  is rendered for the wire, because a promised type carrying
+  `agent_worktrees::Standing` would name a type the promise does not include --
+  and promising it honestly would pull most of that module's vocabulary into the
+  one tier whose worth is being small and stable.
+
+  Gitignored content is deliberately **not** weighed, at either scope. An
+  installed `.pixi/envs/default` is ignored content and is what makes these
+  directories worth reclaiming at all, so weighing it would have put the whole of
+  the reclaim behind `--force-worktrees` -- the flag that also carries past a
+  lock and past another repository's worktree. A clone's own ignored bytes have
+  never counted either, and one conjunction wants one definition of dirty.
+  `docs/cleanup.md` carries the limit with its reason.
+
+  A worktree of a *different* repository nested inside one of ours now stands, is
+  reported and is never probed: ownership is a join against this clone's own
+  listing, not a reading of the directory's gitfile tail. Before this it was
+  offered for removal unopposed, and the reason printed for it was false.
+
+  `dl --ls --size` and `--ls --json`'s `disk` object also name the worktree share
+  of a clone's figure, as a part of it and never an addition.
+
 ### Changed
 
 - **A workspace gets one reusable OpenSSH connection instead of a new one per

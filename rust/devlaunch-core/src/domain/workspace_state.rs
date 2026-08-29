@@ -147,26 +147,6 @@ pub enum Unsaved {
     CouldNotTell(CouldNotTell),
 }
 
-impl Unsaved {
-    /// How an answer reads to a tool: one key, and the key says which kind it is.
-    ///
-    /// Deliberately not a nullable string. A caller that reads `nothingToLose`
-    /// has been told nothing would be lost; a caller that reads `couldNotTell`
-    /// has been told dl does not know, and cannot have got there by finding a
-    /// field absent or null. The shape `disk_usage`'s rendering already uses, for
-    /// the same reason.
-    ///
-    /// `null` survives one level up, in the listing, where it keeps its other
-    /// meaning: there is no clone of dl's own there to inspect.
-    pub(crate) fn as_json(&self) -> serde_json::Value {
-        match self {
-            Self::NothingToLose => serde_json::json!({ "nothingToLose": true }),
-            Self::WouldLose(losses) => serde_json::json!({ "wouldLose": losses.describe() }),
-            Self::CouldNotTell(cause) => serde_json::json!({ "couldNotTell": cause.describe() }),
-        }
-    }
-}
-
 // There is deliberately no `may_delete()` here. Two of the three arms refuse a
 // delete, and a bool saying so is the sentinel this module exists to not have:
 // the guard has to name the arm anyway — it prints what would be lost, or what
