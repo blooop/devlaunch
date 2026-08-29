@@ -185,6 +185,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and that is the promise rather than strays. And moving a promised type between
   modules churns it, which is the price of the guard working at all.
 
+  What the widened classifier still does not reach is written down as a number
+  rather than as an example, because the example was doing the work of the number.
+  Every place describing the promise file named `flows::launch::Launched` and
+  stopped, which reads as one type; the residual is 39 types owning 615 rows in
+  `public-api.rest.txt`, and one of them is `DevcontainerRefError`, the error type
+  of `api::resolve_devcontainer_ref`, whose own row is in the promise file at the
+  `api` path. Rename a variant of it and every consumer matching on it breaks
+  while the only diff is in the file the docs call freely regenerated.
+  `scripts/public-api-snapshots.sh --print-residual` lists them from the
+  checked-in snapshots with no toolchain, and `test/test_public_api_snapshots_doc.py`
+  holds the figures in all three descriptions to what it prints, so the sentence
+  goes red rather than stale.
+
 ### Fixed
 
 - **A captured command no longer pays the drain grace twice.** When a command

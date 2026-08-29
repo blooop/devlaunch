@@ -63,10 +63,26 @@
 //! is the promise and not a stray, and the cost of that is real: moving a
 //! promised type between modules now churns the file where churn is expensive.
 //!
-//! What it still does not reach is a type [`api`] never re-exports but a
-//! promised signature hands back — `flows::launch::Launched`, which
-//! `Launch::run` returns. That is reachable from outside and classified as
-//! binary surface, so a break in it diffs `public-api.rest.txt` alone.
+//! **What it still does not reach, and it is not one type.** A type [`api`]
+//! never re-exports but a promised signature names is reachable from outside
+//! and classified as binary surface, so a break in it diffs
+//! `public-api.rest.txt` alone. Counted rather than guessed at: **39 such types
+//! own 615 rows over there**, and `scripts/public-api-snapshots.sh
+//! --print-residual` lists them.
+//!
+//! The pointed one is `domain::spec::DevcontainerRefError`. [`api`] promises
+//! `resolve_devcontainer_ref`, which returns it, so the *function* is a
+//! promise-file row at the `api` path itself while the error it hands you is
+//! not: rename one of that error's variants and every consumer matching on it
+//! breaks, with the only diff in the file this doc calls freely regenerated.
+//! `domain::metadata::MetadataError` is the same shape, carried by the promised
+//! `StartupError::Metadata`. `flows::launch::Launched`, returned by
+//! `Launch::run`, is the example this paragraph used to give as though it were
+//! the whole of the residual, which is what made 615 rows read as one.
+//!
+//! So a `public-api.rest.txt` diff is routine for a row whose subject nothing
+//! promised names, and a contract change for a row whose subject is one of the
+//! 39. `--print-residual` is how you tell which you are looking at.
 //!
 //! `scripts/public-api-snapshots.sh` regenerates both; see "The public-API
 //! snapshots" in docs/development.md.

@@ -46,6 +46,22 @@ API_ROW_PATTERN = "devlaunch_core::api\\b"
 # only here, so a diff in it can still be a contract change.
 REST_SNAPSHOT = "public-api.rest.txt"
 
+# The residual caveat, pinned by the phrases only it uses. Naming the file was
+# not enough on its own and it is worth saying why, because the weak version of
+# this guard looked exactly like the strong one: `REST_SNAPSHOT` alone is
+# satisfied by `REST_FILE=devlaunch-core/public-api.rest.txt` in the script, by
+# the sentence describing the split in lib.rs, and by a table row in the doc, so
+# a reviewer deleted the entire caveat from two of the three sites and all
+# fourteen tests passed. Each of these appears only in the caveat:
+#
+#   the mechanism -- a type that is handed back but never re-exported;
+#   the example that makes the scale land, since it is the error type of a
+#     function that is itself a promise-file row at the `api` path;
+#   the command that recomputes the scale, so the prose stays checkable.
+RESIDUAL_MECHANISM = "never re-exports"
+RESIDUAL_EXAMPLE = "DevcontainerRefError"
+RESIDUAL_COMMAND = "--print-residual"
+
 
 def script_files() -> list[str]:
     """The snapshots the script says it writes, as it says them.
@@ -179,6 +195,25 @@ def test_the_ci_error_string_sends_a_reader_to_the_document_that_has_the_section
     )
 
 
+def residual() -> tuple[int, int]:
+    """The limit, as the script counts it: (types, rows).
+
+    Types a promised signature hands back that `api` never re-exports, and the
+    rows they own in the tripwire file. Asked of the script for the same reason
+    the file list is: a figure this test kept itself would be a third copy, and
+    the copy that never goes stale is the one nobody wrote down.
+    """
+    printed = subprocess.run(
+        [str(SCRIPT), "--print-residual"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    counts = [int(line.split("\t")[0]) for line in printed.stdout.splitlines() if line.strip()]
+    assert counts, "--print-residual found no residual types at all; the split cannot be that clean"
+    return len(counts), sum(counts)
+
+
 @pytest.mark.unit
 def test_the_docs_say_how_the_promise_file_is_filled_and_what_it_still_misses():
     """The overclaim this section is one edit away from becoming again.
@@ -191,6 +226,11 @@ def test_the_docs_say_how_the_promise_file_is_filled_and_what_it_still_misses():
     the rest file can still carry a contract change, because a type the `api`
     module never re-exports but a promised signature hands back is reachable
     from outside and is classified as binary surface.
+
+    The second half is what this asserts properly now. It used to be spelled as
+    "the text names public-api.rest.txt", which every one of these files does
+    for reasons that have nothing to do with the caveat, so the caveat could be
+    deleted outright and this stayed green.
     """
     for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
         text = path.read_text(encoding="utf-8")
@@ -202,6 +242,48 @@ def test_the_docs_say_how_the_promise_file_is_filled_and_what_it_still_misses():
             f"{path.name} describes the promise file without naming {REST_SNAPSHOT}, "
             "which is where a promised signature's own types are still classified"
         )
+        assert RESIDUAL_MECHANISM in text, (
+            f"{path.name} describes the promise file and not the limit on it: no "
+            f"sentence saying a type the api module {RESIDUAL_MECHANISM} but a "
+            "promised signature hands back is still classified as binary surface"
+        )
+        assert RESIDUAL_EXAMPLE in text, (
+            f"{path.name} states the limit without naming {RESIDUAL_EXAMPLE}, which "
+            "is the case that shows what it costs: the error type of "
+            "api::resolve_devcontainer_ref, a promise-file row at the api path, "
+            "while renaming one of its variants diffs only the tripwire file"
+        )
+        assert RESIDUAL_COMMAND in text, (
+            f"{path.name} states the limit without naming {RESIDUAL_COMMAND}, so a "
+            "reader is told the residual exists and given no way to see what is "
+            "in it today"
+        )
+
+
+@pytest.mark.unit
+def test_the_documented_scale_of_the_limit_is_the_measured_one():
+    """The number, because naming one type made 615 rows read as one.
+
+    Every site above described the residual as `flows::launch::Launched` and
+    nothing else. It is 39 types today, and a reviewer who has been told the
+    limit is one type reads 38 others' diffs as routine churn. So the figure is
+    written down, and written down means diffed: this recomputes it from the
+    checked-in snapshots and holds the prose to it. A surface change that moves
+    the count turns this red in the same run that regenerates the snapshots,
+    which is when the sentence is cheapest to fix.
+    """
+    types, rows = residual()
+    for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
+        text = path.read_text(encoding="utf-8")
+        for figure, what in ((types, "types"), (rows, "rows")):
+            # Bounded, or `39` is satisfied by the unrelated "395 rows moved"
+            # that all three of these files also carry.
+            assert re.search(rf"\b{figure}\b", text), (
+                f"{path.name} does not carry the current count of {what} in the "
+                f"residual ({figure}). Regenerating the snapshots moved it; update "
+                f"the sentence there, or run {SCRIPT.name} {RESIDUAL_COMMAND} to see "
+                "what changed"
+            )
 
 
 def classify(kind: str, rows: list[str]) -> list[str]:
@@ -230,6 +312,12 @@ PROMISED_ROWS = [
     "pub struct devlaunch_core::api::Launch<'a, 'r, 'l>",
     "impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>",
     "pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self) -> ()",
+    # More than one keyword between `pub` and the path. No row of this shape
+    # exists yet, and the point is that one can be added without noticing: a
+    # `const fn` constructor on a promised type is an ordinary thing to write,
+    # and the pattern used to allow exactly one keyword, so it went to the
+    # tripwire file where a rename of it reads as routine churn.
+    "pub const fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::konst() -> ()",
     "impl core::fmt::Debug for devlaunch_core::flows::launch::Host",
 ]
 UNPROMISED_ROWS = [

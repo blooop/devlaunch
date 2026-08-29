@@ -67,10 +67,29 @@ cost is real and worth knowing before you see it: moving a promised type between
 the file where churn is expensive. Some rows appear twice, because the generator emits them twice,
 once under the `api` section and once under the module that owns them.
 
-**What it still does not reach.** A type `api` never re-exports but a promised signature hands back
-is reachable from outside and classified as binary surface. `Launch::run` returns
-`flows::launch::Launched`, so renaming one of that type's fields breaks a consumer and diffs
-`public-api.rest.txt` alone. The `-ss` flag also omits blanket and auto-trait impls from both files,
+**What it still does not reach, and it is not one type.** A type `api` never re-exports but a
+promised signature hands back is reachable from outside and classified as binary surface. Counted
+on the checked-in files rather than guessed at, that is **39 types owning 615 rows** in
+`public-api.rest.txt`, and the command that lists them needs no toolchain:
+
+```bash
+scripts/public-api-snapshots.sh --print-residual
+```
+
+`domain::spec::DevcontainerRefError` is the one to hold the limit against. `api` promises
+`resolve_devcontainer_ref`, whose row sits in the promise file at the `api` path itself, and it
+returns that error: rename a variant of it and every consumer matching on it breaks, while the only
+file that moves is the one this page calls freely regenerated.
+`domain::metadata::MetadataError` is the same shape, carried by the promised
+`StartupError::Metadata`. `flows::launch::Launched`, returned by `Launch::run`, is the example this
+section used to give on its own, which made 615 rows read as one.
+
+So a diff in `public-api.rest.txt` is routine for a row whose subject nothing promised names, and a
+contract change for a row whose subject is one of the 39. `--print-residual` is how you tell the two
+apart, and `test/test_public_api_snapshots_doc.py` diffs the figures in this paragraph against it,
+so they go red rather than stale.
+
+The `-ss` flag also omits blanket and auto-trait impls from both files,
 deliberately: those rows move when rustdoc moves, and a tripwire that fires on toolchain drift
 teaches people to update snapshots unread.
 
