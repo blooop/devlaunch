@@ -70,6 +70,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A workspace gets one reusable OpenSSH connection instead of a new one per
+  run.** `dl <ws> -- <cmd>` typed at a terminal has gone into the container over
+  OpenSSH since M3, through the host alias `devpod up` publishes. It just opened a
+  fresh connection every time, and connection setup is nearly the whole cost of
+  that trip. It now carries `ControlMaster=auto`, a derived `ControlPath` and
+  `ControlPersist=60`: the first trip into a live workspace opens a master, every
+  trip for the next minute joins it, and nothing pre-warms anything, so `dl` starts
+  no process it did not start before.
+
+  Two savings, and one caveat that belongs on both numbers. Measured on a loaded
+  host (load average 21 throughout, so the absolute seconds sit two to three times
+  above a quiet machine and only the ratio travels): a fresh `ssh -t` cost 2590ms
+  to 3140ms against a reused 16ms to 28ms, about 100x. That is most of two seconds
+  off every repeat command into a workspace that is already up, and nothing at all
+  off a first launch into a cold one. The second saving is the one that is not a
+  stopwatch reading: trips that are not multiplexed serialize on a per workspace
+  lock, so eight commands fired at one workspace at once used to finish over a 9.9s
+  to 23.9s staircase, where eight over one master all finished at 8.02s. A fleet of
+  agents attaching to one workspace is this repository's own daily shape.
+
+  The socket path is derived, and its digest covers the host alias, the `SendEnv`
+  permit list and `$SSH_AUTH_SOCK`. That is load bearing rather than tidy: a master
+  filters `SendEnv` against **its own** permit list, in silence, at exit 0, so
+  without it a master opened by a run with no GitHub token would hand the next run
+  an empty `GH_TOKEN` and an unauthenticated `gh` with nothing anywhere to say so.
+  A run whose permit list differs from the master's cannot find that master, so the
+  mismatch has nowhere to happen. The sockets live under `ssh-control` in `dl`'s
+  own cache directory, in a directory this user alone can read, and `dl --purge`
+  takes them with everything else. A socket path too long for a unix socket, or a
+  directory `dl` cannot create, means the session runs unmultiplexed rather than
+  failing. [docs/performance.md](docs/performance.md) has the rest.
+
 - **`dl --purge` names where each surviving workspace came from.** The list of
   workspaces a purge is leaving standing printed ids and nothing else, and an id
   is the one thing you cannot decide on: `pythontemplate` reads exactly the same

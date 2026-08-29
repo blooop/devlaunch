@@ -101,6 +101,205 @@ pub(crate) fn host_alias(workspace_id: &str) -> String {
     format!("{workspace_id}{HOST_SUFFIX}")
 }
 
+// ===========================================================================
+// one connection per workspace
+// ===========================================================================
+
+/// How long OpenSSH keeps a master alive with nothing running on it, in seconds.
+///
+/// A constant and not a knob, on the `DOTFILES_ATTACH_TIMEOUT` grounds: getting it
+/// wrong costs latency, never correctness — a master that has gone away is an
+/// ordinary 2s trip, not a failure. 60s and not 600s because a live master holds a
+/// resident `devpod ssh --stdio` and a `docker exec` per key, and devpod's docker
+/// provider ships an `INACTIVITY_TIMEOUT` option whose own example is `10m`: dl
+/// must not be the reason a user's container never goes idle. Measured at this
+/// value in devlaunch#390 — reuse after 40s idle is 22ms, and past the window
+/// OpenSSH has already unlinked the socket and the next trip is an ordinary
+/// 1972ms.
+pub(crate) const CONTROL_PERSIST: u32 = 60;
+
+/// The leaf under devlaunch's cache directory that the control sockets live in.
+///
+/// Its own directory rather than a corner of the repo cache, for
+/// `LAUNCH_LOCK_DIR`'s reasons exactly: it is keyed by workspace, it is wanted for
+/// workspaces that have no clone under the cache at all, and it must not look like
+/// a repo to the cache's walkers. Under the cache dir rather than
+/// `$XDG_RUNTIME_DIR`, which this project's own containers do not have, so it
+/// follows `XDG_CACHE_HOME` and a scratch run gets scratch sockets.
+pub(crate) const CONTROL_DIR: &str = "ssh-control";
+
+/// The `sockaddr_un::sun_path` a bound socket has to fit in, NUL included.
+///
+/// 108 bytes on Linux and 104 on macOS; the smaller of the two, because the cost
+/// of being wrong is not a warning. This is why [`Reuse`] has a second arm.
+const SUN_PATH: usize = 104;
+
+/// What OpenSSH appends to `ControlPath` before it binds anything.
+///
+/// **`muxserver_listen` does not bind the path it was given.** It binds
+/// `<ControlPath>.<16 random characters>` and `rename(2)`s that into place once
+/// the socket is listening, so the path that has to fit is 17 bytes longer than
+/// the one dl composes, and a socket directory that leaves under 17 bytes of head
+/// room fails at `unix_listener: path ... too long for Unix domain socket` —
+/// **exit 255, the session gone**, not a warning and not a fallback.
+///
+/// Measured rather than reasoned: this ticket's first CI run took the e2e suite
+/// down with it. `pytest`'s own scratch directory made a 96-byte path, which fits
+/// in 104 and does not fit in 104 once OpenSSH has added `.N3IKqcZJ1KbkenKb` to
+/// it, and thirteen tests failed on a length check that was 17 bytes too
+/// generous.
+const LISTEN_SUFFIX: usize = 17;
+
+/// How long a `ControlPath` dl composes may be.
+///
+/// The buffer, less its NUL, less the room OpenSSH takes for itself.
+const CONTROL_PATH_LIMIT: usize = SUN_PATH - 1 - LISTEN_SUFFIX;
+
+/// Whether this invocation may share a connection, and over which socket.
+///
+/// A two-arm sum and not `Option<ControlSocket>`, because [`Reuse::Direct`] is a
+/// real answer with a real cause rather than an absence: a socket path that will
+/// not fit in `sun_path`, or a directory dl cannot make one in. Both arms produce
+/// a valid argv and the same answer from the same session; they differ in latency
+/// only, so no consumer needs to know which it got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Reuse {
+    /// Share a master over this socket, opening one if there is none.
+    Multiplexed(ControlSocket),
+    /// Open a connection of this session's own, as dl always did.
+    Direct,
+}
+
+/// The path a master is keyed by, derived rather than configured.
+///
+/// Derived is what makes there be no registry, no liveness bookkeeping and no
+/// cleanup code: OpenSSH unlinks the socket when the master exits, the master
+/// exits when the container goes away (devlaunch#389 measured four ways), and a
+/// socket left behind by a killed master is unlinked by the next client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ControlSocket(PathBuf);
+
+impl ControlSocket {
+    /// The path, as OpenSSH is told it.
+    pub(crate) fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Reuse {
+    /// Derive the socket this session may share, or answer [`Reuse::Direct`].
+    ///
+    /// `send_env` is the `SendEnv` permit list this invocation would carry and
+    /// `agent` is `$SSH_AUTH_SOCK`. Both are in the socket's identity, and that is
+    /// the load-bearing part of the whole mechanism. A master **filters `SendEnv`
+    /// against its own permit list, silently, at exit 0** (devlaunch#389
+    /// reproduced it: `GOT=[]`, rc=0), so a master opened by a run with no token
+    /// hands the next run an *empty* `GH_TOKEN` and an unauthenticated `gh`, with
+    /// nothing anywhere in the output to say so. Keying the socket on the permit
+    /// list makes that state unrepresentable rather than documented: a client
+    /// whose list differs from the master's cannot find that master. `agent` is
+    /// the same move for #389's other finding, that a reused master pins agent
+    /// forwarding to whoever opened it.
+    ///
+    /// The alternative — declaring `SendEnv=GH_TOKEN` unconditionally so that the
+    /// list is a constant — is refused: it would forward a token that
+    /// `DEVLAUNCH_NO_GH_TOKEN` exists to withhold.
+    ///
+    /// The config file is deliberately *not* in the digest. The alias carries the
+    /// workspace id, and a workspace id is itself a digest of the repo, ref and
+    /// worktree, so two configs that both publish one alias are publishing one
+    /// workspace.
+    ///
+    /// Every way this can go wrong ends at [`Reuse::Direct`], which is the
+    /// fail-closed requirement: a session that cannot be multiplexed is a session
+    /// that runs unmultiplexed, never one that fails.
+    pub(crate) fn derive(
+        dir: &Path,
+        workspace_id: &str,
+        send_env: &[String],
+        agent: Option<&str>,
+    ) -> Self {
+        let path = dir.join(control_key(&host_alias(workspace_id), send_env, agent));
+        // Bytes rather than characters: `sun_path` is a byte buffer.
+        if path.as_os_str().as_encoded_bytes().len() > CONTROL_PATH_LIMIT {
+            return Self::Direct;
+        }
+        // OpenSSH runs `ControlPath` through `percent_expand` before it binds
+        // anything, and an unknown key there — or a `%` with nothing after it —
+        // is `fatal()`, which takes the session with it. The derived name is hex,
+        // but the directory above it is the user's cache directory and dl does not
+        // get to say what is in that. A `%` anywhere in the path therefore means
+        // do not multiplex, on the same footing as a path that will not fit.
+        if path.as_os_str().as_encoded_bytes().contains(&b'%') {
+            return Self::Direct;
+        }
+        match prepare(dir) {
+            Ok(()) => Self::Multiplexed(ControlSocket(path)),
+            Err(_) => Self::Direct,
+        }
+    }
+}
+
+/// Make the socket directory, and make it this user's alone.
+///
+/// `0700` is not tidiness. Anyone who can connect to a master's socket gets a
+/// session **inside the container**, with no key and no prompt, and OpenSSH does
+/// not ask who is on the other end of a socket it connects to. The cache directory
+/// above this one is an ordinary `0755`, so the leaf has to say so itself — and a
+/// leaf whose mode cannot be set is a leaf dl declines to multiplex through.
+fn prepare(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::create_dir_all(dir)?;
+    // Set on every run rather than only at creation: the directory outlives any
+    // one of them, and a mode loosened by something else must not be inherited in
+    // silence.
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// The socket's file name: 16 hex characters of a digest over everything a master
+/// decides on behalf of a later caller.
+///
+/// Hashed and not concatenated, because a `ControlPath` has ~104 bytes to live in
+/// (see [`CONTROL_PATH_LIMIT`]) and an alias alone can spend 30 of them.
+///
+/// Each field goes in length-prefixed, so that no two different inputs can encode
+/// to the same bytes: `["AB", "C"]` and `["A", "BC"]` are one string once
+/// concatenated, and a collision here is exactly the silent cross-permit-list
+/// reuse this key exists to prevent. The prefixes are what make that impossible
+/// *by construction* rather than by an argument about what an alias or an
+/// environment variable name is allowed to contain — which is the kind of
+/// argument that stops holding the day somebody widens one of them.
+///
+/// 64 bits of the digest: what it has to do is tell a handful of live sockets
+/// apart, and the birthday bound on that is many orders of magnitude away.
+fn control_key(alias: &str, send_env: &[String], agent: Option<&str>) -> String {
+    let mut message = String::new();
+    let mut field = |value: &str| {
+        message.push_str(&value.len().to_string());
+        message.push(':');
+        message.push_str(value);
+    };
+    field(alias);
+    field(&send_env.len().to_string());
+    for name in send_env {
+        field(name);
+    }
+    // The marker keeps "no agent" apart from "an agent at the empty path", which
+    // are different sessions and so must be different sockets.
+    field(&match agent {
+        Some(socket) => format!("agent:{socket}"),
+        None => "none".to_owned(),
+    });
+
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(message.as_bytes());
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Build the OpenSSH invocation that runs `command` under a pty.
 ///
 /// `config` is required, and it is the whole reason this function takes a path at
@@ -132,12 +331,20 @@ pub(crate) fn host_alias(workspace_id: &str) -> String {
 /// empty one names no directory: landing in the `workspaceFolder` from
 /// devcontainer.json is the right default, and `cd '' &&` would fail for no
 /// reason.
+///
+/// `reuse` decides whether this session shares a connection, and it arrives as a
+/// value rather than being derived here for the reason `config` does: the socket's
+/// identity covers `send_env`, so a second derivation is a second chance to
+/// disagree with the list actually being sent. A [`Reuse::Multiplexed`] adds three
+/// options and nothing else; [`Reuse::Direct`] adds none, and the two argvs run the
+/// same command with the same result.
 pub(crate) fn command_args(
     config: &Path,
     workspace_id: &str,
     command: &str,
     send_env: &[String],
     workdir: Option<&str>,
+    reuse: &Reuse,
 ) -> Result<Vec<String>, UnsafeRequest> {
     if workspace_id.starts_with('-') {
         return Err(UnsafeRequest::OptionLikeWorkspaceId {
@@ -150,6 +357,18 @@ pub(crate) fn command_args(
         config.display().to_string(),
         "-t".to_owned(),
     ];
+    if let Reuse::Multiplexed(socket) = reuse {
+        // `auto` and not `yes`: the first trip opens the master and every trip
+        // after it joins one, so dl spawns no extra process and there is no
+        // pre-warm to get wrong. `yes` would make a second concurrent trip fail
+        // rather than share.
+        args.push("-o".to_owned());
+        args.push("ControlMaster=auto".to_owned());
+        args.push("-o".to_owned());
+        args.push(format!("ControlPath={}", socket.as_path().display()));
+        args.push("-o".to_owned());
+        args.push(format!("ControlPersist={CONTROL_PERSIST}"));
+    }
     for name in send_env {
         args.push("-o".to_owned());
         args.push(format!("SendEnv={name}"));
@@ -397,8 +616,15 @@ mod tests {
     const A_CONFIG: &str = "/scratch/ssh_config";
 
     fn args_for(workspace_id: &str, command: &str) -> Vec<String> {
-        command_args(Path::new(A_CONFIG), workspace_id, command, &[], None)
-            .expect("a well-formed request")
+        command_args(
+            Path::new(A_CONFIG),
+            workspace_id,
+            command,
+            &[],
+            None,
+            &Reuse::Direct,
+        )
+        .expect("a well-formed request")
     }
 
     // ------------------------------------------------- the OpenSSH invocation
@@ -406,14 +632,53 @@ mod tests {
     #[test]
     fn the_whole_argv_is_what_dl_hands_to_openssh() {
         // The argv *is* the contract: `-F` naming the config the alias was found
-        // in, `-t` before the alias, the alias positionally, one payload argument
-        // last.
+        // in, `-t` before the alias, the three multiplexing options, the permit
+        // list by name, the alias positionally, one payload argument last.
+        let socket = ControlSocket(PathBuf::from("/scratch/ssh-control/0123456789abcdef"));
         let args = command_args(
             Path::new("/scratch/ssh_config"),
             "devlaunch-main-abcdefgh",
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
             Some("/workspaces/devlaunch"),
+            &Reuse::Multiplexed(socket),
+        )
+        .expect("a well-formed request");
+
+        assert_eq!(
+            args,
+            vec![
+                "ssh".to_owned(),
+                "-F".to_owned(),
+                "/scratch/ssh_config".to_owned(),
+                "-t".to_owned(),
+                "-o".to_owned(),
+                "ControlMaster=auto".to_owned(),
+                "-o".to_owned(),
+                "ControlPath=/scratch/ssh-control/0123456789abcdef".to_owned(),
+                "-o".to_owned(),
+                "ControlPersist=60".to_owned(),
+                "-o".to_owned(),
+                "SendEnv=GH_TOKEN".to_owned(),
+                "devlaunch-main-abcdefgh.devpod".to_owned(),
+                "cd /workspaces/devlaunch && bash -lc claude".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_that_cannot_multiplex_carries_no_control_options_at_all() {
+        // The other arm of the same pin. `Direct` is not "multiplexing that
+        // failed": it is an argv with nothing about a control socket in it, which
+        // is what dl sent before this existed and what it must still be able to
+        // send.
+        let args = command_args(
+            Path::new("/scratch/ssh_config"),
+            "devlaunch-main-abcdefgh",
+            "bash -lc claude",
+            &["GH_TOKEN".to_owned()],
+            Some("/workspaces/devlaunch"),
+            &Reuse::Direct,
         )
         .expect("a well-formed request");
 
@@ -445,7 +710,7 @@ mod tests {
         // this function looks up, because a second lookup is a second chance to
         // disagree with the first.
         for config in ["/scratch/ssh_config", "/home/dev/.ssh/config"] {
-            let args = command_args(Path::new(config), "myws", "true", &[], None)
+            let args = command_args(Path::new(config), "myws", "true", &[], None, &Reuse::Direct)
                 .expect("a well-formed request");
 
             let flag = args
@@ -511,6 +776,7 @@ mod tests {
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
             None,
+            &Reuse::Direct,
         )
         .expect("a well-formed request");
 
@@ -537,6 +803,7 @@ mod tests {
             "bash -lc make",
             &[],
             Some("/workspaces/myws"),
+            &Reuse::Direct,
         )
         .expect("a well-formed request");
 
@@ -556,6 +823,7 @@ mod tests {
             "bash -lc make",
             &[],
             Some("/a dir/with space"),
+            &Reuse::Direct,
         )
         .expect("a well-formed request");
 
@@ -585,6 +853,7 @@ mod tests {
                 "bash -lc make",
                 &[],
                 Some(workdir),
+                &Reuse::Direct,
             )
             .expect("a well-formed request");
 
@@ -597,8 +866,15 @@ mod tests {
         // Python's `if workdir:` reads an empty flag value as no workdir; landing
         // in the workspaceFolder from devcontainer.json is the right default, and
         // `cd '' &&` would be a payload that fails for no reason.
-        let args = command_args(Path::new(A_CONFIG), "myws", "bash -lc make", &[], Some(""))
-            .expect("well-formed");
+        let args = command_args(
+            Path::new(A_CONFIG),
+            "myws",
+            "bash -lc make",
+            &[],
+            Some(""),
+            &Reuse::Direct,
+        )
+        .expect("well-formed");
 
         assert_eq!(args.last().map(String::as_str), Some("bash -lc make"));
     }
@@ -617,7 +893,8 @@ mod tests {
                     workspace_id,
                     "bash -lc claude",
                     &[],
-                    None
+                    None,
+                    &Reuse::Direct
                 ),
                 Err(UnsafeRequest::OptionLikeWorkspaceId {
                     workspace_id: workspace_id.to_owned()
@@ -631,7 +908,15 @@ mod tests {
     fn an_ordinary_workspace_id_is_not_refused() {
         for workspace_id in ["devlaunch-main-abcdefgh", "my_ws.2", "ws-1"] {
             assert!(
-                command_args(Path::new(A_CONFIG), workspace_id, "true", &[], None).is_ok(),
+                command_args(
+                    Path::new(A_CONFIG),
+                    workspace_id,
+                    "true",
+                    &[],
+                    None,
+                    &Reuse::Direct
+                )
+                .is_ok(),
                 "{workspace_id:?}"
             );
         }
@@ -644,11 +929,253 @@ mod tests {
         // shell mangles it — and an argument that cannot mean what it says is
         // better refused than sent.
         assert_eq!(
-            command_args(Path::new(A_CONFIG), "myws", "true", &[], Some("/a\0dir")),
+            command_args(
+                Path::new(A_CONFIG),
+                "myws",
+                "true",
+                &[],
+                Some("/a\0dir"),
+                &Reuse::Direct
+            ),
             Err(UnsafeRequest::UnquotableWorkdir {
                 workdir: "/a\0dir".to_owned()
             })
         );
+    }
+
+    // -------------------------------------------- which master this may share
+
+    /// Every permit list dl can build, plus the pair that collides under a join
+    /// that does not length-prefix its fields: same number of names, same bytes
+    /// once run together.
+    const PERMIT_LISTS: [&[&str]; 6] = [
+        &[],
+        &["GH_TOKEN"],
+        &["CLAUDE_CODE_OAUTH_TOKEN"],
+        &["GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
+        &["AB", "C"],
+        &["A", "BC"],
+    ];
+
+    fn owned(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    fn sockets_dir() -> (tempfile::TempDir, PathBuf) {
+        let cache = tempfile::tempdir().expect("a scratch cache");
+        let dir = cache.path().join(CONTROL_DIR);
+        (cache, dir)
+    }
+
+    fn socket_of(reuse: &Reuse) -> &Path {
+        match reuse {
+            Reuse::Multiplexed(socket) => socket.as_path(),
+            Reuse::Direct => panic!("expected a multiplexed session, got Direct"),
+        }
+    }
+
+    #[test]
+    fn two_send_env_permit_lists_never_derive_one_socket() {
+        // The mandatory property, and the whole reason the path is derived rather
+        // than written: a master filters `SendEnv` against *its own* list at exit
+        // 0, so a client that found a master with a different list would get an
+        // empty `GH_TOKEN` and an unauthenticated `gh` with no error anywhere
+        // (devlaunch#389). A different list has to be a different socket, for
+        // every pair of lists, not merely for the pair someone thought of.
+        let (_cache, dir) = sockets_dir();
+
+        let mut seen: Vec<(&[&str], PathBuf)> = Vec::new();
+        for list in PERMIT_LISTS {
+            let reuse = Reuse::derive(&dir, "myws", &owned(list), Some("/run/agent"));
+            let path = socket_of(&reuse).to_path_buf();
+            for (earlier, taken) in &seen {
+                assert_ne!(
+                    &path, taken,
+                    "{list:?} and {earlier:?} would share a master, and so would \
+                     share {earlier:?}'s permit list"
+                );
+            }
+            seen.push((list, path));
+        }
+    }
+
+    #[test]
+    fn the_same_request_derives_the_same_socket_every_time() {
+        // The other half of the property: keying on the permit list is only a
+        // saving if two runs that agree about it *do* find each other's master.
+        let (_cache, dir) = sockets_dir();
+        let permit = owned(&["GH_TOKEN"]);
+
+        let first = Reuse::derive(&dir, "myws", &permit, Some("/run/agent"));
+        let again = Reuse::derive(&dir, "myws", &permit, Some("/run/agent"));
+
+        assert_eq!(first, again);
+    }
+
+    #[test]
+    fn the_agent_socket_a_master_pins_is_part_of_its_key() {
+        // #389's other finding: a reused master forwards whichever agent opened
+        // it, whatever the later client's `SSH_AUTH_SOCK` says. Same move, same
+        // reason — a difference the master would silently override is a
+        // difference in the key.
+        let (_cache, dir) = sockets_dir();
+        let permit = owned(&["GH_TOKEN"]);
+
+        let paths: Vec<PathBuf> = [
+            None,
+            Some(""),
+            Some("/run/user/1000/keyring/ssh"),
+            Some("/tmp/agent"),
+        ]
+        .into_iter()
+        .map(|agent| socket_of(&Reuse::derive(&dir, "myws", &permit, agent)).to_path_buf())
+        .collect();
+
+        for (at, path) in paths.iter().enumerate() {
+            assert!(
+                !paths[..at].contains(path),
+                "two agents share a master: {paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_workspaces_never_share_a_master() {
+        let (_cache, dir) = sockets_dir();
+        let permit = owned(&["GH_TOKEN"]);
+
+        let one = Reuse::derive(&dir, "devlaunch-main-abcdefgh", &permit, None);
+        let other = Reuse::derive(&dir, "devlaunch-main-ijklmnop", &permit, None);
+
+        assert_ne!(one, other);
+    }
+
+    #[test]
+    fn the_socket_is_a_short_hex_name_under_the_directory_it_was_given() {
+        // Hashed rather than concatenated, because the path has to fit in
+        // `sun_path`: an alias alone is longer than the name derived from it.
+        let (_cache, dir) = sockets_dir();
+
+        let reuse = Reuse::derive(&dir, "devlaunch-main-abcdefgh", &[], None);
+
+        let socket = socket_of(&reuse);
+        assert_eq!(socket.parent(), Some(dir.as_path()));
+        let name = socket
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a file name");
+        assert_eq!(name.len(), 16, "{name:?}");
+        assert!(
+            name.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{name:?}"
+        );
+    }
+
+    #[test]
+    fn a_socket_path_too_long_for_sun_path_leaves_the_session_direct() {
+        // A unix socket path has ~104 bytes to live in, and OpenSSH's own reaction
+        // to a `bind()` that fails for any other reason is `fatal()` — it would
+        // take the session with it. A path that will not fit means *do not
+        // multiplex*, never *build a master ssh will refuse*.
+        let too_deep = PathBuf::from("/tmp").join("x".repeat(CONTROL_PATH_LIMIT));
+
+        let reuse = Reuse::derive(&too_deep, "myws", &[], None);
+
+        assert_eq!(reuse, Reuse::Direct);
+        // And nothing was created on the way to saying so.
+        assert!(!too_deep.exists());
+    }
+
+    #[test]
+    fn the_room_openssh_takes_for_its_own_temporary_socket_is_counted_too() {
+        // `muxserver_listen` binds `<ControlPath>.<16 characters>` and renames it
+        // into place, so what has to fit in `sun_path` is 17 bytes longer than what
+        // dl composes. This band -- a path that fits on its own and does not fit
+        // once OpenSSH has added its suffix -- is where the first CI run of this
+        // change took the whole e2e suite down: `unix_listener: path ... too long
+        // for Unix domain socket`, exit 255, thirteen tests. A directory dl can
+        // really create, so that the only thing under test is the length.
+        let cache = tempfile::tempdir().expect("a scratch cache");
+        let base = cache.path().as_os_str().as_encoded_bytes().len();
+        // A socket a few bytes past the budget and still inside `sun_path`.
+        let want_socket = CONTROL_PATH_LIMIT + 5;
+        let want_dir = want_socket - 1 - 16;
+        assert!(
+            want_dir > base + 1,
+            "the scratch path is too long to build this fixture in"
+        );
+        let dir = cache.path().join("d".repeat(want_dir - base - 1));
+        assert_eq!(dir.as_os_str().as_encoded_bytes().len(), want_dir);
+        assert!(
+            want_socket < SUN_PATH,
+            "the fixture has to fit in sun_path on its own, or it is the other \
+             test and proves nothing about the suffix"
+        );
+
+        let reuse = Reuse::derive(&dir, "myws", &[], None);
+
+        assert_eq!(
+            reuse,
+            Reuse::Direct,
+            "a path OpenSSH cannot bind its temporary socket beside is a path dl \
+             must not multiplex through"
+        );
+        assert!(!dir.exists(), "nothing was created on the way to saying so");
+    }
+
+    #[test]
+    fn a_cache_directory_with_a_percent_in_it_leaves_the_session_direct() {
+        // `ControlPath` is percent-expanded by OpenSSH before it is bound, and an
+        // unknown key is `fatal()` rather than a warning — so a user whose
+        // `XDG_CACHE_HOME` holds a `%` would have had every terminal session die,
+        // which is the one outcome this mechanism is not allowed to cause. Nothing
+        // in the derived name can hold one; everything above it is the user's.
+        let cache = tempfile::tempdir().expect("a scratch cache");
+        let dir = cache.path().join("100%-cache").join(CONTROL_DIR);
+
+        let reuse = Reuse::derive(&dir, "myws", &[], None);
+
+        assert_eq!(reuse, Reuse::Direct);
+    }
+
+    #[test]
+    fn a_socket_directory_dl_cannot_make_leaves_the_session_direct() {
+        // Fail closed: the `LAUNCH_LOCK_DIR` hazard in a new place — something
+        // else owns that name, and the session still has to run.
+        let cache = tempfile::tempdir().expect("a scratch cache");
+        let dir = cache.path().join(CONTROL_DIR);
+        std::fs::write(&dir, "not a directory").expect("something in the way");
+
+        let reuse = Reuse::derive(&dir, "myws", &[], None);
+
+        assert_eq!(reuse, Reuse::Direct);
+    }
+
+    #[test]
+    fn the_socket_directory_is_this_users_alone() {
+        // Anyone who can connect to a master's socket gets a session inside the
+        // container, with no key and no prompt, and OpenSSH does not ask who is on
+        // the other end. The cache directory above this one is an ordinary 0755.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (_cache, dir) = sockets_dir();
+
+        let reuse = Reuse::derive(&dir, "myws", &[], None);
+
+        assert!(matches!(reuse, Reuse::Multiplexed(_)));
+        let mode = std::fs::metadata(&dir)
+            .expect("the socket directory")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    }
+
+    #[test]
+    fn a_master_lingers_for_a_minute_and_no_longer() {
+        // Named once, and named here so that moving it is a decision rather than a
+        // typo: a master holds a resident `devpod ssh --stdio` and a `docker exec`
+        // per key, and devpod's own container inactivity example is 10m.
+        assert_eq!(CONTROL_PERSIST, 60);
     }
 
     // ------------------------------------------------------- is there a tty
@@ -919,6 +1446,7 @@ mod tests {
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
             None,
+            &Reuse::Direct,
         )
         .expect("well-formed");
         let env = EnvSpec::inherited().and("GH_TOKEN", "gho_secret");
