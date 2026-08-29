@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787951469353,
+  "lastUpdate": 1788023376237,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -7994,6 +7994,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.428458",
             "unit": "s",
             "extra": "runs=5/5 wall=7.760633s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c89f7d7257cbdf72a9f2d5f698fa785826e69b10",
+          "message": "Merge pull request #513 from blooop/docs/431-honest-snapshot-sentence\n\ndocs: fix #431's false snapshot sentence; record the second-copies rule and review ritual in CLAUDE.md",
+          "timestamp": "2026-08-29T18:06:34+01:00",
+          "tree_id": "9a25f5864c0b7f40f2b48a1fd89acce5e23d580a",
+          "url": "https://github.com/blooop/devlaunch/commit/c89f7d7257cbdf72a9f2d5f698fa785826e69b10"
+        },
+        "date": 1788023374603,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.379481,
+            "range": "± 0.070616",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.359372,
+            "range": "± 0.011017",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000043,
+            "range": "± 0.000002",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.738504,
+            "range": "± 0.065853",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.740753s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.361953,
+            "range": "± 0.133037",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.251702,
+            "range": "± 0.054333",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.333884,
+            "range": "± 0.008663",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 4.031904,
+            "range": "± 0.062765",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 9.004258,
+            "range": "± 0.105152",
+            "unit": "s",
+            "extra": "runs=5/5 wall=9.006798s v0.26.1, Linux-X64"
           }
         ]
       }
