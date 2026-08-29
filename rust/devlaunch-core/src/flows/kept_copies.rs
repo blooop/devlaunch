@@ -188,7 +188,7 @@ impl KeptCopies {
 
 /// What one copy says.
 ///
-/// Versioned by "unparseable means absent", which is the whole of the format story:
+/// Versioned by "unparsable means absent", which is the whole of the format story:
 /// a copy a later build writes differently fails to deserialize and reads as no
 /// copy, costing one workspace's volumes their record rather than costing anybody a
 /// migration.

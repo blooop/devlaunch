@@ -1590,18 +1590,6 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::SpawnRefused
 pub fn devlaunch_core::flows::lifecycle::SpawnRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::SpawnRefused
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::SpawnRefused
-pub enum devlaunch_core::flows::lifecycle::SweepOccasion
-pub devlaunch_core::flows::lifecycle::SweepOccasion::DevpodResult
-pub devlaunch_core::flows::lifecycle::SweepOccasion::KeptCopy
-impl core::clone::Clone for devlaunch_core::flows::lifecycle::SweepOccasion
-pub fn devlaunch_core::flows::lifecycle::SweepOccasion::clone(&self) -> devlaunch_core::flows::lifecycle::SweepOccasion
-impl core::cmp::Eq for devlaunch_core::flows::lifecycle::SweepOccasion
-impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::SweepOccasion
-pub fn devlaunch_core::flows::lifecycle::SweepOccasion::eq(&self, &devlaunch_core::flows::lifecycle::SweepOccasion) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::lifecycle::SweepOccasion
-pub fn devlaunch_core::flows::lifecycle::SweepOccasion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for devlaunch_core::flows::lifecycle::SweepOccasion
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::SweepOccasion
 pub enum devlaunch_core::flows::lifecycle::StopOutcome
 pub devlaunch_core::flows::lifecycle::StopOutcome::DevpodRefused
 pub devlaunch_core::flows::lifecycle::StopOutcome::DevpodRefused::exit: devlaunch_runner::Exit
@@ -1615,6 +1603,18 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::StopOutcome
 pub fn devlaunch_core::flows::lifecycle::StopOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::StopOutcome
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::StopOutcome
+pub enum devlaunch_core::flows::lifecycle::SweepOccasion
+pub devlaunch_core::flows::lifecycle::SweepOccasion::DevpodResult
+pub devlaunch_core::flows::lifecycle::SweepOccasion::KeptCopy
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::SweepOccasion
+pub fn devlaunch_core::flows::lifecycle::SweepOccasion::clone(&self) -> devlaunch_core::flows::lifecycle::SweepOccasion
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::SweepOccasion
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::SweepOccasion
+pub fn devlaunch_core::flows::lifecycle::SweepOccasion::eq(&self, &devlaunch_core::flows::lifecycle::SweepOccasion) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::SweepOccasion
+pub fn devlaunch_core::flows::lifecycle::SweepOccasion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::lifecycle::SweepOccasion
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::SweepOccasion
 pub enum devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker
 pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker::exit: devlaunch_runner::Exit
