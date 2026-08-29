@@ -39,8 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were not merely stale but false. The bench workflow told a reader that a named
   Python spawn-count guard "keeps the gating role" in `ci.yml`, when the counts
   it meant have been argv assertions in the cargo suite since the port; and the
-  divergence table's row 30 still cited an allowance in the parity harness's case
-  list, which retired with the harness.
+  divergence table's row 30 claimed two pins it no longer has, an allowance in
+  the parity harness's case list and a set of `suffix_verb` tests, the first
+  retired with the harness and the second deleted with the behaviour itself. That
+  row is superseded, so nothing pins it, and it now says so.
 
   `test/test_citations_resolve.py` is what stops it happening again: a token
   spelled the way a Python test file is spelled has to resolve to a file, a path

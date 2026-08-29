@@ -8,12 +8,19 @@ repository.workspace = true
 
 [dependencies]
 # The only devlaunch crate named here, and deliberately: aid is a command-line
-# rewrite that hands the result to dl, so the whole of devlaunch it can reach is
-# dl's entry point and the quoting that composes a command line for it. Python
-# pinned the same rule as a test (`test_aid` walked aid.py's AST and refused any
-# use of `dl` beyond `main`, `get_version` and `DL_VALUE_OPTIONS`, and retired
-# with the Python tree in #267); here it is the dependency graph, which needs no
-# test.
+# rewrite that hands the result to dl, so what it can reach is whatever dl makes
+# public and nothing else. That is the whole of what this line enforces. aid
+# cannot name `devlaunch-core` or `devlaunch-runner`, so a new reach into either
+# has to be a `pub use` somebody adds to dl and reviews there.
+#
+# It is a looser rule than Python's, which is worth saying rather than glossing:
+# `test_aid` walked aid.py's AST and refused any use of `dl` beyond `main`,
+# `get_version` and `DL_VALUE_OPTIONS` (that suite retired with the Python tree
+# in #267). Nothing counts names here, and the count is well past three: aid's
+# source reaches dl's signal handlers, terminal helpers, version markers and
+# rendering, and some of what it reaches is devlaunch-core's own arriving
+# through a dl re-export (`shell`, `env_str`). The surface is a review question
+# now, not a test.
 dl = { path = "../dl" }
 
 # Forwarded rather than declared, so the two binaries cannot report different
