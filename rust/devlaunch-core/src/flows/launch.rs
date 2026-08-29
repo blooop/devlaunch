@@ -71,6 +71,7 @@ use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
 use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
+use crate::flows::kept_copies::KeptCopies;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
@@ -201,6 +202,17 @@ pub struct Host {
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
     pub(crate) devpod_home: Option<DevpodHome>,
+}
+
+impl Host {
+    /// devlaunch's copies of what devpod substituted, under this host's cache.
+    ///
+    /// Derived here rather than carried as a field, so the store and everything
+    /// else the cache holds cannot be pointed at two different directories: there
+    /// is one `cache_dir` and this is a view of it.
+    pub(crate) fn kept_copies(&self) -> KeptCopies {
+        KeptCopies::under(&self.cache_dir)
+    }
 }
 
 impl Host {
@@ -1380,6 +1392,15 @@ fn up_under_stage(
         // before devpod wrote that file: the stale result still matches, and the
         // hostname nobody set stays unset. Nothing the host can read tells that
         // apart from a container that never stopped.
+        //
+        // The copy is kept on this arm too, and it is not a tidiness: the sibling
+        // this launch waited out may not have been `dl` at all, and `--purge`
+        // destroys the cache holding the copies while leaving a foreign workspace's
+        // volumes standing (devlaunch#452). It costs one write on a path that has
+        // already established the create completed, which is the same condition the
+        // copy is written under below. The claim it records is "dl brought this up",
+        // never "dl created it".
+        host.kept_copies().keep(identity, host.devpod_home.as_ref());
         let seen = provision
             .provision_tools(context.runner(), identity, PassOccasion::TopUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
@@ -1415,6 +1436,13 @@ fn up_under_stage(
     // Only after a successful `up`: there is no container to install into
     // otherwise. Inside the lock, for the reason it was taken above.
     if let Some(identity) = request.naming.identity() {
+        // The tail of a completed `up`, and **before** the pass rather than after
+        // it. devpod has just rewritten `workspace_result.json`, which is the one
+        // document naming this container's volumes, and the pass below can fail and
+        // take the whole launch with it while the container and its volumes stand.
+        // A copy written on the other side of that pass would be the one launch
+        // whose volumes nothing ever names. See [`crate::flows::kept_copies`].
+        host.kept_copies().keep(identity, host.devpod_home.as_ref());
         // A devpod that went missing between the `up` that just worked and the pass
         // that follows it takes the launch with it, as Python's exception does: there
         // is no session to hand over without the binary that opens one.
@@ -2460,8 +2488,10 @@ pub enum ColdRefused {
     /// The records could not be opened: no home directory, an unreadable
     /// `config.toml`, or a `metadata.json` that would not open.
     Startup(StartupError),
-    /// This launcher was built with no cold path at all — see [`NoColdPath`].
-    /// Nothing was attempted and nothing is wrong with the machine.
+    /// This launcher was built with no cold path at all: the caller established
+    /// the workspace was warm and lent machinery that refuses on principle (the
+    /// crate's own `NoColdPath` is one). Nothing was attempted, and nothing is
+    /// wrong with the machine.
     NoColdPath,
 }
 
@@ -3690,6 +3720,36 @@ mod tests {
             self
         }
 
+        /// devpod's record for a workspace whose create finished, carrying what
+        /// devpod substituted into the devcontainer.
+        ///
+        /// The shape is devpod's own — `SubstitutionContext` beside
+        /// `ContainerDetails` and `MergedConfig` — because the copy this launch
+        /// keeps is a read of exactly this document and nothing else.
+        fn with_substitutions(
+            self,
+            workspace_id: &str,
+            folder: &str,
+            devcontainer_id: &str,
+        ) -> Self {
+            let home = self.devpod_home();
+            self.write_record(workspace_id);
+            std::fs::write(
+                home.result("default", workspace_id),
+                serde_json::json!({
+                    "ContainerDetails": { "Config": { "Image": "vsc-repo-main-ab12-uid" } },
+                    "MergedConfig": {},
+                    "SubstitutionContext": {
+                        "LocalWorkspaceFolder": folder,
+                        "DevContainerID": devcontainer_id,
+                    },
+                })
+                .to_string(),
+            )
+            .expect("a create result");
+            self
+        }
+
         /// devpod's record for a workspace whose create *aborted*: the record, and
         /// no result beside it. A `postCreateCommand` that exits non-zero leaves
         /// exactly this, with the container still up.
@@ -3720,7 +3780,9 @@ mod tests {
         }
 
         /// Every devpod invocation, without the leading `devpod`, in order — the
-        /// shape `test_devpod_spawn_counts.py` asserts.
+        /// shape the Python `test_devpod_spawn_counts` asserted before it retired
+        /// with the Python tree (#267). The spawn counts it gated on are gated
+        /// here now, by the assertions in this module that read this list.
         fn devpod_commands(&self) -> Vec<Vec<String>> {
             self.runner.args_to("devpod")
         }
@@ -3780,6 +3842,32 @@ mod tests {
     impl<'r> ColdMachinery<'r> for NeverCold {
         fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
             panic!("a warm launch opened the cold path");
+        }
+    }
+
+    /// A cold path whose `metadata.json` will not open, refusing exactly as
+    /// [`ColdPath`] does when [`records::open_records`] hands it a
+    /// [`StartupError`].
+    struct MetadataWillNotOpen;
+
+    /// The refusal a real `MetadataStorage::open` produces when the directory it
+    /// needs cannot be created, spelled once so the tests below compare against the
+    /// same value the arm is built from.
+    fn metadata_refusal() -> crate::domain::metadata::MetadataError {
+        crate::domain::metadata::MetadataError::CreateDir {
+            path: PathBuf::from("/cache/devlaunch"),
+            failure: crate::domain::metadata::OsFailure {
+                kind: std::io::ErrorKind::NotADirectory,
+                message: "Not a directory (os error 20)".to_owned(),
+            },
+        }
+    }
+
+    impl<'r> ColdMachinery<'r> for MetadataWillNotOpen {
+        fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
+            Err(ColdRefused::Startup(StartupError::Metadata(
+                metadata_refusal(),
+            )))
         }
     }
 
@@ -4472,6 +4560,205 @@ mod tests {
         );
 
         assert_eq!(outcome, Err(NotRun::NotInstalled));
+    }
+
+    // ----------------------------------------- the copy of the volume names
+
+    /// A pass that reports what devlaunch's kept copy said at the moment it ran.
+    ///
+    /// The ordering is the whole of what this seam is about, and a test that only
+    /// looked at the cache afterwards could not tell "written before the pass" from
+    /// "written after it". This can: the pass reads the copy from inside itself.
+    struct CopyWatchingProvision {
+        copies: KeptCopies,
+        seen: Mutex<Vec<Option<Vec<String>>>>,
+    }
+
+    impl CopyWatchingProvision {
+        fn over(cache_dir: &Path) -> Self {
+            Self {
+                copies: KeptCopies::under(cache_dir),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// What the copy said on each pass, in order.
+        fn seen(&self) -> Vec<Option<Vec<String>>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Provision for CopyWatchingProvision {
+        fn provision_tools(
+            &self,
+            _runner: &dyn Runner,
+            workspace_id: &str,
+            _occasion: PassOccasion,
+            _title: Option<&str>,
+        ) -> Result<Option<ClaudeConfig>, DevpodMissing> {
+            let named = self
+                .copies
+                .volumes(workspace_id)
+                .map(|names| names.iter().cloned().collect());
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(named);
+            Ok(None)
+        }
+
+        fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
+            None
+        }
+    }
+
+    /// The names in the copy this cache holds for `workspace_id`.
+    fn copied_volumes(cache_dir: &Path, workspace_id: &str) -> Option<Vec<String>> {
+        KeptCopies::under(cache_dir)
+            .volumes(workspace_id)
+            .map(|names| names.iter().cloned().collect())
+    }
+
+    /// **Before the provisioning pass, not after it.** Provisioning can fail and
+    /// take the launch with it while the container and its volumes stand, and a
+    /// copy written on the other side of that would be the one launch whose volumes
+    /// nothing ever names.
+    #[test]
+    fn a_completed_up_copies_the_volume_names_before_the_provisioning_pass() {
+        let scene = Scene::new().with_substitutions("myws", "/repos/o/r/repo-main-ab12", "abcdef");
+        let provision = CopyWatchingProvision::over(scene.cache_dir());
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &provision,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(
+            provision.seen(),
+            vec![Some(vec![
+                "repo-main-ab12-pixi".to_owned(),
+                "dind-var-lib-docker-abcdef".to_owned(),
+            ])],
+            "the copy has to be there by the time the pass runs"
+        );
+    }
+
+    /// The other arm of the same `up`, and it is not optional: the sibling this
+    /// launch waited out may not have been `dl` at all, and `--purge` would
+    /// otherwise destroy a foreign workspace's copy while leaving its volumes
+    /// standing (devlaunch#452). The copy claims "dl brought this up", never "dl
+    /// created it".
+    #[test]
+    fn a_sibling_that_won_the_race_still_leaves_this_launch_a_copy() {
+        let scene = Scene::new().with_running("myws").with_substitutions(
+            "myws",
+            "/repos/o/r/repo-main-ab12",
+            "abcdef",
+        );
+        let provision = CopyWatchingProvision::over(scene.cache_dir());
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let (outcome, _) = contended_up(&scene, &request, &provision);
+
+        assert_eq!(outcome, Ok(UpOutcome::SkippedSiblingWon));
+        assert_eq!(
+            provision.seen(),
+            vec![Some(vec![
+                "repo-main-ab12-pixi".to_owned(),
+                "dind-var-lib-docker-abcdef".to_owned(),
+            ])]
+        );
+    }
+
+    /// An `up` devpod refused is not a completed `up`, so there is nothing devpod
+    /// wrote for this launch to copy. Whatever the cache already held is left
+    /// exactly as it was.
+    #[test]
+    fn an_up_devpod_refused_copies_nothing() {
+        let scene = Scene::new();
+        scene
+            .runner
+            .script(["devpod", "up"], Response::failed(1, "no such provider\n"));
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert!(
+            matches!(outcome, Ok(UpOutcome::Refused { .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(copied_volumes(scene.cache_dir(), "myws"), None);
+    }
+
+    /// An `up` that finished without devpod recording a create result names
+    /// nothing, and this is where that case arrives: a create that died in its
+    /// lifecycle hooks. No copy, and the launch is otherwise untouched.
+    #[test]
+    fn an_up_devpod_recorded_nothing_for_copies_nothing() {
+        let scene = Scene::new();
+        let provision = CopyWatchingProvision::over(scene.cache_dir());
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &provision,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(provision.seen(), vec![None]);
+        assert_eq!(copied_volumes(scene.cache_dir(), "myws"), None);
     }
 
     // --------------------------------------------------------- the up argv
@@ -6301,6 +6588,76 @@ mod tests {
                 workspace_id: "a-project".to_owned(),
             }
         );
+    }
+
+    // -------------------------------- the cold path's refusal, as a reason
+
+    /// devlaunch#339: a metadata-refused cold open surfaces as the typed arm.
+    ///
+    /// [`ColdRefused`] carried a `reason: String` until #340, filled by `dl`
+    /// rendering a [`StartupError`] and quoted straight back into this refusal.
+    /// That was the one place the binary's own prose travelled back *through* core,
+    /// and what it cost is visible from here: a caller holding the refusal could
+    /// read the sentence and could not ask which of the three things went wrong.
+    ///
+    /// So the assertion is the whole value, not a substring of one. The refusal
+    /// arrives at the launch's own refusal as the reason it *is*, with the
+    /// [`MetadataError`](crate::domain::metadata::MetadataError) the store produced
+    /// still inside it and no sentence anywhere along the way. Flatten either level
+    /// back to a string and this stops compiling, which is the failure it is here
+    /// for.
+    #[test]
+    fn a_metadata_refused_cold_open_surfaces_as_the_typed_arm() {
+        let refused = name_default_branch(
+            &mut MetadataWillNotOpen,
+            "blooop",
+            "devlaunch",
+            "git@github.com:blooop/devlaunch.git",
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            refused,
+            Err(BranchNotNamed::Cold(ColdRefused::Startup(
+                StartupError::Metadata(metadata_refusal())
+            )))
+        );
+    }
+
+    /// The other arm that opens the cold path, carrying the same reason unchanged.
+    ///
+    /// Both are worth pinning because they are separate `map_err`s over the same
+    /// `open`, and a refusal that survived one of them and was stringified by the
+    /// other would be the old bug back in half the launches.
+    #[test]
+    fn the_cold_arm_of_a_host_side_preparation_carries_the_same_typed_reason() {
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+
+        let refused = prepare(
+            &mut MetadataWillNotOpen,
+            &workspace,
+            "git@github.com:blooop/devlaunch.git",
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            refused,
+            Err(NotPrepared::Cold(ColdRefused::Startup(
+                StartupError::Metadata(metadata_refusal())
+            )))
+        );
+    }
+
+    /// The arm that replaced an English literal.
+    ///
+    /// `NoColdPath` used to refuse with the sentence "the cold path is not available
+    /// to this caller", written in core, which is the rule #251 §5 states. It is a
+    /// variant now and the sentence is the binary's.
+    #[test]
+    fn a_launcher_with_no_cold_path_refuses_with_an_arm_rather_than_a_sentence() {
+        let mut none = NoColdPath;
+
+        assert_eq!(none.open().err(), Some(ColdRefused::NoColdPath));
     }
 
     // -------------------------------- stage two: which workspace, and is it warm

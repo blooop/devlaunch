@@ -2,9 +2,9 @@
 
 Shared because three files aim assertions at README sections and each of them
 needs the same thing: the text under one heading and nothing near it. It used to
-live in `test_lending_doc.py` and be imported from there, which made two unrelated
-test files depend on a third for a helper that is about markdown rather than about
-lending.
+live in the Python `test_lending_doc` (retired with the Python tree in #267) and be
+imported from there, which made two unrelated test files depend on a third for a
+helper that is about markdown rather than about lending.
 """
 
 from __future__ import annotations

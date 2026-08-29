@@ -8,6 +8,8 @@ pub mod completion_cache;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod disk_usage;
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod kept_copies;
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod kill;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod launch;

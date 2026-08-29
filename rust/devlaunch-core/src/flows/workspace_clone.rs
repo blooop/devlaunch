@@ -1340,9 +1340,10 @@ fn say_branch(
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_workspace_clone.py`, `test/test_cold_launch_fetches.py`, the
-    //! token half of `test/test_repo_lock_cycles.py`, and the four integration
-    //! files about what a clone shares with the cache.
+    //! The Python `test_workspace_clone`, `test_cold_launch_fetches`, the token
+    //! half of `test_repo_lock_cycles`, and the four integration files about what
+    //! a clone shares with the cache — all retired with the Python tree (#267),
+    //! and re-pinned here.
     //!
     //! **The argv seam does more here than Python's mocks did.** Python replaced
     //! `RepositoryManager` and `BranchManager` with `MagicMock`s, so a test of
@@ -1551,10 +1552,10 @@ mod tests {
     #[test]
     fn a_cold_launch_issues_exactly_this_sequence() {
         // The whole host-side cold path, in order, with git-lfs absent. Every line
-        // of it is a contract: the bare clone, the branch read off it, the one
-        // targeted fetch in the cache, the local-refs branch probe, the workspace
-        // clone that hardlinks, the remote repointed at the forge, and the reset
-        // checkout.
+        // of it is a contract: the bare clone, the branch read off it and the check
+        // that the branch is really there (devlaunch#477), the one targeted fetch in
+        // the cache, the local-refs branch probe, the workspace clone that
+        // hardlinks, the remote repointed at the forge, and the reset checkout.
         let mut cache = a_cache();
         let fake = FakeGit::new().headed_at_main();
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
@@ -1586,6 +1587,7 @@ mod tests {
                     &bare.display().to_string()
                 ],
                 vec!["git", "symbolic-ref", "HEAD"],
+                vec!["git", "show-ref", "--verify", "refs/heads/main"],
                 vec!["git", "fetch", "origin", "+refs/heads/nb4:refs/heads/nb4"],
                 vec!["git", "show-ref", "--verify", "refs/heads/nb4"],
                 vec![

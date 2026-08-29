@@ -471,6 +471,40 @@ impl core::fmt::Debug for devlaunch_core::domain::metadata::OsFailure
 pub fn devlaunch_core::domain::metadata::OsFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::metadata::OsFailure
 pub mod devlaunch_core::domain::model
+pub enum devlaunch_core::domain::model::SweepTrouble
+pub devlaunch_core::domain::model::SweepTrouble::CloneMissing
+pub devlaunch_core::domain::model::SweepTrouble::FetchRefused
+pub devlaunch_core::domain::model::SweepTrouble::FetchTimedOut
+pub devlaunch_core::domain::model::SweepTrouble::NotRecorded
+pub devlaunch_core::domain::model::SweepTrouble::RefsNotPacked
+impl core::clone::Clone for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::clone(&self) -> devlaunch_core::domain::model::SweepTrouble
+impl core::cmp::Eq for devlaunch_core::domain::model::SweepTrouble
+impl core::cmp::PartialEq for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::eq(&self, &devlaunch_core::domain::model::SweepTrouble) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::domain::model::SweepTrouble
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::model::SweepTrouble
+impl serde_core::ser::Serialize for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct devlaunch_core::domain::model::SweepNote
+pub devlaunch_core::domain::model::SweepNote::said: core::option::Option<alloc::string::String>
+pub devlaunch_core::domain::model::SweepNote::trouble: devlaunch_core::domain::model::SweepTrouble
+impl core::clone::Clone for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::clone(&self) -> devlaunch_core::domain::model::SweepNote
+impl core::cmp::Eq for devlaunch_core::domain::model::SweepNote
+impl core::cmp::PartialEq for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::eq(&self, &devlaunch_core::domain::model::SweepNote) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::model::SweepNote
+impl serde_core::ser::Serialize for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct devlaunch_core::domain::model::WorktreeInfo
 impl core::clone::Clone for devlaunch_core::domain::model::WorktreeInfo
 pub fn devlaunch_core::domain::model::WorktreeInfo::clone(&self) -> devlaunch_core::domain::model::WorktreeInfo
@@ -757,6 +791,18 @@ impl core::fmt::Debug for devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::disk_usage::DiskUsage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::disk_usage::describe_usage(&devlaunch_core::flows::disk_usage::DiskUsage) -> alloc::string::String
+pub mod devlaunch_core::flows::kept_copies
+pub struct devlaunch_core::flows::kept_copies::KeptCopies
+impl devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::under(&std::path::Path) -> Self
+impl core::clone::Clone for devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::clone(&self) -> devlaunch_core::flows::kept_copies::KeptCopies
+impl core::cmp::Eq for devlaunch_core::flows::kept_copies::KeptCopies
+impl core::cmp::PartialEq for devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::eq(&self, &devlaunch_core::flows::kept_copies::KeptCopies) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kept_copies::KeptCopies
 pub mod devlaunch_core::flows::kill
 pub enum devlaunch_core::flows::kill::ContainerRefusal
 pub devlaunch_core::flows::kill::ContainerRefusal::NotRun
@@ -1224,6 +1270,7 @@ pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped::path: std::path::PathBuf
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped::refusal: devlaunch_core::domain::metadata::MetadataError
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::LifecycleNotice
@@ -1328,6 +1375,7 @@ pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted::exit: devlaunch_run
 pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted::stderr: alloc::string::String
 pub devlaunch_core::flows::lifecycle::PurgeStep::NotDeleted::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved
+pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::flows::lifecycle::PurgeStep::VolumesNotRemoved::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::PurgeStep
@@ -1405,6 +1453,18 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::StopOutcome
 pub fn devlaunch_core::flows::lifecycle::StopOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::StopOutcome
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::StopOutcome
+pub enum devlaunch_core::flows::lifecycle::SweepOccasion
+pub devlaunch_core::flows::lifecycle::SweepOccasion::DevpodResult
+pub devlaunch_core::flows::lifecycle::SweepOccasion::KeptCopy
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::SweepOccasion
+pub fn devlaunch_core::flows::lifecycle::SweepOccasion::clone(&self) -> devlaunch_core::flows::lifecycle::SweepOccasion
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::SweepOccasion
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::SweepOccasion
+pub fn devlaunch_core::flows::lifecycle::SweepOccasion::eq(&self, &devlaunch_core::flows::lifecycle::SweepOccasion) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::SweepOccasion
+pub fn devlaunch_core::flows::lifecycle::SweepOccasion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::lifecycle::SweepOccasion
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::SweepOccasion
 pub enum devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker
 pub devlaunch_core::flows::lifecycle::VolumeRefusal::Docker::exit: devlaunch_runner::Exit
@@ -1432,6 +1492,17 @@ pub fn devlaunch_core::flows::lifecycle::VolumeSweep::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::VolumeSweep
 pub fn devlaunch_core::flows::lifecycle::VolumeSweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::VolumeSweep
+pub enum devlaunch_core::flows::lifecycle::VolumesKeptBecause
+pub devlaunch_core::flows::lifecycle::VolumesKeptBecause::ListedAgain
+pub devlaunch_core::flows::lifecycle::VolumesKeptBecause::Refused(devlaunch_core::flows::lifecycle::VolumeRefusal)
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::VolumesKeptBecause
+pub fn devlaunch_core::flows::lifecycle::VolumesKeptBecause::clone(&self) -> devlaunch_core::flows::lifecycle::VolumesKeptBecause
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::VolumesKeptBecause
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::VolumesKeptBecause
+pub fn devlaunch_core::flows::lifecycle::VolumesKeptBecause::eq(&self, &devlaunch_core::flows::lifecycle::VolumesKeptBecause) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::VolumesKeptBecause
+pub fn devlaunch_core::flows::lifecycle::VolumesKeptBecause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::VolumesKeptBecause
 pub struct devlaunch_core::flows::lifecycle::Adoptable
 pub devlaunch_core::flows::lifecycle::Adoptable::clone: std::path::PathBuf
 pub devlaunch_core::flows::lifecycle::Adoptable::context: alloc::string::String
@@ -1480,6 +1551,7 @@ impl devlaunch_core::flows::lifecycle::PrunePlan
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::keeping(&self) -> &[devlaunch_core::flows::lifecycle::Kept]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::nothing_to_do(&self) -> bool
+pub fn devlaunch_core::flows::lifecycle::PrunePlan::reclaiming(&self) -> &[devlaunch_core::flows::lifecycle::ReclaimableVolumes]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::removing(&self) -> &[devlaunch_core::flows::lifecycle::Reclaimable]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::root(&self) -> &std::path::Path
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::stale_records(&self) -> &[devlaunch_core::domain::model::WorktreeInfo]
@@ -1492,8 +1564,10 @@ impl core::fmt::Debug for devlaunch_core::flows::lifecycle::PrunePlan
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::PrunePlan
 pub struct devlaunch_core::flows::lifecycle::PruneReport
+pub devlaunch_core::flows::lifecycle::PruneReport::reclaimed: alloc::vec::Vec<devlaunch_core::flows::lifecycle::ReclaimableVolumes>
 pub devlaunch_core::flows::lifecycle::PruneReport::refused: alloc::vec::Vec<devlaunch_core::flows::repo_manager::Refusal>
 pub devlaunch_core::flows::lifecycle::PruneReport::removed: alloc::vec::Vec<devlaunch_core::flows::lifecycle::Reclaimable>
+pub devlaunch_core::flows::lifecycle::PruneReport::volumes_kept: alloc::vec::Vec<devlaunch_core::flows::lifecycle::VolumesKept>
 pub devlaunch_core::flows::lifecycle::PruneReport::withheld: alloc::vec::Vec<devlaunch_core::flows::lifecycle::Withheld>
 impl devlaunch_core::flows::lifecycle::PruneReport
 pub fn devlaunch_core::flows::lifecycle::PruneReport::finished(&self) -> bool
@@ -1532,6 +1606,17 @@ pub fn devlaunch_core::flows::lifecycle::Reclaimable::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Reclaimable
 pub fn devlaunch_core::flows::lifecycle::Reclaimable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Reclaimable
+pub struct devlaunch_core::flows::lifecycle::ReclaimableVolumes
+pub devlaunch_core::flows::lifecycle::ReclaimableVolumes::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::flows::lifecycle::ReclaimableVolumes::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::ReclaimableVolumes
+pub fn devlaunch_core::flows::lifecycle::ReclaimableVolumes::clone(&self) -> devlaunch_core::flows::lifecycle::ReclaimableVolumes
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::ReclaimableVolumes
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::ReclaimableVolumes
+pub fn devlaunch_core::flows::lifecycle::ReclaimableVolumes::eq(&self, &devlaunch_core::flows::lifecycle::ReclaimableVolumes) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::ReclaimableVolumes
+pub fn devlaunch_core::flows::lifecycle::ReclaimableVolumes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::ReclaimableVolumes
 pub struct devlaunch_core::flows::lifecycle::ReconcilePlan
 impl devlaunch_core::flows::lifecycle::ReconcilePlan
 pub fn devlaunch_core::flows::lifecycle::ReconcilePlan::adopting(&self) -> &[devlaunch_core::flows::lifecycle::Adoptable]
@@ -1587,6 +1672,17 @@ pub fn devlaunch_core::flows::lifecycle::Unlocatable::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Unlocatable
 pub fn devlaunch_core::flows::lifecycle::Unlocatable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Unlocatable
+pub struct devlaunch_core::flows::lifecycle::VolumesKept
+pub devlaunch_core::flows::lifecycle::VolumesKept::because: devlaunch_core::flows::lifecycle::VolumesKeptBecause
+pub devlaunch_core::flows::lifecycle::VolumesKept::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::VolumesKept
+pub fn devlaunch_core::flows::lifecycle::VolumesKept::clone(&self) -> devlaunch_core::flows::lifecycle::VolumesKept
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::VolumesKept
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::VolumesKept
+pub fn devlaunch_core::flows::lifecycle::VolumesKept::eq(&self, &devlaunch_core::flows::lifecycle::VolumesKept) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::VolumesKept
+pub fn devlaunch_core::flows::lifecycle::VolumesKept::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::VolumesKept
 pub struct devlaunch_core::flows::lifecycle::Withheld
 pub devlaunch_core::flows::lifecycle::Withheld::because: devlaunch_core::flows::lifecycle::KeptBecause
 pub devlaunch_core::flows::lifecycle::Withheld::path: std::path::PathBuf
@@ -1602,8 +1698,8 @@ pub fn devlaunch_core::flows::lifecycle::apply_reconciliation(&mut devlaunch_cor
 pub fn devlaunch_core::flows::lifecycle::child_work(&std::path::Path, devlaunch_core::flows::lifecycle::RefreshReason) -> devlaunch_core::flows::lifecycle::ChildWork
 pub fn devlaunch_core::flows::lifecycle::guard_removal(&str, devlaunch_core::domain::workspace_state::Unsaved, devlaunch_core::flows::lifecycle::Insistence) -> devlaunch_core::flows::lifecycle::Guarded
 pub fn devlaunch_core::flows::lifecycle::objection(&devlaunch_core::domain::workspace_state::Unsaved) -> core::option::Option<devlaunch_core::flows::lifecycle::Objection>
-pub fn devlaunch_core::flows::lifecycle::prune_clones(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::flows::lifecycle::PrunePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PruneOutcome, devlaunch_core::flows::lifecycle::PruneError>
-pub fn devlaunch_core::flows::lifecycle::prune_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PrunePlan, devlaunch_core::flows::lifecycle::PruneError>
+pub fn devlaunch_core::flows::lifecycle::prune_clones(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::flows::kept_copies::KeptCopies, &devlaunch_core::flows::lifecycle::PrunePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PruneOutcome, devlaunch_core::flows::lifecycle::PruneError>
+pub fn devlaunch_core::flows::lifecycle::prune_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::kept_copies::KeptCopies, &devlaunch_core::flows::lifecycle::ClonePlacement, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PrunePlan, devlaunch_core::flows::lifecycle::PruneError>
 pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::lifecycle::PurgePlan, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::PurgeStep)) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgeOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::flows::lifecycle::purge_plan(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgePlan, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::lifecycle::reconcile_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcilePlan
@@ -1709,6 +1805,20 @@ pub fn devlaunch_core::flows::listing::SourceDescription::eq(&self, &devlaunch_c
 impl core::fmt::Debug for devlaunch_core::flows::listing::SourceDescription
 pub fn devlaunch_core::flows::listing::SourceDescription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::SourceDescription
+pub struct devlaunch_core::flows::listing::SweptRepoNote
+pub devlaunch_core::flows::listing::SweptRepoNote::note: devlaunch_core::domain::model::SweepNote
+pub devlaunch_core::flows::listing::SweptRepoNote::owner: alloc::string::String
+pub devlaunch_core::flows::listing::SweptRepoNote::repo: alloc::string::String
+impl devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::slug(&self) -> alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::clone(&self) -> devlaunch_core::flows::listing::SweptRepoNote
+impl core::cmp::Eq for devlaunch_core::flows::listing::SweptRepoNote
+impl core::cmp::PartialEq for devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::eq(&self, &devlaunch_core::flows::listing::SweptRepoNote) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::SweptRepoNote
 pub struct devlaunch_core::flows::listing::TableRow
 pub devlaunch_core::flows::listing::TableRow::id: alloc::string::String
 pub devlaunch_core::flows::listing::TableRow::last_used: devlaunch_core::flows::listing::LastUsed
@@ -1754,6 +1864,7 @@ pub fn devlaunch_core::flows::listing::describe_source(&devlaunch_core::clients:
 pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch_core::clients::git::Git<'_>, &[devlaunch_core::clients::devpod::Workspace]) -> devlaunch_core::flows::listing::RepoDiscovery
 pub fn devlaunch_core::flows::listing::flatten_repos(&indexmap::map::IndexMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::listing::head_branch_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::flows::listing::outstanding_sweep_notes(&devlaunch_core::domain::metadata::MetadataStorage) -> alloc::vec::Vec<devlaunch_core::flows::listing::SweptRepoNote>
 pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::repo_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::workspace_table(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path, devlaunch_core::flows::listing::Sizes) -> core::result::Result<devlaunch_core::flows::listing::WorkspaceTable, devlaunch_core::clients::devpod::ListingUnreadable>
@@ -2026,6 +2137,7 @@ pub devlaunch_core::flows::records::Records::clones: devlaunch_core::flows::work
 pub devlaunch_core::flows::records::Records::reported: alloc::vec::Vec<devlaunch_core::flows::records::RecordsNotice>
 pub devlaunch_core::flows::records::Records::storage: devlaunch_core::domain::metadata::MetadataStorage
 pub fn devlaunch_core::flows::records::open_records<'r>(&'r dyn devlaunch_runner::Runner) -> core::result::Result<devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
+pub fn devlaunch_core::flows::records::open_storage() -> core::result::Result<(devlaunch_core::domain::metadata::MetadataStorage, alloc::vec::Vec<devlaunch_core::domain::metadata::Notice>), devlaunch_core::flows::records::StartupError>
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone

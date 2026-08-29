@@ -763,9 +763,9 @@ pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    //! `test/unit/test_aid.py`'s three parsing classes, which are the whole of aid's
-    //! own behaviour: what the command line splits into, what shell command comes
-    //! out, and what dl is handed.
+    //! The Python `test_aid`'s three parsing classes (retired with the Python tree
+    //! in #267), which are the whole of aid's own behaviour: what the command line
+    //! splits into, what shell command comes out, and what dl is handed.
 
     use super::*;
 
@@ -1246,6 +1246,32 @@ mod tests {
             parsed(&["owner/repo", "explain the --rm flag"])
                 .spec_options
                 .is_empty()
+        );
+    }
+
+    /// A pair typed at the *front* is emitted at the front, and that is the spelling
+    /// aid actually produces.
+    ///
+    /// Everything above is about the trailing run, because that is the position a
+    /// recalled line grows in. But aid takes any leading `-` word it does not
+    /// recognise and puts it ahead of the spec without knowing what it means, so
+    /// `aid --rm --force <ws> <prompt>` reaches dl with both flags *before* the
+    /// workspace. aid decides nothing about whether that is safe, and it must not:
+    /// what makes it safe is dl answering the pair by name before it reads where
+    /// `--force` sits, which `dl`'s `the_pair_aid_emits_is_refused_ahead_of_where_force_sits`
+    /// is the other half of. Pinned here so the line those two agree about is a
+    /// line somebody has actually written down.
+    #[test]
+    fn a_leading_pair_reaches_dl_as_the_pair_it_is() {
+        let chosen = parsed(&["--rm", "--force", "owner/repo", "fix it"]);
+
+        assert_eq!(chosen.dl_options, ["--rm", "--force"]);
+        assert_eq!(prompt(&chosen), "fix it");
+        let built = build_dl_args(&chosen).expect("an agent line");
+        assert_eq!(
+            &built[..3],
+            ["--rm", "--force", "owner/repo"],
+            "the pair stopped reaching dl ahead of the spec: {built:?}"
         );
     }
 

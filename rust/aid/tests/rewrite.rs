@@ -385,10 +385,12 @@ fn a_remote_control_variable_that_is_neither_a_yes_nor_a_no_is_refused() {
 
 #[test]
 fn no_prompt_starts_the_agents_plain_session() {
-    // `test/test_interactive_command.py::TestAidReachesTheTtyTransport`'s first case
-    // at the boundary: no prompt, so no prompt flags — and the same transport `dl
-    // <ws>` uses, which is what makes aid a rewrite rather than a launcher. (The
-    // OpenSSH pty half of that class needs a published ssh alias and is M9's.)
+    // The Python `test_interactive_command::TestAidReachesTheTtyTransport`'s first
+    // case at the boundary (that suite retired with the Python tree in #267, and
+    // this is where the case lives now): no prompt, so no prompt flags — and the
+    // same transport `dl <ws>` uses, which is what makes aid a rewrite rather than
+    // a launcher. (The OpenSSH pty half of that class needs a published ssh alias
+    // and is M9's.)
     let world = World::with(&["--warm"]);
     let run = world.aid(&[MAIN]);
     run.exited(0);

@@ -8,7 +8,8 @@
 //! walking up into an ancestor repository) were both invisible to everything
 //! except a real git.
 //!
-//! Ported from `test/test_workspace_state.py`'s five module-level classes:
+//! Ported from the Python `test_workspace_state` (retired with the Python tree
+//! in #267), whose five module-level classes were:
 //! `TestWhatACloneHolds`, `TestWhenGitCannotBeAsked`,
 //! `TestGitIsPinnedToItsWorkTreeToo`, `TestADirectoryThatCannotBeLookedAt`,
 //! `TestTheAnswersAreTotal` and `TestNamingWhatIsUnsaved`. Its remaining classes

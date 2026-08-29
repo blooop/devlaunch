@@ -38,9 +38,10 @@ use crate::runner::Runner;
 /// environment with no home directory, a `config.toml` that cannot be read, and a
 /// `metadata.json` that cannot be opened.
 ///
-/// binary surface — not part of the frozen wf API (#251 §7) on its own; it reaches
-/// the promised tier as the payload of
-/// [`ColdRefused`](crate::flows::launch::ColdRefused).
+/// **Part of the frozen wf API (#251 §7)**, re-exported from
+/// [`api`](crate::api) since #340: it is the payload of
+/// [`ColdRefused::Startup`](crate::flows::launch::ColdRefused::Startup), and a
+/// consumer that cannot match on it is holding a refusal it cannot read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupError {
     NoHomeDirectory,
@@ -70,12 +71,20 @@ impl From<MetadataError> for StartupError {
 ///
 /// One vocabulary over what used to be four fields a caller drained in a fixed
 /// order: the config's retired keys, the load's notices, the migration's report and
-/// the migration's refusal. It is a sink's vocabulary rather than a struct of lists
-/// because the order *is* the report — Python's factory read the config, opened the
-/// store and then announced the migration from inside it — and because a sink is
-/// what lets the words be said while the work is still happening.
+/// the migration's refusal. It is one ordered sequence rather than a struct of four
+/// lists because the order *is* the report — Python's factory read the config,
+/// opened the store and then announced the migration from inside it — and a caller
+/// holding four lists has to know that order to reproduce it.
 ///
-/// binary surface — not part of the frozen wf API (#251 §7)
+/// Note what this vocabulary does *not* buy, unlike the launch's: the open is a
+/// single act, so [`open_records`] finishes before anything can be said about it and
+/// [`ColdPath`](crate::flows::launch::ColdPath) says the whole sequence at once. The
+/// sink is what makes the saying the caller's and the ordering core's, not what
+/// makes it early.
+///
+/// **Part of the frozen wf API (#251 §7)**, re-exported from [`api`](crate::api)
+/// since #340: it is what
+/// [`ColdPath::new`](crate::flows::launch::ColdPath::new) takes its sink in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordsNotice {
     /// A key `config.toml` names that this build no longer reads. Only
@@ -107,7 +116,10 @@ pub enum RecordsNotice {
 /// [`lifecycle::ClonePlacement`](crate::flows::lifecycle::ClonePlacement)), so a
 /// command cannot scan one tree while locking against another.
 ///
-/// binary surface — not part of the frozen wf API (#251 §7)
+/// Not re-exported from [`api`](crate::api), and reachable from it all the same:
+/// it is what [`ColdPath::records`](crate::flows::launch::ColdPath::records)
+/// answers with. That is the classifier gap #352 is about rather than a second
+/// tier, so treat a change here as a change to the promise.
 pub struct Records<'r> {
     pub storage: MetadataStorage,
     /// The clone manager, which is the one thing that names a record's clone
@@ -121,6 +133,24 @@ pub struct Records<'r> {
     pub reported: Vec<RecordsNotice>,
 }
 
+/// Open `metadata.json` and nothing else: no config, no clone manager, no cache
+/// migration.
+///
+/// What a caller reaches for when it has one field of the record to read and no
+/// business writing anything. [`open_records`] is still the construction point for
+/// everything that mutates — this is the same load without the three things that
+/// make that call expensive and consequential, and it is deliberately not a way
+/// around it: a caller that wants a record's *clone* wants the migration, because
+/// the directory it is about may not have been renamed yet.
+///
+/// The load is not a pure read. A `metadata.json` that cannot be parsed is
+/// quarantined by it, which is exactly what every other command does to the same
+/// file, and the notices come back so a caller can say so rather than letting a
+/// record be moved aside in silence.
+pub fn open_storage() -> Result<(MetadataStorage, Vec<metadata::Notice>), StartupError> {
+    Ok(MetadataStorage::open(MetadataStorage::default_path()?)?)
+}
+
 /// Open devlaunch's records, migrating the cache if it has not been migrated yet.
 ///
 /// The one construction point, so nothing can reach a stale clone path before the
@@ -129,7 +159,7 @@ pub struct Records<'r> {
 pub fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, StartupError> {
     let (config, retired_keys) = config::worktree_config()?;
     let cache_dir = xdg::devlaunch_cache()?;
-    let (mut storage, notices) = MetadataStorage::open(MetadataStorage::default_path()?)?;
+    let (mut storage, notices) = open_storage()?;
     // The report is carried out and said by the caller. Python's `migrate_cache`
     // announces inside itself (migration.py `_announce`); core renders no English
     // (#251), so the report travels up and the binary writes the sentences — the
