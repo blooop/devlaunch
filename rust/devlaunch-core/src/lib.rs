@@ -10,7 +10,7 @@
 //!    devpod-the-filesystem where `devpod` is devpod-the-command.
 //! 3. **domain** — `workspace_id`, `spec`, `model`, `metadata`, `config`,
 //!    `xdg`, `locks`: the data model, written once.
-//! 4. **flows** — `launch`, `lifecycle`, `listing`, `provision`,
+//! 4. **flows** — `launch`, `lifecycle`, `listing`, `provision`, `records`,
 //!    `completion`, `disk_usage`, `timing`: the operations. Dependencies run
 //!    strictly downward, so a flow or a domain type may name a tool client
 //!    (`workspace_state` reads `clients::git`); a client never names a flow.
@@ -45,7 +45,7 @@
 //! diff or a red tick. The two tiers get a file each — `public-api.api.txt`
 //! for declarations at the [`api`] path, `public-api.rest.txt` for the rest —
 //! so that a change to the promised tier's *declarations* is a diff in a
-//! 37-row file rather than one row inside two thousand.
+//! 126-row file rather than one row inside two thousand.
 //!
 //! **What that file does not cover, and it is not a small gap.**
 //! `cargo public-api` renders inherent methods and trait impls only at a
@@ -53,7 +53,7 @@
 //! [`api::Launch`]'s only constructor and only method are rendered
 //! `flows::launch::Launch::{new, run}` and land in `public-api.rest.txt`, as do
 //! `CommandContext::new`, `DevcontainerPath::as_str` and every derived
-//! `Clone`/`Debug`/`PartialEq` on the promised types: 42 of the 79 rows the
+//! `Clone`/`Debug`/`PartialEq` on the promised types: 133 of the 259 rows the
 //! generator emits for the `api` section. Renaming `api::Launch::run` — an
 //! unambiguous break — leaves `public-api.api.txt` byte-identical. So the
 //! sound direction is one-way: a diff in the promise file *is* a change to the
@@ -140,6 +140,27 @@ pub mod flows;
 pub mod api {
     // up: start or attach a workspace.
     pub use crate::flows::launch::{Launch, LaunchVerb};
+
+    // …and everything `Launch::new` asks for, so that a caller with this module
+    // and nothing else can build one that goes cold (#340). Five of the seven
+    // parameter types used to live outside here, and the two implementations that
+    // decide whether a launch can go cold at all lived in the `dl` binary — so the
+    // promised tier named a launcher nobody outside `dl` could construct.
+    //
+    // The traits come with them: an external caller may lend its own machinery
+    // (`NoColdPath`'s shape, for a caller that has established the workspace is
+    // warm) instead of the implementations here, and it cannot do that without
+    // naming what it is implementing.
+    pub use crate::flows::launch::{
+        Cold, ColdMachinery, ColdPath, ColdRefused, Host, LaunchNotice, Provision, ToolProvisioning,
+    };
+    pub use crate::flows::lifecycle::{Refresh, SelfInvocation};
+    pub use crate::flows::provision::ProvisionEvent;
+    pub use crate::flows::records::{RecordsNotice, StartupError};
+    // The sink itself, which is how every one of those vocabularies is taken:
+    // `Vec<T>` implements it, so a caller that only wants to collect needs nothing
+    // of its own.
+    pub use crate::notices::Notices;
 
     // list: the workspace listing, and the two shapes wf renders it in.
     pub use crate::flows::listing::{CommandContext, enriched_listing, json_document};

@@ -333,7 +333,8 @@ impl<'r> BranchManager<'r> {
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_worktree_branch_manager.py`, re-pinned at the argv seam.
+    //! The Python `test_worktree_branch_manager`, re-pinned at the argv seam when
+    //! it retired with the Python tree (#267).
     //!
     //! Python's `TestEnsureBranchExists` classes patch the four verbs on the class
     //! and assert which of them were called with what. There is nothing to patch

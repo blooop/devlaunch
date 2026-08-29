@@ -1,60 +1,18 @@
-//! What one `dl` command holds: the runner it spawns through, the cache
-//! directory, and — for the commands that need them — the config, the records and
-//! the clone manager.
+//! The two answers only *this* process can give: where devlaunch keeps its
+//! things, and how to re-run this build.
 //!
-//! # Built when they are needed, and once
-//!
-//! Python memoized the clone manager in a module-level dict and ran the one-shot
-//! id-scheme migration on the way through the factory, so that `--help`,
-//! `--version`, `--ls`, the completion commands and a warm launch never paid for
-//! any of it (#58, then #145). That laziness is behaviour and not an
-//! optimisation: it decides which commands run the migration at all.
-//!
-//! Here it is a value a command builds when it needs one, rather than a memo to
-//! reset: [`open_records`] is the single construction point, it runs the migration
-//! exactly once because it is called at most once per command, and a command that
-//! never calls it has provably not touched `metadata.json`.
+//! The records themselves — the config, `metadata.json`, the cache migration and
+//! the clone manager — used to live here too, and moved to
+//! [`devlaunch_core::flows::records`] in #340. They were never dl's knowledge: the
+//! whole module was core types plumbed together, and keeping the plumbing in the
+//! binary meant `devlaunch_core::api` promised a launcher that only `dl` could
+//! build. What is left is what genuinely belongs to a running program rather than
+//! to the library: `current_exe()`, and the cache path everything else is handed.
 
 use std::path::PathBuf;
 
-use devlaunch_core::clients::git::Git;
-use devlaunch_core::domain::config::{self, ConfigError, RetiredKey, WorktreeConfig};
-use devlaunch_core::domain::metadata::{MetadataError, MetadataStorage, Notice};
 use devlaunch_core::domain::xdg::{self, NoHomeDirectory};
 use devlaunch_core::flows::lifecycle::SelfInvocation;
-use devlaunch_core::flows::migration::{self, MigrationReport};
-use devlaunch_core::flows::workspace_clone::WorkspaceCloneManager;
-use devlaunch_core::runner::Runner;
-
-/// Why a command could not get as far as running.
-///
-/// Three separate reasons because they are fixed in three different places: an
-/// environment with no home directory, a `config.toml` that cannot be read, and a
-/// `metadata.json` that cannot be opened.
-#[derive(Debug)]
-pub(crate) enum StartupError {
-    NoHomeDirectory,
-    Config(ConfigError),
-    Metadata(MetadataError),
-}
-
-impl From<NoHomeDirectory> for StartupError {
-    fn from(_: NoHomeDirectory) -> Self {
-        StartupError::NoHomeDirectory
-    }
-}
-
-impl From<ConfigError> for StartupError {
-    fn from(error: ConfigError) -> Self {
-        StartupError::Config(error)
-    }
-}
-
-impl From<MetadataError> for StartupError {
-    fn from(error: MetadataError) -> Self {
-        StartupError::Metadata(error)
-    }
-}
 
 /// Where devlaunch keeps everything: the directory ownership is decided by and
 /// `--purge` removes.
@@ -105,80 +63,6 @@ fn refresh_program(current_exe: Option<PathBuf>) -> String {
         }
         _ => "dl".to_owned(),
     }
-}
-
-/// The worktree config, and whatever of `config.toml` this build no longer reads.
-pub(crate) fn worktree_config() -> Result<(WorktreeConfig, Vec<RetiredKey>), ConfigError> {
-    config::worktree_config()
-}
-
-/// dl's own records and clones, with the cache migration already run.
-///
-/// Holds the manager and the store together because the listing reads both and
-/// they have to describe the same cache. There is deliberately no second copy of
-/// the config here: the clone root is what the commands want, and the manager is
-/// what answers for that (see [`lifecycle::ClonePlacement`]), so a command cannot
-/// scan one tree while locking against another.
-pub(crate) struct Records<'r> {
-    pub(crate) storage: MetadataStorage,
-    /// The clone manager, which is the one thing that names a record's clone
-    /// directory: the listing, the `dl <ws> rm` guard and the delete itself all
-    /// have to name the *same* directory, and they used to name it separately and
-    /// could disagree (devlaunch#174).
-    pub(crate) clones: WorkspaceCloneManager<'r>,
-    /// Everything the load and the migration had to say, in the order it happened.
-    /// Rendered by the caller: these are typed events, and the sentences are the
-    /// binary's.
-    pub(crate) notices: Vec<Notice>,
-    /// The keys `config.toml` names that this build no longer reads. Only
-    /// `worktree.repos_dir` today, and it is here rather than ignored because it
-    /// used to decide where the clones went: a user who set it has a tree at that
-    /// path, and this run is the only thing that will ever name it.
-    pub(crate) retired_keys: Vec<RetiredKey>,
-    /// What the cache migration did, when it ran and produced a report. `None`
-    /// covers both the common already-current case (a single integer comparison,
-    /// no scan) and a migration that a concurrent process had already finished.
-    /// Rendered by the caller: the report carries the facts, and the sentences —
-    /// Python's `_announce`, up to nine notice classes and the only pointer to
-    /// `dl --reconcile` for orphaned containers — are the binary's (#251).
-    pub(crate) migration: Option<MigrationReport>,
-    /// Why the cache could not be migrated, when it could not.
-    ///
-    /// A failed migration must not take the command with it — the renames that did
-    /// happen are still resumable, because the version header is only written by
-    /// the final save — so this is reported and the command carries on, as Python's
-    /// `logging.warning` did.
-    pub(crate) migration_refused: Option<MetadataError>,
-}
-
-/// Open dl's records, migrating the cache if it has not been migrated yet.
-///
-/// The one construction point, so nothing can reach a stale clone path before the
-/// rename. On an already-migrated cache the migration costs a single integer
-/// comparison: the trigger is the version header the load already parsed.
-pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, StartupError> {
-    let (config, retired_keys) = worktree_config()?;
-    let cache_dir = cache_dir()?;
-    let (mut storage, notices) = MetadataStorage::open(MetadataStorage::default_path()?)?;
-    // The report is kept and rendered by the caller. Python's `migrate_cache`
-    // announces inside itself (migration.py `_announce`); core renders no English
-    // (#251), so the report travels up and the binary writes the sentences — the
-    // migration's orphan/unmigrated notices, including the only pointer a user
-    // gets to `dl --reconcile`/`recreate` for the containers it orphaned.
-    let (migration, migration_refused) =
-        match migration::migrate_cache(&mut storage, &xdg::clone_root_in(&cache_dir)) {
-            Ok(report) => (report, None),
-            Err(refused) => (None, Some(refused)),
-        };
-    let clones = WorkspaceCloneManager::in_cache(&cache_dir, &config, Git::new(runner));
-    Ok(Records {
-        storage,
-        clones,
-        notices,
-        retired_keys,
-        migration,
-        migration_refused,
-    })
 }
 
 #[cfg(test)]

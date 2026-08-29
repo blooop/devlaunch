@@ -37,8 +37,8 @@
 //! lend may not advertise a verification of the payload that the lend does not
 //! perform.
 //!
-//! These tests were `test/test_lending_doc.py` until the Python implementation was
-//! retired (#267). They are here rather than there because every constant and every
+//! These tests were the Python `test_lending_doc` until the Python implementation
+//! was retired (#267). They are here rather than there because every constant and every
 //! generator they read is in this module: from Python they would have had to be
 //! *parsed* out of this file, and a prose-drift guard that can only read the source
 //! it is guarding is one rename away from silently passing.

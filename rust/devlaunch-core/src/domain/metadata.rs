@@ -1107,7 +1107,8 @@ fn encode(document: &Document<'_>) -> Result<Vec<u8>, MetadataError> {
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_worktree_storage.py`, re-pinned.
+    //! The Python `test_worktree_storage`, re-pinned here when it retired with the
+    //! Python tree (#267).
     //!
     //! Python patched two seams to observe behaviour it could not otherwise see
     //! — `Path.replace` to watch the atomic rename, `storage.save` to count

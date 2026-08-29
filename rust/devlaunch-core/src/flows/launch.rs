@@ -57,7 +57,7 @@
 //! *is* a string here is a remote payload — `bash -lc <quoted>` — because those
 //! bytes are a contract with a shell rather than prose for a person.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -76,7 +76,12 @@ use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
 use crate::flows::listing::CommandContext;
-use crate::flows::provision::{ClaudeConfig, DevpodMissing, PassOccasion, ZellijSwitch};
+use crate::flows::provision::verdict_cache::VerdictCache;
+use crate::flows::provision::{
+    self, ClaudeConfig, DevpodMissing, HostLayout, PassOccasion, ProvisionEvent, Provisioning,
+    Switches, ZellijSwitch,
+};
+use crate::flows::records::{self, Records, RecordsNotice, StartupError};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
 use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
@@ -1153,6 +1158,97 @@ impl Provision for NoProvisioning {
         _title: Option<&str>,
     ) -> Result<Option<ClaudeConfig>, DevpodMissing> {
         Ok(None)
+    }
+}
+
+/// Lending the host's tools into every workspace devlaunch opens — the real
+/// [`Provision`], moved out of the `dl` binary by #340.
+///
+/// The host facts are read once, when the value is built, rather than per pass:
+/// a launch can provision twice (a sibling's `up` won the race, then this one's
+/// `up` ran) and a switch that changed between them would make one launch two
+/// different launches. The verdict cache is built here for the same reason and one
+/// more — it is two paths, and resolving either of them a second time is how the
+/// pass that *writes* a marker and the pass that *reads* one come to disagree about
+/// where markers live.
+///
+/// `events` is the caller's sink, and it is the only thing that used to keep this
+/// type in the binary: the pass streams [`ProvisionEvent`]s *while it runs*, because
+/// a cold install moves hundreds of megabytes and a warning about it is worth
+/// nothing an hour later. Held behind a [`RefCell`] because [`Provision`] answers
+/// through `&self` and a sink is written to; that is a borrow the launch cannot
+/// contend with, since one launch makes one pass at a time.
+pub struct ToolProvisioning<'e> {
+    switches: Switches,
+    host: Option<HostLayout>,
+    verdicts: VerdictCache,
+    events: RefCell<&'e mut dyn Notices<ProvisionEvent>>,
+}
+
+impl<'e> ToolProvisioning<'e> {
+    /// What this host will lend, whether it may, what it remembers, and where its
+    /// events go.
+    ///
+    /// `cache` is the caller's for the reason [`Host::from_process`] takes it: the
+    /// caller has already resolved devlaunch's cache directory for everything else,
+    /// and a second answer here could disagree with the first.
+    pub fn from_env(cache: &Path, events: &'e mut dyn Notices<ProvisionEvent>) -> Self {
+        Self {
+            switches: Switches::from_env(),
+            // `None` is a machine with no home directory to look in: nothing to
+            // lend, rather than nothing to do — the setup pass still runs, because
+            // the stages it carries are not tools work.
+            host: HostLayout::from_env(),
+            // A `None` devpod home here means something else again: no file to
+            // check a remembered verdict against, so nothing is ever trusted and
+            // every pass travels, exactly as it did before the cache existed.
+            verdicts: VerdictCache::under(cache, DevpodHome::locate()),
+            events: RefCell::new(events),
+        }
+    }
+}
+
+impl Provision for ToolProvisioning<'_> {
+    fn provision_tools(
+        &self,
+        runner: &dyn Runner,
+        workspace_id: &str,
+        occasion: PassOccasion,
+        title: Option<&str>,
+    ) -> Result<Option<ClaudeConfig>, DevpodMissing> {
+        let provisioned = {
+            let mut events = self.events.borrow_mut();
+            provision::provision_tools(
+                runner,
+                workspace_id,
+                occasion,
+                self.switches,
+                title,
+                self.host.as_ref(),
+                Some(&self.verdicts),
+                &mut **events,
+            )
+        };
+        // Every way of coming up empty is an arm of `Provisioning`, and none of them
+        // is worth an event beyond the ones above: the workspace is up and the user
+        // asked for a session, not for an install. A devpod that has gone missing is
+        // the one answer that travels — the launch cannot go on without it, and the
+        // launch ends with it.
+        //
+        // `CachedProvisioned` is silent for the same reason, and deliberately so: it
+        // is the arm where a launch did *less* than it used to, and a word about it
+        // would put a sentence on the terminal of every prewarm to announce that
+        // nothing happened. `DEVLAUNCH_TIMING=1` is where a missing round trip is
+        // worth reading, and it shows there as the trip that is not in the list.
+        // The Claude fact travels; every arm of `Provisioning` still says nothing.
+        provisioned.map(|pass| {
+            let _: Provisioning = pass.provisioning;
+            pass.claude()
+        })
+    }
+
+    fn remembered_claude(&self, workspace_id: &str) -> Option<ClaudeConfig> {
+        self.verdicts.remembered_claude(workspace_id)
     }
 }
 
@@ -2380,9 +2476,23 @@ pub struct Cold<'a, 'r> {
 }
 
 /// Why the cold path's machinery could not be opened.
+///
+/// A sum over the reasons and not a rendered sentence. It used to be
+/// `reason: String`, which was the one place the binary's own prose travelled back
+/// *through* core — `dl` rendered the words and core quoted them into the launch's
+/// refusal — against the crate's own rule that no user-facing English lives here
+/// (#251 §5). The arms carry what the reason is; the sentences are the caller's,
+/// as they are for [`crate::flows::repo_manager::NotRefreshed`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColdRefused {
-    pub reason: String,
+pub enum ColdRefused {
+    /// The records could not be opened: no home directory, an unreadable
+    /// `config.toml`, or a `metadata.json` that would not open.
+    Startup(StartupError),
+    /// This launcher was built with no cold path at all: the caller established
+    /// the workspace was warm and lent machinery that refuses on principle (the
+    /// crate's own `NoColdPath` is one). Nothing was attempted, and nothing is
+    /// wrong with the machine.
+    NoColdPath,
 }
 
 /// A way to build the cold path's machinery, called only when it is needed.
@@ -2412,9 +2522,65 @@ pub(crate) struct NoColdPath;
 
 impl<'r> ColdMachinery<'r> for NoColdPath {
     fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
-        Err(ColdRefused {
-            reason: "the cold path is not available to this caller".to_owned(),
-        })
+        Err(ColdRefused::NoColdPath)
+    }
+}
+
+/// devlaunch's records, opened on the first ask and kept for the rest of the
+/// command.
+///
+/// **The real implementation, and the reason this type exists at all.** Core states
+/// the requirement in [`ColdMachinery`] — *a way to get* a clone manager and a
+/// metadata store, never the things themselves — so that a warm launch can be shown
+/// never to have read `metadata.json`. Something has to hold the other end of that,
+/// and until #340 it was a private type inside the `dl` binary: a second consumer
+/// could name [`Launch`] and had nothing to hand it that could go cold.
+///
+/// The open reports once, here, rather than at each call site: a caller that forgot
+/// would silently drop what a damaged `metadata.json` has to say, and two callers
+/// that both remembered would say it twice. What it reports is
+/// [`RecordsNotice`]s into the sink the caller supplied — typed events, said at the
+/// moment the open happens. The sentences stay with whoever wrote the sink.
+pub struct ColdPath<'r, 'e> {
+    runner: &'r dyn Runner,
+    said: &'e mut dyn Notices<RecordsNotice>,
+    records: Option<Records<'r>>,
+}
+
+impl<'r, 'e> ColdPath<'r, 'e> {
+    /// A cold path that has not been opened, and will not be until something asks.
+    ///
+    /// Nothing is read here: no config, no `metadata.json`, no migration. That is
+    /// devlaunch#145's whole promise, and it is kept by this constructor doing
+    /// nothing.
+    pub fn new(runner: &'r dyn Runner, said: &'e mut dyn Notices<RecordsNotice>) -> Self {
+        Self {
+            runner,
+            said,
+            records: None,
+        }
+    }
+
+    /// The records, opening them the first time and reporting what that had to say.
+    pub fn records(&mut self) -> Result<&mut Records<'r>, StartupError> {
+        if self.records.is_none() {
+            let records = records::open_records(self.runner)?;
+            self.said.say_all(records.reported.iter().cloned());
+            self.records = Some(records);
+        }
+        Ok(self.records.as_mut().expect("the records were just opened"))
+    }
+}
+
+impl<'r> ColdMachinery<'r> for ColdPath<'r, '_> {
+    fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
+        match self.records() {
+            Ok(records) => Ok(Cold {
+                clones: &records.clones,
+                storage: &mut records.storage,
+            }),
+            Err(refused) => Err(ColdRefused::Startup(refused)),
+        }
     }
 }
 
@@ -3614,7 +3780,9 @@ mod tests {
         }
 
         /// Every devpod invocation, without the leading `devpod`, in order — the
-        /// shape `test_devpod_spawn_counts.py` asserts.
+        /// shape the Python `test_devpod_spawn_counts` asserted before it retired
+        /// with the Python tree (#267). The spawn counts it gated on are gated
+        /// here now, by the assertions in this module that read this list.
         fn devpod_commands(&self) -> Vec<Vec<String>> {
             self.runner.args_to("devpod")
         }
@@ -3674,6 +3842,32 @@ mod tests {
     impl<'r> ColdMachinery<'r> for NeverCold {
         fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
             panic!("a warm launch opened the cold path");
+        }
+    }
+
+    /// A cold path whose `metadata.json` will not open, refusing exactly as
+    /// [`ColdPath`] does when [`records::open_records`] hands it a
+    /// [`StartupError`].
+    struct MetadataWillNotOpen;
+
+    /// The refusal a real `MetadataStorage::open` produces when the directory it
+    /// needs cannot be created, spelled once so the tests below compare against the
+    /// same value the arm is built from.
+    fn metadata_refusal() -> crate::domain::metadata::MetadataError {
+        crate::domain::metadata::MetadataError::CreateDir {
+            path: PathBuf::from("/cache/devlaunch"),
+            failure: crate::domain::metadata::OsFailure {
+                kind: std::io::ErrorKind::NotADirectory,
+                message: "Not a directory (os error 20)".to_owned(),
+            },
+        }
+    }
+
+    impl<'r> ColdMachinery<'r> for MetadataWillNotOpen {
+        fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
+            Err(ColdRefused::Startup(StartupError::Metadata(
+                metadata_refusal(),
+            )))
         }
     }
 
@@ -6394,6 +6588,76 @@ mod tests {
                 workspace_id: "a-project".to_owned(),
             }
         );
+    }
+
+    // -------------------------------- the cold path's refusal, as a reason
+
+    /// devlaunch#339: a metadata-refused cold open surfaces as the typed arm.
+    ///
+    /// [`ColdRefused`] carried a `reason: String` until #340, filled by `dl`
+    /// rendering a [`StartupError`] and quoted straight back into this refusal.
+    /// That was the one place the binary's own prose travelled back *through* core,
+    /// and what it cost is visible from here: a caller holding the refusal could
+    /// read the sentence and could not ask which of the three things went wrong.
+    ///
+    /// So the assertion is the whole value, not a substring of one. The refusal
+    /// arrives at the launch's own refusal as the reason it *is*, with the
+    /// [`MetadataError`](crate::domain::metadata::MetadataError) the store produced
+    /// still inside it and no sentence anywhere along the way. Flatten either level
+    /// back to a string and this stops compiling, which is the failure it is here
+    /// for.
+    #[test]
+    fn a_metadata_refused_cold_open_surfaces_as_the_typed_arm() {
+        let refused = name_default_branch(
+            &mut MetadataWillNotOpen,
+            "blooop",
+            "devlaunch",
+            "git@github.com:blooop/devlaunch.git",
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            refused,
+            Err(BranchNotNamed::Cold(ColdRefused::Startup(
+                StartupError::Metadata(metadata_refusal())
+            )))
+        );
+    }
+
+    /// The other arm that opens the cold path, carrying the same reason unchanged.
+    ///
+    /// Both are worth pinning because they are separate `map_err`s over the same
+    /// `open`, and a refusal that survived one of them and was stringified by the
+    /// other would be the old bug back in half the launches.
+    #[test]
+    fn the_cold_arm_of_a_host_side_preparation_carries_the_same_typed_reason() {
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+
+        let refused = prepare(
+            &mut MetadataWillNotOpen,
+            &workspace,
+            "git@github.com:blooop/devlaunch.git",
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            refused,
+            Err(NotPrepared::Cold(ColdRefused::Startup(
+                StartupError::Metadata(metadata_refusal())
+            )))
+        );
+    }
+
+    /// The arm that replaced an English literal.
+    ///
+    /// `NoColdPath` used to refuse with the sentence "the cold path is not available
+    /// to this caller", written in core, which is the rule #251 §5 states. It is a
+    /// variant now and the sentence is the binary's.
+    #[test]
+    fn a_launcher_with_no_cold_path_refuses_with_an_arm_rather_than_a_sentence() {
+        let mut none = NoColdPath;
+
+        assert_eq!(none.open().err(), Some(ColdRefused::NoColdPath));
     }
 
     // -------------------------------- stage two: which workspace, and is it warm

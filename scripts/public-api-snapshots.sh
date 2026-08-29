@@ -26,8 +26,8 @@
 # methods and trait impls only at a type's *canonical* path, never at the path
 # it is re-exported under. So `api::Launch::run` is rendered
 # `devlaunch_core::flows::launch::Launch::run` and this classifier cannot see
-# it. Of the 79 rows the generator emits for the `api` section, the match keeps
-# 37; the other 42 -- `Launch::new`, `Launch::run`, `CommandContext::new`,
+# it. Of the 259 rows the generator emits for the `api` section, the match keeps
+# 126; the other 133 -- `Launch::new`, `Launch::run`, `CommandContext::new`,
 # `DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on
 # the promised types -- land in the rest file. Renaming `Launch::run` therefore
 # leaves the promise file byte-identical. Two consequences worth carrying:

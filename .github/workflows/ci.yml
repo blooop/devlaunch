@@ -62,6 +62,11 @@ jobs:
   # duplicate build does. Revisit if either build starts dominating the run.
   ci:
     runs-on: ubuntu-latest
+    # A cold `pixi install` and the release build this job pays for, with the
+    # whole pytest suite after them; it finishes in about two minutes warm. The
+    # bound is here for the same reason it is on every other job: unbounded is six
+    # hours, which is long enough that the run is abandoned rather than read.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -246,6 +251,47 @@ jobs:
         run: |
           timeout -k 10 300 cargo test --locked -p dl --test interrupt -- --test-threads=1 --nocapture > interrupt.log 2>&1; ec=$?
           cat interrupt.log; exit $ec
+      # And then the whole thing, because everything above is a list somebody
+      # maintains by hand and a list is a thing a suite falls off.
+      #
+      # The steps above are worth their keep -- a per-suite `timeout` so a wedged
+      # binary fails its own short step, and a step title that names the culprit
+      # even when the runner dies before uploading logs -- but they make the list,
+      # rather than the workspace, the definition of what runs. A test binary
+      # nobody added a step for is built by `Build` above and run by nothing, and
+      # nothing anywhere goes red to say so: a check nobody ran reads exactly like
+      # a check that passed, which is `gate`'s own argument applied one level down.
+      #
+      # It had already happened twice when this step was added.
+      # `devlaunch-test-support` came off the list once and went back with a
+      # comment about it; `dl`'s `picker` and `terminal` suites, 8 tests, were
+      # still off it -- `terminal` being the guard on the terminal-restore fix from
+      # the week before, so the one test that proved that repair had never run in
+      # CI. Neither was a mistake anyone could have seen by reading a green tick.
+      #
+      # So the list stays for triage and the workspace decides what runs. It costs
+      # about what the named steps cost, since it is the same tests over again:
+      # measured at 72s, taking the job from 2:13 to 3:19 against a 30-minute
+      # bound, which is why nothing else here needed resizing. Same
+      # `--test-threads=1` (the concurrency tests must not interleave) and the same
+      # log-pipe fence as the two steps above, for the same reason -- this run
+      # includes them.
+      #
+      # `|| ec=$?` rather than `; ec=$?`, which is the difference between a
+      # failure you can read and a red tick with an empty log. GitHub runs a
+      # `run:` block under `bash -e`, so on a non-zero `timeout` the shell exits
+      # at that line: `ec=$?` and the `cat` never happen, and the only copy of
+      # cargo's output is a file in a workspace that is about to be thrown away.
+      # `||` is a tested condition, which errexit does not fire on, so the log
+      # always prints and `$ec` still carries the code (124 when the timeout is
+      # what fired). That matters most here of anywhere: this step is the only
+      # place `picker` and `terminal` run at all.
+      - name: Test the whole workspace (the backstop under the list above)
+        working-directory: rust
+        run: |
+          ec=0
+          timeout -k 10 900 cargo test --workspace --locked -- --test-threads=1 > workspace.log 2>&1 || ec=$?
+          cat workspace.log; exit $ec
       - name: Clippy
         working-directory: rust
         run: cargo clippy --locked --all-targets -- -D warnings
@@ -605,6 +651,11 @@ jobs:
   # is testable only by copying it, and the copy goes stale.
   review:
     runs-on: ubuntu-latest
+    # The one job here that sleeps on a remote answer: up to two minutes of
+    # polling for a review that has not been posted yet. A poll loop against an
+    # API is the shape that hangs, so this is the job that least deserved to be
+    # the one running unbounded.
+    timeout-minutes: 10
     permissions:
       pull-requests: read
     steps:
@@ -654,6 +705,11 @@ jobs:
     needs: [ci, e2e, rust, rust-coverage, public-api, packaging, review]
     if: always()
     runs-on: ubuntu-latest
+    # Seconds of shell over a list `needs` already resolved. Bounded anyway,
+    # because this is the check a ruleset requires: a `gate` still spinning six
+    # hours after the jobs it covers finished is a merge nobody can complete and
+    # nobody can diagnose.
+    timeout-minutes: 5
     steps:
       - name: Every job this gate covers must have succeeded
         if: always()

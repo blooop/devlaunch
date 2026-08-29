@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::metadata::OsFailure;
 use super::xdg::{self, NoHomeDirectory};
 
 /// Seconds between background fetches, when the file does not say.
@@ -58,12 +59,19 @@ pub struct WorktreeConfig {
 /// the granularity divergence row 8 claims for the refusal: a file that is not
 /// TOML at all and a TOML file whose one value has the wrong type are different
 /// things to fix, and a caller holding one string could not tell which it had.
-#[derive(Debug)]
+///
+/// `Clone` and comparable, for [`metadata::MetadataError`](super::metadata::MetadataError)'s
+/// reason: a refusal that travels inside another refusal has to be as copyable as
+/// the one carrying it, and since #340 this one travels inside
+/// [`ColdRefused`](crate::flows::launch::ColdRefused). That is what the OS side
+/// being an [`OsFailure`] rather than an `io::Error` buys — the same words, from a
+/// value that can be cloned and compared.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
     /// This machine names no home directory, so no config path can be built.
     NoHomeDirectory,
     /// The file exists but could not be read.
-    Unreadable { path: PathBuf, source: io::Error },
+    Unreadable { path: PathBuf, source: OsFailure },
     /// The file is not TOML at all. `reason` is the parser's own words, quoted
     /// as data.
     NotToml { path: PathBuf, reason: String },
@@ -146,7 +154,7 @@ pub(crate) fn worktree_config_at(
         Err(error) => {
             return Err(ConfigError::Unreadable {
                 path: path.to_path_buf(),
-                source: error,
+                source: error.into(),
             });
         }
     };
@@ -243,7 +251,8 @@ struct StoredCleanup {
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_worktree_config.py`, re-pinned.
+    //! The Python `test_worktree_config`, re-pinned here when it retired with the
+    //! Python tree (#267).
     //!
     //! Python's tests construct `WorktreeConfig(...)` directly and check
     //! `to_dict`; both are gone here, because nothing in devlaunch writes this

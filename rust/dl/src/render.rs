@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun, Workspace};
 use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::git::Failure as GitFailure;
@@ -17,6 +17,7 @@ use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::metadata;
+use devlaunch_core::domain::model::SweepTrouble;
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
@@ -28,16 +29,20 @@ use devlaunch_core::flows::kill::{
     TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
-    BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
+    BranchNotNamed, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared,
+    SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
     PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, SweepOccasion,
     Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
-use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
+use devlaunch_core::flows::listing::{
+    self, LastUsed, SizeCell, Sizes, SourceKind, SweptRepoNote, TableRow, WorkspaceTable,
+};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
+use devlaunch_core::flows::records::{RecordsNotice, StartupError};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
@@ -52,7 +57,6 @@ use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
 
 use crate::select::Chosen;
-use crate::session::StartupError;
 
 // ---------------------------------------------------------------------------
 // the `dl --ls` table
@@ -134,6 +138,49 @@ pub(crate) fn table_lines(table: &WorkspaceTable, sizes: Sizes) -> Vec<String> {
         ));
     }
     lines
+}
+
+/// The lines `dl --ls` writes under its table for the repositories whose last
+/// background sweep left something to say.
+///
+/// The sweep runs detached with all three descriptors on `/dev/null`, so until
+/// now every complaint it had went nowhere (devlaunch#480). It writes them into
+/// the record instead, and this is the reading: one line per repository, said
+/// once, under the table a person was already looking at.
+///
+/// Per repository and not per row, because a note is about a bare clone rather
+/// than about a workspace — several rows can share one, and a repository with no
+/// workspace at all still has one to report.
+pub(crate) fn sweep_notes(notes: &[SweptRepoNote]) -> Vec<String> {
+    notes
+        .iter()
+        .map(|outstanding| {
+            let mut line = format!(
+                "Last cache sweep of {}: {}",
+                outstanding.slug(),
+                sweep_trouble(outstanding.note.trouble)
+            );
+            // Only where something spoke. A trailing `: ` over nothing would read
+            // as a refusal whose words were lost, which is a different fact.
+            if let Some(said) = &outstanding.note.said {
+                line.push_str(": ");
+                line.push_str(said);
+            }
+            line
+        })
+        .collect()
+}
+
+/// What one sweep trouble reads as. The words are the binary's (#251 §5); what
+/// travels in the record is the arm.
+fn sweep_trouble(trouble: SweepTrouble) -> &'static str {
+    match trouble {
+        SweepTrouble::RefsNotPacked => "could not pack the refs it fetched",
+        SweepTrouble::FetchRefused => "could not fetch",
+        SweepTrouble::FetchTimedOut => "ran out of time fetching",
+        SweepTrouble::CloneMissing => "found no bare clone to fetch into",
+        SweepTrouble::NotRecorded => "fetched, and could not write the record",
+    }
 }
 
 /// One row's `SIZE` cell.
@@ -680,7 +727,7 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
             "this machine names no home directory, so dl cannot find its config".to_owned()
         }
         config::ConfigError::Unreadable { path, source } => {
-            format!("could not read {} ({source})", path.display())
+            format!("could not read {} ({})", path.display(), source.message)
         }
         // One sentence for both parse arms: the reason already says whether the
         // parser or the typed read refused, and the arms exist for callers.
@@ -713,6 +760,24 @@ pub(crate) fn retired_keys(keys: &[config::RetiredKey]) -> Vec<String> {
             ),
         })
         .collect()
+}
+
+/// One thing the records' open had to say, as the lines it reads as.
+///
+/// A list because one arm is many lines: [`RecordsNotice::Migrated`] carries a whole
+/// report, and Python's `_announce` printed up to nine separate warnings out of it.
+/// Everything else is the one line its own renderer already produced — this is the
+/// dispatch, not a new vocabulary.
+pub(crate) fn records_notice(notice: &RecordsNotice) -> Vec<String> {
+    match notice {
+        RecordsNotice::RetiredKey(key) => retired_keys(std::slice::from_ref(key)),
+        RecordsNotice::Metadata(notice) => metadata_notices(std::slice::from_ref(notice)),
+        RecordsNotice::Migrated(report) => migration_notices(report),
+        RecordsNotice::MigrationRefused(refused) => vec![format!(
+            "Could not migrate the workspace cache: {}",
+            metadata_error(refused)
+        )],
+    }
 }
 
 /// Why a metadata write or open failed, in one line.
@@ -1618,12 +1683,94 @@ pub(crate) const DOCKER_BOUNDARY: &str = concat!(
 // --purge
 // ---------------------------------------------------------------------------
 
+/// Whether the plan above the leaving list is still a decision.
+///
+/// `dl --purge` prints the block and *then* asks, so every line of it is something
+/// the reader can still prevent. `dl --purge -y` answered on the command line, and
+/// the same lines are a record of what is about to happen instead. One sentence in
+/// the block turns on that difference, which is why the renderer is told rather
+/// than left to print advice into a run that has stopped taking any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Confirmation {
+    /// `Are you sure? [y/N]` is coming.
+    WillBeAsked,
+    /// `-y` answered it before the plan was printed.
+    AnsweredOnTheLine,
+}
+
+/// What removing the cache costs the workspaces the purge is *not* deleting.
+///
+/// Said in the block that lists them, because it is a reason to answer `n` and
+/// remove one of them properly first (devlaunch#461). Two things are true of a
+/// survivor and only the first is obvious: it keeps working, and dl stops knowing
+/// anything about it.
+///
+/// **The volume names are named because they are now in the cache**
+/// (devlaunch#456, merged while this was open). dl keeps its own copy of the two
+/// volumes a workspace's devcontainer made, under the cache, so a purge that
+/// leaves a foreign workspace standing destroys the copy of *its* names while
+/// leaving its volumes -- which is the exact case #452 predicted this sentence
+/// would have to cover. What is not lost is the ordinary route: `dl <ws> rm`
+/// reads devpod's own `workspace_result.json` under `DEVPOD_HOME`, which a purge
+/// does not touch, so a survivor deleted through dl still takes its volumes with
+/// it. The copy is what `--prune` reclaims from *after* devpod has forgotten a
+/// workspace, and that is the reach a purge costs it.
+const SURVIVORS_KEEP_WORKING: &str = "Removing the cache also drops what dl recorded about them, the copy of their volume \
+     names included. They keep working, and `dl <workspace> rm` still removes one and its \
+     volumes while devpod still lists it.";
+
+/// The sentence under that one, in the tense the run has earned.
+///
+/// Where the loss is a loss rather than untidiness. A clone a pre-#467 dl placed
+/// under `worktree.repos_dir` is outside the cache, so the workspace opening it is
+/// foreign here and stays; the record naming that directory is *inside* the cache
+/// and goes. Afterwards `dl <ws> rm` answers `NothingRecorded` and leaves the tree
+/// standing, and nothing else on the machine mentions it.
+///
+/// **Two spellings of one fact, and what separates them is whether it is still
+/// actionable.** Printed above the question, "remove such a workspace now" is the
+/// action the whole block exists to offer. Printed under `-y` it would be asking
+/// for something the same run makes impossible three lines later, which is advice
+/// arriving after the door shut. The subject clause is the same either way; only
+/// what follows from it moves.
+fn stranded_clones(confirmation: Confirmation) -> &'static str {
+    match confirmation {
+        Confirmation::WillBeAsked => {
+            "A clone an older dl placed outside the cache is named only by a record in there, \
+             though, so remove such a workspace now if the clone should go with it."
+        }
+        Confirmation::AnsweredOnTheLine => {
+            "A clone an older dl placed outside the cache is named only by a record in there, \
+             though, so from here on `dl <workspace> rm` takes such a workspace and leaves its \
+             clone standing."
+        }
+    }
+}
+
+/// One survivor's line in the leaving list.
+///
+/// A function rather than a `format!` in the loop so that the sample output in
+/// `docs/cleanup.md` can be diffed against the real shape of the line. The page is
+/// a second hand-maintained copy of it, and `the_cleanup_page_quotes_what_a_purge_
+/// really_prints` is the test the standing rule asks for beside such a copy.
+fn leaving_line(id: &str, source: &str) -> String {
+    format!("  - {id}: {source}")
+}
+
 /// What a purge would take, printed before the question is asked.
 ///
 /// The workspaces devlaunch did not create are *named* rather than merely left out
 /// of the count: a user who asked for a clean slate and gets survivors should
 /// learn it while saying no is still an option.
-pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
+///
+/// **Named by their source and not only by their id** (devlaunch#461). An id is
+/// what devpod addresses a workspace by and carries nothing about where it came
+/// from, so `someones-project` reads the same whether it is a `dl ./project` of
+/// yours, a `dl <git-url>`, or a workspace somebody made with `devpod up` -- and
+/// this is the one screen where that difference is being decided on. The source is
+/// the same string `dl --ls` puts in its `SOURCE` column, from the same reading of
+/// it, so the two surfaces cannot describe one workspace differently.
+pub(crate) fn purge_plan_lines(plan: &PurgePlan, confirmation: Confirmation) -> Vec<String> {
     let ownership = plan.ownership();
     let mut lines = vec![
         "This will remove all devlaunch data:".to_owned(),
@@ -1643,11 +1790,29 @@ pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
             ownership
                 .foreign
                 .iter()
-                .map(|workspace| format!("  - {}", workspace.id)),
+                .map(|workspace| leaving_line(&workspace.id, &left_standing_source(workspace))),
         );
+        lines.push(String::new());
+        lines.push(SURVIVORS_KEEP_WORKING.to_owned());
+        lines.push(stranded_clones(confirmation).to_owned());
     }
     lines.push(String::new());
     lines
+}
+
+/// Where one surviving workspace came from, as the leaving list names it.
+///
+/// [`describe_source`](listing::describe_source) is what `dl --ls` reads, and the
+/// detail alone carries the answer for the two arms that have one: a path is a
+/// path and a URL is a URL, and neither needs the `TYPE` column's word repeated
+/// beside it. The third arm does, because devpod's own object is not a source in
+/// any readable sense and would otherwise sit after a colon looking like one.
+fn left_standing_source(workspace: &Workspace) -> String {
+    let described = listing::describe_source(workspace.source());
+    match described.kind {
+        SourceKind::Local | SourceKind::Git => described.detail,
+        SourceKind::Unknown => format!("a source dl cannot read, {}", described.detail),
+    }
 }
 
 /// One rendered line, and which stream it belongs on.
@@ -2225,6 +2390,19 @@ impl Notices<ProvisionEvent> for Saying {
     }
 }
 
+/// The records' open reports through the same sink, at the moment it opens them.
+///
+/// Which is once per command, because the open is: a `ColdPath` that has already
+/// been asked answers from what it holds, so a damaged `metadata.json` is described
+/// once however many verbs go looking at it.
+impl Notices<RecordsNotice> for Saying {
+    fn say(&mut self, notice: RecordsNotice) {
+        for line in records_notice(&notice) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 /// Why this workspace opens without a GitHub login.
 ///
 /// The `Refused` arm names the directory gh read its config from, because that is
@@ -2485,15 +2663,28 @@ fn or_list(items: &[String]) -> String {
 
 fn branch_not_named(error: &BranchNotNamed) -> String {
     match error {
-        BranchNotNamed::Cold(refused) => refused.reason.clone(),
+        BranchNotNamed::Cold(refused) => cold_refused(refused),
         BranchNotNamed::Repository(refused) => ensure_repo_failure(refused),
     }
 }
 
 fn not_prepared(error: &NotPrepared) -> String {
     match error {
-        NotPrepared::Cold(refused) => refused.reason.clone(),
+        NotPrepared::Cold(refused) => cold_refused(refused),
         NotPrepared::Preparation(refused) => prepare_cold_failure(refused),
+    }
+}
+
+/// Why the cold path could not be opened, without the `error: ` prefix.
+///
+/// Quoted inside core's own refusals — `Repository 'owner/repo': <this>` — which is
+/// why the prefix is the caller's, the way [`startup_reason`] is. The words are here
+/// and not in core: `ColdRefused` is a sum over the reasons since #340, and this is
+/// the match that turns each arm into the sentence Python printed for it.
+fn cold_refused(refused: &ColdRefused) -> String {
+    match refused {
+        ColdRefused::Startup(error) => startup_reason(error),
+        ColdRefused::NoColdPath => "the cold path is not available to this caller".to_owned(),
     }
 }
 
@@ -2750,6 +2941,95 @@ mod tests {
         }
     }
 
+    // ------------------------------------------- the cold path's typed refusal
+
+    /// The other half of devlaunch#339: core carries the reason, and this module
+    /// is where it becomes a sentence.
+    ///
+    /// Every arm is asserted whole rather than by substring, because the claim the
+    /// typing was made under is that the words did not move: `ColdRefused` used to
+    /// arrive here already rendered, and these are the exact strings it used to
+    /// arrive with. A `contains` would pass while a rewrite quietly changed the
+    /// line a user reads.
+    #[test]
+    fn every_arm_of_a_cold_refusal_renders_the_sentence_it_used_to_carry() {
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::NoHomeDirectory)),
+            "this machine names no home directory, so dl cannot find its cache"
+        );
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::Config(
+                config::ConfigError::NotToml {
+                    path: PathBuf::from("/cfg/devlaunch/config.toml"),
+                    reason: "expected `.`, `=`".to_owned(),
+                }
+            ))),
+            "/cfg/devlaunch/config.toml is not usable: expected `.`, `=`"
+        );
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::Metadata(
+                metadata::MetadataError::CreateDir {
+                    path: PathBuf::from("/cache/devlaunch"),
+                    failure: metadata::OsFailure {
+                        kind: std::io::ErrorKind::NotADirectory,
+                        message: "Not a directory (os error 20)".to_owned(),
+                    },
+                }
+            ))),
+            "could not create the directory for dl's records at /cache/devlaunch \
+             (Not a directory (os error 20))"
+        );
+        // The arm that replaced a literal written in core. Same words, said here.
+        assert_eq!(
+            cold_refused(&ColdRefused::NoColdPath),
+            "the cold path is not available to this caller"
+        );
+    }
+
+    /// And the refusal reaches the user inside the line the launch refuses with.
+    ///
+    /// `Repository '{owner}/{repo}': …` is Python's sentence and the reason it is a
+    /// reason phrase rather than a sentence of its own: the prefix belongs to the
+    /// caller, so the two must compose exactly here.
+    #[test]
+    fn a_cold_refusal_is_quoted_into_the_launch_refusal_that_carries_it() {
+        let line = launch_refusal(&LaunchRefusal::BranchNotNamed {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            error: BranchNotNamed::Cold(ColdRefused::Startup(StartupError::NoHomeDirectory)),
+        });
+
+        assert_eq!(
+            line.as_deref(),
+            Some(
+                "Repository 'blooop/devlaunch': this machine names no home directory, \
+                 so dl cannot find its cache"
+            )
+        );
+    }
+
+    /// A `config.toml` that could not be read reports the OS's own words.
+    ///
+    /// Pinned because #340 changed what carries them: `ConfigError::Unreadable` held
+    /// an `io::Error` and now holds an `OsFailure`, so that the refusal can be
+    /// cloned into `ColdRefused`. `OsFailure::message` is `io::Error::to_string()`,
+    /// and this is what says the line did not move.
+    #[test]
+    fn an_unreadable_config_still_reads_as_the_os_error_it_was() {
+        let refused: config::ConfigError = config::ConfigError::Unreadable {
+            path: PathBuf::from("/cfg/devlaunch/config.toml"),
+            source: std::io::Error::from_raw_os_error(13).into(),
+        };
+
+        assert_eq!(
+            config_error(&refused),
+            format!(
+                "could not read /cfg/devlaunch/config.toml ({})",
+                std::io::Error::from_raw_os_error(13)
+            )
+        );
+    }
+
     // ------------------------------------------------------- the retired keys
 
     #[test]
@@ -2777,6 +3057,46 @@ mod tests {
     #[test]
     fn a_config_naming_nothing_retired_says_nothing() {
         assert!(retired_keys(&[]).is_empty());
+    }
+
+    // ------------------------------------------------------------- --purge
+
+    #[test]
+    fn the_cleanup_page_quotes_what_a_purge_really_prints() {
+        // `docs/cleanup.md` reproduces the block `--purge` prints above its
+        // question, which makes the page a second hand-maintained copy of it --
+        // and a sample output that has drifted from the command is worse than no
+        // sample. This is the diff test the standing rule asks for beside such a
+        // copy. If that section moves to another page, this path moves with it,
+        // in the same change.
+        //
+        // The survivor line is in here as well as the two sentences, because the
+        // line is what this change is about: the sample would go on reading
+        // `- pythontemplate` on its own if the renderer's format ever went back to
+        // an id, and nothing else would notice.
+        let page = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/cleanup.md"),
+        )
+        .expect("docs/cleanup.md");
+        let quoted = [
+            SURVIVORS_KEEP_WORKING.to_owned(),
+            stranded_clones(Confirmation::WillBeAsked).to_owned(),
+            leaving_line("pythontemplate", "https://github.com/blooop/pythontemplate"),
+            leaving_line("my-hand-made-workspace", "/home/you/projects/thing"),
+        ];
+        for said in quoted {
+            assert!(
+                page.contains(&said),
+                "docs/cleanup.md no longer quotes what the purge says: {said}"
+            );
+        }
+        // And the `-y` spelling is deliberately *not* quoted there: the page
+        // describes it in prose instead, so there is no second copy of it to
+        // drift.
+        assert!(
+            !page.contains(stranded_clones(Confirmation::AnsweredOnTheLine)),
+            "the page grew a copy of the -y sentence; guard it here or take it out"
+        );
     }
 
     // ---------------------------------------------- the refusal advice line
@@ -3545,6 +3865,61 @@ mod tests {
             "Could not pack the refs of blooop/devlaunch: fatal: unable to create \
              'packed-refs.lock': Permission denied"
         );
+    }
+
+    #[test]
+    fn the_last_sweeps_note_reads_as_one_line_naming_the_repository() {
+        // The same refusal as the notice above, a run later. The notice went to the
+        // detached child's null stderr; this is what somebody actually reads, so it
+        // has to name the repository on its own — nothing around it does.
+        use devlaunch_core::domain::model::SweepNote;
+
+        let note = |trouble, said: Option<&str>| SweptRepoNote {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            note: SweepNote {
+                trouble,
+                said: said.map(str::to_owned),
+            },
+        };
+
+        assert_eq!(
+            sweep_notes(&[note(
+                SweepTrouble::RefsNotPacked,
+                Some("fatal: unable to create 'packed-refs.lock': Permission denied"),
+            )]),
+            [
+                "Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: \
+                 fatal: unable to create 'packed-refs.lock': Permission denied"
+            ]
+        );
+        // Nothing spoke, so nothing is quoted: a line ending in a bare colon would
+        // read as a refusal whose words were lost.
+        assert_eq!(
+            sweep_notes(&[note(SweepTrouble::FetchTimedOut, None)]),
+            ["Last cache sweep of blooop/devlaunch: ran out of time fetching"]
+        );
+        assert!(sweep_notes(&[]).is_empty(), "a clean cache says nothing");
+    }
+
+    #[test]
+    fn every_sweep_trouble_has_words_of_its_own() {
+        // Five arms, five sentences, and no two the same: which condition it was is
+        // the whole of what the record carries when git said nothing.
+        let words = [
+            SweepTrouble::RefsNotPacked,
+            SweepTrouble::FetchRefused,
+            SweepTrouble::FetchTimedOut,
+            SweepTrouble::CloneMissing,
+            SweepTrouble::NotRecorded,
+        ]
+        .map(sweep_trouble);
+        let mut sorted = words.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+
+        assert_eq!(sorted.len(), words.len(), "{words:?}");
+        assert!(words.iter().all(|line| !line.is_empty()));
     }
 
     #[test]

@@ -45,7 +45,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   died before any of this existed, and no route reaches them that is not the
   pattern above. `docs/cleanup.md` carries the whole of it.
 
+- **`dl --ls` now tells you when the background cache sweep hit trouble.** The
+  hourly sweep that keeps your bare clones fresh runs as a detached child with
+  nothing attached to its output, so everything it ever had to complain about went
+  straight to `/dev/null`: a fetch that could not reach the remote, a clone deleted
+  underneath its record, a `git pack-refs` refused by a permissions problem. The
+  sweep now writes what happened into `metadata.json` beside that repository's
+  freshness stamp, and `dl --ls` prints it under the table:
+
+  ```
+  Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: fatal: unable to create 'packed-refs.lock': Permission denied
+  ```
+
+  One note per repository, overwritten on every pass that acts on it, so nothing
+  accumulates and there is no log to rotate. A pass that goes cleanly clears the
+  note, so a machine you have fixed stops complaining on its own; a pass that
+  attempted nothing, because the interval had not elapsed or another `dl` run held
+  the lock, leaves the last note where it was rather than claiming a sweep it never
+  ran. `dl --ls --json` carries the same thing as a `lastSweep` object on the rows
+  whose repository has one, added alongside the existing fields and absent
+  entirely when there is nothing outstanding. Nothing new is printed on the launch
+  path, and a `metadata.json` written by an older `dl` reads exactly as it did.
+  [docs/cleanup.md](docs/cleanup.md) has the detail.
+
+### Changed
+
+- **`dl --purge` names where each surviving workspace came from.** The list of
+  workspaces a purge is leaving standing printed ids and nothing else, and an id
+  is the one thing you cannot decide on: `pythontemplate` reads exactly the same
+  whether it is a `dl <git-url>` of yours, a `dl ./project` whose checkout you
+  care about, or something another tool made. Each line now carries the source
+  beside the id, the same string `dl --ls` shows in its `SOURCE` column.
+
+  The block also says what removing the cache costs the workspaces that stay.
+  They keep working, but a clone an older `dl` placed outside the cache, under the
+  retired `worktree.repos_dir` key, is named only by a record inside the cache
+  that is about to go: after the purge, `dl <workspace> rm` deletes the workspace
+  and leaves that directory standing with nothing on the machine pointing at it.
+  Removing such a workspace first is what takes its clone with it. The copy of
+  their volume names goes the same way, so a survivor deleted with a bare `devpod
+  delete` after a purge leaves volumes nothing can reclaim, where `dl --prune`
+  would have. `--purge` also reports a `config.toml` that still sets that key now,
+  which is the only mention a stranded tree gets when no workspace opens it any
+  more.
+
+- **`devlaunch_core::api` can now build a launcher, not just name one.** The two
+  implementations that decide whether a launch can go cold at all lived in the `dl`
+  binary: the one that opens devlaunch's records (config, `metadata.json`, the cache
+  migration, the clone manager) and the one that lends the host's tools into a
+  container. Both are core types plumbed together, and both are now in core, as
+  `flows::launch::ColdPath` and `flows::launch::ToolProvisioning`. What kept them in
+  the binary was where their events were *printed*, so each now takes an event sink
+  as a constructor argument and `dl` supplies the printer and the words. The records
+  themselves moved with them, to a new `flows::records`.
+
+  `api` re-exports every one of `Launch::new`'s parameter types as a result. Five of
+  the seven used to live outside it, so a second consumer could name the launcher and
+  had nothing to hand it. No behaviour changes: the same notices are said, in the same
+  order, in the same words.
+
+- **`ColdRefused` is a sum over the reasons rather than a rendered sentence.** It
+  carried `reason: String`, which was the one place `dl`'s own prose travelled back
+  *through* core, and the move above made that untenable: core would have had to write
+  the words. It is now `Startup(StartupError)` or `NoColdPath`, and `dl` renders each
+  arm. `domain::config::ConfigError` became clonable and comparable for the same
+  reason, its OS side spelled as `OsFailure` the way `MetadataError`'s already was.
+  The sentences a user sees are unchanged, and are held to that rather than inspected:
+  every arm is asserted against the exact line it used to arrive already rendered
+  with, and a real run whose records will not open is judged from outside the binary.
+
+- **One writer spells `dl --ls --json` and `metadata.json` now, not two.** Both
+  are `json.dumps(..., indent=2)` documents that have to agree with the Python
+  build byte for byte, and each was produced by a hundred-line formatter of its
+  own: the same nine layout methods forwarded to `serde_json`'s pretty printer,
+  and the same `ensure_ascii` loop, in two files that had to stay
+  character-for-character equal without anything holding them there. What that
+  cost is on the record directly above this entry, since the escaping gate was
+  wrong about DEL in both copies and closing it meant closing it twice. `dl` now
+  calls core's, and the tree has one indented spelling.
+
+  Nothing about either document moves. The pins on `--ls --json` are the same
+  assertions against the same call they were written against, with the formatter
+  behind them deleted rather than edited: the shaped listing, the empty document,
+  an emoji as its surrogate pair, DEL, and the whole of ASCII against the line
+  `json.dumps` printed for it. `wf` parses that document, so the bar was
+  byte-identity and not equivalence.
+
 ### Fixed
+
+- **Sixty-six citations that pointed at nothing now point at something, and a
+  guard keeps it that way.** Comments across `rust/` name the test that pins the
+  behaviour they describe, which is most of what makes them worth reading.
+  Retiring the Python implementation (#267) deleted about forty of the files
+  those names referred to, in one commit, and the names stayed. A pointer into
+  nothing is worse than no pointer: it still reads as evidence, so the reader
+  goes looking and cannot tell whether the guard moved, was renamed, or never
+  existed.
+
+  Every one of them now names a suite that retired rather than a file to open,
+  and says so, in the form the surviving comments had already settled on. Two
+  were not merely stale but false. The bench workflow told a reader that a named
+  Python spawn-count guard "keeps the gating role" in `ci.yml`, when the counts
+  it meant have been argv assertions in the cargo suite since the port; and the
+  divergence table's row 30 claimed two pins it no longer has, an allowance in
+  the parity harness's case list and a set of `suffix_verb` tests, the first
+  retired with the harness and the second deleted with the behaviour itself. That
+  row is superseded, so nothing pins it, and it now says so.
+
+  `test/test_citations_resolve.py` is what stops it happening again: a token
+  spelled the way a Python test file is spelled has to resolve to a file, a path
+  as written and a bare name against the test tree. `CHANGELOG.md` and
+  `docs/rust-port-scope.md` are out of scope, being records of what was true when
+  they were written.
+
+- **Eight tests that CI was not running.** The Rust job names its test suites one
+  step at a time, which buys real things: a per-suite timeout, so a wedged binary
+  fails its own short step instead of holding the runner until it loses contact,
+  and a step title that names the culprit even when the runner dies before it can
+  upload logs. What it costs is that the list, rather than the workspace, decides
+  what runs. A test binary nobody wrote a step for is compiled by the build step
+  and run by nothing, and no tick anywhere goes red to say so.
+
+  That had happened twice. `devlaunch-test-support` came off the list once and was
+  put back with a note about it; `dl`'s `picker` and `terminal` suites were still
+  off it, eight tests, one of them the test written to prove the terminal-restore
+  fix in this same release. The one test standing behind that repair had never run
+  in CI.
+
+  So the job now runs `cargo test --workspace` after the named steps. The list
+  stays, because the list is what triage reads; the workspace is what decides. It
+  costs 72 seconds, taking the job from 2:13 to 3:19 against a bound of thirty
+  minutes. A guard in the test suite holds both halves in place, and a second one
+  holds every job in the workflow to a timeout: three had none, among them the job
+  that polls a remote API in a sleep loop.
 
 - **The JSON writers now escape DEL, as CPython does.** `metadata.json`,
   `completions.json` and `dl --ls --json` are all written to agree byte for byte
@@ -64,24 +196,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for every ASCII character at once, which says the same thing in the other
   direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
 
-### Changed
+- **`--force`'s placement rule is now held over the whole argument space rather
+  than over the lines somebody thought to list.** The grammar decides whether a
+  `--force` is the modifier or a word in the workspace slot by counting its
+  position, and that reading was covered by hand-written examples that between
+  them never once named `rm` or `rme`, which are the only two verbs a misplaced
+  `--force` could actually destroy something with. A single test now walks every ordering
+  of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
+  checks each one against the rule as Python stated it, so an ordering nobody
+  thought of is covered by construction.
+  **The slot is now counted over the words of the line rather than over its
+  tokens**, which is the one behaviour change and closes the leading half of the
+  same defect. A flag clap has consumed is gone from the words and still sitting in
+  argv, so counting tokens shifted every slot up by one: `dl <flag> ws --force rm`
+  read the verb-slot `--force` as trailing and force-deleted `ws`, where
+  `dl ws --force rm` refuses. No spelling of `<flag>` existed, but only because five
+  unrelated rules each happened to refuse or strip one first, and `aid` hands `dl`
+  every leading `-` word it is given without knowing what any of them mean. A slot
+  is a place a word goes, so it is words that are counted. Every line anybody can
+  type today reads exactly as it did.
+  It turned up one thing that was believed and is not true: clap's two-word cap on
+  the positionals holds only while the words are contiguous. `dl a b c` is refused,
+  but `dl a b --force c` opens a second occurrence and hands the grammar three
+  words. Nothing forced escapes through it, because the third word is refused
+  first, but it is that refusal doing the work and not the cap.
 
-- **One writer spells `dl --ls --json` and `metadata.json` now, not two.** Both
-  are `json.dumps(..., indent=2)` documents that have to agree with the Python
-  build byte for byte, and each was produced by a hundred-line formatter of its
-  own: the same nine layout methods forwarded to `serde_json`'s pretty printer,
-  and the same `ensure_ascii` loop, in two files that had to stay
-  character-for-character equal without anything holding them there. What that
-  cost is on the record directly above this entry, since the escaping gate was
-  wrong about DEL in both copies and closing it meant closing it twice. `dl` now
-  calls core's, and the tree has one indented spelling.
-
-  Nothing about either document moves. The pins on `--ls --json` are the same
-  assertions against the same call they were written against, with the formatter
-  behind them deleted rather than edited: the shaped listing, the empty document,
-  an emoji as its surrogate pair, DEL, and the whole of ASCII against the line
-  `json.dumps` printed for it. `wf` parses that document, so the bar was
-  byte-identity and not equivalence.
+- **The devpod conformance corpus can no longer lose a row quietly.** The corpus
+  is the one place the two fake devpods' expectations live, and its guard checked
+  that certain flag *names* appeared somewhere across all rows. That let a row be
+  deleted with every suite green, the regression row for the `delete
+  --ignore-not-found` drift included, because a sibling row still mentioned the
+  flag. Rows now carry a stable id and both drivers hold the roll call of ids they
+  expect, so a missing row fails by name on both sides. Two more holes closed
+  with it: the check that every row says how it was verified ran on the Rust side
+  alone, so a corpus edited from the Python side could drop a provenance line
+  unnoticed, and the tables saying which devpod flags take a value were written
+  out once per fake with nothing comparing them. Those tables are one shared file
+  now, the way the corpus is, so the two fakes cannot hold different ones at all,
+  and each driver checks the fake it drives against it. Seven of the eight rows
+  that read `unverified` are measured, against a workspace provisioned to run
+  them; the eighth says plainly which half of it was measured and which was not.
 
 ## [0.25.0] - 2026-08-28
 
