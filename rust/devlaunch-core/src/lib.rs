@@ -162,7 +162,33 @@ pub mod api {
     pub use crate::flows::listing::{CommandContext, enriched_listing, json_document};
 
     // remove / stop: the two lifecycle verbs that take a workspace away.
-    pub use crate::flows::lifecycle::{workspace_delete, workspace_stop};
+    //
+    // `workspace_remove` and not `workspace_delete`: the delete without the
+    // unsaved-work guard is gone from the promise rather than documented beside the
+    // guarded one (#410). It was a removal of three exported calls a caller had to
+    // sequence — probe, guard, delete — of which only the last was promised, so the
+    // promised surface was the unguarded one. #251 §7 calls dropping a promised
+    // function a breaking change, and it is the right weight: an unguarded delete
+    // is now unrepresentable rather than merely discouraged.
+    pub use crate::flows::lifecycle::{workspace_remove, workspace_stop};
+
+    // …and everything `workspace_remove` asks for and answers with, for the reason
+    // `Launch::new`'s parameters are here: a promised function whose parameter types
+    // live outside the promise is not callable from the promise. `Refresh` and
+    // `Notices` are already above.
+    pub use crate::clients::devpod_home::DevpodHome;
+    pub use crate::domain::metadata::MetadataStorage;
+    // `KeptCopies` arrives the same way `DevpodHome` did, and for the same reason:
+    // #516 widened the delete with the volume-copy store so a removal reclaims the
+    // volumes devpod substituted, and re-exported nothing, which left the row on
+    // the promised tier naming a type no caller of the promise could name. The
+    // store is a parameter of the removal, so it is promised with it.
+    pub use crate::flows::kept_copies::KeptCopies;
+    pub use crate::flows::lifecycle::{
+        DeleteStalled, Insistence, LifecycleNotice, Removal, RemovalRefused, RemoveOutcome,
+    };
+    pub use crate::flows::records::Records;
+    pub use crate::flows::workspace_clone::WorkspaceCloneManager;
 
     // spec and branch helpers: parsing `owner/repo@branch` and friends, the
     // identity a safe name derives, and the `--devcontainer` reference.

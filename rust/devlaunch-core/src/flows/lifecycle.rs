@@ -92,7 +92,7 @@ use crate::flows::listing::{
 };
 use crate::flows::repo_manager::{
     BACKGROUND_FETCH_TIMEOUT, CacheNotice, FetchRepoError, Fetched, LazyFetchError, Refusal,
-    Removal, RepositoryManager, present, remove_tree_as_far_as_it_goes,
+    RepositoryManager, TreeSweep, present, remove_tree_as_far_as_it_goes,
 };
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
@@ -157,6 +157,24 @@ pub enum LifecycleNotice {
         repo: String,
         branch: String,
     },
+    /// Which workspace is being removed, said once the guard has had its say and
+    /// before devpod is asked.
+    ///
+    /// The resolved id, which is the point of saying it at all: a target that was a
+    /// branch, a path or a row in a picker is not this word, and the line is the
+    /// only place a reader learns what it actually resolved to. It is a notice
+    /// rather than something the caller prints around the call because the *timing*
+    /// is what makes it a warning instead of a receipt — it has to land between the
+    /// guard and `devpod delete`, and only [`workspace_remove`] knows where that
+    /// is.
+    Removing { workspace_id: String },
+    /// The removal found work that exists nowhere else and is going ahead anyway.
+    ///
+    /// Only [`Removal::Wedged`] produces this: `dl <ws> rm` refuses on the same
+    /// finding and `rm --force` never looks. Carries the refusal it stepped past,
+    /// so the list of what is about to be destroyed is the same value the refusal
+    /// would have carried — one guard, one finding, two things to do with it.
+    RemovingOverWork { refusal: RemovalRefused },
     /// Something one of the storage flows reported on the way through.
     Cache(CacheNotice),
 }
@@ -879,6 +897,106 @@ fn stop_call(workspace_id: &str) -> Call {
 // the delete guard
 // ===========================================================================
 
+/// Which removal this is, of the three `dl` performs.
+///
+/// One value rather than the four flags it stands for — the unsaved-work guard,
+/// devpod's `--ignore-not-found`, devpod's `--force` and a deadline — because those
+/// are not independent settings anybody would want to mix. They are one decision
+/// about how badly the caller wants the workspace gone, and spelling them
+/// separately makes seven combinations writable of which three are meant. The three
+/// that are meant are these, and each one names a command line rather than a
+/// setting.
+///
+/// It lived in the `dl` binary until the removal fold, which is what made the
+/// guard skippable: core took the flags one at a time, so the sequence that turns
+/// them into a removal was the caller's to get right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// `dl <ws> rm`, the happy path. Stops at work that exists nowhere else, names
+    /// it, and offers `--force`. devpod is asked with its own defaults and given as
+    /// long as it needs, because a container that is slow to come down is a
+    /// container that is coming down.
+    Guarded,
+    /// `dl <ws> rm --force`. The guard does not even look, and an absent workspace
+    /// counts as deleted, which is what makes it `rm -f` rather than a louder `rm`.
+    /// devpod is still asked politely: this is a workspace you are sure about, not
+    /// one that is stuck.
+    Insisted,
+    /// `dl <ws> kill`. The verb for a workspace that is wedged and finished with,
+    /// so nothing here refuses and nothing here waits indefinitely: the guard looks
+    /// and *reports* rather than stopping, devpod gets `--force` so a workspace it
+    /// can no longer reach still goes, and the call carries a deadline so it cannot
+    /// join the five second lock loop the sweep in front of it was reached for.
+    ///
+    /// The guard still looks, and that is the difference between this and
+    /// [`Removal::Insisted`] rather than a leftover: work that exists nowhere else
+    /// is about to be destroyed, and the person who typed `kill` is owed the list
+    /// even though they are not being asked to confirm it.
+    Wedged,
+}
+
+impl Removal {
+    /// Whether dl will accept an absent workspace as a delete, and what devpod's
+    /// `--ignore-not-found` rides on.
+    ///
+    /// Public because it is also what a *rendering* of the answer turns on: "Removed
+    /// workspace X" and "Workspace X is gone" are the two things a zero exit
+    /// established, and only this tells them apart.
+    pub fn insistence(self) -> Insistence {
+        match self {
+            Self::Guarded => Insistence::NotInsisted,
+            Self::Insisted | Self::Wedged => Insistence::Insisted,
+        }
+    }
+
+    /// How hard devpod is pushed, and whether the call carries a deadline.
+    fn persistence(self) -> Persistence {
+        match self {
+            Self::Guarded | Self::Insisted => Persistence::Ordinary,
+            Self::Wedged => Persistence::Wedged,
+        }
+    }
+
+    /// Whether the unsaved-work probe is worth running, and what its answer does.
+    ///
+    /// [`Removal::Insisted`] is the one that skips it, and it skips it to save the
+    /// work rather than to hide the answer: the probe is a `git status` and a
+    /// `git log` per clone, and `rm --force` has said in advance that it will not
+    /// act on either. Probing unconditionally is the one-line accident this fold
+    /// invites, so the skip is a total function of the removal rather than a
+    /// condition anybody writes twice.
+    fn probe(self) -> Probe {
+        match self {
+            Self::Guarded => Probe::Look(Finding::Refuses),
+            Self::Insisted => Probe::Skip,
+            Self::Wedged => Probe::Look(Finding::Says),
+        }
+    }
+}
+
+/// Whether the removal looks for work that exists nowhere else.
+///
+/// Nested rather than three flat arms so that [`Finding`] is unreachable from the
+/// arm that never looks: a removal that skips the probe has no finding to act on,
+/// and a flat third arm left every `match` on the answer with a case its author had
+/// to invent a body for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Probe {
+    /// Look, and then do this with what is found.
+    Look(Finding),
+    /// Do not look. `rm --force`'s.
+    Skip,
+}
+
+/// What a removal does with work it found that exists nowhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Finding {
+    /// Stop, and hand the refusal back for the caller to name. `rm`'s.
+    Refuses,
+    /// Say it, and remove it. `kill`'s.
+    Says,
+}
+
 /// Whether the caller typed `--force`.
 ///
 /// Named arms rather than a bool, because `--force` means two different things on
@@ -913,7 +1031,7 @@ pub enum RemovalRefused {
 
 /// What the guard decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Guarded {
+pub(crate) enum Guarded {
     /// Nothing dl can establish would be lost, or the caller insisted.
     MayRemove,
     Refused(RemovalRefused),
@@ -934,7 +1052,11 @@ pub enum Guarded {
 /// `--force` is checked *after* the answer is read, not instead of reading it, so
 /// the refusal a forced delete carried past is still available to the caller — and
 /// so a future `--force` that wanted to report what it overrode has it.
-pub fn guard_removal(workspace_id: &str, unsaved: Unsaved, insistence: Insistence) -> Guarded {
+pub(crate) fn guard_removal(
+    workspace_id: &str,
+    unsaved: Unsaved,
+    insistence: Insistence,
+) -> Guarded {
     let refusal = match unsaved {
         Unsaved::NothingToLose => return Guarded::MayRemove,
         Unsaved::WouldLose(losses) => RemovalRefused::WouldLose {
@@ -996,7 +1118,7 @@ impl ClonePathResolver for CloneDirectories<'_, '_> {
 /// from a path or a URL that dl never cloned and does not manage, so it has no
 /// clone of its own to protect and no business inspecting somebody's checkout to
 /// find one.
-pub fn unsaved_work_in(
+pub(crate) fn unsaved_work_in(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     git: &Git<'_>,
@@ -1022,7 +1144,7 @@ pub fn unsaved_work_in(
 /// What became of the docker volumes a deleted workspace's devcontainer created.
 ///
 /// Every arm is an outcome of a delete that **succeeded** — the workspace is gone
-/// in all four — which is why this rides inside [`DeleteOutcome::Deleted`] rather
+/// in all four — which is why this rides inside [`RemoveOutcome::Deleted`] rather
 /// than being able to fail it. Reporting a failure here would send the caller
 /// looking for a workspace that is not there, which is the same reasoning the
 /// clone arm beside it uses.
@@ -1085,9 +1207,22 @@ pub enum VolumeRefusal {
     NotRun { failure: OsFailure },
 }
 
-/// How a delete ended.
+/// How a removal ended.
+///
+/// Three arms and one sum, rather than a guard's answer beside a delete's: the
+/// refusal is an *end* of the removal, and separating the two is what let a caller
+/// hold the first and go on to the second.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeleteOutcome {
+pub enum RemoveOutcome {
+    /// The clone holds work that exists nowhere else, so nothing was deleted:
+    /// devpod was never asked, the clone is where it was, and the workspace is
+    /// still there.
+    ///
+    /// Only [`Removal::Guarded`] ends here. The refusal carries what would have
+    /// been lost, so the caller writes the sentence and the way past it without
+    /// asking again — the words are the caller's for the reason every other refusal
+    /// in this crate leaves them there (#251 §5).
+    Refused(RemovalRefused),
     /// devpod let go of the workspace. `clone` says what became of the local
     /// clone: `Ok` with which no-op or removal happened, or `Err` when the
     /// removal was attempted and refused (the workspace is gone regardless, which
@@ -1109,10 +1244,111 @@ pub enum DeleteOutcome {
     DevpodRefused { exit: Exit },
 }
 
+/// Remove a workspace: the guard, the delete, and the clone with it.
+///
+/// **The whole of `dl <ws> rm`, `rm --force` and `kill` behind one call**, and the
+/// reason it is one call is what the three used to be. The probe, the guard and the
+/// delete were three separate exported functions the caller had to run in the right
+/// order with the right arguments, and only the last of them was on the promised
+/// surface — so the promise was an unguarded delete, and the sequence that makes it
+/// safe lived in the `dl` binary where nothing else could reuse it or be held to
+/// it. A second consumer following the promise exactly would delete somebody's only
+/// copy of an afternoon's work. Folding them removes the way to get that wrong:
+/// there is no argument to this function that skips the guard and reaches the
+/// delete.
+///
+/// The order is the point, and it is fixed here rather than documented for a caller
+/// to reproduce:
+///
+/// 1. **Probe**, but only for a [`Removal`] that will act on the answer — see
+///    [`Removal::probe`]. It is a `git status` and a `git log` per clone.
+/// 2. **Guard**, always asked with [`Insistence::NotInsisted`] whatever this
+///    removal insists, because what is wanted from it is the *finding* rather than
+///    the verdict: [`Removal::Wedged`] acts on the same finding differently, and
+///    passing its own insistence would collapse the finding to
+///    [`Guarded::MayRemove`] before it could.
+/// 3. **Name the volumes, then delete, then remove the clone**, which is
+///    [`workspace_delete`] and where the rest of the ordering lives.
+///
+/// `git` is not a parameter: inside core it is [`CommandContext::git`], so the
+/// probe cannot be pointed at a different git from the one the delete's own clone
+/// work uses.
+///
+/// `copies` is: it is the store devlaunch keeps its own copy of the substituted
+/// volume names in ([`kept_copies`]), and a removal that came back removed drops
+/// this workspace's copy on that proof. It passes straight through to
+/// [`workspace_delete`], which is where the proof arrives. It is a parameter for
+/// the store's own reason — the binary resolves the cache directory once and hands
+/// it down, so a store that resolved its own could name a different directory from
+/// the launch that wrote the copy.
+#[allow(clippy::too_many_arguments)]
+pub fn workspace_remove(
+    context: &mut CommandContext<'_>,
+    refresh: &mut Refresh<'_>,
+    clones: &WorkspaceCloneManager<'_>,
+    storage: &mut MetadataStorage,
+    cache_dir: &Path,
+    devpod_home: Option<&DevpodHome>,
+    copies: &KeptCopies,
+    workspace_id: &str,
+    removal: Removal,
+    stalled: &mut dyn FnMut(DeleteStalled),
+    notices: &mut dyn Notices<LifecycleNotice>,
+) -> Result<RemoveOutcome, NotRun> {
+    if let Probe::Look(finding) = removal.probe() {
+        let unsaved = unsaved_work_in(
+            clones,
+            storage,
+            &context.git(),
+            cache_dir,
+            workspace_id,
+            notices,
+        );
+        if let Guarded::Refused(refusal) =
+            guard_removal(workspace_id, unsaved, Insistence::NotInsisted)
+        {
+            match finding {
+                // The one thing dl refuses on its own account. Nothing below this
+                // line has run, so the workspace and its clone are exactly as they
+                // were.
+                Finding::Refuses => return Ok(RemoveOutcome::Refused(refusal)),
+                // Said and stepped past. A workspace reached with `kill` is one
+                // somebody has already given up on, and stopping here is the failure
+                // the verb was rebuilt to stop having: a wedged workspace's clone is
+                // dirty almost by construction, since what wedged it interrupted
+                // whatever was being done in it.
+                Finding::Says => notices.say(LifecycleNotice::RemovingOverWork { refusal }),
+            }
+        }
+    }
+    // Which workspace this is, named after the guard has had its say and before
+    // devpod is asked.
+    notices.say(LifecycleNotice::Removing {
+        workspace_id: workspace_id.to_owned(),
+    });
+    workspace_delete(
+        context,
+        refresh,
+        clones,
+        storage,
+        devpod_home,
+        copies,
+        workspace_id,
+        removal.insistence(),
+        removal.persistence(),
+        stalled,
+        notices,
+    )
+}
+
 /// Delete a workspace and its local clone (if any).
 ///
+/// **Not the removal**: this is [`workspace_remove`]'s second half, with no
+/// unsaved-work guard in front of it, and it is `pub(crate)` for exactly that
+/// reason. It used to be the promised surface's only removal.
+///
 /// The clone is removed only once devpod has actually let go of the workspace —
-/// see [`DeleteOutcome::DevpodRefused`] for why.
+/// see [`RemoveOutcome::DevpodRefused`] for why.
 ///
 /// [`Insistence::Insisted`] passes devpod's own `--ignore-not-found`, which makes a
 /// workspace devpod does not have count as deleted, so a forced remove is "ensure
@@ -1120,7 +1356,7 @@ pub enum DeleteOutcome {
 /// clone with no workspace is exactly what a half-finished delete leaves, and what
 /// a cold-bench reset (devlaunch#140) must clear.
 #[allow(clippy::too_many_arguments)]
-pub fn workspace_delete(
+pub(crate) fn workspace_delete(
     context: &mut CommandContext<'_>,
     refresh: &mut Refresh<'_>,
     clones: &WorkspaceCloneManager<'_>,
@@ -1132,7 +1368,7 @@ pub fn workspace_delete(
     persistence: Persistence,
     stalled: &mut dyn FnMut(DeleteStalled),
     notices: &mut dyn Notices<LifecycleNotice>,
-) -> Result<DeleteOutcome, NotRun> {
+) -> Result<RemoveOutcome, NotRun> {
     // Named *before* the delete, and that ordering is the whole of why this is two
     // steps: `devpod delete` takes devpod's own record of the workspace away with
     // the workspace, and that record is the only place the substituted volume
@@ -1169,7 +1405,7 @@ pub fn workspace_delete(
     context.forget_workspaces();
     if !exit.is_success() {
         refresh.ask(context.runner(), RefreshReason::Forced);
-        return Ok(DeleteOutcome::DevpodRefused { exit });
+        return Ok(RemoveOutcome::DevpodRefused { exit });
     }
 
     // Streamed rather than collected and appended, because the storage flow's own
@@ -1221,7 +1457,7 @@ pub fn workspace_delete(
         VolumeSweep::NothingNamed | VolumeSweep::NoDocker => {}
     }
     refresh.ask(context.runner(), RefreshReason::Forced);
-    Ok(DeleteOutcome::Deleted { clone, volumes })
+    Ok(RemoveOutcome::Deleted { clone, volumes })
 }
 
 /// Remove the volumes `named`, and say what became of them.
@@ -1354,7 +1590,7 @@ pub enum DeleteStalled {
 /// call site and mean opposite-facing things there. [`Insistence`] is what dl will
 /// *accept* as a delete, and this is what devpod is *asked* for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Persistence {
+pub(crate) enum Persistence {
     /// `rm`'s delete: devpod's defaults, and devpod's own patience.
     Ordinary,
     /// `kill`'s: `--force`, so a workspace devpod can no longer reach goes anyway,
@@ -1563,9 +1799,9 @@ pub fn purge_all_data(
     }
     let cache_dir = plan.cache_dir.clone();
     Ok(match remove_tree_as_far_as_it_goes(&cache_dir) {
-        Removal::Everything => PurgeOutcome::Removed { cache_dir },
-        Removal::WhatItCould(refused) => PurgeOutcome::RemovedWhatItCould { cache_dir, refused },
-        Removal::Nothing(refused) => PurgeOutcome::RemovedNothing { cache_dir, refused },
+        TreeSweep::Everything => PurgeOutcome::Removed { cache_dir },
+        TreeSweep::WhatItCould(refused) => PurgeOutcome::RemovedWhatItCould { cache_dir, refused },
+        TreeSweep::Nothing(refused) => PurgeOutcome::RemovedNothing { cache_dir, refused },
     })
 }
 
@@ -2722,13 +2958,13 @@ pub fn prune_clones(
             // refusal arms are alike to this caller — a directory half removed is
             // still a directory somebody has to deal with — so they share one arm.
             match remove_tree_as_far_as_it_goes(&reclaimable.path) {
-                Removal::Everything => {
+                TreeSweep::Everything => {
                     report.removed.push((*reclaimable).clone());
                     if let Some(record) = record_for.get(&reclaimable.path) {
                         forget.push(record.clone());
                     }
                 }
-                Removal::WhatItCould(refused) | Removal::Nothing(refused) => {
+                TreeSweep::WhatItCould(refused) | TreeSweep::Nothing(refused) => {
                     report.refused.extend(refused.iter().cloned());
                 }
             }
@@ -3846,10 +4082,10 @@ mod tests {
     }
 
     /// The refusals of a removal, whichever arm carries them.
-    fn refused_paths(removal: &Removal) -> Vec<PathBuf> {
+    fn refused_paths(removal: &TreeSweep) -> Vec<PathBuf> {
         match removal {
-            Removal::Everything => Vec::new(),
-            Removal::WhatItCould(refused) | Removal::Nothing(refused) => {
+            TreeSweep::Everything => Vec::new(),
+            TreeSweep::WhatItCould(refused) | TreeSweep::Nothing(refused) => {
                 refused.iter().map(|it| it.path.clone()).collect()
             }
         }
@@ -3867,7 +4103,7 @@ mod tests {
         let cache = a_sealable_cache();
         assert_eq!(
             remove_tree_as_far_as_it_goes(&cache.root),
-            Removal::Everything
+            TreeSweep::Everything
         );
         assert!(!cache.root.exists());
     }
@@ -3880,7 +4116,7 @@ mod tests {
         let dir = temp_dir();
         assert_eq!(
             remove_tree_as_far_as_it_goes(&dir.path().join("never-existed")),
-            Removal::Everything
+            TreeSweep::Everything
         );
     }
 
@@ -3910,7 +4146,7 @@ mod tests {
              to go, and saying so five times buries the one fact"
         );
         assert!(
-            matches!(removal, Removal::WhatItCould(_)),
+            matches!(removal, TreeSweep::WhatItCould(_)),
             "the partial arm has to mean something went: {removal:?}"
         );
     }
@@ -4016,7 +4252,7 @@ mod tests {
         };
         let removal = remove_tree_as_far_as_it_goes(&root);
         assert!(
-            matches!(removal, Removal::Nothing(_)),
+            matches!(removal, TreeSweep::Nothing(_)),
             "nothing came away: {removal:?}"
         );
         assert_eq!(refused_paths(&removal), [root.as_path()]);
@@ -4048,7 +4284,7 @@ mod tests {
         };
         let removal = remove_tree_as_far_as_it_goes(&root);
         assert!(
-            matches!(removal, Removal::WhatItCould(_)),
+            matches!(removal, TreeSweep::WhatItCould(_)),
             "the clones under a sealed root are still removable: {removal:?}"
         );
         assert!(!clone.exists());
@@ -4068,7 +4304,7 @@ mod tests {
         };
         let removal = remove_tree_as_far_as_it_goes(&root);
         assert!(
-            matches!(removal, Removal::Nothing(_)),
+            matches!(removal, TreeSweep::Nothing(_)),
             "nothing was attempted: {removal:?}"
         );
         assert_eq!(refused_paths(&removal), [root]);
@@ -4096,7 +4332,7 @@ mod tests {
 
         let removal = remove_tree_as_far_as_it_goes(&link);
 
-        let Removal::Nothing(refused) = &removal else {
+        let TreeSweep::Nothing(refused) = &removal else {
             panic!("expected a removal that removed nothing, got {removal:?}");
         };
         assert_eq!(refused.len(), 1);
@@ -4140,7 +4376,7 @@ mod tests {
 
         assert_eq!(
             remove_tree_as_far_as_it_goes(&cache.root),
-            Removal::Everything
+            TreeSweep::Everything
         );
         assert!(!cache.root.exists());
         assert_eq!(
@@ -4159,7 +4395,7 @@ mod tests {
         .expect("a dangling link");
         assert_eq!(
             remove_tree_as_far_as_it_goes(&cache.root),
-            Removal::Everything
+            TreeSweep::Everything
         );
         assert!(!cache.root.exists());
     }
@@ -4199,7 +4435,7 @@ mod tests {
         };
         assert_eq!(
             remove_tree_as_far_as_it_goes(&cache.root),
-            Removal::Everything
+            TreeSweep::Everything
         );
         assert!(!cache.root.exists());
     }
@@ -4938,7 +5174,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DeleteOutcome::Deleted {
+            RemoveOutcome::Deleted {
                 clone: Ok(Removed::NothingRecorded),
                 volumes: VolumeSweep::NothingNamed,
             }
@@ -5250,7 +5486,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DeleteOutcome::DevpodRefused {
+            RemoveOutcome::DevpodRefused {
                 exit: Exit::Code(1)
             }
         );
@@ -5292,7 +5528,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DeleteOutcome::Deleted {
+            RemoveOutcome::Deleted {
                 clone: Ok(Removed::Clone),
                 volumes: VolumeSweep::NothingNamed,
             }
@@ -5346,7 +5582,7 @@ mod tests {
         assert!(
             matches!(
                 &outcome,
-                DeleteOutcome::Deleted {
+                RemoveOutcome::Deleted {
                     clone: Err(RemoveWorkspaceError::DirectoryLeft(
                         RemoveTreeError::RootIsSymlink { .. }
                     )),
@@ -5432,7 +5668,7 @@ mod tests {
 
     impl Deleting {
         /// Delete `r-main-aa`, collecting the notices it produced.
-        fn delete(&mut self) -> (DeleteOutcome, Vec<LifecycleNotice>) {
+        fn delete(&mut self) -> (RemoveOutcome, Vec<LifecycleNotice>) {
             let clones = clones_for(&self.world.repos_dir, &self.world.devpod);
             let mut context = CommandContext::new(&self.world.devpod);
             let mut refresh = Refresh::new(&self.updater, &self.cache_path);
@@ -5482,7 +5718,7 @@ mod tests {
         );
         assert_eq!(
             outcome,
-            DeleteOutcome::Deleted {
+            RemoveOutcome::Deleted {
                 clone: Ok(Removed::Clone),
                 volumes: VolumeSweep::Removed,
             }
@@ -5541,7 +5777,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DeleteOutcome::Deleted {
+            RemoveOutcome::Deleted {
                 clone: Ok(Removed::Clone),
                 volumes: VolumeSweep::NoDocker,
             }
@@ -5580,7 +5816,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DeleteOutcome::Deleted {
+            RemoveOutcome::Deleted {
                 clone: Ok(Removed::Clone),
                 volumes: VolumeSweep::Refused(refusal.clone()),
             }
@@ -5610,7 +5846,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DeleteOutcome::Deleted {
+            RemoveOutcome::Deleted {
                 clone: Ok(Removed::Clone),
                 volumes: VolumeSweep::NothingNamed,
             }
@@ -7970,7 +8206,7 @@ mod tests {
         assert!(
             matches!(
                 outcome,
-                DeleteOutcome::Deleted {
+                RemoveOutcome::Deleted {
                     volumes: VolumeSweep::Removed,
                     ..
                 }
