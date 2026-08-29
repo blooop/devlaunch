@@ -690,6 +690,11 @@ trampolines are baked with absolute paths, and two containers sharing one
 environment tree is [pixi#5476](https://github.com/prefix-dev/pixi/issues/5476).
 Only the download cache is shared, which is the part that is safe to share.
 
+That is why a project environment installed inside an agent worktree is a real
+copy and costs what it costs, and it is why `dl --prune` reclaims those copies
+rather than pointing them at anything: see "The regenerable subtrees inside a
+worktree it keeps" in [cleanup.md](cleanup.md).
+
 If the directory cannot be created, or is not there when the launch reaches it,
 because of a full disk, a read-only cache home, or a cache swept between the two,
 the launch goes ahead without the mount and the container downloads its own packages,

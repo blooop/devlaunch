@@ -144,6 +144,13 @@ use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::lifecycle::Insistence;
 use crate::flows::repo_manager::{Refusal, TreeSweep, remove_tree_as_far_as_it_goes};
 
+mod derivatives;
+
+pub use derivatives::{
+    Derivative, NoRecipe, NotDerivableNow, Recipe, ReclaimedDerivative, Tagged, WithheldDerivative,
+};
+use derivatives::{Derivatives, claims_over, tagged_in};
+
 /// The directory an agent harness puts its worktrees in, relative to a clone.
 const WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
 
@@ -896,6 +903,9 @@ impl Reason {
                 // reason it was not in the plan. A claimant, so #468's
                 // derivative reclaim does not reach into it either.
                 Blank::AppearedAfterThePlan => Subject::AClaim,
+                // A worktree, which is a claim on the directory holding it by
+                // something the tag does not speak for.
+                Blank::ASiteSitsInside => Subject::AClaim,
                 Blank::NothingToAskThrough
                 | Blank::GitWouldNotSay(_)
                 // Decided on devlaunch#468: another repository's env, tagged, is
@@ -1010,6 +1020,11 @@ impl Blank {
                  said yes to removing it"
                     .to_owned()
             }
+            Self::ASiteSitsInside => {
+                "a git worktree sits inside it, and whatever declared it regenerable was not \
+                 speaking for that"
+                    .to_owned()
+            }
             Self::NotThisClonesToAccountFor(why) => why.describe().to_owned(),
         }
     }
@@ -1089,6 +1104,11 @@ pub enum Blank {
     /// plan meant this one, so the whole unit is withheld and offered again next
     /// run — by which time it is in the plan they read.
     AppearedAfterThePlan,
+    /// A site sits inside a tagged directory, so whatever declared that
+    /// directory regenerable was not speaking for what is in it (devlaunch#468
+    /// §6). Produced by the derivative fold alone and never by a site's own
+    /// verdict: a site is never *this* to itself.
+    ASiteSitsInside,
 }
 
 // ===========================================================================
@@ -1157,6 +1177,9 @@ struct Weigher<'a, 'r> {
     /// it. `Result` rather than the witness alone: a refusal is an answer and
     /// re-asking it would not make it a different one.
     reachability: RefCell<HashMap<String, Result<Elsewhere, Reason>>>,
+    /// Whether this pass costs the tagged derivatives inside the sites it
+    /// stands. See [`Derivatives`].
+    derivatives: Derivatives,
 }
 
 impl Weigher<'_, '_> {
@@ -1605,6 +1628,11 @@ pub struct CloneWorktrees {
     repo: String,
     going: Vec<Going>,
     standing: Vec<StandingSite>,
+    /// The tagged derivative subtrees inside the sites this run is leaving
+    /// standing (devlaunch#468). A derivative inside a site that is itself
+    /// going is not in here: the site's own removal accounts for it, which is
+    /// devlaunch#446 §6's two-recursions rule extended one artifact over.
+    derivatives: Vec<Tagged>,
 }
 
 impl CloneWorktrees {
@@ -1632,12 +1660,18 @@ impl CloneWorktrees {
         &self.standing
     }
 
+    /// Every tagged derivative inside the sites this run leaves standing, the
+    /// ones it will reclaim and the ones it will not, each with its bytes.
+    pub fn derivatives(&self) -> &[Tagged] {
+        &self.derivatives
+    }
+
     fn nothing_to_do(&self) -> bool {
-        self.going.is_empty()
+        self.going.is_empty() && !self.derivatives.iter().any(|it| it.derivable().is_some())
     }
 
     fn nothing_to_say(&self) -> bool {
-        self.going.is_empty() && self.standing.is_empty()
+        self.going.is_empty() && self.standing.is_empty() && self.derivatives.is_empty()
     }
 }
 
@@ -1653,6 +1687,23 @@ pub struct WorktreeSweep {
 impl WorktreeSweep {
     pub fn clones(&self) -> &[CloneWorktrees] {
         &self.clones
+    }
+
+    /// What reclaiming the tagged derivatives inside the *standing* sites would
+    /// free.
+    ///
+    /// Its own figure beside [`Self::freed`] rather than folded into it, for
+    /// the reason `PrunePlan::clones_freed` gives about the clones: these are a
+    /// different claim about a different set of directories — every one of them
+    /// is inside a site this run has just said it is leaving — and one number
+    /// covering both would describe neither.
+    pub fn derivatives_freed(&self) -> DiskUsage {
+        disk_usage::total_usage(self.clones.iter().flat_map(|clone| {
+            clone
+                .derivatives
+                .iter()
+                .filter_map(|it| it.derivable().map(|one| one.usage().clone()))
+        }))
     }
 
     /// What the whole sweep would free.
@@ -1691,6 +1742,11 @@ struct Weighed {
     /// Standing sites in this subtree, own reasons only. Empty while
     /// `removable` is `Some` — an insisted subtree's reasons ride in `despite`.
     standing: Vec<StandingSite>,
+    /// The tagged derivatives inside this subtree. Empty while `removable` is
+    /// `Some`, and that emptiness is the two-recursions rule rather than an
+    /// omission: a subtree that is going takes its derivatives with it, and
+    /// billing them a second time is exactly the double count R3 forbids.
+    derivatives: Vec<Tagged>,
 }
 
 /// The whole subtree, ready to be one [`Going`] if the parent absorbs it or to
@@ -1712,18 +1768,26 @@ struct Removable {
 /// it: the collectable arm is reachable only when every child's recursion
 /// handed one back, and the caller passes no child list — so "a parent goes
 /// while a nested site stands" is not guarded against, it has no path.
+///
+/// `claims` is every claimant reason in force from an ancestor. It flows *down*
+/// while the verdict folds up, which is why this site's own verdict is taken
+/// before its children are weighed rather than after: a lock is a claim over
+/// everything inside the directory it names, and the derivative fold one level
+/// in has to know about it.
 fn weigh(
     weigher: &Weigher<'_, '_>,
     site: &Site,
     insistence: Insistence,
     forest: &[PathBuf],
+    claims: &[Reason],
 ) -> Weighed {
+    let own = weigher.own_verdict(site, forest);
+    let claims_here = claims_over(claims, &own);
     let children: Vec<Weighed> = site
         .nested
         .iter()
-        .map(|child| weigh(weigher, child, insistence, forest))
+        .map(|child| weigh(weigher, child, insistence, forest, &claims_here))
         .collect();
-    let own = weigher.own_verdict(site, forest);
     let own_removable: Option<Vec<Reason>> = match &own {
         Verdict::Collectable(_) => Some(Vec::new()),
         Verdict::Stands(standing) => match insistence {
@@ -1753,6 +1817,7 @@ fn weigh(
             removable: Some(merged),
             going: Vec::new(),
             standing: Vec::new(),
+            derivatives: Vec::new(),
         };
     }
     // Something here stands, so nothing above this site can go: materialize the
@@ -1760,12 +1825,14 @@ fn weigh(
     // sites that stand of their own accord.
     let mut going = Vec::new();
     let mut standing = Vec::new();
+    let mut derivatives = own_derivatives(weigher, site, &claims_here, forest);
     for child in children {
         if let Some(removable) = child.removable {
             going.push(materialize(removable));
         }
         going.extend(child.going);
         standing.extend(child.standing);
+        derivatives.extend(child.derivatives);
     }
     if let Verdict::Stands(reasons) = own {
         standing.push(StandingSite {
@@ -1777,6 +1844,40 @@ fn weigh(
         removable: None,
         going,
         standing,
+        derivatives,
+    }
+}
+
+/// The tagged derivatives inside one standing site's own directory.
+///
+/// Two arms take none. A registration with nothing at its place has no
+/// directory to walk. And a **symlink** in the worktrees place is never walked:
+/// following it is how a removal leaves the tree `--prune` is scoped to, which
+/// is the same reason [`walk_sites`] never follows one either.
+///
+/// A worktree of another repository *does* get walked, and that is decided
+/// rather than overlooked: devlaunch#468 §6 names
+/// [`Blank::NotThisClonesToAccountFor`] explicitly, because whose repository a
+/// tagged environment belongs to was never part of the argument — the tag and
+/// the lockfile beside it say what they say either way.
+fn own_derivatives(
+    weigher: &Weigher<'_, '_>,
+    site: &Site,
+    claims: &[Reason],
+    forest: &[PathBuf],
+) -> Vec<Tagged> {
+    if weigher.derivatives == Derivatives::NotAsked {
+        return Vec::new();
+    }
+    match &site.kind {
+        SiteKind::OursGone { .. } => Vec::new(),
+        SiteKind::NotOurs {
+            why: Unaccountable::SymlinkInThePlace,
+            ..
+        } => Vec::new(),
+        SiteKind::OursHere { at, .. } | SiteKind::NotOurs { at, .. } => {
+            tagged_in(weigher.clone, at, claims, forest)
+        }
     }
 }
 
@@ -1835,14 +1936,28 @@ pub(crate) fn sweep_clone(
         return None;
     }
     let picture = ClonePicture::of(git, clone)?;
-    let (going, standing) = weigh_clone(git, clone, bare, &picture, |_| insistence);
+    let weighed = weigh_clone(git, clone, bare, &picture, Derivatives::Weighed, |_| {
+        insistence
+    });
     Some(CloneWorktrees {
         clone: clone.to_path_buf(),
         owner: owner.to_owned(),
         repo: repo.to_owned(),
-        going,
-        standing,
+        going: weighed.going,
+        standing: weighed.standing,
+        derivatives: weighed.derivatives,
     })
+}
+
+/// One clone's whole weighing: what goes, what stands, and the tagged
+/// derivatives inside what stands.
+///
+/// A struct rather than a tuple because the third member arrived and a
+/// three-tuple of `Vec`s is three chances to bind the wrong one.
+struct Weighing {
+    going: Vec<Going>,
+    standing: Vec<StandingSite>,
+    derivatives: Vec<Tagged>,
 }
 
 /// Weigh every root in one clone's forest, with an insistence per going root.
@@ -1851,13 +1966,15 @@ fn weigh_clone(
     clone: &Path,
     bare: Option<&Path>,
     picture: &ClonePicture,
+    want: Derivatives,
     insist: impl Fn(&Site) -> Insistence,
-) -> (Vec<Going>, Vec<StandingSite>) {
+) -> Weighing {
     let weigher = Weigher {
         git,
         clone,
         bare,
         reachability: RefCell::new(HashMap::new()),
+        derivatives: want,
     };
     let roots = forest_of(clone, picture);
     let mut forest_paths = Vec::new();
@@ -1866,13 +1983,15 @@ fn weigh_clone(
     }
     let mut going = Vec::new();
     let mut standing = Vec::new();
+    let mut derivatives = Vec::new();
     for root in &roots {
-        let weighed = weigh(&weigher, root, insist(root), &forest_paths);
+        let weighed = weigh(&weigher, root, insist(root), &forest_paths, &[]);
         if let Some(removable) = weighed.removable {
             going.push(materialize(removable));
         }
         going.extend(weighed.going);
         standing.extend(weighed.standing);
+        derivatives.extend(weighed.derivatives);
     }
     going.sort_by(|left, right| {
         let bytes = |unit: &Going| match &unit.what {
@@ -1888,7 +2007,18 @@ fn weigh_clone(
             .then_with(|| path(left).cmp(&path(right)))
     });
     standing.sort_by(|left, right| left.at.cmp(&right.at));
-    (going, standing)
+    derivatives.sort_by(|left, right| {
+        right
+            .usage()
+            .known_bytes()
+            .cmp(&left.usage().known_bytes())
+            .then_with(|| left.at().cmp(right.at()))
+    });
+    Weighing {
+        going,
+        standing,
+        derivatives,
+    }
 }
 
 // ===========================================================================
@@ -1935,12 +2065,23 @@ pub struct WorktreeReport {
     /// Registrations dropped, by name, each one read from a listing.
     pub forgotten: usize,
     pub forget_refused: Vec<ForgetRefused>,
+    /// The tagged derivative subtrees this run reclaimed (devlaunch#468).
+    pub reclaimed: Vec<ReclaimedDerivative>,
+    /// The ones the plan named that the re-read would not hand back.
+    pub withheld_derivatives: Vec<WithheldDerivative>,
 }
 
 impl WorktreeReport {
-    /// What this run actually freed.
+    /// What this run actually freed by removing agent worktrees.
     pub fn freed(&self) -> DiskUsage {
         disk_usage::total_usage(self.removed.iter().map(|it| it.usage.clone()))
+    }
+
+    /// What reclaiming the tagged derivatives freed, with the plan's own
+    /// figures. Its own number for [`WorktreeSweep::derivatives_freed`]'s
+    /// reason: two claims about two disjoint sets of directories.
+    pub fn derivatives_freed(&self) -> DiskUsage {
+        disk_usage::total_usage(self.reclaimed.iter().map(|it| it.usage.clone()))
     }
 
     pub fn nothing_to_say(&self) -> bool {
@@ -1949,6 +2090,8 @@ impl WorktreeReport {
             && self.refused.is_empty()
             && self.forgotten == 0
             && self.forget_refused.is_empty()
+            && self.reclaimed.is_empty()
+            && self.withheld_derivatives.is_empty()
     }
 }
 
@@ -2009,13 +2152,25 @@ pub(crate) fn reclaim(
     };
     // The same weighing as the plan, with the plan's own per-unit insistence: a
     // root the plan promoted is re-weighed as promoted, everything else as not.
-    let (fresh, fresh_standing) = weigh_clone(git, &plan.clone, bare, &picture, |root| {
-        plan.going
-            .iter()
-            .find(|going| approves(going, root, &plan.clone))
-            .map(|going| going.promotion.insistence())
-            .unwrap_or(Insistence::NotInsisted)
-    });
+    let weighed = weigh_clone(
+        git,
+        &plan.clone,
+        bare,
+        &picture,
+        Derivatives::Weighed,
+        |root| {
+            plan.going
+                .iter()
+                .find(|going| approves(going, root, &plan.clone))
+                .map(|going| going.promotion.insistence())
+                .unwrap_or(Insistence::NotInsisted)
+        },
+    );
+    let Weighing {
+        going: fresh,
+        standing: fresh_standing,
+        derivatives: fresh_derivatives,
+    } = weighed;
     for planned in &plan.going {
         let Some(confirmed) = fresh
             .iter()
@@ -2052,6 +2207,56 @@ pub(crate) fn reclaim(
             continue;
         }
         act_on(git, &plan.clone, planned, confirmed, report);
+    }
+    reclaim_derivatives(&plan.clone, &plan.derivatives, &fresh_derivatives, report);
+}
+
+/// Reclaim the tagged derivatives the plan named, each one re-read first.
+///
+/// **Both records are read again, and they are read by the same pass that read
+/// them for the plan.** `fresh` is [`weigh_clone`]'s answer taken under the
+/// lock a moment ago, so the tag, the `conda-meta/pixi` record, the lockfile and
+/// the claimant fold have all been put a second time, by one implementation. A
+/// plan line and the act on it therefore cannot be answering different
+/// questions — the defect this map has punished three times.
+///
+/// The approved set can shrink and can never grow: only a place the plan named
+/// is looked at, and only where the re-read *also* says derivable is anything
+/// removed.
+///
+/// What is removed is the tagged directory alone. Never `.pixi`, which carries
+/// no tag and holds the one file `.pixi/.gitignore` un-ignores; never anything
+/// above it.
+fn reclaim_derivatives(
+    clone: &Path,
+    planned: &[Tagged],
+    fresh: &[Tagged],
+    report: &mut WorktreeReport,
+) {
+    for derivative in planned.iter().filter_map(Tagged::derivable) {
+        let path = clone.join(derivative.at().as_str());
+        let confirmed = fresh.iter().find(|it| it.at() == derivative.at());
+        let Some(_) = confirmed.and_then(Tagged::derivable) else {
+            report.withheld_derivatives.push(WithheldDerivative {
+                path,
+                because: match confirmed {
+                    Some(tagged) => NotDerivableNow::Answered(Box::new(tagged.clone())),
+                    None => NotDerivableNow::NoTagThere,
+                },
+            });
+            continue;
+        };
+        match remove_tree_as_far_as_it_goes(&path) {
+            TreeSweep::Everything => report.reclaimed.push(ReclaimedDerivative {
+                path,
+                // The plan's figure, so what somebody is told they got back is
+                // what they said yes to — the same rule `act_on` follows.
+                usage: derivative.usage().clone(),
+            }),
+            TreeSweep::WhatItCould(refused) | TreeSweep::Nothing(refused) => {
+                report.refused.extend(refused.iter().cloned());
+            }
+        }
     }
 }
 
@@ -2279,8 +2484,15 @@ fn site_reasons(git: &Git<'_>, clone: &Path) -> Vec<Reason> {
     };
     let bare = clone.parent().map(|parent| parent.join(".bare"));
     let bare = bare.as_deref().filter(|path| path.is_dir());
-    let (_, standing) = weigh_clone(git, clone, bare, &picture, |_| Insistence::NotInsisted);
-    standing
+    // `Derivatives::NotAsked`: this is `dl --ls`, and costing a derivative is a
+    // full walk of a site plus an `exclusive_usage` over a 12000-file
+    // environment. The field it leaves empty is discarded here rather than read
+    // as an answer.
+    let weighed = weigh_clone(git, clone, bare, &picture, Derivatives::NotAsked, |_| {
+        Insistence::NotInsisted
+    });
+    weighed
+        .standing
         .into_iter()
         .flat_map(|site| site.reasons.iter().cloned().collect::<Vec<_>>())
         .collect()

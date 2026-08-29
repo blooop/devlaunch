@@ -195,3 +195,42 @@ fn each_file_is_anchored_on_a_row_every_generation_produces() {
         "the rest file does not contain the crate root's row"
     );
 }
+
+#[test]
+fn nothing_but_a_read_mints_a_derivative() {
+    // devlaunch#472's asserted **absence**, in the file that would show it
+    // arriving. `Derivative` says *this directory's creator declared it
+    // regenerable and its recipe is on disk*, and the only thing entitled to
+    // say that is a read that answered -- so the type has private fields, no
+    // `Default`, and no constructor at all. The failure this pins is not a
+    // wrong value, it is a value that can be built without asking, which is
+    // `Proof`'s discipline one artifact over and the reason `Option<Derivative>`
+    // is refused as well.
+    //
+    // `clone` is exempt and only `clone`: it needs one in hand to make another,
+    // so it mints nothing.
+    const TY: &str = "devlaunch_core::flows::agent_worktrees::Derivative";
+    // Anchored first, because an assertion about the absence of rows passes
+    // loudest when the type is absent too -- which is what a rename, a moved
+    // module or a truncated regeneration all look like from in here.
+    assert!(
+        rows(REST).contains(&format!("pub struct {TY}").as_str()),
+        "the snapshot does not declare {TY}, so nothing below it is under test"
+    );
+    let minting: Vec<&str> = rows(REST)
+        .into_iter()
+        .filter(|row| {
+            let hands_one_back = row.starts_with("pub fn ")
+                && row.ends_with(&format!("-> {TY}"))
+                && !row.contains(&format!("{TY}::clone("));
+            let has_a_default = *row == format!("impl core::default::Default for {TY}");
+            let has_a_public_field = row.starts_with(&format!("pub {TY}::")) && row.contains(": ");
+            hands_one_back || has_a_default || has_a_public_field
+        })
+        .collect();
+    assert!(
+        minting.is_empty(),
+        "a Derivative must be handed to you by a read that answered, and these would \
+         build one without asking: {minting:#?}"
+    );
+}
