@@ -946,6 +946,31 @@ fn a_clone_whose_last_tag_the_remote_carries_too_is_deleted_like_any_other() {
 }
 
 #[test]
+fn a_commit_only_a_local_tag_reaches_stops_the_delete() {
+    // devlaunch#487 at the binary boundary, and the other side of the test above:
+    // the same shape of clone, clean tree, nothing on any branch, and one commit
+    // that only a tag reaches. The tag was typed here and never pushed, so the
+    // commit exists in one place on earth and `dl rm` has to say so rather than
+    // delete it.
+    //
+    // What tells the two worlds apart is the cache's mirror, which is the only
+    // thing on the host that knows which of a clone's tags came off a remote: it
+    // carries `v1` in the world above and has never heard of `backup` in this one.
+    let world = World::with(&["--local-tag"]);
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-local-tag";
+
+    let run = world.dl(&["devlaunch-local-tag", "rm"]);
+
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "devlaunch-local-tag holds 1 unpushed commit(s). Push or commit it, or run: dl \
+         devlaunch-local-tag rm --force\n"
+    );
+    assert!(world.exists(clone), "the refusal deleted the clone anyway");
+}
+
+#[test]
 fn a_pushed_tag_does_not_hide_a_commit_that_really_is_nowhere_else() {
     // The other half of #485: the same clone with one commit of its own is still
     // refused, and refused for the commit rather than for the tag, so the exclusion

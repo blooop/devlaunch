@@ -1826,6 +1826,7 @@ impl<'a, 'r> devlaunch_core::flows::lifecycle::CloneDirectories<'a, 'r>
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'a, 'r>::of(&'a devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>) -> Self
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'a, 'r>::take_notices(&self) -> alloc::vec::Vec<devlaunch_core::flows::repo_manager::CacheNotice>
 impl devlaunch_core::flows::listing::ClonePathResolver for devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>
+pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::bare_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::clone_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub struct devlaunch_core::flows::lifecycle::ClonePlacement
 impl devlaunch_core::flows::lifecycle::ClonePlacement
@@ -2185,8 +2186,10 @@ impl core::fmt::Debug for devlaunch_core::flows::listing::WorkspaceOwnership
 pub fn devlaunch_core::flows::listing::WorkspaceOwnership::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::WorkspaceOwnership
 pub trait devlaunch_core::flows::listing::ClonePathResolver
+pub fn devlaunch_core::flows::listing::ClonePathResolver::bare_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::listing::ClonePathResolver::clone_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 impl devlaunch_core::flows::listing::ClonePathResolver for devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>
+pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::bare_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::lifecycle::CloneDirectories<'_, '_>::clone_path(&self, &devlaunch_core::domain::model::WorktreeInfo) -> core::option::Option<std::path::PathBuf>
 pub fn devlaunch_core::flows::listing::describe_source(&devlaunch_core::clients::devpod::WorkspaceSource) -> devlaunch_core::flows::listing::SourceDescription
 pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch_core::clients::git::Git<'_>, &[devlaunch_core::clients::devpod::Workspace]) -> devlaunch_core::flows::listing::RepoDiscovery

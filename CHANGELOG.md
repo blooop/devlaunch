@@ -183,6 +183,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git fetch` over ssh; with a connection master now open on `dl`'s own hottest
   path it is the common one.
 
+- **A commit that only an unpushed local tag reaches is no longer read as nothing
+  to lose.** The delete guard asks what a clone holds that exists nowhere else,
+  and it excluded `refs/tags/*` from the question outright, because a tag your
+  remote carries on a branch it no longer has would otherwise read as hundreds of
+  unpushed commits on every clone of that repository, forever. That exclusion was
+  right about the case it was written for and silently wrong about its neighbour:
+  tag before a rewrite, move the branch off the tag, and the commit under
+  `backup-before-rebase` exists in exactly one place on earth while `dl rm`
+  deletes the clone without asking and `dl --prune` without printing.
+
+  Nothing inside a clone can tell those two apart, because no remote-tracking ref
+  carries a tag: `refs/tags/` holds no mark saying which name arrived in a fetch.
+  What knows is the bare mirror `dl` keeps under `repos/<owner>/<repo>/.bare`,
+  which fetches tags forced and pruned and is what every workspace clone is made
+  from. So the guard compares the two. A tag the mirror holds at the same object
+  came off the remote and still costs nothing; a tag it has not got, or holds at
+  another object, was typed here, and the commits only that tag reaches are
+  counted like any other unpushed work. A local tag pointing at a commit the
+  remote already has is asked about and counts for nothing, which is the whole
+  point of asking rather than counting.
+
+  No network, one extra local `for-each-ref` per clone, and none at all for a
+  repository with no tags. Where there is no mirror to ask, every tag counts,
+  which keeps the clone: a clone kept costs disk, and the other direction costs
+  the only copy of somebody's work. [docs/cleanup.md](docs/cleanup.md) has the
+  table.
+
 - **Sixty-six citations that pointed at nothing now point at something, and a
   guard keeps it that way.** Comments across `rust/` name the test that pins the
   behaviour they describe, which is most of what makes them worth reading.

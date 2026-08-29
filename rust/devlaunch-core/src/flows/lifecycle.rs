@@ -83,7 +83,7 @@ use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
 use crate::domain::metadata::{self, MetadataStorage, RecordUpdate, WorktreeFilter};
 use crate::domain::model::{SweepNote, SweepTrouble, WorktreeInfo};
-use crate::domain::workspace_state::{self, CouldNotTell, Losses, NonEmpty, Unsaved};
+use crate::domain::workspace_state::{self, BareCache, CouldNotTell, Losses, NonEmpty, Unsaved};
 use crate::flows::completion_cache;
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::kept_copies::{self, KeptCopies};
@@ -985,6 +985,10 @@ impl ClonePathResolver for CloneDirectories<'_, '_> {
     fn clone_path(&self, record: &WorktreeInfo) -> Option<PathBuf> {
         self.clones
             .resolve_clone_path(record, &mut *self.notices.borrow_mut())
+    }
+
+    fn bare_path(&self, record: &WorktreeInfo) -> Option<PathBuf> {
+        self.clones.resolve_bare_path(record)
     }
 }
 
@@ -2031,6 +2035,23 @@ pub(crate) enum CloneStatus {
     },
 }
 
+/// The repository one clone directory belongs to.
+///
+/// Three fields that are one fact and are always read together: the names the
+/// scan reports the clone under, and the mirror beside it. Grouped because they
+/// arrive together at both call sites, from the same walk over
+/// `repos/<owner>/<repo>`, and because passing the mirror of a *different*
+/// repository would be a guard reading the wrong tags.
+#[derive(Clone, Copy)]
+pub(crate) struct RepoAt<'a> {
+    pub(crate) owner: &'a str,
+    pub(crate) repo: &'a str,
+    /// dl's mirror for this repository, whether or not it is on disk. A path that
+    /// is not there refuses when asked, and the guard reads that as "no mirror",
+    /// which counts every tag in the clone as local (#487).
+    pub(crate) bare: &'a Path,
+}
+
 /// Which arm `clone` is, asked in the order that fails towards keeping it.
 ///
 /// devpod's own listing is consulted first, and by containment rather than by the
@@ -2046,17 +2067,23 @@ pub(crate) enum CloneStatus {
 ///
 /// The unsaved probe and the disk walk run last and only on the arm that could be
 /// removed. Together they are the expensive half of a scan (593 ms of git over 37
-/// clones on the reference host, plus a walk with no ceiling), and asking them
-/// about a directory no answer could affect is time spent to learn nothing.
+/// clones on the reference host, measured before the tag comparison #487 added,
+/// plus a walk with no ceiling), and asking them about a directory no answer could
+/// affect is time spent to learn nothing.
+///
+/// The bare is named rather than looked up, and it is this repository's own: every
+/// clone this walk reaches is a subdirectory of `repos/<owner>/<repo>`, so the
+/// mirror beside them is the one they were cloned from. `--prune` deletes clones
+/// without being asked twice, which is exactly the surface #487 was about.
 pub(crate) fn clone_status(
     git: &Git<'_>,
     clone: &Path,
-    owner: &str,
-    repo: &str,
+    of: RepoAt<'_>,
     locations: &WorkspaceLocations,
     record_for: &HashMap<PathBuf, WorktreeInfo>,
     listed_at: &HashMap<String, String>,
 ) -> CloneStatus {
+    let RepoAt { owner, repo, bare } = of;
     if let Some(workspace_id) = locations.holder(clone) {
         return CloneStatus::Referenced {
             workspace_id: workspace_id.to_owned(),
@@ -2077,7 +2104,7 @@ pub(crate) fn clone_status(
         };
     }
     CloneStatus::Orphaned {
-        unsaved: workspace_state::holds_unsaved_work(git, clone),
+        unsaved: workspace_state::holds_unsaved_work(git, clone, BareCache::At(bare)),
         usage: disk_usage::exclusive_usage(clone),
     }
 }
@@ -2418,12 +2445,8 @@ pub fn prune_plan(
             let (Some(owner), Some(repo)) = (leaf_of(&owner_dir), leaf_of(&repo_dir)) else {
                 continue;
             };
-            let bare = canonical(
-                &clones
-                    .repo_manager()
-                    .bare_dir(&owner, &repo)
-                    .to_string_lossy(),
-            );
+            let bare_path = clones.repo_manager().bare_dir(&owner, &repo);
+            let bare = canonical(&bare_path.to_string_lossy());
             let _lock = clones
                 .repo_manager()
                 .hold_repo_lock(&owner, &repo)
@@ -2440,8 +2463,11 @@ pub fn prune_plan(
                 let status = clone_status(
                     &git,
                     &clone,
-                    &owner,
-                    &repo,
+                    RepoAt {
+                        owner: &owner,
+                        repo: &repo,
+                        bare: &bare_path,
+                    },
                     locations,
                     &record_for,
                     &listed_at,
@@ -2697,12 +2723,16 @@ pub fn prune_clones(
             .repo_manager()
             .hold_repo_lock(&owner, &repo)
             .map_err(PruneError::Lock)?;
+        let bare_path = clones.repo_manager().bare_dir(&owner, &repo);
         for reclaimable in reclaimables {
             let status = clone_status(
                 &git,
                 &reclaimable.path,
-                &owner,
-                &repo,
+                RepoAt {
+                    owner: &owner,
+                    repo: &repo,
+                    bare: &bare_path,
+                },
                 &locations,
                 &record_for,
                 &listed_at,

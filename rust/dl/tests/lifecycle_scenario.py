@@ -101,6 +101,12 @@ UNPUSHED_WS = "devlaunch-unpushed-committed"
 TAGGED_LEAF = "devlaunch-tagged-release"
 TAGGED_WS = "devlaunch-tagged-release"
 
+# --local-tag: a recorded clone holding a commit that only a tag typed in the clone
+# reaches. The tag was never pushed and the cache's mirror has never heard of it,
+# so the commit under it exists in exactly one place on earth (devlaunch#487).
+LOCAL_TAG_LEAF = "devlaunch-local-tag"
+LOCAL_TAG_WS = "devlaunch-local-tag"
+
 # --sealed-cache: the cache root itself refuses, so a purge removes what it can and
 # names what it could not. Skipped under root, which can unlink anything.
 
@@ -333,11 +339,37 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         git(tagged, "checkout", "-q", "-B", "main", "origin/main")
         git(tagged, "branch", "-qD", "release")
         git(tagged, "remote", "prune", "origin")
+        # And the cache sweeps it, which is what dl's own fetch does
+        # (`+refs/tags/*:refs/tags/*`, forced and pruned). Without this the mirror
+        # would be a snapshot from before the release and the guard would rightly
+        # read `v1` as a tag nobody but this clone has (#487) — true of the
+        # directory on disk, and not the state #485 is about.
+        git(bare, "fetch", "-q", "origin", "+refs/tags/*:refs/tags/*", "--prune")
         worktrees["blooop/devlaunch/release"] = _record(
             "blooop", "devlaunch", "release", tagged, TAGGED_WS
         )
         workspaces[TAGGED_WS] = _workspace(
             TAGGED_WS, {"localFolder": str(tagged)}, OLDER, "Stopped"
+        )
+
+    if "local-tag" in wanted:
+        # devlaunch#487, and the habit that reaches it: tag before a rewrite, then
+        # move the branch out from under the tag. `refs/tags/backup` is the only ref
+        # in the clone that reaches the commit, the tag was never pushed, and the
+        # cache's mirror has no tag by that name at all. Same shape as the world
+        # above, opposite answer, and the mirror is the only thing that tells them
+        # apart.
+        held = _clone(root, origin, repos / "blooop" / "devlaunch" / LOCAL_TAG_LEAF, "rewrite")
+        (held / "an-hour.txt").write_text("an hour of work\n", encoding="utf-8")
+        git(held, "add", "-A")
+        git(held, "commit", "-q", "-m", "about to be rewritten")
+        git(held, "tag", "backup")
+        git(held, "reset", "-q", "--hard", "origin/main")
+        worktrees["blooop/devlaunch/rewrite"] = _record(
+            "blooop", "devlaunch", "rewrite", held, LOCAL_TAG_WS
+        )
+        workspaces[LOCAL_TAG_WS] = _workspace(
+            LOCAL_TAG_WS, {"localFolder": str(held)}, OLDER, "Stopped"
         )
 
     if "not-a-clone" in wanted:
@@ -551,6 +583,7 @@ if __name__ == "__main__":
         "stranded-clone",
         "unpushed",
         "tagged-release",
+        "local-tag",
         "sealed-cache",
         "symlinked-cache",
         "v1-cache",

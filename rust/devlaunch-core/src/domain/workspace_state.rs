@@ -71,7 +71,41 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::clients::git::{Git, GitAnswer};
+use crate::clients::git::{Git, GitAnswer, TagRef};
+
+/// The bare cache a clone was made from, when there is one to consult.
+///
+/// The one thing on the host that can say which of a clone's `refs/tags/*` came
+/// off the remote: dl's mirror fetches `+refs/tags/*:refs/tags/*` forced and
+/// pruned, `git clone` copies those tags into the workspace, so a tag in both at
+/// the same object is a tag the remote had at the last sweep. A tag the bare has
+/// not got is one somebody typed here.
+///
+/// Two arms rather than an `Option<&Path>`, because the absent case is an
+/// *answer* with a direction and not a missing argument. [`Self::Unknown`] counts
+/// every tag in the clone as local, which is the fail-towards-keeping side: a
+/// clone kept costs disk, and the other way costs the only copy of somebody's
+/// work. Every caller that cannot name a bare has to write the word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BareCache<'a> {
+    /// dl's mirror of this clone's repository is at this path.
+    At(&'a Path),
+    /// There is no mirror to compare against — no record, an unusable one, or a
+    /// clone dl did not make.
+    Unknown,
+}
+
+impl<'a> BareCache<'a> {
+    /// The one conversion from "a path, or not" — the shape every resolver
+    /// answers in — so the direction the absent case fails in is decided here
+    /// rather than at each call site.
+    pub(crate) fn of(bare: Option<&'a Path>) -> Self {
+        match bare {
+            Some(path) => Self::At(path),
+            None => Self::Unknown,
+        }
+    }
+}
 
 /// What deleting a clone would destroy, as far as git can be made to say.
 ///
@@ -348,7 +382,11 @@ pub(crate) struct CloneState {
 /// fewer thing to remember. Uncaught, either takes down the whole of
 /// `dl --ls --json` for one bad record, which is the exact harm this guard exists
 /// to stop.
-pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
+///
+/// *bare* is dl's mirror of the repository this clone came from, and it is here
+/// for one question only: which of the clone's tags arrived in a fetch (#487).
+/// See [`BareCache`] for why not naming one is safe and what it costs.
+pub(crate) fn read_clone(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> CloneState {
     let present = match std::fs::metadata(clone) {
         Ok(metadata) => metadata.is_dir(),
         // No directory there, so nothing in it to lose. ENOTDIR is a parent
@@ -387,7 +425,7 @@ pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
         GitAnswer::Said(head) if !head.is_empty() => Some(head),
         _ => None,
     };
-    let unsaved = unsaved(git, clone);
+    let unsaved = unsaved(git, clone, bare);
     CloneState { branch, unsaved }
 }
 
@@ -396,8 +434,8 @@ pub(crate) fn read_clone(git: &Git<'_>, clone: &Path) -> CloneState {
 /// The guard `dl <ws> rm` consults. Thin on purpose: the interesting behaviour is
 /// in [`read_clone`], and this is the name the guard reads by. Total — every path
 /// returns one of the three arms, and none of them means "go ahead" by default.
-pub(crate) fn holds_unsaved_work(git: &Git<'_>, clone: &Path) -> Unsaved {
-    read_clone(git, clone).unsaved
+pub(crate) fn holds_unsaved_work(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> Unsaved {
+    read_clone(git, clone, bare).unsaved
 }
 
 /// Name the first few changed paths from `git status --porcelain` lines.
@@ -451,7 +489,7 @@ fn path_in(line: &str) -> Option<&str> {
 /// clone with no refs at all git exits 0 with no output, so the gate bought
 /// nothing, and on a clone whose HEAD is unborn but which carries an orphan branch
 /// it hid the one thing there was to find.
-fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
+fn unsaved(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> Unsaved {
     let status = match git.status_porcelain(clone) {
         GitAnswer::Said(status) => status,
         GitAnswer::Refused(refused) => {
@@ -466,7 +504,16 @@ fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
     if let Some(changed) = NonEmpty::of(status.lines().map(str::to_owned)) {
         losses.push(Loss::Uncommitted(changed));
     }
-    match git.unpushed_commits(clone) {
+    let local_tags = match local_tags(git, clone, bare) {
+        GitAnswer::Said(tags) => tags,
+        GitAnswer::Refused(refused) => {
+            return Unsaved::CouldNotTell(CouldNotTell::UnpushedNotListed {
+                clone: clone.to_path_buf(),
+                reason: refused.reason().to_owned(),
+            });
+        }
+    };
+    match git.unpushed_commits(clone, &local_tags) {
         GitAnswer::Said(unpushed) => {
             if let Some(commits) = NonEmpty::of(unpushed.lines().map(str::to_owned)) {
                 losses.push(Loss::Unpushed(commits));
@@ -483,6 +530,59 @@ fn unsaved(git: &Git<'_>, clone: &Path) -> Unsaved {
         Some(losses) => Unsaved::WouldLose(losses),
         None => Unsaved::NothingToLose,
     }
+}
+
+/// The clone's tags that the bare cache does not vouch for, as full refnames.
+///
+/// #487's whole answer. The unpushed question excludes `refs/tags/*` wholesale
+/// because a tag the remote carries is not work in danger (#485/#486); these are
+/// the tags it should not have excluded, and they go back into the question by
+/// name.
+///
+/// Three things decide a tag is local, and all three fail towards keeping:
+///
+/// - the bare has not got a tag by that name;
+/// - it has one by that name pointing at a different object, which means this one
+///   was moved or retyped here and what it used to reach may be nowhere else;
+/// - there is no bare to ask — [`BareCache::Unknown`], or a bare that refused —
+///   in which case every tag in the clone is local as far as anything here has
+///   established.
+///
+/// The bare is asked only when the clone has a tag to ask about, so a repository
+/// with no tags pays one `for-each-ref` and a missing bare costs it nothing.
+///
+/// A refusal from the *clone* is a refusal of the whole answer, for the reason
+/// [`unsaved`] gives: the repository has already been shown readable by
+/// `git status`, so a question it then refuses has failed for a reason nobody
+/// here can account for, and "no local tags" would be accounting for it.
+fn local_tags(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> GitAnswer<Vec<String>> {
+    let here = match git.tags_in_clone(clone) {
+        GitAnswer::Said(tags) => tags,
+        GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+    };
+    if here.is_empty() {
+        return GitAnswer::Said(Vec::new());
+    }
+    let fetched = match bare {
+        BareCache::At(bare) => match git.tags_in_bare(bare) {
+            GitAnswer::Said(tags) => tags,
+            // The bare is gone, half-removed, or not a repository. Nothing has
+            // established that any of these tags came off a remote.
+            GitAnswer::Refused(_) => Vec::new(),
+        },
+        BareCache::Unknown => Vec::new(),
+    };
+    GitAnswer::Said(
+        here.into_iter()
+            .filter(|tag| !vouched_for(tag, &fetched))
+            .map(|tag| tag.name)
+            .collect(),
+    )
+}
+
+/// Whether the bare holds *tag* under the same name at the same object.
+fn vouched_for(tag: &TagRef, fetched: &[TagRef]) -> bool {
+    fetched.iter().any(|cached| cached == tag)
 }
 
 #[cfg(test)]

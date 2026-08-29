@@ -630,16 +630,38 @@ the answer covers every local branch, every worktree's HEAD including detached
 ones, and the stash, which is one ref per clone and holds work that exists nowhere
 else either.
 
-It does **not** reach local tags, and that is the one exclusion (#485). A tag your
-remote carries, but which no remote *branch* reaches any more, would otherwise read
-as unpushed, and a repository that tags releases on branches it then deletes has
-those by the hundred. One does: 265 commits reachable only from its tags, which is
-what stood between six of the eight workspaces on a host and being deleted, at 265
-to 269 unpushed commits apiece and none of it real. A guard in that state is not a clone kept for the price of some disk. It is a
-guard that has to be `--force`d past to delete anything, until `--force` is what you
-type without reading, over the clone that did hold an hour of work as readily as
-over this one. What the exclusion gives up is a commit reachable only from a local
-tag, with no branch, worktree HEAD or stash in the clone naming it too.
+Tags are the one ref kind the answer has to think about, and both directions of
+getting it wrong have a ticket. A tag your remote carries, but which no remote
+*branch* reaches any more, must not read as unpushed: a repository that tags
+releases on branches it then deletes has those by the hundred, and one does, at
+265 commits reachable only from its tags. That was what stood between six of the
+eight workspaces on a host and being deleted, at 265 to 269 unpushed commits
+apiece and none of it real (#485). A guard in that state is not a clone kept for
+the price of some disk. It is a guard that has to be `--force`d past to delete
+anything, until `--force` is what you type without reading, over the clone that did
+hold an hour of work as readily as over this one. But a tag you typed here and
+never pushed is the opposite case, and the backup habit reaches it in two commands:
+tag before a rewrite, move the branch off the tag, and that commit exists in one
+place on earth (#487).
+
+A clone cannot tell the two apart on its own, because no remote-tracking ref
+carries a tag: nothing in `refs/tags/` says which name arrived in a fetch. What
+knows is the bare mirror under `repos/<owner>/<repo>/.bare`, which `dl` fetches
+tags into and clones the workspace from. So the rule is a comparison, and it costs
+no network:
+
+| The tag in your clone | Counted as work at risk? |
+| --- | --- |
+| The mirror has it, at the same object | No. It came off the remote. |
+| The mirror has not got it | Yes. Nothing but this clone has ever seen it. |
+| The mirror has the name, at another object | Yes. It was moved or retyped here, and what it used to reach may be nowhere else. |
+| There is no mirror to ask | Yes, every tag. |
+
+The last row is the same principle the whole guard is built on: a check that
+cannot establish safety fails towards keeping the clone. It is reached by a clone
+`dl` has no record for and by a cache directory that has been deleted out from
+under a workspace, and in both the answer is a clone kept, which costs disk and
+nothing else.
 
 The changed paths are named, not just counted, and that matters more than it
 looks: a devcontainer that runs a package install in its `postCreateCommand` can

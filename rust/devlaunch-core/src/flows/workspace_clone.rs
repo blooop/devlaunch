@@ -44,7 +44,7 @@ use super::branch_manager::{
 };
 use super::repo_manager::{
     CacheNotice, Cleanup, CloneError, CloneIfMissingError, FetchOutcome, NotRefreshed,
-    RemoveTreeError, RepoLock, RepositoryManager, TreeRemoval, WrongRepoLock, clone_dir,
+    RemoveTreeError, RepoLock, RepositoryManager, TreeRemoval, WrongRepoLock, bare_dir, clone_dir,
     remove_tree,
 };
 use crate::clients::git::{self, Git};
@@ -477,6 +477,33 @@ impl<'r> WorkspaceCloneManager<'r> {
                 None
             }
         }
+    }
+
+    /// The bare cache a record's clone was made from, or `None` if dl cannot name
+    /// one.
+    ///
+    /// The delete guard's second question since #487, and the only local record of
+    /// which of a clone's `refs/tags/*` came off the remote: the mirror fetches
+    /// tags forced and pruned, and `git clone` copies them from it, so a tag in
+    /// both at the same object was on the remote at the last sweep.
+    ///
+    /// Named off the record's **repository**, not off the clone directory. `.bare`
+    /// is a sibling of every clone dl makes, so the two agree on the ordinary
+    /// layout; they part on a record whose `local_path` was written by an older
+    /// build or edited by hand, and there the repository is the right answer,
+    /// because that is the mirror the clone's `origin` still points at
+    /// (`flows::migration` relies on the same fact).
+    ///
+    /// `None` for a triple the name rules refuse, which is the same refusal
+    /// [`WorkspaceCloneManager::resolve_clone_path`] gives and reaches the guard as
+    /// "no mirror to compare against": every tag in the clone then counts as
+    /// local, so a hand-edited record makes the guard *keep* a clone rather than
+    /// reach past its repository into another one. No notice is said here — this
+    /// runs beside `resolve_clone_path`, which says one for the same record.
+    pub(crate) fn resolve_bare_path(&self, recorded: &WorktreeInfo) -> Option<PathBuf> {
+        validate_ref_name(&recorded.owner, NamePart::Owner).ok()?;
+        validate_ref_name(&recorded.repo, NamePart::Repo).ok()?;
+        Some(bare_dir(&self.repos_dir, &recorded.owner, &recorded.repo))
     }
 
     /// Whether a workspace clone is on disk.
@@ -3099,6 +3126,39 @@ mod tests {
         // The stamps are whatever the constructor writes: nothing below reads
         // them, and they are out of this module's reach now (#412).
         WorktreeInfo::new("owner", "repo", branch, local_path, &leaf(branch))
+    }
+
+    #[test]
+    fn the_mirror_is_named_off_the_repository_wherever_the_clone_was_recorded() {
+        // #487's second question. The clone may sit at a path an older build wrote,
+        // and `.bare` does not move with it: the mirror belongs to the repository,
+        // and it is the one the clone's `origin` still points at.
+        let cache = a_cache();
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+        let elsewhere = cache.dir.path().join("somewhere/else/entirely");
+
+        assert_eq!(
+            manager.resolve_bare_path(&a_record("nb4", elsewhere)),
+            Some(bare_dir(&cache.repos_dir, "owner", "repo"))
+        );
+    }
+
+    #[test]
+    fn a_record_whose_repository_the_name_rules_refuse_names_no_mirror() {
+        // The same hand-edited `metadata.json` the test below is about, asked of the
+        // mirror instead of the clone. Answering a path built from an unsafe name
+        // would point the guard at whatever directory that name walked to, and the
+        // tags it found there would count as *vouched for* — a wrong answer in the
+        // deleting direction. `None` reaches the guard as "no mirror", which counts
+        // every tag in the clone as local and keeps it.
+        let cache = a_cache();
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+        let mut recorded = a_record("nb4", clone_dir(&cache.repos_dir, "owner", "repo", "nb4"));
+        recorded.repo = "../../elsewhere".to_owned();
+
+        assert_eq!(manager.resolve_bare_path(&recorded), None);
     }
 
     #[test]
