@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
   checks each one against the rule as Python stated it, so an ordering nobody
   thought of is covered by construction.
-
   **The slot is now counted over the words of the line rather than over its
   tokens**, which is the one behaviour change and closes the leading half of the
   same defect. A flag clap has consumed is gone from the words and still sitting in
@@ -29,12 +28,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every leading `-` word it is given without knowing what any of them mean. A slot
   is a place a word goes, so it is words that are counted. Every line anybody can
   type today reads exactly as it did.
-
   It turned up one thing that was believed and is not true: clap's two-word cap on
   the positionals holds only while the words are contiguous. `dl a b c` is refused,
   but `dl a b --force c` opens a second occurrence and hands the grammar three
   words. Nothing forced escapes through it, because the third word is refused
   first, but it is that refusal doing the work and not the cap.
+
+## [0.25.0] - 2026-08-28
+
+### Fixed
+
+- **A cache whose default branch was deleted upstream no longer records the dead
+  name.** A bare clone remembers the default branch it was cloned with, in its
+  `HEAD` symref, and nothing repoints it afterwards: `dl` has never written a
+  bare's `HEAD`. So a repository that renamed `master` to `main` leaves the cache
+  pointing at `refs/heads/master` long after the prune that deleted the ref, and
+  `git symbolic-ref HEAD` keeps answering `master`, exit 0, because a symbolic ref
+  is a name rather than a branch.
+
+  The reading now checks that the name is a ref the clone really has, and treats a
+  name that is not as it treats a refusal: ask the next probe. The cost is one
+  local `show-ref` per clone or adopt, and what it buys is that no default branch
+  `dl` records was read off a ref that is not there. It bit hardest on the adopt
+  path, which rebuilds a record by reading the clone: delete `metadata.json` and
+  the dead branch was written straight back, with every fallback that would have
+  answered correctly sitting unreachable behind it.
 
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for
