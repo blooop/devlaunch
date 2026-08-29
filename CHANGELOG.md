@@ -143,6 +143,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the only mention a stranded tree gets when no workspace opens it any
   more.
 
+- **A removal on the promised surface cannot skip the unsaved-work guard, because
+  there is nothing left to skip it with.** `devlaunch_core::api` promised
+  `workspace_delete`, which is the delete *without* the guard, and the probe and the
+  guard that make it safe were two further exported functions the caller had to run
+  first, in the right order, with the right arguments. The sequence lived in the `dl`
+  binary, so nothing outside `dl` could reuse it and nothing held `dl` to it: a second
+  consumer following the promise exactly would delete a clone holding the only copy of
+  somebody's afternoon.
+
+  The three are one `lifecycle::workspace_remove` now — probe, guard, name the
+  volumes, delete, remove the clone, in that order — and `guard_removal`,
+  `unsaved_work_in` and the raw delete are `pub(crate)`. `api::workspace_delete` is
+  gone rather than kept beside the new call, which is a breaking change to the frozen
+  surface (#251 §7) and the right weight: an unguarded delete is unrepresentable
+  instead of documented. `api` also gained what a caller needs to *call* the removal
+  and read its answer, and `DeleteOutcome` is `RemoveOutcome`, with a `Refused` arm
+  beside the two it had. Which of the three removals is being asked for — `rm`,
+  `rm --force`, `kill` — travels as one `Removal` value rather than four flags a
+  caller assembles; it lived in the binary before. No change to what `dl` prints or
+  when.
+
 - **`devlaunch_core::api` can now build a launcher, not just name one.** The two
   implementations that decide whether a launch can go cold at all lived in the `dl`
   binary: the one that opens devlaunch's records (config, `metadata.json`, the cache
@@ -172,13 +193,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names (#352).** `cargo public-api` renders inherent methods and trait impls at a
   type's canonical path only, never at the path it is re-exported under, so
   `api::Launch::run` was rendered `flows::launch::Launch::run` and a filter matching
-  the `api` path could not see it. `public-api.api.txt` held 126 rows and not one
+  the `api` path could not see it. `public-api.api.txt` held 182 rows and not one
   `::new(` or `::run(`, which means renaming `Launch::run` left the file that exists
   to catch exactly that byte-identical. Measured, not inferred: the rename was done
   and the file did not move.
 
   The classifier now reads the `api` module's own re-exports, resolves each back to
-  the path it names, and claims that item's rows too. 395 rows moved from
+  the path it names, and claims that item's rows too. 631 rows moved from
   `public-api.rest.txt` to `public-api.api.txt`, none appeared from nowhere, and the
   same rename now diffs the promise file. Two things follow for a reader of these
   files. Most of the promise file is written at `flows::` and `domain::` paths now,
@@ -188,15 +209,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   What the widened classifier still does not reach is written down as a number
   rather than as an example, because the example was doing the work of the number.
   Every place describing the promise file named `flows::launch::Launched` and
-  stopped, which reads as one type; the residual is 39 types owning 615 rows in
-  `public-api.rest.txt`, and one of them is `DevcontainerRefError`, the error type
-  of `api::resolve_devcontainer_ref`, whose own row is in the promise file at the
-  `api` path. Rename a variant of it and every consumer matching on it breaks
-  while the only diff is in the file the docs call freely regenerated.
-  `scripts/public-api-snapshots.sh --print-residual` lists them from the
-  checked-in snapshots with no toolchain, and `test/test_public_api_snapshots_doc.py`
-  holds the figures in all three descriptions to what it prints, so the sentence
-  goes red rather than stale.
+  stopped, which reads as one type; the residual is 39 types owning over six
+  hundred rows in `public-api.rest.txt`, and one of them is
+  `DevcontainerRefError`, the error type of `api::resolve_devcontainer_ref`,
+  whose own row is in the promise file at the `api` path. Rename a variant of it
+  and every consumer matching on it breaks while the only diff is in the file the
+  docs call freely regenerated. `scripts/public-api-snapshots.sh
+  --print-residual` lists them from the checked-in snapshots with no toolchain,
+  and `test/test_public_api_snapshots_doc.py` holds the count in all three
+  descriptions to what it prints, so the sentence goes red rather than stale.
 
 ### Fixed
 
@@ -315,6 +336,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and each driver checks the fake it drives against it. Seven of the eight rows
   that read `unverified` are measured, against a workspace provisioned to run
   them; the eighth says plainly which half of it was measured and which was not.
+
+- **Two branches that derive the same workspace id are no longer quietly given
+  the same workspace.** A workspace id is `<repo-slug>-<ref-slug>-<suffix>`, and
+  only the four-character suffix makes it unique: the owner is not in the readable
+  half at all, `feature/auth` and `feature-auth` slug to one string, and a long ref
+  loses its tail to the 47-character cap. Two branches whose ids do land on the
+  same string share one clone directory and one devpod workspace, because devpod
+  names workspaces globally rather than per repository.
+
+  What that looked like: the second one attached to the first one's container and
+  said nothing. You got somebody else's checkout, from a command that had no
+  reason to look wrong, and a later `dl <ws> rm` on either of them deleted a clone
+  the other still claimed. Rare, roughly one in thirty-seven thousand across ten
+  near-identical branches in one repository, and the kind of rare that costs a day
+  when it happens.
+
+  `dl` now checks before it asks devpod anything, and refuses:
+
+  ```
+  Workspace id 'devlaunch-release-999999999999999999999911-dq8q' is already held by
+  'blooop/devlaunch@release/999999999999999999999911630'. Launching
+  'blooop/devlaunch@release/999999999999999999999911783' under it would put both
+  in one clone directory and one container, so each would open the other's
+  checkout and 'dl <ws> rm' on either would delete work the other still owns.
+  Rename one of the two branches and launch it again.
+  ```
+
+  Two spellings of one repository are not a collision: `NVIDIA/cuda-samples` and
+  `nvidia/cuda-samples` derive one id on purpose, and the check compares triples by
+  the same rule the id is derived under, so the second spelling still opens the
+  workspace you already have. Refs stay case-sensitive, because `Main` and `main`
+  really are two branches.
+
+  The check reads the records `dl` already keeps, so it needs no round trip and
+  nothing new on disk, and it fails open in every direction: a record whose branch
+  is not a legal ref is skipped, a `metadata.json` that cannot be read means "no
+  collision" rather than an error, and a launch that matches its own record
+  attaches exactly as it did before. Reading the records on the warm attach path
+  takes no lock, runs no migration and writes nothing, so the attach costs what it
+  cost before.
+
+  The same hole in the schema 2 to 3 migration is closed with it: two records that
+  derived one destination both ended up owning it, because the guard against
+  adopting another record's clone only knew the paths records pointed at before
+  the run started.
 
 ## [0.25.0] - 2026-08-28
 

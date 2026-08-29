@@ -44,7 +44,7 @@
 //! request: any change to the crate's public surface is a committed, reviewed
 //! diff or a red tick. The two tiers get a file each — `public-api.api.txt`
 //! for the promised tier, `public-api.rest.txt` for the rest — so that a change
-//! to what [`api`] promises is a diff in a 521-row file rather than one row
+//! to what [`api`] promises is a diff in an 813-row file rather than one row
 //! inside two thousand.
 //!
 //! **How the promise file is filled, because the `api` path is not the whole
@@ -56,7 +56,7 @@
 //! the promised types' names and dropped all of their behaviour, and renaming
 //! `api::Launch::run` — an unambiguous break — left the file byte-identical.
 //! So the classifier resolves each of [`api`]'s re-exports back to the path it
-//! names and claims that item's rows too (#352), which moved 395 rows out of
+//! names and claims that item's rows too (#352), which moved 631 rows out of
 //! the rest file: `Launch::{new, run}`, `CommandContext::new`,
 //! `DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on
 //! a promised type. A `flows::` or `domain::` path inside `public-api.api.txt`
@@ -67,7 +67,7 @@
 //! never re-exports but a promised signature names is reachable from outside
 //! and classified as binary surface, so a break in it diffs
 //! `public-api.rest.txt` alone. Counted rather than guessed at: **39 such types
-//! own 615 rows over there**, and `scripts/public-api-snapshots.sh
+//! own over six hundred rows over there**, and `scripts/public-api-snapshots.sh
 //! --print-residual` lists them.
 //!
 //! The pointed one is `domain::spec::DevcontainerRefError`. [`api`] promises
@@ -78,7 +78,7 @@
 //! `domain::metadata::MetadataError` is the same shape, carried by the promised
 //! `StartupError::Metadata`. `flows::launch::Launched`, returned by
 //! `Launch::run`, is the example this paragraph used to give as though it were
-//! the whole of the residual, which is what made 615 rows read as one.
+//! the whole of the residual, which is what made six hundred rows read as one.
 //!
 //! So a `public-api.rest.txt` diff is routine for a row whose subject nothing
 //! promised names, and a contract change for a row whose subject is one of the
@@ -185,7 +185,33 @@ pub mod api {
     pub use crate::flows::listing::{CommandContext, enriched_listing, json_document};
 
     // remove / stop: the two lifecycle verbs that take a workspace away.
-    pub use crate::flows::lifecycle::{workspace_delete, workspace_stop};
+    //
+    // `workspace_remove` and not `workspace_delete`: the delete without the
+    // unsaved-work guard is gone from the promise rather than documented beside the
+    // guarded one (#410). It was a removal of three exported calls a caller had to
+    // sequence — probe, guard, delete — of which only the last was promised, so the
+    // promised surface was the unguarded one. #251 §7 calls dropping a promised
+    // function a breaking change, and it is the right weight: an unguarded delete
+    // is now unrepresentable rather than merely discouraged.
+    pub use crate::flows::lifecycle::{workspace_remove, workspace_stop};
+
+    // …and everything `workspace_remove` asks for and answers with, for the reason
+    // `Launch::new`'s parameters are here: a promised function whose parameter types
+    // live outside the promise is not callable from the promise. `Refresh` and
+    // `Notices` are already above.
+    pub use crate::clients::devpod_home::DevpodHome;
+    pub use crate::domain::metadata::MetadataStorage;
+    // `KeptCopies` arrives the same way `DevpodHome` did, and for the same reason:
+    // #516 widened the delete with the volume-copy store so a removal reclaims the
+    // volumes devpod substituted, and re-exported nothing, which left the row on
+    // the promised tier naming a type no caller of the promise could name. The
+    // store is a parameter of the removal, so it is promised with it.
+    pub use crate::flows::kept_copies::KeptCopies;
+    pub use crate::flows::lifecycle::{
+        DeleteStalled, Insistence, LifecycleNotice, Removal, RemovalRefused, RemoveOutcome,
+    };
+    pub use crate::flows::records::Records;
+    pub use crate::flows::workspace_clone::WorkspaceCloneManager;
 
     // spec and branch helpers: parsing `owner/repo@branch` and friends, the
     // identity a safe name derives, and the `--devcontainer` reference.

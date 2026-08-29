@@ -191,14 +191,21 @@ pub fn migrate_cache(
     // filesystem has done. `commit_migration` reloads under the lock and re-checks
     // the version, so a concurrent process that already migrated is seen here.
     let committed = storage.commit_migration(|worktrees| {
-        // Snapshotted before any record is touched: it has to describe the layout
-        // the run started from, not one the run is halfway through rewriting.
-        let claimed: HashSet<PathBuf> = worktrees
+        // Seeded with the layout the run started from, and *grown as destinations
+        // are taken*. Both halves matter. A pre-run snapshot alone answers "does
+        // another record own this directory today", which misses the case where two
+        // schema-2 records of one repository derive the same schema-3 id: their
+        // shared destination is a new path no record pointed at before the run, so
+        // the guard below never fired, the first record renamed onto it and the
+        // second silently repointed itself at the same directory. That is exactly
+        // the outcome `blocked` exists to prevent, reached by a route the snapshot
+        // could not see (blooop/devlaunch#438).
+        let mut claimed: HashSet<PathBuf> = worktrees
             .values()
             .map(|record| record.local_path.clone())
             .collect();
         for record in worktrees.values_mut() {
-            migrate_record(record, repos_dir, &claimed, &mut report);
+            migrate_record(record, repos_dir, &mut claimed, &mut report);
         }
 
         // Anything still under an old-scheme name that no record claims. Computed
@@ -253,11 +260,14 @@ pub fn migrate_cache(
 /// the truth about where the clone is now, which is the same principle that made
 /// removal work for old-scheme workspaces (#64).
 ///
-/// `claimed` is every path some record pointed at before this run started.
+/// `claimed` is every path a record points at: the ones they pointed at before the
+/// run, plus every destination taken since. It grows as this runs, which is what
+/// makes the second record to derive a given destination `blocked` rather than a
+/// second owner of one directory.
 fn migrate_record(
     record: &mut WorktreeInfo,
     repos_dir: &Path,
-    claimed: &HashSet<PathBuf>,
+    claimed: &mut HashSet<PathBuf>,
     report: &mut MigrationReport,
 ) {
     let Ok(workspace) = WorkspaceId::new(&record.owner, &record.repo, &record.branch) else {
@@ -276,9 +286,11 @@ fn migrate_record(
     let dest = clone_dir(repos_dir, &record.owner, &record.repo, &workspace.value());
 
     if dest != src && claimed.contains(&dest) {
-        // The derived name is a directory some *other* record owns. Only possible
-        // when a branch was literally named after another branch's derived id —
-        // #55's `foo-bexoza` case, now needing an exact hash match. Rename nothing
+        // The derived name is a directory some *other* record owns, either since
+        // before this run (a branch literally named after another branch's derived
+        // id, #55's `foo-bexoza` case, now needing an exact hash match) or since a
+        // moment ago, because an earlier record in this same pass derived the same
+        // id and took it. Rename nothing
         // and, unlike every other outcome, do not repoint the record either:
         // adopting a clone another record owns is how one workspace's `rm` deletes
         // another's work, which is the class of bug #9766 was.
@@ -311,6 +323,8 @@ fn migrate_record(
     if record.workspace_id != derived {
         report.orphaned_ids.push(record.workspace_id.clone());
     }
+    // Taken, so no later record in this pass can land on it too.
+    claimed.insert(dest.clone());
     record.local_path = dest;
     // The record carries the derived id, because removal by id looks records up by
     // exactly the id dl derives from the spec. `devpod_workspace_id` is left alone:
@@ -978,6 +992,58 @@ mod tests {
             Some(old_workspace_id("devlaunch", "feature auth").as_str()),
             "the record keeps its old id: there is no derived one to give it"
         );
+    }
+
+    #[test]
+    fn two_records_that_derive_one_destination_do_not_both_end_up_owning_it() {
+        // The hole the pre-run snapshot left (blooop/devlaunch#438). These two
+        // branches are a real collision: different refs of one repository whose
+        // triples derive one id, so they derive one destination. That destination is
+        // a *new* path, which no record pointed at before the run, so a `claimed`
+        // built only from the old layout does not contain it: the first record
+        // renames onto it and the second finds `dest.exists()`, renames nothing and
+        // repoints itself at the same directory. Two records, one clone, and a later
+        // `dl <ws> rm` on either deletes work the other still claims -- which is the
+        // outcome the `blocked` arm exists to prevent, reached by a route its guard
+        // could not see.
+        let first = "release/999999999999999999999911630";
+        let second = "release/999999999999999999999911783";
+        let shared = new_leaf("blooop", "devlaunch", first);
+        assert_eq!(
+            shared,
+            new_leaf("blooop", "devlaunch", second),
+            "the pair this test is written against no longer collides"
+        );
+        let cache = build_legacy_cache(&[("blooop", "devlaunch", &[first, second])]);
+        let repo_root = cache.repo_root("blooop", "devlaunch");
+
+        let report = cache.migrate().expect("a migration ran");
+
+        assert_eq!(
+            report.blocked,
+            [Blocked {
+                from: repo_root.join(old_leaf(second)),
+                to: repo_root.join(&shared),
+            }],
+            "the second record to derive the shared destination is refused"
+        );
+        assert_eq!(
+            cache.worktree(&format!("blooop/devlaunch/{first}"))["local_path"].as_str(),
+            Some(repo_root.join(&shared).display().to_string().as_str()),
+            "the first record took the destination"
+        );
+        assert_eq!(
+            cache.worktree(&format!("blooop/devlaunch/{second}"))["local_path"].as_str(),
+            Some(
+                repo_root
+                    .join(old_leaf(second))
+                    .display()
+                    .to_string()
+                    .as_str()
+            ),
+            "the second record kept its own clone rather than adopting the first's"
+        );
+        assert!(repo_root.join(old_leaf(second)).is_dir());
     }
 
     #[test]

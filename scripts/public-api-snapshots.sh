@@ -27,7 +27,7 @@
 # impls at the type's *canonical* path only, never at the path it is re-exported
 # under, so `api::Launch::run` is rendered
 # `devlaunch_core::flows::launch::Launch::run`. Matching the `api` path alone
-# kept 126 rows and left 395 in the rest file, `Launch::new` and `Launch::run`
+# kept 182 rows and left 631 in the rest file, `Launch::new` and `Launch::run`
 # among them, so renaming `Launch::run` left the promise file byte-identical
 # (#352). So the classifier resolves each `api` re-export back to the path it
 # names and claims that item's rows too, which is what `promised_row_pattern`
@@ -37,9 +37,12 @@
 # The limit that is left, and it is not one type. A type `api` never re-exports
 # but a promised signature names is reachable from outside and is classified as
 # binary surface, so a break in it diffs public-api.rest.txt alone. Measured on
-# the checked-in files rather than guessed at: 39 such types own 615 rows over
-# there. `--print-residual` lists them, needs no toolchain, and is what the
-# number above is checked against (`test/test_public_api_snapshots_doc.py`).
+# the checked-in files rather than guessed at: 39 such types own over six
+# hundred rows over there. `--print-residual` lists them, needs no toolchain,
+# and prints the exact row count; the type count above is the figure
+# `test/test_public_api_snapshots_doc.py` diffs against it, because that is the
+# one a reader calibrates on and the one that moves only when the residual
+# really grows.
 #
 # The pointed one is `domain::spec::DevcontainerRefError`, because
 # `pub fn devlaunch_core::api::resolve_devcontainer_ref(&str) -> Result<...,

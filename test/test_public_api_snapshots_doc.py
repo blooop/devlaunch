@@ -262,28 +262,34 @@ def test_the_docs_say_how_the_promise_file_is_filled_and_what_it_still_misses():
 
 @pytest.mark.unit
 def test_the_documented_scale_of_the_limit_is_the_measured_one():
-    """The number, because naming one type made 615 rows read as one.
+    """The number, because naming one type made six hundred rows read as one.
 
     Every site above described the residual as `flows::launch::Launched` and
-    nothing else. It is 39 types today, and a reviewer who has been told the
-    limit is one type reads 38 others' diffs as routine churn. So the figure is
+    nothing else. It is 39 types, and a reviewer who has been told the limit is
+    one type reads the other 38's diffs as routine churn. So the figure is
     written down, and written down means diffed: this recomputes it from the
     checked-in snapshots and holds the prose to it. A surface change that moves
     the count turns this red in the same run that regenerates the snapshots,
     which is when the sentence is cheapest to fix.
+
+    The count of *types* and not of rows, deliberately. The row total moves
+    whenever anything is added to any one of the 39, which is often and says
+    nothing about the scale of the limit; the type count is what a reader is
+    calibrating on and it moves only when the residual genuinely grows. The
+    prose gives rows as a round number for that reason, and
+    ``--print-residual`` is where an exact one lives.
     """
-    types, rows = residual()
+    types, _rows = residual()
     for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
         text = path.read_text(encoding="utf-8")
-        for figure, what in ((types, "types"), (rows, "rows")):
-            # Bounded, or `39` is satisfied by the unrelated "395 rows moved"
-            # that all three of these files also carry.
-            assert re.search(rf"\b{figure}\b", text), (
-                f"{path.name} does not carry the current count of {what} in the "
-                f"residual ({figure}). Regenerating the snapshots moved it; update "
-                f"the sentence there, or run {SCRIPT.name} {RESIDUAL_COMMAND} to see "
-                "what changed"
-            )
+        # Bounded, or `39` is satisfied by the unrelated row counts these files
+        # also carry (`395`, `39x` of anything).
+        assert re.search(rf"\b{types}\b", text), (
+            f"{path.name} does not carry the current number of types in the "
+            f"residual ({types}). Regenerating the snapshots moved it; update the "
+            f"sentence there, or run {SCRIPT.name} {RESIDUAL_COMMAND} to see what "
+            "changed"
+        )
 
 
 def classify(kind: str, rows: list[str]) -> list[str]:

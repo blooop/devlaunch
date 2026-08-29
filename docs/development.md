@@ -49,7 +49,7 @@ because they are not one promise:
 
 | File | What a diff means |
 | --- | --- |
-| `devlaunch-core/public-api.api.txt` | **A change to the promised contract.** A removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 521 rows that declare what `devlaunch_core::api` re-exports, wherever `cargo public-api` chose to render them. |
+| `devlaunch-core/public-api.api.txt` | **A change to the promised contract.** A removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 813 rows that declare what `devlaunch_core::api` re-exports, wherever `cargo public-api` chose to render them. |
 | `devlaunch-core/public-api.rest.txt` | Mostly routine. The binary API (`flows::`, `domain::`, `clients::`) is reachable but never promised, so read it for the accidental `pub`. **But** see the limit below before reading a diff as routine. |
 | `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementer writes against. |
 
@@ -60,7 +60,7 @@ is re-exported under, so `api::Launch::run` is rendered `flows::launch::Launch::
 that matched the `api` path alone therefore kept the promised types' names and dropped all of their
 behaviour, and renaming `api::Launch::run` left the file byte-identical. So the classifier resolves
 each `api` re-export back to the path it names and claims that item's rows too
-([#352](https://github.com/blooop/devlaunch/issues/352)), which moved 395 rows across: `Launch::new`
+([#352](https://github.com/blooop/devlaunch/issues/352)), which moved 631 rows across: `Launch::new`
 and `Launch::run`, `CommandContext::new`, `DevcontainerPath::as_str`, and every derived
 `Clone`/`Debug`/`PartialEq` on a promised type. Those paths are the promise and not strays. The
 cost is real and worth knowing before you see it: moving a promised type between modules now churns
@@ -69,7 +69,7 @@ once under the `api` section and once under the module that owns them.
 
 **What it still does not reach, and it is not one type.** A type `api` never re-exports but a
 promised signature hands back is reachable from outside and classified as binary surface. Counted
-on the checked-in files rather than guessed at, that is **39 types owning 615 rows** in
+on the checked-in files rather than guessed at, that is **39 types owning over six hundred rows** in
 `public-api.rest.txt`, and the command that lists them needs no toolchain:
 
 ```bash
@@ -82,12 +82,14 @@ returns that error: rename a variant of it and every consumer matching on it bre
 file that moves is the one this page calls freely regenerated.
 `domain::metadata::MetadataError` is the same shape, carried by the promised
 `StartupError::Metadata`. `flows::launch::Launched`, returned by `Launch::run`, is the example this
-section used to give on its own, which made 615 rows read as one.
+section used to give on its own, which made six hundred rows read as one.
 
 So a diff in `public-api.rest.txt` is routine for a row whose subject nothing promised names, and a
 contract change for a row whose subject is one of the 39. `--print-residual` is how you tell the two
-apart, and `test/test_public_api_snapshots_doc.py` diffs the figures in this paragraph against it,
-so they go red rather than stale.
+apart, and `test/test_public_api_snapshots_doc.py` diffs the count of types in this paragraph
+against it, so the sentence goes red rather than stale. The row total is left round on purpose: it
+moves whenever anything is added to any one of the 39 and says nothing about the scale of the
+limit, where the count of types moves only when the residual really grows.
 
 The `-ss` flag also omits blanket and auto-trait impls from both files,
 deliberately: those rows move when rustdoc moves, and a tripwire that fires on toolchain drift

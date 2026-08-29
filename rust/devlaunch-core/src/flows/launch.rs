@@ -69,8 +69,11 @@ use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
+use crate::domain::model::WorktreeInfo;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
-use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
+use crate::domain::workspace_id::{
+    NamePart, UnsafeName, WorkspaceId, identity_of, validate_ref_name,
+};
 use crate::flows::kept_copies::KeptCopies;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
@@ -2538,13 +2541,36 @@ pub enum ColdRefused {
 /// path, which is the path a user waits on. A launcher holding a
 /// `&mut MetadataStorage` would have paid for all three before it could ask
 /// devpod anything, so it holds a *way to get one* instead, and "a warm launch
-/// does no metadata I/O" is a fact about which calls happen rather than a
+/// brings none of that up" is a fact about which calls happen rather than a
 /// property to be re-tested.
+///
+/// [`recorded`](Self::recorded) is the one thing a warm launch may ask for, and
+/// its docs say what makes it different in kind: it reads the file and takes none
+/// of the three.
 ///
 /// It is the same move [`lifecycle::resolve_known_workspace`] makes with its
 /// `recorded_id` closure, one level up.
 pub trait ColdMachinery<'r> {
     fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused>;
+
+    /// What `metadata.json` already records, for a reader that only wants to look.
+    ///
+    /// Separate from [`open`](Self::open) because the two cost different things,
+    /// and the difference is the whole reason the collision guard
+    /// (blooop/devlaunch#438) can run in front of a warm attach at all. `open`
+    /// brings the *machinery* up: `config.toml`, the clone manager, and the cache
+    /// migration under the metadata lock, which is a subprocess every sibling
+    /// launch of the repository would queue behind. This reads the file and stops.
+    /// A launch that only has to answer "does some other triple already hold this
+    /// id" needs the records and none of the rest.
+    ///
+    /// **`None` means "nothing recorded", never "something went wrong".** A store
+    /// that cannot be found, opened or parsed answers `None` and the launch
+    /// proceeds, on [`recorded_id`]'s reading: a lookup that failed must not be
+    /// able to stop a command that would otherwise have worked. The guard above it
+    /// is a check on a rare accident, and a check that can fail closed turns a rare
+    /// accident into a common one.
+    fn recorded(&mut self) -> Option<&MetadataStorage>;
 }
 
 /// A launcher that must never reach the cold path, for callers that have already
@@ -2558,6 +2584,12 @@ pub(crate) struct NoColdPath;
 impl<'r> ColdMachinery<'r> for NoColdPath {
     fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
         Err(ColdRefused::NoColdPath)
+    }
+
+    /// Nothing recorded, which is the truth about a caller that has no records at
+    /// all -- and the fail-open answer the collision guard is built to accept.
+    fn recorded(&mut self) -> Option<&MetadataStorage> {
+        None
     }
 }
 
@@ -2580,6 +2612,15 @@ pub struct ColdPath<'r, 'e> {
     runner: &'r dyn Runner,
     said: &'e mut dyn Notices<RecordsNotice>,
     records: Option<Records<'r>>,
+    /// `metadata.json` as read by a caller that only wants to look at it.
+    ///
+    /// A second copy of the store, and deliberately so: loaded without the
+    /// migration, without `config.toml` and without the clone manager, which is the
+    /// whole point of [`ColdMachinery::recorded`]. Nothing ever writes through it,
+    /// and once the real records are open they answer instead, so it can become
+    /// neither a second writer nor a stale copy anybody acts on. A few kilobytes,
+    /// held for the length of one command.
+    looked_at: Option<MetadataStorage>,
 }
 
 impl<'r, 'e> ColdPath<'r, 'e> {
@@ -2593,6 +2634,7 @@ impl<'r, 'e> ColdPath<'r, 'e> {
             runner,
             said,
             records: None,
+            looked_at: None,
         }
     }
 
@@ -2616,6 +2658,29 @@ impl<'r> ColdMachinery<'r> for ColdPath<'r, '_> {
             }),
             Err(refused) => Err(ColdRefused::Startup(refused)),
         }
+    }
+
+    /// The records as something to read, without bringing the machinery up.
+    ///
+    /// The real records answer if this command has already opened them, so a cold
+    /// launch reads the file once rather than twice and the guard sees exactly what
+    /// the rest of the command will write through. Otherwise it is
+    /// [`MetadataStorage::look`]: the file, and none of `open_records`'s config,
+    /// clone manager, migration or lock.
+    ///
+    /// Every failure on the way is `None`, silently. There is no sentence to say
+    /// here: a store dl cannot read is reported the moment the command actually
+    /// needs it, through the notices [`Self::records`] says, and a *look* that came
+    /// up empty is not news -- it is the answer "nothing is recorded against that
+    /// id", which is also what a machine with no records at all says.
+    fn recorded(&mut self) -> Option<&MetadataStorage> {
+        if self.records.is_some() {
+            return self.records.as_ref().map(|records| &records.storage);
+        }
+        if self.looked_at.is_none() {
+            self.looked_at = Some(MetadataStorage::look(MetadataStorage::default_path().ok()?));
+        }
+        self.looked_at.as_ref()
     }
 }
 
@@ -2802,6 +2867,79 @@ fn recorded_id(cold: &mut dyn ColdMachinery<'_>, triple: (&str, &str, &str)) -> 
     let (owner, repo, branch) = triple;
     let opened = cold.open().ok()?;
     lifecycle::recorded_devpod_workspace_id(opened.storage, owner, repo, branch)
+}
+
+/// The triple that already holds this launch's derived id, if a different one does.
+///
+/// **The failure this closes is silence.** A workspace id is one hashed suffix
+/// away from being injective ([`SUFFIX_LENGTH`](crate::domain::workspace_id)), and
+/// two triples that do collide share both of the things the id names: the clone
+/// directory `<repos_dir>/<owner>/<repo>/<id>` and the devpod workspace, whose
+/// names are global rather than scoped by repository. So the second launch opens
+/// the first one's checkout, having said nothing, and a later `dl <ws> rm` on
+/// either deletes a clone the other still claims. That is the hazard
+/// [`migration::migrate_record`](crate::flows::migration) already refuses to walk
+/// into at migration time; this is the same refusal at launch time.
+///
+/// **The scan is local.** [`WorktreeInfo`] stores the triple beside the id derived
+/// from it, so the answer is in the records dl already keeps and costs no round
+/// trip, no devpod call and no new stored state.
+///
+/// Three ways a record can hold the id, and each names a resource that would
+/// actually be shared:
+///
+/// - its `workspace_id` is the id, so the clone directory is one directory;
+/// - its `devpod_workspace_id` is the id, so the container is one container;
+/// - its triple *derives* the id, which is the collision itself. This is the arm
+///   that catches a record whose clone has not been migrated onto its derived name
+///   yet, and the arm that gives the fail-open rule below something to protect.
+///
+/// **A record that cannot be parsed back into a [`WorkspaceId`] is skipped, not
+/// failed on.** The old derivation coerced unsafe refs instead of rejecting them,
+/// so a stored branch is not necessarily a legal ref, and the migration reports
+/// such records as `unusable` rather than stopping. A guard that refused every
+/// launch on the machine because one old record will not parse would be worse than
+/// the collision it is looking for.
+///
+/// **"A different triple" means [`Identity`](crate::domain::workspace_id::Identity),
+/// not a different pair of strings.**
+/// `NVIDIA/cuda-samples@main` and `nvidia/cuda-samples@main` derive one id
+/// deliberately -- GitHub's owners and repos are case-insensitive, and
+/// [`identity_of`] is the rule that makes both spellings one workspace instead of
+/// one repository cloned twice. Comparing the raw strings here would read the
+/// second spelling as an intruder holding the first one's id and refuse it, with a
+/// message telling the reader to rename a branch when both branches are `main`.
+/// Since the comparison and the derivation have to agree, they read the same rule.
+fn colliding_record(
+    cold: &mut dyn ColdMachinery<'_>,
+    workspace: &WorkspaceId,
+) -> Option<(String, String, String)> {
+    let derived = workspace.value();
+    let mine = workspace.identity();
+    let storage = cold.recorded()?;
+    storage
+        .worktrees()
+        .values()
+        .find(|record| {
+            identity_of(&record.owner, &record.repo, &record.branch) != mine
+                && holds_id(record, &derived)
+        })
+        .map(|record| {
+            (
+                record.owner.clone(),
+                record.repo.clone(),
+                record.branch.clone(),
+            )
+        })
+}
+
+/// Whether *record* occupies *derived* -- see [`colliding_record`] for the three
+/// arms and why each of them is a resource and not a coincidence.
+fn holds_id(record: &WorktreeInfo, derived: &str) -> bool {
+    record.workspace_id == derived
+        || record.devpod_workspace_id.as_deref() == Some(derived)
+        || WorkspaceId::new(&record.owner, &record.repo, &record.branch)
+            .is_ok_and(|derivable| derivable.value() == derived)
 }
 
 /// The default branch a bare `owner/repo` means.
@@ -2997,6 +3135,25 @@ pub enum LaunchRefusal {
     /// still lists and cannot be described — and that is precisely the workspace
     /// somebody is about to run `dl <ws> rm` on.
     UnknownWorkspace { name: String },
+    /// Two triples derive one workspace id, and the other one got here first.
+    ///
+    /// Refused rather than attached to, for [`colliding_record`]'s reason: the id
+    /// names both the clone directory and the devpod workspace, so going ahead
+    /// hands this launch the *other* triple's checkout without saying so, and
+    /// leaves a later `dl <ws> rm` able to delete work neither user knows is
+    /// shared. Both triples and the id they share are carried, because the only
+    /// way past it is to rename one of the two branches.
+    IdCollision {
+        /// The id both triples derive.
+        workspace_id: String,
+        owner: String,
+        repo: String,
+        branch: String,
+        /// The triple `metadata.json` already records against `workspace_id`.
+        recorded_owner: String,
+        recorded_repo: String,
+        recorded_branch: String,
+    },
     /// A bare `owner/repo` whose default branch could not be named.
     BranchNotNamed {
         owner: String,
@@ -3211,6 +3368,25 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             Ok(workspace) => workspace,
             Err(unsafe_name) => return Ok(Err(LaunchRefusal::UnsafeSpec(unsafe_name))),
         };
+        // Before devpod is asked anything and before the cold path can build a
+        // directory: an id two triples derive is not an id either of them may be
+        // launched under, and the damage is done by the *attach*, so a guard behind
+        // the status call would fire after the wrong container was already picked.
+        // Reads the records and not the machinery, which is what keeps this off
+        // devlaunch#145's bill -- see `ColdMachinery::recorded`.
+        if let Some((recorded_owner, recorded_repo, recorded_branch)) =
+            colliding_record(self.cold, &workspace)
+        {
+            return Ok(Err(LaunchRefusal::IdCollision {
+                workspace_id: workspace.value(),
+                owner,
+                repo,
+                branch,
+                recorded_owner,
+                recorded_repo,
+                recorded_branch,
+            }));
+        }
         // A devpod that could not be run ends the launch here, before the clone:
         // it is the probe Python raises `DevpodNotInstalled` out of.
         let resolved = resolve_triple(
@@ -3865,6 +4041,14 @@ mod tests {
                 storage: &mut self.storage,
             })
         }
+
+        /// The same store, read rather than opened -- and not counted as an open,
+        /// because it is not one: the collision guard reads the file and the
+        /// machinery stays down. `opens` is what the #145 assertions are written
+        /// against, so counting a look would make them assert something else.
+        fn recorded(&mut self) -> Option<&MetadataStorage> {
+            Some(&self.storage)
+        }
     }
 
     /// A cold path that fails the test if anything opens it.
@@ -3877,6 +4061,34 @@ mod tests {
     impl<'r> ColdMachinery<'r> for NeverCold {
         fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
             panic!("a warm launch opened the cold path");
+        }
+
+        /// Nothing recorded, which is the truth about a scene with no store behind
+        /// it -- and not a panic, because looking is exactly what a warm launch is
+        /// now allowed to do. The panic above still says what it said: the clone
+        /// manager, `config.toml` and the migration stay off this path.
+        fn recorded(&mut self) -> Option<&MetadataStorage> {
+            None
+        }
+    }
+
+    /// A cold path with real records that cannot be *read*.
+    ///
+    /// The fail-open case, and the reason it needs a stub of its own: a store dl
+    /// cannot open, parse or find is common enough (a fresh machine, a half-written
+    /// file, a cache on a filesystem that went away) that a guard which stopped the
+    /// launch over it would break far more launches than the collision it is
+    /// watching for ever will. So the records here hold a collision and the look
+    /// answers `None` anyway.
+    struct UnreadableRecords<'r>(RealCold<'r>);
+
+    impl<'r> ColdMachinery<'r> for UnreadableRecords<'r> {
+        fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
+            self.0.open()
+        }
+
+        fn recorded(&mut self) -> Option<&MetadataStorage> {
+            None
         }
     }
 
@@ -3903,6 +4115,14 @@ mod tests {
             Err(ColdRefused::Startup(StartupError::Metadata(
                 metadata_refusal(),
             )))
+        }
+
+        /// A store that will not open has nothing to show a reader either, and
+        /// answers so rather than refusing: the collision guard treats "could not
+        /// read" as "no collision", which is what keeps a broken cache from
+        /// stopping every launch on the machine.
+        fn recorded(&mut self) -> Option<&MetadataStorage> {
+            None
         }
     }
 
@@ -6891,6 +7111,384 @@ mod tests {
             })
         );
         assert_eq!(cold.opens.get(), 1, "the record was consulted exactly once");
+    }
+
+    // ------------------------------------- stage two: the derived-id collision
+    //
+    // blooop/devlaunch#438. `COLLIDING_A` and `COLLIDING_B` are a real pair: two
+    // branches of one repository whose triples derive one id, found by searching
+    // the shape the module doc records having seen in the wild -- long release
+    // refs differing only past the truncation point, so the readable halves are
+    // identical and only the four-character suffix separates them. They are
+    // written down rather than searched for at test time because a fixed pair is
+    // the same test every run, and because finding one is a birthday search over
+    // 36^4 that has no business running in a unit test.
+    //
+    // If a change to the derivation moves them apart, the first test below fails
+    // and says so, rather than the guard's tests quietly passing against two ids
+    // that no longer collide.
+
+    const COLLIDING_A: &str = "release/999999999999999999999911630";
+    const COLLIDING_B: &str = "release/999999999999999999999911783";
+
+    /// Add one worktree record to the store at *cache_dir*, and save it.
+    fn record_worktree(
+        cache_dir: &Path,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        workspace_id: &str,
+    ) {
+        let (mut storage, _) =
+            MetadataStorage::open(cache_dir.join("metadata.json")).expect("a fresh store opens");
+        storage
+            .add_worktree(WorktreeInfo::new(
+                owner,
+                repo,
+                branch,
+                cache_dir.join(format!("repos/{owner}/{repo}/{workspace_id}")),
+                workspace_id,
+            ))
+            .expect("the record is saved");
+    }
+
+    #[test]
+    fn both_of_the_colliding_refs_really_do_derive_one_id() {
+        let a = WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
+        let b = WorkspaceId::new("blooop", "devlaunch", COLLIDING_B).expect("a safe triple");
+
+        assert_ne!(COLLIDING_A, COLLIDING_B, "two different branches");
+        assert_eq!(
+            a.value(),
+            b.value(),
+            "the pair the collision tests are written against no longer collides"
+        );
+    }
+
+    #[test]
+    fn a_launch_whose_derived_id_another_triple_already_holds_is_refused() {
+        // The failure being closed: devpod workspace names are global rather than
+        // scoped by repository, so the second of two colliding triples finds the
+        // first one's container under its own derived id, attaches, and says
+        // nothing. The user gets somebody else's checkout, and a later `rm` on
+        // either one deletes a clone the other still claims.
+        let held = WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
+        let scene = Scene::new().with_running(&held.value());
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            COLLIDING_A,
+            &held.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            &format!("blooop/devlaunch@{COLLIDING_B}"),
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Refused(LaunchRefusal::IdCollision {
+                workspace_id: held.value(),
+                owner: "blooop".to_owned(),
+                repo: "devlaunch".to_owned(),
+                branch: COLLIDING_B.to_owned(),
+                recorded_owner: "blooop".to_owned(),
+                recorded_repo: "devlaunch".to_owned(),
+                recorded_branch: COLLIDING_A.to_owned(),
+            }))
+        );
+        assert_eq!(
+            scene.devpod_heads(),
+            Vec::<Vec<String>>::new(),
+            "refused before devpod was asked anything, so nothing attached"
+        );
+    }
+
+    #[test]
+    fn a_launch_that_matches_its_own_record_attaches_and_reads_no_machinery() {
+        // The warm path, unchanged and unslowed. A record holding this triple's own
+        // derived id is not a collision -- it is the ordinary case, every workspace
+        // dl has ever made -- and the guard looking at the records must not turn
+        // devlaunch#145's warm attach into a cache migration under the metadata
+        // lock. `opens` is the assertion: the guard read the file, the machinery
+        // stayed down.
+        let workspace =
+            WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            COLLIDING_A,
+            &workspace.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+
+            let launched = launch.run(
+                &format!("blooop/devlaunch@{COLLIDING_A}"),
+                &LaunchVerb::Attach {
+                    command: Some("true".to_owned()),
+                },
+                None,
+            );
+
+            assert_eq!(
+                launched,
+                Ok(Launched::Session(Session::RemoteExit { status: 0 })),
+                "the triple's own record is not a collision"
+            );
+        }
+        assert_eq!(
+            cold.opens.get(),
+            0,
+            "a warm launch still brings no clone manager, config or migration up"
+        );
+    }
+
+    #[test]
+    fn a_repository_spelled_in_another_case_is_the_same_workspace_and_is_not_refused() {
+        // The convergence `suffix` exists to guarantee, seen from the guard's side.
+        // GitHub's owners are case-insensitive, so `NVIDIA/cuda-samples` and
+        // `nvidia/cuda-samples` are one repository and derive one id on purpose --
+        // the alternative is one repo cloned twice into two containers. A guard that
+        // compared the triples as raw strings read the second spelling as a
+        // *different* triple holding the first one's id and refused it, and the
+        // refusal it printed told the reader to rename one of the two branches when
+        // both branches are `main`: a message naming no way out that exists, in
+        // front of a workspace the reader already has running.
+        let recorded = WorkspaceId::new("nvidia", "cuda-samples", "main").expect("a safe triple");
+        let typed = WorkspaceId::new("NVIDIA", "cuda-samples", "main").expect("a safe triple");
+        assert_eq!(
+            typed.value(),
+            recorded.value(),
+            "the two spellings are one workspace, which is what makes this a trap"
+        );
+        let scene = Scene::new().with_running(&recorded.value());
+        record_worktree(
+            scene.cache_dir(),
+            "nvidia",
+            "cuda-samples",
+            "main",
+            &recorded.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "NVIDIA/cuda-samples@main",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 })),
+            "the other spelling of a repository is not an intruder holding its id"
+        );
+    }
+
+    #[test]
+    fn a_ref_that_differs_only_in_case_is_a_different_workspace_and_does_collide() {
+        // The other half of the rule, and the reason the fix folds two of the three
+        // parts rather than all of them. Git refs are case-sensitive: `Main` and
+        // `main` can both exist in one repository, so they are two workspaces. Were
+        // the ref folded along with the owner, this launch would be waved through to
+        // attach to the other branch's container -- the exact silent wrong-checkout
+        // this guard exists to stop.
+        let typed = WorkspaceId::new("owner", "repo", "Main").expect("a safe triple");
+        let other = WorkspaceId::new("owner", "repo", "main").expect("a safe triple");
+        assert_ne!(
+            typed.value(),
+            other.value(),
+            "the two refs hash apart, which is why the collision below has to be staged"
+        );
+        let scene = Scene::new().with_running(&typed.value());
+        record_worktree(
+            scene.cache_dir(),
+            "owner",
+            "repo",
+            "main",
+            // The `main` record is put on the id `Main` derives. Two refs differing
+            // only in case do not collide on their own -- they hash apart by design
+            // -- so a real collision between them cannot be produced, only staged.
+            // What is under test is the comparison, not the hash: the guard has to
+            // read these two as different triples.
+            &typed.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "owner/repo@Main",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Refused(LaunchRefusal::IdCollision {
+                workspace_id: typed.value(),
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                branch: "Main".to_owned(),
+                recorded_owner: "owner".to_owned(),
+                recorded_repo: "repo".to_owned(),
+                recorded_branch: "main".to_owned(),
+            })),
+            "a ref differing only in case is a different branch, not the same one"
+        );
+    }
+
+    #[test]
+    fn a_record_whose_branch_is_not_a_legal_ref_does_not_block_a_launch() {
+        // The old derivation coerced unsafe refs instead of rejecting them, so a
+        // stored branch is not necessarily a ref `WorkspaceId::new` will accept.
+        // The migration reports such a record as `unusable` and carries on; the
+        // guard skips it. A guard that failed on it would refuse every launch on
+        // the machine, which is far worse than the one-in-thirty-seven-thousand
+        // accident it is watching for.
+        let workspace = WorkspaceId::new("owner", "repo", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(&workspace.value());
+        record_worktree(
+            scene.cache_dir(),
+            "owner",
+            "repo",
+            "a branch with spaces",
+            "repo-a-branch-with-spaces-legacy",
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            "owner/repo@main",
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+    }
+
+    #[test]
+    fn a_store_that_cannot_be_read_does_not_refuse_a_launch() {
+        // `recorded_id` states the rule and the guard honours it: a lookup that
+        // failed means "no collision found", not an error. The records here hold
+        // the colliding record from the refusal test, so the only thing standing
+        // between this launch and a refusal is that the look came up empty.
+        let held = WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
+        let scene = Scene::new().with_running(&held.value());
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            COLLIDING_A,
+            &held.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = UnreadableRecords(RealCold::new(scene.cache_dir(), git));
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run(
+            &format!("blooop/devlaunch@{COLLIDING_B}"),
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 })),
+            "an unreadable store means no collision, not a refusal"
+        );
     }
 
     #[test]

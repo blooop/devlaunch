@@ -308,6 +308,7 @@ fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
                 // `dl --prune` lists.
                 LaunchRefusal::UnsafeSpec(_)
                 | LaunchRefusal::UnknownWorkspace { .. }
+                | LaunchRefusal::IdCollision { .. }
                 | LaunchRefusal::BranchNotNamed { .. }
                 | LaunchRefusal::NotPrepared { .. } => Ran {
                     ending: Ending::Refused,

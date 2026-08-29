@@ -480,12 +480,12 @@ jobs:
   # of the promise file is written at `flows::` and `domain::` paths.
   #
   # What is left over is still real and is not one type: 39 types that a
-  # promised signature hands back but `api` never re-exports own 615 rows in the
-  # rest file, `domain::spec::DevcontainerRefError` — the error type of the
-  # promised `api::resolve_devcontainer_ref` — among them. So a rest-file diff
-  # is routine for a row whose subject nothing promised names and a contract
-  # change for a row whose subject is one of those; `--print-residual` tells
-  # them apart.
+  # promised signature hands back but `api` never re-exports own over six
+  # hundred rows in the rest file, `domain::spec::DevcontainerRefError` — the
+  # error type of the promised `api::resolve_devcontainer_ref` — among them.
+  # So a rest-file diff is routine for a row whose subject nothing promised
+  # names and a contract change for a row whose subject is one of those;
+  # `--print-residual` tells them apart.
   #
   # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crates
   # themselves still build on the stable pin everywhere else. The pinned
