@@ -11,6 +11,7 @@ use std::path::Path;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::clients::devpod_home::DevpodHome;
+use devlaunch_core::domain::config;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
@@ -1132,12 +1133,48 @@ fn render_purge(context: &mut CommandContext<'_>, cache: &Path, yes: bool) -> En
     purge_devlaunch_data(context, cache, yes).with_the_boundary()
 }
 
+/// `worktree.repos_dir`'s notice on a path that opens no records (devlaunch#461).
+///
+/// [`report`] says this for every command that opens dl's records, which is where
+/// it belongs and is not here: a purge reads `metadata.json` for nothing, and
+/// opening it would run the cache migration, writing records into the tree this
+/// command is about to remove and into one an aborted purge was asked to leave
+/// alone. So the config is read on its own, which creates nothing and touches
+/// nothing.
+///
+/// It is worth saying *here* in particular, and #467 left the decision to this
+/// ticket. A clone under that retired root is not devlaunch's by the only test
+/// `--purge` has, so the purge leaves it and removes the record that was the last
+/// thing pointing at it. Where a workspace still opens such a clone the leaving
+/// list now names the path; where none does, this line is the only mention that
+/// tree will ever get.
+///
+/// A `config.toml` that cannot be read says nothing rather than refusing: a purge
+/// does not otherwise need the file, and the next command that opens dl's records
+/// is where a broken config is somebody's problem.
+fn say_retired_keys() {
+    if let Ok((_, retired)) = config::worktree_config() {
+        for line in render::retired_keys(&retired) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 fn purge_devlaunch_data(context: &mut CommandContext<'_>, cache: &Path, yes: bool) -> Cleanup {
+    say_retired_keys();
     let plan = match lifecycle::purge_plan(context, cache) {
         Err(refused) => return Cleanup::Raised(refuse_listing(&refused)),
         Ok(plan) => plan,
     };
-    print(&render::purge_plan_lines(&plan));
+    // The plan is told which of the two it is. Everything in it is preventable
+    // while the question is still coming, and one sentence of it offers an action
+    // that only an interactive reader can still take.
+    let confirmation = if yes {
+        render::Confirmation::AnsweredOnTheLine
+    } else {
+        render::Confirmation::WillBeAsked
+    };
+    print(&render::purge_plan_lines(&plan, confirmation));
     if !yes && !confirmed("Are you sure? [y/N] ") {
         println!("Aborted.");
         return Cleanup::Ended(Ending::Done);
