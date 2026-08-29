@@ -25,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   So the job now runs `cargo test --workspace` after the named steps. The list
   stays, because the list is what triage reads; the workspace is what decides. It
-  costs about two minutes, in a job that takes two and a quarter and is allowed
-  thirty. A guard in the test suite holds both halves in place, and a second one
+  costs 72 seconds, taking the job from 2:13 to 3:19 against a bound of thirty
+  minutes. A guard in the test suite holds both halves in place, and a second one
   holds every job in the workflow to a timeout: three had none, among them the job
   that polls a remote API in a sleep loop.
 

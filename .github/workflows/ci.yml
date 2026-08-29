@@ -271,7 +271,8 @@ jobs:
       #
       # So the list stays for triage and the workspace decides what runs. It costs
       # about what the named steps cost, since it is the same tests over again:
-      # ~2 minutes against a job that takes ~2:15, inside a 30-minute bound. Same
+      # measured at 72s, taking the job from 2:13 to 3:19 against a 30-minute
+      # bound, which is why nothing else here needed resizing. Same
       # `--test-threads=1` (the concurrency tests must not interleave) and the same
       # log-pipe fence as the two steps above, for the same reason -- this run
       # includes them.
