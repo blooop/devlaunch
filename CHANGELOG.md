@@ -148,6 +148,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`flows::lifecycle` is thirteen modules instead of one 9,000-line file.** It
+  held five unrelated commands — stop, delete, purge, prune, reconcile — plus the
+  refresh latch, the fetch sweep and the on-disk placement rules that serve the
+  launch path rather than any of them, and it carried thirteen banner comments
+  marking exactly where the modules were. None of them had ever been made into
+  one. The cut follows those banners, and the file that remains is a table of
+  contents: documentation, the module declarations, and the re-exports that keep
+  every `flows::lifecycle::Thing` path where callers already had it.
+
+  Nothing else moved, and the evidence is that nothing else moved. All three
+  `cargo public-api` snapshots are byte identical across the split, because the
+  members are private modules and the re-exports are what is public, so there is
+  still exactly one path to each of these types. Every hunk in a reassembly of the
+  new modules against the old file is a `pub(super)` keyword or the line rewrap
+  that keyword caused: `pub(super)` is the visibility these items already had,
+  since the module they were private to was the whole family.
+
+  A guard keeps the shape. It fails if the root grows a body of its own, which is
+  the only road back to one file, and if any one member grows past a third of the
+  family, which is the same file under a longer name.
+
 - **A workspace gets one reusable OpenSSH connection instead of a new one per
   run.** `dl <ws> -- <cmd>` typed at a terminal has gone into the container over
   OpenSSH since M3, through the host alias `devpod up` publishes. It just opened a

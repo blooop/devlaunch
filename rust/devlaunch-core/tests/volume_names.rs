@@ -37,7 +37,7 @@ const TEMPLATES: [&str; 2] = ["{basename}-pixi", "dind-var-lib-docker-{"];
 
 /// The one function that can remove a volume, and the one module that may call it.
 const REMOVAL: &str = "remove_volumes(";
-const DOOR: &str = "flows/lifecycle.rs";
+const DOOR: &str = "flows/lifecycle/delete.rs";
 const DOORWAY: &str = "clients/docker.rs";
 
 fn crate_src() -> PathBuf {

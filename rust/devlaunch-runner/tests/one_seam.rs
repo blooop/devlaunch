@@ -47,9 +47,15 @@ use std::path::{Path, PathBuf};
 /// `agent_worktrees/tests.rs` holds a wrapper that does real work on purpose:
 /// the sweep's answers come out of real `git worktree list` output, and it keeps
 /// every argv so a test can assert an invocation was *never* made.
+///
+/// `lifecycle/tests.rs` holds the `Devpod` fake the whole lifecycle family is
+/// tested through. It moved out of `flows/lifecycle.rs` with the rest of the
+/// suite when that file became a module root (devlaunch#314), and being in a
+/// file of its own is the only thing that changed about it.
 const TEST_ONLY_FILES: &[&str] = &[
     "devlaunch-core/src/testing.rs",
     "devlaunch-core/src/flows/agent_worktrees/tests.rs",
+    "devlaunch-core/src/flows/lifecycle/tests.rs",
 ];
 
 /// The one implementation that may do real work.
