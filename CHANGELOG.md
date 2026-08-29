@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --prune` now reclaims the Docker volumes of workspaces devpod has already
+  forgotten.** Deleting a workspace through `dl` has removed its two named volumes
+  since devlaunch#325, and the names come from devpod's own record of what it
+  substituted, read at delete time and never guessed from a pattern. That leaves
+  one hole, and it is the one that was measured: a workspace deleted by a bare
+  `devpod delete` outside `dl`, which removes devpod's record and leaves the
+  volumes. After that there is nothing on the machine that names them.
+
+  So `dl` keeps its own copy. At the tail of every `up` that completed, it reads
+  the same two fields out of the same `workspace_result.json` and writes them to a
+  small per workspace file under its cache, beside the tool verdict markers. A
+  prune reclaims from those copies, and the whole of what it asks per copy is
+  whether any workspace `devpod list` returns carries that id. Where none does,
+  the workspace is gone and its volumes are leftovers.
+
+  Nothing is invented at either read, which is the point: every name that reaches
+  `docker volume rm` still came out of a substitution devpod performed and wrote
+  down. Matching `<basename>-pixi` and `dind-var-lib-docker-<id>` against `docker
+  volume ls` stays refused, because the `docker-in-docker` feature writes that
+  second name in every devcontainer tool that runs it, so the candidates `dl`
+  cannot attribute are exactly the ones belonging to somebody else.
+
+  A copy can still be wrong, in exactly two ways, and neither is answered by
+  believing the file. It can name a volume that is already gone, which `docker
+  volume rm --force` treats as a success. It can name one something else now
+  holds, which Docker refuses with `volume is in use`, reported, nothing removed,
+  and the copy kept so the retry is still there. A copy is dropped once, when a
+  removal came back removed for a workspace devpod does not list.
+
+  Two things follow. A run pointed at a scratch `XDG_CACHE_HOME` finds no copies,
+  so it names no volume and removes none, which is what makes the scratch
+  convention safe here by construction. And the 39 orphaned volumes holding 37.28
+  GB measured on the reference host are **out of scope and stay**: their records
+  died before any of this existed, and no route reaches them that is not the
+  pattern above. `docs/cleanup.md` carries the whole of it.
+
 ## [0.25.0] - 2026-08-28
 
 ### Fixed
