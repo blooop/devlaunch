@@ -45,6 +45,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   died before any of this existed, and no route reaches them that is not the
   pattern above. `docs/cleanup.md` carries the whole of it.
 
+- **`dl --ls` now tells you when the background cache sweep hit trouble.** The
+  hourly sweep that keeps your bare clones fresh runs as a detached child with
+  nothing attached to its output, so everything it ever had to complain about went
+  straight to `/dev/null`: a fetch that could not reach the remote, a clone deleted
+  underneath its record, a `git pack-refs` refused by a permissions problem. The
+  sweep now writes what happened into `metadata.json` beside that repository's
+  freshness stamp, and `dl --ls` prints it under the table:
+
+  ```
+  Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: fatal: unable to create 'packed-refs.lock': Permission denied
+  ```
+
+  One note per repository, overwritten on every pass that acts on it, so nothing
+  accumulates and there is no log to rotate. A pass that goes cleanly clears the
+  note, so a machine you have fixed stops complaining on its own; a pass that
+  attempted nothing, because the interval had not elapsed or another `dl` run held
+  the lock, leaves the last note where it was rather than claiming a sweep it never
+  ran. `dl --ls --json` carries the same thing as a `lastSweep` object on the rows
+  whose repository has one, added alongside the existing fields and absent
+  entirely when there is nothing outstanding. Nothing new is printed on the launch
+  path, and a `metadata.json` written by an older `dl` reads exactly as it did.
+  [docs/cleanup.md](docs/cleanup.md) has the detail.
+
 ### Fixed
 
 - **Sixty-six citations that pointed at nothing now point at something, and a
