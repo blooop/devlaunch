@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--force`'s placement rule is now held over the whole argument space rather
+  than over the lines somebody thought to list.** The grammar decides whether a
+  `--force` is the modifier or a word in the workspace slot by counting its
+  position, and that reading was covered by hand-written examples that between
+  them never once named `rm` or `rme`, which are the only two verbs a misplaced
+  `--force` could actually destroy something with. A single test now walks every ordering
+  of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
+  checks each one against the rule as Python stated it, so an ordering nobody
+  thought of is covered by construction. No behaviour changes.
+
+  It turned up one thing that was believed and is not true: clap's two-word cap on
+  the positionals holds only while the words are contiguous. `dl a b c` is refused,
+  but `dl a b --force c` opens a second occurrence and hands the grammar three
+  words. Nothing forced escapes through it, because the third word is refused
+  first, but it is that refusal doing the work and not the cap.
+
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for
   its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
