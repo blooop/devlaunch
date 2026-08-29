@@ -17,7 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--force` could actually destroy something with. A single test now walks every ordering
   of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
   checks each one against the rule as Python stated it, so an ordering nobody
-  thought of is covered by construction. No behaviour changes.
+  thought of is covered by construction.
+
+  **The slot is now counted over the words of the line rather than over its
+  tokens**, which is the one behaviour change and closes the leading half of the
+  same defect. A flag clap has consumed is gone from the words and still sitting in
+  argv, so counting tokens shifted every slot up by one: `dl <flag> ws --force rm`
+  read the verb-slot `--force` as trailing and force-deleted `ws`, where
+  `dl ws --force rm` refuses. No spelling of `<flag>` existed, but only because five
+  unrelated rules each happened to refuse or strip one first, and `aid` hands `dl`
+  every leading `-` word it is given without knowing what any of them mean. A slot
+  is a place a word goes, so it is words that are counted. Every line anybody can
+  type today reads exactly as it did.
 
   It turned up one thing that was believed and is not true: clap's two-word cap on
   the positionals holds only while the words are contiguous. `dl a b c` is refused,
