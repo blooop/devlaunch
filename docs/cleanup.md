@@ -166,7 +166,8 @@ created, meaning the clones it made under its own cache directory (`$XDG_CACHE_H
 directory the purge is about to remove anyway. Everything else keeps working
 afterwards, because nothing a purge touches backs it.
 
-Anything it is leaving is named before it asks:
+Anything it is leaving is named before it asks, by where it came from and not
+only by its id:
 
 ```
 $ dl --purge
@@ -175,11 +176,22 @@ This will remove all devlaunch data:
   - /home/you/.cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
 
 Leaving 2 workspace(s) devlaunch did not create:
-  - pythontemplate
-  - my-hand-made-workspace
+  - pythontemplate: https://github.com/blooop/pythontemplate
+  - my-hand-made-workspace: /home/you/projects/thing
+
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
+A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
 
 Are you sure? [y/N]
 ```
+
+The source is the half you can decide on. An id is what devpod addresses a
+workspace by and says nothing about where it came from, so `pythontemplate` reads
+the same whether it is a `dl <git-url>` of yours, a `dl ./project`, or something
+somebody else's tool made. It is the same string `dl --ls` shows in its `SOURCE`
+column, read the same way, so the two never describe one workspace differently.
+A source `dl` cannot read at all, which is devpod's own object rather than a path
+or a URL, is printed as that object and said to be one.
 
 Three things `dl` does create can land in that second list rather than the first.
 `dl ./some/path` and `dl <git-url>` open a source `dl` did not clone, so it
@@ -191,6 +203,32 @@ three with `dl <workspace> rm`.
 Erring this way is deliberate: a purge that skips one of your own workspaces
 costs you a command, and the other kind of mistake costs you work you cannot get
 back.
+
+That third one is what the two sentences under the list are about. The workspace
+stays, and the record naming its clone was in the cache that has just gone, so a
+`dl <workspace> rm` afterwards deletes the workspace and leaves the directory
+standing with nothing on the machine pointing at it. Removing it before the purge
+is what takes the clone too. If `config.toml` still sets `worktree.repos_dir`,
+`--purge` now says so as well, before the plan: where no workspace opens such a
+clone any more there is no line in any list for it, and that notice is the only
+mention that tree will get.
+
+Under `-y` the second sentence is the same fact in the tense that run has earned.
+"Remove such a workspace now" is an action only somebody who still has the
+question in front of them can take, and printing it into a run that deletes the
+records three lines later would be advice arriving after the door shut, so what
+`-y` says instead is what will be true of `dl <workspace> rm` from then on.
+
+The volume names are part of that loss, and this is the one place it shows.
+Deleting a survivor with `dl <workspace> rm` still takes its volumes: that read
+happens at delete time, out of devpod's own record under `DEVPOD_HOME`, which a
+purge does not touch. What goes is [the copy `dl`
+keeps](#the-volumes-of-a-workspace-devpod-has-already-forgotten), which is what
+`--prune` reclaims from once devpod has forgotten a workspace. So a survivor
+deleted with a bare `devpod delete` after a purge leaves both its volumes with
+nothing on the machine naming them, where before the purge `dl --prune` would
+have reclaimed them. Deleting such a workspace through `dl` is what avoids that,
+and it is the same advice the sentence above gives for its clone.
 
 #### When part of the cache will not go
 
@@ -438,12 +476,28 @@ lands, and the next sweep tries again. Withholding the stamp would make every
 later pass re-fetch the whole repository forever on account of a representation
 change that did not come off.
 
-That notice reaches nobody today, and the honest reading of why is that the sweep
-runs detached with its output discarded, so every notice it raises goes to a null
-descriptor and this is simply the first one that anybody would want to read. What
-a refusal costs while it stays unread is bounded: loose refs are one file per ref
-rewritten in place rather than appended, so a pack that keeps failing holds the
-ref count flat at what one sweep writes instead of growing it.
+The notice itself still reaches nobody, and it never will: the sweep runs
+detached with its output discarded, so every line it raises goes to a null
+descriptor. What reaches somebody is the **record**. A pass that refuses a pack
+writes the repository and git's own words into `metadata.json` beside that
+repository's freshness stamp, and `dl --ls` prints them under its table:
+
+```
+Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: fatal: unable to create 'packed-refs.lock': Permission denied
+```
+
+`dl --ls --json` carries the same thing as a `lastSweep` object on every row
+whose repository has one. Three things bound what that costs. The note is
+overwritten on every pass that acts on a repository, so a cache holds at most one
+per repository and there is no rotation and no second file. A pass that goes
+cleanly clears it, so a machine whose permissions have been fixed stops
+complaining on its own. And a pass that attempted nothing, because the interval
+had not elapsed or another run held the lock, leaves the last note standing
+rather than reporting a clean sweep it never ran.
+
+What a refusal costs while nobody has yet acted on it is bounded too: loose refs
+are one file per ref rewritten in place rather than appended, so a pack that keeps
+failing holds the ref count flat at what one sweep writes instead of growing it.
 
 **Packing does not change what a later prune may delete.** A ref the remote
 retracts is removed whether it was loose or packed: git rewrites `packed-refs`

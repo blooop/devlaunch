@@ -151,6 +151,24 @@ pub(crate) struct Records<'r> {
     pub(crate) migration_refused: Option<MetadataError>,
 }
 
+/// Open `metadata.json` and nothing else: no config, no clone manager, no cache
+/// migration.
+///
+/// What a command reaches for when it has one field of the record to read and no
+/// business writing anything. [`open_records`] is still the construction point for
+/// everything that mutates — this is the same load without the three things that
+/// make that call expensive and consequential, and it is deliberately not a way
+/// around it: a caller that wants a record's *clone* wants the migration, because
+/// the directory it is about may not have been renamed yet.
+///
+/// The load is not a pure read. A `metadata.json` that cannot be parsed is
+/// quarantined by it, which is exactly what every other command does to the same
+/// file, and the notices come back so a caller can say so rather than letting a
+/// record be moved aside in silence.
+pub(crate) fn open_storage() -> Result<(MetadataStorage, Vec<Notice>), StartupError> {
+    Ok(MetadataStorage::open(MetadataStorage::default_path()?)?)
+}
+
 /// Open dl's records, migrating the cache if it has not been migrated yet.
 ///
 /// The one construction point, so nothing can reach a stale clone path before the
@@ -159,7 +177,7 @@ pub(crate) struct Records<'r> {
 pub(crate) fn open_records<'r>(runner: &'r dyn Runner) -> Result<Records<'r>, StartupError> {
     let (config, retired_keys) = worktree_config()?;
     let cache_dir = cache_dir()?;
-    let (mut storage, notices) = MetadataStorage::open(MetadataStorage::default_path()?)?;
+    let (mut storage, notices) = open_storage()?;
     // The report is kept and rendered by the caller. Python's `migrate_cache`
     // announces inside itself (migration.py `_announce`); core renders no English
     // (#251), so the report travels up and the binary writes the sentences — the

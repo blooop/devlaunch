@@ -64,7 +64,7 @@ use crate::clients::devpod::{
 };
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
-use crate::domain::model::WorktreeInfo;
+use crate::domain::model::{SweepNote, WorktreeInfo};
 use crate::domain::workspace_state::{self, CloneState, CouldNotTell, NonEmpty, Unsaved};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::runner::Runner;
@@ -903,6 +903,16 @@ pub struct ListedWorkspace {
     /// checkout to find one.
     pub(crate) clone: Option<DevlaunchClone>,
     pub(crate) disk: DiskField,
+    /// What the last background sweep of this row's repository had to say, from
+    /// the record. `None` covers both the row that is not dl's and the repository
+    /// whose last sweep was clean, which are one thing to a reader of this row:
+    /// there is no complaint outstanding about the cache behind it.
+    ///
+    /// The note is per *repository* and the row is per *workspace*, so several
+    /// rows can carry the same note and a repository with no workspace has no row
+    /// to carry it at all. [`outstanding_sweep_notes`] is the reading that misses
+    /// none of them, and is what `dl --ls` prints under the table.
+    pub(crate) sweep: Option<SweepNote>,
 }
 
 /// The enriched listing: one row per workspace devpod lists, in devpod's order.
@@ -956,12 +966,66 @@ fn enriched_row(
             recorded: record.map(Recorded::of),
         }
     });
+    // Off the recorded triple and not off the source, so the note a row carries is
+    // about the repository dl really cloned for it. A workspace with no record has
+    // no repository to ask about, which is the same `None` a clean sweep leaves.
+    let sweep = clone
+        .as_ref()
+        .and_then(|clone| clone.recorded.as_ref())
+        .and_then(|recorded| view.storage.get_repository(&recorded.owner, &recorded.repo))
+        .and_then(|repository| repository.last_sweep.clone());
     ListedWorkspace {
         id: workspace.id.clone(),
         last_used: workspace.last_used.clone(),
         state: container_state(runner, &workspace.id),
         clone,
         disk: DiskField::of(sizes, measurable.as_deref()),
+        sweep,
+    }
+}
+
+/// Every repository whose last background sweep left something to say, in the
+/// order the record holds them.
+///
+/// The reading behind the line `dl --ls` prints under its table. Per repository
+/// rather than per row, because that is what the note is: a repository with three
+/// workspaces has one note and a repository with none still has one, and a listing
+/// that only ever spoke through rows would say the first three times and the
+/// second never.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+pub fn outstanding_sweep_notes(storage: &MetadataStorage) -> Vec<SweptRepoNote> {
+    storage
+        .list_repositories()
+        .into_iter()
+        .filter_map(|repository| {
+            repository.last_sweep.clone().map(|note| SweptRepoNote {
+                owner: repository.owner.clone(),
+                repo: repository.repo.clone(),
+                note,
+            })
+        })
+        .collect()
+}
+
+/// One repository's outstanding sweep note, with the repository it is about.
+///
+/// The sweep walks a whole cache in one detached pass, so a note that did not say
+/// which repository it was about would be unactionable — the same reason
+/// [`CacheNotice::RefsNotPacked`](crate::flows::repo_manager::CacheNotice) names
+/// one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub struct SweptRepoNote {
+    pub owner: String,
+    pub repo: String,
+    pub note: SweepNote,
+}
+
+impl SweptRepoNote {
+    /// The `owner/repo` slug a line names it by.
+    pub fn slug(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
     }
 }
 
@@ -1098,7 +1162,24 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
         DiskField::NothingOfOurs => insert(&mut value, "disk", serde_json::Value::Null),
         DiskField::Freed(usage) => insert(&mut value, "disk", disk_usage::usage_as_json(usage)),
     }
+    // Appended, and absent unless there is a note. Both halves are the contract
+    // (#251 §7): `wf` parses this document, so every key it already reads keeps
+    // its name, its spelling and its place, and a cache with nothing outstanding
+    // produces the byte-for-byte document it produced before this field existed.
+    // Absent rather than null for the reason `disk` is absent unless asked —
+    // there is then one thing the key's presence means and only one.
+    if let Some(note) = &row.sweep {
+        insert(&mut value, "lastSweep", sweep_as_json(note));
+    }
     value
+}
+
+/// One sweep note as the wire carries it: which trouble, and what git said.
+///
+/// `said` is `null` rather than absent where nothing spoke, because that is a fact
+/// about the refusal and every reader of this key already has the note itself.
+fn sweep_as_json(note: &SweepNote) -> serde_json::Value {
+    serde_json::to_value(note).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 fn insert(object: &mut serde_json::Value, key: &str, field: serde_json::Value) {
@@ -2302,6 +2383,138 @@ mod tests {
         fn id(&self, which: &str) -> &str {
             &self.ids[which]
         }
+
+        /// Record `blooop/<repo>` — which the two dl-made rows are clones of, when
+        /// it is `demo` — with whatever the last sweep of it left behind.
+        fn given_a_swept_repository(&mut self, repo: &str, note: Option<SweepNote>) {
+            let mut repository = crate::domain::model::BaseRepository::new(
+                "blooop",
+                repo,
+                &format!("https://github.com/blooop/{repo}.git"),
+                self.cache.join("repos").join("blooop").join(repo),
+            );
+            repository.last_sweep = note;
+            self.storage
+                .add_repository(repository)
+                .expect("a repository record");
+        }
+    }
+
+    /// The rows of a document, by workspace id.
+    fn rows_by_id(document: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+        document
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|row| (row["id"].as_str().expect("an id").to_owned(), row.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_row_carries_the_note_the_last_sweep_left_on_its_repository() {
+        // The other half of devlaunch#480: the sweep writes the note into the
+        // record from a detached child nobody can see, and this is where `wf` and
+        // anybody reading `--ls --json` can see it.
+        let mut scene = Scene::build();
+        scene.given_a_swept_repository(
+            "demo",
+            Some(SweepNote {
+                trouble: crate::domain::model::SweepTrouble::RefsNotPacked,
+                said: Some(
+                    "fatal: unable to create 'packed-refs.lock': Permission denied".to_owned(),
+                ),
+            }),
+        );
+
+        let document = json_document(&scene.rows(Sizes::Skip));
+        let rows = rows_by_id(&document);
+
+        let expected = serde_json::json!({
+            "trouble": "refs_not_packed",
+            "said": "fatal: unable to create 'packed-refs.lock': Permission denied",
+        });
+        assert_eq!(rows[scene.id("clean")]["lastSweep"], expected);
+        assert_eq!(
+            rows[scene.id("dirty")]["lastSweep"],
+            expected,
+            "one repository, two workspaces, one note"
+        );
+        // A dl clone with no record has no repository to ask about, and neither has
+        // a workspace dl did not make. Absent, not null: the key means one thing.
+        for row in [scene.id("unrecorded"), "someone-elses", "from-an-image"] {
+            assert!(
+                rows[row].get("lastSweep").is_none(),
+                "{row} carries a note about a repository it has none of: {}",
+                rows[row]
+            );
+        }
+    }
+
+    #[test]
+    fn a_cache_with_nothing_outstanding_writes_the_document_it_always_wrote() {
+        // The field is additive on the wire `wf` parses (#251 §7): a repository
+        // whose last sweep went cleanly adds no key at all, so the document below
+        // is byte for byte the one pinned in the golden above.
+        let mut scene = Scene::build();
+        scene.given_a_swept_repository("demo", None);
+
+        let document = json_document(&scene.rows(Sizes::Skip));
+
+        assert!(!document.to_string().contains("lastSweep"), "{document}");
+        assert!(outstanding_sweep_notes(&scene.storage).is_empty());
+    }
+
+    #[test]
+    fn a_note_with_nothing_quoted_still_says_which_trouble_it_was() {
+        // `said: null` rather than an absent key or an empty string: a fetch killed
+        // at the bound is a refusal nothing wrote words for, and the reader still
+        // has to be told which refusal it was.
+        let mut scene = Scene::build();
+        scene.given_a_swept_repository(
+            "demo",
+            Some(SweepNote {
+                trouble: crate::domain::model::SweepTrouble::FetchTimedOut,
+                said: None,
+            }),
+        );
+
+        let document = json_document(&scene.rows(Sizes::Skip));
+
+        assert_eq!(
+            rows_by_id(&document)[scene.id("clean")]["lastSweep"],
+            serde_json::json!({ "trouble": "fetch_timed_out", "said": null })
+        );
+    }
+
+    #[test]
+    fn the_notes_under_the_table_are_per_repository_and_reach_the_ones_with_no_workspace() {
+        // Why the table's line is not a column: a note is about a bare clone, and a
+        // repository nobody has a workspace for still has one to report. A reading
+        // that only ever spoke through rows would never say this one.
+        let mut scene = Scene::build();
+        scene.given_a_swept_repository("demo", None);
+        scene.given_a_swept_repository(
+            "no-workspace-of-its-own",
+            Some(SweepNote {
+                trouble: crate::domain::model::SweepTrouble::CloneMissing,
+                said: None,
+            }),
+        );
+
+        let outstanding = outstanding_sweep_notes(&scene.storage);
+
+        assert_eq!(outstanding.len(), 1, "{outstanding:?}");
+        assert_eq!(outstanding[0].slug(), "blooop/no-workspace-of-its-own");
+        assert_eq!(
+            outstanding[0].note.trouble,
+            crate::domain::model::SweepTrouble::CloneMissing
+        );
+        assert!(
+            !json_document(&scene.rows(Sizes::Skip))
+                .to_string()
+                .contains("lastSweep"),
+            "no row is a clone of it, so no row says anything about it"
+        );
     }
 
     #[test]

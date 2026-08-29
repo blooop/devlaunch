@@ -79,7 +79,7 @@ use crate::clients::docker;
 use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
 use crate::domain::metadata::{self, MetadataStorage, RecordUpdate, WorktreeFilter};
-use crate::domain::model::WorktreeInfo;
+use crate::domain::model::{SweepNote, SweepTrouble, WorktreeInfo};
 use crate::domain::workspace_state::{self, CouldNotTell, Losses, NonEmpty, Unsaved};
 use crate::flows::completion_cache;
 use crate::flows::disk_usage::{self, DiskUsage};
@@ -88,8 +88,8 @@ use crate::flows::listing::{
     self, ClonePathResolver, CommandContext, WorkspaceOwnership, json_as_python_writes_it,
 };
 use crate::flows::repo_manager::{
-    BACKGROUND_FETCH_TIMEOUT, CacheNotice, Fetched, LazyFetchError, Refusal, Removal,
-    RepositoryManager, present, remove_tree_as_far_as_it_goes,
+    BACKGROUND_FETCH_TIMEOUT, CacheNotice, FetchRepoError, Fetched, LazyFetchError, Refusal,
+    Removal, RepositoryManager, present, remove_tree_as_far_as_it_goes,
 };
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
@@ -502,7 +502,15 @@ pub fn sweep_repo_fetches(
                 &mut cache_notices,
             )
         });
+        // Read off the same two values the arm below is built from, before either
+        // is moved: the note and the counted arm have to be two readings of one
+        // pass, which is the mistake `disk` and `unsaved` each made in turn in the
+        // listing.
+        let left_behind = last_sweep_note(&swept, &cache_notices);
         extend_with_cache(&mut report.notices, cache_notices);
+        if let LastSweep::Wrote(note) = left_behind {
+            record_sweep_note(storage, &owner, &repo, note, &mut report.notices);
+        }
         report.repos.push(match swept {
             Err(refusal) => SweptRepo::LockUnavailable {
                 owner,
@@ -516,6 +524,113 @@ pub fn sweep_repo_fetches(
         });
     }
     report
+}
+
+/// What one pass of the sweep leaves in one repository's record.
+///
+/// Two arms rather than a bare `Option<SweepNote>`, because there are three
+/// outcomes and only two of them are notes: a pass can leave a note, clear the
+/// last one, or have no standing to touch the field at all. Collapsing the last
+/// two would have a contended repository report a clean sweep that never ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LastSweep {
+    /// The pass acted on the repository. `None` clears whatever the pass before
+    /// it left, which is what makes a cache that has been fixed stop complaining.
+    Wrote(Option<SweepNote>),
+    /// Nothing was attempted — the interval had not elapsed, another dl run held
+    /// the lock, or the lock would not open — so the last pass's note stands.
+    Untouched,
+}
+
+/// What the record should say about one repository after this pass.
+///
+/// The pack refusal is read out of the notices the fetch raised rather than out of
+/// its return value, because a refused pack is deliberately *not* a failed fetch
+/// (docs/cleanup.md): `fetch_repo` returns `Ok` and says so in a
+/// [`CacheNotice::RefsNotPacked`], which until now went to the detached child's
+/// null stderr and nowhere else.
+fn last_sweep_note(
+    swept: &Result<Option<Result<Fetched, LazyFetchError>>, LockError>,
+    raised: &[CacheNotice],
+) -> LastSweep {
+    match swept {
+        Ok(Some(Ok(Fetched::Fetched))) => LastSweep::Wrote(refs_not_packed(raised)),
+        // The repository left the store between the listing above and the fetch,
+        // so there is no record to annotate. `update_repository` would answer
+        // `Absent`; saying so here keeps the write off a path with nothing to
+        // write to.
+        Ok(Some(Err(LazyFetchError::NotInMetadata { .. }))) => LastSweep::Untouched,
+        Ok(Some(Err(LazyFetchError::Fetch(refused)))) => {
+            LastSweep::Wrote(Some(fetch_trouble(refused)))
+        }
+        Ok(Some(Ok(Fetched::Skipped))) | Ok(None) | Err(_) => LastSweep::Untouched,
+    }
+}
+
+/// The pack refusal this pass raised, if it raised one.
+fn refs_not_packed(raised: &[CacheNotice]) -> Option<SweepNote> {
+    raised.iter().find_map(|notice| match notice {
+        CacheNotice::RefsNotPacked { reason, .. } => Some(SweepNote {
+            trouble: SweepTrouble::RefsNotPacked,
+            said: Some(reason.clone()),
+        }),
+        _ => None,
+    })
+}
+
+/// A failed fetch as the record carries it.
+///
+/// Every arm keeps git's words where git is what refused, and `None` where nothing
+/// spoke — a child killed at the bound and a directory that is not there are
+/// conditions dl observed, and inventing a sentence for them here would be core
+/// writing English (#251 §5). Which condition it was is the arm, and the `dl`
+/// binary spells it.
+fn fetch_trouble(refused: &FetchRepoError) -> SweepNote {
+    match refused {
+        FetchRepoError::NoLocalClone { .. } => SweepNote {
+            trouble: SweepTrouble::CloneMissing,
+            said: None,
+        },
+        FetchRepoError::TimedOut { .. } => SweepNote {
+            trouble: SweepTrouble::FetchTimedOut,
+            said: None,
+        },
+        FetchRepoError::Refused { reason } => SweepNote {
+            trouble: SweepTrouble::FetchRefused,
+            said: Some(reason.clone()),
+        },
+        FetchRepoError::NotRecorded(_) => SweepNote {
+            trouble: SweepTrouble::NotRecorded,
+            said: None,
+        },
+    }
+}
+
+/// Put the note in the record, outside the repo lock the fetch held.
+///
+/// Outside on purpose: the metadata lock is its own, `update_repository` reloads
+/// the record under it and moves one field, and holding the repository's lock
+/// across that write would put every sibling launch behind a second file lock for
+/// a field no launch reads.
+fn record_sweep_note(
+    storage: &mut MetadataStorage,
+    owner: &str,
+    repo: &str,
+    note: Option<SweepNote>,
+    notices: &mut dyn Notices<LifecycleNotice>,
+) {
+    match storage.update_repository(owner, repo, |recorded| recorded.last_sweep = note) {
+        // `Absent` is the record removed by another run while this pass was in it.
+        // Nothing was written, which is right — a store that inserted would undo
+        // that delete — and it is not news about the sweep.
+        Ok((RecordUpdate::Applied | RecordUpdate::Absent, store_notices)) => {
+            extend_with_store(notices, store_notices);
+        }
+        // The sweep never complains, and here it could not if it wanted to: a note
+        // that cannot be written is the very condition it would have reported, and
+        // there is nowhere left to put it. The next pass writes the same note.
+        Err(_nowhere_to_put_it) => {}
+    }
 }
 
 // ===========================================================================
@@ -6024,6 +6139,15 @@ mod tests {
                 .clone()
         }
 
+        /// What the record says the last sweep of this repository had to say.
+        fn last_sweep(&self, owner: &str, repo: &str) -> Option<SweepNote> {
+            self.storage
+                .get_repository(owner, repo)
+                .expect("a record")
+                .last_sweep
+                .clone()
+        }
+
         fn fetches(&self) -> Vec<devlaunch_test_support::Call> {
             self.fake
                 .calls()
@@ -6274,6 +6398,182 @@ mod tests {
         let report = sweep_repo_fetches(&manager, &mut cache.storage);
         assert!(report.repos.is_empty());
         assert_eq!(cache.fetches().len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // what the sweep leaves in the record (devlaunch#480)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_pack_that_refused_is_left_in_the_record_in_gits_own_words() {
+        // The notice this reads was already raised (#470) and already went nowhere:
+        // the sweep is a detached child with all three descriptors on /dev/null. The
+        // record is where it survives to be read.
+        let mut cache = a_sweeping_cache();
+        cache.recorded(OWNER, REPO, Some(hours_ago(2)));
+        cache.fake.script(
+            ["git", "pack-refs"],
+            Response::failed(
+                1,
+                "fatal: unable to create 'packed-refs.lock': Permission denied\n",
+            ),
+        );
+        let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+
+        let report = sweep_repo_fetches(&manager, &mut cache.storage);
+
+        assert_eq!(
+            report.repos,
+            [SweptRepo::Fetched {
+                owner: OWNER.to_owned(),
+                repo: REPO.to_owned()
+            }],
+            "a pack that refused is not a fetch that failed"
+        );
+        assert_eq!(
+            cache.last_sweep(OWNER, REPO),
+            Some(SweepNote {
+                trouble: SweepTrouble::RefsNotPacked,
+                said: Some(
+                    "fatal: unable to create 'packed-refs.lock': Permission denied".to_owned()
+                ),
+            })
+        );
+        assert!(
+            cache.last_fetched(OWNER, REPO).is_some(),
+            "the stamp is about the fetch, and the fetch happened"
+        );
+    }
+
+    #[test]
+    fn a_sweep_that_went_cleanly_takes_the_last_ones_note_away() {
+        // Overwritten, not accumulated: one note per repository is what makes the
+        // record able to hold this at all, and a cache whose trouble has been fixed
+        // has to stop complaining without anybody clearing it by hand.
+        let mut cache = a_sweeping_cache();
+        cache.recorded(OWNER, REPO, Some(hours_ago(2)));
+        let (_written, _) = cache
+            .storage
+            .update_repository(OWNER, REPO, |recorded| {
+                recorded.last_sweep = Some(SweepNote {
+                    trouble: SweepTrouble::RefsNotPacked,
+                    said: Some("something that no longer happens".to_owned()),
+                });
+            })
+            .expect("a note from the pass before");
+        let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+
+        sweep_repo_fetches(&manager, &mut cache.storage);
+
+        assert_eq!(cache.last_sweep(OWNER, REPO), None);
+    }
+
+    #[test]
+    fn a_pass_that_attempted_nothing_leaves_the_last_note_standing() {
+        // Three ways to attempt nothing and one rule for all of them: silence about
+        // a repository this pass never touched must not read as a clean sweep of it.
+        // Here the interval has not elapsed; contended and lock-unavailable take the
+        // same arm.
+        let mut cache = a_sweeping_cache();
+        cache.recorded(OWNER, REPO, Some(Timestamp::now()));
+        let outstanding = SweepNote {
+            trouble: SweepTrouble::FetchRefused,
+            said: Some("fatal: no route to host".to_owned()),
+        };
+        let (_written, _) = cache
+            .storage
+            .update_repository(OWNER, REPO, |recorded| {
+                recorded.last_sweep = Some(outstanding.clone());
+            })
+            .expect("a note from the pass before");
+        let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+
+        let report = sweep_repo_fetches(&manager, &mut cache.storage);
+
+        assert_eq!(
+            report.repos,
+            [SweptRepo::NotDue {
+                owner: OWNER.to_owned(),
+                repo: REPO.to_owned()
+            }]
+        );
+        assert_eq!(cache.last_sweep(OWNER, REPO), Some(outstanding));
+    }
+
+    #[test]
+    fn a_fetch_that_failed_leaves_what_git_said_about_it() {
+        let mut cache = a_sweeping_cache();
+        cache.recorded(OWNER, REPO, Some(hours_ago(2)));
+        cache.fake.script(
+            ["git", "fetch"],
+            Response::failed(128, "fatal: no route to host\n"),
+        );
+        let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+
+        sweep_repo_fetches(&manager, &mut cache.storage);
+
+        assert_eq!(
+            cache.last_sweep(OWNER, REPO),
+            Some(SweepNote {
+                trouble: SweepTrouble::FetchRefused,
+                said: Some("fatal: no route to host".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_fetch_killed_at_the_bound_says_so_and_quotes_nobody() {
+        // Nothing spoke: the child was killed by dl, so `said` is None rather than
+        // an empty string standing in for words that were never written.
+        let mut cache = a_sweeping_cache();
+        cache.recorded(OWNER, REPO, Some(hours_ago(2)));
+        cache.fake.script(["git", "fetch"], Response::TimedOut);
+        let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+
+        sweep_repo_fetches(&manager, &mut cache.storage);
+
+        assert_eq!(
+            cache.last_sweep(OWNER, REPO),
+            Some(SweepNote {
+                trouble: SweepTrouble::FetchTimedOut,
+                said: None,
+            })
+        );
+    }
+
+    #[test]
+    fn each_repository_gets_its_own_note_out_of_the_one_pass() {
+        // The sweep walks a whole cache in one detached pass, so a note that landed
+        // on the wrong record would be worse than none: it would name a repository
+        // that is fine and clear the one that is not. Two repositories, two
+        // different troubles, one pass.
+        let mut cache = a_sweeping_cache();
+        cache.recorded(OWNER, "first", Some(hours_ago(2)));
+        let gone = cache.recorded(OWNER, "second", Some(hours_ago(2)));
+        std::fs::remove_dir_all(&gone).expect("the second clone is deleted under the record");
+        cache.fake.script(
+            ["git", "pack-refs"],
+            Response::failed(1, "fatal: refusing to pack\n"),
+        );
+        let manager = RepositoryManager::new(&cache.repos_dir, Git::new(&cache.fake));
+
+        sweep_repo_fetches(&manager, &mut cache.storage);
+
+        assert_eq!(
+            cache.last_sweep(OWNER, "first"),
+            Some(SweepNote {
+                trouble: SweepTrouble::RefsNotPacked,
+                said: Some("fatal: refusing to pack".to_owned()),
+            })
+        );
+        assert_eq!(
+            cache.last_sweep(OWNER, "second"),
+            Some(SweepNote {
+                trouble: SweepTrouble::CloneMissing,
+                said: None,
+            }),
+            "the repository whose clone is gone never reached a pack to refuse"
+        );
     }
 
     // =======================================================================
