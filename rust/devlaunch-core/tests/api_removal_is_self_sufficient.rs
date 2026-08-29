@@ -27,8 +27,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use devlaunch_core::api::{
     ColdPath, CommandContext, DeleteStalled, DevpodHome, KeptCopies, LifecycleNotice, Notices,
-    Records, RecordsNotice, Refresh, Removal, RemovalRefused, RemoveOutcome, SelfInvocation,
-    workspace_remove,
+    Records, RecordsNotice, Refresh, Removal, RemovalGrounds, RemovalRefused, RemoveOutcome,
+    SelfInvocation, workspace_remove,
 };
 use devlaunch_core::runner::{
     CapturedText, DetachOutcome, Invocation, Outcome, ProcessRunner, Runner, SpawnSpec,
@@ -60,18 +60,31 @@ fn a_guarded_removal_refuses_over_unsaved_work_and_never_asks_devpod() {
 
     let RemoveOutcome::Refused(RemovalRefused {
         workspace_id,
-        standing,
+        because,
     }) = outcome
     else {
         panic!("expected a refusal that names what would be lost, got {outcome:?}");
     };
     assert_eq!(workspace_id, WORKSPACE);
-    // The refusal carries the whole standing rather than one arm of it, because
-    // a clone can hold work *and* have a question that could not be put, and a
-    // refusal naming one would be telling half the truth (devlaunch#446).
-    let lost = standing
-        .would_lose()
-        .expect("a proved loss, not an unproved");
+    // **Destructured rather than read through a method, and that is this file's
+    // whole point.** Every type named here is reached through
+    // `devlaunch_core::api` and nothing else, so a promised shape carrying a
+    // type the promise does not include stops compiling right here instead of
+    // shipping (devlaunch#531). `RemovalGrounds` is made of `String`, which is
+    // why this reads with nothing imported from `flows`.
+    //
+    // Three arms and not two options: a standing is non-empty and every reason
+    // in it is either a proved loss or an unproved, so "neither" cannot happen
+    // and the type does not admit it. `BothAtOnce` is #446 surviving the
+    // flattening -- a clone can hold work *and* have a question that could not
+    // be put, and a refusal still never picks one of two true things.
+    let lost = match &because {
+        RemovalGrounds::WouldLose(lost) => lost,
+        RemovalGrounds::BothAtOnce { would_lose, .. } => would_lose,
+        RemovalGrounds::CouldNotTell(blank) => {
+            panic!("a dirty tree is a proved loss, not an unproved: {blank}")
+        }
+    };
     assert!(
         lost.contains("an-hour-of-work.md"),
         "the refusal has to carry what would be lost, not a count: {lost}"

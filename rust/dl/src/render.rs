@@ -37,8 +37,8 @@ use devlaunch_core::flows::launch::{
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, NotAdopted, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, SweepOccasion, Unlocatable,
-    VolumeRefusal, VolumesKeptBecause,
+    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalGrounds, RemovalRefused,
+    SweepOccasion, Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
 use devlaunch_core::flows::listing::{
     self, CloneDisk, LastUsed, SizeCell, Sizes, SourceKind, SweptRepoNote, TableRow, WorkspaceTable,
@@ -1204,30 +1204,23 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 /// hand. Both words are offered the way past *they* asked for.
 pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
     let workspace_id = &refused.workspace_id;
-    match (
-        refused.standing.would_lose(),
-        refused.standing.could_not_tell(),
-    ) {
-        (Some(holds), None) => format!(
+    match &refused.because {
+        RemovalGrounds::WouldLose(holds) => format!(
             "{workspace_id} holds {holds}. Push or commit it, or run: dl {spec} {word} --force"
         ),
-        (None, Some(blank)) => format!(
+        RemovalGrounds::CouldNotTell(blank) => format!(
             "{workspace_id}: {blank}. devlaunch will not delete a clone it cannot check. Look \
              at it, or run: dl {spec} {word} --force"
         ),
         // Both at once -- a dirty tree beside a refused probe, or a nested
         // worktree's loss beside a lock. Saying one would be telling half the
         // truth, so both are said (devlaunch#446).
-        (Some(holds), Some(blank)) => format!(
+        RemovalGrounds::BothAtOnce {
+            would_lose: holds,
+            could_not_tell: blank,
+        } => format!(
             "{workspace_id} holds {holds}, and {blank}. devlaunch will not delete a clone it \
              cannot check. Push or commit it, look at it, or run: dl {spec} {word} --force"
-        ),
-        // A standing is non-empty by construction, so one of the arms above
-        // said something; this arm exists for the match to be total and points
-        // the reader at the raw reasons rather than inventing a sentence.
-        (None, None) => format!(
-            "{workspace_id}: {}. Run: dl {spec} {word} --force",
-            refused.standing.describe()
         ),
     }
 }
@@ -1256,24 +1249,20 @@ pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
 /// line before the delete, and the workspace is gone by the next one.
 pub(crate) fn removing_over_work(refused: &RemovalRefused) -> String {
     let workspace_id = &refused.workspace_id;
-    match (
-        refused.standing.would_lose(),
-        refused.standing.could_not_tell(),
-    ) {
-        (Some(holds), None) => {
+    match &refused.because {
+        RemovalGrounds::WouldLose(holds) => {
             format!("{workspace_id} holds {holds}, and kill is deleting it anyway.")
         }
-        (None, Some(blank)) => format!(
+        RemovalGrounds::CouldNotTell(blank) => format!(
             "{workspace_id}: {blank}, so there may be work here that is nowhere else. kill is \
              deleting it anyway."
         ),
-        (Some(holds), Some(blank)) => format!(
+        RemovalGrounds::BothAtOnce {
+            would_lose: holds,
+            could_not_tell: blank,
+        } => format!(
             "{workspace_id} holds {holds}, and {blank}, so there may be more here that is \
              nowhere else. kill is deleting it anyway."
-        ),
-        (None, None) => format!(
-            "{workspace_id}: {}. kill is deleting it anyway.",
-            refused.standing.describe()
         ),
     }
 }

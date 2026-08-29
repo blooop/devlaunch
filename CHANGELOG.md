@@ -116,6 +116,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read, the acting pass acts only on units whose registrations the plan named,
   and the forget only ever follows a directory removal that completed.
 
+  **`api::RemovalRefused` changes shape, and it is a break.** It was two arms
+  that each named one thing -- `WouldLose` or `CouldNotTell` -- and a clone can
+  be both at once: a dirty tree beside a reachability probe that was refused, or
+  a nested agent worktree's loss beside the clone's own. Picking one to report
+  was telling half the truth. It is now a `workspace_id` and a
+  `RemovalGrounds`, which has an arm for each and a third for both.
+
+  `RemovalGrounds` is made of `String`. The standing that decides it stays
+  inside `flows` and is rendered at the seam, the way the `--ls --json` payload
+  is rendered for the wire, because a promised type carrying
+  `agent_worktrees::Standing` would name a type the promise does not include --
+  and promising it honestly would pull most of that module's vocabulary into the
+  one tier whose worth is being small and stable.
+
   Gitignored content is deliberately **not** weighed, at either scope. An
   installed `.pixi/envs/default` is ignored content and is what makes these
   directories worth reclaiming at all, so weighing it would have put the whole of

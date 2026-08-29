@@ -972,12 +972,12 @@ impl Standing {
         parts.join(" and ")
     }
 
-    /// Whether anything in here is an unproved rather than a proved loss — what
-    /// decides between "push or commit it" and "look at it" in a refusal.
-    pub fn any_unproved(&self) -> bool {
-        self.iter()
-            .any(|reason| matches!(reason, Reason::CouldNotProve { .. }))
-    }
+    // `any_unproved` lived here and is deleted rather than kept for symmetry.
+    // It was written for the refusal's wording and never called: the render
+    // sites match on which words exist, which answers the same question without
+    // asking a second one that could disagree. `Standing` is in the binary
+    // surface residual, so an uncalled reader there is rows a consumer can bind
+    // to for nothing (devlaunch#531).
 }
 
 fn located(words: &str, at: &Place) -> String {

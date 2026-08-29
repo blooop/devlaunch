@@ -1041,18 +1041,75 @@ impl Insisted {
 
 /// Why `dl <ws> rm` will not delete this workspace.
 ///
-/// Carries the verdict's whole standing rather than one arm of it, because a
-/// clone can hold work *and* have a question that could not be put — a dirty
-/// tree beside a refused reachability probe, or unsaved work in a nested agent
-/// worktree beside the clone's own — and a refusal that named one would be
-/// telling half the truth (devlaunch#446). "Could not be proved" is refused for
-/// not knowing: the work is still on disk and nothing has shown it exists
-/// anywhere else, which is the same standing as unpushed work and gets the same
-/// refusal and the same way past it (devlaunch#171).
+/// **The standing is rendered into words here rather than carried, and that is
+/// the seam doing its job.** This type is re-exported at [`crate::api`], so
+/// every type it names is part of the promise. Carrying
+/// [`agent_worktrees::Standing`] would name a type the promise does not
+/// include — the defect the comment beside that re-export already records —
+/// and promising it honestly would drag `StandingSite`, `Reason`, `Place`,
+/// `Blank`, `Subject` and `NonEmpty<Loss>` along with it, which is most of a
+/// module's internal vocabulary arriving in the one tier whose value is being
+/// small and stable. So the standing stays exactly as it is inside `flows`,
+/// and what crosses the promise is [`RemovalGrounds`]: the same words, made of
+/// `String`. It is the move [`agent_worktrees::Verdict::unsaved_json`] makes
+/// for the wire, at the same boundary and for the same reason (devlaunch#531).
+///
+/// Nothing about the modelling changed. #446's "a refusal carries the whole
+/// standing" is still true of the domain type, and still true here:
+/// [`RemovalGrounds`]
+/// has an arm for holding work *and* having a question that could not be put,
+/// so a refusal still never has to pick one of two true things to say.
+/// "Could not be proved" is refused for not knowing: the work is still on disk
+/// and nothing has shown it exists anywhere else, which is the same standing as
+/// unpushed work and gets the same refusal and the same way past it
+/// (devlaunch#171).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemovalRefused {
     pub workspace_id: String,
-    pub standing: Standing,
+    pub because: RemovalGrounds,
+}
+
+/// What a refusal has to say, in the words it will be said in.
+///
+/// **Three arms and not two `Option<String>`s.** A standing is non-empty by
+/// construction and every reason in it is either a proved loss or an unproved,
+/// so "neither" cannot happen — and a pair of options is a type in which it can.
+/// Both render sites used to match the pair and carry a fourth arm apologising
+/// for being unreachable; this is that arm deleted rather than commented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemovalGrounds {
+    /// Work that exists nowhere else, and every question was answered.
+    WouldLose(String),
+    /// No proved loss, but a question that could not be put — which is refused
+    /// for not knowing rather than waved through.
+    CouldNotTell(String),
+    /// Both, which is the case that makes this a sum and not a choice.
+    BothAtOnce {
+        would_lose: String,
+        could_not_tell: String,
+    },
+}
+
+/// Render one standing into the words that cross the promise.
+///
+/// Deliberately not a method on [`RemovalGrounds`] and not `pub`: a public
+/// constructor taking a [`Standing`] would put that type back in the promised
+/// tier's signature list, which is the whole thing this seam exists to avoid.
+/// The conversion belongs to the boundary, so it lives at the boundary.
+fn refusal_from(standing: &Standing) -> RemovalGrounds {
+    match (standing.would_lose(), standing.could_not_tell()) {
+        (Some(would_lose), Some(could_not_tell)) => RemovalGrounds::BothAtOnce {
+            would_lose,
+            could_not_tell,
+        },
+        (Some(would_lose), None) => RemovalGrounds::WouldLose(would_lose),
+        (None, Some(could_not_tell)) => RemovalGrounds::CouldNotTell(could_not_tell),
+        // Unreachable: a standing is non-empty and each reason answers one of
+        // the two. Rendering the whole thing is the honest fallback -- it says
+        // what the reasons say, rather than inventing a sentence or panicking
+        // on a path a caller cannot trigger.
+        (None, None) => RemovalGrounds::CouldNotTell(standing.describe()),
+    }
 }
 
 /// What the guard decided.
@@ -1086,7 +1143,7 @@ pub(crate) fn guard_removal(
         Verdict::Collectable(_) => return Guarded::MayRemove,
         Verdict::Stands(standing) => RemovalRefused {
             workspace_id: workspace_id.to_owned(),
-            standing,
+            because: refusal_from(&standing),
         },
     };
     match insistence {
@@ -6048,7 +6105,7 @@ mod tests {
             guarded,
             Guarded::Refused(RemovalRefused {
                 workspace_id: "ws".to_owned(),
-                standing
+                because: refusal_from(&standing)
             })
         );
     }
@@ -6075,7 +6132,7 @@ mod tests {
             guarded,
             Guarded::Refused(RemovalRefused {
                 workspace_id: "ws".to_owned(),
-                standing
+                because: refusal_from(&standing)
             })
         );
     }
