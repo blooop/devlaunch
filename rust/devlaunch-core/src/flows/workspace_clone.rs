@@ -1551,10 +1551,10 @@ mod tests {
     #[test]
     fn a_cold_launch_issues_exactly_this_sequence() {
         // The whole host-side cold path, in order, with git-lfs absent. Every line
-        // of it is a contract: the bare clone, the branch read off it, the one
-        // targeted fetch in the cache, the local-refs branch probe, the workspace
-        // clone that hardlinks, the remote repointed at the forge, and the reset
-        // checkout.
+        // of it is a contract: the bare clone, the branch read off it and the check
+        // that the branch is really there (devlaunch#477), the one targeted fetch in
+        // the cache, the local-refs branch probe, the workspace clone that
+        // hardlinks, the remote repointed at the forge, and the reset checkout.
         let mut cache = a_cache();
         let fake = FakeGit::new().headed_at_main();
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
@@ -1586,6 +1586,7 @@ mod tests {
                     &bare.display().to_string()
                 ],
                 vec!["git", "symbolic-ref", "HEAD"],
+                vec!["git", "show-ref", "--verify", "refs/heads/main"],
                 vec!["git", "fetch", "origin", "+refs/heads/nb4:refs/heads/nb4"],
                 vec!["git", "show-ref", "--verify", "refs/heads/nb4"],
                 vec![
