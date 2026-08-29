@@ -645,6 +645,326 @@ pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub mod devlaunch_core::flows
+pub mod devlaunch_core::flows::agent_worktrees
+pub enum devlaunch_core::flows::agent_worktrees::Blank
+pub devlaunch_core::flows::agent_worktrees::Blank::AppearedAfterThePlan
+pub devlaunch_core::flows::agent_worktrees::Blank::GitWouldNotSay(devlaunch_core::domain::workspace_state::CouldNotTell)
+pub devlaunch_core::flows::agent_worktrees::Blank::NotThisClonesToAccountFor(devlaunch_core::flows::agent_worktrees::Unaccountable)
+pub devlaunch_core::flows::agent_worktrees::Blank::NothingToAskThrough
+pub devlaunch_core::flows::agent_worktrees::Blank::ThirdPartyClaim(core::option::Option<alloc::string::String>)
+impl devlaunch_core::flows::agent_worktrees::Blank
+pub fn devlaunch_core::flows::agent_worktrees::Blank::describe(&self) -> alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Blank
+pub fn devlaunch_core::flows::agent_worktrees::Blank::clone(&self) -> devlaunch_core::flows::agent_worktrees::Blank
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Blank
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Blank
+pub fn devlaunch_core::flows::agent_worktrees::Blank::eq(&self, &devlaunch_core::flows::agent_worktrees::Blank) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Blank
+pub fn devlaunch_core::flows::agent_worktrees::Blank::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Blank
+pub enum devlaunch_core::flows::agent_worktrees::Collectable
+pub devlaunch_core::flows::agent_worktrees::Collectable::Directory(devlaunch_core::flows::agent_worktrees::GoingDirectory)
+pub devlaunch_core::flows::agent_worktrees::Collectable::Registration(devlaunch_core::flows::agent_worktrees::GoingRegistration)
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Collectable
+pub fn devlaunch_core::flows::agent_worktrees::Collectable::clone(&self) -> devlaunch_core::flows::agent_worktrees::Collectable
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Collectable
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Collectable
+pub fn devlaunch_core::flows::agent_worktrees::Collectable::eq(&self, &devlaunch_core::flows::agent_worktrees::Collectable) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Collectable
+pub fn devlaunch_core::flows::agent_worktrees::Collectable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Collectable
+pub enum devlaunch_core::flows::agent_worktrees::Place
+pub devlaunch_core::flows::agent_worktrees::Place::ASite(devlaunch_core::flows::agent_worktrees::Inside)
+pub devlaunch_core::flows::agent_worktrees::Place::TheCloneItself
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Place
+pub fn devlaunch_core::flows::agent_worktrees::Place::clone(&self) -> devlaunch_core::flows::agent_worktrees::Place
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Place
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Place
+pub fn devlaunch_core::flows::agent_worktrees::Place::eq(&self, &devlaunch_core::flows::agent_worktrees::Place) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Place
+pub fn devlaunch_core::flows::agent_worktrees::Place::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Place
+pub enum devlaunch_core::flows::agent_worktrees::Reason
+pub devlaunch_core::flows::agent_worktrees::Reason::CouldNotProve
+pub devlaunch_core::flows::agent_worktrees::Reason::CouldNotProve::at: devlaunch_core::flows::agent_worktrees::Place
+pub devlaunch_core::flows::agent_worktrees::Reason::CouldNotProve::blank: devlaunch_core::flows::agent_worktrees::Blank
+pub devlaunch_core::flows::agent_worktrees::Reason::Holds
+pub devlaunch_core::flows::agent_worktrees::Reason::Holds::at: devlaunch_core::flows::agent_worktrees::Place
+pub devlaunch_core::flows::agent_worktrees::Reason::Holds::losses: alloc::boxed::Box<devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>>
+impl devlaunch_core::flows::agent_worktrees::Reason
+pub fn devlaunch_core::flows::agent_worktrees::Reason::at(&self) -> &devlaunch_core::flows::agent_worktrees::Place
+pub fn devlaunch_core::flows::agent_worktrees::Reason::subject(&self) -> devlaunch_core::flows::agent_worktrees::Subject
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Reason
+pub fn devlaunch_core::flows::agent_worktrees::Reason::clone(&self) -> devlaunch_core::flows::agent_worktrees::Reason
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Reason
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Reason
+pub fn devlaunch_core::flows::agent_worktrees::Reason::eq(&self, &devlaunch_core::flows::agent_worktrees::Reason) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Reason
+pub fn devlaunch_core::flows::agent_worktrees::Reason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Reason
+pub enum devlaunch_core::flows::agent_worktrees::Subject
+pub devlaunch_core::flows::agent_worktrees::Subject::AClaim
+pub devlaunch_core::flows::agent_worktrees::Subject::GitsAccountOfContent
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Subject
+pub fn devlaunch_core::flows::agent_worktrees::Subject::clone(&self) -> devlaunch_core::flows::agent_worktrees::Subject
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Subject
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Subject
+pub fn devlaunch_core::flows::agent_worktrees::Subject::eq(&self, &devlaunch_core::flows::agent_worktrees::Subject) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Subject
+pub fn devlaunch_core::flows::agent_worktrees::Subject::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::agent_worktrees::Subject
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Subject
+pub enum devlaunch_core::flows::agent_worktrees::Unaccountable
+pub devlaunch_core::flows::agent_worktrees::Unaccountable::GitfileUnreadable
+pub devlaunch_core::flows::agent_worktrees::Unaccountable::PlainDirectory
+pub devlaunch_core::flows::agent_worktrees::Unaccountable::RegisteredElsewhere
+pub devlaunch_core::flows::agent_worktrees::Unaccountable::SymlinkInThePlace
+impl devlaunch_core::flows::agent_worktrees::Unaccountable
+pub fn devlaunch_core::flows::agent_worktrees::Unaccountable::describe(&self) -> &'static str
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Unaccountable
+pub fn devlaunch_core::flows::agent_worktrees::Unaccountable::clone(&self) -> devlaunch_core::flows::agent_worktrees::Unaccountable
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Unaccountable
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Unaccountable
+pub fn devlaunch_core::flows::agent_worktrees::Unaccountable::eq(&self, &devlaunch_core::flows::agent_worktrees::Unaccountable) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Unaccountable
+pub fn devlaunch_core::flows::agent_worktrees::Unaccountable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::agent_worktrees::Unaccountable
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Unaccountable
+pub enum devlaunch_core::flows::agent_worktrees::Verdict
+pub devlaunch_core::flows::agent_worktrees::Verdict::Collectable(devlaunch_core::flows::agent_worktrees::Proof)
+pub devlaunch_core::flows::agent_worktrees::Verdict::Stands(devlaunch_core::flows::agent_worktrees::Standing)
+impl devlaunch_core::flows::agent_worktrees::Verdict
+pub fn devlaunch_core::flows::agent_worktrees::Verdict::unsaved_json(&self) -> serde_json::value::Value
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Verdict
+pub fn devlaunch_core::flows::agent_worktrees::Verdict::clone(&self) -> devlaunch_core::flows::agent_worktrees::Verdict
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Verdict
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Verdict
+pub fn devlaunch_core::flows::agent_worktrees::Verdict::eq(&self, &devlaunch_core::flows::agent_worktrees::Verdict) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Verdict
+pub fn devlaunch_core::flows::agent_worktrees::Verdict::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Verdict
+pub enum devlaunch_core::flows::agent_worktrees::WorktreeHead
+pub devlaunch_core::flows::agent_worktrees::WorktreeHead::Branch
+pub devlaunch_core::flows::agent_worktrees::WorktreeHead::Branch::commit: alloc::string::String
+pub devlaunch_core::flows::agent_worktrees::WorktreeHead::Branch::reference: alloc::string::String
+pub devlaunch_core::flows::agent_worktrees::WorktreeHead::Detached
+pub devlaunch_core::flows::agent_worktrees::WorktreeHead::Detached::commit: alloc::string::String
+impl devlaunch_core::flows::agent_worktrees::WorktreeHead
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeHead::named(&self) -> alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WorktreeHead
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeHead::clone(&self) -> devlaunch_core::flows::agent_worktrees::WorktreeHead
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WorktreeHead
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WorktreeHead
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeHead::eq(&self, &devlaunch_core::flows::agent_worktrees::WorktreeHead) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WorktreeHead
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeHead::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WorktreeHead
+pub enum devlaunch_core::flows::agent_worktrees::WorktreePromotion
+pub devlaunch_core::flows::agent_worktrees::WorktreePromotion::Insisted
+pub devlaunch_core::flows::agent_worktrees::WorktreePromotion::Insisted::despite: devlaunch_core::flows::agent_worktrees::Standing
+pub devlaunch_core::flows::agent_worktrees::WorktreePromotion::Unopposed
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WorktreePromotion
+pub fn devlaunch_core::flows::agent_worktrees::WorktreePromotion::clone(&self) -> devlaunch_core::flows::agent_worktrees::WorktreePromotion
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WorktreePromotion
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WorktreePromotion
+pub fn devlaunch_core::flows::agent_worktrees::WorktreePromotion::eq(&self, &devlaunch_core::flows::agent_worktrees::WorktreePromotion) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WorktreePromotion
+pub fn devlaunch_core::flows::agent_worktrees::WorktreePromotion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WorktreePromotion
+pub struct devlaunch_core::flows::agent_worktrees::CloneWorktrees
+impl devlaunch_core::flows::agent_worktrees::CloneWorktrees
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::clone_path(&self) -> &std::path::Path
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::going(&self) -> &[devlaunch_core::flows::agent_worktrees::Going]
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::owner(&self) -> &str
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::repo(&self) -> &str
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::standing(&self) -> &[devlaunch_core::flows::agent_worktrees::StandingSite]
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::CloneWorktrees
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::clone(&self) -> devlaunch_core::flows::agent_worktrees::CloneWorktrees
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::CloneWorktrees
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::CloneWorktrees
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::eq(&self, &devlaunch_core::flows::agent_worktrees::CloneWorktrees) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::CloneWorktrees
+pub fn devlaunch_core::flows::agent_worktrees::CloneWorktrees::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::CloneWorktrees
+pub struct devlaunch_core::flows::agent_worktrees::ForgetRefused
+pub devlaunch_core::flows::agent_worktrees::ForgetRefused::reason: alloc::string::String
+pub devlaunch_core::flows::agent_worktrees::ForgetRefused::registered: std::path::PathBuf
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::ForgetRefused
+pub fn devlaunch_core::flows::agent_worktrees::ForgetRefused::clone(&self) -> devlaunch_core::flows::agent_worktrees::ForgetRefused
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::ForgetRefused
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::ForgetRefused
+pub fn devlaunch_core::flows::agent_worktrees::ForgetRefused::eq(&self, &devlaunch_core::flows::agent_worktrees::ForgetRefused) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::ForgetRefused
+pub fn devlaunch_core::flows::agent_worktrees::ForgetRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::ForgetRefused
+pub struct devlaunch_core::flows::agent_worktrees::Going
+impl devlaunch_core::flows::agent_worktrees::Going
+pub fn devlaunch_core::flows::agent_worktrees::Going::forgets(&self) -> &[devlaunch_core::flows::agent_worktrees::Recorded]
+pub fn devlaunch_core::flows::agent_worktrees::Going::promotion(&self) -> &devlaunch_core::flows::agent_worktrees::WorktreePromotion
+pub fn devlaunch_core::flows::agent_worktrees::Going::what(&self) -> &devlaunch_core::flows::agent_worktrees::Collectable
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Going
+pub fn devlaunch_core::flows::agent_worktrees::Going::clone(&self) -> devlaunch_core::flows::agent_worktrees::Going
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Going
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Going
+pub fn devlaunch_core::flows::agent_worktrees::Going::eq(&self, &devlaunch_core::flows::agent_worktrees::Going) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Going
+pub fn devlaunch_core::flows::agent_worktrees::Going::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Going
+pub struct devlaunch_core::flows::agent_worktrees::GoingDirectory
+impl devlaunch_core::flows::agent_worktrees::GoingDirectory
+pub fn devlaunch_core::flows::agent_worktrees::GoingDirectory::at(&self) -> &std::path::Path
+pub fn devlaunch_core::flows::agent_worktrees::GoingDirectory::forgets(&self) -> &[devlaunch_core::flows::agent_worktrees::Recorded]
+pub fn devlaunch_core::flows::agent_worktrees::GoingDirectory::usage(&self) -> &devlaunch_core::flows::disk_usage::DiskUsage
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::GoingDirectory
+pub fn devlaunch_core::flows::agent_worktrees::GoingDirectory::clone(&self) -> devlaunch_core::flows::agent_worktrees::GoingDirectory
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::GoingDirectory
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::GoingDirectory
+pub fn devlaunch_core::flows::agent_worktrees::GoingDirectory::eq(&self, &devlaunch_core::flows::agent_worktrees::GoingDirectory) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::GoingDirectory
+pub fn devlaunch_core::flows::agent_worktrees::GoingDirectory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::GoingDirectory
+pub struct devlaunch_core::flows::agent_worktrees::GoingRegistration
+impl devlaunch_core::flows::agent_worktrees::GoingRegistration
+pub fn devlaunch_core::flows::agent_worktrees::GoingRegistration::forgets(&self) -> &[devlaunch_core::flows::agent_worktrees::Recorded]
+pub fn devlaunch_core::flows::agent_worktrees::GoingRegistration::place(&self) -> &devlaunch_core::flows::agent_worktrees::Inside
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::GoingRegistration
+pub fn devlaunch_core::flows::agent_worktrees::GoingRegistration::clone(&self) -> devlaunch_core::flows::agent_worktrees::GoingRegistration
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::GoingRegistration
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::GoingRegistration
+pub fn devlaunch_core::flows::agent_worktrees::GoingRegistration::eq(&self, &devlaunch_core::flows::agent_worktrees::GoingRegistration) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::GoingRegistration
+pub fn devlaunch_core::flows::agent_worktrees::GoingRegistration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::GoingRegistration
+pub struct devlaunch_core::flows::agent_worktrees::Inside
+impl devlaunch_core::flows::agent_worktrees::Inside
+pub fn devlaunch_core::flows::agent_worktrees::Inside::as_str(&self) -> &str
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Inside
+pub fn devlaunch_core::flows::agent_worktrees::Inside::clone(&self) -> devlaunch_core::flows::agent_worktrees::Inside
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Inside
+impl core::cmp::Ord for devlaunch_core::flows::agent_worktrees::Inside
+pub fn devlaunch_core::flows::agent_worktrees::Inside::cmp(&self, &devlaunch_core::flows::agent_worktrees::Inside) -> core::cmp::Ordering
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Inside
+pub fn devlaunch_core::flows::agent_worktrees::Inside::eq(&self, &devlaunch_core::flows::agent_worktrees::Inside) -> bool
+impl core::cmp::PartialOrd for devlaunch_core::flows::agent_worktrees::Inside
+pub fn devlaunch_core::flows::agent_worktrees::Inside::partial_cmp(&self, &devlaunch_core::flows::agent_worktrees::Inside) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Inside
+pub fn devlaunch_core::flows::agent_worktrees::Inside::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Inside
+pub struct devlaunch_core::flows::agent_worktrees::Lock
+pub devlaunch_core::flows::agent_worktrees::Lock::reason: core::option::Option<alloc::string::String>
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Lock
+pub fn devlaunch_core::flows::agent_worktrees::Lock::clone(&self) -> devlaunch_core::flows::agent_worktrees::Lock
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Lock
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Lock
+pub fn devlaunch_core::flows::agent_worktrees::Lock::eq(&self, &devlaunch_core::flows::agent_worktrees::Lock) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Lock
+pub fn devlaunch_core::flows::agent_worktrees::Lock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Lock
+pub struct devlaunch_core::flows::agent_worktrees::Proof
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Proof
+pub fn devlaunch_core::flows::agent_worktrees::Proof::clone(&self) -> devlaunch_core::flows::agent_worktrees::Proof
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Proof
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Proof
+pub fn devlaunch_core::flows::agent_worktrees::Proof::eq(&self, &devlaunch_core::flows::agent_worktrees::Proof) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Proof
+pub fn devlaunch_core::flows::agent_worktrees::Proof::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Proof
+pub struct devlaunch_core::flows::agent_worktrees::Recorded
+impl devlaunch_core::flows::agent_worktrees::Recorded
+pub fn devlaunch_core::flows::agent_worktrees::Recorded::as_path(&self) -> &std::path::Path
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Recorded
+pub fn devlaunch_core::flows::agent_worktrees::Recorded::clone(&self) -> devlaunch_core::flows::agent_worktrees::Recorded
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Recorded
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Recorded
+pub fn devlaunch_core::flows::agent_worktrees::Recorded::eq(&self, &devlaunch_core::flows::agent_worktrees::Recorded) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Recorded
+pub fn devlaunch_core::flows::agent_worktrees::Recorded::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Recorded
+pub struct devlaunch_core::flows::agent_worktrees::RemovedWorktree
+pub devlaunch_core::flows::agent_worktrees::RemovedWorktree::path: std::path::PathBuf
+pub devlaunch_core::flows::agent_worktrees::RemovedWorktree::usage: devlaunch_core::flows::disk_usage::DiskUsage
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::RemovedWorktree
+pub fn devlaunch_core::flows::agent_worktrees::RemovedWorktree::clone(&self) -> devlaunch_core::flows::agent_worktrees::RemovedWorktree
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::RemovedWorktree
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::RemovedWorktree
+pub fn devlaunch_core::flows::agent_worktrees::RemovedWorktree::eq(&self, &devlaunch_core::flows::agent_worktrees::RemovedWorktree) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::RemovedWorktree
+pub fn devlaunch_core::flows::agent_worktrees::RemovedWorktree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::RemovedWorktree
+pub struct devlaunch_core::flows::agent_worktrees::Standing
+impl devlaunch_core::flows::agent_worktrees::Standing
+pub fn devlaunch_core::flows::agent_worktrees::Standing::any_unproved(&self) -> bool
+pub fn devlaunch_core::flows::agent_worktrees::Standing::could_not_tell(&self) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::flows::agent_worktrees::Standing::describe(&self) -> alloc::string::String
+pub fn devlaunch_core::flows::agent_worktrees::Standing::would_lose(&self) -> core::option::Option<alloc::string::String>
+impl devlaunch_core::flows::agent_worktrees::Standing
+pub fn devlaunch_core::flows::agent_worktrees::Standing::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = &devlaunch_core::flows::agent_worktrees::Reason>
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::Standing
+pub fn devlaunch_core::flows::agent_worktrees::Standing::clone(&self) -> devlaunch_core::flows::agent_worktrees::Standing
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::Standing
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::Standing
+pub fn devlaunch_core::flows::agent_worktrees::Standing::eq(&self, &devlaunch_core::flows::agent_worktrees::Standing) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::Standing
+pub fn devlaunch_core::flows::agent_worktrees::Standing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::Standing
+pub struct devlaunch_core::flows::agent_worktrees::StandingSite
+impl devlaunch_core::flows::agent_worktrees::StandingSite
+pub fn devlaunch_core::flows::agent_worktrees::StandingSite::at(&self) -> &std::path::Path
+pub fn devlaunch_core::flows::agent_worktrees::StandingSite::reasons(&self) -> &devlaunch_core::flows::agent_worktrees::Standing
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::StandingSite
+pub fn devlaunch_core::flows::agent_worktrees::StandingSite::clone(&self) -> devlaunch_core::flows::agent_worktrees::StandingSite
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::StandingSite
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::StandingSite
+pub fn devlaunch_core::flows::agent_worktrees::StandingSite::eq(&self, &devlaunch_core::flows::agent_worktrees::StandingSite) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::StandingSite
+pub fn devlaunch_core::flows::agent_worktrees::StandingSite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::StandingSite
+pub struct devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::because: devlaunch_core::flows::agent_worktrees::Standing
+pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::path: std::path::PathBuf
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::clone(&self) -> devlaunch_core::flows::agent_worktrees::WithheldWorktree
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::eq(&self, &devlaunch_core::flows::agent_worktrees::WithheldWorktree) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub struct devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub devlaunch_core::flows::agent_worktrees::WorktreeReport::forget_refused: alloc::vec::Vec<devlaunch_core::flows::agent_worktrees::ForgetRefused>
+pub devlaunch_core::flows::agent_worktrees::WorktreeReport::forgotten: usize
+pub devlaunch_core::flows::agent_worktrees::WorktreeReport::refused: alloc::vec::Vec<devlaunch_core::flows::repo_manager::Refusal>
+pub devlaunch_core::flows::agent_worktrees::WorktreeReport::removed: alloc::vec::Vec<devlaunch_core::flows::agent_worktrees::RemovedWorktree>
+pub devlaunch_core::flows::agent_worktrees::WorktreeReport::withheld: alloc::vec::Vec<devlaunch_core::flows::agent_worktrees::WithheldWorktree>
+impl devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeReport::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeReport::nothing_to_say(&self) -> bool
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeReport::clone(&self) -> devlaunch_core::flows::agent_worktrees::WorktreeReport
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WorktreeReport
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeReport::eq(&self, &devlaunch_core::flows::agent_worktrees::WorktreeReport) -> bool
+impl core::default::Default for devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeReport::default() -> devlaunch_core::flows::agent_worktrees::WorktreeReport
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WorktreeReport
+pub struct devlaunch_core::flows::agent_worktrees::WorktreeSweep
+impl devlaunch_core::flows::agent_worktrees::WorktreeSweep
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::clones(&self) -> &[devlaunch_core::flows::agent_worktrees::CloneWorktrees]
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::nothing_to_do(&self) -> bool
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::nothing_to_say(&self) -> bool
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WorktreeSweep
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::clone(&self) -> devlaunch_core::flows::agent_worktrees::WorktreeSweep
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WorktreeSweep
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WorktreeSweep
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::eq(&self, &devlaunch_core::flows::agent_worktrees::WorktreeSweep) -> bool
+impl core::default::Default for devlaunch_core::flows::agent_worktrees::WorktreeSweep
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::default() -> devlaunch_core::flows::agent_worktrees::WorktreeSweep
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WorktreeSweep
+pub fn devlaunch_core::flows::agent_worktrees::WorktreeSweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WorktreeSweep
 pub mod devlaunch_core::flows::branch_manager
 pub enum devlaunch_core::flows::branch_manager::BranchError
 pub devlaunch_core::flows::branch_manager::BranchError::NotCreated
@@ -1179,7 +1499,7 @@ pub fn devlaunch_core::flows::lifecycle::ChildWork::fmt(&self, &mut core::fmt::F
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::ChildWork
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::ChildWork
 pub enum devlaunch_core::flows::lifecycle::KeptBecause
-pub devlaunch_core::flows::lifecycle::KeptBecause::Objected(devlaunch_core::flows::lifecycle::Objection)
+pub devlaunch_core::flows::lifecycle::KeptBecause::Objected(devlaunch_core::flows::agent_worktrees::Standing)
 pub devlaunch_core::flows::lifecycle::KeptBecause::RecordsDisagree
 pub devlaunch_core::flows::lifecycle::KeptBecause::RecordsDisagree::sourced_at: alloc::string::String
 pub devlaunch_core::flows::lifecycle::KeptBecause::RecordsDisagree::workspace_id: alloc::string::String
@@ -1207,20 +1527,9 @@ pub fn devlaunch_core::flows::lifecycle::NotAdopted::eq(&self, &devlaunch_core::
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::NotAdopted
 pub fn devlaunch_core::flows::lifecycle::NotAdopted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::NotAdopted
-pub enum devlaunch_core::flows::lifecycle::Objection
-pub devlaunch_core::flows::lifecycle::Objection::CouldNotTell(devlaunch_core::domain::workspace_state::CouldNotTell)
-pub devlaunch_core::flows::lifecycle::Objection::WouldLose(devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>)
-impl core::clone::Clone for devlaunch_core::flows::lifecycle::Objection
-pub fn devlaunch_core::flows::lifecycle::Objection::clone(&self) -> devlaunch_core::flows::lifecycle::Objection
-impl core::cmp::Eq for devlaunch_core::flows::lifecycle::Objection
-impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::Objection
-pub fn devlaunch_core::flows::lifecycle::Objection::eq(&self, &devlaunch_core::flows::lifecycle::Objection) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Objection
-pub fn devlaunch_core::flows::lifecycle::Objection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Objection
 pub enum devlaunch_core::flows::lifecycle::Promotion
 pub devlaunch_core::flows::lifecycle::Promotion::Insisted
-pub devlaunch_core::flows::lifecycle::Promotion::Insisted::despite: devlaunch_core::flows::lifecycle::Objection
+pub devlaunch_core::flows::lifecycle::Promotion::Insisted::despite: devlaunch_core::flows::agent_worktrees::Standing
 pub devlaunch_core::flows::lifecycle::Promotion::Unopposed
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::Promotion
 pub fn devlaunch_core::flows::lifecycle::Promotion::clone(&self) -> devlaunch_core::flows::lifecycle::Promotion
@@ -1421,6 +1730,18 @@ pub fn devlaunch_core::flows::lifecycle::ClonePlacement::eq(&self, &devlaunch_co
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::ClonePlacement
 pub fn devlaunch_core::flows::lifecycle::ClonePlacement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::ClonePlacement
+pub struct devlaunch_core::flows::lifecycle::Insisted
+pub devlaunch_core::flows::lifecycle::Insisted::clones: devlaunch_core::flows::lifecycle::Insistence
+pub devlaunch_core::flows::lifecycle::Insisted::worktrees: devlaunch_core::flows::lifecycle::Insistence
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::Insisted
+pub fn devlaunch_core::flows::lifecycle::Insisted::clone(&self) -> devlaunch_core::flows::lifecycle::Insisted
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::Insisted
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::Insisted
+pub fn devlaunch_core::flows::lifecycle::Insisted::eq(&self, &devlaunch_core::flows::lifecycle::Insisted) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::Insisted
+pub fn devlaunch_core::flows::lifecycle::Insisted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::lifecycle::Insisted
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Insisted
 pub struct devlaunch_core::flows::lifecycle::Kept
 pub devlaunch_core::flows::lifecycle::Kept::because: devlaunch_core::flows::lifecycle::KeptBecause
 pub devlaunch_core::flows::lifecycle::Kept::path: std::path::PathBuf
@@ -1434,13 +1755,14 @@ pub fn devlaunch_core::flows::lifecycle::Kept::fmt(&self, &mut core::fmt::Format
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Kept
 pub struct devlaunch_core::flows::lifecycle::PrunePlan
 impl devlaunch_core::flows::lifecycle::PrunePlan
-pub fn devlaunch_core::flows::lifecycle::PrunePlan::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
+pub fn devlaunch_core::flows::lifecycle::PrunePlan::clones_freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::keeping(&self) -> &[devlaunch_core::flows::lifecycle::Kept]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::nothing_to_do(&self) -> bool
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::reclaiming(&self) -> &[devlaunch_core::flows::lifecycle::ReclaimableVolumes]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::removing(&self) -> &[devlaunch_core::flows::lifecycle::Reclaimable]
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::root(&self) -> &std::path::Path
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::stale_records(&self) -> &[devlaunch_core::domain::model::WorktreeInfo]
+pub fn devlaunch_core::flows::lifecycle::PrunePlan::worktrees(&self) -> &devlaunch_core::flows::agent_worktrees::WorktreeSweep
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::PrunePlan
 pub fn devlaunch_core::flows::lifecycle::PrunePlan::clone(&self) -> devlaunch_core::flows::lifecycle::PrunePlan
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::PrunePlan
@@ -1455,9 +1777,10 @@ pub devlaunch_core::flows::lifecycle::PruneReport::refused: alloc::vec::Vec<devl
 pub devlaunch_core::flows::lifecycle::PruneReport::removed: alloc::vec::Vec<devlaunch_core::flows::lifecycle::Reclaimable>
 pub devlaunch_core::flows::lifecycle::PruneReport::volumes_kept: alloc::vec::Vec<devlaunch_core::flows::lifecycle::VolumesKept>
 pub devlaunch_core::flows::lifecycle::PruneReport::withheld: alloc::vec::Vec<devlaunch_core::flows::lifecycle::Withheld>
+pub devlaunch_core::flows::lifecycle::PruneReport::worktrees: devlaunch_core::flows::agent_worktrees::WorktreeReport
 impl devlaunch_core::flows::lifecycle::PruneReport
+pub fn devlaunch_core::flows::lifecycle::PruneReport::clones_freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::lifecycle::PruneReport::finished(&self) -> bool
-pub fn devlaunch_core::flows::lifecycle::PruneReport::freed(&self) -> devlaunch_core::flows::disk_usage::DiskUsage
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::PruneReport
 pub fn devlaunch_core::flows::lifecycle::PruneReport::clone(&self) -> devlaunch_core::flows::lifecycle::PruneReport
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::PruneReport
@@ -1582,9 +1905,8 @@ pub fn devlaunch_core::flows::lifecycle::Withheld::fmt(&self, &mut core::fmt::Fo
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Withheld
 pub fn devlaunch_core::flows::lifecycle::apply_reconciliation(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::clients::devpod_home::DevpodHome, &devlaunch_core::flows::lifecycle::ReconcilePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcileReport
 pub fn devlaunch_core::flows::lifecycle::child_work(&std::path::Path, devlaunch_core::flows::lifecycle::RefreshReason) -> devlaunch_core::flows::lifecycle::ChildWork
-pub fn devlaunch_core::flows::lifecycle::objection(&devlaunch_core::domain::workspace_state::Unsaved) -> core::option::Option<devlaunch_core::flows::lifecycle::Objection>
 pub fn devlaunch_core::flows::lifecycle::prune_clones(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &devlaunch_core::flows::kept_copies::KeptCopies, &devlaunch_core::flows::lifecycle::PrunePlan, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PruneOutcome, devlaunch_core::flows::lifecycle::PruneError>
-pub fn devlaunch_core::flows::lifecycle::prune_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::kept_copies::KeptCopies, &devlaunch_core::flows::lifecycle::ClonePlacement, devlaunch_core::flows::lifecycle::Insistence, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PrunePlan, devlaunch_core::flows::lifecycle::PruneError>
+pub fn devlaunch_core::flows::lifecycle::prune_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::kept_copies::KeptCopies, &devlaunch_core::flows::lifecycle::ClonePlacement, devlaunch_core::flows::lifecycle::Insisted, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::PrunePlan, devlaunch_core::flows::lifecycle::PruneError>
 pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::lifecycle::PurgePlan, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::PurgeStep)) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgeOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::flows::lifecycle::purge_plan(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgePlan, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::lifecycle::reconcile_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcilePlan
@@ -1603,7 +1925,7 @@ impl core::fmt::Debug for devlaunch_core::flows::listing::LastUsed
 pub fn devlaunch_core::flows::listing::LastUsed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::LastUsed
 pub enum devlaunch_core::flows::listing::SizeCell
-pub devlaunch_core::flows::listing::SizeCell::Measured(devlaunch_core::flows::disk_usage::DiskUsage)
+pub devlaunch_core::flows::listing::SizeCell::Measured(devlaunch_core::flows::listing::CloneDisk)
 pub devlaunch_core::flows::listing::SizeCell::NoColumn
 pub devlaunch_core::flows::listing::SizeCell::NotOurs
 impl core::clone::Clone for devlaunch_core::flows::listing::SizeCell
@@ -1652,6 +1974,20 @@ pub fn devlaunch_core::flows::listing::WorkspaceTable::eq(&self, &devlaunch_core
 impl core::fmt::Debug for devlaunch_core::flows::listing::WorkspaceTable
 pub fn devlaunch_core::flows::listing::WorkspaceTable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::WorkspaceTable
+pub struct devlaunch_core::flows::listing::CloneDisk
+impl devlaunch_core::flows::listing::CloneDisk
+pub fn devlaunch_core::flows::listing::CloneDisk::freed(&self) -> &devlaunch_core::flows::disk_usage::DiskUsage
+pub fn devlaunch_core::flows::listing::CloneDisk::in_worktrees(&self) -> core::option::Option<&devlaunch_core::flows::disk_usage::DiskUsage>
+pub fn devlaunch_core::flows::listing::CloneDisk::measured(u64, core::option::Option<u64>) -> Self
+pub fn devlaunch_core::flows::listing::CloneDisk::worktrees_worth_naming(&self) -> core::option::Option<&devlaunch_core::flows::disk_usage::DiskUsage>
+impl core::clone::Clone for devlaunch_core::flows::listing::CloneDisk
+pub fn devlaunch_core::flows::listing::CloneDisk::clone(&self) -> devlaunch_core::flows::listing::CloneDisk
+impl core::cmp::Eq for devlaunch_core::flows::listing::CloneDisk
+impl core::cmp::PartialEq for devlaunch_core::flows::listing::CloneDisk
+pub fn devlaunch_core::flows::listing::CloneDisk::eq(&self, &devlaunch_core::flows::listing::CloneDisk) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::listing::CloneDisk
+pub fn devlaunch_core::flows::listing::CloneDisk::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::CloneDisk
 pub struct devlaunch_core::flows::listing::DlView<'a>
 pub devlaunch_core::flows::listing::DlView::cache_dir: &'a std::path::Path
 pub devlaunch_core::flows::listing::DlView::clones: &'a dyn devlaunch_core::flows::listing::ClonePathResolver
