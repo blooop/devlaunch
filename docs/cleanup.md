@@ -438,12 +438,28 @@ lands, and the next sweep tries again. Withholding the stamp would make every
 later pass re-fetch the whole repository forever on account of a representation
 change that did not come off.
 
-That notice reaches nobody today, and the honest reading of why is that the sweep
-runs detached with its output discarded, so every notice it raises goes to a null
-descriptor and this is simply the first one that anybody would want to read. What
-a refusal costs while it stays unread is bounded: loose refs are one file per ref
-rewritten in place rather than appended, so a pack that keeps failing holds the
-ref count flat at what one sweep writes instead of growing it.
+The notice itself still reaches nobody, and it never will: the sweep runs
+detached with its output discarded, so every line it raises goes to a null
+descriptor. What reaches somebody is the **record**. A pass that refuses a pack
+writes the repository and git's own words into `metadata.json` beside that
+repository's freshness stamp, and `dl --ls` prints them under its table:
+
+```
+Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: fatal: unable to create 'packed-refs.lock': Permission denied
+```
+
+`dl --ls --json` carries the same thing as a `lastSweep` object on every row
+whose repository has one. Three things bound what that costs. The note is
+overwritten on every pass that acts on a repository, so a cache holds at most one
+per repository and there is no rotation and no second file. A pass that goes
+cleanly clears it, so a machine whose permissions have been fixed stops
+complaining on its own. And a pass that attempted nothing, because the interval
+had not elapsed or another run held the lock, leaves the last note standing
+rather than reporting a clean sweep it never ran.
+
+What a refusal costs while nobody has yet acted on it is bounded too: loose refs
+are one file per ref rewritten in place rather than appended, so a pack that keeps
+failing holds the ref count flat at what one sweep writes instead of growing it.
 
 **Packing does not change what a later prune may delete.** A ref the remote
 retracts is removed whether it was loose or packed: git rewrites `packed-refs`
