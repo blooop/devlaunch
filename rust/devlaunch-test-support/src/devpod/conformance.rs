@@ -27,9 +27,8 @@ use serde::Deserialize;
 /// The corpus, read at compile time from the directory both suites share.
 const CORPUS: &str = include_str!("../../../../test/fixtures/devpod/conformance.json");
 
-/// The other fake's source, read the same way so its flag tables can be compared
-/// with this one's. Nothing here executes it; see [`the_two_fakes_agree_on_which
-/// _flags_take_a_value`].
+/// The other fake's source, read only to check that it still reads the shared
+/// value-flag file rather than keeping a copy. Nothing here executes it.
 const SHIM: &str = include_str!("../../../../test/fixtures/devpod_shim.py");
 
 /// Every row this driver expects to find in the corpus, by `id`.
@@ -388,61 +387,54 @@ fn every_row_says_how_it_was_verified() {
 }
 
 #[test]
-fn the_two_fakes_agree_on_which_flags_take_a_value() {
-    // The tables that say which flags consume the next argv element are written
-    // out twice, once per fake, and nothing compared them: dropping a flag from
-    // one left every suite green, because only ~14 of the ~44 names have a corpus
-    // row to catch it behaviourally. This is the other half of the corpus — the
-    // corpus proves the two fakes agree on the calls it covers, and this proves
-    // they agree on the tables that decide the rest.
-    for (ours, theirs, table) in [
-        (GLOBAL_VALUE_FLAGS, "_GLOBAL_VALUE_FLAGS", "the globals"),
-        (UP_VALUE_FLAGS, "_UP_VALUE_FLAGS", "up"),
-        (SSH_VALUE_FLAGS, "_SSH_VALUE_FLAGS", "ssh"),
-        (DELETE_VALUE_FLAGS, "_DELETE_VALUE_FLAGS", "delete"),
-        (STATUS_VALUE_FLAGS, "_STATUS_VALUE_FLAGS", "status"),
-    ] {
-        let mut mine: Vec<&str> = ours.to_vec();
-        mine.sort_unstable();
-        let mut shim = shim_table(theirs);
-        shim.sort_unstable();
-        assert_eq!(
-            mine, shim,
-            "the two fakes disagree on which {table} flags take a value; a flag in \
-             one table and not the other is read as bare by one fake, which makes \
-             its value that call's positional"
-        );
-    }
-
-    // `stop` has no flags of its own, which no list of names can express.
-    assert!(STOP_VALUE_FLAGS.is_empty());
+fn the_value_flag_tables_are_a_file_both_fakes_read() {
+    // The tables saying which flags consume the next argv element used to be
+    // written out twice, once per fake, with nothing comparing them: dropping a
+    // flag from one left every suite green, because only ~14 of the ~44 names
+    // have a corpus row to catch it behaviourally. They are one file now, for the
+    // same reason the corpus is one file, so the two fakes cannot disagree — and
+    // what is left to check is that neither has quietly grown a private copy.
     assert!(
-        SHIM.contains("_STOP_VALUE_FLAGS = frozenset()"),
-        "the shim's stop table is no longer empty, and this one is"
+        SHIM.contains("\"value_flags.json\""),
+        "the shim no longer reads the shared value-flag file; a private copy is \
+         what this whole mechanism exists to prevent"
     );
-}
 
-/// The flag names in one of the shim's tables, read out of its source.
-///
-/// Reading text rather than running Python is the point: this side compares its
-/// own live constants against the other side's source, and the pytest driver does
-/// the mirror image, so neither test can be fooled by misparsing the language it
-/// is written in.
-fn shim_table(name: &str) -> Vec<&'static str> {
-    let opened = format!("{name} = {{");
-    let start = SHIM
-        .find(&opened)
-        .unwrap_or_else(|| panic!("the shim no longer defines {name}"))
-        + opened.len();
-    // No flag name carries a brace, so the first one closes the set — which is
-    // what lets one reader handle the tables written on one line and the tables
-    // written over thirty.
-    let length = SHIM[start..]
-        .find('}')
-        .unwrap_or_else(|| panic!("{name} has no closing brace"));
-    SHIM[start..start + length]
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .collect()
+    // The roll call of tables, the same guard the rows get: a table in the file
+    // that this fake never asks for, or one it asks for that the file does not
+    // have, fails by name rather than sitting there unread. Adding a table means
+    // a `Table` variant, and the compiler makes you give that a key, so the two
+    // sides of this cannot drift apart quietly either.
+    let mut named: Vec<&str> = Table::ALL.iter().map(|table| table.key()).collect();
+    named.sort_unstable();
+    let mut in_file: Vec<&str> = value_flags().keys().map(String::as_str).collect();
+    in_file.sort_unstable();
+    assert_eq!(
+        named, in_file,
+        "the shared file's tables and the ones this fake knows about have to be \
+         the same set; an unread table guards nothing"
+    );
+
+    for table in Table::ALL {
+        let flags = table.flags();
+        // `stop` has no flags of its own at v0.26.1, which is a fact about devpod
+        // rather than an empty parse. Everything else being non-empty is what
+        // says the file was read rather than merely found.
+        if *table == Table::Stop {
+            assert!(flags.is_empty(), "devpod stop has no flags of its own");
+        } else {
+            assert!(
+                !flags.is_empty(),
+                "table {:?} came back empty, which no devpod subcommand but stop is",
+                table.key()
+            );
+        }
+        for flag in flags {
+            assert!(
+                flag.starts_with('-'),
+                "table {:?} holds {flag:?}, which is not a flag name",
+                table.key()
+            );
+        }
+    }
 }

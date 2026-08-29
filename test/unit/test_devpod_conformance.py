@@ -41,6 +41,7 @@ import pytest
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 SHIM = FIXTURES / "devpod_shim.py"
 CORPUS = FIXTURES / "devpod" / "conformance.json"
+VALUE_FLAGS = FIXTURES / "devpod" / "value_flags.json"
 RUST_DRIVER = (
     Path(__file__).parent.parent.parent
     / "rust"
@@ -87,6 +88,14 @@ ROLL_CALL = [
     "list-leaves-workspaces-alone",
     "unknown-command",
 ]
+
+#: Every value-flag table there is, by its name in the shared file.
+#:
+#: The rows' roll call, one level up. The Rust fake names the same six as a
+#: `Table` enum, and each driver checks the fake it drives against the file, so a
+#: table that exists in one place and not the other fails by name rather than
+#: sitting there unread.
+TABLE_ROLL_CALL = ["global", "up", "ssh", "delete", "status", "stop"]
 
 #: The shape each named row has to keep: which subcommand, which flag, and which
 #: side of the positional it sits on. Keyed by row id, so the guard is about
@@ -278,59 +287,51 @@ def _shim_module():
     return module
 
 
-def _rust_table(source: str, name: str) -> list:
-    """The flag names in one of the Rust fake's tables, read out of its source.
+def test_the_value_flag_tables_are_a_file_both_fakes_read():
+    """The tables deciding which flags consume the next argv element are one file.
 
-    Reading text rather than linking Rust is the point, and it is the mirror of
-    what the Rust driver does to this file: each side compares its own live
-    values against the other side's source, so neither test can be fooled by
-    misparsing the language it is written in.
+    They used to be written out twice, once per fake, with nothing comparing them:
+    dropping a flag from one left every suite green, because only ~14 of the ~44
+    names have a corpus row to catch it behaviourally. They are one file now, for
+    the same reason the corpus is one file, so the two fakes cannot disagree. What
+    is left to check is that neither has quietly grown a private copy, and each
+    driver checks the fake it drives -- the file is the referee between them.
     """
-    match = re.search(
-        rf"const {name}: &\[&str\] = &\[(.*?)\];",
-        source,
-        re.DOTALL,
+    tables = json.loads(VALUE_FLAGS.read_text(encoding="utf-8"))["tables"]
+    assert sorted(tables) == sorted(TABLE_ROLL_CALL), (
+        "the shared file's tables and the ones this driver names have to be the "
+        "same set; an unread table guards nothing"
     )
-    assert match, f"the Rust fake no longer defines {name}"
-    return re.findall(r'"([^"]+)"', match.group(1))
 
-
-def test_the_two_fakes_agree_on_which_flags_take_a_value():
-    """The tables deciding which flags consume the next argv element are one list.
-
-    They are written out twice, once per fake, and nothing compared them: dropping
-    a flag from one left every suite green, because only ~14 of the ~44 names have
-    a corpus row to catch it behaviourally. The corpus proves the two fakes agree
-    on the calls it covers; this proves they agree on the tables that decide the
-    rest.
-    """
     shim = _shim_module()
-    rust = RUST_FAKE.read_text(encoding="utf-8")
-
-    def ours(name):
-        """The shim's copy of one table.
-
-        Its tables are underscore-named because nothing was ever meant to import
-        them; reading them is this test's whole job, and `getattr` says that
-        without asking the shim to widen its surface for a test.
-        """
-        return getattr(shim, f"_{name}")
-
-    for name, table in [
-        ("GLOBAL_VALUE_FLAGS", "the globals"),
-        ("UP_VALUE_FLAGS", "up"),
-        ("SSH_VALUE_FLAGS", "ssh"),
-        ("DELETE_VALUE_FLAGS", "delete"),
-        ("STATUS_VALUE_FLAGS", "status"),
-    ]:
-        assert sorted(ours(name)) == sorted(_rust_table(rust, name)), (
-            f"the two fakes disagree on which {table} flags take a value; a flag "
-            "in one table and not the other is read as bare by one fake, which "
-            "makes its value that call's positional"
-        )
-
-    # `stop` has no flags of its own, which no list of names can express.
-    assert not ours("STOP_VALUE_FLAGS")
-    assert "const STOP_VALUE_FLAGS: &[&str] = &[];" in rust, (
-        "the Rust fake's stop table is no longer empty, and this one is"
+    defined = sorted(name for name in dir(shim) if name.endswith("_VALUE_FLAGS"))
+    assert defined == sorted(f"_{name.upper()}_VALUE_FLAGS" for name in TABLE_ROLL_CALL), (
+        f"the shim's value-flag tables are {defined}, which is not the roll call; "
+        "a table it keeps for itself is one the shared file cannot referee"
     )
+
+    for name in TABLE_ROLL_CALL:
+        flags = getattr(shim, f"_{name.upper()}_VALUE_FLAGS")
+        assert set(flags) == set(tables[name]), (
+            f"the shim's {name} table is not the shared file's; it reads the file, "
+            "so this failing means something rewrote the table after loading it"
+        )
+        # `stop` has no flags of its own at v0.26.1, which is a fact about devpod
+        # rather than an empty parse. Everything else being non-empty is what says
+        # the file was read rather than merely found.
+        if name == "stop":
+            assert not flags, "devpod stop has no flags of its own"
+        else:
+            assert flags, f"table {name!r} came back empty, which no subcommand but stop is"
+        for flag in flags:
+            assert flag.startswith("-"), f"table {name!r} holds {flag!r}, not a flag name"
+
+
+def test_the_rust_fake_reads_the_shared_value_flag_file_too():
+    """Neither fake gets a private copy, which is the whole mechanism.
+
+    The Rust side reaches this file with `include_str!`, which fails the build if
+    it moves; this is the other half of that, the same bargain the corpus has.
+    """
+    assert VALUE_FLAGS.exists()
+    assert "test/fixtures/devpod/value_flags.json" in RUST_FAKE.read_text(encoding="utf-8")

@@ -3,7 +3,11 @@
 
 Stands on PATH under the name `devpod`, in front of *any* dl implementation —
 it must know nothing about which one is calling, so it is a standalone,
-stdlib-only program: no devlaunch imports, no pytest, no test helpers. It
+stdlib-only program: no devlaunch imports, no pytest, no test helpers. The one
+file it reads from the tree is `devpod/value_flags.json` beside it, which says
+which flags consume a value and is the other fake's copy too; the harness runs
+this program from where it lives rather than copying it, so the path holds, and
+a run that cannot read it exits 78 rather than parsing every call wrong. It
 re-homes `test/fixtures/devpod_mock.py`'s proven design as a separate process:
 
 - **workspace state machine**, persisted to the JSON file named by
@@ -46,80 +50,37 @@ import time
 
 EX_CONFIG = 78
 
-#: The value-taking flags every subcommand inherits, from real devpod v0.26.1's
-#: global flag block. `--debug` and `--silent` are bare and so are absent.
-_GLOBAL_VALUE_FLAGS = {"--context", "--devpod-home", "--log-output", "--provider"}
-
-#: `devpod up` flags that consume a value, so the positional source is found by
-#: skipping them.
+#: Which flags consume the next argv element, read from the file the other fake
+#: reads too.
 #:
-#: Taken wholesale from `devpod up --help` at v0.26.1 rather than grown one flag
-#: at a time: every flag it types `string`, `strings`, `stringArray` or a named
-#: type is here, and the booleans (`--recreate`, `--reset`, `--open-ide`, …) are
-#: not, because cobra takes a boolean's value only as `--flag=false`. Growing
-#: this by hand is what left `--init-env`, `--mount`, `--dotfiles-script`,
-#: `--dotfiles-script-env` and `--workspace-env-file` out of it, and real devpod
-#: accepts those *before* the positional source, where reading one as bare makes
-#: its value the workspace source. The conformance corpus drives that shape.
-_UP_VALUE_FLAGS = {
-    "--additional-features",
-    "--devcontainer-id",
-    "--devcontainer-image",
-    "--devcontainer-path",
-    "--dotfiles",
-    "--dotfiles-script",
-    "--dotfiles-script-env",
-    "--dotfiles-script-env-file",
-    "--extra-devcontainer-path",
-    "--fallback-image",
-    "--gidmap",
-    "--git-clone-strategy",
-    "--git-ssh-signing-key",
-    "--id",
-    "--ide",
-    "--ide-option",
-    "--init-env",
-    "--machine",
-    "--mount",
-    "--prebuild-repository",
-    "--provider-option",
-    "--source",
-    "--ssh-config",
-    "--uidmap",
-    "--userns",
-    "--workspace-env",
-    "--workspace-env-file",
-}
+#: These lists used to be written out here *and* in the Rust fake, which is the
+#: same two-copies-of-one-fact shape that let `delete --ignore-not-found` drift:
+#: one side dropping a flag reads its value as a positional, and no test of
+#: either fake against itself can see it. The file says what each list is for and
+#: where it came from. Read by path rather than imported, because this program is
+#: materialized on PATH as `devpod` and has no package to import from.
+_VALUE_FLAGS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "devpod", "value_flags.json"
+)
 
-#: `devpod ssh` flags that consume a value, from `devpod ssh --help` at v0.26.1.
-#: `--workdir` is the one dl sends and the one this read as bare, which made an
-#: attach with a working directory look like an attach to a workspace named after
-#: that directory.
-_SSH_VALUE_FLAGS = {
-    "--command",
-    "--forward-ports",
-    "-L",
-    "--forward-ports-timeout",
-    "--git-ssh-signing-key",
-    "--reverse-forward-ports",
-    "-R",
-    "--send-env",
-    "--set-env",
-    "--ssh-keepalive-interval",
-    "--term-mode",
-    "--user",
-    "--workdir",
-}
+try:
+    with open(_VALUE_FLAGS_FILE, encoding="utf-8") as _f:
+        _TABLES = {name: frozenset(flags) for name, flags in json.load(_f)["tables"].items()}
+except (OSError, ValueError, KeyError) as _error:
+    # The same call as a missing DEVPOD_SHIM_STATE: a broken harness, not a
+    # devpod that happens to parse nothing. Without the tables this program
+    # reads every value flag as bare and makes its value the workspace, which
+    # is the exact failure the shared file exists to prevent -- so it refuses
+    # to run at all rather than run wrong.
+    print(f"devpod-shim: cannot read {_VALUE_FLAGS_FILE}: {_error}", file=sys.stderr)
+    sys.exit(EX_CONFIG)
 
-#: `devpod delete` flags that consume a value. `--force` and
-#: `--ignore-not-found` are bare and `--grace-period` is a string.
-_DELETE_VALUE_FLAGS = {"--grace-period"}
-
-#: `devpod status` flags that consume a value. `--container-status` is a boolean.
-_STATUS_VALUE_FLAGS = {"--output", "--timeout"}
-
-#: `devpod stop` has no flags of its own at v0.26.1.
-_STOP_VALUE_FLAGS = frozenset()
+_GLOBAL_VALUE_FLAGS = _TABLES["global"]
+_UP_VALUE_FLAGS = _TABLES["up"]
+_SSH_VALUE_FLAGS = _TABLES["ssh"]
+_DELETE_VALUE_FLAGS = _TABLES["delete"]
+_STATUS_VALUE_FLAGS = _TABLES["status"]
+_STOP_VALUE_FLAGS = _TABLES["stop"]
 
 
 def _log(argv):
