@@ -1083,110 +1083,26 @@ fn resolve_link(path: &Path) -> PathBuf {
 }
 
 /// Serialize `document` the way Python's `json.dump(..., indent=2)` does.
+///
+/// The formatter is the crate's one indented spelling, which lives down in
+/// `json` beside the compact one rather than here, because `dl --ls --json`
+/// needs the same bytes and used to get them from a second copy (#346). A
+/// `Document` is a struct rather than a [`serde_json::Value`], so it goes
+/// through the formatter directly: routing it through a `Value` first would put
+/// its field order at the mercy of the map implementation, and the field order
+/// is part of what this file is pinned on.
 fn encode(document: &Document<'_>) -> Result<Vec<u8>, MetadataError> {
     let mut bytes = Vec::new();
-    let mut serializer =
-        serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+    let mut serializer = serde_json::Serializer::with_formatter(
+        &mut bytes,
+        crate::json::PythonPrettyFormatter::default(),
+    );
     document
         .serialize(&mut serializer)
         .map_err(|error| MetadataError::Encode {
             reason: error.to_string(),
         })?;
     Ok(bytes)
-}
-
-/// `json.dump(..., indent=2)`, escaping included.
-///
-/// Two-space indentation is what serde's pretty printer already does; what it
-/// does not do is Python's `ensure_ascii`, which spells every character outside
-/// `' '..'~'` as a `\uXXXX` escape — the printable range, not "non-ASCII", since
-/// DEL is ASCII and Python escapes it too. A branch name with an umlaut in it is
-/// enough to make the two builds write different bytes for the same data, so the
-/// escaping is matched rather than left to chance.
-///
-/// The layout is what differs from the compact [`crate::json::PythonFormatter`] —
-/// this document is indented and that one is on one line — so the escaping is
-/// the crate's one copy of it rather than a second loop here that had to stay
-/// character-for-character equal to survive. (The compact formatter also spells
-/// floats Python's way; this one does not, which no `Document` can reach today
-/// because its numbers are all `i64`.)
-#[derive(Default)]
-struct PythonJsonFormatter<'indent> {
-    pretty: serde_json::ser::PrettyFormatter<'indent>,
-}
-
-impl serde_json::ser::Formatter for PythonJsonFormatter<'_> {
-    fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        crate::json::write_ensure_ascii(writer, fragment)
-    }
-
-    // The rest is the pretty printer's layout, delegated unchanged.
-
-    fn begin_array<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_array(writer)
-    }
-
-    fn end_array<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_array(writer)
-    }
-
-    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_array_value(writer, first)
-    }
-
-    fn end_array_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_array_value(writer)
-    }
-
-    fn begin_object<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_object(writer)
-    }
-
-    fn end_object<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_object(writer)
-    }
-
-    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_object_key(writer, first)
-    }
-
-    fn begin_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_object_value(writer)
-    }
-
-    fn end_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_object_value(writer)
-    }
 }
 
 #[cfg(test)]
@@ -1699,8 +1615,10 @@ mod tests {
     #[test]
     fn the_indent_two_document_escapes_an_astral_character_as_the_pair() {
         let mut bytes = Vec::new();
-        let mut serializer =
-            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        let mut serializer = serde_json::Serializer::with_formatter(
+            &mut bytes,
+            crate::json::PythonPrettyFormatter::default(),
+        );
         json!({ "branch": "feature/br\u{fc}nch", "tags": ["\u{1f680}", "plain"] })
             .serialize(&mut serializer)
             .expect("a Vec never fails to write");
@@ -1731,8 +1649,10 @@ mod tests {
     #[test]
     fn the_indent_two_document_spells_the_serde_escapes_pythons_way() {
         let mut bytes = Vec::new();
-        let mut serializer =
-            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        let mut serializer = serde_json::Serializer::with_formatter(
+            &mut bytes,
+            crate::json::PythonPrettyFormatter::default(),
+        );
         json!({
             "branch": "a\"b\\c\nd\te\rf\u{8}g\u{c}h",
             "tags": ["\u{0}\u{1}\u{1f}", "/slash/", "\u{2028}\u{2029}"],
@@ -1769,8 +1689,10 @@ mod tests {
     #[test]
     fn the_indent_two_document_escapes_del_the_way_python_does() {
         let mut bytes = Vec::new();
-        let mut serializer =
-            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        let mut serializer = serde_json::Serializer::with_formatter(
+            &mut bytes,
+            crate::json::PythonPrettyFormatter::default(),
+        );
         json!({ "branch": "a\u{7f}b", "tags": ["\u{7f}"] })
             .serialize(&mut serializer)
             .expect("a Vec never fails to write");
@@ -1800,8 +1722,10 @@ mod tests {
     fn the_indent_two_document_spells_every_ascii_character_pythons_way() {
         let all_of_ascii: String = (0u8..=0x7f).map(char::from).collect();
         let mut bytes = Vec::new();
-        let mut serializer =
-            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        let mut serializer = serde_json::Serializer::with_formatter(
+            &mut bytes,
+            crate::json::PythonPrettyFormatter::default(),
+        );
         json!({ "branch": all_of_ascii })
             .serialize(&mut serializer)
             .expect("a Vec never fails to write");

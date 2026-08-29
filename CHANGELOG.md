@@ -64,6 +64,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for every ASCII character at once, which says the same thing in the other
   direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
 
+### Changed
+
+- **One writer spells `dl --ls --json` and `metadata.json` now, not two.** Both
+  are `json.dumps(..., indent=2)` documents that have to agree with the Python
+  build byte for byte, and each was produced by a hundred-line formatter of its
+  own: the same nine layout methods forwarded to `serde_json`'s pretty printer,
+  and the same `ensure_ascii` loop, in two files that had to stay
+  character-for-character equal without anything holding them there. What that
+  cost is on the record directly above this entry, since the escaping gate was
+  wrong about DEL in both copies and closing it meant closing it twice. `dl` now
+  calls core's, and the tree has one indented spelling.
+
+  Nothing about either document moves. The pins on `--ls --json` are the same
+  assertions against the same call they were written against, with the formatter
+  behind them deleted rather than edited: the shaped listing, the empty document,
+  an emoji as its surrogate pair, DEL, and the whole of ASCII against the line
+  `json.dumps` printed for it. `wf` parses that document, so the bar was
+  byte-identity and not equivalence.
+
 ## [0.25.0] - 2026-08-28
 
 ### Fixed

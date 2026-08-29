@@ -2629,6 +2629,7 @@ impl core::fmt::Debug for devlaunch_core::json::JsonKind
 pub fn devlaunch_core::json::JsonKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::json::JsonKind
 impl core::marker::StructuralPartialEq for devlaunch_core::json::JsonKind
+pub fn devlaunch_core::json::as_python_writes_it_indented(&serde_json::value::Value) -> alloc::string::String
 pub mod devlaunch_core::notices
 pub trait devlaunch_core::notices::Notices<T>
 pub fn devlaunch_core::notices::Notices::say(&mut self, T)

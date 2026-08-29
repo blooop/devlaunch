@@ -50,7 +50,6 @@ use devlaunch_core::notices::Notices;
 use devlaunch_core::shell;
 use devlaunch_runner::{Exit, OsFailure};
 use serde_json::Value;
-use serde_json::ser::{Formatter, PrettyFormatter};
 
 use crate::select::Chosen;
 use crate::session::StartupError;
@@ -181,139 +180,21 @@ fn widest<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
 /// A JSON document spelled the way `json.dumps(value, indent=2)` spells it.
 ///
 /// Grade A: `wf` parses `dl --ls --json`, so this is a wire format and not a
-/// rendering choice. Two-space indentation, `": "` after a key, and — the part
-/// `serde_json` does not do on its own — every character outside `' '..'~'`
-/// escaped as `\uXXXX`, which is Python's `ensure_ascii=True`. That range is
-/// CPython's, and it is one character narrower than "ASCII": DEL is ASCII and
-/// Python escapes it.
-pub(crate) fn python_json_document(value: &Value) -> String {
-    let mut out = Vec::new();
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonPretty::default());
-    match serde::Serialize::serialize(value, &mut serializer) {
-        // A document that cannot be serialized is not reachable from a
-        // `serde_json::Value`, and an empty string is the one answer that cannot
-        // be mistaken for a listing.
-        Err(_) => String::new(),
-        Ok(()) => String::from_utf8(out).unwrap_or_default(),
-    }
-}
-
-/// `PrettyFormatter` with `ensure_ascii`.
+/// rendering choice, and a byte of it is not this file's to pick.
 ///
-/// Delegates the whole of the indentation to `serde_json`'s own pretty formatter,
-/// which lays a document out exactly as Python's `indent=2` does, and overrides
-/// only the one thing Python does differently: it escapes every character outside
-/// `' '..'~'`, as the surrogate pair for anything outside the basic plane.
-#[derive(Default)]
-struct PythonPretty {
-    pretty: PrettyFormatter<'static>,
-}
-
-impl Formatter for PythonPretty {
-    fn begin_array<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_array(writer)
-    }
-
-    fn end_array<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_array(writer)
-    }
-
-    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_array_value(writer, first)
-    }
-
-    fn end_array_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_array_value(writer)
-    }
-
-    fn begin_object<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_object(writer)
-    }
-
-    fn end_object<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_object(writer)
-    }
-
-    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_object_key(writer, first)
-    }
-
-    fn end_object_key<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_object_key(writer)
-    }
-
-    fn begin_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.begin_object_value(writer)
-    }
-
-    fn end_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        self.pretty.end_object_value(writer)
-    }
-
-    /// The run of string bytes `serde_json` did not have to escape, which includes
-    /// every non-ASCII one — it escapes only the control characters, `"` and `\`.
-    /// Python escapes the rest too, and this is where that happens.
-    ///
-    /// "The rest" is everything outside `' '..'~'`, which is CPython's `S_CHAR`
-    /// and is one character wider than `is_ascii()`: DEL (`U+007F`) is ASCII and
-    /// Python still escapes it. This is the third copy of core's
-    /// `write_ensure_ascii` (devlaunch#346 collapses it), so it carried the same
-    /// wrong gate and is corrected in step with it.
-    fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
-    where
-        W: ?Sized + io::Write,
-    {
-        // CPython's `S_CHAR`, spelled exactly as core's `python_writes_it_bare`
-        // spells it, quote and backslash excluded: serde escapes those before a
-        // fragment is cut, and excluding them is the arm that stays valid JSON if
-        // it ever stops.
-        let written_bare =
-            |character: char| matches!(character, ' '..='~') && !matches!(character, '"' | '\\');
-        if fragment.bytes().map(char::from).all(written_bare) {
-            return writer.write_all(fragment.as_bytes());
-        }
-        let mut units = [0u16; 2];
-        for character in fragment.chars() {
-            if written_bare(character) {
-                writer.write_all(character.encode_utf8(&mut [0u8; 4]).as_bytes())?;
-                continue;
-            }
-            for unit in character.encode_utf16(&mut units) {
-                writer.write_all(format!("\\u{unit:04x}").as_bytes())?;
-            }
-        }
-        Ok(())
-    }
+/// One line, because the spelling is core's. It was a formatter here until
+/// devlaunch#346 — a hundred lines forwarding every layout method to
+/// `serde_json`'s pretty printer, plus an `ensure_ascii` loop, standing beside a
+/// formatter in core doing the same for `metadata.json`. Two copies of one fact,
+/// and what they cost was visible before they were merged: the escaping gate was
+/// wrong about DEL in both, and closing it meant closing it twice.
+///
+/// The name stays here rather than the call moving to core's, because the
+/// document's own pins hang off it: the tests below assert the same literals
+/// against the same call they asserted against the deleted formatter, so what
+/// they now measure is that the collapse changed no byte.
+pub(crate) fn python_json_document(value: &Value) -> String {
+    devlaunch_core::json::as_python_writes_it_indented(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -3173,13 +3054,14 @@ mod tests {
         );
     }
 
-    /// DEL, the one non-printable ASCII character serde hands to this formatter
-    /// rather than escaping itself.
+    /// DEL, the one non-printable ASCII character serde hands to the fragment
+    /// writer rather than escaping itself.
     ///
-    /// `--ls --json` is a wire format `wf` parses, so the third live copy of the
-    /// escaping (devlaunch#346 collapses it onto core's) carried the same
-    /// divergence core's did and is closed here alongside it. Expectation from
-    /// `json.dumps`.
+    /// `--ls --json` is a wire format `wf` parses, so when this document was
+    /// spelled by a formatter of its own it carried the same divergence core's
+    /// did, and it was closed in both at once (devlaunch#349). The assertion has
+    /// not moved since; what has moved is what stands behind it, and that is the
+    /// point of leaving it exactly as it was. Expectation from `json.dumps`.
     #[test]
     fn del_is_escaped_as_python_escapes_it() {
         assert_eq!(
@@ -3190,11 +3072,13 @@ mod tests {
 
     /// The whole ASCII range at once, against the line Python wrote for it.
     ///
-    /// This copy of the escaping and core's are supposed to be spelled the same
-    /// until devlaunch#346 merges them, so it gets core's sweep too: nothing bare
-    /// that `json.dumps` escapes, nothing escaped that it leaves bare. Expectation
-    /// is the literal `json.dumps` printed for
-    /// `''.join(chr(c) for c in range(0x80))`.
+    /// This sweep went in while `dl` still had an escaping loop of its own, to
+    /// hold it character-for-character equal to core's: nothing bare that
+    /// `json.dumps` escapes, nothing escaped that it leaves bare. The loop is gone
+    /// (devlaunch#346) and the sweep is unchanged, which turns it from a
+    /// cross-check between two copies into the evidence that retiring one of them
+    /// moved no byte of a document `wf` parses. Expectation is the literal
+    /// `json.dumps` printed for `''.join(chr(c) for c in range(0x80))`.
     #[test]
     fn every_ascii_character_is_spelled_the_way_python_spells_it() {
         let all_of_ascii: String = (0u8..=0x7f).map(char::from).collect();
