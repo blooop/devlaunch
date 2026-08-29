@@ -276,19 +276,13 @@ fn the_corpus_answers_the_roll_call() {
     let rows = corpus().rows;
     let found: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
 
-    let missing: Vec<&&str> = ROLL_CALL
-        .iter()
-        .filter(|id| !found.contains(*id))
-        .collect();
+    let missing: Vec<&&str> = ROLL_CALL.iter().filter(|id| !found.contains(*id)).collect();
     assert!(
         missing.is_empty(),
         "the corpus has lost rows the roll call names: {missing:?}"
     );
 
-    let unexpected: Vec<&&str> = found
-        .iter()
-        .filter(|id| !ROLL_CALL.contains(*id))
-        .collect();
+    let unexpected: Vec<&&str> = found.iter().filter(|id| !ROLL_CALL.contains(*id)).collect();
     assert!(
         unexpected.is_empty(),
         "the corpus carries rows this driver does not name: {unexpected:?} — \

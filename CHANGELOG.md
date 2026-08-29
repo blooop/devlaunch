@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The devpod conformance corpus can no longer lose a row quietly.** The corpus
+  is the one place the two fake devpods' expectations live, and its guard checked
+  that certain flag *names* appeared somewhere across all rows. That let a row be
+  deleted with every suite green, the regression row for the `delete
+  --ignore-not-found` drift included, because a sibling row still mentioned the
+  flag. Rows now carry a stable id and both drivers hold the roll call of ids they
+  expect, so a missing row fails by name on both sides. Two more holes closed
+  with it: the check that every row says how it was verified ran on the Rust side
+  alone, so a corpus edited from the Python side could drop a provenance line
+  unnoticed, and the tables saying which devpod flags take a value were written
+  out once per fake with nothing comparing them. Each driver now enforces both.
+  Every row that used to read `unverified` is measured: those were the rows
+  needing a provisioned workspace, and one was provisioned to run them.
+
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for
   its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
