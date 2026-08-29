@@ -248,8 +248,70 @@ pub enum Loss {
     Uncommitted(NonEmpty<String>),
     /// Commits no remote-tracking ref contains, one `git log --oneline` line
     /// each.
-    Unpushed(NonEmpty<String>),
+    Unpushed {
+        commits: NonEmpty<String>,
+        /// The share of those commits that nothing but a local tag reaches, when
+        /// there is such a share.
+        ///
+        /// `None` is "no tag is why this clone is being kept", and it is the
+        /// ordinary case: an unpushed commit on a branch needs no explaining,
+        /// because the sentence the reader gets already tells them what to do
+        /// about it. `Some` is the case where that sentence is wrong, so the
+        /// answer carries what makes it right instead of the reader guessing.
+        by_tags: Option<ByLocalTags>,
+    },
 }
+
+/// The local tags an unpushed count is owed to, and the commits owed to them.
+///
+/// Both halves are [`NonEmpty`], so this value cannot say "some tags reached no
+/// commits" or "some commits were reached by no tags": it exists exactly when a
+/// tag this clone's mirror does not vouch for is the only thing naming a commit,
+/// which is the one case where "push or commit it" is advice the reader cannot
+/// act on. Where nothing is owed to a tag there is no value, not an empty one.
+///
+/// Two shapes reach it and the sentence does not distinguish them, deliberately.
+/// The mirror has never heard of the tag (#487's own case: tagged here, never
+/// pushed) and the mirror is simply behind the remote (the tag was pushed from
+/// this clone and no sweep has run since). Naming the tag settles both without
+/// this having to know which: a reader who recognises `v0.26.0` as a release they
+/// pushed learns the cache is stale, and a reader who sees `backup-before-rebase`
+/// learns the thing that saves their work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub struct ByLocalTags {
+    /// Short tag names, `backup` rather than `refs/tags/backup`, because this is
+    /// what a person types and reads.
+    tags: NonEmpty<String>,
+    /// The `git log --oneline` lines only those tags reach.
+    commits: NonEmpty<String>,
+}
+
+impl ByLocalTags {
+    /// The attribution, or nothing when no commit is owed to a tag.
+    ///
+    /// Takes both sides through [`NonEmpty::of`], so the empty case is the absent
+    /// value rather than a value that describes nothing. *tags* arrive as full
+    /// refnames, which is what the query names them by, and are shortened here so
+    /// there is one place that knows the prefix.
+    pub(crate) fn of(
+        tags: impl IntoIterator<Item = String>,
+        commits: impl IntoIterator<Item = String>,
+    ) -> Option<Self> {
+        Some(Self {
+            tags: NonEmpty::of(tags.into_iter().map(|reference| {
+                reference
+                    .strip_prefix(REFS_TAGS)
+                    .unwrap_or(&reference)
+                    .to_owned()
+            }))?,
+            commits: NonEmpty::of(commits)?,
+        })
+    }
+}
+
+/// The prefix every tag refname carries, stripped for display.
+const REFS_TAGS: &str = "refs/tags/";
 
 impl Loss {
     /// Python's phrasing, exactly: this text reaches a person through
@@ -262,7 +324,23 @@ impl Loss {
                 changed.len(),
                 name_a_few(changed, NAME_AT_MOST)
             ),
-            Self::Unpushed(commits) => format!("{} unpushed commit(s)", commits.len()),
+            Self::Unpushed {
+                commits,
+                by_tags: None,
+            } => format!("{} unpushed commit(s)", commits.len()),
+            // Both counts, because they are different facts and the smaller one is
+            // the actionable half: it says how much of the refusal "push it" cannot
+            // clear. Where every unpushed commit is a tag's, the two numbers agree
+            // and the sentence is merely emphatic rather than wrong.
+            Self::Unpushed {
+                commits,
+                by_tags: Some(by_tags),
+            } => format!(
+                "{} unpushed commit(s), {} reachable only from local tag(s) ({})",
+                commits.len(),
+                by_tags.commits.len(),
+                first_few(&by_tags.tags, NAME_AT_MOST),
+            ),
         }
     }
 }
@@ -450,15 +528,28 @@ pub(crate) fn holds_unsaved_work(git: &Git<'_>, clone: &Path, bare: BareCache<'_
 /// path starts at offset 3; a rename reads `old -> new`, and the whole field is
 /// kept rather than split, because both halves are the news.
 fn name_a_few(changed: &NonEmpty<String>, limit: usize) -> String {
-    let mut names: Vec<&str> = changed
-        .iter()
-        .take(limit)
-        .filter_map(|line| path_in(line))
-        .collect();
-    if changed.len() > limit {
-        names.push("…");
+    let named = changed.iter().filter_map(|line| path_in(line));
+    // Counted from the porcelain lines rather than from `named`, so a line too
+    // short to hold a path still counts towards "there are more than these".
+    cut_short(named, changed.len(), limit)
+}
+
+/// The first few of *names*, with an ellipsis when there were more.
+///
+/// The tag half of the same rule [`name_a_few`] applies to changed paths, sharing
+/// its one implementation: two truncation rules that drifted would be two
+/// sentences claiming to elide the same way.
+fn first_few(names: &NonEmpty<String>, limit: usize) -> String {
+    cut_short(names.iter().map(String::as_str), names.len(), limit)
+}
+
+/// *limit* of the names, then `…` when *total* is larger.
+fn cut_short<'a>(names: impl Iterator<Item = &'a str>, total: usize, limit: usize) -> String {
+    let mut kept: Vec<&str> = names.take(limit).collect();
+    if total > limit {
+        kept.push("…");
     }
-    names.join(", ")
+    kept.join(", ")
 }
 
 /// The path field of one porcelain line, or nothing when the line is too short to
@@ -516,7 +607,8 @@ fn unsaved(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> Unsaved {
     match git.unpushed_commits(clone, &local_tags) {
         GitAnswer::Said(unpushed) => {
             if let Some(commits) = NonEmpty::of(unpushed.lines().map(str::to_owned)) {
-                losses.push(Loss::Unpushed(commits));
+                let by_tags = owed_to_tags(git, clone, &local_tags);
+                losses.push(Loss::Unpushed { commits, by_tags });
             }
         }
         GitAnswer::Refused(refused) => {
@@ -530,6 +622,34 @@ fn unsaved(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> Unsaved {
         Some(losses) => Unsaved::WouldLose(losses),
         None => Unsaved::NothingToLose,
     }
+}
+
+/// Which of the unpushed commits nothing but a local tag reaches, if any.
+///
+/// Asked only once there is a refusal to explain, and only when a local tag was
+/// named in the question that produced it, so a clone with nothing to lose pays
+/// nothing and a clone with no tags pays nothing.
+///
+/// **A refusal here is not a [`Unsaved::CouldNotTell`], and that is the one place
+/// this module bends its own rule.** Everywhere else a git command that fails
+/// after the repository has been shown readable takes the whole answer with it,
+/// because the alternative is accounting for the failure as "nothing to lose" —
+/// permission, granted by a question that did not work. Nothing of the sort is
+/// available here: the loss is already established and the clone is already being
+/// kept. All that is lost is the half of the sentence that says which tag, so the
+/// answer degrades to the sentence it had before (#487) rather than to a worse
+/// arm. Failing the whole reading would trade a plainer refusal for a vaguer one.
+fn owed_to_tags(git: &Git<'_>, clone: &Path, local_tags: &[String]) -> Option<ByLocalTags> {
+    if local_tags.is_empty() {
+        return None;
+    }
+    let GitAnswer::Said(only_tags) = git.commits_only_tags_reach(clone, local_tags) else {
+        return None;
+    };
+    ByLocalTags::of(
+        local_tags.iter().cloned(),
+        only_tags.lines().map(str::to_owned),
+    )
 }
 
 /// The clone's tags that the bare cache does not vouch for, as full refnames.

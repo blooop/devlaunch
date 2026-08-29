@@ -962,10 +962,15 @@ fn a_commit_only_a_local_tag_reaches_stops_the_delete() {
     let run = world.dl(&["devlaunch-local-tag", "rm"]);
 
     run.exited(1);
+    // The tag is named, and that is the half of this sentence a person can act on.
+    // "Push or commit it" is advice for a commit that is neither pushed nor
+    // committed; this one is committed, and where the mirror is merely behind it is
+    // pushed as well. `backup` is what tells the reader which of those they are
+    // looking at, and in the #487 case it is the name of the thing being saved.
     assert_eq!(
         run.err,
-        "devlaunch-local-tag holds 1 unpushed commit(s). Push or commit it, or run: dl \
-         devlaunch-local-tag rm --force\n"
+        "devlaunch-local-tag holds 1 unpushed commit(s), 1 reachable only from local tag(s) \
+         (backup). Push or commit it, or run: dl devlaunch-local-tag rm --force\n"
     );
     assert!(world.exists(clone), "the refusal deleted the clone anyway");
 }

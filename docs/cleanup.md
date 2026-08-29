@@ -663,6 +663,30 @@ cannot establish safety fails towards keeping the clone. It is reached by a clon
 under a workspace, and in both the answer is a clone kept, which costs disk and
 nothing else.
 
+**Where a tag is the reason, the refusal says so and names it**, because the
+sentence a refusal ends with has to be one you can act on:
+
+```
+$ dl blooop/repo@feature rm
+error: devlaunch-repo-feature-xyz holds 1 unpushed commit(s), 1 reachable only
+       from local tag(s) (backup-before-rebase).
+       Push or commit it, or run: dl blooop/repo@feature rm --force
+```
+
+Both counts, because they answer different questions: how much would be lost, and
+how much of it pushing cannot clear. A commit under a tag is already committed, so
+"push or commit it" is advice you have already taken, and the tag's name is what
+tells you which case you are in. `backup-before-rebase` is the work being saved.
+`v0.26.0` is a release you did push, whose tag has not reached the mirror yet,
+which is what a `dl --refresh` fixes and what nothing else on the machine would
+have told you.
+
+The count that is not attributed to a tag is left alone: a commit on a branch
+needs no explaining, so a clone holding one of each reads `2 unpushed commit(s), 1
+reachable only from local tag(s) (backup)`, and a tag sitting on a commit some
+branch also holds is named nowhere, because it explains nothing about why the
+clone is being kept.
+
 The changed paths are named, not just counted, and that matters more than it
 looks: a devcontainer that runs a package install in its `postCreateCommand` can
 leave a tracked lockfile modified in *every* workspace it builds. This repo's

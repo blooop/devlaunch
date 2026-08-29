@@ -782,7 +782,9 @@ pub fn devlaunch_core::domain::workspace_state::CouldNotTell::fmt(&self, &mut co
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_state::CouldNotTell
 pub enum devlaunch_core::domain::workspace_state::Loss
 pub devlaunch_core::domain::workspace_state::Loss::Uncommitted(devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>)
-pub devlaunch_core::domain::workspace_state::Loss::Unpushed(devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>)
+pub devlaunch_core::domain::workspace_state::Loss::Unpushed
+pub devlaunch_core::domain::workspace_state::Loss::Unpushed::by_tags: core::option::Option<devlaunch_core::domain::workspace_state::ByLocalTags>
+pub devlaunch_core::domain::workspace_state::Loss::Unpushed::commits: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
 impl core::clone::Clone for devlaunch_core::domain::workspace_state::Loss
 pub fn devlaunch_core::domain::workspace_state::Loss::clone(&self) -> devlaunch_core::domain::workspace_state::Loss
 impl core::cmp::Eq for devlaunch_core::domain::workspace_state::Loss
@@ -803,6 +805,15 @@ pub fn devlaunch_core::domain::workspace_state::Unsaved::eq(&self, &devlaunch_co
 impl core::fmt::Debug for devlaunch_core::domain::workspace_state::Unsaved
 pub fn devlaunch_core::domain::workspace_state::Unsaved::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_state::Unsaved
+pub struct devlaunch_core::domain::workspace_state::ByLocalTags
+impl core::clone::Clone for devlaunch_core::domain::workspace_state::ByLocalTags
+pub fn devlaunch_core::domain::workspace_state::ByLocalTags::clone(&self) -> devlaunch_core::domain::workspace_state::ByLocalTags
+impl core::cmp::Eq for devlaunch_core::domain::workspace_state::ByLocalTags
+impl core::cmp::PartialEq for devlaunch_core::domain::workspace_state::ByLocalTags
+pub fn devlaunch_core::domain::workspace_state::ByLocalTags::eq(&self, &devlaunch_core::domain::workspace_state::ByLocalTags) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::workspace_state::ByLocalTags
+pub fn devlaunch_core::domain::workspace_state::ByLocalTags::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::workspace_state::ByLocalTags
 pub struct devlaunch_core::domain::workspace_state::NonEmpty<T>
 impl devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>
 pub fn devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>::describe(&self) -> alloc::string::String

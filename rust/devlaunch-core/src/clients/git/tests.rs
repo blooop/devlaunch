@@ -171,6 +171,32 @@ fn the_pinned_verbs_ask_exactly_what_python_asked() {
 }
 
 #[test]
+fn the_attribution_query_is_the_unpushed_one_with_the_sides_swapped() {
+    // The tags are the whole positive set and everything else is subtracted, so a
+    // commit it returns is on no remote, no branch, no worktree HEAD and no stash.
+    // `--exclude` still binds to the `--all` that follows it, which is why that
+    // pair stays adjacent on the negative side rather than being split up.
+    let (dir, _root) = a_clone();
+    let fake = ScriptedRunner::new();
+    let git = Git::new(&fake);
+
+    git.commits_only_tags_reach(dir.path(), &["refs/tags/backup".to_owned()]);
+
+    assert_eq!(
+        strs(&argv(&fake))[3..],
+        [
+            "log",
+            "--oneline",
+            "refs/tags/backup",
+            "--not",
+            "--remotes",
+            "--exclude=refs/tags/*",
+            "--all"
+        ]
+    );
+}
+
+#[test]
 fn the_two_tag_queries_ask_the_same_question_of_each_side() {
     // The clone's tags and the bare's are compared to each other, so the two
     // spellings have to be one: a format that drifted would read as "every tag is
@@ -207,6 +233,38 @@ fn the_two_tag_queries_ask_the_same_question_of_each_side() {
     );
     assert_eq!(cwd(&fake), None);
     assert_eq!(timeout(&fake), Some(Duration::from_secs(30)));
+}
+
+#[test]
+fn a_tag_is_its_object_as_well_as_its_name() {
+    // `vouched_for` in the delete guard is `fetched.iter().any(|cached| cached ==
+    // tag)`, so this equality *is* the safety rule: derived on the name alone it
+    // would degrade to "the mirror has heard of this name", which silently excuses
+    // a tag the clone moved onto a commit that exists nowhere else. That failure
+    // has no test of its own that could catch it, because every fixture where the
+    // two agree passes either way. Hence one here, on the equality itself.
+    let same = TagRef {
+        name: "refs/tags/v1".to_owned(),
+        object: "aaa".to_owned(),
+    };
+    let moved = TagRef {
+        name: "refs/tags/v1".to_owned(),
+        object: "bbb".to_owned(),
+    };
+    let renamed = TagRef {
+        name: "refs/tags/v2".to_owned(),
+        object: "aaa".to_owned(),
+    };
+
+    assert_eq!(same, same.clone());
+    assert_ne!(
+        same, moved,
+        "the same name at another object is another tag"
+    );
+    assert_ne!(
+        same, renamed,
+        "and the same object under another name is too"
+    );
 }
 
 #[test]
@@ -1111,8 +1169,9 @@ fn nothing_here_spawns_more_than_once_per_verb() {
     git.unpushed_commits(Path::new("/ws"), &[]);
     git.tags_in_clone(Path::new("/ws"));
     git.tags_in_bare(Path::new("/cache/.bare"));
+    git.commits_only_tags_reach(Path::new("/ws"), &[]);
 
-    assert_eq!(fake.call_count(), 30, "one spawn per verb, 30 verbs");
+    assert_eq!(fake.call_count(), 31, "one spawn per verb, 31 verbs");
     assert!(
         fake.calls()
             .iter()

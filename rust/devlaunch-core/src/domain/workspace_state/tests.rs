@@ -445,9 +445,12 @@ fn a_commit_only_an_unpushed_local_tag_reaches_is_unsaved() {
         "the mirror has no tag at all, so this one was typed here"
     );
 
+    // The whole sentence, tag named. "1 unpushed commit(s)" alone tells the reader
+    // to push or commit something they have already committed; the tag's name is
+    // what turns the refusal into the thing that saves the work.
     assert_eq!(
         would_lose(&held_against(&clone, &fixture.remote)),
-        "1 unpushed commit(s)"
+        "1 unpushed commit(s), 1 reachable only from local tag(s) (backup)"
     );
 }
 
@@ -477,7 +480,7 @@ fn a_local_tag_the_bare_holds_at_another_object_is_unsaved() {
 
     assert_eq!(
         would_lose(&held_against(&clone, &fixture.remote)),
-        "1 unpushed commit(s)"
+        "1 unpushed commit(s), 1 reachable only from local tag(s) (v1)"
     );
 }
 
@@ -523,9 +526,13 @@ fn with_no_bare_to_compare_against_every_tag_counts() {
         Unsaved::NothingToLose,
         "with the mirror named it is #485's answer"
     );
+    // And it names the tag, which is what makes a mirror that is merely *behind*
+    // diagnosable rather than baffling: a reader who recognises `v1` as a release
+    // they pushed learns the cache is stale, where "push or commit it" tells them
+    // to do a thing they have already done.
     assert_eq!(
         would_lose(&held(&clone)),
-        "1 unpushed commit(s)",
+        "1 unpushed commit(s), 1 reachable only from local tag(s) (v1)",
         "and without one, the same clone is kept"
     );
 }
@@ -545,10 +552,115 @@ fn a_bare_that_is_not_a_repository_counts_every_tag_too() {
     git(&clone, &["tag", "backup"]);
     git(&clone, &["reset", "-q", "--hard", "origin/feature"]);
 
+    // Both tags are named, and that is the honest answer rather than a loose one:
+    // with no mirror readable, nothing has established which of them the remote
+    // has, so both are candidates for the commit nothing else reaches. Narrowing
+    // the list would mean claiming knowledge this run does not have.
     assert_eq!(
         would_lose(&held_against(&clone, &fixture.path("no-such-bare"))),
-        "1 unpushed commit(s)"
+        "1 unpushed commit(s), 1 reachable only from local tag(s) (backup, v1)"
     );
+}
+
+#[test]
+fn a_branch_commit_is_not_blamed_on_a_tag_that_happens_to_be_there() {
+    // The over-claim this could have shipped instead. The clone holds two unpushed
+    // commits for two different reasons: one on a branch, which "push it" really
+    // does clear, and one only a local tag reaches, which it does not. The sentence
+    // has to carry both numbers, because a reader told "2 unpushed commit(s),
+    // 2 reachable only from local tag(s)" would go looking for a tag that explains
+    // the branch commit and find none.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    git(&clone, &["checkout", "-q", "-b", "wip"]);
+    write(&clone.join("branch-work.txt"), "an hour of work\n");
+    commit(&clone, "branch work");
+    git(&clone, &["checkout", "-q", "feature"]);
+    write(&clone.join("rewritten.txt"), "another hour\n");
+    commit(&clone, "about to be rewritten");
+    git(&clone, &["tag", "backup"]);
+    git(&clone, &["reset", "-q", "--hard", "origin/feature"]);
+
+    assert_eq!(
+        would_lose(&held_against(&clone, &fixture.remote)),
+        "2 unpushed commit(s), 1 reachable only from local tag(s) (backup)"
+    );
+}
+
+#[test]
+fn a_tag_that_reaches_nothing_of_its_own_is_not_named_in_the_refusal() {
+    // The other half of the same honesty. A local tag sitting on a commit some
+    // branch also holds explains nothing about why this clone is being kept, and
+    // naming it would send the reader after the wrong ref. The unpushed commit here
+    // is the branch's, and the sentence stays the plain one.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("more.txt"), "more\n");
+    commit(&clone, "more");
+    git(&clone, &["tag", "sits-on-the-branch"]);
+
+    assert_eq!(
+        would_lose(&held_against(&clone, &fixture.remote)),
+        "1 unpushed commit(s)",
+        "the tag reaches nothing the branch does not"
+    );
+}
+
+#[test]
+fn a_long_list_of_tags_is_cut_short_like_every_other_list() {
+    // One truncation rule, shared with the changed-paths list rather than written
+    // twice: a stale mirror on a repository that tags releases makes every tag
+    // local, and a refusal that dumped four hundred names would be unreadable in
+    // exactly the case a person most needs to read it.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("an-hour.txt"), "an hour of work\n");
+    commit(&clone, "about to be rewritten");
+    for n in 0..5 {
+        git(&clone, &["tag", &format!("backup-{n}")]);
+    }
+    git(&clone, &["reset", "-q", "--hard", "origin/feature"]);
+
+    let description = would_lose(&held_against(&clone, &fixture.remote));
+
+    assert!(
+        description.starts_with("1 unpushed commit(s), 1 reachable only from local tag(s) ("),
+        "{description:?}"
+    );
+    assert!(
+        description.ends_with("(backup-0, backup-1, backup-2, …)"),
+        "three names and an ellipsis: {description:?}"
+    );
+}
+
+#[test]
+fn the_attribution_is_given_up_rather_than_the_refusal_when_git_will_not_say() {
+    // The one place this module does *not* turn a refusal into `CouldNotTell`, and
+    // the reason that is safe: by the time this is asked the loss is established
+    // and the clone is being kept either way, so no failed question here can be
+    // read as permission. Only the half of the sentence naming the tag is lost.
+    // Asserted on the decision itself rather than through a fixture, because the
+    // two `git log` calls share an argv prefix and cannot be scripted apart.
+    let refused = ScriptedRunner::new().with_script(["git"], Response::failed(128, "fatal: nope"));
+
+    assert_eq!(
+        owed_to_tags(
+            &Git::new(&refused),
+            Path::new("/ws"),
+            &["refs/tags/backup".to_owned()]
+        ),
+        None
+    );
+}
+
+#[test]
+fn no_local_tags_is_no_question_asked() {
+    // The cheap path, pinned as a spawn count: a clone whose every tag the mirror
+    // vouches for pays nothing for the sentence it does not need.
+    let fake = ScriptedRunner::new();
+
+    assert_eq!(owed_to_tags(&Git::new(&fake), Path::new("/ws"), &[]), None);
+    assert_eq!(fake.call_count(), 0);
 }
 
 #[test]
@@ -1114,9 +1226,10 @@ fn each_arm_renders_as_one_key_that_names_it() {
         r#"{"nothingToLose":true}"#
     );
     assert_eq!(
-        Unsaved::WouldLose(Losses::one(Loss::Unpushed(NonEmpty::one(
-            "abc123 more".to_owned()
-        ))))
+        Unsaved::WouldLose(Losses::one(Loss::Unpushed {
+            commits: NonEmpty::one("abc123 more".to_owned()),
+            by_tags: None,
+        }))
         .as_json()
         .to_string(),
         r#"{"wouldLose":"1 unpushed commit(s)"}"#
@@ -1176,7 +1289,10 @@ fn two_of_the_three_answers_refuse_a_delete() {
     for (unsaved, may_delete) in [
         (Unsaved::NothingToLose, true),
         (
-            Unsaved::WouldLose(Losses::one(Loss::Unpushed(NonEmpty::one("abc".to_owned())))),
+            Unsaved::WouldLose(Losses::one(Loss::Unpushed {
+                commits: NonEmpty::one("abc".to_owned()),
+                by_tags: None,
+            })),
             false,
         ),
         (

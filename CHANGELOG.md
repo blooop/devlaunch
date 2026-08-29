@@ -210,6 +210,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the only copy of somebody's work. [docs/cleanup.md](docs/cleanup.md) has the
   table.
 
+  **And where a tag is the reason, the refusal now names it**, because "push or
+  commit it" is advice you have already taken for a commit that is under a tag:
+  `holds 1 unpushed commit(s), 1 reachable only from local tag(s)
+  (backup-before-rebase)`. Both counts, since the smaller one is how much of the
+  refusal pushing cannot clear. It matters in the case where the mirror is merely
+  *behind* the remote, which is otherwise baffling: a release you did push, on a
+  branch that has since gone, reads as unpushed until the next sweep, and now the
+  name in the message is the thing that tells you so. A commit on a branch is not
+  blamed on a tag, and a tag reaching nothing a branch does not reach is named
+  nowhere.
+
 - **Sixty-six citations that pointed at nothing now point at something, and a
   guard keeps it that way.** Comments across `rust/` name the test that pins the
   behaviour they describe, which is most of what makes them worth reading.

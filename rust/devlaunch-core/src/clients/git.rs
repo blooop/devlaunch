@@ -575,6 +575,36 @@ impl<'r> Git<'r> {
         self.about(clone, &TAG_REFS_QUERY).map(tag_refs_in)
     }
 
+    /// Of the commits [`Git::unpushed_commits`] counted, the ones *only* these
+    /// local tags reach.
+    ///
+    /// The same ref algebra as that query with the sides swapped: the tags are the
+    /// whole positive set, and everything else — the remotes and every local ref
+    /// that is not a tag — is subtracted. So a commit here is on no remote, on no
+    /// branch, in no worktree HEAD and in no stash, and the only thing naming it
+    /// is a tag this clone's mirror does not vouch for.
+    ///
+    /// It is asked for the *sentence*, not for the decision: the refusal is
+    /// already decided by the query above, and this says which tags to name in it.
+    /// "1 unpushed commit(s)" tells someone to push or commit something they have
+    /// already committed, and where the mirror is merely behind, already pushed
+    /// too; "reachable only from local tag(s) (backup)" is the same fact said in
+    /// a way that can be acted on.
+    ///
+    /// The result is a subset of the other query's by construction, which is what
+    /// lets the two counts be reported in one sentence without either being a
+    /// second measurement of the same thing.
+    pub(crate) fn commits_only_tags_reach(
+        &self,
+        clone: &Path,
+        local_tags: &[String],
+    ) -> GitAnswer<String> {
+        let mut args: Vec<&str> = vec!["log", "--oneline"];
+        args.extend(local_tags.iter().map(String::as_str));
+        args.extend(["--not", "--remotes", "--exclude=refs/tags/*", "--all"]);
+        self.about(clone, &args)
+    }
+
     /// Every tag in the bare cache at *bare*, with the object each one names.
     ///
     /// `--git-dir` and no work tree, because a bare has none, and no cwd, because

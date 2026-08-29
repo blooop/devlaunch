@@ -5713,9 +5713,10 @@ mod tests {
 
     #[test]
     fn work_saved_nowhere_else_stops_the_delete_and_names_what_it_is() {
-        let losses = Losses::one(workspace_state::Loss::Unpushed(NonEmpty::one(
-            "abc1234 later".to_owned(),
-        )));
+        let losses = Losses::one(workspace_state::Loss::Unpushed {
+            commits: NonEmpty::one("abc1234 later".to_owned()),
+            by_tags: None,
+        });
         let guarded = guard_removal(
             "ws",
             Unsaved::WouldLose(losses.clone()),
