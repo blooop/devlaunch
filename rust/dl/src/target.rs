@@ -197,7 +197,7 @@ fn triple(
         Ok(Resolution::Warm { placement }) => placement.workspace_id().to_owned(),
         // devpod knows nothing about it. The derived id is what the verb addresses,
         // and devpod's own refusal is what the user sees — no clone, no record.
-        Ok(Resolution::Cold { workspace }) => workspace.value(),
+        Ok(Resolution::Cold { workspace }) => workspace.value().to_owned(),
         // A devpod that could not be run at all ends the command, because every
         // other verb here goes on to address devpod itself. `kill` does not: it
         // addresses the host, and a devpod that would not say which workspace this
@@ -205,7 +205,7 @@ fn triple(
         // unless devpod knew better, and it could not be asked. Refusing here
         // would be the verb for a host that will not answer refusing because the
         // host did not answer.
-        Err(_) if vetting == Vetting::Unnecessary => workspace.value(),
+        Err(_) if vetting == Vetting::Unnecessary => workspace.value().to_owned(),
         Err(not_run) => return Err(Unaddressable::DevpodNotRun(not_run)),
     };
     Ok(Addressed {

@@ -2812,13 +2812,10 @@ pub fn resolve_triple(
     notices: &mut dyn Notices<LaunchNotice>,
     patience: Patience,
 ) -> Result<Resolution, NotRun> {
-    let derived = workspace.value();
-    let triple = (workspace.owner(), workspace.repo(), workspace.git_ref());
     let known = lifecycle::resolve_known_workspace(
         context.runner(),
-        triple,
-        &derived,
-        || recorded_id(cold, triple),
+        workspace,
+        || recorded_id(cold, workspace),
         &mut as_lifecycle(notices),
         patience,
     )?;
@@ -2863,10 +2860,14 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 /// A store that cannot be opened answers `None`, which is Python's reading: a
 /// lookup that failed must not be able to stop a command that would otherwise
 /// have worked.
-fn recorded_id(cold: &mut dyn ColdMachinery<'_>, triple: (&str, &str, &str)) -> Option<String> {
-    let (owner, repo, branch) = triple;
+fn recorded_id(cold: &mut dyn ColdMachinery<'_>, workspace: &WorkspaceId) -> Option<String> {
     let opened = cold.open().ok()?;
-    lifecycle::recorded_devpod_workspace_id(opened.storage, owner, repo, branch)
+    lifecycle::recorded_devpod_workspace_id(
+        opened.storage,
+        workspace.owner(),
+        workspace.repo(),
+        workspace.git_ref(),
+    )
 }
 
 /// The triple that already holds this launch's derived id, if a different one does.
@@ -2914,7 +2915,6 @@ fn colliding_record(
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
 ) -> Option<(String, String, String)> {
-    let derived = workspace.value();
     let mine = workspace.identity();
     let storage = cold.recorded()?;
     storage
@@ -2922,7 +2922,7 @@ fn colliding_record(
         .values()
         .find(|record| {
             identity_of(&record.owner, &record.repo, &record.branch) != mine
-                && holds_id(record, &derived)
+                && holds_id(record, workspace)
         })
         .map(|record| {
             (
@@ -2933,9 +2933,15 @@ fn colliding_record(
         })
 }
 
-/// Whether *record* occupies *derived* -- see [`colliding_record`] for the three
-/// arms and why each of them is a resource and not a coincidence.
-fn holds_id(record: &WorktreeInfo, derived: &str) -> bool {
+/// Whether *record* occupies the id *workspace* derives -- see
+/// [`colliding_record`] for the three arms and why each of them is a resource and
+/// not a coincidence.
+///
+/// Takes the triple rather than the rendered id, because the third arm re-derives
+/// from the *record's* triple and compares: handing this an id from somewhere
+/// other than the triple in play would answer a question nobody asked.
+fn holds_id(record: &WorktreeInfo, workspace: &WorkspaceId) -> bool {
+    let derived = workspace.value();
     record.workspace_id == derived
         || record.devpod_workspace_id.as_deref() == Some(derived)
         || WorkspaceId::new(&record.owner, &record.repo, &record.branch)
@@ -3017,7 +3023,7 @@ pub(crate) fn prepare(
     );
     match prepared {
         Ok(prepared) => Ok(Placement::Creating {
-            workspace_id: workspace.value(),
+            workspace_id: workspace.value().to_owned(),
             title: workspace.label(),
             source: prepared.path.to_string_lossy().into_owned(),
         }),
@@ -3378,7 +3384,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             colliding_record(self.cold, &workspace)
         {
             return Ok(Err(LaunchRefusal::IdCollision {
-                workspace_id: workspace.value(),
+                workspace_id: workspace.value().to_owned(),
                 owner,
                 repo,
                 branch,
@@ -7004,7 +7010,7 @@ mod tests {
         // cold path never being opened.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "wayfinder/devlaunch-7")
             .expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let mut context = CommandContext::new(&scene.runner);
 
         let resolution = resolve_triple(
@@ -7019,7 +7025,7 @@ mod tests {
             resolution,
             Ok(Resolution::Warm {
                 placement: Placement::Known {
-                    workspace_id: workspace.value(),
+                    workspace_id: workspace.value().to_owned(),
                     title: workspace.label(),
                     state: ContainerState::Running,
                 }
@@ -7029,7 +7035,7 @@ mod tests {
             scene.devpod_commands(),
             vec![vec![
                 "status".to_owned(),
-                workspace.value(),
+                workspace.value().to_owned(),
                 "--output".to_owned(),
                 "json".to_owned(),
             ]]
@@ -7053,13 +7059,10 @@ mod tests {
             let (mut storage, _) = MetadataStorage::open(scene.cache_dir().join("metadata.json"))
                 .expect("a fresh store");
             let mut record = WorktreeInfo::new(
-                "blooop",
-                "devlaunch",
-                "main",
+                &workspace,
                 scene
                     .cache_dir()
                     .join("repos/blooop/devlaunch/devlaunch-main-legacy"),
-                &workspace.value(),
             );
             record.devpod_workspace_id = Some("devlaunch-main-legacy".to_owned());
             storage.add_worktree(record).expect("the record is saved");
@@ -7142,7 +7145,7 @@ mod tests {
         let (mut storage, _) =
             MetadataStorage::open(cache_dir.join("metadata.json")).expect("a fresh store opens");
         storage
-            .add_worktree(WorktreeInfo::new(
+            .add_worktree(WorktreeInfo::as_an_older_dl_recorded_it(
                 owner,
                 repo,
                 branch,
@@ -7173,13 +7176,13 @@ mod tests {
         // nothing. The user gets somebody else's checkout, and a later `rm` on
         // either one deletes a clone the other still claims.
         let held = WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
-        let scene = Scene::new().with_running(&held.value());
+        let scene = Scene::new().with_running(held.value());
         record_worktree(
             scene.cache_dir(),
             "blooop",
             "devlaunch",
             COLLIDING_A,
-            &held.value(),
+            held.value(),
         );
         let git = Git::new(&scene.runner);
         let mut cold = RealCold::new(scene.cache_dir(), git);
@@ -7207,7 +7210,7 @@ mod tests {
         assert_eq!(
             launched,
             Ok(Launched::Refused(LaunchRefusal::IdCollision {
-                workspace_id: held.value(),
+                workspace_id: held.value().to_owned(),
                 owner: "blooop".to_owned(),
                 repo: "devlaunch".to_owned(),
                 branch: COLLIDING_B.to_owned(),
@@ -7233,13 +7236,13 @@ mod tests {
         // stayed down.
         let workspace =
             WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         record_worktree(
             scene.cache_dir(),
             "blooop",
             "devlaunch",
             COLLIDING_A,
-            &workspace.value(),
+            workspace.value(),
         );
         let git = Git::new(&scene.runner);
         let mut cold = RealCold::new(scene.cache_dir(), git);
@@ -7296,13 +7299,13 @@ mod tests {
             recorded.value(),
             "the two spellings are one workspace, which is what makes this a trap"
         );
-        let scene = Scene::new().with_running(&recorded.value());
+        let scene = Scene::new().with_running(recorded.value());
         record_worktree(
             scene.cache_dir(),
             "nvidia",
             "cuda-samples",
             "main",
-            &recorded.value(),
+            recorded.value(),
         );
         let git = Git::new(&scene.runner);
         let mut cold = RealCold::new(scene.cache_dir(), git);
@@ -7349,7 +7352,7 @@ mod tests {
             other.value(),
             "the two refs hash apart, which is why the collision below has to be staged"
         );
-        let scene = Scene::new().with_running(&typed.value());
+        let scene = Scene::new().with_running(typed.value());
         record_worktree(
             scene.cache_dir(),
             "owner",
@@ -7360,7 +7363,7 @@ mod tests {
             // -- so a real collision between them cannot be produced, only staged.
             // What is under test is the comparison, not the hash: the guard has to
             // read these two as different triples.
-            &typed.value(),
+            typed.value(),
         );
         let git = Git::new(&scene.runner);
         let mut cold = RealCold::new(scene.cache_dir(), git);
@@ -7388,7 +7391,7 @@ mod tests {
         assert_eq!(
             launched,
             Ok(Launched::Refused(LaunchRefusal::IdCollision {
-                workspace_id: typed.value(),
+                workspace_id: typed.value().to_owned(),
                 owner: "owner".to_owned(),
                 repo: "repo".to_owned(),
                 branch: "Main".to_owned(),
@@ -7409,7 +7412,7 @@ mod tests {
         // the machine, which is far worse than the one-in-thirty-seven-thousand
         // accident it is watching for.
         let workspace = WorkspaceId::new("owner", "repo", "main").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         record_worktree(
             scene.cache_dir(),
             "owner",
@@ -7453,13 +7456,13 @@ mod tests {
         // the colliding record from the refusal test, so the only thing standing
         // between this launch and a refusal is that the look came up empty.
         let held = WorkspaceId::new("blooop", "devlaunch", COLLIDING_A).expect("a safe triple");
-        let scene = Scene::new().with_running(&held.value());
+        let scene = Scene::new().with_running(held.value());
         record_worktree(
             scene.cache_dir(),
             "blooop",
             "devlaunch",
             COLLIDING_A,
-            &held.value(),
+            held.value(),
         );
         let git = Git::new(&scene.runner);
         let mut cold = UnreadableRecords(RealCold::new(scene.cache_dir(), git));
@@ -7569,7 +7572,7 @@ mod tests {
         // workspace twice, which is the only place it shows.
         let workspace =
             WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
-        let mut scene = Scene::new().with_running(&workspace.value());
+        let mut scene = Scene::new().with_running(workspace.value());
         let home = tempfile::tempdir().expect("a scratch home");
         std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
         std::fs::write(
@@ -7634,7 +7637,7 @@ mod tests {
         // next `up`, and a workspace created by this build has one from the start.
         let workspace =
             WorkspaceId::new("octocat", "Hello-World", "master").expect("a safe triple");
-        let mut scene = Scene::new().with_running(&workspace.value());
+        let mut scene = Scene::new().with_running(workspace.value());
         let home = tempfile::tempdir().expect("a scratch home");
         std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
         std::fs::write(
@@ -7693,7 +7696,7 @@ mod tests {
         // overhead is what sits between picking a ticket and a running agent.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "wayfinder/devlaunch-7")
             .expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);
@@ -7725,13 +7728,13 @@ mod tests {
             vec![
                 vec![
                     "status".to_owned(),
-                    workspace.value(),
+                    workspace.value().to_owned(),
                     "--output".to_owned(),
                     "json".to_owned(),
                 ],
                 vec![
                     "ssh".to_owned(),
-                    workspace.value(),
+                    workspace.value().to_owned(),
                     "--command".to_owned(),
                     "bash -lc 'echo hi'".to_owned(),
                 ],
@@ -7756,7 +7759,7 @@ mod tests {
         // trade.
         let workspace =
             WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
-        let mut scene = Scene::new().with_running(&workspace.value());
+        let mut scene = Scene::new().with_running(workspace.value());
         scene.host.stderr_tty = true;
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
@@ -7800,7 +7803,7 @@ mod tests {
             scene
                 .devpod_commands()
                 .iter()
-                .all(|call| call.contains(&workspace.value())),
+                .all(|call| call.iter().any(|word| word == workspace.value())),
             "{:?}",
             scene.devpod_commands()
         );
@@ -7816,7 +7819,7 @@ mod tests {
         // `dl blooop/devlaunch@main` put `devlaunch@main`, and the two names would
         // then pile up in the profile a line each.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
-        let mut scene = Scene::new().with_running(&workspace.value());
+        let mut scene = Scene::new().with_running(workspace.value());
         scene.host.stderr_tty = true;
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
@@ -7833,7 +7836,7 @@ mod tests {
                 &mut parts.said,
             )
             .recognised_as(Some(workspace.clone()));
-            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+            let _ = launch.run(workspace.value(), &LaunchVerb::Up, None);
         }
 
         assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
@@ -7849,7 +7852,7 @@ mod tests {
         // recorded-id path gets.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let switched = WorkspaceId::new("blooop", "devlaunch", "other").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);
@@ -7865,10 +7868,13 @@ mod tests {
                 &mut parts.said,
             )
             .recognised_as(Some(switched));
-            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+            let _ = launch.run(workspace.value(), &LaunchVerb::Up, None);
         }
 
-        assert_eq!(parts.provision.titles(), vec![Some(workspace.value())]);
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some(workspace.value().to_owned())]
+        );
     }
 
     #[test]
@@ -8232,7 +8238,7 @@ mod tests {
         // was one line ever. What that cost was the `@`, on every launch, to keep a
         // guarantee that only bites when the same workspace is reached two ways.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);
@@ -8259,12 +8265,12 @@ mod tests {
                 &mut parts.chatter,
                 &mut parts.said,
             );
-            let _ = launch.run(&workspace.value(), &LaunchVerb::Up, None);
+            let _ = launch.run(workspace.value(), &LaunchVerb::Up, None);
         }
 
         assert_eq!(
             parts.provision.titles(),
-            vec![Some(workspace.label()), Some(workspace.value())],
+            vec![Some(workspace.label()), Some(workspace.value().to_owned())],
             "the spec installs the label and the bare id installs the id"
         );
     }
@@ -8287,7 +8293,7 @@ mod tests {
         // `a_spec_cannot_smuggle_a_second_escape_into_the_title` is where the raw
         // spec is pushed through it.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main\n").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);
@@ -8318,7 +8324,7 @@ mod tests {
         // two places it has to reach.
         let workspace =
             WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);
@@ -8378,7 +8384,7 @@ mod tests {
         // arrives later is the one it is for, and asking this pass to guess whether
         // one ever will is a question it cannot answer.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         assert!(!scene.host.stderr_tty, "the premise of this test");
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
@@ -8833,7 +8839,7 @@ mod tests {
         // also what keeps it from queueing behind a sibling's cold launch of the
         // same repo.
         let workspace = WorkspaceId::new("owner", "repo", "feature/x").expect("a safe triple");
-        let scene = Scene::new().with_running(&workspace.value());
+        let scene = Scene::new().with_running(workspace.value());
         let updater = SelfInvocation::new("dl");
         let completion = scene.cache_dir().join("completion.json");
         let mut parts = launching(&scene.runner, &updater, &completion);
@@ -8873,7 +8879,7 @@ mod tests {
         let workspace = WorkspaceId::new("owner", "repo", "main").expect("a safe triple");
         scene
             .runner
-            .add_workspace(&workspace.value(), WorkspaceState::Running);
+            .add_workspace(workspace.value(), WorkspaceState::Running);
         // A bare clone with a HEAD, as a real `git clone --bare` leaves it.
         scene.runner.script(
             ["git", "symbolic-ref"],

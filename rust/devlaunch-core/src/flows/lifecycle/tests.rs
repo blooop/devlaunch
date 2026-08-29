@@ -463,7 +463,13 @@ impl World {
 
     /// A worktree record naming `clone`, with `leaf` as its workspace id.
     fn record(&mut self, leaf: &str, branch: &str, clone: &Path) -> WorktreeInfo {
-        let record = WorktreeInfo::new(OWNER, REPO, branch, clone.to_path_buf(), leaf);
+        let record = WorktreeInfo::as_an_older_dl_recorded_it(
+            OWNER,
+            REPO,
+            branch,
+            clone.to_path_buf(),
+            leaf,
+        );
         self.storage
             .add_worktree(record.clone())
             .expect("the record is written");
@@ -2603,7 +2609,8 @@ fn a_stale_record_does_not_let_the_delete_past_the_guard() {
     let mut world = World::empty();
     let derived_id = WorkspaceId::new(OWNER, REPO, "feature")
         .expect("a safe triple")
-        .value();
+        .value()
+        .to_owned();
     let derived = world.clone_at(&derived_id, "feature");
     std::fs::write(derived.join("more.txt"), "more\n").expect("a file");
     commit(&derived, "more");
@@ -3362,6 +3369,39 @@ fn each_repository_gets_its_own_note_out_of_the_one_pass() {
 // which workspace a triple is (devlaunch#88, #145)
 // =======================================================================
 
+/// The triple these tests resolve, parsed.
+fn a_triple(branch: &str) -> WorkspaceId {
+    WorkspaceId::new(OWNER, REPO, branch).expect("a safe triple")
+}
+
+#[test]
+fn the_id_probed_is_the_one_the_triple_itself_derives() {
+    // The derived id used to arrive as a second argument beside the triple, so
+    // this function could be handed a triple and an id that were not each
+    // other's -- and it goes on to *name both* in the notice it emits when they
+    // differ, which is a sentence about a workspace nobody has. There is one
+    // argument now, and the id is read off it.
+    let workspace = a_triple("main");
+    let devpod = devpod_knowing(&[(workspace.value(), "Running")]);
+
+    let resolved = resolve_known_workspace(
+        &devpod,
+        &workspace,
+        || None,
+        &mut ignoring(),
+        Patience::AsLongAsItTakes,
+    );
+
+    assert_eq!(
+        resolved,
+        Ok(KnownWorkspace::Known {
+            workspace_id: "r-main-znkz".to_owned(),
+            state: ContainerState::Running,
+        })
+    );
+    assert_eq!(workspace.value(), "r-main-znkz");
+}
+
 /// A devpod that knows exactly these workspaces, in these states.
 fn devpod_knowing(known: &[(&str, &str)]) -> FakeRunner {
     let fake = FakeRunner::new();
@@ -3382,13 +3422,13 @@ fn devpod_knowing(known: &[(&str, &str)]) -> FakeRunner {
 fn a_workspace_devpod_knows_answers_from_the_derivation_and_reads_no_record() {
     // #145's promise: a launch of a workspace devpod already knows must not load
     // metadata.json. Here the closure is the record read, and it is never called.
-    let devpod = devpod_knowing(&[("r-main-aaa", "Running")]);
+    let workspace = a_triple("main");
+    let devpod = devpod_knowing(&[(workspace.value(), "Running")]);
     let mut asked = false;
 
     let resolved = resolve_known_workspace(
         &devpod,
-        (OWNER, REPO, "main"),
-        "r-main-aaa",
+        &workspace,
         || {
             asked = true;
             Some("something-else".to_owned())
@@ -3400,7 +3440,7 @@ fn a_workspace_devpod_knows_answers_from_the_derivation_and_reads_no_record() {
     assert_eq!(
         resolved,
         Ok(KnownWorkspace::Known {
-            workspace_id: "r-main-aaa".to_owned(),
+            workspace_id: workspace.value().to_owned(),
             state: ContainerState::Running
         })
     );
@@ -3412,13 +3452,13 @@ fn a_workspace_created_under_the_old_scheme_is_still_addressable() {
     // The regression PR #81 caused: the record was written by a dl whose
     // derivation produced a different id, and following the derivation reaches a
     // workspace devpod has never heard of.
+    let workspace = a_triple("main");
     let devpod = devpod_knowing(&[("r-main-old", "Stopped")]);
     let mut notices = Vec::new();
 
     let resolved = resolve_known_workspace(
         &devpod,
-        (OWNER, REPO, "main"),
-        "r-main-new",
+        &workspace,
         || Some("r-main-old".to_owned()),
         &mut notices,
         Patience::AsLongAsItTakes,
@@ -3431,11 +3471,14 @@ fn a_workspace_created_under_the_old_scheme_is_still_addressable() {
             state: ContainerState::Stopped
         })
     );
+    // The sentence names the recorded id, the derived id and the triple, and the
+    // derived id is now read off the triple rather than handed in beside it -- so
+    // the three cannot be about two different workspaces.
     assert_eq!(
         notices,
         [LifecycleNotice::AddressingRecordedWorkspace {
             recorded: "r-main-old".to_owned(),
-            derived: "r-main-new".to_owned(),
+            derived: workspace.value().to_owned(),
             owner: OWNER.to_owned(),
             repo: REPO.to_owned(),
             branch: "main".to_owned(),
@@ -3445,19 +3488,19 @@ fn a_workspace_created_under_the_old_scheme_is_still_addressable() {
 
 #[test]
 fn a_record_that_agrees_with_the_derivation_changes_nothing() {
+    let workspace = a_triple("main");
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
-        (OWNER, REPO, "main"),
-        "r-main-new",
-        || Some("r-main-new".to_owned()),
+        &workspace,
+        || Some(workspace.value().to_owned()),
         &mut ignoring(),
         Patience::AsLongAsItTakes,
     );
     assert_eq!(
         resolved,
         Ok(KnownWorkspace::Unknown {
-            derived: "r-main-new".to_owned()
+            derived: workspace.value().to_owned()
         })
     );
 }
@@ -3467,11 +3510,11 @@ fn a_stored_id_devpod_also_denies_is_not_used() {
     // metadata.json is append-mostly, so a record naming a workspace deleted
     // months ago is ordinary. The answer has to be the derived id — the one a
     // create would use — not a workspace that is doubly gone.
+    let workspace = a_triple("main");
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
-        (OWNER, REPO, "main"),
-        "r-main-new",
+        &workspace,
         || Some("r-main-old".to_owned()),
         &mut ignoring(),
         Patience::AsLongAsItTakes,
@@ -3479,7 +3522,7 @@ fn a_stored_id_devpod_also_denies_is_not_used() {
     assert_eq!(
         resolved,
         Ok(KnownWorkspace::Unknown {
-            derived: "r-main-new".to_owned()
+            derived: workspace.value().to_owned()
         })
     );
 }
@@ -3488,11 +3531,11 @@ fn a_stored_id_devpod_also_denies_is_not_used() {
 fn no_record_at_all_falls_back_to_the_derivation() {
     // Also the answer for a cache dl could not read: a lookup that failed must not
     // stop a command that would otherwise have worked.
+    let workspace = a_triple("main");
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
-        (OWNER, REPO, "main"),
-        "r-main-new",
+        &workspace,
         || None,
         &mut ignoring(),
         Patience::AsLongAsItTakes,
@@ -3501,11 +3544,11 @@ fn no_record_at_all_falls_back_to_the_derivation() {
     assert_eq!(
         resolved,
         KnownWorkspace::Unknown {
-            derived: "r-main-new".to_owned()
+            derived: workspace.value().to_owned()
         }
     );
     assert!(resolved.state().is_none());
-    assert_eq!(resolved.workspace_id(), "r-main-new");
+    assert_eq!(resolved.workspace_id(), workspace.value());
     assert!(!resolved.is_running());
 }
 
@@ -3522,8 +3565,7 @@ fn a_devpod_nobody_can_run_is_not_a_workspace_nobody_knows() {
 
     let resolved = resolve_known_workspace(
         &missing,
-        (OWNER, REPO, "main"),
-        "r-main-new",
+        &a_triple("main"),
         || {
             asked = true;
             Some("r-main-old".to_owned())
@@ -3543,11 +3585,11 @@ fn a_devpod_nobody_can_run_is_not_a_workspace_nobody_knows() {
 fn a_devpod_that_refused_the_derived_id_is_a_denial_and_not_a_failure() {
     // The other side of the line above: devpod ran, said it has no such
     // workspace, and that is the cold path -- exit code and all.
+    let workspace = a_triple("main");
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
-        (OWNER, REPO, "main"),
-        "r-main-new",
+        &workspace,
         || None,
         &mut ignoring(),
         Patience::AsLongAsItTakes,
@@ -3555,7 +3597,7 @@ fn a_devpod_that_refused_the_derived_id_is_a_denial_and_not_a_failure() {
     assert_eq!(
         resolved,
         Ok(KnownWorkspace::Unknown {
-            derived: "r-main-new".to_owned()
+            derived: workspace.value().to_owned()
         })
     );
 }

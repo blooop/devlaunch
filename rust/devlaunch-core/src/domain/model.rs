@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use jiff::civil;
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::domain::workspace_id::WorkspaceId;
+
 /// What `default_branch` is when a stored entry does not say.
 const DEFAULT_BRANCH: &str = "main";
 
@@ -367,7 +369,46 @@ impl BaseRepository {
 
 impl WorktreeInfo {
     /// A worktree recorded as created and used now.
-    pub(crate) fn new(
+    ///
+    /// Takes the parsed triple rather than its four parts, so the recorded triple
+    /// and the recorded id cannot be about different workspaces. That agreement is
+    /// what `flows::launch`'s collision guard reads this record back for: it
+    /// compares the *triple* to decide whether the record holding a derived id
+    /// belongs to the launch in front of it, and a record whose halves disagreed
+    /// would send it the wrong answer.
+    pub(crate) fn new(workspace: &WorkspaceId, local_path: PathBuf) -> Self {
+        let now = Timestamp::now();
+        Self {
+            owner: workspace.owner().to_owned(),
+            repo: workspace.repo().to_owned(),
+            branch: workspace.git_ref().to_owned(),
+            local_path,
+            workspace_id: workspace.value().to_owned(),
+            created_at: now.clone(),
+            last_used: now,
+            devpod_workspace_id: None,
+        }
+    }
+
+    /// A record whose id is **not** the one its triple derives, as an older `dl`
+    /// left behind.
+    ///
+    /// Test-only, and it has to exist because the state is real: the derivation
+    /// moved once (#81, and again when the suffix scheme changed), so
+    /// `metadata.json` genuinely holds records whose stored id no longer matches
+    /// their stored triple, and a hand-edited file can hold anything at all. That
+    /// is the state `flows::launch`'s collision guard and
+    /// `lifecycle::resolve_known_workspace` both exist to handle, so their tests
+    /// have to be able to build one. Production reads such a record off disk
+    /// through [`Self::from_json`] and cannot construct one: [`Self::new`] is the
+    /// only other way in, and it derives the id from the triple.
+    ///
+    /// The branch is a `&str` rather than a validated ref for the same reason.
+    /// The old derivation coerced unsafe refs instead of rejecting them, so a
+    /// stored branch is not necessarily a legal one -- `flows::migration` reports
+    /// exactly those records as unusable, and the test for it needs one.
+    #[cfg(test)]
+    pub(crate) fn as_an_older_dl_recorded_it(
         owner: &str,
         repo: &str,
         branch: &str,
@@ -956,9 +997,26 @@ mod tests {
 
     #[test]
     fn a_new_worktree_is_created_and_used_at_the_same_moment() {
-        let worktree = WorktreeInfo::new("o", "r", "b", PathBuf::from("/p"), "w");
+        let workspace = WorkspaceId::new("o", "r", "b").expect("a safe triple");
+        let worktree = WorktreeInfo::new(&workspace, PathBuf::from("/p"));
 
         assert_eq!(worktree.created_at, worktree.last_used);
         assert_eq!(worktree.devpod_workspace_id, None);
+    }
+
+    #[test]
+    fn a_new_record_holds_the_triple_the_id_beside_it_was_derived_from() {
+        // The collision guard reads this record back and compares the *triple* to
+        // decide whether the id belongs to the launch in front of it, so the two
+        // halves agreeing is load-bearing rather than tidy. They used to be four
+        // independent arguments -- three parts and an id -- with nothing but the
+        // caller's care keeping them about one workspace.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let record = WorktreeInfo::new(&workspace, PathBuf::from("/p"));
+
+        assert_eq!(record.owner, "blooop");
+        assert_eq!(record.repo, "devlaunch");
+        assert_eq!(record.branch, "main");
+        assert_eq!(record.workspace_id, "devlaunch-main-3j1t");
     }
 }

@@ -283,7 +283,7 @@ fn migrate_record(
     };
 
     let src = record.local_path.clone();
-    let dest = clone_dir(repos_dir, &record.owner, &record.repo, &workspace.value());
+    let dest = clone_dir(repos_dir, &workspace);
 
     if dest != src && claimed.contains(&dest) {
         // The derived name is a directory some *other* record owns, either since
@@ -331,7 +331,7 @@ fn migrate_record(
     // #55 flagged holding two ids in one record as a modelling defect, and giving
     // that field a second meaning ("the orphaned old container") would make the
     // defect worse. The orphaned ids go in the report instead.
-    record.workspace_id = derived;
+    record.workspace_id = derived.to_owned();
 }
 
 /// Move `src` to `dest`, recording the outcome. `false` if it did not happen.
@@ -491,6 +491,7 @@ mod tests {
         WorkspaceId::new(owner, repo, branch)
             .expect("a safe triple")
             .value()
+            .to_owned()
     }
 
     /// A cache written by an older devlaunch.
