@@ -166,6 +166,16 @@ pub fn devlaunch_core::flows::launch::Host::default() -> devlaunch_core::flows::
 impl core::fmt::Debug for devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Host
+impl devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::under(&std::path::Path) -> Self
+impl core::clone::Clone for devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::clone(&self) -> devlaunch_core::flows::kept_copies::KeptCopies
+impl core::cmp::Eq for devlaunch_core::flows::kept_copies::KeptCopies
+impl core::cmp::PartialEq for devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::eq(&self, &devlaunch_core::flows::kept_copies::KeptCopies) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kept_copies::KeptCopies
+pub fn devlaunch_core::flows::kept_copies::KeptCopies::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kept_copies::KeptCopies
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self

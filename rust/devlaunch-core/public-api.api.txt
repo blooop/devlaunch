@@ -78,6 +78,7 @@ pub devlaunch_core::api::LifecycleNotice::Removing::workspace_id: alloc::string:
 pub devlaunch_core::api::LifecycleNotice::RemovingOverWork
 pub devlaunch_core::api::LifecycleNotice::RemovingOverWork::refusal: devlaunch_core::flows::lifecycle::RemovalRefused
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved
+pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
 pub enum devlaunch_core::api::ProvisionEvent
