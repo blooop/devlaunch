@@ -75,6 +75,7 @@ pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::new(&'r dyn devlaunch_ru
 pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::records(&mut self) -> core::result::Result<&mut devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
 impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
 pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 impl<'r> devlaunch_core::flows::listing::CommandContext<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::git(&self) -> devlaunch_core::clients::git::Git<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::new(&'r dyn devlaunch_runner::Runner) -> Self
@@ -127,6 +128,7 @@ pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&sel
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
 impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
 pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 impl<T> devlaunch_core::notices::Notices<T> for alloc::vec::Vec<T>
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
 impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
@@ -1429,6 +1431,7 @@ pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::new(&'r dyn devlaunch_ru
 pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::records(&mut self) -> core::result::Result<&mut devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
 impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
 pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 pub struct devlaunch_core::flows::launch::Host
 impl devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
