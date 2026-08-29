@@ -116,6 +116,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/rust-port-scope.md` are out of scope, being records of what was true when
   they were written.
 
+- **Eight tests that CI was not running.** The Rust job names its test suites one
+  step at a time, which buys real things: a per-suite timeout, so a wedged binary
+  fails its own short step instead of holding the runner until it loses contact,
+  and a step title that names the culprit even when the runner dies before it can
+  upload logs. What it costs is that the list, rather than the workspace, decides
+  what runs. A test binary nobody wrote a step for is compiled by the build step
+  and run by nothing, and no tick anywhere goes red to say so.
+
+  That had happened twice. `devlaunch-test-support` came off the list once and was
+  put back with a note about it; `dl`'s `picker` and `terminal` suites were still
+  off it, eight tests, one of them the test written to prove the terminal-restore
+  fix in this same release. The one test standing behind that repair had never run
+  in CI.
+
+  So the job now runs `cargo test --workspace` after the named steps. The list
+  stays, because the list is what triage reads; the workspace is what decides. It
+  costs 72 seconds, taking the job from 2:13 to 3:19 against a bound of thirty
+  minutes. A guard in the test suite holds both halves in place, and a second one
+  holds every job in the workflow to a timeout: three had none, among them the job
+  that polls a remote API in a sleep loop.
+
+- **The JSON writers now escape DEL, as CPython does.** `metadata.json`,
+  `completions.json` and `dl --ls --json` are all written to agree byte for byte
+  with what the Python build wrote, and one character disagreed: `U+007F`. The
+  escaper's gate was `is_ascii()` where CPython's is `' '` through `'~'`, so DEL
+  went out as a raw byte where `json.dumps` writes the six characters `\u007f`.
+  It is the only non-printable ASCII character serde hands to the escaper instead
+  of escaping itself, which is how it stayed wrong through three copies of the
+  loop.
+  No branch name can carry a DEL (git rejects control characters in ref names),
+  so nothing in the wild hit it going out. Coming back in did: the metadata loader
+  parses and re-encodes, so a `metadata.json` written by the Python build with an
+  escaped DEL in it re-saved as a raw byte, quietly breaking the round-trip the
+  file's own contract asserts. That load-and-re-save is now pinned on a real file,
+  and each of the three writers is pinned against the line `json.dumps` printed
+  for every ASCII character at once, which says the same thing in the other
+  direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
+
 - **`--force`'s placement rule is now held over the whole argument space rather
   than over the lines somebody thought to list.** The grammar decides whether a
   `--force` is the modifier or a word in the workspace slot by counting its
