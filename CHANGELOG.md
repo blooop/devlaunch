@@ -308,6 +308,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that read `unverified` are measured, against a workspace provisioned to run
   them; the eighth says plainly which half of it was measured and which was not.
 
+- **Two branches that derive the same workspace id are no longer quietly given
+  the same workspace.** A workspace id is `<repo-slug>-<ref-slug>-<suffix>`, and
+  only the four-character suffix makes it unique: the owner is not in the readable
+  half at all, `feature/auth` and `feature-auth` slug to one string, and a long ref
+  loses its tail to the 47-character cap. Two branches whose ids do land on the
+  same string share one clone directory and one devpod workspace, because devpod
+  names workspaces globally rather than per repository.
+
+  What that looked like: the second one attached to the first one's container and
+  said nothing. You got somebody else's checkout, from a command that had no
+  reason to look wrong, and a later `dl <ws> rm` on either of them deleted a clone
+  the other still claimed. Rare, roughly one in thirty-seven thousand across ten
+  near-identical branches in one repository, and the kind of rare that costs a day
+  when it happens.
+
+  `dl` now checks before it asks devpod anything, and refuses:
+
+  ```
+  Workspace id 'devlaunch-release-999999999999999999999911-dq8q' is already held by
+  'blooop/devlaunch@release/999999999999999999999911630'. Launching
+  'blooop/devlaunch@release/999999999999999999999911783' under it would put both
+  in one clone directory and one container, so each would open the other's
+  checkout and 'dl <ws> rm' on either would delete work the other still owns.
+  Rename one of the two branches and launch it again.
+  ```
+
+  Two spellings of one repository are not a collision: `NVIDIA/cuda-samples` and
+  `nvidia/cuda-samples` derive one id on purpose, and the check compares triples by
+  the same rule the id is derived under, so the second spelling still opens the
+  workspace you already have. Refs stay case-sensitive, because `Main` and `main`
+  really are two branches.
+
+  The check reads the records `dl` already keeps, so it needs no round trip and
+  nothing new on disk, and it fails open in every direction: a record whose branch
+  is not a legal ref is skipped, a `metadata.json` that cannot be read means "no
+  collision" rather than an error, and a launch that matches its own record
+  attaches exactly as it did before. Reading the records on the warm attach path
+  takes no lock, runs no migration and writes nothing, so the attach costs what it
+  cost before.
+
+  The same hole in the schema 2 to 3 migration is closed with it: two records that
+  derived one destination both ended up owning it, because the guard against
+  adopting another record's clone only knew the paths records pointed at before
+  the run started.
+
 ## [0.25.0] - 2026-08-28
 
 ### Fixed

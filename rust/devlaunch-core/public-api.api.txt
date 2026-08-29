@@ -167,6 +167,7 @@ pub const devlaunch_core::api::HANDOFF_VAR: &str
 pub const devlaunch_core::api::PREWARM_VAR: &str
 pub trait devlaunch_core::api::ColdMachinery<'r>
 pub fn devlaunch_core::api::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub fn devlaunch_core::api::ColdMachinery::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 pub trait devlaunch_core::api::Notices<T>
 pub fn devlaunch_core::api::Notices::say(&mut self, T)
 pub trait devlaunch_core::api::Provision

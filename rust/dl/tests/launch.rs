@@ -449,12 +449,20 @@ fn a_devcontainer_choice_a_running_workspace_cannot_honour_is_said_not_discarded
 }
 
 #[test]
-fn a_warm_triple_launch_does_no_metadata_io_at_all() {
+fn a_warm_triple_launch_writes_nothing_to_the_cache() {
     // devlaunch#145, observed on disk rather than through a mock. The cache is
-    // seeded with an unparsable `metadata.json`: any path that *reads* it
+    // seeded with an unparsable `metadata.json`: any path that *opens* it
     // quarantines it to `metadata.json.corrupt` and says so, and any path that takes
-    // the metadata lock leaves `metadata.json.lock` behind. A launch that did no
-    // metadata I/O leaves the garbage byte-identical and creates neither sibling.
+    // the metadata lock leaves `metadata.json.lock` behind. A launch that wrote
+    // nothing leaves the garbage byte-identical and creates neither sibling.
+    //
+    // **A warm launch does read the file**, and this test is deliberately not about
+    // that. The collision guard (blooop/devlaunch#438) reads it through
+    // `MetadataStorage::look`, which takes no lock, runs no migration and writes
+    // nothing -- so every assertion below still holds, and holds honestly. What #145
+    // bought was that a user waiting on an attach does not pay for the *machinery*;
+    // the name of this test used to say "no I/O at all", which claimed more than the
+    // assertions do and would send a reader looking to undo that read.
     let world = World::with(&["--warm"]);
     std::fs::write(world.path("cache/devlaunch/metadata.json"), "not json")
         .expect("a corrupt document");
@@ -488,6 +496,54 @@ fn a_warm_triple_launch_does_no_metadata_io_at_all() {
             format!("devpod ssh {MAIN} --command bash -lc 'echo hi'"),
         ]
     );
+}
+
+#[test]
+fn a_warm_launch_whose_id_another_triple_holds_is_refused_by_the_real_binary() {
+    // blooop/devlaunch#438, through the shipping code path rather than a stub.
+    //
+    // **This is the test that watches `ColdPath::recorded`.** Every other test of
+    // the guard hands `Launch` a cold path built for the test, so all of them stay
+    // green if the production implementation answers "nothing recorded" -- which is
+    // exactly what a rebase did to it once, grafting `NoColdPath`'s body onto
+    // `ColdPath` and switching the guard off with the suite still passing. Only a
+    // run of the real binary against a real `metadata.json` can tell the two apart.
+    //
+    // The world is the warm one, with its record moved onto a different branch: the
+    // clone and the devpod workspace stay exactly where they were, so `main` still
+    // derives `MAIN` and devpod still has it running, but the record holding that id
+    // now names `blooop/devlaunch@other`. That is what a collision looks like from
+    // disk, and it is staged rather than derived because a real suffix collision is
+    // a one-in-1.7-million search.
+    let world = World::with(&["--warm"]);
+    let records = world.path("cache/devlaunch/metadata.json");
+    let seeded = std::fs::read_to_string(&records).expect("the fixture's records");
+    let moved = seeded
+        .replace("\"blooop/devlaunch/main\"", "\"blooop/devlaunch/other\"")
+        .replace("\"branch\": \"main\"", "\"branch\": \"other\"");
+    assert_ne!(
+        moved, seeded,
+        "the record was not moved, so this proves nothing"
+    );
+    std::fs::write(&records, &moved).expect("the edited records");
+
+    let run = world.dl(&["blooop/devlaunch@main", "--", "echo", "hi"]);
+
+    run.exited(1);
+    let said = run.stderr_lines().join("\n");
+    assert!(said.contains(MAIN), "the id is named: {said}");
+    assert!(
+        said.contains("blooop/devlaunch@main"),
+        "the launched triple is named: {said}"
+    );
+    assert!(
+        said.contains("blooop/devlaunch@other"),
+        "the triple already holding it is named: {said}"
+    );
+    // Refused before devpod was asked anything, which is the point of where the
+    // guard sits: the damage is done by the attach, so a check behind the status
+    // call would fire after the wrong container had already been chosen.
+    assert_eq!(world.calls().exact(&world.root), Vec::<String>::new());
 }
 
 // ===========================================================================
