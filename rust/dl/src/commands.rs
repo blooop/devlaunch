@@ -17,23 +17,22 @@ use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kill;
-use devlaunch_core::flows::launch::LaunchNotice;
+use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteOutcome, DeleteStalled, Guarded, Insistence, LifecycleNotice,
     Persistence, PruneError, PruneOutcome, Refresh, RefreshReason, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
+use devlaunch_core::flows::records::{Records, StartupError, open_records};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::runner::{Exit, Runner};
 
 use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
-use crate::cold::ColdPath;
 use crate::hangup;
 use crate::launch::{self, Family, Reached};
 use crate::render;
 use crate::render::Swept;
 use crate::select;
-use crate::session::{self, Records, StartupError};
 use crate::target::{self, Unaddressable, Vetting};
 
 /// How a command ended, as an exit code.
@@ -221,7 +220,7 @@ fn render_json(
     cache: &Path,
     sizes: Sizes,
 ) -> Ending {
-    let records = match session::open_records(runner) {
+    let records = match open_records(runner) {
         Err(refused) => return refuse_startup(&refused),
         Ok(records) => records,
     };
@@ -339,7 +338,7 @@ fn render_update_cache(
             // next keystroke reads, while the fetch sweep is for the launch after
             // that. Both are on the same hour, so a child that gets this far does
             // both or, when it exits early above, neither.
-            let mut records = match session::open_records(runner) {
+            let mut records = match open_records(runner) {
                 Err(refused) => return refuse_startup(&refused),
                 Ok(records) => records,
             };
@@ -531,7 +530,11 @@ fn render_workspace<'r>(
     devcontainer: Option<&DevcontainerPath>,
     recognised: Option<WorkspaceId>,
 ) -> Ending {
-    let mut cold = ColdPath::new(runner);
+    // The open's own notices are said where they happen, by the same printer every
+    // other notice goes through: a damaged `metadata.json` has something to say
+    // before the verb it is holding up gets anywhere.
+    let mut opening = render::Saying;
+    let mut cold = ColdPath::new(runner, &mut opening);
     // The word the line used, asked of the verb rather than written out per arm.
     // Two of the three arms are one word each and could be spelled here, but
     // `Family::Remove` covers both `rm` and `rme`, and a notice that quotes a word
@@ -732,7 +735,7 @@ fn after_the_session<'r>(
     context: &mut CommandContext<'r>,
     cache: &Path,
     refresh: &mut Refresh<'_>,
-    cold: &mut ColdPath<'r>,
+    cold: &mut ColdPath<'r, '_>,
     target: &str,
     rm: RmOnExit,
     ran: launch::Ran,
@@ -790,7 +793,7 @@ fn render_stop<'r>(
     runner: &'r dyn Runner,
     context: &mut CommandContext<'r>,
     refresh: &mut Refresh<'_>,
-    cold: &mut ColdPath<'r>,
+    cold: &mut ColdPath<'r, '_>,
     target: &str,
 ) -> Ending {
     let addressed = match target::resolve(runner, context, cold, target, Vetting::ByDevpod) {
@@ -851,7 +854,7 @@ fn render_kill<'r>(
     context: &mut CommandContext<'r>,
     cache: &Path,
     refresh: &mut Refresh<'_>,
-    cold: &mut ColdPath<'r>,
+    cold: &mut ColdPath<'r, '_>,
     target: &str,
     word: &str,
 ) -> Ending {
@@ -910,7 +913,7 @@ fn render_remove<'r>(
     context: &mut CommandContext<'r>,
     cache: &Path,
     refresh: &mut Refresh<'_>,
-    cold: &mut ColdPath<'r>,
+    cold: &mut ColdPath<'r, '_>,
     target: &str,
     removal: Removal,
     word: &str,
@@ -946,7 +949,7 @@ fn remove_addressed<'r>(
     context: &mut CommandContext<'r>,
     cache: &Path,
     refresh: &mut Refresh<'_>,
-    cold: &mut ColdPath<'r>,
+    cold: &mut ColdPath<'r, '_>,
     workspace_id: &str,
     target: &str,
     removal: Removal,
@@ -1188,7 +1191,7 @@ fn prune_clone_directories(
     yes: bool,
     force: bool,
 ) -> Cleanup {
-    let mut records = match session::open_records(runner) {
+    let mut records = match open_records(runner) {
         Err(refused) => return Cleanup::Raised(refuse_startup(&refused)),
         Ok(records) => records,
     };
@@ -1292,7 +1295,7 @@ fn render_reconcile(
     refresh: &mut Refresh<'_>,
     yes: bool,
 ) -> Ending {
-    let mut records = match session::open_records(runner) {
+    let mut records = match open_records(runner) {
         Err(refused) => return refuse_startup(&refused),
         Ok(records) => records,
     };
@@ -1605,28 +1608,16 @@ fn refuse_startup(refused: &StartupError) -> Ending {
 
 /// Everything the config load, the metadata load and the cache migration had to
 /// say.
+///
+/// For the commands that open the records directly rather than through a
+/// [`ColdPath`] — which says the same notices through [`render::Saying`] at the
+/// moment the open happens. The order is core's, and it is the order Python's
+/// factory produced them in: the config's retired keys, then the load's notices,
+/// then the migration's, then any refusal of it.
 pub(crate) fn report(records: &Records<'_>) {
-    // The config is read before the records are opened, so its notices are said
-    // first — and here rather than at the load, so that the once-per-command
-    // guarantee `report` already carries covers them too.
-    for line in render::retired_keys(&records.retired_keys) {
-        eprintln!("{line}");
-    }
-    for line in render::metadata_notices(&records.notices) {
-        eprintln!("{line}");
-    }
-    // The cache migration's notices, said after the load's and before any refusal:
-    // Python's factory ran the load then `migrate_cache`, which announced inside
-    // itself. On an already-current cache there is no report and nothing to say.
-    if let Some(report) = &records.migration {
-        for line in render::migration_notices(report) {
+    for notice in &records.reported {
+        for line in render::records_notice(notice) {
             eprintln!("{line}");
         }
-    }
-    if let Some(refused) = &records.migration_refused {
-        eprintln!(
-            "Could not migrate the workspace cache: {}",
-            render::metadata_error(refused)
-        );
     }
 }

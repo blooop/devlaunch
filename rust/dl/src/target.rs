@@ -35,13 +35,11 @@ use std::time::Duration;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun, Patience};
 use devlaunch_core::domain::workspace_id::{UnsafeName, WorkspaceId};
-use devlaunch_core::flows::launch::{self, LaunchNotice, Plan, Resolution};
+use devlaunch_core::flows::launch::{self, ColdPath, LaunchNotice, Plan, Resolution};
 use devlaunch_core::flows::lifecycle;
 use devlaunch_core::flows::listing::CommandContext;
+use devlaunch_core::flows::records::StartupError;
 use devlaunch_core::runner::Runner;
-
-use crate::cold::ColdPath;
-use crate::session::StartupError;
 
 /// Which workspace the target is, and everything the resolution had to say on the
 /// way.
@@ -137,7 +135,7 @@ impl Vetting {
 pub(crate) fn resolve<'r>(
     runner: &'r dyn Runner,
     context: &mut CommandContext<'r>,
-    cold: &mut ColdPath<'r>,
+    cold: &mut ColdPath<'r, '_>,
     target: &str,
     vetting: Vetting,
 ) -> Result<Addressed, Unaddressable> {
@@ -165,7 +163,7 @@ pub(crate) fn resolve<'r>(
 /// devpod does not recognise the hint (devlaunch#88).
 fn triple(
     context: &mut CommandContext<'_>,
-    cold: &mut ColdPath<'_>,
+    cold: &mut ColdPath<'_, '_>,
     owner: String,
     repo: String,
     branch: Option<String>,
@@ -269,7 +267,8 @@ mod tests {
     fn a_bare_name_the_caller_will_not_vet_costs_no_spawn_at_all() {
         let fake = FakeRunner::new();
         let mut context = CommandContext::new(&fake);
-        let mut cold = ColdPath::new(&fake);
+        let mut said = Vec::new();
+        let mut cold = ColdPath::new(&fake, &mut said);
 
         let addressed = resolve(
             &fake,
@@ -296,7 +295,8 @@ mod tests {
     fn a_workspace_devpod_denies_is_still_addressable_without_vetting() {
         let fake = FakeRunner::new();
         let mut context = CommandContext::new(&fake);
-        let mut cold = ColdPath::new(&fake);
+        let mut said = Vec::new();
+        let mut cold = ColdPath::new(&fake, &mut said);
 
         let addressed = resolve(
             &fake,
@@ -319,7 +319,8 @@ mod tests {
         let bound = |vetting| {
             let fake = FakeRunner::new();
             let mut context = CommandContext::new(&fake);
-            let mut cold = ColdPath::new(&fake);
+            let mut said = Vec::new();
+            let mut cold = ColdPath::new(&fake, &mut said);
             let _ = resolve(
                 &fake,
                 &mut context,

@@ -49,7 +49,7 @@ because they are not one promise:
 
 | File | What a diff means |
 | --- | --- |
-| `devlaunch-core/public-api.api.txt` | **A change to the promised contract.** A removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 37 declarations written *at* the `devlaunch_core::api` path, and only those. |
+| `devlaunch-core/public-api.api.txt` | **A change to the promised contract.** A removal or a changed signature breaks a consumer, an addition is a deliberate widening. Holds the 126 declarations written *at* the `devlaunch_core::api` path, and only those. |
 | `devlaunch-core/public-api.rest.txt` | Mostly routine. The binary API (`flows::`, `domain::`, `clients::`) is reachable but never promised, so read it for the accidental `pub`. **But** the promised types' methods and impls are in here too (see below), and a diff touching one of those is a contract change. |
 | `devlaunch-runner/public-api.txt` | The process seam an external `Runner` implementer writes against. |
 
@@ -57,8 +57,8 @@ because they are not one promise:
 and trait impls only at a type's *canonical* path, never at the path it is re-exported under, so
 the classifier cannot see them. `api::Launch`'s only constructor and only method are rendered
 `flows::launch::Launch::{new, run}` and land in the rest file, along with `CommandContext::new`,
-`DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on the promised types: 42
-of the 79 rows the generator emits for the `api` section. Measured consequence: renaming
+`DevcontainerPath::as_str` and every derived `Clone`/`Debug`/`PartialEq` on the promised types: 133
+of the 259 rows the generator emits for the `api` section. Measured consequence: renaming
 `api::Launch::run` leaves `public-api.api.txt` byte-identical. The guard is therefore one-way. A
 diff in the promise file is a change to the promise, but not every change to the promise diffs it.
 Widening the classifier is [#352](https://github.com/blooop/devlaunch/issues/352).

@@ -28,7 +28,8 @@ use devlaunch_core::flows::kill::{
     TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
-    BranchNotNamed, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
+    BranchNotNamed, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared,
+    SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
@@ -38,6 +39,7 @@ use devlaunch_core::flows::lifecycle::{
 use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
+use devlaunch_core::flows::records::{RecordsNotice, StartupError};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
@@ -53,7 +55,6 @@ use serde_json::Value;
 use serde_json::ser::{Formatter, PrettyFormatter};
 
 use crate::select::Chosen;
-use crate::session::StartupError;
 
 // ---------------------------------------------------------------------------
 // the `dl --ls` table
@@ -785,7 +786,7 @@ pub(crate) fn config_error(error: &config::ConfigError) -> String {
             "this machine names no home directory, so dl cannot find its config".to_owned()
         }
         config::ConfigError::Unreadable { path, source } => {
-            format!("could not read {} ({source})", path.display())
+            format!("could not read {} ({})", path.display(), source.message)
         }
         // One sentence for both parse arms: the reason already says whether the
         // parser or the typed read refused, and the arms exist for callers.
@@ -818,6 +819,24 @@ pub(crate) fn retired_keys(keys: &[config::RetiredKey]) -> Vec<String> {
             ),
         })
         .collect()
+}
+
+/// One thing the records' open had to say, as the lines it reads as.
+///
+/// A list because one arm is many lines: [`RecordsNotice::Migrated`] carries a whole
+/// report, and Python's `_announce` printed up to nine separate warnings out of it.
+/// Everything else is the one line its own renderer already produced — this is the
+/// dispatch, not a new vocabulary.
+pub(crate) fn records_notice(notice: &RecordsNotice) -> Vec<String> {
+    match notice {
+        RecordsNotice::RetiredKey(key) => retired_keys(std::slice::from_ref(key)),
+        RecordsNotice::Metadata(notice) => metadata_notices(std::slice::from_ref(notice)),
+        RecordsNotice::Migrated(report) => migration_notices(report),
+        RecordsNotice::MigrationRefused(refused) => vec![format!(
+            "Could not migrate the workspace cache: {}",
+            metadata_error(refused)
+        )],
+    }
 }
 
 /// Why a metadata write or open failed, in one line.
@@ -2264,6 +2283,19 @@ impl Notices<ProvisionEvent> for Saying {
     }
 }
 
+/// The records' open reports through the same sink, at the moment it opens them.
+///
+/// Which is once per command, because the open is: a `ColdPath` that has already
+/// been asked answers from what it holds, so a damaged `metadata.json` is described
+/// once however many verbs go looking at it.
+impl Notices<RecordsNotice> for Saying {
+    fn say(&mut self, notice: RecordsNotice) {
+        for line in records_notice(&notice) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 /// Why this workspace opens without a GitHub login.
 ///
 /// The `Refused` arm names the directory gh read its config from, because that is
@@ -2524,15 +2556,28 @@ fn or_list(items: &[String]) -> String {
 
 fn branch_not_named(error: &BranchNotNamed) -> String {
     match error {
-        BranchNotNamed::Cold(refused) => refused.reason.clone(),
+        BranchNotNamed::Cold(refused) => cold_refused(refused),
         BranchNotNamed::Repository(refused) => ensure_repo_failure(refused),
     }
 }
 
 fn not_prepared(error: &NotPrepared) -> String {
     match error {
-        NotPrepared::Cold(refused) => refused.reason.clone(),
+        NotPrepared::Cold(refused) => cold_refused(refused),
         NotPrepared::Preparation(refused) => prepare_cold_failure(refused),
+    }
+}
+
+/// Why the cold path could not be opened, without the `error: ` prefix.
+///
+/// Quoted inside core's own refusals — `Repository 'owner/repo': <this>` — which is
+/// why the prefix is the caller's, the way [`startup_reason`] is. The words are here
+/// and not in core: `ColdRefused` is a sum over the reasons since #340, and this is
+/// the match that turns each arm into the sentence Python printed for it.
+fn cold_refused(refused: &ColdRefused) -> String {
+    match refused {
+        ColdRefused::Startup(error) => startup_reason(error),
+        ColdRefused::NoColdPath => "the cold path is not available to this caller".to_owned(),
     }
 }
 

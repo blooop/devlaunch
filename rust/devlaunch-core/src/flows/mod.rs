@@ -20,6 +20,8 @@ pub mod migration;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod provision;
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod records;
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod repo_manager;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod workspace_clone;

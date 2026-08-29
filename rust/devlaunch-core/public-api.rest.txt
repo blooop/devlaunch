@@ -1,4 +1,20 @@
 pub mod devlaunch_core
+impl core::clone::Clone for devlaunch_core::flows::launch::ColdRefused
+pub fn devlaunch_core::flows::launch::ColdRefused::clone(&self) -> devlaunch_core::flows::launch::ColdRefused
+impl core::cmp::Eq for devlaunch_core::flows::launch::ColdRefused
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::ColdRefused
+pub fn devlaunch_core::flows::launch::ColdRefused::eq(&self, &devlaunch_core::flows::launch::ColdRefused) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::ColdRefused
+pub fn devlaunch_core::flows::launch::ColdRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ColdRefused
+impl core::clone::Clone for devlaunch_core::flows::launch::LaunchNotice
+pub fn devlaunch_core::flows::launch::LaunchNotice::clone(&self) -> devlaunch_core::flows::launch::LaunchNotice
+impl core::cmp::Eq for devlaunch_core::flows::launch::LaunchNotice
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::LaunchNotice
+pub fn devlaunch_core::flows::launch::LaunchNotice::eq(&self, &devlaunch_core::flows::launch::LaunchNotice) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::LaunchNotice
+pub fn devlaunch_core::flows::launch::LaunchNotice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::LaunchNotice
 impl core::clone::Clone for devlaunch_core::flows::launch::LaunchVerb
 pub fn devlaunch_core::flows::launch::LaunchVerb::clone(&self) -> devlaunch_core::flows::launch::LaunchVerb
 impl core::cmp::Eq for devlaunch_core::flows::launch::LaunchVerb
@@ -7,6 +23,22 @@ pub fn devlaunch_core::flows::launch::LaunchVerb::eq(&self, &devlaunch_core::flo
 impl core::fmt::Debug for devlaunch_core::flows::launch::LaunchVerb
 pub fn devlaunch_core::flows::launch::LaunchVerb::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::LaunchVerb
+impl core::clone::Clone for devlaunch_core::flows::provision::ProvisionEvent
+pub fn devlaunch_core::flows::provision::ProvisionEvent::clone(&self) -> devlaunch_core::flows::provision::ProvisionEvent
+impl core::cmp::Eq for devlaunch_core::flows::provision::ProvisionEvent
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::ProvisionEvent
+pub fn devlaunch_core::flows::provision::ProvisionEvent::eq(&self, &devlaunch_core::flows::provision::ProvisionEvent) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::provision::ProvisionEvent
+pub fn devlaunch_core::flows::provision::ProvisionEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ProvisionEvent
+impl core::clone::Clone for devlaunch_core::flows::records::RecordsNotice
+pub fn devlaunch_core::flows::records::RecordsNotice::clone(&self) -> devlaunch_core::flows::records::RecordsNotice
+impl core::cmp::Eq for devlaunch_core::flows::records::RecordsNotice
+impl core::cmp::PartialEq for devlaunch_core::flows::records::RecordsNotice
+pub fn devlaunch_core::flows::records::RecordsNotice::eq(&self, &devlaunch_core::flows::records::RecordsNotice) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::records::RecordsNotice
+pub fn devlaunch_core::flows::records::RecordsNotice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::records::RecordsNotice
 impl<'a> core::clone::Clone for devlaunch_core::domain::spec::SpecIdentity<'a>
 pub fn devlaunch_core::domain::spec::SpecIdentity<'a>::clone(&self) -> devlaunch_core::domain::spec::SpecIdentity<'a>
 impl<'a> core::cmp::Eq for devlaunch_core::domain::spec::SpecIdentity<'a>
@@ -15,6 +47,20 @@ pub fn devlaunch_core::domain::spec::SpecIdentity<'a>::eq(&self, &devlaunch_core
 impl<'a> core::fmt::Debug for devlaunch_core::domain::spec::SpecIdentity<'a>
 pub fn devlaunch_core::domain::spec::SpecIdentity<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::StructuralPartialEq for devlaunch_core::domain::spec::SpecIdentity<'a>
+impl core::clone::Clone for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::clone(&self) -> devlaunch_core::flows::records::StartupError
+impl core::cmp::Eq for devlaunch_core::flows::records::StartupError
+impl core::cmp::PartialEq for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::eq(&self, &devlaunch_core::flows::records::StartupError) -> bool
+impl core::convert::From<devlaunch_core::domain::config::ConfigError> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::config::ConfigError) -> Self
+impl core::convert::From<devlaunch_core::domain::metadata::MetadataError> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::metadata::MetadataError) -> Self
+impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
+impl core::fmt::Debug for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::records::StartupError
 impl<'a> core::clone::Clone for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 pub fn devlaunch_core::domain::spec::WorkspaceSpec<'a>::clone(&self) -> devlaunch_core::domain::spec::WorkspaceSpec<'a>
 impl<'a> core::cmp::Eq for devlaunch_core::domain::spec::WorkspaceSpec<'a>
@@ -24,6 +70,11 @@ impl<'a> core::fmt::Debug for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 pub fn devlaunch_core::domain::spec::WorkspaceSpec<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Copy for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 impl<'a> core::marker::StructuralPartialEq for devlaunch_core::domain::spec::WorkspaceSpec<'a>
+impl<'r, 'e> devlaunch_core::flows::launch::ColdPath<'r, 'e>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::new(&'r dyn devlaunch_runner::Runner, &'e mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::records::RecordsNotice>) -> Self
+pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::records(&mut self) -> core::result::Result<&mut devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
+impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
 impl<'r> devlaunch_core::flows::listing::CommandContext<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::git(&self) -> devlaunch_core::clients::git::Git<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::new(&'r dyn devlaunch_runner::Runner) -> Self
@@ -38,10 +89,49 @@ pub fn devlaunch_core::domain::spec::DevcontainerPath::eq(&self, &devlaunch_core
 impl core::fmt::Debug for devlaunch_core::domain::spec::DevcontainerPath
 pub fn devlaunch_core::domain::spec::DevcontainerPath::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::spec::DevcontainerPath
+impl devlaunch_core::flows::launch::Host
+pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
+impl core::clone::Clone for devlaunch_core::flows::launch::Host
+pub fn devlaunch_core::flows::launch::Host::clone(&self) -> devlaunch_core::flows::launch::Host
+impl core::cmp::Eq for devlaunch_core::flows::launch::Host
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::Host
+pub fn devlaunch_core::flows::launch::Host::eq(&self, &devlaunch_core::flows::launch::Host) -> bool
+impl core::default::Default for devlaunch_core::flows::launch::Host
+pub fn devlaunch_core::flows::launch::Host::default() -> devlaunch_core::flows::launch::Host
+impl core::fmt::Debug for devlaunch_core::flows::launch::Host
+pub fn devlaunch_core::flows::launch::Host::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Host
 impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
+impl<'a> devlaunch_core::flows::lifecycle::Refresh<'a>
+pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::ask(&mut self, &dyn devlaunch_runner::Runner, devlaunch_core::flows::lifecycle::RefreshReason) -> devlaunch_core::flows::lifecycle::RefreshSpawn
+pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::new(&'a devlaunch_core::flows::lifecycle::SelfInvocation, &'a std::path::Path) -> Self
+pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::rearm(&mut self)
+pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::spawned(&self) -> bool
+impl devlaunch_core::flows::lifecycle::SelfInvocation
+pub fn devlaunch_core::flows::lifecycle::SelfInvocation::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::SelfInvocation
+pub fn devlaunch_core::flows::lifecycle::SelfInvocation::clone(&self) -> devlaunch_core::flows::lifecycle::SelfInvocation
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::SelfInvocation
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::SelfInvocation
+pub fn devlaunch_core::flows::lifecycle::SelfInvocation::eq(&self, &devlaunch_core::flows::lifecycle::SelfInvocation) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::SelfInvocation
+pub fn devlaunch_core::flows::lifecycle::SelfInvocation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::SelfInvocation
+impl<'e> devlaunch_core::flows::launch::ToolProvisioning<'e>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'e>::from_env(&std::path::Path, &'e mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> Self
+impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+impl<T> devlaunch_core::notices::Notices<T> for alloc::vec::Vec<T>
+pub fn alloc::vec::Vec<T>::say(&mut self, T)
+impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
 pub mod devlaunch_core::clients
 pub mod devlaunch_core::clients::devpod
 pub enum devlaunch_core::clients::devpod::ContainerState
@@ -294,14 +384,22 @@ pub devlaunch_core::domain::config::ConfigError::NotToml::path: std::path::PathB
 pub devlaunch_core::domain::config::ConfigError::NotToml::reason: alloc::string::String
 pub devlaunch_core::domain::config::ConfigError::Unreadable
 pub devlaunch_core::domain::config::ConfigError::Unreadable::path: std::path::PathBuf
-pub devlaunch_core::domain::config::ConfigError::Unreadable::source: core::io::error::Error
+pub devlaunch_core::domain::config::ConfigError::Unreadable::source: devlaunch_core::domain::metadata::OsFailure
 pub devlaunch_core::domain::config::ConfigError::WrongType
 pub devlaunch_core::domain::config::ConfigError::WrongType::path: std::path::PathBuf
 pub devlaunch_core::domain::config::ConfigError::WrongType::reason: alloc::string::String
+impl core::clone::Clone for devlaunch_core::domain::config::ConfigError
+pub fn devlaunch_core::domain::config::ConfigError::clone(&self) -> devlaunch_core::domain::config::ConfigError
+impl core::cmp::Eq for devlaunch_core::domain::config::ConfigError
+impl core::cmp::PartialEq for devlaunch_core::domain::config::ConfigError
+pub fn devlaunch_core::domain::config::ConfigError::eq(&self, &devlaunch_core::domain::config::ConfigError) -> bool
+impl core::convert::From<devlaunch_core::domain::config::ConfigError> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::config::ConfigError) -> Self
 impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devlaunch_core::domain::config::ConfigError
 pub fn devlaunch_core::domain::config::ConfigError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
 impl core::fmt::Debug for devlaunch_core::domain::config::ConfigError
 pub fn devlaunch_core::domain::config::ConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::config::ConfigError
 pub enum devlaunch_core::domain::config::RetiredKey
 pub devlaunch_core::domain::config::RetiredKey::ReposDir
 pub devlaunch_core::domain::config::RetiredKey::ReposDir::named: alloc::string::String
@@ -415,6 +513,8 @@ pub fn devlaunch_core::domain::metadata::MetadataError::clone(&self) -> devlaunc
 impl core::cmp::Eq for devlaunch_core::domain::metadata::MetadataError
 impl core::cmp::PartialEq for devlaunch_core::domain::metadata::MetadataError
 pub fn devlaunch_core::domain::metadata::MetadataError::eq(&self, &devlaunch_core::domain::metadata::MetadataError) -> bool
+impl core::convert::From<devlaunch_core::domain::metadata::MetadataError> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::metadata::MetadataError) -> Self
 impl core::fmt::Debug for devlaunch_core::domain::metadata::MetadataError
 pub fn devlaunch_core::domain::metadata::MetadataError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::metadata::MetadataError
@@ -694,6 +794,8 @@ impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devla
 pub fn devlaunch_core::domain::config::ConfigError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
 impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devlaunch_core::flows::completion::InstallError
 pub fn devlaunch_core::flows::completion::InstallError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
+impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
 impl core::fmt::Debug for devlaunch_core::domain::xdg::NoHomeDirectory
 pub fn devlaunch_core::domain::xdg::NoHomeDirectory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::domain::xdg::NoHomeDirectory
@@ -1024,6 +1126,17 @@ pub fn devlaunch_core::flows::launch::BranchNotNamed::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::launch::BranchNotNamed
 pub fn devlaunch_core::flows::launch::BranchNotNamed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::BranchNotNamed
+pub enum devlaunch_core::flows::launch::ColdRefused
+pub devlaunch_core::flows::launch::ColdRefused::NoColdPath
+pub devlaunch_core::flows::launch::ColdRefused::Startup(devlaunch_core::flows::records::StartupError)
+impl core::clone::Clone for devlaunch_core::flows::launch::ColdRefused
+pub fn devlaunch_core::flows::launch::ColdRefused::clone(&self) -> devlaunch_core::flows::launch::ColdRefused
+impl core::cmp::Eq for devlaunch_core::flows::launch::ColdRefused
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::ColdRefused
+pub fn devlaunch_core::flows::launch::ColdRefused::eq(&self, &devlaunch_core::flows::launch::ColdRefused) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::ColdRefused
+pub fn devlaunch_core::flows::launch::ColdRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ColdRefused
 pub enum devlaunch_core::flows::launch::LaunchAborted
 pub devlaunch_core::flows::launch::LaunchAborted::DevpodNotRun(devlaunch_core::clients::devpod::NotRun)
 pub devlaunch_core::flows::launch::LaunchAborted::ListingUnreadable(devlaunch_core::clients::devpod::ListingUnreadable)
@@ -1255,16 +1368,12 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Termin
 pub struct devlaunch_core::flows::launch::Cold<'a, 'r>
 pub devlaunch_core::flows::launch::Cold::clones: &'a devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
 pub devlaunch_core::flows::launch::Cold::storage: &'a mut devlaunch_core::domain::metadata::MetadataStorage
-pub struct devlaunch_core::flows::launch::ColdRefused
-pub devlaunch_core::flows::launch::ColdRefused::reason: alloc::string::String
-impl core::clone::Clone for devlaunch_core::flows::launch::ColdRefused
-pub fn devlaunch_core::flows::launch::ColdRefused::clone(&self) -> devlaunch_core::flows::launch::ColdRefused
-impl core::cmp::Eq for devlaunch_core::flows::launch::ColdRefused
-impl core::cmp::PartialEq for devlaunch_core::flows::launch::ColdRefused
-pub fn devlaunch_core::flows::launch::ColdRefused::eq(&self, &devlaunch_core::flows::launch::ColdRefused) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::launch::ColdRefused
-pub fn devlaunch_core::flows::launch::ColdRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ColdRefused
+pub struct devlaunch_core::flows::launch::ColdPath<'r, 'e>
+impl<'r, 'e> devlaunch_core::flows::launch::ColdPath<'r, 'e>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::new(&'r dyn devlaunch_runner::Runner, &'e mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::records::RecordsNotice>) -> Self
+pub fn devlaunch_core::flows::launch::ColdPath<'r, 'e>::records(&mut self) -> core::result::Result<&mut devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
+impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
 pub struct devlaunch_core::flows::launch::Host
 impl devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -1283,6 +1392,12 @@ impl<'a, 'r, 'l> devlaunch_core::flows::launch::Launch<'a, 'r, 'l>
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::new(&'a mut devlaunch_core::flows::listing::CommandContext<'r>, &'a mut devlaunch_core::flows::lifecycle::Refresh<'l>, &'a mut dyn devlaunch_core::flows::launch::ColdMachinery<'r>, &'a dyn devlaunch_core::flows::launch::Provision, &'a devlaunch_core::flows::launch::Host, &'a mut dyn core::ops::function::FnMut(&str), &'a mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, core::option::Option<devlaunch_core::domain::workspace_id::WorkspaceId>) -> Self
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
+pub struct devlaunch_core::flows::launch::ToolProvisioning<'e>
+impl<'e> devlaunch_core::flows::launch::ToolProvisioning<'e>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'e>::from_env(&std::path::Path, &'e mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> Self
+impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
 pub struct devlaunch_core::flows::launch::UnquotableCommand
 pub devlaunch_core::flows::launch::UnquotableCommand::command: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::launch::UnquotableCommand
@@ -1295,9 +1410,14 @@ pub fn devlaunch_core::flows::launch::UnquotableCommand::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::UnquotableCommand
 pub trait devlaunch_core::flows::launch::ColdMachinery<'r>
 pub fn devlaunch_core::flows::launch::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
 pub trait devlaunch_core::flows::launch::Provision
 pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::Provision::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::lifecycle
@@ -2259,6 +2379,43 @@ pub fn devlaunch_core::flows::provision::Switches::fmt(&self, &mut core::fmt::Fo
 impl core::marker::Copy for devlaunch_core::flows::provision::Switches
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::Switches
 pub fn devlaunch_core::flows::provision::provision_tools(&dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, devlaunch_core::flows::provision::Switches, core::option::Option<&str>, core::option::Option<&devlaunch_core::flows::provision::HostLayout>, core::option::Option<&devlaunch_core::flows::provision::verdict_cache::VerdictCache>, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> core::result::Result<devlaunch_core::flows::provision::Pass, devlaunch_core::flows::provision::DevpodMissing>
+pub mod devlaunch_core::flows::records
+pub enum devlaunch_core::flows::records::RecordsNotice
+pub devlaunch_core::flows::records::RecordsNotice::Metadata(devlaunch_core::domain::metadata::Notice)
+pub devlaunch_core::flows::records::RecordsNotice::Migrated(devlaunch_core::flows::migration::MigrationReport)
+pub devlaunch_core::flows::records::RecordsNotice::MigrationRefused(devlaunch_core::domain::metadata::MetadataError)
+pub devlaunch_core::flows::records::RecordsNotice::RetiredKey(devlaunch_core::domain::config::RetiredKey)
+impl core::clone::Clone for devlaunch_core::flows::records::RecordsNotice
+pub fn devlaunch_core::flows::records::RecordsNotice::clone(&self) -> devlaunch_core::flows::records::RecordsNotice
+impl core::cmp::Eq for devlaunch_core::flows::records::RecordsNotice
+impl core::cmp::PartialEq for devlaunch_core::flows::records::RecordsNotice
+pub fn devlaunch_core::flows::records::RecordsNotice::eq(&self, &devlaunch_core::flows::records::RecordsNotice) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::records::RecordsNotice
+pub fn devlaunch_core::flows::records::RecordsNotice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::records::RecordsNotice
+pub enum devlaunch_core::flows::records::StartupError
+pub devlaunch_core::flows::records::StartupError::Config(devlaunch_core::domain::config::ConfigError)
+pub devlaunch_core::flows::records::StartupError::Metadata(devlaunch_core::domain::metadata::MetadataError)
+pub devlaunch_core::flows::records::StartupError::NoHomeDirectory
+impl core::clone::Clone for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::clone(&self) -> devlaunch_core::flows::records::StartupError
+impl core::cmp::Eq for devlaunch_core::flows::records::StartupError
+impl core::cmp::PartialEq for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::eq(&self, &devlaunch_core::flows::records::StartupError) -> bool
+impl core::convert::From<devlaunch_core::domain::config::ConfigError> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::config::ConfigError) -> Self
+impl core::convert::From<devlaunch_core::domain::metadata::MetadataError> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::metadata::MetadataError) -> Self
+impl core::convert::From<devlaunch_core::domain::xdg::NoHomeDirectory> for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::xdg::NoHomeDirectory) -> Self
+impl core::fmt::Debug for devlaunch_core::flows::records::StartupError
+pub fn devlaunch_core::flows::records::StartupError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::records::StartupError
+pub struct devlaunch_core::flows::records::Records<'r>
+pub devlaunch_core::flows::records::Records::clones: devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
+pub devlaunch_core::flows::records::Records::reported: alloc::vec::Vec<devlaunch_core::flows::records::RecordsNotice>
+pub devlaunch_core::flows::records::Records::storage: devlaunch_core::domain::metadata::MetadataStorage
+pub fn devlaunch_core::flows::records::open_records<'r>(&'r dyn devlaunch_runner::Runner) -> core::result::Result<devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone

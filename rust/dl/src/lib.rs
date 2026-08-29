@@ -9,13 +9,14 @@
 //! summary; an `aid` with launch logic of its own is the drift the Python module was
 //! written to end.
 //!
-//! Five modules, and the boundary between them is the invariant (#251's invariant 1:
+//! Four modules, and the boundary between them is the invariant (#251's invariant 1:
 //! the binary holds nothing beyond parsing, rendering and interactive selection):
 //!
 //! - [`cli`] — the grammar. argv in, one `Command` out, pure.
-//! - [`session`] — what one command holds: the runner, the cache directory, and
-//!   the records when it needs them; [`cold`] is the lazily-opened records
-//!   themselves, and [`target`] is which workspace a verb's target word names.
+//! - [`session`] — the two answers only this process can give: where devlaunch
+//!   keeps its things, and how to re-run this build. The records it used to open
+//!   are core's since #340 ([`devlaunch_core::flows::launch::ColdPath`], opened
+//!   lazily), and [`target`] is which workspace a verb's target word names.
 //! - [`commands`] — one `render_*` per command, and the exhaustive match;
 //!   [`launch`] is the eight launch verbs' half of it, and [`select`] is the
 //!   embedded picker that supplies the workspace when the command line named none.
@@ -23,7 +24,6 @@
 //!   prints is written in that module or in [`commands`]; core holds none of it.
 
 mod cli;
-mod cold;
 mod commands;
 mod hangup;
 mod launch;
