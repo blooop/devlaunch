@@ -71,6 +71,7 @@ use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
 use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
+use crate::flows::kept_copies::KeptCopies;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
@@ -196,6 +197,17 @@ pub struct Host {
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
     pub(crate) devpod_home: Option<DevpodHome>,
+}
+
+impl Host {
+    /// devlaunch's copies of what devpod substituted, under this host's cache.
+    ///
+    /// Derived here rather than carried as a field, so the store and everything
+    /// else the cache holds cannot be pointed at two different directories: there
+    /// is one `cache_dir` and this is a view of it.
+    pub(crate) fn kept_copies(&self) -> KeptCopies {
+        KeptCopies::under(&self.cache_dir)
+    }
 }
 
 impl Host {
@@ -1284,6 +1296,15 @@ fn up_under_stage(
         // before devpod wrote that file: the stale result still matches, and the
         // hostname nobody set stays unset. Nothing the host can read tells that
         // apart from a container that never stopped.
+        //
+        // The copy is kept on this arm too, and it is not a tidiness: the sibling
+        // this launch waited out may not have been `dl` at all, and `--purge`
+        // destroys the cache holding the copies while leaving a foreign workspace's
+        // volumes standing (devlaunch#452). It costs one write on a path that has
+        // already established the create completed, which is the same condition the
+        // copy is written under below. The claim it records is "dl brought this up",
+        // never "dl created it".
+        host.kept_copies().keep(identity, host.devpod_home.as_ref());
         let seen = provision
             .provision_tools(context.runner(), identity, PassOccasion::TopUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
@@ -1319,6 +1340,13 @@ fn up_under_stage(
     // Only after a successful `up`: there is no container to install into
     // otherwise. Inside the lock, for the reason it was taken above.
     if let Some(identity) = request.naming.identity() {
+        // The tail of a completed `up`, and **before** the pass rather than after
+        // it. devpod has just rewritten `workspace_result.json`, which is the one
+        // document naming this container's volumes, and the pass below can fail and
+        // take the whole launch with it while the container and its volumes stand.
+        // A copy written on the other side of that pass would be the one launch
+        // whose volumes nothing ever names. See [`crate::flows::kept_copies`].
+        host.kept_copies().keep(identity, host.devpod_home.as_ref());
         // A devpod that went missing between the `up` that just worked and the pass
         // that follows it takes the launch with it, as Python's exception does: there
         // is no session to hand over without the binary that opens one.
@@ -3526,6 +3554,36 @@ mod tests {
             self
         }
 
+        /// devpod's record for a workspace whose create finished, carrying what
+        /// devpod substituted into the devcontainer.
+        ///
+        /// The shape is devpod's own — `SubstitutionContext` beside
+        /// `ContainerDetails` and `MergedConfig` — because the copy this launch
+        /// keeps is a read of exactly this document and nothing else.
+        fn with_substitutions(
+            self,
+            workspace_id: &str,
+            folder: &str,
+            devcontainer_id: &str,
+        ) -> Self {
+            let home = self.devpod_home();
+            self.write_record(workspace_id);
+            std::fs::write(
+                home.result("default", workspace_id),
+                serde_json::json!({
+                    "ContainerDetails": { "Config": { "Image": "vsc-repo-main-ab12-uid" } },
+                    "MergedConfig": {},
+                    "SubstitutionContext": {
+                        "LocalWorkspaceFolder": folder,
+                        "DevContainerID": devcontainer_id,
+                    },
+                })
+                .to_string(),
+            )
+            .expect("a create result");
+            self
+        }
+
         /// devpod's record for a workspace whose create *aborted*: the record, and
         /// no result beside it. A `postCreateCommand` that exits non-zero leaves
         /// exactly this, with the container still up.
@@ -4308,6 +4366,205 @@ mod tests {
         );
 
         assert_eq!(outcome, Err(NotRun::NotInstalled));
+    }
+
+    // ----------------------------------------- the copy of the volume names
+
+    /// A pass that reports what devlaunch's kept copy said at the moment it ran.
+    ///
+    /// The ordering is the whole of what this seam is about, and a test that only
+    /// looked at the cache afterwards could not tell "written before the pass" from
+    /// "written after it". This can: the pass reads the copy from inside itself.
+    struct CopyWatchingProvision {
+        copies: KeptCopies,
+        seen: Mutex<Vec<Option<Vec<String>>>>,
+    }
+
+    impl CopyWatchingProvision {
+        fn over(cache_dir: &Path) -> Self {
+            Self {
+                copies: KeptCopies::under(cache_dir),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// What the copy said on each pass, in order.
+        fn seen(&self) -> Vec<Option<Vec<String>>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Provision for CopyWatchingProvision {
+        fn provision_tools(
+            &self,
+            _runner: &dyn Runner,
+            workspace_id: &str,
+            _occasion: PassOccasion,
+            _title: Option<&str>,
+        ) -> Result<Option<ClaudeConfig>, DevpodMissing> {
+            let named = self
+                .copies
+                .volumes(workspace_id)
+                .map(|names| names.iter().cloned().collect());
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(named);
+            Ok(None)
+        }
+
+        fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
+            None
+        }
+    }
+
+    /// The names in the copy this cache holds for `workspace_id`.
+    fn copied_volumes(cache_dir: &Path, workspace_id: &str) -> Option<Vec<String>> {
+        KeptCopies::under(cache_dir)
+            .volumes(workspace_id)
+            .map(|names| names.iter().cloned().collect())
+    }
+
+    /// **Before the provisioning pass, not after it.** Provisioning can fail and
+    /// take the launch with it while the container and its volumes stand, and a
+    /// copy written on the other side of that would be the one launch whose volumes
+    /// nothing ever names.
+    #[test]
+    fn a_completed_up_copies_the_volume_names_before_the_provisioning_pass() {
+        let scene = Scene::new().with_substitutions("myws", "/repos/o/r/repo-main-ab12", "abcdef");
+        let provision = CopyWatchingProvision::over(scene.cache_dir());
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &provision,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(
+            provision.seen(),
+            vec![Some(vec![
+                "repo-main-ab12-pixi".to_owned(),
+                "dind-var-lib-docker-abcdef".to_owned(),
+            ])],
+            "the copy has to be there by the time the pass runs"
+        );
+    }
+
+    /// The other arm of the same `up`, and it is not optional: the sibling this
+    /// launch waited out may not have been `dl` at all, and `--purge` would
+    /// otherwise destroy a foreign workspace's copy while leaving its volumes
+    /// standing (devlaunch#452). The copy claims "dl brought this up", never "dl
+    /// created it".
+    #[test]
+    fn a_sibling_that_won_the_race_still_leaves_this_launch_a_copy() {
+        let scene = Scene::new().with_running("myws").with_substitutions(
+            "myws",
+            "/repos/o/r/repo-main-ab12",
+            "abcdef",
+        );
+        let provision = CopyWatchingProvision::over(scene.cache_dir());
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let (outcome, _) = contended_up(&scene, &request, &provision);
+
+        assert_eq!(outcome, Ok(UpOutcome::SkippedSiblingWon));
+        assert_eq!(
+            provision.seen(),
+            vec![Some(vec![
+                "repo-main-ab12-pixi".to_owned(),
+                "dind-var-lib-docker-abcdef".to_owned(),
+            ])]
+        );
+    }
+
+    /// An `up` devpod refused is not a completed `up`, so there is nothing devpod
+    /// wrote for this launch to copy. Whatever the cache already held is left
+    /// exactly as it was.
+    #[test]
+    fn an_up_devpod_refused_copies_nothing() {
+        let scene = Scene::new();
+        scene
+            .runner
+            .script(["devpod", "up"], Response::failed(1, "no such provider\n"));
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert!(
+            matches!(outcome, Ok(UpOutcome::Refused { .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(copied_volumes(scene.cache_dir(), "myws"), None);
+    }
+
+    /// An `up` that finished without devpod recording a create result names
+    /// nothing, and this is where that case arrives: a create that died in its
+    /// lifecycle hooks. No copy, and the launch is otherwise untouched.
+    #[test]
+    fn an_up_devpod_recorded_nothing_for_copies_nothing() {
+        let scene = Scene::new();
+        let provision = CopyWatchingProvision::over(scene.cache_dir());
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &provision,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(provision.seen(), vec![None]);
+        assert_eq!(copied_volumes(scene.cache_dir(), "myws"), None);
     }
 
     // --------------------------------------------------------- the up argv
