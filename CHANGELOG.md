@@ -68,6 +68,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, and a `metadata.json` written by an older `dl` reads exactly as it did.
   [docs/cleanup.md](docs/cleanup.md) has the detail.
 
+### Changed
+
+- **`dl --purge` names where each surviving workspace came from.** The list of
+  workspaces a purge is leaving standing printed ids and nothing else, and an id
+  is the one thing you cannot decide on: `pythontemplate` reads exactly the same
+  whether it is a `dl <git-url>` of yours, a `dl ./project` whose checkout you
+  care about, or something another tool made. Each line now carries the source
+  beside the id, the same string `dl --ls` shows in its `SOURCE` column.
+
+  The block also says what removing the cache costs the workspaces that stay.
+  They keep working, but a clone an older `dl` placed outside the cache, under the
+  retired `worktree.repos_dir` key, is named only by a record inside the cache
+  that is about to go: after the purge, `dl <workspace> rm` deletes the workspace
+  and leaves that directory standing with nothing on the machine pointing at it.
+  Removing such a workspace first is what takes its clone with it. The copy of
+  their volume names goes the same way, so a survivor deleted with a bare `devpod
+  delete` after a purge leaves volumes nothing can reclaim, where `dl --prune`
+  would have. `--purge` also reports a `config.toml` that still sets that key now,
+  which is the only mention a stranded tree gets when no workspace opens it any
+  more.
+
 ### Fixed
 
 - **Sixty-six citations that pointed at nothing now point at something, and a
@@ -94,6 +115,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as written and a bare name against the test tree. `CHANGELOG.md` and
   `docs/rust-port-scope.md` are out of scope, being records of what was true when
   they were written.
+
+- **Eight tests that CI was not running.** The Rust job names its test suites one
+  step at a time, which buys real things: a per-suite timeout, so a wedged binary
+  fails its own short step instead of holding the runner until it loses contact,
+  and a step title that names the culprit even when the runner dies before it can
+  upload logs. What it costs is that the list, rather than the workspace, decides
+  what runs. A test binary nobody wrote a step for is compiled by the build step
+  and run by nothing, and no tick anywhere goes red to say so.
+
+  That had happened twice. `devlaunch-test-support` came off the list once and was
+  put back with a note about it; `dl`'s `picker` and `terminal` suites were still
+  off it, eight tests, one of them the test written to prove the terminal-restore
+  fix in this same release. The one test standing behind that repair had never run
+  in CI.
+
+  So the job now runs `cargo test --workspace` after the named steps. The list
+  stays, because the list is what triage reads; the workspace is what decides. It
+  costs 72 seconds, taking the job from 2:13 to 3:19 against a bound of thirty
+  minutes. A guard in the test suite holds both halves in place, and a second one
+  holds every job in the workflow to a timeout: three had none, among them the job
+  that polls a remote API in a sleep loop.
 
 - **The devpod conformance corpus can no longer lose a row quietly.** The corpus
   is the one place the two fake devpods' expectations live, and its guard checked

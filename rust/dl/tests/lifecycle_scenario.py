@@ -112,6 +112,15 @@ TAGGED_WS = "devlaunch-tagged-release"
 NOT_A_CLONE_LEAF = "devlaunch-opaque-nogit"
 NOT_A_CLONE_WS = "devlaunch-opaque-nogit"
 
+# --stranded-clone: a clone a pre-#467 dl placed under `worktree.repos_dir`, a key
+# this build no longer reads, and the `config.toml` that still names it. The clone
+# sits outside the cache, so the workspace opening it is foreign to `--purge` and
+# the tree is out of `--prune`'s reach; the record naming it is inside the cache
+# the purge is about to remove.
+STRANDED_LEAF = "devlaunch-main-3j1t"
+STRANDED_WS = "devlaunch-main-3j1t"
+STRANDED_ROOT = "old-repos"
+
 
 def git(cwd, *args):
     """Run git in *cwd*, insisting it worked."""
@@ -346,6 +355,29 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
             NOT_A_CLONE_WS, {"localFolder": str(opaque)}, OLDER, "Stopped"
         )
 
+    if "stranded-clone" in wanted:
+        # devlaunch#461, reproduced from #467's review. Everything a machine that
+        # once set `worktree.repos_dir` still has: the clone at the path that key
+        # named, a devpod workspace sourcing it, the record in dl's cache that
+        # points at it, and the key itself, still in `config.toml`.
+        stranded = _clone(
+            root,
+            origin,
+            root / STRANDED_ROOT / "blooop" / "devlaunch" / STRANDED_LEAF,
+            "main",
+        )
+        worktrees["blooop/devlaunch/stranded"] = _record(
+            "blooop", "devlaunch", "stranded", stranded, STRANDED_WS
+        )
+        workspaces[STRANDED_WS] = _workspace(
+            STRANDED_WS, {"localFolder": str(stranded)}, OLDER, "Stopped"
+        )
+        config = root / "config" / "devlaunch"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / "config.toml").write_text(
+            f'[worktree]\nrepos_dir = "{root / STRANDED_ROOT}"\n', encoding="utf-8"
+        )
+
     if "unplaceable" in wanted:
         workspaces[UNPLACEABLE_WS] = _workspace(
             UNPLACEABLE_WS, {"localFolder": 42}, OLDER, "Stopped"
@@ -501,6 +533,7 @@ if __name__ == "__main__":
             "usage: lifecycle_scenario.py <root> <devpod_shim.py> [--prunable] "
             "[--stale-record] [--orphan] [--unplaceable] [--unwritable] "
             "[--no-cache] [--no-workspaces] [--not-a-clone] [--unpushed] "
+            "[--stranded-clone] "
             "[--tagged-release] "
             "[--sealed-cache] [--symlinked-cache] [--v1-cache] "
             "[--devcontainer-volumes]"
@@ -515,6 +548,7 @@ if __name__ == "__main__":
         "no-cache",
         "no-workspaces",
         "not-a-clone",
+        "stranded-clone",
         "unpushed",
         "tagged-release",
         "sealed-cache",

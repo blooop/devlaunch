@@ -1714,14 +1714,50 @@ fn a_fresh_cache_stops_the_child_before_it_sweeps() {
 // --purge
 // ===========================================================================
 
-/// Python's `dl --purge` plan for the base world, verbatim.
+/// Python's `dl --purge` plan for the base world, with devlaunch#461's two
+/// additions to the block that names the survivors.
+///
+/// **The second deliberate divergence from Python in this file**, beside
+/// [`DOCKER_BOUNDARY`] below. Python printed a bare workspace id per survivor, and
+/// an id is exactly what a user cannot decide on: `someones-project` could be a
+/// `dl ./project` of theirs, a `dl <git-url>`, or a workspace somebody made with
+/// `devpod up`. So each one is named by its source, and the sentence under the
+/// list says what removing the cache costs the workspaces that are staying.
+///
+/// This is the plan a run that is **about to ask** prints. `-y` prints
+/// [`PURGE_PLAN_YES`], which differs in the one line that offers an action, and
+/// the two are spelled out separately rather than derived from each other so that
+/// a change to either is read as the output change it is.
 const PURGE_PLAN: &str = "\
 This will remove all devlaunch data:
   - 2 DevPod workspace(s)
   - {ROOT}/cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
 
 Leaving 1 workspace(s) devlaunch did not create:
-  - someones-project
+  - someones-project: {ROOT}/foreign/proj
+
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
+A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
+
+";
+
+/// The same plan under `-y`, where the last sentence is in the tense that run has
+/// earned.
+///
+/// "Remove such a workspace now" is an action only a reader with the question
+/// still in front of them can take; the same run deletes the records that make it
+/// possible three lines later. So `-y` gets the same fact as what will be true
+/// from then on, and every `-y` golden below is built from this one.
+const PURGE_PLAN_YES: &str = "\
+This will remove all devlaunch data:
+  - 2 DevPod workspace(s)
+  - {ROOT}/cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
+
+Leaving 1 workspace(s) devlaunch did not create:
+  - someones-project: {ROOT}/foreign/proj
+
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
+A clone an older dl placed outside the cache is named only by a record in there, though, so from here on `dl <workspace> rm` takes such a workspace and leaves its clone standing.
 
 ";
 
@@ -1737,6 +1773,114 @@ Leaving 1 workspace(s) devlaunch did not create:
 const DOCKER_BOUNDARY: &str = "devlaunch does not manage Docker images: the images these \
                                workspaces built may still hold disk, and `docker system df` \
                                shows what Docker is holding.\n";
+
+#[test]
+fn the_leaving_list_names_each_survivors_source_beside_its_id() {
+    // devlaunch#461. The id on its own is not something a user can decide on: a
+    // `dl ./project` of theirs, a `dl <git-url>` and a workspace they made with
+    // `devpod up` all read the same, and this is the one screen where somebody is
+    // deciding. The source is what tells them apart.
+    let world = World::base();
+    let run = world.answering("n\n", &["--purge"]);
+    run.exited(0);
+    assert!(
+        run.out
+            .contains("  - someones-project: {ROOT}/foreign/proj\n"),
+        "the leaving list named an id and no source:\n{}",
+        run.out
+    );
+    assert!(
+        run.out.contains(
+            "Removing the cache also drops what dl recorded about them, the copy of \
+                 their volume names included."
+        ),
+        "the block did not say what the purge costs the survivors:\n{}",
+        run.out
+    );
+}
+
+#[test]
+fn a_survivor_whose_source_dl_cannot_read_is_said_to_be_one() {
+    // The third arm of the source, and the reason the leaving list does not simply
+    // print the detail: devpod's own object after a colon reads like a source, and
+    // this is the one row where dl has nothing truer to say than the object.
+    let world = World::with(&["--unplaceable"]);
+    let run = world.answering("n\n", &["--purge"]);
+    run.exited(0);
+    assert!(
+        run.out.contains(
+            "  - a-source-nobody-can-read: a source dl cannot read, {\"localFolder\": 42}\n"
+        ),
+        "{}",
+        run.out
+    );
+}
+
+#[test]
+fn a_purge_names_the_clone_a_retired_repos_dir_left_outside_the_cache() {
+    // devlaunch#461, the case #467's review reproduced. A pre-#467 `dl` put this
+    // clone under `worktree.repos_dir`, so the workspace opening it is foreign
+    // here: the purge leaves it standing and removes the record that is the last
+    // thing on the machine pointing at the tree. It used to print `devlaunch-main-3j1t`
+    // and nothing else, which names neither the clone nor the fact that it is one.
+    let world = World::with(&["--stranded-clone"]);
+    let run = world.answering("n\n", &["--purge"]);
+    run.exited(0);
+    assert!(
+        run.out.contains(
+            "Leaving 2 workspace(s) devlaunch did not create:\n  \
+             - someones-project: {ROOT}/foreign/proj\n  \
+             - devlaunch-main-3j1t: {ROOT}/old-repos/blooop/devlaunch/devlaunch-main-3j1t\n"
+        ),
+        "the stranded clone's path is not in the plan:\n{}",
+        run.out
+    );
+    // And the retired key earns its notice on this path too, which is the half the
+    // list cannot cover: a clone under that root with no workspace left opening it
+    // has no line in any plan, and this run is what removes its record.
+    assert!(
+        run.err.contains("worktree.repos_dir = '{ROOT}/old-repos'"),
+        "the purge said nothing about the key that put a tree there:\n{}",
+        run.err
+    );
+
+    // What the sentence under the list is warning about, on disk: the tree stays
+    // and the record naming it does not.
+    let purged = world.dl(&["--purge", "-y"]);
+    purged.exited(0);
+    assert!(
+        world.exists("old-repos/blooop/devlaunch/devlaunch-main-3j1t"),
+        "the purge removed a clone outside its own cache"
+    );
+    assert!(
+        !world.exists("cache/devlaunch/metadata.json"),
+        "the record survived, so the sentence about losing it is wrong"
+    );
+    assert_eq!(
+        world.devpod_calls().last().map(String::as_str),
+        Some("devpod delete devlaunch-dirty-fqta --force"),
+        "the stranded workspace was deleted, or the ownership scope moved"
+    );
+}
+
+#[test]
+fn removing_a_stranded_workspace_before_the_purge_takes_its_clone() {
+    // What the plan's last sentence advises, checked rather than assumed. It is
+    // true because `resolve_clone_path` prefers the record's absolute `local_path`
+    // over the path derived from the cache root, and every unit test around that
+    // function uses a path *under* the clone root -- so a later "only remove trees
+    // under the cache" hardening would turn a printed sentence into bad advice
+    // with nothing failing. Found in review of devlaunch#461.
+    let world = World::with(&["--stranded-clone"]);
+    let run = world.dl(&["devlaunch-main-3j1t", "rm"]);
+    assert!(
+        !world.exists("old-repos/blooop/devlaunch/devlaunch-main-3j1t"),
+        "the clone stayed: exit {:?}\nout:{}\nerr:{}",
+        run.code,
+        run.out,
+        run.err
+    );
+}
 
 #[test]
 fn a_purge_answered_no_removes_nothing_and_still_names_the_disk_it_does_not_free() {
@@ -1801,7 +1945,7 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed: {{ROOT}}/cache/devlaunch\n{DOCKER_BOUNDARY}"
         )
@@ -1847,7 +1991,7 @@ fn a_purge_that_could_not_remove_everything_says_which_paths_refused() {
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed what was permitted under {{ROOT}}/cache/devlaunch. These refused:\n  \
              - {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-locked/held: \
@@ -1874,7 +2018,7 @@ fn a_purge_that_removed_not_one_path_says_that_rather_than_the_other_sentence() 
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed nothing under {{ROOT}}/cache/devlaunch. These refused:\n  \
              - {{ROOT}}/cache/devlaunch: is a symbolic link to {{ROOT}}/elsewhere/devlaunch, \
@@ -1918,7 +2062,7 @@ fn a_purge_that_deleted_workspaces_and_found_no_cache_says_nothing_about_the_cac
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n{DOCKER_BOUNDARY}"
         )
     );
