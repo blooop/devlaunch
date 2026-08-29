@@ -1098,9 +1098,10 @@ fn encode(document: &Document<'_>) -> Result<Vec<u8>, MetadataError> {
 /// `json.dump(..., indent=2)`, escaping included.
 ///
 /// Two-space indentation is what serde's pretty printer already does; what it
-/// does not do is Python's `ensure_ascii`, which spells every non-ASCII
-/// character as a `\uXXXX` escape. A branch name with an umlaut in it is enough
-/// to make the two builds write different bytes for the same data, so the
+/// does not do is Python's `ensure_ascii`, which spells every character outside
+/// `' '..'~'` as a `\uXXXX` escape — the printable range, not "non-ASCII", since
+/// DEL is ASCII and Python escapes it too. A branch name with an umlaut in it is
+/// enough to make the two builds write different bytes for the same data, so the
 /// escaping is matched rather than left to chance.
 ///
 /// The layout is what differs from the compact [`crate::json::PythonFormatter`] —
@@ -1246,6 +1247,47 @@ mod tests {
         "      \"created_at\": \"2026-08-18T14:03:22\",\n",
         "      \"last_used\": \"2026-08-18T14:03:22.123456\",\n",
         "      \"devpod_workspace_id\": \"devlaunch-feature-brunch\"\n",
+        "    }\n",
+        "  }\n",
+        "}",
+    );
+
+    /// The same file with a DEL in the branch name, as CPython wrote it.
+    ///
+    /// A separate golden rather than a row in the one above, because that one is
+    /// the canonical shape and this is the pathological one. `\u007f` is the
+    /// escape `json.dumps` produces and the one this build used to destroy on the
+    /// way back out: the loader parses to a `serde_json::Map` and the saver
+    /// re-encodes, so before devlaunch#349 a load-and-save turned those six
+    /// characters into a raw `0x7f` byte, in the file whose whole contract is that
+    /// it does not change under a build that only read it.
+    const PYTHON_METADATA_WITH_DEL: &str = concat!(
+        "{\n",
+        "  \"version\": 3,\n",
+        "  \"repositories\": {\n",
+        "    \"blooop/devlaunch\": {\n",
+        "      \"owner\": \"blooop\",\n",
+        "      \"repo\": \"devlaunch\",\n",
+        "      \"remote_url\": \"https://github.com/blooop/devlaunch.git\",\n",
+        "      \"local_path\": \"/home/u/.cache/devlaunch/repos/blooop/devlaunch\",\n",
+        "      \"default_branch\": \"main\",\n",
+        "      \"last_fetched\": \"2026-08-18T14:03:22.123456\",\n",
+        "      \"worktrees\": [\n",
+        "        \"feature/de\\u007fl\"\n",
+        "      ]\n",
+        "    }\n",
+        "  },\n",
+        "  \"worktrees\": {\n",
+        "    \"blooop/devlaunch/feature/de\\u007fl\": {\n",
+        "      \"owner\": \"blooop\",\n",
+        "      \"repo\": \"devlaunch\",\n",
+        "      \"branch\": \"feature/de\\u007fl\",\n",
+        "      \"local_path\": ",
+        "\"/home/u/.cache/devlaunch/repos/blooop/devlaunch/clones/devlaunch-feature-del\",\n",
+        "      \"workspace_id\": \"devlaunch-feature-del\",\n",
+        "      \"created_at\": \"2026-08-18T14:03:22\",\n",
+        "      \"last_used\": \"2026-08-18T14:03:22.123456\",\n",
+        "      \"devpod_workspace_id\": \"devlaunch-feature-del\"\n",
         "    }\n",
         "  }\n",
         "}",
@@ -1717,6 +1759,64 @@ mod tests {
         );
     }
 
+    /// DEL, at the document whose bytes the round-trip contract is about.
+    ///
+    /// This one is worth pinning here and not only at the escaper because of what
+    /// the loader does: it parses into a `serde_json::Value` and re-encodes, so a
+    /// `metadata.json` the Python build wrote carrying a `\u007f` escape used to
+    /// come back out as a raw `0x7f` byte. That is the byte-for-byte agreement
+    /// this module's header promises, failing on a file nobody edited.
+    /// Expectation from `json.dumps(..., indent=2)`.
+    #[test]
+    fn the_indent_two_document_escapes_del_the_way_python_does() {
+        let mut bytes = Vec::new();
+        let mut serializer =
+            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        json!({ "branch": "a\u{7f}b", "tags": ["\u{7f}"] })
+            .serialize(&mut serializer)
+            .expect("a Vec never fails to write");
+
+        assert_eq!(
+            String::from_utf8(bytes).expect("the escaping writes ASCII"),
+            concat!(
+                "{\n",
+                "  \"branch\": \"a\\u007fb\",\n",
+                "  \"tags\": [\n",
+                "    \"\\u007f\"\n",
+                "  ]\n",
+                "}",
+            )
+        );
+    }
+
+    /// The whole ASCII range at once, at the indented document.
+    ///
+    /// The escaping is core's and core sweeps it too, but the claim worth being
+    /// able to make is about this *writer*: `metadata.json` is the file whose
+    /// bytes the coexistence contract is written in, and a per-class pin only
+    /// covers the classes someone thought to name. DEL belonged to none of them,
+    /// which is how it survived. Expectation is the document `json.dumps` printed
+    /// for `{"branch": ''.join(chr(c) for c in range(0x80))}` with `indent=2`.
+    #[test]
+    fn the_indent_two_document_spells_every_ascii_character_pythons_way() {
+        let all_of_ascii: String = (0u8..=0x7f).map(char::from).collect();
+        let mut bytes = Vec::new();
+        let mut serializer =
+            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        json!({ "branch": all_of_ascii })
+            .serialize(&mut serializer)
+            .expect("a Vec never fails to write");
+
+        assert_eq!(
+            String::from_utf8(bytes).expect("the escaping writes ASCII"),
+            concat!(
+                "{\n",
+                "  \"branch\": \"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f !\\\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\\u007f\"\n",
+                "}",
+            )
+        );
+    }
+
     #[test]
     fn an_empty_save_is_byte_for_byte_what_python_writes() {
         let dir = temp_dir();
@@ -1746,6 +1846,34 @@ mod tests {
         );
         storage.save().expect("saved");
         assert_eq!(read(&path), PYTHON_METADATA);
+    }
+
+    /// The round trip devlaunch#349 exists for, at the file rather than the
+    /// encoder.
+    ///
+    /// The encoder pins above prove the bytes; this proves the path that produces
+    /// them on a file nobody edited. `load()` parses into a map, `save()`
+    /// re-encodes, and neither step is reached by building a `Serializer` by hand
+    /// — so this is the only test that fails the way a user would have seen it,
+    /// with a `metadata.json` the Python build wrote coming back with six
+    /// characters replaced by one raw byte.
+    #[test]
+    fn a_python_file_carrying_an_escaped_del_re_saves_with_it_still_escaped() {
+        let dir = temp_dir();
+        let path = dir.path().join("metadata.json");
+        write(&path, PYTHON_METADATA_WITH_DEL);
+
+        let storage = quiet_storage(dir.path());
+
+        assert_eq!(
+            storage
+                .get_worktree("blooop", "devlaunch", "feature/de\u{7f}l")
+                .map(|w| w.workspace_id.as_str()),
+            Some("devlaunch-feature-del"),
+            "the branch name survives the load with its DEL intact"
+        );
+        storage.save().expect("saved");
+        assert_eq!(read(&path), PYTHON_METADATA_WITH_DEL);
     }
 
     // --- a file that cannot be read at all --------------------------------
