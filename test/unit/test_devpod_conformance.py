@@ -272,6 +272,7 @@ def _shim_module():
     is about the constants inside it, and importing beats parsing its source.
     """
     spec = importlib.util.spec_from_file_location("devpod_shim_tables", SHIM)
+    assert spec is not None and spec.loader is not None, f"{SHIM} is not importable"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
