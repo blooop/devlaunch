@@ -110,8 +110,12 @@ TEST_FILES = {path.name for path in (REPO_ROOT / "test").rglob("test_*.py") if p
 
 
 def _resolves(citation: str) -> bool:
+    # `is_file` rather than `exists`: every citation these patterns match is
+    # spelled like a file, and the failure message tells the reader to open one.
+    # A directory that happens to answer to the name would satisfy `exists` and
+    # nothing a reader wants.
     if "/" in citation:
-        return (REPO_ROOT / citation).exists()
+        return (REPO_ROOT / citation).is_file()
     return citation in TEST_FILES
 
 

@@ -25,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dead branch was written straight back, with every fallback that would have
   answered correctly sitting unreachable behind it.
 
-- **Sixty citations that pointed at nothing now point at something, and a guard
-  keeps it that way.** Comments across `rust/` name the test that pins the
+- **Sixty-six citations that pointed at nothing now point at something, and a
+  guard keeps it that way.** Comments across `rust/` name the test that pins the
   behaviour they describe, which is most of what makes them worth reading.
   Retiring the Python implementation (#267) deleted about forty of the files
   those names referred to, in one commit, and the names stayed. A pointer into
