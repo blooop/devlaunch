@@ -412,6 +412,46 @@ fn a_capture_returns_when_a_grandchild_holds_the_pipe_past_a_clean_exit() {
     );
 }
 
+/// The same shape again, timed: one stuck descendant holds *both* write ends, so
+/// the drain must cost one [`DRAIN_GRACE`] and not one per pipe.
+///
+/// `setsid sleep 30` inherits the child's stdout and stderr together, which is
+/// exactly what an ssh ControlMaster does — and dl now opens one of those on its
+/// hottest path, so this went from an occasional git shape to the common one
+/// (devlaunch#501). With the grace computed inside each `collect` the two waits
+/// are serial and the capture costs 1s; with one deadline shared by both it costs
+/// 500ms, and nothing is given up, because both drain threads started before the
+/// wait for the child did.
+#[test]
+fn two_pipes_one_descendant_holds_cost_one_grace_between_them() {
+    require_setsid();
+    let spec = SpawnSpec::from(sh("setsid sleep 30 & printf done"));
+
+    let started = Instant::now();
+    let outcome = within(
+        Duration::from_secs(5),
+        "capture never returned: the success path is waiting on a pipe a \
+         grandchild still holds",
+        move || ProcessRunner.capture(&spec),
+    );
+    let took = started.elapsed();
+
+    let (_, io) = ran(outcome);
+    assert_eq!(io.stdout, "done");
+    // Proof the pipes really were held: an EOF that arrived would have made this
+    // return in microseconds and the bound below would pass having pinned nothing.
+    assert!(
+        took >= DRAIN_GRACE * 4 / 5,
+        "the drain did not wait at all ({took:?}), so the grandchild cannot have \
+         been holding the pipes and this test proves nothing"
+    );
+    assert!(
+        took < DRAIN_GRACE * 8 / 5,
+        "the drain cost {took:?}, which is more than one grace of {DRAIN_GRACE:?}: \
+         the two pipes are each being given their own"
+    );
+}
+
 #[test]
 fn a_timeout_that_is_not_reached_answers_normally() {
     let spec = SpawnSpec::from(sh("printf quick")).with_timeout(Duration::from_secs(30));
@@ -708,10 +748,13 @@ impl Read for Interrupting {
 #[test]
 fn a_drain_treats_an_interrupted_read_as_a_retry_not_an_ending() {
     let pieces = vec!["ab", "cd", "ef"];
-    let drained = collect(drain(Some(Interrupting {
-        pieces: pieces.into_iter(),
-        interrupt_next: false,
-    })));
+    let drained = collect(
+        drain(Some(Interrupting {
+            pieces: pieces.into_iter(),
+            interrupt_next: false,
+        })),
+        Instant::now() + DRAIN_GRACE,
+    );
     assert_eq!(
         drained, "abcdef",
         "an interrupted read ended the drain and truncated the output"

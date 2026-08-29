@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI now refuses a pull request that files a new entry inside an already
+  released section of this file.** `## [Unreleased]` is a stable heading that a
+  release cut renames: it becomes `## [0.25.0] - 2026-08-28`, and a fresh empty
+  `[Unreleased]` is inserted above it. A branch cut before that release carries
+  its entry anchored by context under the old heading, which is now the release.
+  Git sees lines added below a heading that still exists, resolves the merge with
+  no conflict, and the pull request reports mergeable with every check green while
+  a shipped version quietly grows bullets describing fixes it never contained.
+
+  It is not a lapse of attention. Over one afternoon it happened four times
+  independently to three people who did not know of each other, and twice inside a
+  single build. Every instance was caught by someone reading the diff, because
+  until now there was nothing else that could catch it.
+
+  The rule is that a version section already present on the base branch must be
+  byte identical on the branch. Phrased that way it permits the one commit that
+  legitimately rewrites this file: a release cut adds a heading that was not there
+  and modifies none that was. The tempting phrasing, that the released portion of
+  the file is unchanged, is wrong on its own terms rather than merely
+  inconvenient, since it fails every release and so would be switched off before
+  it ever caught anything.
+
 - **`dl --prune` now reclaims the Docker volumes of workspaces devpod has already
   forgotten.** Deleting a workspace through `dl` has removed its two named volumes
   since devlaunch#325, and the names come from devpod's own record of what it
@@ -69,6 +91,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [docs/cleanup.md](docs/cleanup.md) has the detail.
 
 ### Changed
+
+- **A workspace gets one reusable OpenSSH connection instead of a new one per
+  run.** `dl <ws> -- <cmd>` typed at a terminal has gone into the container over
+  OpenSSH since M3, through the host alias `devpod up` publishes. It just opened a
+  fresh connection every time, and connection setup is nearly the whole cost of
+  that trip. It now carries `ControlMaster=auto`, a derived `ControlPath` and
+  `ControlPersist=60`: the first trip into a live workspace opens a master, every
+  trip for the next minute joins it, and nothing pre-warms anything, so `dl` starts
+  no process it did not start before.
+
+  Two savings, and one caveat that belongs on both numbers. Measured on a loaded
+  host (load average 21 throughout, so the absolute seconds sit two to three times
+  above a quiet machine and only the ratio travels): a fresh `ssh -t` cost 2590ms
+  to 3140ms against a reused 16ms to 28ms, about 100x. That is most of two seconds
+  off every repeat command into a workspace that is already up, and nothing at all
+  off a first launch into a cold one. The second saving is the one that is not a
+  stopwatch reading: trips that are not multiplexed serialize on a per workspace
+  lock, so eight commands fired at one workspace at once used to finish over a 9.9s
+  to 23.9s staircase, where eight over one master all finished at 8.02s. A fleet of
+  agents attaching to one workspace is this repository's own daily shape.
+
+  The socket path is derived, and its digest covers the host alias, the `SendEnv`
+  permit list and `$SSH_AUTH_SOCK`. That is load bearing rather than tidy: a master
+  filters `SendEnv` against **its own** permit list, in silence, at exit 0, so
+  without it a master opened by a run with no GitHub token would hand the next run
+  an empty `GH_TOKEN` and an unauthenticated `gh` with nothing anywhere to say so.
+  A run whose permit list differs from the master's cannot find that master, so the
+  mismatch has nowhere to happen. The sockets live under `ssh-control` in `dl`'s
+  own cache directory, in a directory this user alone can read, and `dl --purge`
+  takes them with everything else. A socket path too long for a unix socket, or a
+  directory `dl` cannot create, means the session runs unmultiplexed rather than
+  failing. [docs/performance.md](docs/performance.md) has the rest.
 
 - **`dl --purge` names where each surviving workspace came from.** The list of
   workspaces a purge is leaving standing printed ids and nothing else, and an id
@@ -137,6 +191,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Fixed
+
+- **A captured command no longer pays the drain grace twice.** When a command
+  exits while a descendant it forked still holds the pipes open, `dl` waits a
+  short grace for the last of the output rather than waiting for an end of file
+  that is never coming. That grace was charged per pipe and the two pipes were
+  drained one after the other, so a single stuck descendant, which holds stdout
+  and stderr together, cost 1s of dead waiting on a 500ms grace. It is now one
+  deadline shared by both drains, so the grace bounds the drain. Nothing is given
+  up by sharing it: both drains start before the wait for the command does, so
+  both have had the same grace to finish in. The shape used to be an occasional
+  `git fetch` over ssh; with a connection master now open on `dl`'s own hottest
+  path it is the common one.
 
 - **Sixty-six citations that pointed at nothing now point at something, and a
   guard keeps it that way.** Comments across `rust/` name the test that pins the
@@ -225,6 +291,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but `dl a b --force c` opens a second occurrence and hands the grammar three
   words. Nothing forced escapes through it, because the third word is refused
   first, but it is that refusal doing the work and not the cap.
+
+- **The devpod conformance corpus can no longer lose a row quietly.** The corpus
+  is the one place the two fake devpods' expectations live, and its guard checked
+  that certain flag *names* appeared somewhere across all rows. That let a row be
+  deleted with every suite green, the regression row for the `delete
+  --ignore-not-found` drift included, because a sibling row still mentioned the
+  flag. Rows now carry a stable id and both drivers hold the roll call of ids they
+  expect, so a missing row fails by name on both sides. Two more holes closed
+  with it: the check that every row says how it was verified ran on the Rust side
+  alone, so a corpus edited from the Python side could drop a provenance line
+  unnoticed, and the tables saying which devpod flags take a value were written
+  out once per fake with nothing comparing them. Those tables are one shared file
+  now, the way the corpus is, so the two fakes cannot hold different ones at all,
+  and each driver checks the fake it drives against it. Seven of the eight rows
+  that read `unverified` are measured, against a workspace provisioned to run
+  them; the eighth says plainly which half of it was measured and which was not.
 
 ## [0.25.0] - 2026-08-28
 
