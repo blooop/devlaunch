@@ -78,6 +78,27 @@ jobs:
       - name: CI
         run: |
           pixi run ci
+      # blooop/devlaunch#527. A branch rebased across a release cut files its entry
+      # inside the shipped section and git resolves it *cleanly*, so this is the
+      # only signal there is -- `MERGEABLE` and a green suite both say nothing about
+      # it. Pull requests only: on a push there is no base to be frozen against.
+      #
+      # The base commit is fetched explicitly at depth 1 rather than switching the
+      # checkout above to `fetch-depth: 0`, which would pull the whole history into
+      # every run of this job to serve one `git show`.
+      - name: A released section is not a place to file a new entry
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "$BASE_SHA"
+          # `git show` writes nothing and exits non-zero if the path is absent at
+          # that commit, and `set -e` turns that into a failure rather than an
+          # empty file that would compare equal to anything.
+          git show "$BASE_SHA:CHANGELOG.md" > "$RUNNER_TEMP/base-CHANGELOG.md"
+          python3 scripts/changelog_frozen.py \
+            "$RUNNER_TEMP/base-CHANGELOG.md" CHANGELOG.md
       # Flagged `python` since #294, so it is reported as what it is — the
       # harness, the doc guards and `scripts/` — rather than as "the project's
       # coverage". The shipped crates are the `rust` flag, uploaded by the

@@ -20,6 +20,44 @@ naming it and then the tools probe, rides a single setup pass. So an
 interactive `dl <ws>` and a one-shot
 `dl <ws> -- <cmd>` cost the same trips.
 
+## One connection per workspace
+
+The trip that carries `dl <ws> -- <cmd>` at a terminal is OpenSSH, over the host
+alias `devpod up` publishes, and that connection is now reused. Three options go
+on an argv `dl` already built: `ControlMaster=auto`, a derived `ControlPath`, and
+`ControlPersist=60`. The first trip into a live workspace opens a master, every
+trip for the next minute joins it, and nothing pre-warms anything, so `dl` starts
+no process it did not start before.
+
+What it saves, measured on one loaded host (load average 21 for the whole run, so
+the absolute seconds sit two to three times above a quiet machine and only the
+ratio travels): a fresh `ssh -t` cost 2590ms to 3140ms and a reused one 16ms to
+28ms. About 100x, and it is worth being plain about where it lands. A first launch
+into a cold workspace moves by nothing. A repeat command into a workspace that is
+already up saves most of two seconds. And the case it helps most is not a stopwatch
+reading at all: trips that are not multiplexed serialize on a per workspace lock,
+so eight commands fired at one workspace at once used to finish over a 9.9s to
+23.9s staircase, where eight over one master all finished at 8.02s. A fleet of
+agents attaching to one workspace is this repository's own daily shape.
+
+The socket path is derived rather than configured, and what goes into the digest
+is the point of the whole thing. A master filters `SendEnv` against **its own**
+permit list, in silence, at exit 0, so a master opened by a run with no GitHub
+token would hand the next run an empty `GH_TOKEN` and an unauthenticated `gh` with
+nothing anywhere to say so. The digest therefore covers the host alias, the
+`SendEnv` permit list and `$SSH_AUTH_SOCK`: a run whose permit list differs from
+the master's cannot find that master, so the mismatch has nowhere to happen. The
+sockets live under `ssh-control` in `dl`'s own cache directory, in a directory
+this user alone can read, and `dl --purge` takes them with everything else. Losing
+one costs the next trip its couple of seconds and nothing more.
+
+It fails closed in both directions. A socket path too long for a unix socket, or a
+directory `dl` cannot create, means the session runs unmultiplexed rather than
+failing. A master that has gone away leaves a socket the next client unlinks, and
+`ControlPersist` is a minute rather than an hour because a live master holds a
+resident `devpod ssh --stdio` process and a `docker exec` per key, and `dl` must
+not be the reason a container never goes idle.
+
 ## Measuring launch time
 
 Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
