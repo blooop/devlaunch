@@ -91,9 +91,73 @@ def settings(job: str) -> str:
     return "\n".join(line for line in job.splitlines() if not line.lstrip().startswith("#"))
 
 
+# A `key:` at some indentation. Deliberately unable to match a step, because a
+# step is a list item (`      - name: ...`) and the leading `-` is not in here:
+# telling a job's own keys from a step's is the whole job of this pattern.
+KEY = re.compile(r"^( *)([A-Za-z][\w-]*):")
+# The same, where the value is a block scalar (`run: |`) rather than on the line.
+BLOCK = re.compile(r"^( *)([A-Za-z][\w-]*): *[|>][-+]? *$")
+# A job's own settings sit here. `runs-on:`, `needs:`, `timeout-minutes:`.
+JOB_INDENT = 4
+
+
+def _walk(job: str) -> tuple[list[str], list[str]]:
+    """Split a job into its own keys and the shell it actually runs.
+
+    Both halves exist because the naive version of each was wrong, and in the
+    same direction -- a string found somewhere in the job slice was taken for a
+    setting the job has.
+
+    `timeout-minutes` is a valid key on a *step* as well as on a job, and a step
+    timeout bounds the step and leaves the job unbounded. So the keys returned
+    here are only those at the job's own indentation, and a `run:` script is
+    skipped entirely rather than scanned -- a job's shell is free to contain a
+    line shaped like a key.
+
+    The `run:` halves are returned separately because a step *title* is not a
+    command: a step called `disabled: cargo test --workspace` runs nothing, and
+    a check that reads the whole slice cannot tell it from one that does.
+    """
+    keys: list[str] = []
+    scripts: list[str] = []
+    lines = settings(job).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        block = BLOCK.match(line)
+        if block:
+            indent, key = len(block.group(1)), block.group(2)
+            if indent == JOB_INDENT:
+                keys.append(key)
+            # Everything more-indented than the key belongs to its value, and is
+            # not searched for keys of its own.
+            while i < len(lines):
+                body = lines[i]
+                if body.strip() and len(body) - len(body.lstrip()) <= indent:
+                    break
+                if key == "run":
+                    scripts.append(body.strip())
+                i += 1
+            continue
+        key_match = KEY.match(line)
+        if key_match:
+            indent, key = len(key_match.group(1)), key_match.group(2)
+            if indent == JOB_INDENT:
+                keys.append(key)
+            if key == "run":
+                scripts.append(line.split("run:", 1)[1].strip())
+    return keys, scripts
+
+
+def job_keys(job: str) -> list[str]:
+    """The keys the job itself carries, not the ones its steps carry."""
+    return _walk(job)[0]
+
+
 def run_lines(job: str) -> list[str]:
-    """Every command line in a job, comments dropped."""
-    return [line.strip() for line in settings(job).splitlines() if line.strip()]
+    """Every line of shell a job runs, and nothing that merely sits near some."""
+    return [line for line in _walk(job)[1] if line]
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +216,13 @@ def test_every_job_carries_a_timeout():
 
     Per job rather than per named job: the three that were missing one are
     fixable once, and the next job somebody adds is what this is for.
+
+    At the job's own indentation, because `timeout-minutes` is a legal key on a
+    step too and a step timeout bounds the step while leaving the job unbounded.
+    A substring search over the job's text calls that covered; it is the same
+    mistake this file is about, one level further in.
     """
-    unbounded = [name for name in job_names() if "timeout-minutes:" not in settings(ci_job(name))]
+    unbounded = [name for name in job_names() if "timeout-minutes" not in job_keys(ci_job(name))]
     assert not unbounded, (
         f"these ci.yml jobs run unbounded: {unbounded}. GitHub's own default is "
         "six hours, which is long enough that the run is abandoned rather than read"

@@ -276,10 +276,21 @@ jobs:
       # `--test-threads=1` (the concurrency tests must not interleave) and the same
       # log-pipe fence as the two steps above, for the same reason -- this run
       # includes them.
+      #
+      # `|| ec=$?` rather than `; ec=$?`, which is the difference between a
+      # failure you can read and a red tick with an empty log. GitHub runs a
+      # `run:` block under `bash -e`, so on a non-zero `timeout` the shell exits
+      # at that line: `ec=$?` and the `cat` never happen, and the only copy of
+      # cargo's output is a file in a workspace that is about to be thrown away.
+      # `||` is a tested condition, which errexit does not fire on, so the log
+      # always prints and `$ec` still carries the code (124 when the timeout is
+      # what fired). That matters most here of anywhere: this step is the only
+      # place `picker` and `terminal` run at all.
       - name: Test the whole workspace (the backstop under the list above)
         working-directory: rust
         run: |
-          timeout -k 10 900 cargo test --workspace --locked -- --test-threads=1 > workspace.log 2>&1; ec=$?
+          ec=0
+          timeout -k 10 900 cargo test --workspace --locked -- --test-threads=1 > workspace.log 2>&1 || ec=$?
           cat workspace.log; exit $ec
       - name: Clippy
         working-directory: rust
