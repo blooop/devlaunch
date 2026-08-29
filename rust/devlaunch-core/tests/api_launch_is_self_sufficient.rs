@@ -66,10 +66,15 @@ fn a_cold_capable_launch_is_built_from_the_api_module_alone() {
         said,
     );
     drop(launch);
+    // Dropped so its sink can be read: the provisioner borrows `provision_said` for
+    // as long as it lives, and all three sinks are worth asserting rather than the
+    // two that happen to be readable without this line.
+    drop(provision);
 
     // Nothing was spawned, nothing was said, and -- the point of devlaunch#145 --
     // no records were opened to say it with.
     assert_eq!(runner.call_count(), 0);
     assert!(records_said.is_empty(), "{records_said:?}");
+    assert!(provision_said.is_empty(), "{provision_said:?}");
     assert!(launch_said.is_empty(), "{launch_said:?}");
 }

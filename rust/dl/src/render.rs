@@ -2834,6 +2834,95 @@ mod tests {
         }
     }
 
+    // ------------------------------------------- the cold path's typed refusal
+
+    /// The other half of devlaunch#339: core carries the reason, and this module
+    /// is where it becomes a sentence.
+    ///
+    /// Every arm is asserted whole rather than by substring, because the claim the
+    /// typing was made under is that the words did not move: `ColdRefused` used to
+    /// arrive here already rendered, and these are the exact strings it used to
+    /// arrive with. A `contains` would pass while a rewrite quietly changed the
+    /// line a user reads.
+    #[test]
+    fn every_arm_of_a_cold_refusal_renders_the_sentence_it_used_to_carry() {
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::NoHomeDirectory)),
+            "this machine names no home directory, so dl cannot find its cache"
+        );
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::Config(
+                config::ConfigError::NotToml {
+                    path: PathBuf::from("/cfg/devlaunch/config.toml"),
+                    reason: "expected `.`, `=`".to_owned(),
+                }
+            ))),
+            "/cfg/devlaunch/config.toml is not usable: expected `.`, `=`"
+        );
+        assert_eq!(
+            cold_refused(&ColdRefused::Startup(StartupError::Metadata(
+                metadata::MetadataError::CreateDir {
+                    path: PathBuf::from("/cache/devlaunch"),
+                    failure: metadata::OsFailure {
+                        kind: std::io::ErrorKind::NotADirectory,
+                        message: "Not a directory (os error 20)".to_owned(),
+                    },
+                }
+            ))),
+            "could not create the directory for dl's records at /cache/devlaunch \
+             (Not a directory (os error 20))"
+        );
+        // The arm that replaced a literal written in core. Same words, said here.
+        assert_eq!(
+            cold_refused(&ColdRefused::NoColdPath),
+            "the cold path is not available to this caller"
+        );
+    }
+
+    /// And the refusal reaches the user inside the line the launch refuses with.
+    ///
+    /// `Repository '{owner}/{repo}': …` is Python's sentence and the reason it is a
+    /// reason phrase rather than a sentence of its own: the prefix belongs to the
+    /// caller, so the two must compose exactly here.
+    #[test]
+    fn a_cold_refusal_is_quoted_into_the_launch_refusal_that_carries_it() {
+        let line = launch_refusal(&LaunchRefusal::BranchNotNamed {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            error: BranchNotNamed::Cold(ColdRefused::Startup(StartupError::NoHomeDirectory)),
+        });
+
+        assert_eq!(
+            line.as_deref(),
+            Some(
+                "Repository 'blooop/devlaunch': this machine names no home directory, \
+                 so dl cannot find its cache"
+            )
+        );
+    }
+
+    /// A `config.toml` that could not be read reports the OS's own words.
+    ///
+    /// Pinned because #340 changed what carries them: `ConfigError::Unreadable` held
+    /// an `io::Error` and now holds an `OsFailure`, so that the refusal can be
+    /// cloned into `ColdRefused`. `OsFailure::message` is `io::Error::to_string()`,
+    /// and this is what says the line did not move.
+    #[test]
+    fn an_unreadable_config_still_reads_as_the_os_error_it_was() {
+        let refused: config::ConfigError = config::ConfigError::Unreadable {
+            path: PathBuf::from("/cfg/devlaunch/config.toml"),
+            source: std::io::Error::from_raw_os_error(13).into(),
+        };
+
+        assert_eq!(
+            config_error(&refused),
+            format!(
+                "could not read /cfg/devlaunch/config.toml ({})",
+                std::io::Error::from_raw_os_error(13)
+            )
+        );
+    }
+
     // ------------------------------------------------------- the retired keys
 
     #[test]

@@ -30,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the words. It is now `Startup(StartupError)` or `NoColdPath`, and `dl` renders each
   arm. `domain::config::ConfigError` became clonable and comparable for the same
   reason, its OS side spelled as `OsFailure` the way `MetadataError`'s already was.
-  The sentences a user sees are unchanged.
+  The sentences a user sees are unchanged, and are held to that rather than inspected:
+  every arm is asserted against the exact line it used to arrive already rendered
+  with, and a real run whose records will not open is judged from outside the binary.
 
 ### Fixed
 

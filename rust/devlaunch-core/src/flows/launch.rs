@@ -2460,8 +2460,10 @@ pub enum ColdRefused {
     /// The records could not be opened: no home directory, an unreadable
     /// `config.toml`, or a `metadata.json` that would not open.
     Startup(StartupError),
-    /// This launcher was built with no cold path at all — see [`NoColdPath`].
-    /// Nothing was attempted and nothing is wrong with the machine.
+    /// This launcher was built with no cold path at all: the caller established
+    /// the workspace was warm and lent machinery that refuses on principle (the
+    /// crate's own `NoColdPath` is one). Nothing was attempted, and nothing is
+    /// wrong with the machine.
     NoColdPath,
 }
 
@@ -3780,6 +3782,32 @@ mod tests {
     impl<'r> ColdMachinery<'r> for NeverCold {
         fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
             panic!("a warm launch opened the cold path");
+        }
+    }
+
+    /// A cold path whose `metadata.json` will not open, refusing exactly as
+    /// [`ColdPath`] does when [`records::open_records`] hands it a
+    /// [`StartupError`].
+    struct MetadataWillNotOpen;
+
+    /// The refusal a real `MetadataStorage::open` produces when the directory it
+    /// needs cannot be created, spelled once so the tests below compare against the
+    /// same value the arm is built from.
+    fn metadata_refusal() -> crate::domain::metadata::MetadataError {
+        crate::domain::metadata::MetadataError::CreateDir {
+            path: PathBuf::from("/cache/devlaunch"),
+            failure: crate::domain::metadata::OsFailure {
+                kind: std::io::ErrorKind::NotADirectory,
+                message: "Not a directory (os error 20)".to_owned(),
+            },
+        }
+    }
+
+    impl<'r> ColdMachinery<'r> for MetadataWillNotOpen {
+        fn open(&mut self) -> Result<Cold<'_, 'r>, ColdRefused> {
+            Err(ColdRefused::Startup(StartupError::Metadata(
+                metadata_refusal(),
+            )))
         }
     }
 
@@ -6301,6 +6329,76 @@ mod tests {
                 workspace_id: "a-project".to_owned(),
             }
         );
+    }
+
+    // -------------------------------- the cold path's refusal, as a reason
+
+    /// devlaunch#339: a metadata-refused cold open surfaces as the typed arm.
+    ///
+    /// [`ColdRefused`] carried a `reason: String` until #340, filled by `dl`
+    /// rendering a [`StartupError`] and quoted straight back into this refusal.
+    /// That was the one place the binary's own prose travelled back *through* core,
+    /// and what it cost is visible from here: a caller holding the refusal could
+    /// read the sentence and could not ask which of the three things went wrong.
+    ///
+    /// So the assertion is the whole value, not a substring of one. The refusal
+    /// arrives at the launch's own refusal as the reason it *is*, with the
+    /// [`MetadataError`](crate::domain::metadata::MetadataError) the store produced
+    /// still inside it and no sentence anywhere along the way. Flatten either level
+    /// back to a string and this stops compiling, which is the failure it is here
+    /// for.
+    #[test]
+    fn a_metadata_refused_cold_open_surfaces_as_the_typed_arm() {
+        let refused = name_default_branch(
+            &mut MetadataWillNotOpen,
+            "blooop",
+            "devlaunch",
+            "git@github.com:blooop/devlaunch.git",
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            refused,
+            Err(BranchNotNamed::Cold(ColdRefused::Startup(
+                StartupError::Metadata(metadata_refusal())
+            )))
+        );
+    }
+
+    /// The other arm that opens the cold path, carrying the same reason unchanged.
+    ///
+    /// Both are worth pinning because they are separate `map_err`s over the same
+    /// `open`, and a refusal that survived one of them and was stringified by the
+    /// other would be the old bug back in half the launches.
+    #[test]
+    fn the_cold_arm_of_a_host_side_preparation_carries_the_same_typed_reason() {
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+
+        let refused = prepare(
+            &mut MetadataWillNotOpen,
+            &workspace,
+            "git@github.com:blooop/devlaunch.git",
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            refused,
+            Err(NotPrepared::Cold(ColdRefused::Startup(
+                StartupError::Metadata(metadata_refusal())
+            )))
+        );
+    }
+
+    /// The arm that replaced an English literal.
+    ///
+    /// `NoColdPath` used to refuse with the sentence "the cold path is not available
+    /// to this caller", written in core, which is the rule #251 §5 states. It is a
+    /// variant now and the sentence is the binary's.
+    #[test]
+    fn a_launcher_with_no_cold_path_refuses_with_an_arm_rather_than_a_sentence() {
+        let mut none = NoColdPath;
+
+        assert_eq!(none.open().err(), Some(ColdRefused::NoColdPath));
     }
 
     // -------------------------------- stage two: which workspace, and is it warm

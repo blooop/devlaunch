@@ -38,9 +38,10 @@ use crate::runner::Runner;
 /// environment with no home directory, a `config.toml` that cannot be read, and a
 /// `metadata.json` that cannot be opened.
 ///
-/// binary surface — not part of the frozen wf API (#251 §7) on its own; it reaches
-/// the promised tier as the payload of
-/// [`ColdRefused`](crate::flows::launch::ColdRefused).
+/// **Part of the frozen wf API (#251 §7)**, re-exported from
+/// [`api`](crate::api) since #340: it is the payload of
+/// [`ColdRefused::Startup`](crate::flows::launch::ColdRefused::Startup), and a
+/// consumer that cannot match on it is holding a refusal it cannot read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupError {
     NoHomeDirectory,
@@ -70,12 +71,20 @@ impl From<MetadataError> for StartupError {
 ///
 /// One vocabulary over what used to be four fields a caller drained in a fixed
 /// order: the config's retired keys, the load's notices, the migration's report and
-/// the migration's refusal. It is a sink's vocabulary rather than a struct of lists
-/// because the order *is* the report — Python's factory read the config, opened the
-/// store and then announced the migration from inside it — and because a sink is
-/// what lets the words be said while the work is still happening.
+/// the migration's refusal. It is one ordered sequence rather than a struct of four
+/// lists because the order *is* the report — Python's factory read the config,
+/// opened the store and then announced the migration from inside it — and a caller
+/// holding four lists has to know that order to reproduce it.
 ///
-/// binary surface — not part of the frozen wf API (#251 §7)
+/// Note what this vocabulary does *not* buy, unlike the launch's: the open is a
+/// single act, so [`open_records`] finishes before anything can be said about it and
+/// [`ColdPath`](crate::flows::launch::ColdPath) says the whole sequence at once. The
+/// sink is what makes the saying the caller's and the ordering core's, not what
+/// makes it early.
+///
+/// **Part of the frozen wf API (#251 §7)**, re-exported from [`api`](crate::api)
+/// since #340: it is what
+/// [`ColdPath::new`](crate::flows::launch::ColdPath::new) takes its sink in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordsNotice {
     /// A key `config.toml` names that this build no longer reads. Only
@@ -107,7 +116,10 @@ pub enum RecordsNotice {
 /// [`lifecycle::ClonePlacement`](crate::flows::lifecycle::ClonePlacement)), so a
 /// command cannot scan one tree while locking against another.
 ///
-/// binary surface — not part of the frozen wf API (#251 §7)
+/// Not re-exported from [`api`](crate::api), and reachable from it all the same:
+/// it is what [`ColdPath::records`](crate::flows::launch::ColdPath::records)
+/// answers with. That is the classifier gap #352 is about rather than a second
+/// tier, so treat a change here as a change to the promise.
 pub struct Records<'r> {
     pub storage: MetadataStorage,
     /// The clone manager, which is the one thing that names a record's clone
