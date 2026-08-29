@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun};
+use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun, Workspace};
 use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::git::Failure as GitFailure;
@@ -37,7 +37,7 @@ use devlaunch_core::flows::lifecycle::{
     Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
 use devlaunch_core::flows::listing::{
-    LastUsed, SizeCell, Sizes, SweptRepoNote, TableRow, WorkspaceTable,
+    self, LastUsed, SizeCell, Sizes, SourceKind, SweptRepoNote, TableRow, WorkspaceTable,
 };
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
@@ -1769,11 +1769,47 @@ pub(crate) const DOCKER_BOUNDARY: &str = concat!(
 // --purge
 // ---------------------------------------------------------------------------
 
+/// What removing the cache costs the workspaces the purge is *not* deleting.
+///
+/// Said in the block that lists them, because it is a reason to answer `n` and
+/// remove one of them properly first (devlaunch#461). Two things are true of a
+/// survivor and only the first is obvious: it keeps working, and dl stops knowing
+/// anything about it.
+///
+/// The second line is where that costs something rather than merely being tidy. A
+/// clone a pre-#467 dl placed under `worktree.repos_dir` is outside the cache, so
+/// the workspace opening it is foreign here and stays; the record naming that
+/// directory is *inside* the cache and goes. After this, `dl <ws> rm` answers
+/// `NothingRecorded` and leaves the tree standing, and nothing else on the machine
+/// mentions it. Removing that workspace before the purge is what takes its clone
+/// with it.
+///
+/// Deliberately not a claim about volumes. The names of the two volumes a
+/// workspace's devcontainer made are read from devpod's own `workspace_result.json`
+/// under `DEVPOD_HOME`, which a purge does not touch, so a survivor's volumes still
+/// go with it whenever it is removed. That changes when devlaunch keeps its own
+/// copy under the cache (devlaunch#456), and this sentence is where it will be
+/// said.
+const SURVIVORS_LOSE_THE_RECORDS: [&str; 2] = [
+    "Removing the cache also drops what dl recorded about them. They keep working, and \
+     `dl <workspace> rm` still removes one.",
+    "A clone an older dl placed outside the cache is named only by a record in there, though, \
+     so remove such a workspace now if the clone should go with it.",
+];
+
 /// What a purge would take, printed before the question is asked.
 ///
 /// The workspaces devlaunch did not create are *named* rather than merely left out
 /// of the count: a user who asked for a clean slate and gets survivors should
 /// learn it while saying no is still an option.
+///
+/// **Named by their source and not only by their id** (devlaunch#461). An id is
+/// what devpod addresses a workspace by and carries nothing about where it came
+/// from, so `someones-project` reads the same whether it is a `dl ./project` of
+/// yours, a `dl <git-url>`, or a workspace somebody made with `devpod up` -- and
+/// this is the one screen where that difference is being decided on. The source is
+/// the same string `dl --ls` puts in its `SOURCE` column, from the same reading of
+/// it, so the two surfaces cannot describe one workspace differently.
 pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
     let ownership = plan.ownership();
     let mut lines = vec![
@@ -1791,14 +1827,30 @@ pub(crate) fn purge_plan_lines(plan: &PurgePlan) -> Vec<String> {
             ownership.foreign.len()
         ));
         lines.extend(
-            ownership
-                .foreign
-                .iter()
-                .map(|workspace| format!("  - {}", workspace.id)),
+            ownership.foreign.iter().map(|workspace| {
+                format!("  - {}: {}", workspace.id, left_standing_source(workspace))
+            }),
         );
+        lines.push(String::new());
+        lines.extend(SURVIVORS_LOSE_THE_RECORDS.map(str::to_owned));
     }
     lines.push(String::new());
     lines
+}
+
+/// Where one surviving workspace came from, as the leaving list names it.
+///
+/// [`describe_source`](listing::describe_source) is what `dl --ls` reads, and the
+/// detail alone carries the answer for the two arms that have one: a path is a
+/// path and a URL is a URL, and neither needs the `TYPE` column's word repeated
+/// beside it. The third arm does, because devpod's own object is not a source in
+/// any readable sense and would otherwise sit after a colon looking like one.
+fn left_standing_source(workspace: &Workspace) -> String {
+    let described = listing::describe_source(workspace.source());
+    match described.kind {
+        SourceKind::Local | SourceKind::Git => described.detail,
+        SourceKind::Unknown => format!("a source dl cannot read, {}", described.detail),
+    }
 }
 
 /// One rendered line, and which stream it belongs on.
@@ -2928,6 +2980,28 @@ mod tests {
     #[test]
     fn a_config_naming_nothing_retired_says_nothing() {
         assert!(retired_keys(&[]).is_empty());
+    }
+
+    // ------------------------------------------------------------- --purge
+
+    #[test]
+    fn the_cleanup_page_quotes_the_sentences_a_purge_really_prints() {
+        // `docs/cleanup.md` reproduces the block `--purge` prints above its
+        // question, which makes it a second hand-maintained copy of these two
+        // sentences -- and a sample output that has drifted from the command is
+        // worse than no sample. This is the diff test the standing rule asks for
+        // beside such a copy. If that section moves to another page, this path
+        // moves with it, in the same change.
+        let page = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/cleanup.md"),
+        )
+        .expect("docs/cleanup.md");
+        for said in SURVIVORS_LOSE_THE_RECORDS {
+            assert!(
+                page.contains(said),
+                "docs/cleanup.md no longer quotes what the purge says: {said}"
+            );
+        }
     }
 
     // ---------------------------------------------- the refusal advice line

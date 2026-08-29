@@ -1714,14 +1714,25 @@ fn a_fresh_cache_stops_the_child_before_it_sweeps() {
 // --purge
 // ===========================================================================
 
-/// Python's `dl --purge` plan for the base world, verbatim.
+/// Python's `dl --purge` plan for the base world, with devlaunch#461's two
+/// additions to the block that names the survivors.
+///
+/// **The second deliberate divergence from Python in this file**, beside
+/// [`DOCKER_BOUNDARY`] below. Python printed a bare workspace id per survivor, and
+/// an id is exactly what a user cannot decide on: `someones-project` could be a
+/// `dl ./project` of theirs, a `dl <git-url>`, or a workspace somebody made with
+/// `devpod up`. So each one is named by its source, and the sentence under the
+/// list says what removing the cache costs the workspaces that are staying.
 const PURGE_PLAN: &str = "\
 This will remove all devlaunch data:
   - 2 DevPod workspace(s)
   - {ROOT}/cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
 
 Leaving 1 workspace(s) devlaunch did not create:
-  - someones-project
+  - someones-project: {ROOT}/foreign/proj
+
+Removing the cache also drops what dl recorded about them. They keep working, and `dl <workspace> rm` still removes one.
+A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
 
 ";
 
@@ -1737,6 +1748,93 @@ Leaving 1 workspace(s) devlaunch did not create:
 const DOCKER_BOUNDARY: &str = "devlaunch does not manage Docker images: the images these \
                                workspaces built may still hold disk, and `docker system df` \
                                shows what Docker is holding.\n";
+
+#[test]
+fn the_leaving_list_names_each_survivors_source_beside_its_id() {
+    // devlaunch#461. The id on its own is not something a user can decide on: a
+    // `dl ./project` of theirs, a `dl <git-url>` and a workspace they made with
+    // `devpod up` all read the same, and this is the one screen where somebody is
+    // deciding. The source is what tells them apart.
+    let world = World::base();
+    let run = world.answering("n\n", &["--purge"]);
+    run.exited(0);
+    assert!(
+        run.out
+            .contains("  - someones-project: {ROOT}/foreign/proj\n"),
+        "the leaving list named an id and no source:\n{}",
+        run.out
+    );
+    assert!(
+        run.out
+            .contains("Removing the cache also drops what dl recorded about them."),
+        "the block did not say what the purge costs the survivors:\n{}",
+        run.out
+    );
+}
+
+#[test]
+fn a_survivor_whose_source_dl_cannot_read_is_said_to_be_one() {
+    // The third arm of the source, and the reason the leaving list does not simply
+    // print the detail: devpod's own object after a colon reads like a source, and
+    // this is the one row where dl has nothing truer to say than the object.
+    let world = World::with(&["--unplaceable"]);
+    let run = world.answering("n\n", &["--purge"]);
+    run.exited(0);
+    assert!(
+        run.out.contains(
+            "  - a-source-nobody-can-read: a source dl cannot read, {\"localFolder\": 42}\n"
+        ),
+        "{}",
+        run.out
+    );
+}
+
+#[test]
+fn a_purge_names_the_clone_a_retired_repos_dir_left_outside_the_cache() {
+    // devlaunch#461, the case #467's review reproduced. A pre-#467 `dl` put this
+    // clone under `worktree.repos_dir`, so the workspace opening it is foreign
+    // here: the purge leaves it standing and removes the record that is the last
+    // thing on the machine pointing at the tree. It used to print `devlaunch-main-3j1t`
+    // and nothing else, which names neither the clone nor the fact that it is one.
+    let world = World::with(&["--stranded-clone"]);
+    let run = world.answering("n\n", &["--purge"]);
+    run.exited(0);
+    assert!(
+        run.out.contains(
+            "Leaving 2 workspace(s) devlaunch did not create:\n  \
+             - someones-project: {ROOT}/foreign/proj\n  \
+             - devlaunch-main-3j1t: {ROOT}/old-repos/blooop/devlaunch/devlaunch-main-3j1t\n"
+        ),
+        "the stranded clone's path is not in the plan:\n{}",
+        run.out
+    );
+    // And the retired key earns its notice on this path too, which is the half the
+    // list cannot cover: a clone under that root with no workspace left opening it
+    // has no line in any plan, and this run is what removes its record.
+    assert!(
+        run.err.contains("worktree.repos_dir = '{ROOT}/old-repos'"),
+        "the purge said nothing about the key that put a tree there:\n{}",
+        run.err
+    );
+
+    // What the sentence under the list is warning about, on disk: the tree stays
+    // and the record naming it does not.
+    let purged = world.dl(&["--purge", "-y"]);
+    purged.exited(0);
+    assert!(
+        world.exists("old-repos/blooop/devlaunch/devlaunch-main-3j1t"),
+        "the purge removed a clone outside its own cache"
+    );
+    assert!(
+        !world.exists("cache/devlaunch/metadata.json"),
+        "the record survived, so the sentence about losing it is wrong"
+    );
+    assert_eq!(
+        world.devpod_calls().last().map(String::as_str),
+        Some("devpod delete devlaunch-dirty-fqta --force"),
+        "the stranded workspace was deleted, or the ownership scope moved"
+    );
+}
 
 #[test]
 fn a_purge_answered_no_removes_nothing_and_still_names_the_disk_it_does_not_free() {

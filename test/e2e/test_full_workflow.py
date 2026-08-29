@@ -331,9 +331,15 @@ class TestPurgeE2E:
         assert [line for line in printed if line.startswith("Deleting DevPod workspace:")] == [
             f"Deleting DevPod workspace: {mine}"
         ], report
-        # Named rather than silently passed over.
+        # Named rather than silently passed over, and named by its *source*:
+        # an id on its own cannot be told from a `dl ./project` of yours
+        # (devlaunch#461). The source is asserted as "there is one" rather than
+        # against a literal, because what devpod echoes back for a git source is
+        # devpod's normalisation of the URL and not this test's business.
         assert "Leaving 1 workspace(s) devlaunch did not create:" in printed, report
-        assert f"  - {theirs}" in printed, report
+        left = [line for line in printed if line.startswith(f"  - {theirs}: ")]
+        assert len(left) == 1, report
+        assert left[0].split(": ", 1)[1].strip(), report
 
         listed_after = workspace_ids()
         assert mine not in listed_after, report

@@ -68,6 +68,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, and a `metadata.json` written by an older `dl` reads exactly as it did.
   [docs/cleanup.md](docs/cleanup.md) has the detail.
 
+### Changed
+
+- **`dl --purge` names where each surviving workspace came from.** The list of
+  workspaces a purge is leaving standing printed ids and nothing else, and an id
+  is the one thing you cannot decide on: `pythontemplate` reads exactly the same
+  whether it is a `dl <git-url>` of yours, a `dl ./project` whose checkout you
+  care about, or something another tool made. Each line now carries the source
+  beside the id, the same string `dl --ls` shows in its `SOURCE` column.
+
+  The block also says what removing the cache costs the workspaces that stay.
+  They keep working, but a clone an older `dl` placed outside the cache, under the
+  retired `worktree.repos_dir` key, is named only by a record inside the cache
+  that is about to go: after the purge, `dl <workspace> rm` deletes the workspace
+  and leaves that directory standing with nothing on the machine pointing at it.
+  Removing such a workspace first is what takes its clone with it. `--purge` also
+  reports a `config.toml` that still sets that key now, which is the only mention
+  a stranded tree gets when no workspace opens it any more.
+
 ### Fixed
 
 - **Sixty-six citations that pointed at nothing now point at something, and a
