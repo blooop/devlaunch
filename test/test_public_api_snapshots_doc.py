@@ -282,9 +282,12 @@ def test_the_documented_scale_of_the_limit_is_the_measured_one():
     types, _rows = residual()
     for path in (DEV_DOC, SCRIPT, RUST / "devlaunch-core" / "src" / "lib.rs"):
         text = path.read_text(encoding="utf-8")
-        # Bounded, or `39` is satisfied by the unrelated row counts these files
-        # also carry (`395`, `39x` of anything).
-        assert re.search(rf"\b{types}\b", text), (
+        # The number *and* the noun it counts. A bare `\b39\b` was satisfied
+        # twice over by things that are not this: `395 rows moved` two
+        # paragraphs up, and "39 of them" about orphaned Docker volumes five
+        # hundred lines away in the same document. Matching "39 types" and "39
+        # such types" is what makes deleting the caveat show up here.
+        assert re.search(rf"\b{types}\b(?: \w+)? types", text), (
             f"{path.name} does not carry the current number of types in the "
             f"residual ({types}). Regenerating the snapshots moved it; update the "
             f"sentence there, or run {SCRIPT.name} {RESIDUAL_COMMAND} to see what "
