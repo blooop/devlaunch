@@ -340,6 +340,10 @@ class TestPurgeE2E:
         left = [line for line in printed if line.startswith(f"  - {theirs}: ")]
         assert len(left) == 1, report
         assert left[0].split(": ", 1)[1].strip(), report
+        # And a source, not the fallback for one dl could not read: that arm is
+        # what a broken reading degrades to, and "something after the colon"
+        # accepts it just as happily as a real URL.
+        assert "a source dl cannot read" not in left[0], report
 
         listed_after = workspace_ids()
         assert mine not in listed_after, report

@@ -213,6 +213,12 @@ is what takes the clone too. If `config.toml` still sets `worktree.repos_dir`,
 clone any more there is no line in any list for it, and that notice is the only
 mention that tree will get.
 
+Under `-y` the second sentence is the same fact in the tense that run has earned.
+"Remove such a workspace now" is an action only somebody who still has the
+question in front of them can take, and printing it into a run that deletes the
+records three lines later would be advice arriving after the door shut, so what
+`-y` says instead is what will be true of `dl <workspace> rm` from then on.
+
 Volumes are not part of that loss. The two named volumes a workspace's
 devcontainer made are read from devpod's own record under `DEVPOD_HOME`, which a
 purge does not touch, so a survivor's volumes still go with it whenever it is

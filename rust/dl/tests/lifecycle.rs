@@ -1723,6 +1723,11 @@ fn a_fresh_cache_stops_the_child_before_it_sweeps() {
 /// `dl ./project` of theirs, a `dl <git-url>`, or a workspace somebody made with
 /// `devpod up`. So each one is named by its source, and the sentence under the
 /// list says what removing the cache costs the workspaces that are staying.
+///
+/// This is the plan a run that is **about to ask** prints. `-y` prints
+/// [`PURGE_PLAN_YES`], which differs in the one line that offers an action, and
+/// the two are spelled out separately rather than derived from each other so that
+/// a change to either is read as the output change it is.
 const PURGE_PLAN: &str = "\
 This will remove all devlaunch data:
   - 2 DevPod workspace(s)
@@ -1733,6 +1738,26 @@ Leaving 1 workspace(s) devlaunch did not create:
 
 Removing the cache also drops what dl recorded about them. They keep working, and `dl <workspace> rm` still removes one.
 A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
+
+";
+
+/// The same plan under `-y`, where the last sentence is in the tense that run has
+/// earned.
+///
+/// "Remove such a workspace now" is an action only a reader with the question
+/// still in front of them can take; the same run deletes the records that make it
+/// possible three lines later. So `-y` gets the same fact as what will be true
+/// from then on, and every `-y` golden below is built from this one.
+const PURGE_PLAN_YES: &str = "\
+This will remove all devlaunch data:
+  - 2 DevPod workspace(s)
+  - {ROOT}/cache/devlaunch/ (workspace clones, repo caches, the shared pixi cache, completions)
+
+Leaving 1 workspace(s) devlaunch did not create:
+  - someones-project: {ROOT}/foreign/proj
+
+Removing the cache also drops what dl recorded about them. They keep working, and `dl <workspace> rm` still removes one.
+A clone an older dl placed outside the cache is named only by a record in there, though, so from here on `dl <workspace> rm` takes such a workspace and leaves its clone standing.
 
 ";
 
@@ -1837,6 +1862,25 @@ fn a_purge_names_the_clone_a_retired_repos_dir_left_outside_the_cache() {
 }
 
 #[test]
+fn removing_a_stranded_workspace_before_the_purge_takes_its_clone() {
+    // What the plan's last sentence advises, checked rather than assumed. It is
+    // true because `resolve_clone_path` prefers the record's absolute `local_path`
+    // over the path derived from the cache root, and every unit test around that
+    // function uses a path *under* the clone root -- so a later "only remove trees
+    // under the cache" hardening would turn a printed sentence into bad advice
+    // with nothing failing. Found in review of devlaunch#461.
+    let world = World::with(&["--stranded-clone"]);
+    let run = world.dl(&["devlaunch-main-3j1t", "rm"]);
+    assert!(
+        !world.exists("old-repos/blooop/devlaunch/devlaunch-main-3j1t"),
+        "the clone stayed: exit {:?}\nout:{}\nerr:{}",
+        run.code,
+        run.out,
+        run.err
+    );
+}
+
+#[test]
 fn a_purge_answered_no_removes_nothing_and_still_names_the_disk_it_does_not_free() {
     let world = World::with(&["--prunable"]);
     let before = world.cache_fingerprint();
@@ -1899,7 +1943,7 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed: {{ROOT}}/cache/devlaunch\n{DOCKER_BOUNDARY}"
         )
@@ -1945,7 +1989,7 @@ fn a_purge_that_could_not_remove_everything_says_which_paths_refused() {
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed what was permitted under {{ROOT}}/cache/devlaunch. These refused:\n  \
              - {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-locked/held: \
@@ -1972,7 +2016,7 @@ fn a_purge_that_removed_not_one_path_says_that_rather_than_the_other_sentence() 
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n\
              Removed nothing under {{ROOT}}/cache/devlaunch. These refused:\n  \
              - {{ROOT}}/cache/devlaunch: is a symbolic link to {{ROOT}}/elsewhere/devlaunch, \
@@ -2016,7 +2060,7 @@ fn a_purge_that_deleted_workspaces_and_found_no_cache_says_nothing_about_the_cac
     assert_eq!(
         run.out,
         format!(
-            "{PURGE_PLAN}Deleting DevPod workspace: devlaunch-main-legacy\n\
+            "{PURGE_PLAN_YES}Deleting DevPod workspace: devlaunch-main-legacy\n\
              Deleting DevPod workspace: devlaunch-dirty-fqta\n{DOCKER_BOUNDARY}"
         )
     );

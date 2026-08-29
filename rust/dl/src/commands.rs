@@ -1162,7 +1162,15 @@ fn purge_devlaunch_data(context: &mut CommandContext<'_>, cache: &Path, yes: boo
         Err(refused) => return Cleanup::Raised(refuse_listing(&refused)),
         Ok(plan) => plan,
     };
-    print(&render::purge_plan_lines(&plan));
+    // The plan is told which of the two it is. Everything in it is preventable
+    // while the question is still coming, and one sentence of it offers an action
+    // that only an interactive reader can still take.
+    let confirmation = if yes {
+        render::Confirmation::AnsweredOnTheLine
+    } else {
+        render::Confirmation::WillBeAsked
+    };
+    print(&render::purge_plan_lines(&plan, confirmation));
     if !yes && !confirmed("Are you sure? [y/N] ") {
         println!("Aborted.");
         return Cleanup::Ended(Ending::Done);
