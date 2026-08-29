@@ -1716,6 +1716,36 @@ mod tests {
         );
     }
 
+    /// DEL, at the document whose bytes the round-trip contract is about.
+    ///
+    /// This one is worth pinning here and not only at the escaper because of what
+    /// the loader does: it parses into a `serde_json::Value` and re-encodes, so a
+    /// `metadata.json` the Python build wrote carrying a `\u007f` escape used to
+    /// come back out as a raw `0x7f` byte. That is the byte-for-byte agreement
+    /// this module's header promises, failing on a file nobody edited.
+    /// Expectation from `json.dumps(..., indent=2)`.
+    #[test]
+    fn the_indent_two_document_escapes_del_the_way_python_does() {
+        let mut bytes = Vec::new();
+        let mut serializer =
+            serde_json::Serializer::with_formatter(&mut bytes, PythonJsonFormatter::default());
+        json!({ "branch": "a\u{7f}b", "tags": ["\u{7f}"] })
+            .serialize(&mut serializer)
+            .expect("a Vec never fails to write");
+
+        assert_eq!(
+            String::from_utf8(bytes).expect("the escaping writes ASCII"),
+            concat!(
+                "{\n",
+                "  \"branch\": \"a\\u007fb\",\n",
+                "  \"tags\": [\n",
+                "    \"\\u007f\"\n",
+                "  ]\n",
+                "}",
+            )
+        );
+    }
+
     #[test]
     fn an_empty_save_is_byte_for_byte_what_python_writes() {
         let dir = temp_dir();

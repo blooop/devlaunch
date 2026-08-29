@@ -281,16 +281,23 @@ impl Formatter for PythonPretty {
     /// The run of string bytes `serde_json` did not have to escape, which includes
     /// every non-ASCII one — it escapes only the control characters, `"` and `\`.
     /// Python escapes the rest too, and this is where that happens.
+    ///
+    /// "The rest" is everything outside `' '..'~'`, which is CPython's `S_CHAR`
+    /// and is one character wider than `is_ascii()`: DEL (`U+007F`) is ASCII and
+    /// Python still escapes it. This is the third copy of core's
+    /// `write_ensure_ascii` (devlaunch#346 collapses it), so it carried the same
+    /// wrong gate and is corrected in step with it.
     fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
     where
         W: ?Sized + io::Write,
     {
-        if fragment.is_ascii() {
+        let written_bare = |character: char| matches!(character, ' '..='~');
+        if fragment.bytes().map(char::from).all(written_bare) {
             return writer.write_all(fragment.as_bytes());
         }
         let mut units = [0u16; 2];
         for character in fragment.chars() {
-            if character.is_ascii() {
+            if written_bare(character) {
                 writer.write_all(character.encode_utf8(&mut [0u8; 4]).as_bytes())?;
                 continue;
             }
@@ -3090,6 +3097,37 @@ mod tests {
         assert_eq!(
             python_json_document(&serde_json::json!("héllo 🚀")),
             r#""h\u00e9llo \ud83d\ude80""#
+        );
+    }
+
+    /// DEL, the one non-printable ASCII character serde hands to this formatter
+    /// rather than escaping itself.
+    ///
+    /// `--ls --json` is a wire format `wf` parses, so the third live copy of the
+    /// escaping (devlaunch#346 collapses it onto core's) carried the same
+    /// divergence core's did and is closed here alongside it. Expectation from
+    /// `json.dumps`.
+    #[test]
+    fn del_is_escaped_as_python_escapes_it() {
+        assert_eq!(
+            python_json_document(&serde_json::json!("a\u{7f}b")),
+            r#""a\u007fb""#
+        );
+    }
+
+    /// The whole ASCII range at once, against the line Python wrote for it.
+    ///
+    /// This copy of the escaping and core's are supposed to be spelled the same
+    /// until devlaunch#346 merges them, so it gets core's sweep too: nothing bare
+    /// that `json.dumps` escapes, nothing escaped that it leaves bare. Expectation
+    /// is the literal `json.dumps` printed for
+    /// `''.join(chr(c) for c in range(0x80))`.
+    #[test]
+    fn every_ascii_character_is_spelled_the_way_python_spells_it() {
+        let all_of_ascii: String = (0u8..=0x7f).map(char::from).collect();
+        assert_eq!(
+            python_json_document(&serde_json::json!(all_of_ascii)),
+            r##""\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u007f""##
         );
     }
 
