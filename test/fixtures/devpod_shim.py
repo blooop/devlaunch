@@ -8,7 +8,8 @@ file it reads from the tree is `devpod/value_flags.json` beside it, which says
 which flags consume a value and is the other fake's copy too; the harness runs
 this program from where it lives rather than copying it, so the path holds, and
 a run that cannot read it exits 78 rather than parsing every call wrong. It
-re-homes `test/fixtures/devpod_mock.py`'s proven design as a separate process:
+re-homes the proven design of the Python `devpod_mock` fixture (retired with
+that tree in #267) as a separate process:
 
 - **workspace state machine**, persisted to the JSON file named by
   ``DEVPOD_SHIM_STATE`` so it survives across the many short-lived processes a

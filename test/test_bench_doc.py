@@ -348,7 +348,7 @@ def test_the_epilogs_cold_reset_is_a_command_dl_actually_accepts(devpod_shim):
     run against a devpod that has nothing to delete, the state every cold bench's
     first reset meets.
 
-    Lived in `test_timing.py` until the Python implementation was retired (#267),
+    Lived in the Python `test_timing` until that implementation was retired (#267),
     and moved here rather than being dropped: this file already guards the document's
     copies of the same commands, and while the document currently points at this
     epilog instead of publishing a reset of its own, the epilog's is the only one

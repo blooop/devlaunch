@@ -1305,9 +1305,10 @@ mod tests {
 
     // ------------------------------------------------------- the timing spans
     //
-    // `test/test_timing.py`'s `TestDevpodRoundTripsAreNamed` asserts these labels
-    // through `main()`, where they arrive from Python's one spawn helper. They
-    // arrive from this module's three, so this is where they are pinned.
+    // The Python `test_timing`'s `TestDevpodRoundTripsAreNamed` asserted these
+    // labels through `main()`, where they arrived from Python's one spawn helper.
+    // They arrive from this module's three, so this is where they are pinned now;
+    // that suite retired with the Python tree (#267).
 
     /// The span labels `record` produced, in order.
     ///

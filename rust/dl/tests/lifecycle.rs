@@ -8,6 +8,11 @@
 //! not come from Python — the `--stop`/`--rm` flag spellings, which Python parsed
 //! as a workspace name — the divergence row is cited beside it.
 //!
+//! The case comments below name the Python suite each case came from. Every one of
+//! those retired with the Python tree (#267), so they are provenance to grep the
+//! history for rather than files to open; what pins the behaviour now is the case
+//! the name sits on.
+//!
 //! Python's diagnostics go to stderr as the bare message: `dl.py` configures
 //! `logging.basicConfig(level=logging.INFO, format="%(message)s")`, so `info`,
 //! `warning` and `error` all arrive with no level, no logger name and no prefix.
@@ -258,6 +263,62 @@ impl World {
                 String::from_utf8_lossy(&done.stderr)
             );
         }
+    }
+
+    /// Put a `git` first on the run's PATH that refuses `pack-refs` and is the
+    /// real git for everything else.
+    ///
+    /// The one failure in this file that has to come from a *subprocess* rather
+    /// than from a fixture flag: what the sweep records is git's own words, and a
+    /// world that supplied them itself would be pinning the test's spelling of a
+    /// refusal instead of git's.
+    fn given_a_git_that_will_not_pack_refs(&self) {
+        let real = ["/usr/bin/git", "/bin/git"]
+            .into_iter()
+            .map(Path::new)
+            .find(|candidate| candidate.exists())
+            .expect("git is installed");
+        let shim = self.path("bin/git");
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\n\
+                 for argument in \"$@\"; do\n\
+                 \x20 if [ \"$argument\" = pack-refs ]; then\n\
+                 \x20   echo \"{REFUSED_PACK}\" >&2\n\
+                 \x20   exit 1\n\
+                 \x20 fi\n\
+                 done\n\
+                 exec {} \"$@\"\n",
+                real.display()
+            ),
+        )
+        .expect("a git that will not pack");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("an executable fake");
+    }
+
+    /// Wind every repository's fetch clock back to before the interval.
+    ///
+    /// The sweep is interval-gated on `last_fetched`, which the pass before it just
+    /// moved, so a second pass in the same test would find nothing due and step over
+    /// the very repository the test is about.
+    fn restale_the_fetch_clock(&self) {
+        let mut record: serde_json::Value =
+            serde_json::from_str(&self.read("cache/devlaunch/metadata.json")).expect("a record");
+        for repository in record["repositories"]
+            .as_object_mut()
+            .expect("the repositories")
+            .values_mut()
+        {
+            repository["last_fetched"] = serde_json::json!("2020-01-01T00:00:00");
+        }
+        std::fs::write(
+            self.path("cache/devlaunch/metadata.json"),
+            record.to_string(),
+        )
+        .expect("a record with a stale clock");
     }
 
     /// The whole cache, contents included, as a listing two runs can be compared by.
@@ -569,7 +630,7 @@ fn a_stop_addresses_the_workspace_and_says_nothing() {
 
 #[test]
 fn a_stop_reaches_the_workspace_the_record_names() {
-    // devlaunch#88, and `test_stored_workspace_id.py`'s
+    // devlaunch#88, and the Python `test_stored_workspace_id`'s
     // TestTheSubcommandsAddressWhatWasResolved at the boundary: the record holds a
     // devpod workspace id this build does not derive, devpod has only that one, and
     // the stop has to reach it. The derived id is in the line because the two are
@@ -843,7 +904,7 @@ fn a_clone_git_cannot_be_asked_about_is_refused_for_not_knowing() {
 
 #[test]
 fn a_clone_holding_a_commit_no_remote_has_is_refused_and_named_as_that() {
-    // `test_workspace_state.py`'s guard texts: uncommitted work and unpushed commits
+    // The Python `test_workspace_state`'s guard texts: uncommitted work and unpushed commits
     // are different losses, and the refusal says which — a user who reads
     // "uncommitted" for a committed change would go looking in the wrong place.
     let world = World::with(&["--unpushed"]);
@@ -1459,7 +1520,7 @@ fn an_rme_devpod_would_not_finish_leaves_the_shell_up_too() {
 
 #[test]
 fn a_command_that_changed_the_workspace_list_refreshes_the_completions_behind_it() {
-    // `test_dl.py`'s refresh classes, spawn half: the child is this build, run as
+    // The Python `test_dl`'s refresh classes, spawn half: the child is this build, run as
     // `<program> --update-cache --force`, detached — so what can be observed from
     // out here is that a completion cache appears without this process waiting for
     // one, and that the child asked devpod for the list.
@@ -1528,7 +1589,7 @@ fn the_refresh_child_writes_the_cache_and_sweeps_the_bare_clones() {
 
 #[test]
 fn the_child_migrates_the_cache_like_every_other_run() {
-    // `test_updater_fetch_sweep.py`'s TestTheChildMigratesLikeEveryOtherRun: a
+    // The Python `test_updater_fetch_sweep`'s TestTheChildMigratesLikeEveryOtherRun: a
     // detached child is the worst place to skip the one-shot id-scheme migration,
     // because nobody is watching it write records in a shape the rest of dl no
     // longer reads. It reaches metadata through the same construction point every
@@ -1544,6 +1605,92 @@ fn the_child_migrates_the_cache_like_every_other_run() {
             .read("cache/devlaunch/metadata.json")
             .contains("\"version\": 3"),
         "the refresh child did not migrate the cache"
+    );
+}
+
+/// What the fake git writes when it refuses to pack, and what the record must
+/// come to hold: git's words, not dl's.
+const REFUSED_PACK: &str = "fatal: unable to create 'packed-refs.lock': Permission denied";
+
+#[test]
+fn a_pack_the_sweep_could_not_do_is_readable_when_somebody_next_lists() {
+    // devlaunch#480, end to end and in that order: the refusal is raised inside a
+    // detached child whose three descriptors are `/dev/null`, so the only way it
+    // reaches anybody is the record. Before this, no test could tell the notice
+    // being raised from the notice being read, because nothing read it.
+    let world = World::base();
+    world.given_a_git_that_will_not_pack_refs();
+
+    world.dl(&["--update-cache", "--force"]).exited(0);
+
+    let record = world.read("cache/devlaunch/metadata.json");
+    assert!(
+        record.contains("\"refs_not_packed\"") && record.contains(REFUSED_PACK),
+        "the sweep's refusal is not in the record: {record}"
+    );
+
+    let listed = world.dl(&["--ls"]);
+    listed.exited(0);
+    assert!(
+        listed.err.contains(&format!(
+            "Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: \
+             {REFUSED_PACK}"
+        )),
+        "--ls did not read the note back: {}",
+        listed.err
+    );
+
+    let document = world.dl(&["--ls", "--json"]);
+    document.exited(0);
+    let rows: serde_json::Value = serde_json::from_str(&document.out).expect("the wire document");
+    let notes: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter_map(|row| row.get("lastSweep"))
+        .collect();
+    assert!(
+        !notes.is_empty()
+            && notes.iter().all(|note| {
+                note["trouble"] == "refs_not_packed" && note["said"] == REFUSED_PACK
+            }),
+        "the wire document does not carry the note verbatim: {}",
+        document.out
+    );
+}
+
+#[test]
+fn a_later_sweep_that_went_fine_takes_the_complaint_back_out() {
+    // Overwritten on every pass that acts, which is what lets the record hold this
+    // at all: no rotation, no second file, and a cache whose trouble has been fixed
+    // stops complaining without anybody clearing it by hand.
+    let world = World::base();
+    world.given_a_git_that_will_not_pack_refs();
+    world.dl(&["--update-cache", "--force"]).exited(0);
+    assert!(
+        world
+            .read("cache/devlaunch/metadata.json")
+            .contains("refs_not_packed"),
+        "the first pass left nothing to clear"
+    );
+
+    std::fs::remove_file(world.path("bin/git")).expect("the real git is back on PATH");
+    world.restale_the_fetch_clock();
+    world.dl(&["--update-cache", "--force"]).exited(0);
+
+    assert!(
+        !world
+            .read("cache/devlaunch/metadata.json")
+            .contains("last_sweep"),
+        "a clean pass left the last one's complaint standing: {}",
+        world.read("cache/devlaunch/metadata.json")
+    );
+    let listed = world.dl(&["--ls"]);
+    listed.exited(0);
+    assert!(
+        !listed.err.contains("Last cache sweep"),
+        "--ls is still reading a note nothing is complaining about: {}",
+        listed.err
     );
 }
 
@@ -1686,7 +1833,7 @@ fn a_purge_deletes_the_workspaces_devlaunch_made_and_its_cache() {
 
 #[test]
 fn a_purge_that_could_not_remove_everything_says_which_paths_refused() {
-    // `test_purge_partial_removal.py`'s TestTheReportIsActionable and
+    // The Python `test_purge_partial_removal`'s TestTheReportIsActionable and
     // TestThePurgeSaysWhichOfTheThreeHappened, at the boundary: the headline says
     // *which* of the three endings this was, the paths and their reasons are what
     // somebody acts on, and the `sudo rm -rf` line is quoted.
@@ -1779,7 +1926,7 @@ fn a_purge_that_deleted_workspaces_and_found_no_cache_says_nothing_about_the_cac
 
 #[test]
 fn a_purge_that_cannot_read_the_workspace_list_refuses_rather_than_purging_nothing() {
-    // `test_workspace_listing.py`'s purge-will-not-act half: a purge that quietly
+    // The Python `test_workspace_listing`'s purge-will-not-act half: a purge that quietly
     // did nothing used to look exactly like a purge that had nothing to do.
     let world = World::base();
     world.devpod_answers(&["list"], 1, "context not found: default\n");
@@ -1840,7 +1987,7 @@ Dropping 1 record(s) of directories already gone.
 
 #[test]
 fn a_prune_answered_no_removes_nothing_and_the_report_is_the_read_only_view() {
-    // `test_prune_orphaned_clones.py`'s report and input classes, and
+    // The Python `test_prune_orphaned_clones`'s report and input classes, and
     // TestTheDiskThisCommandDoesNotFree: the plan names what is going, what is
     // staying and why, and the run ends on the boundary sentence whichever way it
     // ends.
@@ -2055,7 +2202,7 @@ Nothing here is deleted. `dl <workspace> rm` is how one goes, if it should.
 
 #[test]
 fn a_reconcile_answered_no_changes_nothing() {
-    // `test_reconcile_orphaned_workspaces.py`'s report and confirm classes: the
+    // The Python `test_reconcile_orphaned_workspaces`'s report and confirm classes: the
     // repair the migration's notice promises is stated before it is consented to,
     // and nothing here is deleted.
     let world = World::with(&["--orphan"]);

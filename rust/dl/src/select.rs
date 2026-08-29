@@ -8,8 +8,10 @@
 //!
 //! What it offers is Python's list and Python's order, with one row per workspace
 //! devpod lists — no filtering of any kind, so a workspace whose source devlaunch
-//! cannot read is *offered* rather than quietly dropped
-//! (`test/unit/test_workspace_source.py::TestTheFuzzyPickerOffersEverySource`).
+//! cannot read is *offered* rather than quietly dropped; that is pinned by this
+//! module's own tests, which took it over from the Python
+//! `test_workspace_source::TestTheFuzzyPickerOffersEverySource` when the Python
+//! tree retired (#267).
 //!
 //! **The columns are not Python's.** `dl.py::fuzzy_select_workspace` drew
 //! `{id} | {kind} | {detail}`, where the last two came from `describe_source`; this
@@ -829,8 +831,9 @@ impl SkimItem for Row {
 
 #[cfg(test)]
 mod tests {
-    //! `test/unit/test_workspace_source.py::TestTheFuzzyPickerOffersEverySource`,
-    //! which is the spec for what the picker offers: the labels, and that picking
+    //! The Python `test_workspace_source::TestTheFuzzyPickerOffersEverySource`
+    //! (retired with the Python tree in #267), which was and is the spec for what
+    //! the picker offers: the labels, and that picking
     //! one maps back to a workspace. Both are the pure half of this module, and the
     //! workspaces are built the way a real run gets them — from a `devpod list`
     //! answer through the listing parser — so the label is pinned over the whole

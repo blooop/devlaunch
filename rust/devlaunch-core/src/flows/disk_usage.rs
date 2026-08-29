@@ -468,7 +468,9 @@ impl UsageWire {
 
 #[cfg(test)]
 mod tests {
-    //! What `test/unit/test_disk_usage.py` pins, on this side of the port.
+    //! What the Python `test_disk_usage` pinned, on this side of the port. That
+    //! suite retired with the Python tree (#267); this is where its subject lives
+    //! now.
     //!
     //! The number under test is *exclusive* bytes: what deleting this directory
     //! would free, counting a file only when every one of its links lies inside
