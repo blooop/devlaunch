@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with it: the check that every row says how it was verified ran on the Rust side
   alone, so a corpus edited from the Python side could drop a provenance line
   unnoticed, and the tables saying which devpod flags take a value were written
-  out once per fake with nothing comparing them. Each driver now enforces both.
-  Every row that used to read `unverified` is measured: those were the rows
-  needing a provisioned workspace, and one was provisioned to run them.
+  out once per fake with nothing comparing them. Those tables are one shared file
+  now, the way the corpus is, so the two fakes cannot hold different ones at all,
+  and each driver checks the fake it drives against it. Seven of the eight rows
+  that read `unverified` are measured, against a workspace provisioned to run
+  them; the eighth says plainly which half of it was measured and which was not.
 
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for
