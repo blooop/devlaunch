@@ -1340,9 +1340,10 @@ fn say_branch(
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_workspace_clone.py`, `test/test_cold_launch_fetches.py`, the
-    //! token half of `test/test_repo_lock_cycles.py`, and the four integration
-    //! files about what a clone shares with the cache.
+    //! The Python `test_workspace_clone`, `test_cold_launch_fetches`, the token
+    //! half of `test_repo_lock_cycles`, and the four integration files about what
+    //! a clone shares with the cache — all retired with the Python tree (#267),
+    //! and re-pinned here.
     //!
     //! **The argv seam does more here than Python's mocks did.** Python replaced
     //! `RepositoryManager` and `BranchManager` with `MagicMock`s, so a test of

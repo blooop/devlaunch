@@ -382,10 +382,11 @@ pub(crate) fn local_branches(git: &Git<'_>, repos_dir: &Path, owner_repo: &str) 
 
 #[cfg(test)]
 mod tests {
-    //! Ported from `test/test_dl.py`'s `TestCacheFunctions`,
+    //! Ported from the Python `test_dl`'s `TestCacheFunctions`,
     //! `TestCompletionCacheFreshness`, `TestNoRefreshForCacheFreeCommands` and
     //! `TestCacheReadingCommandsWarmTheCache`, plus
-    //! `test/unit/test_workspace_listing.py::TestCompletionsAreBuiltFromWhateverCanBeRead`.
+    //! `test_workspace_listing::TestCompletionsAreBuiltFromWhateverCanBeRead`.
+    //! Both suites retired with the Python tree (#267).
     //!
     //! The two files' bytes are goldens: they were read off a scratch cache written
     //! by the Python build, run against the devpod shim.

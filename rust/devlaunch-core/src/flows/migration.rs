@@ -431,7 +431,8 @@ fn write_lines(path: &Path, lines: &[String]) -> Listing {
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_worktree_migration.py`, re-pinned.
+    //! The Python `test_worktree_migration`, re-pinned here when it retired with
+    //! the Python tree (#267).
     //!
     //! Every test builds its own cache under a temp directory. Nothing here may
     //! read or write the real cache: the migration renames directories that can

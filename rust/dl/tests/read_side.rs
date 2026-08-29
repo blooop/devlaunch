@@ -734,7 +734,7 @@ fn install_edits_the_rc_file_it_is_given() {
 
 #[test]
 fn the_json_listing_migrates_the_cache_and_the_table_does_not() {
-    // `test_worktree_migration.py`'s TestWiring, at the boundary: the migration
+    // The Python `test_worktree_migration`'s TestWiring, at the boundary: the migration
     // runs from the one place the clone manager is built, so the commands that
     // never build one never migrate. `--ls` reads devpod and nothing else;
     // `--ls --json` reads the records, so it is the one that migrates.

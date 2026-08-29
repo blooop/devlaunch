@@ -222,6 +222,18 @@ checking rather than trusting, because a private package fails at nothing. See
   matching on headings. Moving one of those sections between files means moving
   the path in its guard, in the same change.
 
+- **A citation spelled as a path has to point somewhere.** Comments all over
+  `rust/` name the test that pins the behaviour they describe, which is what
+  makes the record worth reading. `test/test_citations_resolve.py` holds every
+  one of those names to being a file: a path is checked as written, a bare
+  filename against the test tree. Retiring the Python implementation (#267)
+  broke about sixty of them at once, which is why the rule exists. When a suite
+  is gone, name it without the extension and say it retired, the way the
+  comments now do: `test_purge_ownership` (Python, retired in #267). The
+  history stays greppable and stops impersonating a live guard. `CHANGELOG.md`
+  and `docs/rust-port-scope.md` are out of scope as records of what was true
+  when they were written.
+
 - **No em or en dashes in the README or the `docs/` pages it links.** They read
   as machine-written. Use a full stop or a comma, or end the sentence, and write
   a numeric range as "18s to 28s". `test/test_docs_prose.py` asserts it and

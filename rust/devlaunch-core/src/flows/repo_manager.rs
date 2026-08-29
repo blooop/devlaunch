@@ -1791,11 +1791,10 @@ pub(crate) mod tests {
     //! repository in the same temp directory — a real clone, no network — and are
     //! marked in their names.
     //!
-    //! Ported from `test/test_worktree_repo_manager.py`,
-    //! `test/integration/test_repo_manager_real.py`,
-    //! `test/integration/test_repo_manager_recovery.py`,
-    //! `test/integration/test_clone_race.py` and the fetch-count half of
-    //! `test/test_cold_launch_fetches.py`.
+    //! Ported from these Python suites, all retired with the Python tree (#267):
+    //! `test_worktree_repo_manager`, the integration suites
+    //! `test_repo_manager_real`, `test_repo_manager_recovery` and
+    //! `test_clone_race`, and the fetch-count half of `test_cold_launch_fetches`.
 
     use std::process::Command;
     use std::sync::mpsc;
