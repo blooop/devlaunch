@@ -9,10 +9,13 @@
 //! why the names are the ones a caller outside dl would reach for.
 //!
 //! Everything reachable here is **binary surface — not part of the frozen wf API
-//! (#251 §7)**, except the three §7 names (`list`, `remove`, `up`): the `dl`
-//! binary is a separate crate and every sentence a user reads is written there,
-//! so a rendering layer that could not name these typed results would not be a
-//! rendering layer. The distinction is what stays frozen at the end of M6.
+//! (#251 §7)** unless [`api`](crate::api) re-exports it: the `dl` binary is a
+//! separate crate and every sentence a user reads is written there, so a rendering
+//! layer that could not name these typed results would not be a rendering layer.
+//! Five names from this module are promised rather than merely reachable — the
+//! three §7 verbs (`list`, `remove`, `up`), and, since #340, [`Refresh`] and
+//! [`SelfInvocation`], which `api::Launch::new` cannot be called without. The
+//! authority is `api`'s re-export list and the snapshot over it, not this comment.
 //!
 //! # Three commands remove things, and none of them decides what is finished
 //!

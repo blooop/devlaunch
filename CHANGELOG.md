@@ -89,6 +89,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the only mention a stranded tree gets when no workspace opens it any
   more.
 
+- **`devlaunch_core::api` can now build a launcher, not just name one.** The two
+  implementations that decide whether a launch can go cold at all lived in the `dl`
+  binary: the one that opens devlaunch's records (config, `metadata.json`, the cache
+  migration, the clone manager) and the one that lends the host's tools into a
+  container. Both are core types plumbed together, and both are now in core, as
+  `flows::launch::ColdPath` and `flows::launch::ToolProvisioning`. What kept them in
+  the binary was where their events were *printed*, so each now takes an event sink
+  as a constructor argument and `dl` supplies the printer and the words. The records
+  themselves moved with them, to a new `flows::records`.
+
+  `api` re-exports every one of `Launch::new`'s parameter types as a result. Five of
+  the seven used to live outside it, so a second consumer could name the launcher and
+  had nothing to hand it. No behaviour changes: the same notices are said, in the same
+  order, in the same words.
+
+- **`ColdRefused` is a sum over the reasons rather than a rendered sentence.** It
+  carried `reason: String`, which was the one place `dl`'s own prose travelled back
+  *through* core, and the move above made that untenable: core would have had to write
+  the words. It is now `Startup(StartupError)` or `NoColdPath`, and `dl` renders each
+  arm. `domain::config::ConfigError` became clonable and comparable for the same
+  reason, its OS side spelled as `OsFailure` the way `MetadataError`'s already was.
+  The sentences a user sees are unchanged, and are held to that rather than inspected:
+  every arm is asserted against the exact line it used to arrive already rendered
+  with, and a real run whose records will not open is judged from outside the binary.
+
+
 ### Fixed
 
 - **Sixty-six citations that pointed at nothing now point at something, and a

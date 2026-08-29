@@ -16,7 +16,7 @@
 //! The tests below hold the partition, which is not the same as holding the
 //! promise. `cargo public-api` renders methods and impls only at a type's
 //! canonical path, so `api::Launch::{new, run}` and every derived impl on a
-//! promised type are in the rest file — 42 of the 79 rows the generator emits
+//! promised type are in the rest file — 133 of the 259 rows the generator emits
 //! for the `api` section — and renaming `Launch::run` diffs neither of these
 //! two files in the place a reader would look. Deliberately not asserted here:
 //! <https://github.com/blooop/devlaunch/issues/352> widens the classifier, and

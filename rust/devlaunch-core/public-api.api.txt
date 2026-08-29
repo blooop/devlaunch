@@ -1,4 +1,48 @@
 pub mod devlaunch_core::api
+pub enum devlaunch_core::api::ColdRefused
+pub devlaunch_core::api::ColdRefused::NoColdPath
+pub devlaunch_core::api::ColdRefused::Startup(devlaunch_core::flows::records::StartupError)
+pub enum devlaunch_core::api::LaunchNotice
+pub devlaunch_core::api::LaunchNotice::AlreadyRunning
+pub devlaunch_core::api::LaunchNotice::AlreadyRunning::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AlreadyRunningAttaching
+pub devlaunch_core::api::LaunchNotice::AlreadyRunningAttaching::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::BroughtUpBySibling
+pub devlaunch_core::api::LaunchNotice::BroughtUpBySibling::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
+pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning
+pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::spec: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed
+pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed::exit: devlaunch_runner::Exit
+pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable
+pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::Lifecycle(devlaunch_core::flows::lifecycle::LifecycleNotice)
+pub devlaunch_core::api::LaunchNotice::NoDevpodSshConfig
+pub devlaunch_core::api::LaunchNotice::NoDevpodSshConfig::looked_in: std::path::PathBuf
+pub devlaunch_core::api::LaunchNotice::NoDevpodSshConfig::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::NoGitHubToken(devlaunch_core::clients::gh::GhEvent)
+pub devlaunch_core::api::LaunchNotice::NoTerminalAlias
+pub devlaunch_core::api::LaunchNotice::NoTerminalAlias::config: std::path::PathBuf
+pub devlaunch_core::api::LaunchNotice::NoTerminalAlias::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::PixiCacheNotADirectory
+pub devlaunch_core::api::LaunchNotice::PixiCacheNotADirectory::source: std::path::PathBuf
+pub devlaunch_core::api::LaunchNotice::PixiCacheNotCreated
+pub devlaunch_core::api::LaunchNotice::PixiCacheNotCreated::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::PixiCacheNotCreated::source: std::path::PathBuf
+pub devlaunch_core::api::LaunchNotice::SshCommand
+pub devlaunch_core::api::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_core::api::LaunchNotice::SshConfigUnlocatable
+pub devlaunch_core::api::LaunchNotice::StartingForDotfiles
+pub devlaunch_core::api::LaunchNotice::StartingForDotfiles::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
+pub devlaunch_core::api::LaunchNotice::TokenNotStaged
+pub devlaunch_core::api::LaunchNotice::TokenNotStaged::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::WaitingForSiblingLaunch
+pub devlaunch_core::api::LaunchNotice::WaitingForSiblingLaunch::workspace_id: alloc::string::String
 pub enum devlaunch_core::api::LaunchVerb
 pub devlaunch_core::api::LaunchVerb::Attach
 pub devlaunch_core::api::LaunchVerb::Attach::command: core::option::Option<alloc::string::String>
@@ -8,11 +52,41 @@ pub devlaunch_core::api::LaunchVerb::Recreate
 pub devlaunch_core::api::LaunchVerb::Reset
 pub devlaunch_core::api::LaunchVerb::Restart
 pub devlaunch_core::api::LaunchVerb::Up
+pub enum devlaunch_core::api::ProvisionEvent
+pub devlaunch_core::api::ProvisionEvent::NotInstalled
+pub devlaunch_core::api::ProvisionEvent::NotInstalled::exit: devlaunch_runner::Exit
+pub devlaunch_core::api::ProvisionEvent::NotInstalled::tools: alloc::vec::Vec<&'static str>
+pub devlaunch_core::api::ProvisionEvent::NotInstalled::workspace: alloc::string::String
+pub devlaunch_core::api::ProvisionEvent::PayloadNotBundled
+pub devlaunch_core::api::ProvisionEvent::PayloadNotBundled::failure: devlaunch_core::flows::provision::BundleFailed
+pub devlaunch_core::api::ProvisionEvent::ProvisioningDisabled
+pub devlaunch_core::api::ProvisionEvent::ProvisioningDisabled::workspace: alloc::string::String
+pub devlaunch_core::api::ProvisionEvent::StageFailed
+pub devlaunch_core::api::ProvisionEvent::StageFailed::loudness: devlaunch_core::flows::provision::FailureLevel
+pub devlaunch_core::api::ProvisionEvent::StageFailed::stage: &'static str
+pub devlaunch_core::api::ProvisionEvent::StageFailed::status: i32
+pub devlaunch_core::api::ProvisionEvent::StageFailed::workspace: alloc::string::String
+pub devlaunch_core::api::ProvisionEvent::StageNotReported
+pub devlaunch_core::api::ProvisionEvent::StageNotReported::loudness: devlaunch_core::flows::provision::FailureLevel
+pub devlaunch_core::api::ProvisionEvent::StageNotReported::stage: &'static str
+pub devlaunch_core::api::ProvisionEvent::StageNotReported::workspace: alloc::string::String
+pub devlaunch_core::api::ProvisionEvent::TripRefused
+pub devlaunch_core::api::ProvisionEvent::TripRefused::refusal: devlaunch_core::clients::devpod::NotRun
+pub devlaunch_core::api::ProvisionEvent::TripRefused::workspace: alloc::string::String
+pub enum devlaunch_core::api::RecordsNotice
+pub devlaunch_core::api::RecordsNotice::Metadata(devlaunch_core::domain::metadata::Notice)
+pub devlaunch_core::api::RecordsNotice::Migrated(devlaunch_core::flows::migration::MigrationReport)
+pub devlaunch_core::api::RecordsNotice::MigrationRefused(devlaunch_core::domain::metadata::MetadataError)
+pub devlaunch_core::api::RecordsNotice::RetiredKey(devlaunch_core::domain::config::RetiredKey)
 pub enum devlaunch_core::api::SpecIdentity<'a>
 pub devlaunch_core::api::SpecIdentity::ExistingName(&'a str)
 pub devlaunch_core::api::SpecIdentity::PathLeaf(&'a str)
 pub devlaunch_core::api::SpecIdentity::RepoLabel(alloc::string::String)
 pub devlaunch_core::api::SpecIdentity::Workspace(alloc::string::String)
+pub enum devlaunch_core::api::StartupError
+pub devlaunch_core::api::StartupError::Config(devlaunch_core::domain::config::ConfigError)
+pub devlaunch_core::api::StartupError::Metadata(devlaunch_core::domain::metadata::MetadataError)
+pub devlaunch_core::api::StartupError::NoHomeDirectory
 pub enum devlaunch_core::api::WorkspaceSpec<'a>
 pub devlaunch_core::api::WorkspaceSpec::ExistingIdOrName(&'a str)
 pub devlaunch_core::api::WorkspaceSpec::HostPath(&'a str)
@@ -23,11 +97,26 @@ pub devlaunch_core::api::WorkspaceSpec::OwnerRepo::repo: &'a str
 pub devlaunch_core::api::WorkspaceSpec::Path(&'a str)
 pub devlaunch_core::api::WorkspaceSpec::SshUrl(&'a str)
 pub devlaunch_core::api::WorkspaceSpec::Url(&'a str)
+pub struct devlaunch_core::api::Cold<'a, 'r>
+pub devlaunch_core::api::Cold::clones: &'a devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
+pub devlaunch_core::api::Cold::storage: &'a mut devlaunch_core::domain::metadata::MetadataStorage
+pub struct devlaunch_core::api::ColdPath<'r, 'e>
 pub struct devlaunch_core::api::CommandContext<'r>
 pub struct devlaunch_core::api::DevcontainerPath(_)
+pub struct devlaunch_core::api::Host
 pub struct devlaunch_core::api::Launch<'a, 'r, 'l>
+pub struct devlaunch_core::api::Refresh<'a>
+pub struct devlaunch_core::api::SelfInvocation
+pub struct devlaunch_core::api::ToolProvisioning<'e>
 pub const devlaunch_core::api::HANDOFF_VAR: &str
 pub const devlaunch_core::api::PREWARM_VAR: &str
+pub trait devlaunch_core::api::ColdMachinery<'r>
+pub fn devlaunch_core::api::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub trait devlaunch_core::api::Notices<T>
+pub fn devlaunch_core::api::Notices::say(&mut self, T)
+pub trait devlaunch_core::api::Provision
+pub fn devlaunch_core::api::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
+pub fn devlaunch_core::api::Provision::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
 pub fn devlaunch_core::api::enriched_listing(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::listing::DlView<'_>, devlaunch_core::flows::listing::Sizes) -> core::result::Result<alloc::vec::Vec<devlaunch_core::flows::listing::ListedWorkspace>, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::api::identity(&str) -> core::result::Result<devlaunch_core::domain::spec::SpecIdentity<'_>, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::api::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
