@@ -1220,26 +1220,35 @@ fn a_recorded_path_that_is_not_a_path_at_all_is_could_not_tell() {
 
 #[test]
 fn each_arm_renders_as_one_key_that_names_it() {
-    // The exact wire format: wf parses this.
+    // The exact wire format: wf parses this. The verdict is the internal answer
+    // now, and this is its one flattening to the wire — a clone with no agent
+    // worktrees reads exactly as it always did.
+    use crate::flows::agent_worktrees::{Blank, Place, Reason, Verdict};
     assert_eq!(
-        Unsaved::NothingToLose.as_json().to_string(),
+        Verdict::test_collectable().unsaved_json().to_string(),
         r#"{"nothingToLose":true}"#
     );
     assert_eq!(
-        Unsaved::WouldLose(Losses::one(Loss::Unpushed {
-            commits: NonEmpty::one("abc123 more".to_owned()),
-            by_tags: None,
-        }))
-        .as_json()
+        Verdict::test_stands(vec![Reason::Holds {
+            at: Place::TheCloneItself,
+            losses: Box::new(Losses::one(Loss::Unpushed {
+                commits: NonEmpty::one("abc123 more".to_owned()),
+                by_tags: None,
+            })),
+        }])
+        .unsaved_json()
         .to_string(),
         r#"{"wouldLose":"1 unpushed commit(s)"}"#
     );
     assert_eq!(
-        Unsaved::CouldNotTell(CouldNotTell::GitCouldNotRead {
-            clone: PathBuf::from("/c"),
-            reason: "git said no".to_owned(),
-        })
-        .as_json()
+        Verdict::test_stands(vec![Reason::CouldNotProve {
+            at: Place::TheCloneItself,
+            blank: Blank::GitWouldNotSay(CouldNotTell::GitCouldNotRead {
+                clone: PathBuf::from("/c"),
+                reason: "git said no".to_owned(),
+            }),
+        }])
+        .unsaved_json()
         .to_string(),
         r#"{"couldNotTell":"git could not read /c: git said no"}"#
     );

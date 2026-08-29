@@ -253,7 +253,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --ls` | List every workspace |
 | `dl --ls --json` | The same, machine-readable, with what each workspace would lose if deleted |
 | `dl --ls --size` | Add what deleting each one would free. Opt-in: it walks every file |
-| `dl --prune` | Remove the clone directories no workspace opens any more, and reclaim the volumes of workspaces devpod has forgotten |
+| `dl --prune` | Remove the clone directories no workspace opens any more, the agent git worktrees inside the clones it keeps, and the volumes of workspaces devpod has forgotten |
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions |
@@ -263,6 +263,9 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 
 `--prune`, `--reconcile` and `--purge` print their plan and ask first. `-y` skips the question,
 and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere else.
+`--force-worktrees` is the separate answer for the agent git worktrees `--prune` finds inside a
+clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and why it is not
+`--force`.
 
 ```bash
 $ dl --version
@@ -368,13 +371,17 @@ different jobs:
 
 | Command | Takes | Leaves |
 |---|---|---|
-| `dl --prune` | Clone directories no workspace opens, and the volumes of workspaces devpod no longer lists | Every workspace, container and image |
+| `dl --prune` | Clone directories no workspace opens, collectable agent git worktrees inside the ones it keeps, and the volumes of workspaces devpod no longer lists | Every workspace, container and image |
 | `dl --purge` | The workspaces devlaunch created, and its caches | Workspaces it did not create, each named with its source before it asks |
 | `dl --reconcile` | Nothing | Repairs records that stopped matching the disk |
 
 Two promises worth knowing. **Nothing deletes work that exists nowhere else:** a clone with
 uncommitted or unpushed changes, or one git cannot read to find out, is kept and named, and
-`--force` is what overrides that. And **`dl` does not decide which workspaces are finished**,
+`--force` is what overrides that. An agent harness working inside a workspace makes its own git
+worktrees under the clone, and nothing used to collect them. `dl --ls --size` says how much of a
+clone is worktrees, and `--prune` reaches inside the clones it keeps to reclaim the ones that are
+finished. [docs/cleanup.md](docs/cleanup.md) has the rules, the measurements, and what each
+refusal is asserting. And **`dl` does not decide which workspaces are finished**,
 because that is a fact about a ticket or somebody's intent. It reports what exists and what each
 one holds, via `dl --ls --json`, and leaves the choosing to you or to a tool that knows.
 

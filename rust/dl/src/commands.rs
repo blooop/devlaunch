@@ -21,8 +21,8 @@ use devlaunch_core::flows::kept_copies::KeptCopies;
 use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
 use devlaunch_core::flows::lifecycle::{
-    self, ChildWork, DeleteStalled, Insistence, LifecycleNotice, PruneError, PruneOutcome, Refresh,
-    RefreshReason, Removal, RemoveOutcome, StopOutcome,
+    self, ChildWork, DeleteStalled, Insisted, Insistence, LifecycleNotice, PruneError,
+    PruneOutcome, Refresh, RefreshReason, Removal, RemoveOutcome, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
@@ -110,7 +110,17 @@ pub(crate) fn dispatch(
         Command::UpdateCache { force } => render_update_cache(runner, &mut context, cache, force),
         Command::Refresh => render_refresh(&mut context, cache),
         Command::Install { rc } => render_install(&mut context, cache, rc.as_deref()),
-        Command::Prune { yes, force } => render_prune(runner, &mut context, cache, yes, force),
+        Command::Prune {
+            yes,
+            force,
+            force_worktrees,
+        } => render_prune(
+            runner,
+            &mut context,
+            cache,
+            yes,
+            insisted(force, force_worktrees),
+        ),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
         // The two arms that name a verb are the two that can be `rme`, and the
@@ -1125,9 +1135,29 @@ fn render_prune(
     context: &mut CommandContext<'_>,
     cache: &Path,
     yes: bool,
-    force: bool,
+    insisted: Insisted,
 ) -> Ending {
-    prune_clone_directories(runner, context, cache, yes, force).with_the_boundary()
+    prune_clone_directories(runner, context, cache, yes, insisted).with_the_boundary()
+}
+
+/// What the two insistence flags mean, in one value.
+///
+/// Built here rather than passed as two booleans, so the pair cannot be handed
+/// over the wrong way round: they answer different hazards and `--force`
+/// reaching the worktree sweep would widen a flag people already type.
+fn insisted(force: bool, force_worktrees: bool) -> Insisted {
+    Insisted {
+        clones: insistence_of(force),
+        worktrees: insistence_of(force_worktrees),
+    }
+}
+
+fn insistence_of(insisted: bool) -> Insistence {
+    if insisted {
+        Insistence::Insisted
+    } else {
+        Insistence::NotInsisted
+    }
 }
 
 fn prune_clone_directories(
@@ -1135,7 +1165,7 @@ fn prune_clone_directories(
     context: &mut CommandContext<'_>,
     cache: &Path,
     yes: bool,
-    force: bool,
+    insisted: Insisted,
 ) -> Cleanup {
     let mut records = match open_records(runner) {
         Err(refused) => return Cleanup::Raised(refuse_startup(&refused)),
@@ -1156,11 +1186,6 @@ fn prune_clone_directories(
         ));
         return Cleanup::Ended(Ending::Refused);
     }
-    let insistence = if force {
-        Insistence::Insisted
-    } else {
-        Insistence::NotInsisted
-    };
     let mut notices: Vec<LifecycleNotice> = Vec::new();
     // devlaunch's copies of what devpod substituted, under the cache the binary
     // already resolved. This is what makes a run pointed at a scratch
@@ -1172,7 +1197,7 @@ fn prune_clone_directories(
         &workspaces,
         &copies,
         &placement,
-        insistence,
+        insisted,
         &mut notices,
     ) {
         Err(refused) => return Cleanup::Raised(refuse_prune(&refused)),

@@ -83,7 +83,8 @@ use crate::clients::git::Git;
 use crate::domain::locks::{self, LockError};
 use crate::domain::metadata::{self, MetadataStorage, RecordUpdate, WorktreeFilter};
 use crate::domain::model::{SweepNote, SweepTrouble, WorktreeInfo};
-use crate::domain::workspace_state::{self, BareCache, CouldNotTell, Losses, NonEmpty, Unsaved};
+use crate::domain::workspace_state::{BareCache, NonEmpty};
+use crate::flows::agent_worktrees::{self, Standing, Verdict, WorktreeReport, WorktreeSweep};
 use crate::flows::completion_cache;
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::kept_copies::{self, KeptCopies};
@@ -1008,25 +1009,50 @@ pub enum Insistence {
     NotInsisted,
 }
 
+/// What one `dl --prune` was told to go ahead despite, and which flag said it.
+///
+/// One value with named fields rather than two [`Insistence`] parameters side by
+/// side, because they answer different hazards and a caller could not be stopped
+/// from swapping them. The swap in the dangerous direction is `--force` reaching
+/// the worktree sweep, which would quietly widen a flag people already type from
+/// "past a clone holding work nowhere else" to "past a locked worktree somebody
+/// may be working in".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Insisted {
+    /// `--force`.
+    pub clones: Insistence,
+    /// `--force-worktrees`.
+    pub worktrees: Insistence,
+}
+
+impl Insisted {
+    /// Nothing insisted on: what a plain `dl --prune` means.
+    ///
+    /// The command builds its pair from the flags it was given, so this spelling
+    /// of it is the tests' convenience and nothing else's.
+    #[cfg(test)]
+    pub(crate) fn nothing() -> Self {
+        Self {
+            clones: Insistence::NotInsisted,
+            worktrees: Insistence::NotInsisted,
+        }
+    }
+}
+
 /// Why `dl <ws> rm` will not delete this workspace.
 ///
-/// Two arms and no third, because [`Unsaved`] has three and one of them is
-/// permission. Each carries what its sentence interpolates and nothing else.
+/// Carries the verdict's whole standing rather than one arm of it, because a
+/// clone can hold work *and* have a question that could not be put — a dirty
+/// tree beside a refused reachability probe, or unsaved work in a nested agent
+/// worktree beside the clone's own — and a refusal that named one would be
+/// telling half the truth (devlaunch#446). "Could not be proved" is refused for
+/// not knowing: the work is still on disk and nothing has shown it exists
+/// anywhere else, which is the same standing as unpushed work and gets the same
+/// refusal and the same way past it (devlaunch#171).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RemovalRefused {
-    /// The clone holds work that exists nowhere else.
-    WouldLose {
-        workspace_id: String,
-        losses: Losses,
-    },
-    /// dl could not establish what the clone holds. Refused for not knowing, and
-    /// it says which: the work is still on disk and nothing has shown that it
-    /// exists anywhere else, which is the same standing as unpushed work and gets
-    /// the same refusal and the same way past it (devlaunch#171).
-    CouldNotTell {
-        workspace_id: String,
-        cause: CouldNotTell,
-    },
+pub struct RemovalRefused {
+    pub workspace_id: String,
+    pub standing: Standing,
 }
 
 /// What the guard decided.
@@ -1043,29 +1069,24 @@ pub(crate) enum Guarded {
 /// whether the work is finished — dl has no way to know that — but about whether
 /// this clone is the only place the work exists.
 ///
-/// Total over [`Unsaved`]'s three arms, and only one of them is permission
-/// (devlaunch#171). Python needed `unhandled_unsaved()` behind an `isinstance`
-/// chain so that an answer the guard did not name would raise rather than slide
-/// through an `else` into a deletion; here the `match` is exhaustive at compile
-/// time, so a fourth arm breaks this function instead.
+/// Total over [`Verdict`]'s two arms, and only one of them is permission — and
+/// that one carries a proof no caller can mint (devlaunch#446), where
+/// devlaunch#171's version of this guard could still be handed a "nothing to
+/// lose" that nothing had established.
 ///
 /// `--force` is checked *after* the answer is read, not instead of reading it, so
 /// the refusal a forced delete carried past is still available to the caller — and
 /// so a future `--force` that wanted to report what it overrode has it.
 pub(crate) fn guard_removal(
     workspace_id: &str,
-    unsaved: Unsaved,
+    verdict: Verdict,
     insistence: Insistence,
 ) -> Guarded {
-    let refusal = match unsaved {
-        Unsaved::NothingToLose => return Guarded::MayRemove,
-        Unsaved::WouldLose(losses) => RemovalRefused::WouldLose {
+    let refusal = match verdict {
+        Verdict::Collectable(_) => return Guarded::MayRemove,
+        Verdict::Stands(standing) => RemovalRefused {
             workspace_id: workspace_id.to_owned(),
-            losses,
-        },
-        Unsaved::CouldNotTell(cause) => RemovalRefused::CouldNotTell {
-            workspace_id: workspace_id.to_owned(),
-            cause,
+            standing,
         },
     };
     match insistence {
@@ -1114,11 +1135,12 @@ impl ClonePathResolver for CloneDirectories<'_, '_> {
     }
 }
 
-/// What deleting `workspace_id` would destroy, as far as dl can establish.
+/// What deleting `workspace_id` would destroy, as far as dl can establish —
+/// the clone's own probes and every agent worktree nested in it, one verdict.
 ///
 /// [`listing::unsaved_work_in`]'s reader, wired to the production resolver. The
-/// answer for a workspace dl has no record of is [`Unsaved::NothingToLose`], which
-/// is the honest answer rather than a permissive one: those are workspaces opened
+/// answer for a workspace dl has no record of is collectable, which is the
+/// honest answer rather than a permissive one: those are workspaces opened
 /// from a path or a URL that dl never cloned and does not manage, so it has no
 /// clone of its own to protect and no business inspecting somebody's checkout to
 /// find one.
@@ -1129,7 +1151,7 @@ pub(crate) fn unsaved_work_in(
     cache_dir: &Path,
     workspace_id: &str,
     notices: &mut dyn Notices<LifecycleNotice>,
-) -> Unsaved {
+) -> Verdict {
     let directories = CloneDirectories::of(clones);
     let view = listing::DlView {
         cache_dir,
@@ -2213,35 +2235,6 @@ fn subdirectories(path: &Path) -> Vec<PathBuf> {
 // prune: what one clone directory is
 // ===========================================================================
 
-/// What removing a clone would destroy or risk — the two answers `--prune` acts
-/// on.
-///
-/// The one place devlaunch#171's three answers become the two `decide` acts on:
-/// something to say, or nothing. "Could not tell" arrives here as an *objection*
-/// rather than as an absence, so the clone is kept for the same reason unpushed
-/// work keeps one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Objection {
-    /// Deleting it would destroy this. Carries the losses, so the description a
-    /// report prints is derived rather than passed along as text.
-    WouldLose(Losses),
-    /// git could not be asked about it, and this is what it said.
-    CouldNotTell(CouldNotTell),
-}
-
-/// What removing `unsaved`'s clone would cost, or nothing when it would cost
-/// nothing.
-///
-/// Total over [`Unsaved`]'s arms, so a fourth answer stops the build rather than
-/// falling through into a deletion.
-pub fn objection(unsaved: &Unsaved) -> Option<Objection> {
-    match unsaved {
-        Unsaved::NothingToLose => None,
-        Unsaved::WouldLose(losses) => Some(Objection::WouldLose(losses.clone())),
-        Unsaved::CouldNotTell(cause) => Some(Objection::CouldNotTell(cause.clone())),
-    }
-}
-
 /// Which arm one clone directory is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CloneStatus {
@@ -2249,14 +2242,18 @@ pub(crate) enum CloneStatus {
     Referenced { workspace_id: String },
     /// Nothing opens this directory and no record ties it to a live workspace.
     ///
-    /// `unsaved` sits inside this arm rather than beside the classification because
-    /// it is only ever actionable here: "unsaved work on a clone that is staying
-    /// anyway" is a sentence this type cannot say. `usage` is here for the same
-    /// reason and earns its place twice over — the walk behind it is O(files) with
-    /// no ceiling, and this is the only arm whose bytes anybody is going to get
-    /// back, so putting it here is what keeps the other two arms from being walked
-    /// at all.
-    Orphaned { unsaved: Unsaved, usage: DiskUsage },
+    /// `verdict` sits inside this arm rather than beside the classification
+    /// because it is only ever actionable here: "unsaved work on a clone that is
+    /// staying anyway" is a sentence this type cannot say. It is
+    /// [`agent_worktrees::clone_verdict`] — the clone's own probes conjoined
+    /// with every agent worktree nested in it, so an orphan clone whose
+    /// gitignored `.claude/worktrees/` holds an afternoon of unsaved work can no
+    /// longer read as free to delete (devlaunch#446). `usage` is here for the
+    /// same reason and earns its place twice over — the walk behind it is
+    /// O(files) with no ceiling, and this is the only arm whose bytes anybody is
+    /// going to get back, so putting it here is what keeps the other two arms
+    /// from being walked at all.
+    Orphaned { verdict: Verdict, usage: DiskUsage },
     /// devpod lists a workspace whose records and devlaunch's disagree about where
     /// it is.
     ///
@@ -2340,7 +2337,7 @@ pub(crate) fn clone_status(
         };
     }
     CloneStatus::Orphaned {
-        unsaved: workspace_state::holds_unsaved_work(git, clone, BareCache::At(bare)),
+        verdict: agent_worktrees::clone_verdict(git, clone, BareCache::At(bare)),
         usage: disk_usage::exclusive_usage(clone),
     }
 }
@@ -2353,8 +2350,9 @@ pub(crate) fn clone_status(
 pub enum KeptBecause {
     /// A live workspace still opens it.
     StillOpened { workspace_id: String },
-    /// It holds something, and `--force` was not typed.
-    Objected(Objection),
+    /// At least one thing stands it — work it holds, or a question that could
+    /// not be put — and `--force` was not typed.
+    Objected(Standing),
     /// devpod lists the workspace this directory's record names, and sources it
     /// somewhere else. See devlaunch#88.
     RecordsDisagree {
@@ -2375,7 +2373,7 @@ pub enum KeptBecause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Promotion {
     Unopposed,
-    Insisted { despite: Objection },
+    Insisted { despite: Standing },
 }
 
 impl Promotion {
@@ -2421,17 +2419,17 @@ pub(crate) fn decide(status: CloneStatus, insistence: Insistence) -> Decision {
         CloneStatus::Referenced { workspace_id } => {
             Decision::Keep(KeptBecause::StillOpened { workspace_id })
         }
-        CloneStatus::Orphaned { unsaved, usage } => match objection(&unsaved) {
-            None => Decision::Remove {
+        CloneStatus::Orphaned { verdict, usage } => match verdict {
+            Verdict::Collectable(_) => Decision::Remove {
                 usage,
                 promotion: Promotion::Unopposed,
             },
-            Some(objected) => match insistence {
+            Verdict::Stands(standing) => match insistence {
                 Insistence::Insisted => Decision::Remove {
                     usage,
-                    promotion: Promotion::Insisted { despite: objected },
+                    promotion: Promotion::Insisted { despite: standing },
                 },
-                Insistence::NotInsisted => Decision::Keep(KeptBecause::Objected(objected)),
+                Insistence::NotInsisted => Decision::Keep(KeptBecause::Objected(standing)),
             },
         },
         CloneStatus::Disputed {
@@ -2530,16 +2528,31 @@ pub struct PrunePlan {
     /// copies of what devpod substituted. A second enumeration beside the clone
     /// walk rather than a column on it: see [`prune_plan`].
     reclaiming: Vec<ReclaimableVolumes>,
+    /// The agent git worktrees inside the clones this run is *keeping*
+    /// (devlaunch#426). Only the kept ones, which is what stops their bytes
+    /// being counted twice: a clone this run removes already accounts for
+    /// everything inside it.
+    worktrees: WorktreeSweep,
 }
 
 impl PrunePlan {
     /// Whether this run would change nothing at all.
     pub fn nothing_to_do(&self) -> bool {
-        self.removing.is_empty() && self.stale_records.is_empty() && self.reclaiming.is_empty()
+        self.removing.is_empty()
+            && self.stale_records.is_empty()
+            && self.reclaiming.is_empty()
+            && self.worktrees.nothing_to_do()
     }
 
-    /// What the whole run would free.
-    pub fn freed(&self) -> DiskUsage {
+    /// What removing the *clone directories* would free.
+    ///
+    /// **The agent worktrees are deliberately not in it** (devlaunch#442 review,
+    /// S2). Their bytes have their own sentence, because they are a different
+    /// claim: every one of them is inside a clone this run has just said it is
+    /// keeping, so folding them in here made the headline number describe
+    /// directories that are not going, and then said the same bytes twice. Ask
+    /// [`Self::worktrees`] for that figure.
+    pub fn clones_freed(&self) -> DiskUsage {
         disk_usage::total_usage(self.removing.iter().map(|it| it.usage.clone()))
     }
 
@@ -2566,6 +2579,11 @@ impl PrunePlan {
     /// The volumes this run will reclaim from devlaunch's kept copies.
     pub fn reclaiming(&self) -> &[ReclaimableVolumes] {
         &self.reclaiming
+    }
+
+    /// The agent git worktrees inside the clones this run is keeping.
+    pub fn worktrees(&self) -> &WorktreeSweep {
+        &self.worktrees
     }
 }
 
@@ -2666,12 +2684,13 @@ pub fn prune_plan(
     workspaces: &[Workspace],
     copies: &KeptCopies,
     placement: &ClonePlacement,
-    insistence: Insistence,
+    insisted: Insisted,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PrunePlan, PruneError> {
     let ClonePlacement { root, locations } = placement;
     let mut removing: Vec<Reclaimable> = Vec::new();
     let mut keeping: Vec<Kept> = Vec::new();
+    let mut worktrees = WorktreeSweep::default();
     let mut cache_notices = Vec::new();
     let record_for = records_by_directory(clones, storage, &mut cache_notices);
     let listed_at = sources_by_workspace(workspaces);
@@ -2708,7 +2727,7 @@ pub fn prune_plan(
                     &record_for,
                     &listed_at,
                 );
-                match decide(status, insistence) {
+                match decide(status, insisted.clones) {
                     Decision::Remove { usage, promotion } => removing.push(Reclaimable {
                         path: clone,
                         owner: owner.clone(),
@@ -2716,10 +2735,25 @@ pub fn prune_plan(
                         usage,
                         promotion,
                     }),
-                    Decision::Keep(because) => keeping.push(Kept {
-                        path: clone,
-                        because,
-                    }),
+                    Decision::Keep(because) => {
+                        // The agent worktrees inside a clone are swept only
+                        // where the clone itself is staying — a clone that is
+                        // going already accounts for everything inside it — and
+                        // the sweep runs here, under the same repository lock
+                        // the classification was taken under.
+                        worktrees.record(agent_worktrees::sweep_clone(
+                            &git,
+                            &clone,
+                            &owner,
+                            &repo,
+                            bare.as_deref(),
+                            insisted.worktrees,
+                        ));
+                        keeping.push(Kept {
+                            path: clone,
+                            because,
+                        });
+                    }
                 }
             }
         }
@@ -2739,6 +2773,7 @@ pub fn prune_plan(
         keeping,
         stale_records,
         reclaiming: reclaimable_volumes(copies, workspaces),
+        worktrees,
     })
 }
 
@@ -2871,18 +2906,26 @@ pub struct PruneReport {
     /// The workspaces whose volumes stayed, and why. Their copies are kept, so
     /// every one of these is retryable.
     pub volumes_kept: Vec<VolumesKept>,
+    /// What the run did about the agent worktrees inside the clones it kept.
+    pub worktrees: WorktreeReport,
 }
 
 impl PruneReport {
-    /// What this run actually freed — a total over the things it removed, with the
+    /// What the *clone directories* this run removed actually freed — with the
     /// figures the plan measured, so what a person is told they got back is what
     /// they said yes to.
-    pub fn freed(&self) -> DiskUsage {
+    ///
+    /// The agent worktrees are not in it, for the reason
+    /// [`PrunePlan::clones_freed`] gives: they are inside clones this run kept,
+    /// and [`WorktreeReport::freed`] is where their bytes are stated.
+    pub fn clones_freed(&self) -> DiskUsage {
         disk_usage::total_usage(self.removed.iter().map(|it| it.usage.clone()))
     }
 
     pub fn finished(&self) -> bool {
         self.refused.is_empty()
+            && self.worktrees.refused.is_empty()
+            && self.worktrees.forget_refused.is_empty()
     }
 }
 
@@ -2952,6 +2995,7 @@ pub fn prune_clones(
         refused: Vec::new(),
         reclaimed: Vec::new(),
         volumes_kept: Vec::new(),
+        worktrees: WorktreeReport::default(),
     };
     let mut forget: Vec<WorktreeInfo> = Vec::new();
     for ((owner, repo), reclaimables) in by_repo {
@@ -3004,6 +3048,24 @@ pub fn prune_clones(
     // below: these volumes belong to workspaces with no clone directory in this
     // plan at all, so no repository lock is about them.
     reclaim_volumes(context.runner(), copies, plan, &workspaces, &mut report);
+    // The agent worktrees inside the clones this run is keeping. A second pass
+    // over a disjoint set of directories — the sweep only ever covers clones the
+    // plan keeps, and the loop above only ever removes whole clones — so it
+    // takes each repository's lock again rather than sharing the loop, which is
+    // holding a lock for as short a time as the work needs.
+    for found in plan.worktrees.clones() {
+        let _lock = clones
+            .repo_manager()
+            .hold_repo_lock(found.owner(), found.repo())
+            .map_err(PruneError::Lock)?;
+        let bare = canonical(
+            &clones
+                .repo_manager()
+                .bare_dir(found.owner(), found.repo())
+                .to_string_lossy(),
+        );
+        agent_worktrees::reclaim(&git, found, bare.as_deref(), &mut report.worktrees);
+    }
     // Outside every repo lock, because the repo lock is what protects the
     // *directory* work and a record drop touches only `metadata.json`, which has a
     // lock of its own. Keeping it out means a repository is held for exactly as
@@ -3585,6 +3647,7 @@ mod tests {
     use crate::domain::metadata::MetadataStorage;
     use crate::domain::model::{BaseRepository, Timestamp, WorktreeInfo};
     use crate::domain::workspace_id::WorkspaceId;
+    use crate::domain::workspace_state;
     use crate::flows::repo_manager::tests::{refusing_reads, refusing_writes, run_git};
     use crate::flows::repo_manager::{RefusalReason, RemoveTreeError, bare_dir};
     use crate::flows::workspace_clone::GitLfs;
@@ -4021,6 +4084,17 @@ mod tests {
 
     /// The plan `--prune` would print.
     fn plan_for(world: &World, insistence: Insistence) -> PrunePlan {
+        plan_insisting(
+            world,
+            Insisted {
+                clones: insistence,
+                worktrees: Insistence::NotInsisted,
+            },
+        )
+    }
+
+    /// The plan, with both insistences named.
+    fn plan_insisting(world: &World, insisted: Insisted) -> PrunePlan {
         let clones = clones_for(&world.repos_dir, &world.devpod);
         let mut context = CommandContext::new(&world.devpod);
         let workspaces = context.workspaces().expect("a listing");
@@ -4031,7 +4105,7 @@ mod tests {
             &workspaces,
             &world.copies(),
             &placement,
-            insistence,
+            insisted,
             &mut ignoring(),
         )
         .expect("a plan")
@@ -5932,60 +6006,76 @@ mod tests {
     // the delete guard
     // =======================================================================
 
-    fn losses_of(unsaved: &Unsaved) -> String {
-        match unsaved {
-            Unsaved::WouldLose(losses) => losses.describe(),
+    fn losses_of(verdict: &Verdict) -> String {
+        match verdict {
+            Verdict::Stands(standing) => standing
+                .would_lose()
+                .unwrap_or_else(|| panic!("expected losses, got {standing:?}")),
             other => panic!("expected losses, got {other:?}"),
         }
     }
 
+    /// A standing built from one proved loss, for the guard's unit tests.
+    fn stands_holding(losses: workspace_state::Losses) -> Standing {
+        Standing::test_of(vec![agent_worktrees::Reason::Holds {
+            at: agent_worktrees::Place::TheCloneItself,
+            losses: Box::new(losses),
+        }])
+    }
+
     #[test]
-    fn nothing_to_lose_is_the_only_answer_that_is_permission() {
+    fn a_collectable_verdict_is_the_only_answer_that_is_permission() {
         assert_eq!(
-            guard_removal("ws", Unsaved::NothingToLose, Insistence::NotInsisted),
+            guard_removal("ws", Verdict::test_collectable(), Insistence::NotInsisted),
             Guarded::MayRemove
         );
     }
 
     #[test]
     fn work_saved_nowhere_else_stops_the_delete_and_names_what_it_is() {
-        let losses = Losses::one(workspace_state::Loss::Unpushed {
-            commits: NonEmpty::one("abc1234 later".to_owned()),
-            by_tags: None,
-        });
+        let standing = stands_holding(workspace_state::Losses::one(
+            workspace_state::Loss::Unpushed {
+                commits: NonEmpty::one("abc1234 later".to_owned()),
+                by_tags: None,
+            },
+        ));
         let guarded = guard_removal(
             "ws",
-            Unsaved::WouldLose(losses.clone()),
+            Verdict::Stands(standing.clone()),
             Insistence::NotInsisted,
         );
         assert_eq!(
             guarded,
-            Guarded::Refused(RemovalRefused::WouldLose {
+            Guarded::Refused(RemovalRefused {
                 workspace_id: "ws".to_owned(),
-                losses
+                standing
             })
         );
     }
 
     #[test]
     fn an_answer_git_would_not_give_stops_the_delete_too() {
-        // devlaunch#171: "could not tell" refuses exactly as "would lose" does. The
-        // files are still on disk and nothing has established that they exist
-        // anywhere else.
-        let cause = CouldNotTell::GitCouldNotRead {
+        // devlaunch#171: "could not be proved" refuses exactly as "would lose"
+        // does. The files are still on disk and nothing has established that
+        // they exist anywhere else.
+        let cause = workspace_state::CouldNotTell::GitCouldNotRead {
             clone: PathBuf::from("/x"),
             reason: "not a repository".to_owned(),
         };
+        let standing = Standing::test_of(vec![agent_worktrees::Reason::CouldNotProve {
+            at: agent_worktrees::Place::TheCloneItself,
+            blank: agent_worktrees::Blank::GitWouldNotSay(cause),
+        }]);
         let guarded = guard_removal(
             "ws",
-            Unsaved::CouldNotTell(cause.clone()),
+            Verdict::Stands(standing.clone()),
             Insistence::NotInsisted,
         );
         assert_eq!(
             guarded,
-            Guarded::Refused(RemovalRefused::CouldNotTell {
+            Guarded::Refused(RemovalRefused {
                 workspace_id: "ws".to_owned(),
-                cause
+                standing
             })
         );
     }
@@ -5993,23 +6083,28 @@ mod tests {
     #[test]
     fn force_gets_past_both_refusals() {
         // The caller who means it is not blocked by dl declining to guess.
-        for unsaved in [
-            Unsaved::WouldLose(Losses::one(workspace_state::Loss::Uncommitted(
-                NonEmpty::one("?? scratch.md".to_owned()),
+        for verdict in [
+            Verdict::Stands(stands_holding(workspace_state::Losses::one(
+                workspace_state::Loss::Uncommitted(NonEmpty::one("?? scratch.md".to_owned())),
             ))),
-            Unsaved::CouldNotTell(CouldNotTell::DirectoryUnknown {
-                workspace_id: "ws".to_owned(),
-            }),
+            Verdict::test_stands(vec![agent_worktrees::Reason::CouldNotProve {
+                at: agent_worktrees::Place::TheCloneItself,
+                blank: agent_worktrees::Blank::GitWouldNotSay(
+                    workspace_state::CouldNotTell::DirectoryUnknown {
+                        workspace_id: "ws".to_owned(),
+                    },
+                ),
+            }]),
         ] {
             assert_eq!(
-                guard_removal("ws", unsaved, Insistence::Insisted),
+                guard_removal("ws", verdict, Insistence::Insisted),
                 Guarded::MayRemove
             );
         }
     }
 
     /// The guard's answer about `workspace_id`, over a real cache and real git.
-    fn guard_reads(world: &World, workspace_id: &str) -> Unsaved {
+    fn guard_reads(world: &World, workspace_id: &str) -> Verdict {
         let clones = clones_for(&world.repos_dir, &world.devpod);
         let git = Git::new(&world.devpod);
         unsaved_work_in(
@@ -6027,7 +6122,10 @@ mod tests {
         let mut world = World::empty();
         let clone = world.clone_at("r-main-aa", "main");
         world.record("r-main-aa", "main", &clone);
-        assert_eq!(guard_reads(&world, "r-main-aa"), Unsaved::NothingToLose);
+        assert!(matches!(
+            guard_reads(&world, "r-main-aa"),
+            Verdict::Collectable(_)
+        ));
     }
 
     #[test]
@@ -6069,7 +6167,10 @@ mod tests {
         let clone = world.clone_at("r-main-aa", "main");
         std::fs::write(clone.join("an-hour-of-work.md"), "half a plan\n").expect("their work");
 
-        assert_eq!(guard_reads(&world, "r-main-aa"), Unsaved::NothingToLose);
+        assert!(matches!(
+            guard_reads(&world, "r-main-aa"),
+            Verdict::Collectable(_)
+        ));
         assert!(clone.join("an-hour-of-work.md").exists());
     }
 
@@ -6110,16 +6211,13 @@ mod tests {
         let stale = world.repo_dir.join("not-on-disk");
         world.record("r-evil-aaa", "--evil", &stale);
 
-        let unsaved = guard_reads(&world, "r-evil-aaa");
+        let verdict = guard_reads(&world, "r-evil-aaa");
 
-        let Unsaved::CouldNotTell(cause) = &unsaved else {
-            panic!("expected a refusal, got {unsaved:?}");
+        let Verdict::Stands(standing) = &verdict else {
+            panic!("expected a refusal, got {verdict:?}");
         };
-        assert!(
-            cause.describe().contains("r-evil-aaa"),
-            "{}",
-            cause.describe()
-        );
+        let words = standing.could_not_tell().expect("an unproved, not a loss");
+        assert!(words.contains("r-evil-aaa"), "{words}");
     }
 
     #[test]
@@ -6133,9 +6231,12 @@ mod tests {
         std::fs::write(broken.join("scratch.md"), "an agent's notes\n").expect("their work");
         world.record("r-broken-aa", "broken", &broken);
 
-        let unsaved = guard_reads(&world, "r-broken-aa");
+        let verdict = guard_reads(&world, "r-broken-aa");
 
-        assert!(matches!(unsaved, Unsaved::CouldNotTell(_)), "{unsaved:?}");
+        let Verdict::Stands(standing) = &verdict else {
+            panic!("expected a refusal, got {verdict:?}");
+        };
+        assert!(standing.could_not_tell().is_some(), "{standing:?}");
         assert!(broken.join("scratch.md").exists());
     }
 
@@ -6148,7 +6249,10 @@ mod tests {
         world.record("r-main-aa", "main", &clone);
         std::fs::remove_dir_all(&clone).expect("removed by hand");
 
-        assert_eq!(guard_reads(&world, "r-main-aa"), Unsaved::NothingToLose);
+        assert!(matches!(
+            guard_reads(&world, "r-main-aa"),
+            Verdict::Collectable(_)
+        ));
     }
 
     // =======================================================================
@@ -7362,10 +7466,12 @@ mod tests {
                 workspace_id: "referenced".to_owned()
             }
         );
-        assert!(matches!(
-            kept_because(&plan, &four.orphan_dirty),
-            KeptBecause::Objected(Objection::WouldLose(_))
-        ));
+        match kept_because(&plan, &four.orphan_dirty) {
+            KeptBecause::Objected(standing) => {
+                assert!(standing.would_lose().is_some(), "{standing:?}");
+            }
+            other => panic!("expected a standing, got {other:?}"),
+        }
         assert!(matches!(
             kept_because(&plan, &four.disputed),
             KeptBecause::RecordsDisagree { .. }
@@ -7391,10 +7497,12 @@ mod tests {
             [] as [&Path; 0],
             "nothing is safe to remove"
         );
-        assert!(matches!(
-            kept_because(&plan, &four.orphan_clean),
-            KeptBecause::Objected(Objection::WouldLose(_))
-        ));
+        match kept_because(&plan, &four.orphan_clean) {
+            KeptBecause::Objected(standing) => {
+                assert!(standing.would_lose().is_some(), "{standing:?}");
+            }
+            other => panic!("expected a standing, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7457,12 +7565,12 @@ mod tests {
             .iter()
             .find(|(path, _)| *path == four.orphan_dirty)
             .expect("the dirty orphan");
-        assert!(matches!(
-            dirty.1,
-            Promotion::Insisted {
-                despite: Objection::WouldLose(_)
+        match &dirty.1 {
+            Promotion::Insisted { despite } => {
+                assert!(despite.would_lose().is_some(), "{despite:?}");
             }
-        ));
+            other => panic!("expected an insisted promotion, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7476,10 +7584,12 @@ mod tests {
         std::fs::write(broken.join("something.txt"), "x\n").expect("a file in it");
 
         let kept = plan_for(&world, Insistence::NotInsisted);
-        assert!(matches!(
-            kept_because(&kept, &broken),
-            KeptBecause::Objected(Objection::CouldNotTell(_))
-        ));
+        match kept_because(&kept, &broken) {
+            KeptBecause::Objected(standing) => {
+                assert!(standing.could_not_tell().is_some(), "{standing:?}");
+            }
+            other => panic!("expected a standing, got {other:?}"),
+        }
         assert!(removing(&kept).is_empty());
 
         let forced = plan_for(&world, Insistence::Insisted);
@@ -7526,7 +7636,7 @@ mod tests {
             &workspaces,
             &KeptCopies::under(dir.path()),
             &placement,
-            Insistence::NotInsisted,
+            Insisted::nothing(),
             &mut ignoring(),
         )
         .expect("a plan");
@@ -7641,7 +7751,7 @@ mod tests {
         let plan = plan_for(&world, Insistence::NotInsisted);
 
         assert_eq!(removing(&plan), [big, small]);
-        assert!(plan.freed().known_bytes() > 2 * 1024 * 1024);
+        assert!(plan.clones_freed().known_bytes() > 2 * 1024 * 1024);
     }
 
     #[test]
@@ -8266,6 +8376,262 @@ mod tests {
         deleting.delete();
 
         assert_eq!(deleting.world.copies().copied(), ["r-main-aa"]);
+    }
+
+    // =======================================================================
+    // agent worktrees inside the clones a prune keeps (devlaunch#426, #454)
+    // =======================================================================
+
+    /// One real agent git worktree inside `clone`, on its own pushed branch.
+    ///
+    /// The directory the harness makes, made the way the harness makes it,
+    /// because the classification is git's own `worktree list` and a stub would
+    /// report no registrations at all -- which used to read as "git has
+    /// forgotten these", the answer that deleted.
+    fn an_agent_worktree(clone: &Path, leaf: &str) -> PathBuf {
+        let path = clone.join(".claude").join("worktrees").join(leaf);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the worktrees directory");
+        run_git(
+            clone,
+            &["worktree", "add", "-b", leaf, &path.display().to_string()],
+        );
+        run_git(clone, &["push", "-u", "origin", leaf]);
+        path
+    }
+
+    /// A worktree nested inside another, the way an agent session running in a
+    /// worktree makes one.
+    fn a_nested_worktree(clone: &Path, inside: &Path, leaf: &str) -> PathBuf {
+        let path = inside.join(".claude").join("worktrees").join(leaf);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the worktrees directory");
+        run_git(
+            clone,
+            &["worktree", "add", "-b", leaf, &path.display().to_string()],
+        );
+        run_git(clone, &["push", "-u", "origin", leaf]);
+        path
+    }
+
+    /// Rewrite `clone`'s worktree registrations to the container paths they
+    /// really carry, which is what a host sees.
+    fn as_a_host_sees_them(clone: &Path) {
+        let admin = clone.join(".git").join("worktrees");
+        for entry in std::fs::read_dir(&admin).expect("the admin directory") {
+            let gitdir = entry.expect("an admin entry").path().join("gitdir");
+            let registered = std::fs::read_to_string(&gitdir).expect("a gitdir file");
+            std::fs::write(
+                &gitdir,
+                registered.replace(&clone.display().to_string(), "/workspaces/a-container"),
+            )
+            .expect("the rewritten gitdir");
+        }
+    }
+
+    /// A live workspace whose clone holds one collectable agent worktree.
+    fn a_live_clone_with_an_agent_worktree() -> (World, PathBuf, PathBuf) {
+        let mut world = World::empty();
+        let clone = world.clone_at("r-live-aa", "live");
+        world.record("r-live-aa", "live", &clone);
+        let worktree = an_agent_worktree(&clone, "agent-one");
+        as_a_host_sees_them(&clone);
+        world.devpod.lists(&[listed("live", &clone)]);
+        (world, clone, worktree)
+    }
+
+    /// Every directory the sweep would remove, across every clone in the plan.
+    fn sweeping(plan: &PrunePlan) -> Vec<PathBuf> {
+        plan.worktrees()
+            .clones()
+            .iter()
+            .flat_map(|clone| clone.going())
+            .filter_map(|going| match going.what() {
+                agent_worktrees::Collectable::Directory(directory) => {
+                    Some(directory.at().to_path_buf())
+                }
+                agent_worktrees::Collectable::Registration(_) => None,
+            })
+            .collect()
+    }
+
+    /// Every site the sweep would leave standing, across every clone.
+    fn sweep_standing(plan: &PrunePlan) -> Vec<PathBuf> {
+        plan.worktrees()
+            .clones()
+            .iter()
+            .flat_map(|clone| clone.standing())
+            .map(|site| site.at().to_path_buf())
+            .collect()
+    }
+
+    #[test]
+    fn the_plan_reaches_inside_a_clone_it_is_keeping() {
+        // The whole of devlaunch#426: every one of the 72 directories measured
+        // was inside a clone belonging to a *live* workspace, so the orphan rule
+        // not only missed them, it must never fire on them.
+        let (world, clone, worktree) = a_live_clone_with_an_agent_worktree();
+
+        let plan = plan_for(&world, Insistence::NotInsisted);
+
+        assert!(
+            removing(&plan).is_empty(),
+            "the clone itself is staying: {:?}",
+            removing(&plan)
+        );
+        assert!(matches!(
+            kept_because(&plan, &clone),
+            KeptBecause::StillOpened { .. }
+        ));
+        assert_eq!(sweeping(&plan), [worktree]);
+        assert!(
+            !plan.nothing_to_do(),
+            "a plan with worktrees to reclaim has something to do"
+        );
+    }
+
+    #[test]
+    fn a_worktree_inside_a_clone_that_is_going_is_not_swept_separately() {
+        // Its bytes are already in the clone's own figure, so sweeping it would
+        // count them twice and offer a directory that will not be there.
+        let world = World::empty();
+        let orphan = world.clone_at("r-orphan-aa", "orphan");
+        an_agent_worktree(&orphan, "agent-one");
+        as_a_host_sees_them(&orphan);
+        world.devpod.lists(&[]);
+
+        // `--force` is what carries the clone itself past the standing the
+        // worktrees put in its way: the clone-level verdict conjoins every site
+        // in it, and an untracked `.claude/` is uncommitted work besides. That
+        // guard is right to count them -- removing the clone destroys whatever
+        // they hold -- so the insistence is the fixture, not a workaround.
+        let plan = plan_for(&world, Insistence::Insisted);
+
+        assert_eq!(removing(&plan), [orphan]);
+        assert!(plan.worktrees().nothing_to_say(), "{:?}", plan.worktrees());
+    }
+
+    #[test]
+    fn the_acting_pass_removes_the_worktree_and_forgets_its_registration() {
+        let (mut world, clone, worktree) = a_live_clone_with_an_agent_worktree();
+        let plan = plan_for(&world, Insistence::NotInsisted);
+        let clones = clones_for(&world.repos_dir, &world.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let copies = world.copies();
+
+        let outcome = prune_clones(
+            &mut context,
+            &clones,
+            &mut world.storage,
+            &copies,
+            &plan,
+            &mut ignoring(),
+        )
+        .expect("the pass ran");
+
+        let PruneOutcome::Acted(report) = &outcome else {
+            panic!("expected the pass to act, got {outcome:?}");
+        };
+        assert!(report.finished());
+        assert_eq!(report.worktrees.removed.len(), 1);
+        assert_eq!(report.worktrees.forgotten, 1);
+        assert!(!worktree.exists());
+        assert!(clone.exists(), "the clone itself is untouched");
+        let listing = run_git(&clone, &["worktree", "list", "--porcelain"]);
+        assert!(
+            !listing.contains("agent-one"),
+            "git still lists it: {listing}"
+        );
+    }
+
+    #[test]
+    fn a_nested_worktree_holding_work_stands_the_whole_subtree_end_to_end() {
+        // T1 through the real command's two passes: the plan offers nothing
+        // containing the outer worktree, and the acting pass removes nothing.
+        let mut world = World::empty();
+        let clone = world.clone_at("r-live-aa", "live");
+        world.record("r-live-aa", "live", &clone);
+        let outer = an_agent_worktree(&clone, "agent-outer");
+        let inner = a_nested_worktree(&clone, &outer, "agent-inner");
+        std::fs::write(inner.join("UNSAVED.txt"), "an afternoon\n").expect("the note");
+        as_a_host_sees_them(&clone);
+        world.devpod.lists(&[listed("live", &clone)]);
+
+        let plan = plan_for(&world, Insistence::NotInsisted);
+        assert!(sweeping(&plan).is_empty(), "{:?}", plan.worktrees());
+        assert_eq!(sweep_standing(&plan), std::slice::from_ref(&inner));
+
+        let clones = clones_for(&world.repos_dir, &world.devpod);
+        let mut context = CommandContext::new(&world.devpod);
+        let copies = world.copies();
+        prune_clones(
+            &mut context,
+            &clones,
+            &mut world.storage,
+            &copies,
+            &plan,
+            &mut ignoring(),
+        )
+        .expect("the pass ran");
+
+        assert!(outer.exists(), "the outer worktree is untouched");
+        assert_eq!(
+            std::fs::read_to_string(inner.join("UNSAVED.txt")).expect("the note is still here"),
+            "an afternoon\n"
+        );
+    }
+
+    #[test]
+    fn what_a_worktree_holds_is_reported_and_kept_until_the_flag_says_otherwise() {
+        let (world, clone, worktree) = a_live_clone_with_an_agent_worktree();
+        std::fs::write(worktree.join("notes.md"), "an afternoon\n").expect("a note");
+
+        let kept = plan_for(&world, Insistence::Insisted);
+        assert!(
+            sweeping(&kept).is_empty(),
+            "--force is not --force-worktrees: {:?}",
+            kept.worktrees()
+        );
+        assert_eq!(sweep_standing(&kept), std::slice::from_ref(&worktree));
+
+        let removed = plan_insisting(
+            &world,
+            Insisted {
+                clones: Insistence::NotInsisted,
+                worktrees: Insistence::Insisted,
+            },
+        );
+        assert_eq!(sweeping(&removed), [worktree]);
+        assert!(clone.exists());
+    }
+
+    #[test]
+    fn an_orphan_clone_whose_gitignored_worktrees_hold_work_is_kept() {
+        // The nested half of the dirt blindness, at the surface that destroys
+        // things: `.claude/` is gitignored, so the clone's own status says
+        // nothing, and the shipped orphan rule removed the clone outright.
+        let world = World::empty();
+        let orphan = world.clone_at("r-orphan-aa", "orphan");
+        std::fs::write(orphan.join(".gitignore"), ".claude/\n").expect("a gitignore");
+        commit(&orphan, "ignore the agent worktrees");
+        run_git(&orphan, &["push", "origin", "orphan"]);
+        let worktree = an_agent_worktree(&orphan, "agent-one");
+        std::fs::write(worktree.join("UNSAVED.txt"), "an afternoon\n").expect("the note");
+        as_a_host_sees_them(&orphan);
+        world.devpod.lists(&[]);
+
+        let plan = plan_for(&world, Insistence::NotInsisted);
+
+        assert!(
+            removing(&plan).is_empty(),
+            "the clone holds work one level in: {:?}",
+            removing(&plan)
+        );
+        match kept_because(&plan, &orphan) {
+            KeptBecause::Objected(standing) => {
+                let words = standing.describe();
+                assert!(words.contains("agent-one"), "{words}");
+            }
+            other => panic!("expected a standing, got {other:?}"),
+        }
     }
 
     // =======================================================================

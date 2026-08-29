@@ -2252,10 +2252,14 @@ fn force_removes_the_clone_holding_work_and_says_what_it_was() {
     let run = world.dl(&["--prune", "-y", "--force"]);
     run.exited(0);
     let out = without_sizes(&run.out);
+    // A semicolon rather than a comma before "removing anyway", because what
+    // --force is answering can now be two clauses joined by one: a clone that
+    // holds work *and* has a question that could not be put says both
+    // (devlaunch#446), and a comma there would read as a third item.
     assert!(
         out.contains(
             "  - {ROOT}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-gone-dirty (<size>) -- \
-             holds 1 uncommitted change(s) (scratch.txt), removing anyway\n"
+             holds 1 uncommitted change(s) (scratch.txt); removing anyway\n"
         ),
         "what --force is answering belongs on the line of the directory it answers \
          for: {out}"

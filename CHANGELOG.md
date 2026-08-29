@@ -90,6 +90,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, and a `metadata.json` written by an older `dl` reads exactly as it did.
   [docs/cleanup.md](docs/cleanup.md) has the detail.
 
+- **`dl --prune` reclaims the agent git worktrees stranded inside the clones it
+  keeps, and `--force-worktrees` is the one flag that carries one past a
+  refusal.** An agent harness working inside a workspace makes its own git
+  worktrees under `<clone>/.claude/worktrees/<name>/`, one per task, and nothing
+  ever collected them: 72 of them on the reference host, 104.5 GB, about 82% of
+  everything under `repos/`. Every one sat inside a clone belonging to a live
+  workspace, so the orphan rule not only missed them, it must never fire there.
+
+  The unit is a **site and everything nested inside it**, decided bottom-up and
+  conjunctively, so a worktree nested inside one being removed cannot be lost
+  with it: the collectable arm of a verdict is reachable only when every nested
+  site handed one back. What decides it is a verdict rather than a boolean,
+  `Collectable(Proof) | Stands(NonEmpty<Reason>)`, where the proof is a witness
+  only a probe that answered can mint and reasons accumulate up the subtree, so
+  a site that is both dirty and locked reports both and a parent's line names
+  the child that caused it. Dirt is asked per working tree and reachability per
+  repository, which closes the clone-level guard's blindness to nested worktrees.
+
+  The metadata operation is `git worktree remove <the path git printed>`, per
+  registration, by name, and the clone-wide `git worktree prune` is deleted
+  rather than gated: its domain is a directory read at act time, so a
+  registration created after the plan was printed was inside its blast radius and
+  no plan could name it. Every name the sweep forgets came out of a listing it
+  read, and the forget only ever follows a directory removal that completed.
+
+  A worktree of a *different* repository nested inside one of ours now stands, is
+  reported and is never probed: ownership is a join against this clone's own
+  listing, not a reading of the directory's gitfile tail. Before this it was
+  offered for removal unopposed, and the reason printed for it was false.
+
+  `dl --ls --size` and `--ls --json`'s `disk` object also name the worktree share
+  of a clone's figure, as a part of it and never an addition.
+
 ### Changed
 
 - **A workspace gets one reusable OpenSSH connection instead of a new one per

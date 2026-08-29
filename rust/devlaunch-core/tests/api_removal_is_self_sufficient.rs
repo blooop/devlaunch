@@ -58,18 +58,23 @@ fn a_guarded_removal_refuses_over_unsaved_work_and_never_asks_devpod() {
 
     let outcome = machine.remove(Removal::Guarded);
 
-    let RemoveOutcome::Refused(RemovalRefused::WouldLose {
+    let RemoveOutcome::Refused(RemovalRefused {
         workspace_id,
-        losses,
+        standing,
     }) = outcome
     else {
         panic!("expected a refusal that names what would be lost, got {outcome:?}");
     };
     assert_eq!(workspace_id, WORKSPACE);
+    // The refusal carries the whole standing rather than one arm of it, because
+    // a clone can hold work *and* have a question that could not be put, and a
+    // refusal naming one would be telling half the truth (devlaunch#446).
+    let lost = standing
+        .would_lose()
+        .expect("a proved loss, not an unproved");
     assert!(
-        losses.describe().contains("an-hour-of-work.md"),
-        "the refusal has to carry what would be lost, not a count: {}",
-        losses.describe()
+        lost.contains("an-hour-of-work.md"),
+        "the refusal has to carry what would be lost, not a count: {lost}"
     );
     assert!(
         machine.devpod_argvs().is_empty(),

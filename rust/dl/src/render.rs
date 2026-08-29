@@ -21,6 +21,9 @@ use devlaunch_core::domain::model::SweepTrouble;
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::flows::agent_worktrees::{
+    Collectable, Standing as WorktreeStanding, WorktreePromotion, WorktreeReport, WorktreeSweep,
+};
 use devlaunch_core::flows::branch_manager::BranchError;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
@@ -33,12 +36,12 @@ use devlaunch_core::flows::launch::{
     SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
-    Insistence, KeptBecause, LifecycleNotice, NotAdopted, Objection, Promotion, PrunePlan,
-    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, SweepOccasion,
-    Unlocatable, VolumeRefusal, VolumesKeptBecause,
+    Insistence, KeptBecause, LifecycleNotice, NotAdopted, Promotion, PrunePlan, PruneReport,
+    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, SweepOccasion, Unlocatable,
+    VolumeRefusal, VolumesKeptBecause,
 };
 use devlaunch_core::flows::listing::{
-    self, LastUsed, SizeCell, Sizes, SourceKind, SweptRepoNote, TableRow, WorkspaceTable,
+    self, CloneDisk, LastUsed, SizeCell, Sizes, SourceKind, SweptRepoNote, TableRow, WorkspaceTable,
 };
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
@@ -197,8 +200,26 @@ fn size_cell(row: &TableRow, sizes: Sizes) -> String {
             // Not `0 B`: nothing was measured here, and a zero would say the
             // opposite of that.
             SizeCell::NotOurs => "-".to_owned(),
-            SizeCell::Measured(usage) => describe_usage(usage),
+            SizeCell::Measured(disk) => size_of(disk),
         },
+    }
+}
+
+/// One clone's size, with the part of it that is agent git worktrees named.
+///
+/// The parenthetical appears only where there is something to say, so the column
+/// reads as it always did on a machine that has never run an agent in a
+/// workspace. Where there is, it is the number that would otherwise be
+/// invisible: on the host devlaunch#426 was found on, the worktrees were 82% of
+/// the cache and no `--ls --size` row said so.
+///
+/// A part of the figure beside it and never an addition -- the worktrees are
+/// inside the clone.
+fn size_of(disk: &CloneDisk) -> String {
+    let total = describe_usage(disk.freed());
+    match disk.worktrees_worth_naming() {
+        Some(worktrees) => format!("{total} ({} in worktrees)", describe_usage(worktrees)),
+        None => total,
     }
 }
 
@@ -1182,21 +1203,31 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 /// to the two-step `rme` exists to collapse: delete, wait, then close the tab by
 /// hand. Both words are offered the way past *they* asked for.
 pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
-    match refused {
-        RemovalRefused::WouldLose {
-            workspace_id,
-            losses,
-        } => format!(
-            "{workspace_id} holds {}. Push or commit it, or run: dl {spec} {word} --force",
-            losses.describe()
+    let workspace_id = &refused.workspace_id;
+    match (
+        refused.standing.would_lose(),
+        refused.standing.could_not_tell(),
+    ) {
+        (Some(holds), None) => format!(
+            "{workspace_id} holds {holds}. Push or commit it, or run: dl {spec} {word} --force"
         ),
-        RemovalRefused::CouldNotTell {
-            workspace_id,
-            cause,
-        } => format!(
-            "{workspace_id}: {}. devlaunch will not delete a clone it cannot check. Look at it, \
-             or run: dl {spec} {word} --force",
-            cause.describe()
+        (None, Some(blank)) => format!(
+            "{workspace_id}: {blank}. devlaunch will not delete a clone it cannot check. Look \
+             at it, or run: dl {spec} {word} --force"
+        ),
+        // Both at once -- a dirty tree beside a refused probe, or a nested
+        // worktree's loss beside a lock. Saying one would be telling half the
+        // truth, so both are said (devlaunch#446).
+        (Some(holds), Some(blank)) => format!(
+            "{workspace_id} holds {holds}, and {blank}. devlaunch will not delete a clone it \
+             cannot check. Push or commit it, look at it, or run: dl {spec} {word} --force"
+        ),
+        // A standing is non-empty by construction, so one of the arms above
+        // said something; this arm exists for the match to be total and points
+        // the reader at the raw reasons rather than inventing a sentence.
+        (None, None) => format!(
+            "{workspace_id}: {}. Run: dl {spec} {word} --force",
+            refused.standing.describe()
         ),
     }
 }
@@ -1224,21 +1255,25 @@ pub(crate) fn rm_on_exit_removing(spec: &str) -> String {
 /// No way past is offered, because there is nothing to offer: this is the last
 /// line before the delete, and the workspace is gone by the next one.
 pub(crate) fn removing_over_work(refused: &RemovalRefused) -> String {
-    match refused {
-        RemovalRefused::WouldLose {
-            workspace_id,
-            losses,
-        } => format!(
-            "{workspace_id} holds {}, and kill is deleting it anyway.",
-            losses.describe()
+    let workspace_id = &refused.workspace_id;
+    match (
+        refused.standing.would_lose(),
+        refused.standing.could_not_tell(),
+    ) {
+        (Some(holds), None) => {
+            format!("{workspace_id} holds {holds}, and kill is deleting it anyway.")
+        }
+        (None, Some(blank)) => format!(
+            "{workspace_id}: {blank}, so there may be work here that is nowhere else. kill is \
+             deleting it anyway."
         ),
-        RemovalRefused::CouldNotTell {
-            workspace_id,
-            cause,
-        } => format!(
-            "{workspace_id}: {}, so there may be work here that is nowhere else. kill is deleting \
-             it anyway.",
-            cause.describe()
+        (Some(holds), Some(blank)) => format!(
+            "{workspace_id} holds {holds}, and {blank}, so there may be more here that is \
+             nowhere else. kill is deleting it anyway."
+        ),
+        (None, None) => format!(
+            "{workspace_id}: {}. kill is deleting it anyway.",
+            refused.standing.describe()
         ),
     }
 }
@@ -1974,7 +2009,7 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         lines.push(format!(
             "Removing {} that nothing references -- {}:",
             plan.removing().len(),
-            describe_usage(&plan.freed())
+            describe_usage(&plan.clones_freed())
         ));
         for reclaimable in plan.removing() {
             let mut line = format!(
@@ -1986,7 +2021,7 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
             // for. Without it the plan reads the same for a clone holding an
             // afternoon's uncommitted work as for an empty one.
             if let Promotion::Insisted { despite } = &reclaimable.promotion {
-                line = format!("{line} -- holds {}, removing anyway", objection(despite));
+                line = format!("{line} -- {}; removing anyway", standing_words(despite));
             }
             lines.push(line);
         }
@@ -2032,8 +2067,149 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         ));
         lines.push(String::new());
     }
+    lines.extend(worktree_plan_lines(plan.worktrees()));
     if plan.nothing_to_do() {
         lines.push("Nothing to prune.".to_owned());
+    }
+    lines
+}
+
+/// The agent git worktrees inside the clones this run is keeping, and what each
+/// site is (devlaunch#426).
+///
+/// Its own section under the clone plan rather than rows mixed into it, because
+/// these are a different kind of thing: every one of them is inside a clone the
+/// run has just said it is *not* touching, and the rules that reach them are
+/// their own. Nothing at all is printed when there is nothing to say, which is
+/// every host that has never run an agent in a workspace.
+///
+/// One line per standing site, attributed to the site rather than to each
+/// ancestor it pins: a parent reported as "kept" with the child unnamed is the
+/// invisible straggler, and a three-deep chain pinned by one site is one line.
+fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
+    if sweep.nothing_to_say() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        format!(
+            "Agent git worktrees inside the clones above -- {}:",
+            describe_usage(&sweep.freed())
+        ),
+        String::new(),
+    ];
+    for found in sweep.clones() {
+        lines.push(format!("  {}:", found.clone_path().display()));
+        for going in found.going() {
+            let mut line = match going.what() {
+                Collectable::Directory(directory) => format!(
+                    "    - removing {} ({}), and dropping its {} registration(s)",
+                    directory.at().display(),
+                    describe_usage(directory.usage()),
+                    directory.forgets().len()
+                ),
+                Collectable::Registration(registration) => format!(
+                    "    - forgetting the registration for {}: nothing is at it in this \
+                     clone, and its commits are all somewhere else",
+                    registration.place().as_str()
+                ),
+            };
+            // What `--force-worktrees` is answering, on the line of the unit it
+            // answers for. Without it the plan reads the same for a worktree
+            // holding an afternoon's work as for a finished one.
+            if let WorktreePromotion::Insisted { despite } = going.promotion() {
+                line = format!("{line} -- {}; removing anyway", standing_words(despite));
+            }
+            lines.push(line);
+        }
+        for standing in found.standing() {
+            lines.push(format!(
+                "    - leaving {}: {} -- add --force-worktrees to remove it anyway",
+                standing.at().display(),
+                standing.reasons().describe()
+            ));
+        }
+    }
+    lines.push(String::new());
+    // Said once, rather than implied by every line above it. `--prune` is a
+    // local command and deliberately does not fetch, so "nothing else reaches
+    // these commits" is a statement about the last fetch and not about the
+    // forge now.
+    lines.push(
+        "Whether a worktree's commits are anywhere else is as of the last fetch into the \
+         repository cache; --prune does not fetch."
+            .to_owned(),
+    );
+    lines.push(String::new());
+    lines
+}
+
+/// Everything a standing says, as the clause a keep or an insistence line
+/// interpolates. Both kinds of reason, never one standing in for the other.
+fn standing_words(standing: &WorktreeStanding) -> String {
+    let mut parts = Vec::new();
+    if let Some(holds) = standing.would_lose() {
+        parts.push(format!("holds {holds}"));
+    }
+    if let Some(blank) = standing.could_not_tell() {
+        parts.push(format!("could not be proved safe: {blank}"));
+    }
+    if parts.is_empty() {
+        // A standing is non-empty by construction; this is the match staying
+        // total rather than a case anything reaches.
+        return standing.describe();
+    }
+    parts.join(", and ")
+}
+
+/// What the run did about the agent worktrees.
+///
+/// The withheld lines say *that this was not so when the plan was printed*,
+/// which is the whole of what a second classification has to tell somebody who
+/// has already read the first one -- and here it is not a rare race: a container
+/// is not a participant in devlaunch's repository lock, so it can write into a
+/// worktree while the plan is on screen.
+fn worktree_report_lines(report: &WorktreeReport) -> Vec<String> {
+    if report.nothing_to_say() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "Removed {} agent worktree(s) -- {}.",
+        report.removed.len(),
+        describe_usage(&report.freed())
+    )];
+    if report.forgotten > 0 {
+        lines.push(format!(
+            "Dropped {} worktree registration(s), each by the path git printed for it.",
+            report.forgotten
+        ));
+    }
+    for withheld in &report.withheld {
+        lines.push(format!(
+            "Left {}: {} -- add --force-worktrees to remove it anyway. That was not so when \
+             the plan above was printed.",
+            withheld.path.display(),
+            withheld.because.describe()
+        ));
+    }
+    for refused in &report.forget_refused {
+        lines.push(format!(
+            "git would not drop the registration for {}: {}. The next --prune will offer it \
+             again.",
+            refused.registered.display(),
+            refused.reason
+        ));
+    }
+    if !report.refused.is_empty() {
+        let by_hand: Vec<std::path::PathBuf> = report
+            .refused
+            .iter()
+            .map(|refusal| refusal.path.clone())
+            .collect();
+        lines.extend(report_refusals(
+            report.refused.iter(),
+            "Some agent worktrees would not come away. These refused:",
+            &by_hand,
+        ));
     }
     lines
 }
@@ -2044,10 +2220,10 @@ fn kept_because(because: &KeptBecause) -> String {
         KeptBecause::StillOpened { workspace_id } => {
             format!("workspace {workspace_id} still opens it")
         }
-        KeptBecause::Objected(objected) => {
+        KeptBecause::Objected(standing) => {
             format!(
-                "holds {} -- add --force to remove it anyway",
-                objection(objected)
+                "{} -- add --force to remove it anyway",
+                standing_words(standing)
             )
         }
         KeptBecause::RecordsDisagree {
@@ -2057,16 +2233,6 @@ fn kept_because(because: &KeptBecause) -> String {
             "devpod lists workspace {workspace_id} and sources it at {sourced_at}; see \
              devlaunch#88"
         ),
-    }
-}
-
-/// What removing a clone would destroy or risk, as the clause after "holds".
-fn objection(objected: &Objection) -> String {
-    match objected {
-        Objection::WouldLose(losses) => losses.describe(),
-        Objection::CouldNotTell(cause) => {
-            format!("work git could not be asked about ({})", cause.describe())
-        }
     }
 }
 
@@ -2103,7 +2269,7 @@ pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
     let mut lines = vec![format!(
         "Removed {} clone director(ies) -- {}.",
         report.removed.len(),
-        describe_usage(&report.freed())
+        describe_usage(&report.clones_freed())
     )];
     for withheld in &report.withheld {
         lines.push(format!(
@@ -2145,6 +2311,7 @@ pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
             &by_hand,
         ));
     }
+    lines.extend(worktree_report_lines(&report.worktrees));
     lines
 }
 
@@ -2971,7 +3138,6 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use devlaunch_core::flows::disk_usage::DiskUsage;
     use devlaunch_core::flows::kill::{HostProcess, Signalled};
     use devlaunch_core::flows::launch::TerminalTitle;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
@@ -3367,7 +3533,7 @@ mod tests {
                     "a",
                     SourceKind::Local,
                     "/x",
-                    SizeCell::Measured(DiskUsage::measured(2048)),
+                    SizeCell::Measured(CloneDisk::measured(2048, None)),
                     LastUsed::Never,
                 ),
                 row(
