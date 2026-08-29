@@ -82,9 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retired `worktree.repos_dir` key, is named only by a record inside the cache
   that is about to go: after the purge, `dl <workspace> rm` deletes the workspace
   and leaves that directory standing with nothing on the machine pointing at it.
-  Removing such a workspace first is what takes its clone with it. `--purge` also
-  reports a `config.toml` that still sets that key now, which is the only mention
-  a stranded tree gets when no workspace opens it any more.
+  Removing such a workspace first is what takes its clone with it. The copy of
+  their volume names goes the same way, so a survivor deleted with a bare `devpod
+  delete` after a purge leaves volumes nothing can reclaim, where `dl --prune`
+  would have. `--purge` also reports a `config.toml` that still sets that key now,
+  which is the only mention a stranded tree gets when no workspace opens it any
+  more.
 
 ### Fixed
 

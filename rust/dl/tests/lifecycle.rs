@@ -1736,7 +1736,7 @@ This will remove all devlaunch data:
 Leaving 1 workspace(s) devlaunch did not create:
   - someones-project: {ROOT}/foreign/proj
 
-Removing the cache also drops what dl recorded about them. They keep working, and `dl <workspace> rm` still removes one.
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
 A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
 
 ";
@@ -1756,7 +1756,7 @@ This will remove all devlaunch data:
 Leaving 1 workspace(s) devlaunch did not create:
   - someones-project: {ROOT}/foreign/proj
 
-Removing the cache also drops what dl recorded about them. They keep working, and `dl <workspace> rm` still removes one.
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
 A clone an older dl placed outside the cache is named only by a record in there, though, so from here on `dl <workspace> rm` takes such a workspace and leaves its clone standing.
 
 ";
@@ -1790,8 +1790,10 @@ fn the_leaving_list_names_each_survivors_source_beside_its_id() {
         run.out
     );
     assert!(
-        run.out
-            .contains("Removing the cache also drops what dl recorded about them."),
+        run.out.contains(
+            "Removing the cache also drops what dl recorded about them, the copy of \
+                 their volume names included."
+        ),
         "the block did not say what the purge costs the survivors:\n{}",
         run.out
     );

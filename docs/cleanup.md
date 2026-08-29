@@ -179,7 +179,7 @@ Leaving 2 workspace(s) devlaunch did not create:
   - pythontemplate: https://github.com/blooop/pythontemplate
   - my-hand-made-workspace: /home/you/projects/thing
 
-Removing the cache also drops what dl recorded about them. They keep working, and `dl <workspace> rm` still removes one.
+Removing the cache also drops what dl recorded about them, the copy of their volume names included. They keep working, and `dl <workspace> rm` still removes one and its volumes while devpod still lists it.
 A clone an older dl placed outside the cache is named only by a record in there, though, so remove such a workspace now if the clone should go with it.
 
 Are you sure? [y/N]
@@ -219,10 +219,16 @@ question in front of them can take, and printing it into a run that deletes the
 records three lines later would be advice arriving after the door shut, so what
 `-y` says instead is what will be true of `dl <workspace> rm` from then on.
 
-Volumes are not part of that loss. The two named volumes a workspace's
-devcontainer made are read from devpod's own record under `DEVPOD_HOME`, which a
-purge does not touch, so a survivor's volumes still go with it whenever it is
-removed.
+The volume names are part of that loss, and this is the one place it shows.
+Deleting a survivor with `dl <workspace> rm` still takes its volumes: that read
+happens at delete time, out of devpod's own record under `DEVPOD_HOME`, which a
+purge does not touch. What goes is [the copy `dl`
+keeps](#the-volumes-of-a-workspace-devpod-has-already-forgotten), which is what
+`--prune` reclaims from once devpod has forgotten a workspace. So a survivor
+deleted with a bare `devpod delete` after a purge leaves both its volumes with
+nothing on the machine naming them, where before the purge `dl --prune` would
+have reclaimed them. Deleting such a workspace through `dl` is what avoids that,
+and it is the same advice the sentence above gives for its clone.
 
 #### When part of the cache will not go
 

@@ -1791,14 +1791,19 @@ pub(crate) enum Confirmation {
 /// survivor and only the first is obvious: it keeps working, and dl stops knowing
 /// anything about it.
 ///
-/// Deliberately not a claim about volumes. The names of the two volumes a
-/// workspace's devcontainer made are read from devpod's own `workspace_result.json`
-/// under `DEVPOD_HOME`, which a purge does not touch, so a survivor's volumes still
-/// go with it whenever it is removed. That changes when devlaunch keeps its own
-/// copy under the cache (devlaunch#456), and this sentence is where it will be
-/// said.
-const SURVIVORS_KEEP_WORKING: &str = "Removing the cache also drops what dl recorded about them. They keep working, and \
-     `dl <workspace> rm` still removes one.";
+/// **The volume names are named because they are now in the cache**
+/// (devlaunch#456, merged while this was open). dl keeps its own copy of the two
+/// volumes a workspace's devcontainer made, under the cache, so a purge that
+/// leaves a foreign workspace standing destroys the copy of *its* names while
+/// leaving its volumes -- which is the exact case #452 predicted this sentence
+/// would have to cover. What is not lost is the ordinary route: `dl <ws> rm`
+/// reads devpod's own `workspace_result.json` under `DEVPOD_HOME`, which a purge
+/// does not touch, so a survivor deleted through dl still takes its volumes with
+/// it. The copy is what `--prune` reclaims from *after* devpod has forgotten a
+/// workspace, and that is the reach a purge costs it.
+const SURVIVORS_KEEP_WORKING: &str = "Removing the cache also drops what dl recorded about them, the copy of their volume \
+     names included. They keep working, and `dl <workspace> rm` still removes one and its \
+     volumes while devpod still lists it.";
 
 /// The sentence under that one, in the tense the run has earned.
 ///
