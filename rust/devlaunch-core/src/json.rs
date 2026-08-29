@@ -1,16 +1,22 @@
 //! JSON written the way CPython's `json.dumps` writes it.
 //!
 //! Both binaries write documents the cutover checklist compares byte for byte —
-//! the `completions.json` cache, `dl --ls --json`, `dl --completion-data`, the
-//! `SOURCE` column's rendering of a source dl cannot read, and the
-//! `DEVLAUNCH_TIMING=json` line — so the spelling is part of the contract rather
-//! than a style choice. One copy of it in this crate, at the bottom of it,
-//! because a second copy is how one of those documents drifts: the timing
-//! document was written with `serde_json::to_string` and lost the spacing while
-//! its own docstring promised byte-comparability. `dl --ls --json` was the last
-//! of them spelled somewhere else, by a formatter of `dl`'s own; devlaunch#346
-//! collapsed that onto [`as_python_writes_it_indented`], so the enumeration above
-//! is now the whole of what this module spells and there is nowhere else to look.
+//! the `metadata.json` store, the `completions.json` cache, `dl --ls --json`,
+//! `dl --completion-data`, the `SOURCE` column's rendering of a source dl cannot
+//! read, and the `DEVLAUNCH_TIMING=json` line — so the spelling is part of the
+//! contract rather than a style choice. One copy of it in this crate, at the
+//! bottom of it, because a second copy is how one of those documents drifts:
+//! the timing document was written with `serde_json::to_string` and lost the
+//! spacing while its own docstring promised byte-comparability. `dl --ls --json`
+//! was the last of them spelled somewhere else, by a formatter of `dl`'s own;
+//! devlaunch#346 collapsed that onto [`as_python_writes_it_indented`], so all six
+//! are now spelled from here and there is nowhere else to look.
+//!
+//! That list is hand-maintained, so it is the part of this paragraph that rots.
+//! The one a compiler will give you is the callers of [`as_python_writes_it`],
+//! [`serialize_as_python`], [`as_python_writes_it_indented`] and
+//! [`PythonPrettyFormatter`]; a seventh document that reaches none of them is a
+//! second spelling, whatever this paragraph has come to say by then.
 //!
 //! Below the four layers on purpose: `timing` is the crate root's own module and
 //! `flows` sits at the top, so a shared helper either lives here or gets reached
@@ -184,10 +190,9 @@ pub fn as_python_writes_it_indented(value: &serde_json::Value) -> String {
 /// a loop here.
 ///
 /// Only the layout differs from the compact [`PythonFormatter`] — this document
-/// is indented and that one is on one line. (The compact formatter also spells
-/// floats Python's way and this one does not, which no document that reaches here
-/// can tell: the metadata store's numbers are all `i64`, and the listing's
-/// `disk` is one too.)
+/// is indented and that one is on one line. The float spelling is the same one,
+/// forwarded below, so the two cannot come to disagree about a number the way
+/// they came to disagree about DEL.
 #[derive(Default)]
 pub(crate) struct PythonPrettyFormatter<'indent> {
     pretty: serde_json::ser::PrettyFormatter<'indent>,
@@ -199,6 +204,28 @@ impl serde_json::ser::Formatter for PythonPrettyFormatter<'_> {
         W: ?Sized + io::Write,
     {
         write_ensure_ascii(writer, fragment)
+    }
+
+    /// Floats, spelled by the same [`python_repr`] the compact formatter uses.
+    ///
+    /// Unreachable from either document as they stand, and it moves no byte of
+    /// them: `metadata.json`'s only bare number is its `version`, an `i64`, and
+    /// every number in `dl --ls --json` sits inside `disk` — which is an object
+    /// (`{"exclusiveBytes": u64}`, or `{"atLeastBytes": u64, "unreadable":
+    /// usize}`) or `null`, and never a number itself. `unsaved` is an object
+    /// holding a bool or a string, and `lastSweep` holds a token and a string.
+    ///
+    /// It is three lines anyway, because the sentence it replaces was a claim
+    /// about callers held in prose, and prose is precisely what this module's
+    /// own cautionary tale is about. [`as_python_writes_it_indented`] is `pub`
+    /// and takes any [`serde_json::Value`], so the day a float does arrive it is
+    /// spelled Python's way rather than ryu's, and nobody has to have remembered
+    /// this paragraph.
+    fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        writer.write_all(python_repr(value).as_bytes())
     }
 
     // The rest is the pretty printer's layout, delegated unchanged. The nine
@@ -593,12 +620,60 @@ mod tests {
         );
     }
 
+    /// The whole ASCII range at once, at the indented seam.
+    ///
+    /// The pin the crate's other two spellings already had and this one did not:
+    /// the compact formatter is swept by
+    /// [`every_ascii_character_is_spelled_the_way_json_dumps_spells_it`] and
+    /// `metadata.json` by `the_indent_two_document_spells_every_ascii_character_pythons_way`,
+    /// and both exist because the per-class tests each pin a class someone
+    /// thought to name — which is how DEL stayed wrong through three copies of
+    /// the escaper. Sweeping closes the gap in both directions at once: nothing
+    /// bare that Python escapes, nothing escaped that it leaves bare.
+    ///
+    /// Inside an object rather than at a bare string, because a bare string asks
+    /// for no layout at all and would make this the compact sweep under a second
+    /// name. Expectation is the literal `json.dumps` printed for
+    /// `{"branch": ''.join(chr(c) for c in range(0x80))}` with `indent=2`, under
+    /// the frozen Python build (3.14).
+    #[test]
+    fn an_indented_document_spells_every_ascii_character_the_way_json_dumps_does() {
+        let all_of_ascii: String = (0u8..=0x7f).map(char::from).collect();
+        assert_eq!(
+            as_python_writes_it_indented(&serde_json::json!({ "branch": all_of_ascii })),
+            concat!(
+                "{\n  \"branch\": \"",
+                r##"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u007f"##,
+                "\"\n}",
+            )
+        );
+    }
+
+    /// The indented spelling's floats, which are the compact one's.
+    ///
+    /// No document that reaches [`as_python_writes_it_indented`] carries a float
+    /// today — see [`PythonPrettyFormatter::write_f64`] for why — so this pins
+    /// the override rather than a wire, and it is here because an override with
+    /// nothing measuring it is how the two formatters would drift apart again.
+    /// `1e-05` is the decade where ryu and CPython disagree, `1e+16` the exponent
+    /// spelling they disagree on, and `-0.0` and `1.0` the shapes Rust's `Display`
+    /// writes without the fraction. Expectation is the literal `json.dumps`
+    /// printed for the same list with `indent=2`.
+    #[test]
+    fn an_indented_document_spells_floats_the_way_json_dumps_does() {
+        assert_eq!(
+            as_python_writes_it_indented(&serde_json::json!([1e-5, 1e16, -0.0, 1.0])),
+            "[\n  1e-05,\n  1e+16,\n  -0.0,\n  1.0\n]"
+        );
+    }
+
     #[test]
     fn integers_are_untouched() {
-        // `disk` in `dl --ls --json` is an integer, and Python writes it bare.
+        // The listing's numbers are `disk`'s, and Python writes them bare. `disk`
+        // itself is an object or null, never a number.
         assert_eq!(
-            as_python_writes_it(&serde_json::json!({ "disk": 4096 })),
-            r#"{"disk": 4096}"#
+            as_python_writes_it(&serde_json::json!({ "exclusiveBytes": 4096 })),
+            r#"{"exclusiveBytes": 4096}"#
         );
     }
 }
