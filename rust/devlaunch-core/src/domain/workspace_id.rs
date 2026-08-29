@@ -21,7 +21,7 @@
 //! [`WorkspaceId::label`] is the same three pieces read for a person rather than
 //! for devpod: `<repo-slug>@<ref-slug>`, no suffix. It is a second *rendering* and
 //! not a second derivation, which is the property worth keeping: both come out of
-//! one [`WorkspaceId::parts`], so a change to where the cuts fall moves the id and
+//! one [`parts_of`], so a change to where the cuts fall moves the id and
 //! the label together or not at all. Nothing addresses a workspace by a label and
 //! it is not unique, which is what lets it drop the four characters that carry the
 //! identity. See its own docs for where that is spent.
@@ -492,7 +492,7 @@ fn join_parts(parts: &Parts) -> String {
     join(&[&parts.repo, &parts.git_ref, &parts.suffix])
 }
 
-/// The pieces [`WorkspaceId::parts`] cuts, in the order an id joins them.
+/// The pieces [`parts_of`] cuts, in the order an id joins them.
 ///
 /// Any of the three can be the empty string, which [`join`] drops rather than
 /// spelling as a stray dash.
