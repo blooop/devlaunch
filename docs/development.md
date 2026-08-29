@@ -69,7 +69,7 @@ once under the `api` section and once under the module that owns them.
 
 **What it still does not reach, and it is not one type.** A type `api` never re-exports but a
 promised signature hands back is reachable from outside and classified as binary surface. Counted
-on the checked-in files rather than guessed at, that is **39 types owning over six hundred rows** in
+on the checked-in files rather than guessed at, that is **37 types owning close to six hundred rows** in
 `public-api.rest.txt`, and the command that lists them needs no toolchain:
 
 ```bash
