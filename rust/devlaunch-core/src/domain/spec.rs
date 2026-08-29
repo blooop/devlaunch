@@ -188,7 +188,7 @@ pub fn identity(spec: &str) -> Result<SpecIdentity<'_>, UnsafeName> {
             repo,
             branch: Some(branch),
         } => Ok(SpecIdentity::Workspace(
-            WorkspaceId::new(owner, repo, branch)?.value(),
+            WorkspaceId::new(owner, repo, branch)?.value().to_owned(),
         )),
         WorkspaceSpec::OwnerRepo {
             repo, branch: None, ..

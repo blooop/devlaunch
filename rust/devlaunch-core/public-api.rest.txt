@@ -542,7 +542,7 @@ pub struct devlaunch_core::domain::workspace_id::WorkspaceId
 impl devlaunch_core::domain::workspace_id::WorkspaceId
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::label(&self) -> alloc::string::String
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::new(&str, &str, &str) -> core::result::Result<Self, devlaunch_core::domain::workspace_id::UnsafeName>
-pub fn devlaunch_core::domain::workspace_id::WorkspaceId::value(&self) -> alloc::string::String
+pub fn devlaunch_core::domain::workspace_id::WorkspaceId::value(&self) -> &str
 impl core::clone::Clone for devlaunch_core::domain::workspace_id::WorkspaceId
 pub fn devlaunch_core::domain::workspace_id::WorkspaceId::clone(&self) -> devlaunch_core::domain::workspace_id::WorkspaceId
 impl core::cmp::Eq for devlaunch_core::domain::workspace_id::WorkspaceId

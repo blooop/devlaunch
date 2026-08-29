@@ -3,6 +3,7 @@
 use super::notices::LifecycleNotice;
 use crate::clients::devpod::{self, ContainerState, NotRun, Patience, StatusUnreadable};
 use crate::domain::metadata::MetadataStorage;
+use crate::domain::workspace_id::WorkspaceId;
 use crate::notices::Notices;
 use crate::runner::Runner;
 use crate::timing;
@@ -127,14 +128,22 @@ impl KnownWorkspace {
 /// path it sends a launch down fetches a branch and builds a workspace clone on a
 /// host that cannot open it, and leaves both behind for the exit-127 to be
 /// discovered after. So the error is the runner's, and it travels.
+///
+/// **The triple and the id it derives arrive as one value**, which is what keeps
+/// the notice below honest. They used to be two arguments -- a `(owner, repo,
+/// ref)` tuple and a `derived: &str` beside it -- and nothing tied them together,
+/// while the one sentence this function emits names *both*: "addressing
+/// `<recorded>` instead of `<derived>` for `<owner>/<repo>@<branch>`". A caller
+/// that handed over an id from a different triple got a line about a workspace
+/// nobody has, and a launch pointed at whichever of the two the record matched.
 pub(crate) fn resolve_known_workspace(
     runner: &dyn Runner,
-    triple: (&str, &str, &str),
-    derived: &str,
+    workspace: &WorkspaceId,
     recorded_id: impl FnOnce() -> Option<String>,
     notices: &mut dyn Notices<LifecycleNotice>,
     patience: Patience,
 ) -> Result<KnownWorkspace, NotRun> {
+    let derived = workspace.value();
     match workspace_state(runner, derived, patience) {
         Ok(state) => {
             return Ok(KnownWorkspace::Known {
@@ -164,13 +173,12 @@ pub(crate) fn resolve_known_workspace(
         Err(StatusUnreadable::NotRun(not_run)) => return Err(not_run),
         Err(_) => return unknown(),
     };
-    let (owner, repo, branch) = triple;
     notices.say(LifecycleNotice::AddressingRecordedWorkspace {
         recorded: recorded.clone(),
         derived: derived.to_owned(),
-        owner: owner.to_owned(),
-        repo: repo.to_owned(),
-        branch: branch.to_owned(),
+        owner: workspace.owner().to_owned(),
+        repo: workspace.repo().to_owned(),
+        branch: workspace.git_ref().to_owned(),
     });
     Ok(KnownWorkspace::Known {
         workspace_id: recorded,

@@ -21,7 +21,7 @@
 //! [`WorkspaceId::label`] is the same three pieces read for a person rather than
 //! for devpod: `<repo-slug>@<ref-slug>`, no suffix. It is a second *rendering* and
 //! not a second derivation, which is the property worth keeping: both come out of
-//! one [`WorkspaceId::parts`], so a change to where the cuts fall moves the id and
+//! one [`parts_of`], so a change to where the cuts fall moves the id and
 //! the label together or not at all. Nothing addresses a workspace by a label and
 //! it is not unique, which is what lets it drop the four characters that carry the
 //! identity. See its own docs for where that is spent.
@@ -304,11 +304,41 @@ pub(crate) fn source_workspace_id(source: &str) -> String {
 ///
 /// The fields are private and there is no other constructor, which is what makes
 /// an unvalidated triple unrepresentable rather than merely discouraged.
+///
+/// **The id is derived at the parse and kept**, which is what lets
+/// [`value`](Self::value) lend one out rather than build one. The derivation is a
+/// SHA-256, three slug passes and a truncation budget, and it was running on every
+/// call: a single launch asks several times, and the callers this ticket migrated
+/// ask again at every layer they hand the id down through. Nothing here is a
+/// cache in the sense that needs invalidating -- the triple is immutable and the
+/// derivation is pure, so the stored string is the answer for as long as the value
+/// exists. Storing it is also what makes [`value`](Self::value) able to lend a
+/// `&str` at all: a string built on the way out has nothing to lend.
+///
+/// **Which string-like impls this type carries, and which it refuses.** It has
+/// [`Display`](std::fmt::Display), which writes the stored id and now allocates
+/// nothing, and it has `value()`, `owner()`, `repo()` and `git_ref()`. It has no
+/// `Deref<Target = str>`, no `AsRef<str>` and no `Borrow<str>`, and that is the
+/// decision rather than an omission. `Deref` is the pointed one: it would let a
+/// `&WorkspaceId` be spent anywhere a `&str` is wanted, by coercion and in
+/// silence, which is exactly the erasure the signatures around this type were
+/// tightened to stop -- a validated triple would go back to being interchangeable
+/// with any string at every call site that takes one. `AsRef<str>` and
+/// `Borrow<str>` are milder and buy nothing: nothing generic over `impl
+/// AsRef<str>` consumes a workspace id, and no map is keyed by one, so both would
+/// be rows on the surface with no caller. `value()` is one call longer to write
+/// and says which of the four strings a reader is looking at.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkspaceId {
     owner: String,
     repo: String,
     git_ref: String,
+    /// [`Self::value`], derived once by [`Self::new`].
+    ///
+    /// In the derived `PartialEq`, `Eq` and `Hash` because it is in the struct,
+    /// and harmless there: it is a pure function of the three fields above it, so
+    /// it can only ever agree with them.
+    value: String,
 }
 
 impl WorkspaceId {
@@ -322,6 +352,7 @@ impl WorkspaceId {
         validate_ref_name(repo, NamePart::Repo)?;
         validate_ref_name(git_ref, NamePart::Ref)?;
         Ok(Self {
+            value: join_parts(&parts_of(owner, repo, git_ref)),
             owner: owner.to_string(),
             repo: repo.to_string(),
             git_ref: git_ref.to_string(),
@@ -357,23 +388,23 @@ impl WorkspaceId {
     ///
     /// Lowercasing does not move ids for input that was already lowercase, which
     /// is every id this project has published.
+    ///
+    /// Only this module's tests read it, and they read it a great deal: the golden
+    /// vectors pin the suffix beside the id, and a dozen tests assert that an id
+    /// ends in its own. Nothing outside asks for a suffix on its own -- an id is
+    /// what addresses a workspace -- so this is the frozen half of the derivation
+    /// exposed for the tests that freeze it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn suffix(&self) -> String {
-        let Identity {
-            owner,
-            repo,
-            git_ref,
-        } = self.identity();
-        hashed_suffix(&[&owner, &repo, &git_ref])
+        suffix_of(&self.identity())
     }
 
     /// The derived id, at most [`TARGET_LENGTH`] characters.
-    pub fn value(&self) -> String {
-        let Parts {
-            repo,
-            git_ref,
-            suffix,
-        } = self.parts();
-        join(&[&repo, &git_ref, &suffix])
+    ///
+    /// Lent out, not built: see the note on the type for why the derivation runs
+    /// at the parse instead.
+    pub fn value(&self) -> &str {
+        &self.value
     }
 
     /// The same id read as `repo@ref`: no suffix, and an `@` where the id has a
@@ -405,52 +436,63 @@ impl WorkspaceId {
     /// slugs to nothing, `_` being the shortest of them. There is nothing for the
     /// `@` to sit between there, and the id is the one name that is never empty.
     pub fn label(&self) -> String {
-        let Parts {
-            repo,
-            git_ref,
-            suffix,
-        } = self.parts();
-        if repo.is_empty() || git_ref.is_empty() {
-            return join(&[&repo, &git_ref, &suffix]);
+        let parts = parts_of(&self.owner, &self.repo, &self.git_ref);
+        if parts.repo.is_empty() || parts.git_ref.is_empty() {
+            return join_parts(&parts);
         }
-        format!("{repo}@{git_ref}")
-    }
-
-    /// The three pieces an id is joined from, each already cut to its budget.
-    ///
-    /// One derivation for [`value`](Self::value) and [`label`](Self::label) rather
-    /// than two that agree by inspection: the label is the id with the suffix
-    /// dropped and one separator changed, and that claim only stays true while a
-    /// single function decides where the cuts fall.
-    fn parts(&self) -> Parts {
-        let suffix = self.suffix();
-        let mut repo_part = slug(&self.repo);
-        // Cut the repo slug only when the id would otherwise overflow. Whenever the
-        // cut does fire, the ref is left TARGET_LENGTH - 20 - 1 - 1 - 4 = 21
-        // characters, so it can never come out of that branch with nothing to spend
-        // — the hole that let a 47-char repo name skip truncation altogether.
-        let untruncated = join(&[&repo_part, &fit_ref(&self.git_ref, TARGET_LENGTH), &suffix]);
-        if untruncated.len() > TARGET_LENGTH {
-            repo_part = head(&repo_part, REPO_SLUG_LENGTH)
-                .trim_matches('-')
-                .to_string();
-        }
-        let separators = if repo_part.is_empty() { 1 } else { 2 };
-        // Saturating because the *other* branch can reach zero, and reaches it
-        // legitimately: a repo slug of 42 with a ref that slugs to nothing fits
-        // inside the budget untruncated, so the cut never fires and the arithmetic
-        // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
-        // the empty string, `join` drops it, and the id lands exactly on the cap.
-        let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
-        Parts {
-            git_ref: fit_ref(&self.git_ref, room),
-            repo: repo_part,
-            suffix,
-        }
+        format!("{}@{}", parts.repo, parts.git_ref)
     }
 }
 
-/// The pieces [`WorkspaceId::parts`] cuts, in the order an id joins them.
+/// The [`SUFFIX_LENGTH`]-character identity suffix for a folded triple.
+fn suffix_of(identity: &Identity) -> String {
+    hashed_suffix(&[&identity.owner, &identity.repo, &identity.git_ref])
+}
+
+/// The three pieces an id is joined from, each already cut to its budget.
+///
+/// One derivation for [`WorkspaceId::value`] and [`WorkspaceId::label`] rather
+/// than two that agree by inspection: the label is the id with the suffix dropped
+/// and one separator changed, and that claim only stays true while a single
+/// function decides where the cuts fall.
+///
+/// A free function over the triple rather than a method, so [`WorkspaceId::new`]
+/// can derive the id it stores *before* there is a value to call a method on --
+/// which is what keeps the stored id from having a moment of being the empty
+/// string.
+fn parts_of(owner: &str, repo: &str, git_ref: &str) -> Parts {
+    let suffix = suffix_of(&identity_of(owner, repo, git_ref));
+    let mut repo_part = slug(repo);
+    // Cut the repo slug only when the id would otherwise overflow. Whenever the
+    // cut does fire, the ref is left TARGET_LENGTH - 20 - 1 - 1 - 4 = 21
+    // characters, so it can never come out of that branch with nothing to spend
+    // — the hole that let a 47-char repo name skip truncation altogether.
+    let untruncated = join(&[&repo_part, &fit_ref(git_ref, TARGET_LENGTH), &suffix]);
+    if untruncated.len() > TARGET_LENGTH {
+        repo_part = head(&repo_part, REPO_SLUG_LENGTH)
+            .trim_matches('-')
+            .to_string();
+    }
+    let separators = if repo_part.is_empty() { 1 } else { 2 };
+    // Saturating because the *other* branch can reach zero, and reaches it
+    // legitimately: a repo slug of 42 with a ref that slugs to nothing fits
+    // inside the budget untruncated, so the cut never fires and the arithmetic
+    // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
+    // the empty string, `join` drops it, and the id lands exactly on the cap.
+    let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
+    Parts {
+        git_ref: fit_ref(git_ref, room),
+        repo: repo_part,
+        suffix,
+    }
+}
+
+/// The id these [`Parts`] spell: the three of them, dashed, absent ones dropped.
+fn join_parts(parts: &Parts) -> String {
+    join(&[&parts.repo, &parts.git_ref, &parts.suffix])
+}
+
+/// The pieces [`parts_of`] cuts, in the order an id joins them.
 ///
 /// Any of the three can be the empty string, which [`join`] drops rather than
 /// spelling as a stray dash.
@@ -462,7 +504,7 @@ struct Parts {
 
 impl fmt::Display for WorkspaceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.value())
+        f.write_str(self.value())
     }
 }
 
@@ -1057,7 +1099,7 @@ mod tests {
     fn case_variants_of_one_repo_derive_one_id() {
         let ids: HashSet<String> = CASE_VARIANTS
             .iter()
-            .map(|&(owner, repo)| id(owner, repo, "main").value())
+            .map(|&(owner, repo)| id(owner, repo, "main").value().to_owned())
             .collect();
         assert_eq!(ids.len(), 1);
     }
@@ -1131,7 +1173,7 @@ mod tests {
     fn unsafe_owners_are_refused() {
         for owner in ["", "--evil", "own er"] {
             assert_eq!(
-                WorkspaceId::new(owner, "repo", "main").map(|w| w.value()),
+                WorkspaceId::new(owner, "repo", "main").map(|w| w.value().to_owned()),
                 Err(UnsafeName {
                     part: NamePart::Owner,
                     name: owner.to_string(),
@@ -1144,7 +1186,7 @@ mod tests {
     fn unsafe_repos_are_refused() {
         for repo in ["", "--evil", "re po"] {
             assert_eq!(
-                WorkspaceId::new("owner", repo, "main").map(|w| w.value()),
+                WorkspaceId::new("owner", repo, "main").map(|w| w.value().to_owned()),
                 Err(UnsafeName {
                     part: NamePart::Repo,
                     name: repo.to_string(),
@@ -1202,7 +1244,7 @@ mod tests {
             "featureauth",
         ]
         .into_iter()
-        .map(|git_ref| id("blooop", "devlaunch", git_ref).value())
+        .map(|git_ref| id("blooop", "devlaunch", git_ref).value().to_owned())
         .collect();
         assert_eq!(ids.len(), 5);
     }
@@ -1249,14 +1291,14 @@ mod tests {
             .collect();
         let readable: HashSet<String> = parsed
             .iter()
-            .map(|w| drop_last_segment(&w.value()))
+            .map(|w| drop_last_segment(w.value()))
             .collect();
         assert_eq!(
             readable.len(),
             1,
             "the corpus must collide before truncation"
         );
-        let values: HashSet<String> = parsed.iter().map(|w| w.value()).collect();
+        let values: HashSet<String> = parsed.iter().map(|w| w.value().to_owned()).collect();
         let suffixes: HashSet<String> = parsed.iter().map(|w| w.suffix()).collect();
         assert_eq!(values.len(), suffixes.len());
     }
@@ -1279,7 +1321,9 @@ mod tests {
     #[test]
     fn every_repo_length_fits() {
         for repo_len in 1..60 {
-            let value = id("owner", &"r".repeat(repo_len), "some/long/branch/name-here").value();
+            let value = id("owner", &"r".repeat(repo_len), "some/long/branch/name-here")
+                .value()
+                .to_owned();
             assert!(value.len() <= TARGET_LENGTH, "{repo_len}: {value}");
         }
     }
@@ -1287,7 +1331,9 @@ mod tests {
     #[test]
     fn every_ref_length_fits() {
         for ref_len in 1..80 {
-            let value = id("owner", "devlaunch", &"b".repeat(ref_len)).value();
+            let value = id("owner", "devlaunch", &"b".repeat(ref_len))
+                .value()
+                .to_owned();
             assert!(value.len() <= TARGET_LENGTH, "{ref_len}: {value}");
         }
     }
@@ -1300,7 +1346,8 @@ mod tests {
             &repo,
             "a/very/long/branch/name/that/eats/the/budget",
         )
-        .value();
+        .value()
+        .to_owned();
         assert!(value.starts_with(&format!("{repo}-")), "{value}");
     }
 
@@ -1311,7 +1358,8 @@ mod tests {
             &"r".repeat(47),
             "a/very/long/branch/name/that/eats/the/budget",
         )
-        .value();
+        .value()
+        .to_owned();
         assert!(
             value.starts_with(&format!("{}-", "r".repeat(REPO_SLUG_LENGTH))),
             "{value}"
@@ -1519,7 +1567,9 @@ mod tests {
 
     #[test]
     fn a_constructed_id_is_lowercase_alphanumerics_and_dashes() {
-        let value = id("Owner", "My_Repo.git", "Feature/MyBranch").value();
+        let value = id("Owner", "My_Repo.git", "Feature/MyBranch")
+            .value()
+            .to_owned();
         assert!(
             value
                 .chars()
@@ -1539,7 +1589,8 @@ mod tests {
             "devlaunch",
             "dependabot/github_actions/codecov/codecov-action-6",
         )
-        .value();
+        .value()
+        .to_owned();
         assert!(value.contains("codecov"), "{value}");
         assert!(value.starts_with("devlaunch-dependabot-codecov"), "{value}");
         assert!(!value.contains("github-actions"), "{value}");
@@ -1557,7 +1608,7 @@ mod tests {
             "c".repeat(12),
             "d".repeat(12)
         );
-        let value = id("blooop", "dl", &git_ref).value();
+        let value = id("blooop", "dl", &git_ref).value().to_owned();
         let kept = format!("dl-a-{}-{}-zzz-", "c".repeat(12), "d".repeat(12));
         assert!(value.starts_with(&kept), "{value}");
         assert!(!value.contains(&"b".repeat(12)), "{value}");
@@ -1566,7 +1617,9 @@ mod tests {
     /// The other side of the same rule: nothing drops until it has to.
     #[test]
     fn a_ref_that_fits_whole_keeps_every_segment() {
-        let value = id("blooop", "dl", "a/bbbbbbbb/cccccccc/dddddddd/zzz").value();
+        let value = id("blooop", "dl", "a/bbbbbbbb/cccccccc/dddddddd/zzz")
+            .value()
+            .to_owned();
         assert!(
             value.starts_with("dl-a-bbbbbbbb-cccccccc-dddddddd-zzz-"),
             "{value}"
@@ -1579,7 +1632,7 @@ mod tests {
     #[test]
     fn the_first_and_last_segments_survive_heavy_truncation() {
         let git_ref = format!("aa/{}/{}/zz", "m".repeat(40), "n".repeat(40));
-        let value = id("blooop", "dl", &git_ref).value();
+        let value = id("blooop", "dl", &git_ref).value().to_owned();
         assert!(value.starts_with("dl-aa-zz-"), "{value}");
         assert!(
             !value.contains("mmmm") && !value.contains("nnnn"),
@@ -1589,7 +1642,9 @@ mod tests {
 
     #[test]
     fn a_single_segment_ref_is_truncated_by_characters() {
-        let value = id("blooop", "devlaunch", &"a".repeat(60)).value();
+        let value = id("blooop", "devlaunch", &"a".repeat(60))
+            .value()
+            .to_owned();
         assert!(value.starts_with("devlaunch-aaa"), "{value}");
     }
 
@@ -1617,7 +1672,7 @@ mod tests {
 
     #[test]
     fn dropping_segments_leaves_no_double_dashes() {
-        let value = id("blooop", "devlaunch", "a//b///c/d").value();
+        let value = id("blooop", "devlaunch", "a//b///c/d").value().to_owned();
         assert!(!value.contains("--"), "{value}");
     }
 
@@ -1722,7 +1777,7 @@ mod tests {
         let triple = id("anyone", "github.com", "owner/repo");
         let source = source_workspace_id("github.com/owner/repo");
         assert_eq!(drop_last_segment(&source), "github-com-owner-repo");
-        assert_eq!(drop_last_segment(&triple.value()), "github-com-owner-repo");
+        assert_eq!(drop_last_segment(triple.value()), "github-com-owner-repo");
         assert_ne!(source, triple.value());
     }
 
@@ -1742,8 +1797,8 @@ mod tests {
         // randomised hash seed -- the module's only inputs are its arguments, which
         // is why Python needed a fresh-interpreter test and this does not. The
         // repeated call is the part still worth asserting.
-        let first = id("blooop", "devlaunch", "main").value();
-        let second = id("blooop", "devlaunch", "main").value();
+        let first = id("blooop", "devlaunch", "main").value().to_owned();
+        let second = id("blooop", "devlaunch", "main").value().to_owned();
         assert_eq!(first, second);
         assert_eq!(first, "devlaunch-main-3j1t");
     }
@@ -1754,7 +1809,7 @@ mod tests {
     fn the_real_world_corpus_is_unique_and_within_budget() {
         let ids: Vec<String> = GOLDEN_TRIPLES
             .iter()
-            .map(|&(owner, repo, git_ref, _, _)| id(owner, repo, git_ref).value())
+            .map(|&(owner, repo, git_ref, _, _)| id(owner, repo, git_ref).value().to_owned())
             .collect();
         for value in &ids {
             assert!(value.len() <= TARGET_LENGTH, "{value}");
@@ -1770,7 +1825,7 @@ mod tests {
         for &(owner, repo, git_ref, _, _) in GOLDEN_TRIPLES {
             let repo_slug = slug(repo);
             if repo_slug.len() <= REPO_SLUG_LENGTH && !repo_slug.is_empty() {
-                let value = id(owner, repo, git_ref).value();
+                let value = id(owner, repo, git_ref).value().to_owned();
                 assert!(value.starts_with(&format!("{repo_slug}-")), "{value}");
             }
         }
@@ -1782,6 +1837,33 @@ mod tests {
     fn display_is_the_id() {
         let parsed = id("blooop", "devlaunch", "main");
         assert_eq!(parsed.to_string(), parsed.value());
+    }
+
+    #[test]
+    fn the_id_is_derived_once_and_lent_out_after_that() {
+        // Two calls hand back the *same* bytes, not two equal copies of them. The
+        // distinction is the whole point: `value` used to run the derivation --
+        // the hash, three slug passes and the truncation budget -- on every call,
+        // and callers on the launch path ask several times each. Comparing the
+        // strings would pass either way, so the assertion is on where they live.
+        let parsed = id("blooop", "devlaunch", "main");
+        assert_eq!(
+            parsed.value().as_ptr(),
+            parsed.value().as_ptr(),
+            "value() must lend out the id it already derived, not derive a fresh one"
+        );
+        assert_eq!(parsed.value(), "devlaunch-main-3j1t");
+    }
+
+    #[test]
+    fn a_clone_lends_out_its_own_copy_of_the_id() {
+        // A clone is a second workspace id, equal to the first and borrowing
+        // nothing from it -- so the cached rendering cannot become a shared
+        // lifetime that ties two values together.
+        let parsed = id("blooop", "devlaunch", "main");
+        let copy = parsed.clone();
+        assert_eq!(parsed.value(), copy.value());
+        assert_ne!(parsed.value().as_ptr(), copy.value().as_ptr());
     }
 
     #[test]

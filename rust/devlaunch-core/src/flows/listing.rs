@@ -2404,13 +2404,16 @@ mod tests {
 
             let clean_id = WorkspaceId::new("blooop", "demo", "feature")
                 .expect("a safe triple")
-                .value();
+                .value()
+                .to_owned();
             let dirty_id = WorkspaceId::new("blooop", "demo", "messy")
                 .expect("a safe triple")
-                .value();
+                .value()
+                .to_owned();
             let unrecorded_id = WorkspaceId::new("blooop", "other", "main")
                 .expect("a safe triple")
-                .value();
+                .value()
+                .to_owned();
             // The ids the Python run produced, so the fixture and the goldens are
             // known to be about the same workspaces.
             assert_eq!(clean_id, "demo-feature-j53q");
@@ -2435,7 +2438,7 @@ mod tests {
 
             let mut storage = storage_at(&cache.join("metadata.json"));
             storage
-                .add_worktree(WorktreeInfo::new(
+                .add_worktree(WorktreeInfo::as_an_older_dl_recorded_it(
                     "blooop",
                     "demo",
                     "feature",
@@ -2444,7 +2447,7 @@ mod tests {
                 ))
                 .expect("a record");
             storage
-                .add_worktree(WorktreeInfo::new(
+                .add_worktree(WorktreeInfo::as_an_older_dl_recorded_it(
                     "blooop",
                     "demo",
                     "messy",
@@ -2875,7 +2878,7 @@ mod tests {
         let mut scene = Scene::build();
         scene
             .storage
-            .add_worktree(WorktreeInfo::new(
+            .add_worktree(WorktreeInfo::as_an_older_dl_recorded_it(
                 "blooop",
                 "other-project",
                 "main",
@@ -2915,7 +2918,7 @@ mod tests {
             .expect("the repo directory");
         let mut storage = storage_at(&cache.join("metadata.json"));
         storage
-            .add_worktree(WorktreeInfo::new(
+            .add_worktree(WorktreeInfo::as_an_older_dl_recorded_it(
                 "blooop",
                 "r",
                 "feature",

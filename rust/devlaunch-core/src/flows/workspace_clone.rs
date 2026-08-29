@@ -412,12 +412,7 @@ impl<'r> WorkspaceCloneManager<'r> {
 
     /// The directory a *validated* triple's clone lives in.
     fn path_of(&self, workspace: &WorkspaceId) -> PathBuf {
-        clone_dir(
-            &self.repos_dir,
-            workspace.owner(),
-            workspace.repo(),
-            &workspace.value(),
-        )
+        clone_dir(&self.repos_dir, workspace)
     }
 
     /// The one directory a record's clone lives in, or `None` if dl cannot say.
@@ -981,13 +976,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         // Step 5: record the workspace. A record that cannot be written is a
         // notice and not a failure: the clone is on disk and usable, and refusing
         // the launch over its bookkeeping would be the worse outcome.
-        let mut recorded = WorktreeInfo::new(
-            owner,
-            repo,
-            branch,
-            ws_path.to_path_buf(),
-            &workspace.value(),
-        );
+        let mut recorded = WorktreeInfo::new(workspace, ws_path.to_path_buf());
         // The devpod workspace id, written down rather than left to be re-derived
         // later (devlaunch#88). It is the same string as `workspace_id` at the
         // moment it is written — dl hands this clone to `devpod up --id
@@ -997,7 +986,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         // had no second copy of its old id anywhere, so the whole population became
         // unaddressable at once. Re-registration writes it too, which is how a
         // record from an older dl acquires one without a migration.
-        recorded.devpod_workspace_id = Some(workspace.value());
+        recorded.devpod_workspace_id = Some(workspace.value().to_owned());
         match storage.add_worktree(recorded) {
             Ok(store_notices) => {
                 notices.say_all(store_notices.into_iter().map(CacheNotice::Metadata));
@@ -1414,9 +1403,12 @@ mod tests {
     /// pinned in `domain::workspace_id`. Restating it here would pin the same fact
     /// twice and make these tests fail for the wrong reason.
     fn leaf(branch: &str) -> String {
-        WorkspaceId::new("owner", "repo", branch)
-            .expect("a safe triple")
-            .value()
+        a_triple(branch).value().to_owned()
+    }
+
+    /// The triple every clone in this module belongs to, parsed.
+    fn a_triple(branch: &str) -> WorkspaceId {
+        WorkspaceId::new("owner", "repo", branch).expect("a safe triple")
     }
 
     fn a_clone_manager<'r>(cache: &Cache, git: Git<'r>, lfs: GitLfs) -> WorkspaceCloneManager<'r> {
@@ -1433,7 +1425,7 @@ mod tests {
 
     /// A workspace clone already on disk, holding `files`.
     fn given_clone(cache: &Cache, branch: &str, files: &[(&str, &[u8])]) -> PathBuf {
-        let ws = clone_dir(&cache.repos_dir, "owner", "repo", &leaf(branch));
+        let ws = clone_dir(&cache.repos_dir, &a_triple(branch));
         std::fs::create_dir_all(ws.join(".git")).expect("the clone");
         for (name, content) in files {
             let path = ws.join(name);
@@ -1557,7 +1549,7 @@ mod tests {
                 .expect("safe")
         );
 
-        let ws = clone_dir(&cache.repos_dir, "owner", "repo", &leaf("main"));
+        let ws = clone_dir(&cache.repos_dir, &a_triple("main"));
         std::fs::create_dir_all(&ws).expect("the directory");
         assert!(
             !manager
@@ -1587,7 +1579,7 @@ mod tests {
         let fake = FakeGit::new().headed_at_main();
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
         let bare = bare_dir(&cache.repos_dir, "owner", "repo");
-        let ws = clone_dir(&cache.repos_dir, "owner", "repo", &leaf("nb4"));
+        let ws = clone_dir(&cache.repos_dir, &a_triple("nb4"));
 
         let prepared = manager
             .prepare_cold(
@@ -1846,7 +1838,7 @@ mod tests {
     fn no_launch_fetches_inside_the_workspace_clone() {
         let mut cache = a_cache();
         let bare = given_cached_repo(&mut cache);
-        let ws = clone_dir(&cache.repos_dir, "owner", "repo", &leaf("nb4"));
+        let ws = clone_dir(&cache.repos_dir, &a_triple("nb4"));
         let fake = FakeGit::new();
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
 
@@ -2003,7 +1995,7 @@ mod tests {
     fn a_clone_that_failed_takes_its_debris_with_it() {
         let mut cache = a_cache();
         given_cached_repo(&mut cache);
-        let ws = clone_dir(&cache.repos_dir, "owner", "repo", &leaf("nb4"));
+        let ws = clone_dir(&cache.repos_dir, &a_triple("nb4"));
         // What a killed `git clone` leaves: a directory with no `.git` in it.
         std::fs::create_dir_all(ws.join("half-written")).expect("the debris");
         let fake = FakeGit::new().with_script(["git", "clone"], Response::exited(128));
@@ -2068,7 +2060,7 @@ mod tests {
             );
             assert_eq!(
                 recorded.local_path,
-                clone_dir(&cache.repos_dir, "owner", "repo", &leaf("nb4"))
+                clone_dir(&cache.repos_dir, &a_triple("nb4"))
             );
         }
     }
@@ -2486,7 +2478,7 @@ mod tests {
 
         assert_eq!(
             prepared.path,
-            clone_dir(&cache.repos_dir, "owner", "repo", &leaf("nb4")),
+            clone_dir(&cache.repos_dir, &a_triple("nb4")),
             "the path is unchanged: the workspace is still handed to devpod as before"
         );
         let stale: Vec<&CacheNotice> = notices
@@ -3125,7 +3117,7 @@ mod tests {
     fn a_record(branch: &str, local_path: PathBuf) -> WorktreeInfo {
         // The stamps are whatever the constructor writes: nothing below reads
         // them, and they are out of this module's reach now (#412).
-        WorktreeInfo::new("owner", "repo", branch, local_path, &leaf(branch))
+        WorktreeInfo::as_an_older_dl_recorded_it("owner", "repo", branch, local_path, &leaf(branch))
     }
 
     #[test]
@@ -3155,7 +3147,7 @@ mod tests {
         let cache = a_cache();
         let fake = FakeGit::new();
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
-        let mut recorded = a_record("nb4", clone_dir(&cache.repos_dir, "owner", "repo", "nb4"));
+        let mut recorded = a_record("nb4", clone_dir(&cache.repos_dir, &a_triple("nb4")));
         recorded.repo = "../../elsewhere".to_owned();
 
         assert_eq!(manager.resolve_bare_path(&recorded), None);
@@ -3188,7 +3180,7 @@ mod tests {
         let cache = a_cache();
         let fake = FakeGit::new();
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
-        let derived = clone_dir(&cache.repos_dir, "owner", "repo", &leaf("nb4"));
+        let derived = clone_dir(&cache.repos_dir, &a_triple("nb4"));
 
         for recorded in [PathBuf::from(""), PathBuf::from("relative/clone")] {
             let named = manager

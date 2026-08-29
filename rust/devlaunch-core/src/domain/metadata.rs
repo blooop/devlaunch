@@ -1434,7 +1434,7 @@ mod tests {
         {
             let mut storage = quiet_storage(dir.path());
             storage
-                .add_worktree(WorktreeInfo::new(
+                .add_worktree(WorktreeInfo::as_an_older_dl_recorded_it(
                     "owner1",
                     "repo1",
                     "branch1",

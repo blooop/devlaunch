@@ -42,7 +42,7 @@ use crate::clients::git::{self, Failure, Git, GitRefused};
 use crate::domain::locks::{self, Contention, LockError, LockGuard};
 use crate::domain::metadata::{self, MetadataError, MetadataStorage, RecordUpdate};
 use crate::domain::model::{BaseRepository, RecordedDefaultBranch, Timestamp};
-use crate::domain::workspace_id::{NamePart, UnsafeName, validate_ref_name};
+use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
 use crate::domain::workspace_state::NonEmpty;
 use crate::notices::Notices;
 use crate::osext::system_words;
@@ -108,14 +108,19 @@ pub(crate) fn repo_lock_path(repos_dir: &Path, owner: &str, repo: &str) -> PathB
 /// every branch of a repository onto a single identity
 /// (kinisi-robotics/kinisi_ros#9766).
 ///
-/// Takes the id as a string rather than a `WorkspaceId` so a caller holding a
-/// *recorded* id — the listing flows, reading `metadata.json` — can name the same
-/// directory without re-deriving it. A caller starting from a triple should go
-/// through
-/// [`crate::flows::workspace_clone::WorkspaceCloneManager::workspace_path`],
-/// which derives the id and therefore validates the triple.
-pub(crate) fn clone_dir(repos_dir: &Path, owner: &str, repo: &str, workspace_id: &str) -> PathBuf {
-    repo_dir(repos_dir, owner, repo).join(workspace_id)
+/// **Every segment comes out of one [`WorkspaceId`]**, which is what makes an
+/// unvalidated ref unable to reach a directory name here: there is no second way
+/// in. This took the owner, the repo and the id as three loose strings, on the
+/// reasoning that a caller holding an id *recorded* in `metadata.json` could then
+/// name the same directory without re-deriving it. No such caller was left — both
+/// production callers destructured a `WorkspaceId` on the way in — and what the
+/// three strings did keep costing was the disagreement they permitted: a path
+/// filed under one repository whose leaf is another repository's id was four
+/// arguments away and nothing checked. A record's clone is named by
+/// [`crate::flows::workspace_clone::WorkspaceCloneManager::resolve_clone_path`],
+/// which reads the recorded path first and derives only as a fallback.
+pub(crate) fn clone_dir(repos_dir: &Path, workspace: &WorkspaceId) -> PathBuf {
+    repo_dir(repos_dir, workspace.owner(), workspace.repo()).join(workspace.value())
 }
 
 // ---------------------------------------------------------------- reports
@@ -2241,10 +2246,36 @@ pub(crate) mod tests {
             repos.join("owner/repo/.lock")
         );
         assert_eq!(
-            clone_dir(repos, "owner", "repo", "repo-main-dkjd"),
+            clone_dir(repos, &a_triple("owner", "repo", "main")),
             repos.join("owner/repo/repo-main-dkjd"),
             "a clone is a sibling of the cache it was cut from, on one filesystem"
         );
+    }
+
+    #[test]
+    fn a_clone_directory_is_named_by_one_validated_triple_and_not_by_four_strings() {
+        // Every segment of this path comes out of the same `WorkspaceId`: the two
+        // directories above the leaf and the leaf itself. What that buys is a
+        // disagreement that can no longer be spelled -- a path filed under one
+        // repository whose leaf is another repository's id used to be four
+        // arguments away, and is now not expressible.
+        let repos = Path::new("/cache/repos");
+        assert_eq!(
+            clone_dir(repos, &a_triple("owner", "repo", "main")),
+            Path::new("/cache/repos/owner/repo/repo-main-dkjd")
+        );
+        assert_eq!(
+            clone_dir(repos, &a_triple("blooop", "devlaunch", "main")),
+            Path::new("/cache/repos/blooop/devlaunch/devlaunch-main-3j1t")
+        );
+    }
+
+    /// A triple this module is allowed to build a path out of.
+    ///
+    /// There is no other way in: an unvalidated `&str` does not satisfy
+    /// [`clone_dir`], which is the whole of what this ticket bought.
+    fn a_triple(owner: &str, repo: &str, git_ref: &str) -> WorkspaceId {
+        WorkspaceId::new(owner, repo, git_ref).expect("the test triple is safe")
     }
 
     #[test]

@@ -148,6 +148,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A workspace id is derived once, and the three signatures that had a triple in
+  hand stopped flattening it into loose strings.** `WorkspaceId::value()` ran the
+  whole derivation on every call — a SHA-256 over the triple, three slug passes
+  and the truncation budget — and a single launch asks for it several times, at
+  every layer it hands the id down through. The derivation now runs at the parse,
+  where the triple is validated, and `value()` lends out what it already has. It
+  answers `&str` rather than `String` for that reason, which is the one row that
+  moves in the `cargo public-api` snapshots.
+
+  What that buys is not the arithmetic. `clone_dir`, `WorktreeInfo::new` and
+  `lifecycle::resolve_known_workspace` each took a triple and its derived id as
+  three or four separate strings, and each of them permitted a disagreement that
+  nothing checked: a clone directory filed under one repository whose leaf is
+  another repository's id, a `metadata.json` record whose stored triple and stored
+  id are about two different workspaces, and a notice reading "addressing
+  `<recorded>` instead of `<derived>` for `<owner>/<repo>@<branch>`" in which the
+  derived id is not one that triple derives. All three take the parsed
+  `WorkspaceId` now, so the disagreement is not expressible and an unvalidated
+  string does not satisfy them.
+
+  The record whose halves disagree is real, though — the derivation moved once and
+  `metadata.json` still holds records written under the old one, which is the
+  state the collision guard and the recorded-id fallback both exist to handle — so
+  there is a test-only constructor named for exactly that, and production reads
+  such a record off disk or not at all.
+
+  Deliberately no `Deref<Target = str>` on the type. It would let a validated
+  triple be spent as a plain string by coercion at every call site that takes one,
+  which is the erasure this change is undoing.
+
 - **`flows::lifecycle` is thirteen modules instead of one 9,000-line file.** It
   held five unrelated commands — stop, delete, purge, prune, reconcile — plus the
   refresh latch, the fetch sweep and the on-disk placement rules that serve the
