@@ -23,7 +23,7 @@
 //!   a listing in the test. That one *is* read off today's binary, deliberately and
 //!   unlike every other golden in these suites — there is no Python left to capture
 //!   it from. What it catches is a **change**, which is what the parity cases caught
-//!   too (`parity_cases.txt`: "the regression tripwire"). Every line of it should be
+//!   too, under the heading they gave it: "the regression tripwire". Every line of it should be
 //!   explainable at review; a line nobody can explain is the finding.
 //!
 //! # What is left out, and why

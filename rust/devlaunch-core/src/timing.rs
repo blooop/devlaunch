@@ -947,7 +947,9 @@ impl Drop for Exclusive {
 
 #[cfg(test)]
 mod tests {
-    //! What `test/test_timing.py` pins, on this side of the port.
+    //! What the Python `test_timing` pinned, on this side of the port. It retired
+    //! with the Python tree (#267), except for the bench-harness half, which moved
+    //! to `test/test_bench_doc.py` and `test/fixtures/bench_harness.py`.
     //!
     //! Its `TestBenchHarness`, `TestTheDocumentedColdReset`,
     //! `TestBenchRecordsEachRunsStages` and `TestEveryDocumentedInvocation`

@@ -10,9 +10,10 @@ repository.workspace = true
 # The only devlaunch crate named here, and deliberately: aid is a command-line
 # rewrite that hands the result to dl, so the whole of devlaunch it can reach is
 # dl's entry point and the quoting that composes a command line for it. Python
-# pins the same rule as a test (`test/unit/test_aid.py` walks aid.py's AST and
-# refuses any use of `dl` beyond `main`, `get_version` and `DL_VALUE_OPTIONS`);
-# here it is the dependency graph.
+# pinned the same rule as a test (`test_aid` walked aid.py's AST and refused any
+# use of `dl` beyond `main`, `get_version` and `DL_VALUE_OPTIONS`, and retired
+# with the Python tree in #267); here it is the dependency graph, which needs no
+# test.
 dl = { path = "../dl" }
 
 # Forwarded rather than declared, so the two binaries cannot report different

@@ -3029,18 +3029,17 @@ mod tests {
     //! is ordinary on bind and overlay mounts. Where the filesystem does not deny,
     //! the test steps aside instead of asserting something it cannot reproduce.
     //!
-    //! Ported from `test/unit/test_purge_partial_removal.py`,
-    //! `test/unit/test_purge_ownership.py`'s purge-action classes,
-    //! `test/unit/test_workspace_listing.py::TestPurgeWillNotActOnAListItCouldNotRead`,
-    //! `test/test_workspace_state.py`'s `TestTheDeleteGuard` and
-    //! `TestForcedRemoveIsEnsureAbsent`, `test/test_dl.py`'s
+    //! Ported from these Python suites, all of which retired with the Python tree
+    //! (#267) — the names are what to grep the history for, not files to open:
+    //! `test_purge_partial_removal`, `test_purge_ownership`'s purge-action
+    //! classes, `test_workspace_listing::TestPurgeWillNotActOnAListItCouldNotRead`,
+    //! `test_workspace_state`'s `TestTheDeleteGuard` and
+    //! `TestForcedRemoveIsEnsureAbsent`, `test_dl`'s
     //! `TestBackgroundRefreshSpawning`, `TestRefreshChildRechecksFreshness` and
     //! `TestWorkspaceCommandsRefreshOnceAfterwards`,
-    //! `test/unit/test_updater_fetch_sweep.py`,
-    //! `test/unit/test_stored_workspace_id.py`,
-    //! `test/unit/test_prune_orphaned_clones.py`,
-    //! `test/unit/test_workspace_source_placement.py` and
-    //! `test/unit/test_reconcile_orphaned_workspaces.py`.
+    //! `test_updater_fetch_sweep`, `test_stored_workspace_id`,
+    //! `test_prune_orphaned_clones`, `test_workspace_source_placement` and
+    //! `test_reconcile_orphaned_workspaces`.
     //!
     //! `remove_tree_as_far_as_it_goes` lives in `flows::repo_manager` beside the
     //! cleanup it is the counterpart of, and is tested from here: `dl --purge` is

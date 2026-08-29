@@ -763,9 +763,9 @@ pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    //! `test/unit/test_aid.py`'s three parsing classes, which are the whole of aid's
-    //! own behaviour: what the command line splits into, what shell command comes
-    //! out, and what dl is handed.
+    //! The Python `test_aid`'s three parsing classes (retired with the Python tree
+    //! in #267), which are the whole of aid's own behaviour: what the command line
+    //! splits into, what shell command comes out, and what dl is handed.
 
     use super::*;
 

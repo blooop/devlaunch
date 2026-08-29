@@ -3556,7 +3556,9 @@ mod tests {
         }
 
         /// Every devpod invocation, without the leading `devpod`, in order — the
-        /// shape `test_devpod_spawn_counts.py` asserts.
+        /// shape the Python `test_devpod_spawn_counts` asserted before it retired
+        /// with the Python tree (#267). The spawn counts it gated on are gated
+        /// here now, by the assertions in this module that read this list.
         fn devpod_commands(&self) -> Vec<Vec<String>> {
             self.runner.args_to("devpod")
         }

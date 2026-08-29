@@ -42,6 +42,7 @@ sentences live pointers however old the document is.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -52,9 +53,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Records rather than pointers: what they say was true when it was written.
 ARCHIVAL = {"CHANGELOG.md", "docs/rust-port-scope.md"}
 
-# The trees a citation can be written in. Everything else (`rust/target`, a
+# The trees a citation can be written in. Everything else (a pixi environment, a
 # vendored dependency, whatever a tool drops) is not prose this repository owns.
 SOURCE_TREES = (".github", "docs", "rust", "scripts", "test")
+# Cargo's build output lives inside one of them and is nobody's prose. It is also
+# there or not there depending on whether anything has been built, which would
+# make the set of cases this test collects depend on the state of the machine.
+BUILD_OUTPUT = "rust/target"
 SOURCE_SUFFIXES = {".md", ".py", ".rs", ".sh", ".toml", ".yaml", ".yml"}
 TOP_LEVEL_DOCS = ("AGENTS.md", "CLAUDE.md", "README.md")
 
@@ -83,22 +88,25 @@ def sources() -> list[Path]:
             found.append(page)
     found.extend(page for page in REPO_ROOT.glob("*.toml") if page.is_file())
     for tree in SOURCE_TREES:
-        for path in sorted((REPO_ROOT / tree).rglob("*")):
-            if path.is_file() and path.suffix in SOURCE_SUFFIXES:
-                found.append(path)
-    return [
-        path
-        for path in found
-        if path.relative_to(REPO_ROOT).as_posix() not in ARCHIVAL
-    ]
+        for directory, subdirectories, files in os.walk(REPO_ROOT / tree):
+            here = Path(directory)
+            # Pruned rather than filtered afterwards: cargo's output holds tens of
+            # thousands of files and walking it is most of this test's runtime.
+            subdirectories[:] = sorted(
+                name
+                for name in subdirectories
+                if not (here / name).is_relative_to(REPO_ROOT / BUILD_OUTPUT)
+            )
+            found.extend(
+                here / name for name in sorted(files) if Path(name).suffix in SOURCE_SUFFIXES
+            )
+    return [path for path in found if path.relative_to(REPO_ROOT).as_posix() not in ARCHIVAL]
 
 
 SOURCES = sources()
 
 # Every Python test file that exists, by basename, for the bare-name rule.
-TEST_FILES = {
-    path.name for path in (REPO_ROOT / "test").rglob("test_*.py") if path.is_file()
-}
+TEST_FILES = {path.name for path in (REPO_ROOT / "test").rglob("test_*.py") if path.is_file()}
 
 
 def _resolves(citation: str) -> bool:

@@ -25,6 +25,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dead branch was written straight back, with every fallback that would have
   answered correctly sitting unreachable behind it.
 
+- **Sixty citations that pointed at nothing now point at something, and a guard
+  keeps it that way.** Comments across `rust/` name the test that pins the
+  behaviour they describe, which is most of what makes them worth reading.
+  Retiring the Python implementation (#267) deleted about forty of the files
+  those names referred to, in one commit, and the names stayed. A pointer into
+  nothing is worse than no pointer: it still reads as evidence, so the reader
+  goes looking and cannot tell whether the guard moved, was renamed, or never
+  existed.
+
+  Every one of them now names a suite that retired rather than a file to open,
+  and says so, in the form the surviving comments had already settled on. Two
+  were not merely stale but false. The bench workflow told a reader that a named
+  Python spawn-count guard "keeps the gating role" in `ci.yml`, when the counts
+  it meant have been argv assertions in the cargo suite since the port; and the
+  divergence table's row 30 still cited an allowance in the parity harness's case
+  list, which retired with the harness.
+
+  `test/test_citations_resolve.py` is what stops it happening again: a token
+  spelled the way a Python test file is spelled has to resolve to a file, a path
+  as written and a bare name against the test tree. `CHANGELOG.md` and
+  `docs/rust-port-scope.md` are out of scope, being records of what was true when
+  they were written.
+
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for
   its own use, the kitty keyboard protocol, bracketed paste, mouse reporting, the
