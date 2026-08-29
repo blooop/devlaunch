@@ -160,15 +160,18 @@ impl Insisted {
 /// **The standing is rendered into words here rather than carried, and that is
 /// the seam doing its job.** This type is re-exported at [`crate::api`], so
 /// every type it names is part of the promise. Carrying
-/// [`agent_worktrees::Standing`] would name a type the promise does not
-/// include — the defect the comment beside that re-export already records —
+/// [`agent_worktrees::Standing`](crate::flows::agent_worktrees::Standing) would
+/// name a type the promise does not include — the defect the comment beside that
+/// re-export already records —
 /// and promising it honestly would drag `StandingSite`, `Reason`, `Place`,
 /// `Blank`, `Subject` and `NonEmpty<Loss>` along with it, which is most of a
 /// module's internal vocabulary arriving in the one tier whose value is being
 /// small and stable. So the standing stays exactly as it is inside `flows`,
 /// and what crosses the promise is [`RemovalGrounds`]: the same words, made of
-/// `String`. It is the move [`agent_worktrees::Verdict::unsaved_json`] makes
-/// for the wire, at the same boundary and for the same reason (devlaunch#531).
+/// `String`. It is the move
+/// [`agent_worktrees::Verdict::unsaved_json`](crate::flows::agent_worktrees::Verdict::unsaved_json)
+/// makes for the wire, at the same boundary and for the same reason
+/// (devlaunch#531).
 ///
 /// Nothing about the modelling changed. #446's "a refusal carries the whole
 /// standing" is still true of the domain type, and still true here:

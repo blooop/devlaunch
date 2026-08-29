@@ -111,15 +111,15 @@ pub enum SpawnRefused {
 /// it.
 ///
 /// A value the binary makes one of per command, for the reason
-/// [`CommandContext`] is one: Python held the latch in a module-level dict and had
-/// to remember that a dl process is one command, so per-process state was
-/// per-invocation state. Here a second command is a second `Refresh` and the reset
-/// is structural.
+/// [`CommandContext`](crate::flows::listing::CommandContext) is one: Python held
+/// the latch in a module-level dict and had to remember that a dl process is one
+/// command, so per-process state was per-invocation state. Here a second command
+/// is a second `Refresh` and the reset is structural.
 ///
 /// It is threaded *into* the mutating flows rather than left beside them, so "a
 /// command that changed the workspace list forces a refresh" is something a caller
-/// cannot forget: [`workspace_stop`] and [`workspace_delete`] cannot be called
-/// without one.
+/// cannot forget: [`workspace_stop`](super::workspace_stop) and
+/// [`workspace_delete`](super::workspace_delete) cannot be called without one.
 pub struct Refresh<'a> {
     updater: &'a SelfInvocation,
     /// The completion cache whose mtime decides whether an unforced refresh is

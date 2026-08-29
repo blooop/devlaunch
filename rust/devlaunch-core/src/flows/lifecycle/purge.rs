@@ -69,8 +69,9 @@ pub enum PurgeStep {
     Deleting { workspace_id: String },
     /// devpod refused, and the purge carried on: one failed delete must not cost
     /// the rest of the cache its removal. The step is the failure's one report —
-    /// it used to be doubled as a [`LifecycleNotice`] too, and the binary carried
-    /// a filter whose whole job was to drop the second copy.
+    /// it used to be doubled as a [`LifecycleNotice`](super::LifecycleNotice)
+    /// too, and the binary carried a filter whose whole job was to drop the
+    /// second copy.
     NotDeleted {
         workspace_id: String,
         exit: Exit,
@@ -78,9 +79,10 @@ pub enum PurgeStep {
     },
     /// The workspace went and the named docker volumes its devcontainer created
     /// are still there. Said for the reason
-    /// [`LifecycleNotice::VolumesNotRemoved`] is said on the `rm` path — a purge
-    /// promises a clean slate, and disk it could not reclaim is the one thing
-    /// worth naming about it. The three sweeps that went fine say nothing.
+    /// [`LifecycleNotice::VolumesNotRemoved`](super::LifecycleNotice::VolumesNotRemoved)
+    /// is said on the `rm` path — a purge promises a clean slate, and disk it
+    /// could not reclaim is the one thing worth naming about it. The three sweeps
+    /// that went fine say nothing.
     VolumesNotRemoved {
         workspace_id: String,
         occasion: SweepOccasion,

@@ -184,8 +184,9 @@ pub(crate) fn clone_root(clones: &WorkspaceCloneManager<'_>) -> PathBuf {
 /// The tree a maintenance command scans and where devpod's workspaces sit in it,
 /// resolved together.
 ///
-/// [`prune_plan`] and [`reconcile_plan`] classify a directory by joining two
-/// facts: the root the candidates are scanned under, and where every live
+/// [`prune_plan`] and [`reconcile_plan`](super::reconcile_plan) classify a
+/// directory by joining two facts: the root the candidates are scanned under,
+/// and where every live
 /// workspace's source resolves *against that same root*. Taken as two parameters
 /// the pair could be built from two different roots — and the join would then
 /// mis-classify a clone, reading a healthy one whose workspace was placed against

@@ -71,13 +71,14 @@ pub enum LifecycleNotice {
     /// only place a reader learns what it actually resolved to. It is a notice
     /// rather than something the caller prints around the call because the *timing*
     /// is what makes it a warning instead of a receipt — it has to land between the
-    /// guard and `devpod delete`, and only [`workspace_remove`] knows where that
-    /// is.
+    /// guard and `devpod delete`, and only
+    /// [`workspace_remove`](super::workspace_remove) knows where that is.
     Removing { workspace_id: String },
     /// The removal found work that exists nowhere else and is going ahead anyway.
     ///
-    /// Only [`Removal::Wedged`] produces this: `dl <ws> rm` refuses on the same
-    /// finding and `rm --force` never looks. Carries the refusal it stepped past,
+    /// Only [`Removal::Wedged`](super::Removal::Wedged) produces this: `dl <ws>
+    /// rm` refuses on the same finding and `rm --force` never looks. Carries the
+    /// refusal it stepped past,
     /// so the list of what is about to be destroyed is the same value the refusal
     /// would have carried — one guard, one finding, two things to do with it.
     RemovingOverWork { refusal: RemovalRefused },

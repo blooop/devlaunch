@@ -60,11 +60,12 @@
 //! # Every mutation forgets the snapshot
 //!
 //! A flow that changes what `devpod list` would say takes the
-//! [`CommandContext`] **mutably** and calls
-//! [`CommandContext::forget_workspaces`] — Python's
-//! `invalidate_workspace_list_cache()`. Taking it mutably is the point: a flow
-//! that mutates devpod cannot be handed a shared reference, so it cannot quietly
-//! leave a stale snapshot behind.
+//! [`CommandContext`](crate::flows::listing::CommandContext) **mutably** and
+//! calls
+//! [`CommandContext::forget_workspaces`](crate::flows::listing::CommandContext::forget_workspaces)
+//! — Python's `invalidate_workspace_list_cache()`. Taking it mutably is the
+//! point: a flow that mutates devpod cannot be handed a shared reference, so it
+//! cannot quietly leave a stale snapshot behind.
 //!
 //! # This module is a table of contents
 //!
