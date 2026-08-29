@@ -1,6 +1,6 @@
 """The fake `devpod` PATH shim (#252 §3), tested as the program it is.
 
-The shim re-homes `test/fixtures/devpod_mock.py`'s design — call recorder,
+The shim re-homes the Python `devpod_mock` fixture's design — call recorder,
 argv→response table, workspace state machine — as a standalone executable, so
 it can stand on PATH in front of *any* dl implementation. Every test here
 spawns it as a separate process, because that is the only way it is ever used.

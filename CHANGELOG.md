@@ -7,7 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --prune` now reclaims the Docker volumes of workspaces devpod has already
+  forgotten.** Deleting a workspace through `dl` has removed its two named volumes
+  since devlaunch#325, and the names come from devpod's own record of what it
+  substituted, read at delete time and never guessed from a pattern. That leaves
+  one hole, and it is the one that was measured: a workspace deleted by a bare
+  `devpod delete` outside `dl`, which removes devpod's record and leaves the
+  volumes. After that there is nothing on the machine that names them.
+
+  So `dl` keeps its own copy. At the tail of every `up` that completed, it reads
+  the same two fields out of the same `workspace_result.json` and writes them to a
+  small per workspace file under its cache, beside the tool verdict markers. A
+  prune reclaims from those copies, and the whole of what it asks per copy is
+  whether any workspace `devpod list` returns carries that id. Where none does,
+  the workspace is gone and its volumes are leftovers.
+
+  Nothing is invented at either read, which is the point: every name that reaches
+  `docker volume rm` still came out of a substitution devpod performed and wrote
+  down. Matching `<basename>-pixi` and `dind-var-lib-docker-<id>` against `docker
+  volume ls` stays refused, because the `docker-in-docker` feature writes that
+  second name in every devcontainer tool that runs it, so the candidates `dl`
+  cannot attribute are exactly the ones belonging to somebody else.
+
+  A copy can still be wrong, in exactly two ways, and neither is answered by
+  believing the file. It can name a volume that is already gone, which `docker
+  volume rm --force` treats as a success. It can name one something else now
+  holds, which Docker refuses with `volume is in use`, reported, nothing removed,
+  and the copy kept so the retry is still there. A copy is dropped once, when a
+  removal came back removed for a workspace devpod does not list.
+
+  Two things follow. A run pointed at a scratch `XDG_CACHE_HOME` finds no copies,
+  so it names no volume and removes none, which is what makes the scratch
+  convention safe here by construction. And the 39 orphaned volumes holding 37.28
+  GB measured on the reference host are **out of scope and stay**: their records
+  died before any of this existed, and no route reaches them that is not the
+  pattern above. `docs/cleanup.md` carries the whole of it.
+
+- **`dl --ls` now tells you when the background cache sweep hit trouble.** The
+  hourly sweep that keeps your bare clones fresh runs as a detached child with
+  nothing attached to its output, so everything it ever had to complain about went
+  straight to `/dev/null`: a fetch that could not reach the remote, a clone deleted
+  underneath its record, a `git pack-refs` refused by a permissions problem. The
+  sweep now writes what happened into `metadata.json` beside that repository's
+  freshness stamp, and `dl --ls` prints it under the table:
+
+  ```
+  Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: fatal: unable to create 'packed-refs.lock': Permission denied
+  ```
+
+  One note per repository, overwritten on every pass that acts on it, so nothing
+  accumulates and there is no log to rotate. A pass that goes cleanly clears the
+  note, so a machine you have fixed stops complaining on its own; a pass that
+  attempted nothing, because the interval had not elapsed or another `dl` run held
+  the lock, leaves the last note where it was rather than claiming a sweep it never
+  ran. `dl --ls --json` carries the same thing as a `lastSweep` object on the rows
+  whose repository has one, added alongside the existing fields and absent
+  entirely when there is nothing outstanding. Nothing new is printed on the launch
+  path, and a `metadata.json` written by an older `dl` reads exactly as it did.
+  [docs/cleanup.md](docs/cleanup.md) has the detail.
+
 ### Changed
+
+- **`dl --purge` names where each surviving workspace came from.** The list of
+  workspaces a purge is leaving standing printed ids and nothing else, and an id
+  is the one thing you cannot decide on: `pythontemplate` reads exactly the same
+  whether it is a `dl <git-url>` of yours, a `dl ./project` whose checkout you
+  care about, or something another tool made. Each line now carries the source
+  beside the id, the same string `dl --ls` shows in its `SOURCE` column.
+
+  The block also says what removing the cache costs the workspaces that stay.
+  They keep working, but a clone an older `dl` placed outside the cache, under the
+  retired `worktree.repos_dir` key, is named only by a record inside the cache
+  that is about to go: after the purge, `dl <workspace> rm` deletes the workspace
+  and leaves that directory standing with nothing on the machine pointing at it.
+  Removing such a workspace first is what takes its clone with it. The copy of
+  their volume names goes the same way, so a survivor deleted with a bare `devpod
+  delete` after a purge leaves volumes nothing can reclaim, where `dl --prune`
+  would have. `--purge` also reports a `config.toml` that still sets that key now,
+  which is the only mention a stranded tree gets when no workspace opens it any
+  more.
 
 - **A removal on the promised surface cannot skip the unsaved-work guard, because
   there is nothing left to skip it with.** `devlaunch_core::api` promised
@@ -55,7 +135,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every arm is asserted against the exact line it used to arrive already rendered
   with, and a real run whose records will not open is judged from outside the binary.
 
+
 ### Fixed
+
+- **Sixty-six citations that pointed at nothing now point at something, and a
+  guard keeps it that way.** Comments across `rust/` name the test that pins the
+  behaviour they describe, which is most of what makes them worth reading.
+  Retiring the Python implementation (#267) deleted about forty of the files
+  those names referred to, in one commit, and the names stayed. A pointer into
+  nothing is worse than no pointer: it still reads as evidence, so the reader
+  goes looking and cannot tell whether the guard moved, was renamed, or never
+  existed.
+
+  Every one of them now names a suite that retired rather than a file to open,
+  and says so, in the form the surviving comments had already settled on. Two
+  were not merely stale but false. The bench workflow told a reader that a named
+  Python spawn-count guard "keeps the gating role" in `ci.yml`, when the counts
+  it meant have been argv assertions in the cargo suite since the port; and the
+  divergence table's row 30 claimed two pins it no longer has, an allowance in
+  the parity harness's case list and a set of `suffix_verb` tests, the first
+  retired with the harness and the second deleted with the behaviour itself. That
+  row is superseded, so nothing pins it, and it now says so.
+
+  `test/test_citations_resolve.py` is what stops it happening again: a token
+  spelled the way a Python test file is spelled has to resolve to a file, a path
+  as written and a bare name against the test tree. `CHANGELOG.md` and
+  `docs/rust-port-scope.md` are out of scope, being records of what was true when
+  they were written.
+
+- **Eight tests that CI was not running.** The Rust job names its test suites one
+  step at a time, which buys real things: a per-suite timeout, so a wedged binary
+  fails its own short step instead of holding the runner until it loses contact,
+  and a step title that names the culprit even when the runner dies before it can
+  upload logs. What it costs is that the list, rather than the workspace, decides
+  what runs. A test binary nobody wrote a step for is compiled by the build step
+  and run by nothing, and no tick anywhere goes red to say so.
+
+  That had happened twice. `devlaunch-test-support` came off the list once and was
+  put back with a note about it; `dl`'s `picker` and `terminal` suites were still
+  off it, eight tests, one of them the test written to prove the terminal-restore
+  fix in this same release. The one test standing behind that repair had never run
+  in CI.
+
+  So the job now runs `cargo test --workspace` after the named steps. The list
+  stays, because the list is what triage reads; the workspace is what decides. It
+  costs 72 seconds, taking the job from 2:13 to 3:19 against a bound of thirty
+  minutes. A guard in the test suite holds both halves in place, and a second one
+  holds every job in the workflow to a timeout: three had none, among them the job
+  that polls a remote API in a sleep loop.
+
+- **The JSON writers now escape DEL, as CPython does.** `metadata.json`,
+  `completions.json` and `dl --ls --json` are all written to agree byte for byte
+  with what the Python build wrote, and one character disagreed: `U+007F`. The
+  escaper's gate was `is_ascii()` where CPython's is `' '` through `'~'`, so DEL
+  went out as a raw byte where `json.dumps` writes the six characters `\u007f`.
+  It is the only non-printable ASCII character serde hands to the escaper instead
+  of escaping itself, which is how it stayed wrong through three copies of the
+  loop.
+  No branch name can carry a DEL (git rejects control characters in ref names),
+  so nothing in the wild hit it going out. Coming back in did: the metadata loader
+  parses and re-encodes, so a `metadata.json` written by the Python build with an
+  escaped DEL in it re-saved as a raw byte, quietly breaking the round-trip the
+  file's own contract asserts. That load-and-re-save is now pinned on a real file,
+  and each of the three writers is pinned against the line `json.dumps` printed
+  for every ASCII character at once, which says the same thing in the other
+  direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
+
+- **`--force`'s placement rule is now held over the whole argument space rather
+  than over the lines somebody thought to list.** The grammar decides whether a
+  `--force` is the modifier or a word in the workspace slot by counting its
+  position, and that reading was covered by hand-written examples that between
+  them never once named `rm` or `rme`, which are the only two verbs a misplaced
+  `--force` could actually destroy something with. A single test now walks every ordering
+  of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
+  checks each one against the rule as Python stated it, so an ordering nobody
+  thought of is covered by construction.
+  **The slot is now counted over the words of the line rather than over its
+  tokens**, which is the one behaviour change and closes the leading half of the
+  same defect. A flag clap has consumed is gone from the words and still sitting in
+  argv, so counting tokens shifted every slot up by one: `dl <flag> ws --force rm`
+  read the verb-slot `--force` as trailing and force-deleted `ws`, where
+  `dl ws --force rm` refuses. No spelling of `<flag>` existed, but only because five
+  unrelated rules each happened to refuse or strip one first, and `aid` hands `dl`
+  every leading `-` word it is given without knowing what any of them mean. A slot
+  is a place a word goes, so it is words that are counted. Every line anybody can
+  type today reads exactly as it did.
+  It turned up one thing that was believed and is not true: clap's two-word cap on
+  the positionals holds only while the words are contiguous. `dl a b c` is refused,
+  but `dl a b --force c` opens a second occurrence and hands the grammar three
+  words. Nothing forced escapes through it, because the third word is refused
+  first, but it is that refusal doing the work and not the cap.
+
+## [0.25.0] - 2026-08-28
+
+### Fixed
+
+- **A cache whose default branch was deleted upstream no longer records the dead
+  name.** A bare clone remembers the default branch it was cloned with, in its
+  `HEAD` symref, and nothing repoints it afterwards: `dl` has never written a
+  bare's `HEAD`. So a repository that renamed `master` to `main` leaves the cache
+  pointing at `refs/heads/master` long after the prune that deleted the ref, and
+  `git symbolic-ref HEAD` keeps answering `master`, exit 0, because a symbolic ref
+  is a name rather than a branch.
+
+  The reading now checks that the name is a ref the clone really has, and treats a
+  name that is not as it treats a refusal: ask the next probe. The cost is one
+  local `show-ref` per clone or adopt, and what it buys is that no default branch
+  `dl` records was read off a ref that is not there. It bit hardest on the adopt
+  path, which rebuilds a record by reading the clone: delete `metadata.json` and
+  the dead branch was written straight back, with every fallback that would have
+  answered correctly sitting unreachable behind it.
 
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for

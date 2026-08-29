@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use devlaunch_core::api::{
-    ColdPath, CommandContext, DeleteStalled, DevpodHome, LifecycleNotice, Notices, Records,
-    RecordsNotice, Refresh, Removal, RemovalRefused, RemoveOutcome, SelfInvocation,
+    ColdPath, CommandContext, DeleteStalled, DevpodHome, KeptCopies, LifecycleNotice, Notices,
+    Records, RecordsNotice, Refresh, Removal, RemovalRefused, RemoveOutcome, SelfInvocation,
     workspace_remove,
 };
 use devlaunch_core::runner::{
@@ -146,6 +146,35 @@ fn the_volumes_are_named_before_devpod_is_asked_to_delete() {
             "{volume} was named in devpod's record and had to be swept: {swept:?}"
         );
     }
+}
+
+/// The copy devlaunch keeps of those names goes with them.
+///
+/// `workspace_remove` takes the copy store because the removal is where a copy
+/// stops being worth keeping: devlaunch#456 drops it on the proof that docker
+/// removed the volumes it named. The store is a parameter rather than something
+/// the removal resolves, so the way to get this wrong is to accept one and never
+/// reach it, which nothing above would notice: the workspace still goes, the exit
+/// is still zero, and the next `--prune` reports reclaiming volumes that left with
+/// the workspace.
+#[test]
+fn the_kept_copy_of_the_volumes_goes_with_the_workspace() {
+    let machine = Machine::new();
+    machine.a_recorded_clone_holding("an-hour-of-work.md");
+    machine.a_devcontainer_that_created_a_volume();
+    machine.a_kept_copy_naming(&[&format!("{WORKSPACE}-pixi")]);
+
+    let outcome = machine.remove(Removal::Insisted);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "expected the workspace to go, got {outcome:?}"
+    );
+    assert!(
+        !machine.kept_copy_path().exists(),
+        "docker removed the volumes the copy named, so the copy names nothing: {}",
+        machine.kept_copy_path().display()
+    );
 }
 
 // ===========================================================================
@@ -274,6 +303,27 @@ impl Machine {
             .expect("devpod's create result");
     }
 
+    /// devlaunch's own copy of what devpod substituted, as a completed `up` leaves
+    /// one under the cache directory.
+    ///
+    /// Written as a file for `a_recorded_clone_holding`'s reason: the store's write
+    /// verb is internal to the crate, and what this test is about is the copy a
+    /// previous run left on disk.
+    fn a_kept_copy_naming(&self, volumes: &[&str]) {
+        let path = self.kept_copy_path();
+        std::fs::create_dir_all(path.parent().expect("the copies directory"))
+            .expect("the copies directory");
+        let copy = serde_json::json!({ "volumes": volumes });
+        std::fs::write(&path, copy.to_string()).expect("the kept copy");
+    }
+
+    /// Where `KeptCopies::under(&self.cache)` keeps this workspace's copy.
+    fn kept_copy_path(&self) -> PathBuf {
+        self.cache
+            .join("workspace-copies")
+            .join(format!("{WORKSPACE}.json"))
+    }
+
     /// Open devlaunch's records the way a command does, and remove the workspace
     /// through the one call the promise carries.
     fn remove(&self, removal: Removal) -> RemoveOutcome {
@@ -301,6 +351,10 @@ impl Machine {
             storage,
             &self.cache,
             devpod_home.as_ref(),
+            // The same cache directory the records came out of, which is where a
+            // launch of this workspace would have written the copy this removal
+            // drops.
+            &KeptCopies::under(&self.cache),
             WORKSPACE,
             removal,
             &mut |DeleteStalled::OnTheLock| {},

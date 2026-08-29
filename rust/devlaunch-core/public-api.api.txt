@@ -151,6 +151,7 @@ pub struct devlaunch_core::api::CommandContext<'r>
 pub struct devlaunch_core::api::DevcontainerPath(_)
 pub struct devlaunch_core::api::DevpodHome
 pub struct devlaunch_core::api::Host
+pub struct devlaunch_core::api::KeptCopies
 pub struct devlaunch_core::api::Launch<'a, 'r, 'l>
 pub struct devlaunch_core::api::MetadataStorage
 pub struct devlaunch_core::api::Records<'r>
@@ -175,5 +176,5 @@ pub fn devlaunch_core::api::identity(&str) -> core::result::Result<devlaunch_cor
 pub fn devlaunch_core::api::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
 pub fn devlaunch_core::api::parse(&str) -> devlaunch_core::domain::spec::WorkspaceSpec<'_>
 pub fn devlaunch_core::api::resolve_devcontainer_ref(&str) -> core::result::Result<devlaunch_core::domain::spec::DevcontainerPath, devlaunch_core::domain::spec::DevcontainerRefError>
-pub fn devlaunch_core::api::workspace_remove(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &std::path::Path, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, devlaunch_core::flows::lifecycle::Removal, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::DeleteStalled), &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::RemoveOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::api::workspace_remove(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &std::path::Path, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &devlaunch_core::flows::kept_copies::KeptCopies, &str, devlaunch_core::flows::lifecycle::Removal, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::DeleteStalled), &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::RemoveOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::api::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>

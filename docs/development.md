@@ -92,7 +92,12 @@ Committing a regenerated `public-api.api.txt` is committing a change to the prom
 say which one in the pull request. If the change was to a promised type's methods or impls,
 the diff to point at is in `public-api.rest.txt`. `rust/devlaunch-core/tests/public_api_snapshots.rs`
 holds the two core files to the split itself, every promised row an `api` declaration and none
-of the others one, so a hand-edited snapshot fails in the Rust suite rather than in review.
+of the others one, so a hand-edit that files a row in the wrong tier fails in the Rust suite.
+Ordering is not a partition property and nothing local checks it, so a block written in the
+wrong position satisfies every one of those assertions and is caught only by CI's `public-api`
+job, which regenerates the files and diffs them. A hand-edited snapshot is therefore provisional
+until that job agrees, and in this repository's devcontainer, which has neither prerequisite
+above, hand-editing is the only route there is.
 
 **What a failed run leaves behind**, precisely, because "nothing" would be a claim rather than a
 fact. The script checks every destination is writable before it generates anything, then writes
@@ -143,6 +148,14 @@ Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `car
 working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
 [AGENTS.md](../AGENTS.md).
+
+One thing to know about pointing a run at a scratch cache (`XDG_CACHE_HOME=/tmp/...`), which
+AGENTS.md recommends for anything near storage. A run that *creates* a workspace writes its copy
+of that workspace's volume names into the cache it is about to throw away, and that copy is the
+only record of those names once devpod's own record goes. Remove such workspaces with `dl <ws> rm`
+before discarding the scratch cache, or their volumes outlive everything that could name them. See
+[the volumes of a workspace devpod has already
+forgotten](cleanup.md#the-volumes-of-a-workspace-devpod-has-already-forgotten).
 
 ### The Quickstart's demo GIFs
 

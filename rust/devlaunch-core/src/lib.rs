@@ -178,6 +178,12 @@ pub mod api {
     // `Notices` are already above.
     pub use crate::clients::devpod_home::DevpodHome;
     pub use crate::domain::metadata::MetadataStorage;
+    // `KeptCopies` arrives the same way `DevpodHome` did, and for the same reason:
+    // #516 widened the delete with the volume-copy store so a removal reclaims the
+    // volumes devpod substituted, and re-exported nothing, which left the row on
+    // the promised tier naming a type no caller of the promise could name. The
+    // store is a parameter of the removal, so it is promised with it.
+    pub use crate::flows::kept_copies::KeptCopies;
     pub use crate::flows::lifecycle::{
         DeleteStalled, Insistence, LifecycleNotice, Removal, RemovalRefused, RemoveOutcome,
     };

@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.24.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.25.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -253,7 +253,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --ls` | List every workspace |
 | `dl --ls --json` | The same, machine-readable, with what each workspace would lose if deleted |
 | `dl --ls --size` | Add what deleting each one would free. Opt-in: it walks every file |
-| `dl --prune` | Remove the clone directories no workspace opens any more |
+| `dl --prune` | Remove the clone directories no workspace opens any more, and reclaim the volumes of workspaces devpod has forgotten |
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions |
@@ -266,7 +266,7 @@ and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere el
 
 ```bash
 $ dl --version
-dl 0.24.0
+dl 0.25.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -368,8 +368,8 @@ different jobs:
 
 | Command | Takes | Leaves |
 |---|---|---|
-| `dl --prune` | Clone directories no workspace opens | Every workspace, container, image and volume |
-| `dl --purge` | The workspaces devlaunch created, and its caches | Workspaces it did not create, named before it asks |
+| `dl --prune` | Clone directories no workspace opens, and the volumes of workspaces devpod no longer lists | Every workspace, container and image |
+| `dl --purge` | The workspaces devlaunch created, and its caches | Workspaces it did not create, each named with its source before it asks |
 | `dl --reconcile` | Nothing | Repairs records that stopped matching the disk |
 
 Two promises worth knowing. **Nothing deletes work that exists nowhere else:** a clone with

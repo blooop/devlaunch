@@ -1,6 +1,7 @@
 //! The fake devpod behind the fake runner: a workspace state machine.
 //!
-//! `test/fixtures/devpod_mock.py`'s design, re-homed behind the typed
+//! The Python `devpod_mock` fixture's design (retired with the Python tree in
+//! #267), re-homed behind the typed
 //! [`Runner`](devlaunch_runner::Runner) seam and brought up to the
 //! fidelity `test/fixtures/devpod_shim.py` proved out. What matters is that the
 //! shapes are real devpod's shapes, because the code under test parses them:

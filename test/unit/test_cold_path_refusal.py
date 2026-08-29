@@ -70,9 +70,7 @@ class TestRecordsThatWillNotOpen:
         assert said, result.stderr
         assert said[0].startswith("Repository 'blooop/devlaunch': could not create the directory")
 
-    def test_nothing_was_asked_of_devpod_for_a_workspace_that_cannot_be_named(
-        self, devpod_shim
-    ):
+    def test_nothing_was_asked_of_devpod_for_a_workspace_that_cannot_be_named(self, devpod_shim):
         """The refusal comes before the round trips, so there is nothing to clean up.
 
         A `devpod up` here would leave a container behind for a launch that never

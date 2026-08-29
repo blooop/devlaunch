@@ -6,7 +6,7 @@ stand-in that reports a timing document and exits. That keeps the tests fast,
 hermetic, and able to describe launches that would be awkward to arrange for real
 (a run that reported its stages and then failed).
 
-These helpers lived in `test/test_timing.py`, which judged the Python
+These helpers lived in the Python `test_timing`, which judged that
 implementation's timing module and went with it (#267). The bench scripts are
 language-agnostic tooling and stayed, so the harness that drives them stayed too
 -- with the timing vocabulary now read from the Rust source that owns it rather

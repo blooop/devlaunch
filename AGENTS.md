@@ -222,6 +222,18 @@ checking rather than trusting, because a private package fails at nothing. See
   matching on headings. Moving one of those sections between files means moving
   the path in its guard, in the same change.
 
+- **A citation spelled as a path has to point somewhere.** Comments all over
+  `rust/` name the test that pins the behaviour they describe, which is what
+  makes the record worth reading. `test/test_citations_resolve.py` holds every
+  one of those names to being a file: a path is checked as written, a bare
+  filename against the test tree. Retiring the Python implementation (#267)
+  broke about sixty of them at once, which is why the rule exists. When a suite
+  is gone, name it without the extension and say it retired, the way the
+  comments now do: `test_purge_ownership` (Python, retired in #267). The
+  history stays greppable and stops impersonating a live guard. `CHANGELOG.md`
+  and `docs/rust-port-scope.md` are out of scope as records of what was true
+  when they were written.
+
 - **No em or en dashes in the README or the `docs/` pages it links.** They read
   as machine-written. Use a full stop or a comma, or end the sentence, and write
   a numeric range as "18s to 28s". `test/test_docs_prose.py` asserts it and
@@ -234,3 +246,28 @@ checking rather than trusting, because a private package fails at nothing. See
 - **A page under `docs/` is not the README.** Six sentences survived the split
   still saying "the rest of this README" or "the figures above are this README's"
   from inside a docs page. Same test guards the phrase.
+
+## Standing rules: second copies of a fact, and when a review happens
+
+- **A second hand-maintained copy of a fact is allowed only if a test named
+  beside it diffs it against the first.** The 2026-08 review found six copies of
+  one fact and three had already drifted: the two devpod fakes, `dl.bash`'s
+  tables, CI's test list. No generator is required and none is mandated —
+  `dl.bash` stays hand-written for that reason, since `clap_complete` cannot
+  express the dynamic half and a generator erases the comments that explain why
+  owners win over ids. The rule lives here as one paragraph and not as a register
+  under `docs/`, because a register is itself a second copy of a fact and would
+  need a guard of its own. Enforcement is nothing new: the guards that already
+  exist (`completion_tables`, `public-api`, the doc tests) are the enforcement,
+  and a reviewer who notices a new copy asks for a diff test beside it. A prek
+  hook or a per-PR gate was weighed and refused — one person writes and breaks
+  this rule, so the same attention enforces it either way, and the tax is real
+  while the miss rate is not.
+
+- **An architecture review is chartered as a wayfinder map when the reviewer
+  judges enough has changed, never as a per-PR gate.** No schedule triggers it,
+  because the charter month produced three reviews unprompted and the trigger was
+  never the missing part. The mechanism that does run every time is smaller: the
+  fresh-context adversarial review of each PR by an agent that did not write it,
+  which is where the last three real defects were caught — #427's layering
+  violation, #415's four-hole guard, #428's dropped `Absent`.
