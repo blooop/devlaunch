@@ -17,6 +17,7 @@ use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::metadata;
+use devlaunch_core::domain::model::SweepTrouble;
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
@@ -36,7 +37,9 @@ use devlaunch_core::flows::lifecycle::{
     PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalRefused, SweepOccasion,
     Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
-use devlaunch_core::flows::listing::{LastUsed, SizeCell, Sizes, TableRow, WorkspaceTable};
+use devlaunch_core::flows::listing::{
+    LastUsed, SizeCell, Sizes, SweptRepoNote, TableRow, WorkspaceTable,
+};
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::records::{RecordsNotice, StartupError};
@@ -136,6 +139,49 @@ pub(crate) fn table_lines(table: &WorkspaceTable, sizes: Sizes) -> Vec<String> {
         ));
     }
     lines
+}
+
+/// The lines `dl --ls` writes under its table for the repositories whose last
+/// background sweep left something to say.
+///
+/// The sweep runs detached with all three descriptors on `/dev/null`, so until
+/// now every complaint it had went nowhere (devlaunch#480). It writes them into
+/// the record instead, and this is the reading: one line per repository, said
+/// once, under the table a person was already looking at.
+///
+/// Per repository and not per row, because a note is about a bare clone rather
+/// than about a workspace — several rows can share one, and a repository with no
+/// workspace at all still has one to report.
+pub(crate) fn sweep_notes(notes: &[SweptRepoNote]) -> Vec<String> {
+    notes
+        .iter()
+        .map(|outstanding| {
+            let mut line = format!(
+                "Last cache sweep of {}: {}",
+                outstanding.slug(),
+                sweep_trouble(outstanding.note.trouble)
+            );
+            // Only where something spoke. A trailing `: ` over nothing would read
+            // as a refusal whose words were lost, which is a different fact.
+            if let Some(said) = &outstanding.note.said {
+                line.push_str(": ");
+                line.push_str(said);
+            }
+            line
+        })
+        .collect()
+}
+
+/// What one sweep trouble reads as. The words are the binary's (#251 §5); what
+/// travels in the record is the arm.
+fn sweep_trouble(trouble: SweepTrouble) -> &'static str {
+    match trouble {
+        SweepTrouble::RefsNotPacked => "could not pack the refs it fetched",
+        SweepTrouble::FetchRefused => "could not fetch",
+        SweepTrouble::FetchTimedOut => "ran out of time fetching",
+        SweepTrouble::CloneMissing => "found no bare clone to fetch into",
+        SweepTrouble::NotRecorded => "fetched, and could not write the record",
+    }
 }
 
 /// One row's `SIZE` cell.
@@ -3750,6 +3796,61 @@ mod tests {
             "Could not pack the refs of blooop/devlaunch: fatal: unable to create \
              'packed-refs.lock': Permission denied"
         );
+    }
+
+    #[test]
+    fn the_last_sweeps_note_reads_as_one_line_naming_the_repository() {
+        // The same refusal as the notice above, a run later. The notice went to the
+        // detached child's null stderr; this is what somebody actually reads, so it
+        // has to name the repository on its own — nothing around it does.
+        use devlaunch_core::domain::model::SweepNote;
+
+        let note = |trouble, said: Option<&str>| SweptRepoNote {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            note: SweepNote {
+                trouble,
+                said: said.map(str::to_owned),
+            },
+        };
+
+        assert_eq!(
+            sweep_notes(&[note(
+                SweepTrouble::RefsNotPacked,
+                Some("fatal: unable to create 'packed-refs.lock': Permission denied"),
+            )]),
+            [
+                "Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: \
+                 fatal: unable to create 'packed-refs.lock': Permission denied"
+            ]
+        );
+        // Nothing spoke, so nothing is quoted: a line ending in a bare colon would
+        // read as a refusal whose words were lost.
+        assert_eq!(
+            sweep_notes(&[note(SweepTrouble::FetchTimedOut, None)]),
+            ["Last cache sweep of blooop/devlaunch: ran out of time fetching"]
+        );
+        assert!(sweep_notes(&[]).is_empty(), "a clean cache says nothing");
+    }
+
+    #[test]
+    fn every_sweep_trouble_has_words_of_its_own() {
+        // Five arms, five sentences, and no two the same: which condition it was is
+        // the whole of what the record carries when git said nothing.
+        let words = [
+            SweepTrouble::RefsNotPacked,
+            SweepTrouble::FetchRefused,
+            SweepTrouble::FetchTimedOut,
+            SweepTrouble::CloneMissing,
+            SweepTrouble::NotRecorded,
+        ]
+        .map(sweep_trouble);
+        let mut sorted = words.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+
+        assert_eq!(sorted.len(), words.len(), "{words:?}");
+        assert!(words.iter().all(|line| !line.is_empty()));
     }
 
     #[test]

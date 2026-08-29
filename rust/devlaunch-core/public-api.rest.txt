@@ -607,6 +607,40 @@ impl core::fmt::Debug for devlaunch_core::domain::metadata::OsFailure
 pub fn devlaunch_core::domain::metadata::OsFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::metadata::OsFailure
 pub mod devlaunch_core::domain::model
+pub enum devlaunch_core::domain::model::SweepTrouble
+pub devlaunch_core::domain::model::SweepTrouble::CloneMissing
+pub devlaunch_core::domain::model::SweepTrouble::FetchRefused
+pub devlaunch_core::domain::model::SweepTrouble::FetchTimedOut
+pub devlaunch_core::domain::model::SweepTrouble::NotRecorded
+pub devlaunch_core::domain::model::SweepTrouble::RefsNotPacked
+impl core::clone::Clone for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::clone(&self) -> devlaunch_core::domain::model::SweepTrouble
+impl core::cmp::Eq for devlaunch_core::domain::model::SweepTrouble
+impl core::cmp::PartialEq for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::eq(&self, &devlaunch_core::domain::model::SweepTrouble) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::domain::model::SweepTrouble
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::model::SweepTrouble
+impl serde_core::ser::Serialize for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for devlaunch_core::domain::model::SweepTrouble
+pub fn devlaunch_core::domain::model::SweepTrouble::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct devlaunch_core::domain::model::SweepNote
+pub devlaunch_core::domain::model::SweepNote::said: core::option::Option<alloc::string::String>
+pub devlaunch_core::domain::model::SweepNote::trouble: devlaunch_core::domain::model::SweepTrouble
+impl core::clone::Clone for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::clone(&self) -> devlaunch_core::domain::model::SweepNote
+impl core::cmp::Eq for devlaunch_core::domain::model::SweepNote
+impl core::cmp::PartialEq for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::eq(&self, &devlaunch_core::domain::model::SweepNote) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::model::SweepNote
+impl serde_core::ser::Serialize for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for devlaunch_core::domain::model::SweepNote
+pub fn devlaunch_core::domain::model::SweepNote::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct devlaunch_core::domain::model::WorktreeInfo
 impl core::clone::Clone for devlaunch_core::domain::model::WorktreeInfo
 pub fn devlaunch_core::domain::model::WorktreeInfo::clone(&self) -> devlaunch_core::domain::model::WorktreeInfo
@@ -2099,6 +2133,20 @@ pub fn devlaunch_core::flows::listing::SourceDescription::eq(&self, &devlaunch_c
 impl core::fmt::Debug for devlaunch_core::flows::listing::SourceDescription
 pub fn devlaunch_core::flows::listing::SourceDescription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::SourceDescription
+pub struct devlaunch_core::flows::listing::SweptRepoNote
+pub devlaunch_core::flows::listing::SweptRepoNote::note: devlaunch_core::domain::model::SweepNote
+pub devlaunch_core::flows::listing::SweptRepoNote::owner: alloc::string::String
+pub devlaunch_core::flows::listing::SweptRepoNote::repo: alloc::string::String
+impl devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::slug(&self) -> alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::clone(&self) -> devlaunch_core::flows::listing::SweptRepoNote
+impl core::cmp::Eq for devlaunch_core::flows::listing::SweptRepoNote
+impl core::cmp::PartialEq for devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::eq(&self, &devlaunch_core::flows::listing::SweptRepoNote) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::listing::SweptRepoNote
+pub fn devlaunch_core::flows::listing::SweptRepoNote::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::listing::SweptRepoNote
 pub struct devlaunch_core::flows::listing::TableRow
 pub devlaunch_core::flows::listing::TableRow::id: alloc::string::String
 pub devlaunch_core::flows::listing::TableRow::last_used: devlaunch_core::flows::listing::LastUsed
@@ -2146,6 +2194,7 @@ pub fn devlaunch_core::flows::listing::enriched_listing(&mut devlaunch_core::flo
 pub fn devlaunch_core::flows::listing::flatten_repos(&indexmap::map::IndexMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::listing::head_branch_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
+pub fn devlaunch_core::flows::listing::outstanding_sweep_notes(&devlaunch_core::domain::metadata::MetadataStorage) -> alloc::vec::Vec<devlaunch_core::flows::listing::SweptRepoNote>
 pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::repo_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::workspace_table(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path, devlaunch_core::flows::listing::Sizes) -> core::result::Result<devlaunch_core::flows::listing::WorkspaceTable, devlaunch_core::clients::devpod::ListingUnreadable>
@@ -2478,6 +2527,7 @@ pub devlaunch_core::flows::records::Records::clones: devlaunch_core::flows::work
 pub devlaunch_core::flows::records::Records::reported: alloc::vec::Vec<devlaunch_core::flows::records::RecordsNotice>
 pub devlaunch_core::flows::records::Records::storage: devlaunch_core::domain::metadata::MetadataStorage
 pub fn devlaunch_core::flows::records::open_records<'r>(&'r dyn devlaunch_runner::Runner) -> core::result::Result<devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
+pub fn devlaunch_core::flows::records::open_storage() -> core::result::Result<(devlaunch_core::domain::metadata::MetadataStorage, alloc::vec::Vec<devlaunch_core::domain::metadata::Notice>), devlaunch_core::flows::records::StartupError>
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone

@@ -265,6 +265,62 @@ impl World {
         }
     }
 
+    /// Put a `git` first on the run's PATH that refuses `pack-refs` and is the
+    /// real git for everything else.
+    ///
+    /// The one failure in this file that has to come from a *subprocess* rather
+    /// than from a fixture flag: what the sweep records is git's own words, and a
+    /// world that supplied them itself would be pinning the test's spelling of a
+    /// refusal instead of git's.
+    fn given_a_git_that_will_not_pack_refs(&self) {
+        let real = ["/usr/bin/git", "/bin/git"]
+            .into_iter()
+            .map(Path::new)
+            .find(|candidate| candidate.exists())
+            .expect("git is installed");
+        let shim = self.path("bin/git");
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\n\
+                 for argument in \"$@\"; do\n\
+                 \x20 if [ \"$argument\" = pack-refs ]; then\n\
+                 \x20   echo \"{REFUSED_PACK}\" >&2\n\
+                 \x20   exit 1\n\
+                 \x20 fi\n\
+                 done\n\
+                 exec {} \"$@\"\n",
+                real.display()
+            ),
+        )
+        .expect("a git that will not pack");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("an executable fake");
+    }
+
+    /// Wind every repository's fetch clock back to before the interval.
+    ///
+    /// The sweep is interval-gated on `last_fetched`, which the pass before it just
+    /// moved, so a second pass in the same test would find nothing due and step over
+    /// the very repository the test is about.
+    fn restale_the_fetch_clock(&self) {
+        let mut record: serde_json::Value =
+            serde_json::from_str(&self.read("cache/devlaunch/metadata.json")).expect("a record");
+        for repository in record["repositories"]
+            .as_object_mut()
+            .expect("the repositories")
+            .values_mut()
+        {
+            repository["last_fetched"] = serde_json::json!("2020-01-01T00:00:00");
+        }
+        std::fs::write(
+            self.path("cache/devlaunch/metadata.json"),
+            record.to_string(),
+        )
+        .expect("a record with a stale clock");
+    }
+
     /// The whole cache, contents included, as a listing two runs can be compared by.
     ///
     /// The instrument for a command that must leave the cache **alone** — one
@@ -1549,6 +1605,92 @@ fn the_child_migrates_the_cache_like_every_other_run() {
             .read("cache/devlaunch/metadata.json")
             .contains("\"version\": 3"),
         "the refresh child did not migrate the cache"
+    );
+}
+
+/// What the fake git writes when it refuses to pack, and what the record must
+/// come to hold: git's words, not dl's.
+const REFUSED_PACK: &str = "fatal: unable to create 'packed-refs.lock': Permission denied";
+
+#[test]
+fn a_pack_the_sweep_could_not_do_is_readable_when_somebody_next_lists() {
+    // devlaunch#480, end to end and in that order: the refusal is raised inside a
+    // detached child whose three descriptors are `/dev/null`, so the only way it
+    // reaches anybody is the record. Before this, no test could tell the notice
+    // being raised from the notice being read, because nothing read it.
+    let world = World::base();
+    world.given_a_git_that_will_not_pack_refs();
+
+    world.dl(&["--update-cache", "--force"]).exited(0);
+
+    let record = world.read("cache/devlaunch/metadata.json");
+    assert!(
+        record.contains("\"refs_not_packed\"") && record.contains(REFUSED_PACK),
+        "the sweep's refusal is not in the record: {record}"
+    );
+
+    let listed = world.dl(&["--ls"]);
+    listed.exited(0);
+    assert!(
+        listed.err.contains(&format!(
+            "Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: \
+             {REFUSED_PACK}"
+        )),
+        "--ls did not read the note back: {}",
+        listed.err
+    );
+
+    let document = world.dl(&["--ls", "--json"]);
+    document.exited(0);
+    let rows: serde_json::Value = serde_json::from_str(&document.out).expect("the wire document");
+    let notes: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter_map(|row| row.get("lastSweep"))
+        .collect();
+    assert!(
+        !notes.is_empty()
+            && notes.iter().all(|note| {
+                note["trouble"] == "refs_not_packed" && note["said"] == REFUSED_PACK
+            }),
+        "the wire document does not carry the note verbatim: {}",
+        document.out
+    );
+}
+
+#[test]
+fn a_later_sweep_that_went_fine_takes_the_complaint_back_out() {
+    // Overwritten on every pass that acts, which is what lets the record hold this
+    // at all: no rotation, no second file, and a cache whose trouble has been fixed
+    // stops complaining without anybody clearing it by hand.
+    let world = World::base();
+    world.given_a_git_that_will_not_pack_refs();
+    world.dl(&["--update-cache", "--force"]).exited(0);
+    assert!(
+        world
+            .read("cache/devlaunch/metadata.json")
+            .contains("refs_not_packed"),
+        "the first pass left nothing to clear"
+    );
+
+    std::fs::remove_file(world.path("bin/git")).expect("the real git is back on PATH");
+    world.restale_the_fetch_clock();
+    world.dl(&["--update-cache", "--force"]).exited(0);
+
+    assert!(
+        !world
+            .read("cache/devlaunch/metadata.json")
+            .contains("last_sweep"),
+        "a clean pass left the last one's complaint standing: {}",
+        world.read("cache/devlaunch/metadata.json")
+    );
+    let listed = world.dl(&["--ls"]);
+    listed.exited(0);
+    assert!(
+        !listed.err.contains("Last cache sweep"),
+        "--ls is still reading a note nothing is complaining about: {}",
+        listed.err
     );
 }
 

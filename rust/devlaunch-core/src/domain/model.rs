@@ -212,6 +212,77 @@ pub(crate) struct BaseRepository {
     /// §4). Out of reach of `flows`, so a caller with one field to change has
     /// to say which field, and cannot carry a stale copy of this one along.
     pub(super) worktrees: Vec<String>,
+    /// What the last background sweep of this repository had to say — see
+    /// [`SweepNote`].
+    ///
+    /// Last in the record rather than beside `last_fetched`, which is where it
+    /// belongs by meaning: the two are written by the same pass, but a key
+    /// appended is a key every older reader already ignores, where a key
+    /// inserted moves `worktrees` and rewrites the file for every repository
+    /// that never had a note.
+    ///
+    /// Omitted from the file entirely when there is none, so a clean cache's
+    /// `metadata.json` is byte for byte the one this build wrote before the
+    /// field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_sweep: Option<SweepNote>,
+}
+
+/// What one background sweep had to say about one repository.
+///
+/// The sweep is a detached child with all three descriptors on `/dev/null`
+/// (`ProcessRunner::detach`), so every notice it raises has always gone
+/// nowhere. This is the one that survives to be read: `dl --ls` prints it and
+/// `dl --ls --json` carries it, which is the whole of devlaunch#480.
+///
+/// **Overwritten, never accumulated.** Each pass that actually acts on a
+/// repository replaces this outright — a pass that fetched cleanly clears it —
+/// so one repository holds at most one note and the record needs no rotation
+/// and no second file. A pass that attempted nothing (the interval had not
+/// elapsed, another run held the lock, the lock would not open) leaves the last
+/// pass's note standing, because clearing it there would report a clean sweep
+/// that never ran.
+///
+/// **Absent rather than empty when there is nothing to say.** The key is left
+/// out of the file, so "the last sweep was clean" is one state, "a note is
+/// here" is another, and a stored value this build cannot read is a third —
+/// a [`NotRebuilt`], exactly as an unparsable `last_fetched` is. A bare string
+/// would have spelled the first two the same way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SweepNote {
+    /// Which of the sweep's troubles this was.
+    pub trouble: SweepTrouble,
+    /// The words of whatever refused, verbatim — git's own stderr where git is
+    /// what refused.
+    ///
+    /// `None` where nothing said anything: a fetch killed at the bound and a
+    /// clone that is not on disk are conditions dl observed rather than
+    /// sentences anything wrote, and an empty string for them would be a
+    /// refusal that said nothing dressed up as one that did.
+    pub said: Option<String>,
+}
+
+/// What went wrong for a sweep, in the arms the sweep itself can tell apart.
+///
+/// Not a rendering: the words are the `dl` binary's (#251 §5), and what travels
+/// here is which condition it was plus whatever git said about it. Snake case
+/// on the wire in both places it appears, because it is a token rather than a
+/// sentence — the same way devpod's `Running` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SweepTrouble {
+    /// The fetch worked and `git pack-refs --all` would not collapse the loose
+    /// refs it wrote. The cache is fresh either way; see docs/cleanup.md.
+    RefsNotPacked,
+    /// git refused the fetch.
+    FetchRefused,
+    /// The fetch ran past the sweep's own time bound and the child was killed.
+    FetchTimedOut,
+    /// The record names a bare clone that is not on disk, so there was nothing
+    /// to fetch into.
+    CloneMissing,
+    /// The fetch worked and the freshness stamp could not be written.
+    NotRecorded,
 }
 
 /// A workspace clone of one branch.
@@ -271,6 +342,7 @@ impl BaseRepository {
             default_branch: RecordedDefaultBranch::Named(DEFAULT_BRANCH.to_owned()),
             last_fetched: None,
             worktrees: Vec::new(),
+            last_sweep: None,
         }
     }
 
@@ -286,6 +358,7 @@ impl BaseRepository {
                 default_branch: RecordedDefaultBranch::from_stored(stored.default_branch),
                 last_fetched: read_optional_timestamp(stored.last_fetched)?,
                 worktrees: stored.worktrees,
+                last_sweep: read_optional_sweep_note(stored.last_sweep)?,
             },
             unknown_fields: stored.unknown.into_keys().collect(),
         })
@@ -357,6 +430,8 @@ struct StoredRepository {
     last_fetched: Option<serde_json::Value>,
     #[serde(default)]
     worktrees: Vec<String>,
+    #[serde(default)]
+    last_sweep: Option<serde_json::Value>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -402,6 +477,35 @@ fn read_optional_timestamp(
         Some(serde_json::Value::String(text)) => read_timestamp(&text).map(Some),
         Some(other) => Err(NotRebuilt {
             reason: format!("last_fetched is {}", json_kind(&other)),
+        }),
+    }
+}
+
+/// `last_sweep` as the sweep writes it: absent and null both mean the last sweep
+/// left nothing to say, an object is a note, anything else is unreadable.
+///
+/// No empty-string arm, where [`read_optional_timestamp`] has one: that arm is
+/// bug-compatibility with a Python `last_fetched` this field has no history with,
+/// and an empty note that reads as no note is the exact conflation the field was
+/// shaped to avoid.
+///
+/// A note whose *object* this build cannot read costs the entry, the way an
+/// unparsable `last_fetched` does — the load reports it and storage preserves the
+/// original before any rewrite. A key inside the note that this build has no
+/// field for costs only that key, which is the module's other rule and the reason
+/// a newer devlaunch's extra detail cannot take a repository out of the listing.
+fn read_optional_sweep_note(
+    stored: Option<serde_json::Value>,
+) -> Result<Option<SweepNote>, NotRebuilt> {
+    match stored {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(object @ serde_json::Value::Object(_)) => serde_json::from_value(object)
+            .map(Some)
+            .map_err(|error| NotRebuilt {
+                reason: format!("last_sweep is unreadable: {error}"),
+            }),
+        Some(other) => Err(NotRebuilt {
+            reason: format!("last_sweep is {}", json_kind(&other)),
         }),
     }
 }
@@ -472,6 +576,9 @@ mod tests {
                 2024, 1, 1, 12, 0, 0, 0,
             ))),
             worktrees: vec!["feature-1".to_owned(), "feature-2".to_owned()],
+            // The golden below is Python's, from before this field existed, and
+            // it still is: a record with no note writes no key.
+            last_sweep: None,
         }
     }
 
@@ -658,6 +765,109 @@ mod tests {
         );
 
         BaseRepository::from_json(stored).expect_err("not rebuilt");
+    }
+
+    // --- the last sweep's note (devlaunch#480) ----------------------------
+
+    #[test]
+    fn a_record_written_before_the_field_existed_still_loads_and_says_nothing() {
+        // Every `metadata.json` on every machine dl has ever run on. The key is not
+        // there, and "the last sweep left nothing to say" is the right reading of
+        // that: a record cannot be made unloadable by a field it predates.
+        let stored = json_of(PYTHON_REPOSITORY);
+
+        let rebuilt = BaseRepository::from_json(stored).expect("rebuilt");
+
+        assert_eq!(rebuilt.entry.last_sweep, None);
+        assert!(
+            rebuilt.unknown_fields.is_empty(),
+            "an absent key is not an unknown one"
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_note_writes_no_key_at_all() {
+        // What keeps the upgrade silent: a cache whose sweeps all went cleanly
+        // rewrites byte for byte the file this build wrote before the field
+        // existed, so nothing about `metadata.json` moves for anybody who has no
+        // trouble to report.
+        let written = serde_json::to_string(&python_repository()).expect("serializable");
+
+        assert!(
+            !written.contains("last_sweep"),
+            "absent, not null: {written}"
+        );
+    }
+
+    #[test]
+    fn a_note_round_trips_through_the_record() {
+        let mut repository = python_repository();
+        repository.last_sweep = Some(SweepNote {
+            trouble: SweepTrouble::RefsNotPacked,
+            said: Some("fatal: unable to create 'packed-refs.lock'".to_owned()),
+        });
+
+        let written = serde_json::to_string(&repository).expect("serializable");
+        let rebuilt = BaseRepository::from_json(json_of(&written)).expect("rebuilt");
+
+        assert!(
+            written.contains(r#""last_sweep":{"trouble":"refs_not_packed","said":"#),
+            "the tokens are the record's own spelling: {written}"
+        );
+        assert_eq!(rebuilt.entry, repository);
+    }
+
+    #[test]
+    fn a_null_note_reads_as_no_note_rather_than_as_damage() {
+        let stored = json_of(
+            r#"{"owner":"o","repo":"r","remote_url":"u","local_path":"/p","last_sweep":null}"#,
+        );
+
+        let rebuilt = BaseRepository::from_json(stored).expect("rebuilt");
+
+        assert_eq!(rebuilt.entry.last_sweep, None);
+    }
+
+    #[test]
+    fn a_note_this_build_cannot_read_costs_the_entry_the_way_a_bad_stamp_does() {
+        // Absence, a note, and a stored value that is not one are three states and
+        // not two: the third goes the way `last_fetched` already goes — the entry is
+        // reported unusable and storage preserves the original before any rewrite —
+        // rather than being quietly read as "nothing to say".
+        for stored in [
+            r#"{"owner":"o","repo":"r","remote_url":"u","local_path":"/p","last_sweep":""}"#,
+            r#"{"owner":"o","repo":"r","remote_url":"u","local_path":"/p","last_sweep":3}"#,
+            r#"{"owner":"o","repo":"r","remote_url":"u","local_path":"/p",
+                "last_sweep":{"trouble":"a_trouble_this_build_has_no_arm_for"}}"#,
+        ] {
+            let failed = BaseRepository::from_json(json_of(stored)).expect_err("not rebuilt");
+            assert!(
+                failed.reason.contains("last_sweep"),
+                "the reason names the field: {:?}",
+                failed.reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_inside_a_note_that_this_build_has_no_field_for_costs_only_that_key() {
+        // The module's other rule, and the reason a newer devlaunch's extra detail
+        // cannot take a repository out of somebody's listing. The note itself is
+        // overwritten wholesale by the next sweep anyway.
+        let stored = json_of(
+            r#"{"owner":"o","repo":"r","remote_url":"u","local_path":"/p",
+                "last_sweep":{"trouble":"fetch_timed_out","said":null,"after":"30s"}}"#,
+        );
+
+        let rebuilt = BaseRepository::from_json(stored).expect("rebuilt");
+
+        assert_eq!(
+            rebuilt.entry.last_sweep,
+            Some(SweepNote {
+                trouble: SweepTrouble::FetchTimedOut,
+                said: None,
+            })
+        );
     }
 
     #[test]

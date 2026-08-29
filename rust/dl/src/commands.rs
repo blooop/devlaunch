@@ -24,7 +24,7 @@ use devlaunch_core::flows::lifecycle::{
     Persistence, PruneError, PruneOutcome, Refresh, RefreshReason, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
-use devlaunch_core::flows::records::{Records, StartupError, open_records};
+use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::runner::{Exit, Runner};
 
@@ -196,17 +196,40 @@ fn render_list(
     }
 }
 
-/// The human table. Reads devpod and nothing else — no config, no records, no
-/// migration, which is what keeps a listing one round trip.
+/// The human table, and whatever the last background sweep left in the record.
+///
+/// Still one devpod round trip, still no config and no cache migration — the one
+/// thing it reads besides devpod is `metadata.json`, and only for the sweep notes
+/// under the table. That read is the point of devlaunch#480: the sweep is a
+/// detached child whose stderr is `/dev/null`, so the record is the only place a
+/// complaint of its can be left, and `--ls` is the only surface anybody reads.
 fn render_table(context: &mut CommandContext<'_>, cache: &Path, sizes: Sizes) -> Ending {
-    match listing::workspace_table(context, cache, sizes) {
-        Err(refused) => refuse_listing(&refused),
-        Ok(table) => {
-            for line in render::table_lines(&table, sizes) {
-                println!("{line}");
-            }
-            Ending::Done
-        }
+    let table = match listing::workspace_table(context, cache, sizes) {
+        Err(refused) => return refuse_listing(&refused),
+        Ok(table) => table,
+    };
+    for line in render::table_lines(&table, sizes) {
+        println!("{line}");
+    }
+    say_sweep_notes();
+    Ending::Done
+}
+
+/// The lines under the table, on stderr where every other notice goes.
+///
+/// A record that will not open costs the notes and nothing else: `--ls` answers
+/// out of devpod, and a listing that refused because a note could not be fetched
+/// would be the tail wagging the dog. The load's own notices are said, so a
+/// `metadata.json` this run quarantines is never moved aside in silence.
+fn say_sweep_notes() {
+    let Ok((storage, notices)) = open_storage() else {
+        return;
+    };
+    for line in render::metadata_notices(&notices) {
+        eprintln!("{line}");
+    }
+    for line in render::sweep_notes(&listing::outstanding_sweep_notes(&storage)) {
+        eprintln!("{line}");
     }
 }
 
