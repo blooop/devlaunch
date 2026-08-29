@@ -154,6 +154,13 @@ pub(crate) const CONTEXT_OPTIONS_TTL: Duration = Duration::from_secs(3600);
 /// `--workspace-env` on every `up` while a mount only lands at creation.
 pub(crate) const PIXI_CACHE_TARGET: &str = "/var/tmp/devlaunch-pixi";
 
+/// `$SSH_AUTH_SOCK`, OpenSSH's own name for the agent it would forward.
+///
+/// Named here rather than read as a literal for [`ssh::CONFIG_VAR`]'s reason: it
+/// is somebody else's spelling, and one place to look for it is the whole of what
+/// keeps a rename from becoming a silently shared master.
+pub(crate) const SSH_AUTH_SOCK_VAR: &str = "SSH_AUTH_SOCK";
+
 /// The leaf under devlaunch's cache directory that the launch locks live in.
 ///
 /// Its own directory rather than the repo cache: this lock is keyed by workspace,
@@ -192,6 +199,13 @@ pub struct Host {
     /// from — so it names the file devpod publishes its host aliases into, and
     /// the only one it publishes them into.
     pub(crate) devpod_ssh_config: Option<String>,
+    /// `$SSH_AUTH_SOCK`: the agent this run would forward.
+    ///
+    /// Read for one purpose, and it is not a flag — it goes into the identity of
+    /// the ssh control socket. A reused master forwards whichever agent opened it
+    /// and ignores the later client's, so two runs with different agents must not
+    /// find one another's master (devlaunch#389).
+    pub(crate) ssh_auth_sock: Option<String>,
     /// The home directory, which holds the `~/.ssh/config` devpod falls back to
     /// and expands a `~/` in any of the paths above. `None` on a machine with no
     /// home directory; `dl` still runs there when `XDG_CACHE_HOME` is set, and
@@ -233,6 +247,7 @@ impl Host {
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
             devpod_ssh_config: crate::osext::env_str(ssh::CONFIG_VAR),
+            ssh_auth_sock: crate::osext::env_str(SSH_AUTH_SOCK_VAR),
             home: crate::osext::home_dir(),
             cache_dir: cache_dir.into(),
             devpod_home: DevpodHome::locate(),
@@ -244,6 +259,16 @@ impl Host {
         self.cache_dir
             .join(LAUNCH_LOCK_DIR)
             .join(format!("{workspace_id}.lock"))
+    }
+
+    /// Where this host's ssh control sockets live.
+    ///
+    /// Under the cache dir, so it follows `XDG_CACHE_HOME` like the rest of dl's
+    /// storage: a scratch run gets scratch sockets, and `dl --purge` takes them
+    /// away with everything else. Losing them costs the next trip its ~2s and
+    /// nothing more, which is what makes that correct by construction.
+    pub(crate) fn ssh_control_dir(&self) -> PathBuf {
+        self.cache_dir.join(ssh::CONTROL_DIR)
     }
 
     /// The host directory containers share their downloaded pixi packages through.
@@ -1982,12 +2007,22 @@ fn ssh_with_terminal(
         gh::openssh_forwarding(session.forwarded_token(notices)),
         session.forwarded_claude().as_ref(),
     );
+    // Derived from the permit list that is about to be sent, not from one read
+    // again somewhere else: a master filters `SendEnv` against its own list in
+    // silence, so the list and the socket it is carried over have to be one fact.
+    let reuse = ssh::Reuse::derive(
+        &session.host.ssh_control_dir(),
+        workspace_id,
+        &forwarding.args,
+        session.host.ssh_auth_sock.as_deref(),
+    );
     let args = ssh::command_args(
         config,
         workspace_id,
         payload.as_str(),
         &forwarding.args,
         workdir,
+        &reuse,
     )
     .map_err(SessionRefused::UnsafeRequest)?;
     notices.say(LaunchNotice::SshCommand { argv: args.clone() });
@@ -5875,6 +5910,10 @@ mod tests {
         // `~/.ssh/config`, which is exactly that host.
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
         let published = published_config(&scene.host);
+        let socket = ssh::Reuse::derive(&scene.host.ssh_control_dir(), "myws", &[], None);
+        let ssh::Reuse::Multiplexed(socket) = socket else {
+            panic!("a scratch cache is short enough to multiplex through");
+        };
 
         let (session, _, _) = a_session(&scene, Some("claude"));
 
@@ -5891,6 +5930,12 @@ mod tests {
                 "-F".to_owned(),
                 published.display().to_string(),
                 "-t".to_owned(),
+                "-o".to_owned(),
+                "ControlMaster=auto".to_owned(),
+                "-o".to_owned(),
+                format!("ControlPath={}", socket.as_path().display()),
+                "-o".to_owned(),
+                "ControlPersist=60".to_owned(),
                 "myws.devpod".to_owned(),
                 "bash -lc claude".to_owned(),
             ]]
@@ -6134,6 +6179,74 @@ mod tests {
             .expect("an ssh call");
         assert!(argv.contains(&"SendEnv=GH_TOKEN".to_owned()), "{argv:?}");
         assert!(!argv.iter().any(|arg| arg.contains("gho_secretvalue")));
+    }
+
+    #[test]
+    fn a_run_with_a_token_and_a_run_without_never_share_a_master() {
+        // devlaunch#389's silent failure, closed at the flow rather than at the
+        // digest: a master opened by the run with no token filters `SendEnv`
+        // against its own empty permit list, so the run *with* a token would get
+        // an empty `GH_TOKEN` and an unauthenticated `gh` at exit 0. The two runs
+        // cannot find each other's socket, so the state has nowhere to happen.
+        //
+        // The file names are compared rather than the whole paths, because each
+        // scene has a scratch cache of its own; the name is the key.
+        let with_token = logged_in(Scene::new().on_a_terminal(&["myws"]).with_running("myws"));
+        let without = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&with_token, Some("claude"));
+        let _ = a_session(&without, Some("claude"));
+
+        let keyed = |scene: &Scene| -> String {
+            let argv = scene
+                .runner
+                .argvs()
+                .into_iter()
+                .next()
+                .expect("an ssh call");
+            let path = argv
+                .iter()
+                .find_map(|arg| arg.strip_prefix("ControlPath="))
+                .unwrap_or_else(|| panic!("no ControlPath in {argv:?}"))
+                .to_owned();
+            Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a socket name")
+                .to_owned()
+        };
+
+        assert!(
+            keyed(&with_token) != keyed(&without),
+            "a permit list of [GH_TOKEN] and one of [] share a master, so the \
+             forwarded token would be filtered away in silence"
+        );
+    }
+
+    #[test]
+    fn the_control_socket_lives_under_devlaunchs_own_cache_directory() {
+        // Under `XDG_CACHE_HOME` like the rest of dl's storage, in a leaf of its
+        // own so the cache's walkers do not read it as a repo, and `dl --purge`
+        // takes it away with everything else.
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&scene, Some("claude"));
+
+        let argv = scene
+            .runner
+            .argvs()
+            .into_iter()
+            .next()
+            .expect("an ssh call");
+        let path = argv
+            .iter()
+            .find_map(|arg| arg.strip_prefix("ControlPath="))
+            .unwrap_or_else(|| panic!("no ControlPath in {argv:?}"));
+        assert_eq!(
+            Path::new(path).parent(),
+            Some(scene.host.ssh_control_dir().as_path())
+        );
+        assert!(scene.host.ssh_control_dir().is_dir());
     }
 
     #[test]
