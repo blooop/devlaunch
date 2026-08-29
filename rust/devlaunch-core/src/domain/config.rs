@@ -243,7 +243,8 @@ struct StoredCleanup {
 
 #[cfg(test)]
 mod tests {
-    //! `test/test_worktree_config.py`, re-pinned.
+    //! The Python `test_worktree_config`, re-pinned here when it retired with the
+    //! Python tree (#267).
     //!
     //! Python's tests construct `WorktreeConfig(...)` directly and check
     //! `to_dict`; both are gone here, because nothing in devlaunch writes this

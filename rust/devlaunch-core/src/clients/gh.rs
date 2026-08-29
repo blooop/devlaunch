@@ -589,9 +589,10 @@ mod tests {
 
     // -------------------------------------------------------- the timing span
     //
-    // `test/test_timing.py`'s `TestTransportAndGitGhCallsAreNamed` and
-    // `TestHostPrepIsAStage` assert this from outside; Python's span and stage sit
-    // inside `_token_from_gh_cli`, so this is the module that owns them.
+    // The Python `test_timing`'s `TestTransportAndGitGhCallsAreNamed` and
+    // `TestHostPrepIsAStage` asserted this from outside, and retired with the
+    // Python tree (#267); Python's span and stage sat inside `_token_from_gh_cli`,
+    // so this is the module that owns them.
 
     /// The stages and spans a measured `record` produced.
     fn measured(record: impl FnOnce()) -> timing::Document {

@@ -369,7 +369,7 @@ different jobs:
 | Command | Takes | Leaves |
 |---|---|---|
 | `dl --prune` | Clone directories no workspace opens, and the volumes of workspaces devpod no longer lists | Every workspace, container and image |
-| `dl --purge` | The workspaces devlaunch created, and its caches | Workspaces it did not create, named before it asks |
+| `dl --purge` | The workspaces devlaunch created, and its caches | Workspaces it did not create, each named with its source before it asks |
 | `dl --reconcile` | Nothing | Repairs records that stopped matching the disk |
 
 Two promises worth knowing. **Nothing deletes work that exists nowhere else:** a clone with

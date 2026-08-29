@@ -45,7 +45,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   died before any of this existed, and no route reaches them that is not the
   pattern above. `docs/cleanup.md` carries the whole of it.
 
+- **`dl --ls` now tells you when the background cache sweep hit trouble.** The
+  hourly sweep that keeps your bare clones fresh runs as a detached child with
+  nothing attached to its output, so everything it ever had to complain about went
+  straight to `/dev/null`: a fetch that could not reach the remote, a clone deleted
+  underneath its record, a `git pack-refs` refused by a permissions problem. The
+  sweep now writes what happened into `metadata.json` beside that repository's
+  freshness stamp, and `dl --ls` prints it under the table:
+
+  ```
+  Last cache sweep of blooop/devlaunch: could not pack the refs it fetched: fatal: unable to create 'packed-refs.lock': Permission denied
+  ```
+
+  One note per repository, overwritten on every pass that acts on it, so nothing
+  accumulates and there is no log to rotate. A pass that goes cleanly clears the
+  note, so a machine you have fixed stops complaining on its own; a pass that
+  attempted nothing, because the interval had not elapsed or another `dl` run held
+  the lock, leaves the last note where it was rather than claiming a sweep it never
+  ran. `dl --ls --json` carries the same thing as a `lastSweep` object on the rows
+  whose repository has one, added alongside the existing fields and absent
+  entirely when there is nothing outstanding. Nothing new is printed on the launch
+  path, and a `metadata.json` written by an older `dl` reads exactly as it did.
+  [docs/cleanup.md](docs/cleanup.md) has the detail.
+
+### Changed
+
+- **`dl --purge` names where each surviving workspace came from.** The list of
+  workspaces a purge is leaving standing printed ids and nothing else, and an id
+  is the one thing you cannot decide on: `pythontemplate` reads exactly the same
+  whether it is a `dl <git-url>` of yours, a `dl ./project` whose checkout you
+  care about, or something another tool made. Each line now carries the source
+  beside the id, the same string `dl --ls` shows in its `SOURCE` column.
+
+  The block also says what removing the cache costs the workspaces that stay.
+  They keep working, but a clone an older `dl` placed outside the cache, under the
+  retired `worktree.repos_dir` key, is named only by a record inside the cache
+  that is about to go: after the purge, `dl <workspace> rm` deletes the workspace
+  and leaves that directory standing with nothing on the machine pointing at it.
+  Removing such a workspace first is what takes its clone with it. The copy of
+  their volume names goes the same way, so a survivor deleted with a bare `devpod
+  delete` after a purge leaves volumes nothing can reclaim, where `dl --prune`
+  would have. `--purge` also reports a `config.toml` that still sets that key now,
+  which is the only mention a stranded tree gets when no workspace opens it any
+  more.
+
 ### Fixed
+
+- **Sixty-six citations that pointed at nothing now point at something, and a
+  guard keeps it that way.** Comments across `rust/` name the test that pins the
+  behaviour they describe, which is most of what makes them worth reading.
+  Retiring the Python implementation (#267) deleted about forty of the files
+  those names referred to, in one commit, and the names stayed. A pointer into
+  nothing is worse than no pointer: it still reads as evidence, so the reader
+  goes looking and cannot tell whether the guard moved, was renamed, or never
+  existed.
+
+  Every one of them now names a suite that retired rather than a file to open,
+  and says so, in the form the surviving comments had already settled on. Two
+  were not merely stale but false. The bench workflow told a reader that a named
+  Python spawn-count guard "keeps the gating role" in `ci.yml`, when the counts
+  it meant have been argv assertions in the cargo suite since the port; and the
+  divergence table's row 30 claimed two pins it no longer has, an allowance in
+  the parity harness's case list and a set of `suffix_verb` tests, the first
+  retired with the harness and the second deleted with the behaviour itself. That
+  row is superseded, so nothing pins it, and it now says so.
+
+  `test/test_citations_resolve.py` is what stops it happening again: a token
+  spelled the way a Python test file is spelled has to resolve to a file, a path
+  as written and a bare name against the test tree. `CHANGELOG.md` and
+  `docs/rust-port-scope.md` are out of scope, being records of what was true when
+  they were written.
 
 - **`--force`'s placement rule is now held over the whole argument space rather
   than over the lines somebody thought to list.** The grammar decides whether a

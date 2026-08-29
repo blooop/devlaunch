@@ -1107,8 +1107,9 @@ pub(crate) fn argv_without_devcontainer(argv: &[String]) -> Vec<&str> {
 mod tests {
     //! The grammar decisions, as tables.
     //!
-    //! What `test/test_dl.py`'s dispatch expectations and the module docstring's
-    //! usage block say, re-expressed against [`resolve`] — plus the three
+    //! What the Python `test_dl`'s dispatch expectations and the module
+    //! docstring's usage block said, re-expressed against [`resolve`] when both
+    //! retired with the Python tree (#267) — plus the three
     //! divergence rows the grammar carries, each with the input that distinguishes
     //! it from Python.
 
