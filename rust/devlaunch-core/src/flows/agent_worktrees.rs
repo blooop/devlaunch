@@ -132,6 +132,8 @@
 //! `rev-list --all`. It is in the shared ref store, which nothing here removes.
 //! No probe asks about it, and none should be added.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::clients::git::{ForgetForce, Git};
@@ -478,10 +480,17 @@ impl ClonePicture {
     /// Registrations under a `.claude/worktrees/` with nothing at their place in
     /// this clone. The place is a join of the clone root and the suffix, built
     /// for one existence check; the recorded path itself is never resolved.
+    ///
+    /// **`symlink_metadata` rather than `exists`, to agree with the walk.**
+    /// `Path::exists` follows links, so a *dangling* symlink at a registered
+    /// place reads as absent here and as a present entry to [`walk_sites`] —
+    /// and the two answers together produce two sites for one `Inside`, one of
+    /// them offering a forget for a registration whose place is occupied. The
+    /// walk is the authority on what is there, so this asks the walk's question.
     fn nothing_at_their_place(&self, clone: &Path) -> Vec<&Registration> {
         self.registered
             .iter()
-            .filter(|it| !clone.join(&it.inside.place).exists())
+            .filter(|it| std::fs::symlink_metadata(clone.join(&it.inside.place)).is_err())
             .collect()
     }
 }
@@ -850,6 +859,21 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// The same reason, said about `at` instead.
+    ///
+    /// Only for a memoised reachability answer, which is a fact about a commit
+    /// rather than about a place: the site it was first asked from is not the
+    /// site a later reader is deciding about, and a report that named the first
+    /// one would send somebody to the wrong directory.
+    fn about(mut self, at: &Place) -> Self {
+        match &mut self {
+            Self::Holds { at: was, .. } | Self::CouldNotProve { at: was, .. } => {
+                *was = at.clone();
+            }
+        }
+        self
+    }
+
     pub fn at(&self) -> &Place {
         match self {
             Self::Holds { at, .. } | Self::CouldNotProve { at, .. } => at,
@@ -868,6 +892,10 @@ impl Reason {
             Self::Holds { .. } => Subject::GitsAccountOfContent,
             Self::CouldNotProve { blank, .. } => match blank {
                 Blank::ThirdPartyClaim(_) => Subject::AClaim,
+                // Somebody may be working in it right now; that is the whole
+                // reason it was not in the plan. A claimant, so #468's
+                // derivative reclaim does not reach into it either.
+                Blank::AppearedAfterThePlan => Subject::AClaim,
                 Blank::NothingToAskThrough
                 | Blank::GitWouldNotSay(_)
                 // Decided on devlaunch#468: another repository's env, tagged, is
@@ -977,6 +1005,11 @@ impl Blank {
             Self::ThirdPartyClaim(Some(reason)) => {
                 format!("git is holding it locked ({reason})")
             }
+            Self::AppearedAfterThePlan => {
+                "it appeared inside this directory after the plan was printed, so nobody has \
+                 said yes to removing it"
+                    .to_owned()
+            }
             Self::NotThisClonesToAccountFor(why) => why.describe().to_owned(),
         }
     }
@@ -1051,6 +1084,11 @@ pub enum Blank {
     ThirdPartyClaim(Option<String>),
     /// This site is not this clone's to account for; see [`Unaccountable`].
     NotThisClonesToAccountFor(Unaccountable),
+    /// A site inside an approved subtree that the plan did not name, found by
+    /// the acting pass. Nothing establishes that the person who said yes to the
+    /// plan meant this one, so the whole unit is withheld and offered again next
+    /// run — by which time it is in the plan they read.
+    AppearedAfterThePlan,
 }
 
 // ===========================================================================
@@ -1104,6 +1142,21 @@ struct Weigher<'a, 'r> {
     git: &'a Git<'r>,
     clone: &'a Path,
     bare: Option<&'a Path>,
+    /// What Q3 already answered, keyed on the revision it was asked about.
+    ///
+    /// The question is about a commit and a repository, and both are fixed for
+    /// the whole of one clone's weighing, so two sites cut from the same commit
+    /// asked it twice and got the same answer twice. On the reference host's
+    /// shape that is most of the git this pass runs. Keyed on the revision
+    /// rather than on the site, because the revision is the whole of what the
+    /// answer depends on — a cache keyed on anything wider would be a second
+    /// definition of what the question is.
+    ///
+    /// Held for one `weigh_clone` call and dropped with it, so nothing here
+    /// survives into a later pass with a staler answer than the pass that took
+    /// it. `Result` rather than the witness alone: a refusal is an answer and
+    /// re-asking it would not make it a different one.
+    reachability: RefCell<HashMap<String, Result<Elsewhere, Reason>>>,
 }
 
 impl Weigher<'_, '_> {
@@ -1115,6 +1168,21 @@ impl Weigher<'_, '_> {
     /// has to be attributed to the directory holding it — the clone-scope
     /// `--all` question is asked once of the clone itself, elsewhere.
     fn elsewhere(&self, at: &Place, head: &WorktreeHead) -> Result<Elsewhere, Reason> {
+        if let Some(answered) = self.reachability.borrow().get(head.revision()) {
+            // The reason names the site it came from, and this one came from
+            // another: re-attribute it so a report still names the directory it
+            // is about. The answer itself is the same answer.
+            return answered.clone().map_err(|reason| reason.about(at));
+        }
+        let answer = self.ask_elsewhere(at, head);
+        self.reachability
+            .borrow_mut()
+            .insert(head.revision().to_owned(), answer.clone());
+        answer
+    }
+
+    /// [`Weigher::elsewhere`] with the memo taken out of the way.
+    fn ask_elsewhere(&self, at: &Place, head: &WorktreeHead) -> Result<Elsewhere, Reason> {
         match in_the_cache(self.git, self.bare, head.commit()) {
             InTheCache::Reached => Ok(Elsewhere(())),
             InTheCache::Beyond | InTheCache::CouldNotSay => {
@@ -1156,11 +1224,23 @@ impl Weigher<'_, '_> {
     /// Q2 for one present worktree, asked through the admin directory derived
     /// from the join.
     ///
-    /// **The answer includes ignored files.** Measured: `git worktree remove`
-    /// deletes a worktree whose only content is gitignored, exit 0 and silent —
-    /// git's own dirty check does not count ignored files — so this predicate is
-    /// the whole of the protection, and an ignored file is as gone as a tracked
-    /// one (devlaunch#462).
+    /// **Ignored content is not weighed, and it is not weighed at clone scope
+    /// either — that is the point.** One conjunction wants one definition of
+    /// what makes a tree dirty, and a clone's own ignored bytes have never
+    /// counted, so counting them one level in would be the same rule written
+    /// twice and disagreeing about the same bytes. It is a real limit rather
+    /// than an oversight: `git worktree remove` deletes a worktree whose only
+    /// content is gitignored, exit 0 and silent, and so does the removal here.
+    ///
+    /// The limit is stated rather than closed because closing it at this scope
+    /// alone costs more than it buys. An installed `.pixi/envs/default` is
+    /// ignored content and is the whole reason an agent worktree is worth
+    /// reclaiming — 18 of the 72 on the reference host, and the difference
+    /// between 104 GB and about 10 — so weighing it put every one of those
+    /// directories behind `--force-worktrees`, which also carries past a lock
+    /// and past another repository's worktree. Whether ignored bytes should be
+    /// weighed is one question for both scopes, and [`Git::worktree_dirt`] and
+    /// `docs/cleanup.md` carry it with its reason.
     ///
     /// An untracked or ignored entry is dropped from the answer only when
     /// everything under it is a site the child forest accounts for — each such
@@ -1319,15 +1399,13 @@ impl Weigher<'_, '_> {
 /// Whether one `git status` line is nothing but sites the forest already
 /// accounts for.
 ///
-/// Only ever true of an **untracked or ignored** entry on the
-/// `.claude/worktrees/` spine. A tracked change under the same path is
-/// somebody's edit to a file the repository knows about and is never dropped,
-/// and an entry anywhere else is not this module's business.
+/// Only ever true of an **untracked** entry on the `.claude/worktrees/` spine.
+/// A tracked change under the same path is somebody's edit to a file the
+/// repository knows about and is never dropped, and an entry anywhere else is
+/// not this module's business. There is no ignored arm because the probe does
+/// not ask for ignored entries; see [`Weigher::clean`].
 fn accounted_for_by_the_forest(root: &Path, line: &str, forest: &[PathBuf]) -> bool {
-    let Some(entry) = line
-        .strip_prefix("?? ")
-        .or_else(|| line.strip_prefix("!! "))
-    else {
+    let Some(entry) = line.strip_prefix("?? ") else {
         return false;
     };
     // git quotes a path holding anything unusual. Quoted means unparsed here,
@@ -1468,6 +1546,17 @@ impl Going {
 
     pub fn promotion(&self) -> &WorktreePromotion {
         &self.promotion
+    }
+
+    /// Every registration this one unit accounts for, whichever arm it is.
+    ///
+    /// The unit's blast radius over the metadata, in one place, so the acting
+    /// pass compares the two passes' radii rather than their roots.
+    pub fn forgets(&self) -> &[Recorded] {
+        match &self.what {
+            Collectable::Directory(directory) => directory.forgets(),
+            Collectable::Registration(registration) => registration.forgets(),
+        }
     }
 
     fn identity(&self) -> GoingIdentity<'_> {
@@ -1764,7 +1853,12 @@ fn weigh_clone(
     picture: &ClonePicture,
     insist: impl Fn(&Site) -> Insistence,
 ) -> (Vec<Going>, Vec<StandingSite>) {
-    let weigher = Weigher { git, clone, bare };
+    let weigher = Weigher {
+        git,
+        clone,
+        bare,
+        reachability: RefCell::new(HashMap::new()),
+    };
     let roots = forest_of(clone, picture);
     let mut forest_paths = Vec::new();
     for root in &roots {
@@ -1863,12 +1957,24 @@ impl WorktreeReport {
 /// The caller holds the repository lock. **Every site is classified again,
 /// under that lock, immediately before anything goes**, by the same weighing
 /// the plan ran — one implementation, so the plan and the outcome cannot answer
-/// different questions. Only a unit this pass *also* finds collectable, *and*
-/// the plan approved, is acted on: the approved set can shrink between the
-/// report and the act and can never grow, now over a tree rather than a list. A
-/// site that appeared after the plan has no approval, so it cannot be
-/// collectable here — and it is still classified, so it still objects, so it
-/// still makes every parent stand.
+/// different questions.
+///
+/// **Matching the two passes by identity is not enough, and that is worth
+/// spelling out because it was wrong here once.** A unit's identity is its root;
+/// its blast radius is a subtree. A site created inside an approved parent after
+/// the plan was printed is weighed by this pass on its own merits, and if it is
+/// collectable it is *absorbed into the parent's unit* — so the unit count is
+/// unchanged, the identity matches, and something the plan never named goes out
+/// with the removal and is handed to `git worktree remove`. Measured on this
+/// tree: a plan naming one registration acted on two.
+///
+/// So a confirmed unit is acted on only when **every registration it now names
+/// was named by the plan**. That is the subset check in [`grew_past`], and it is
+/// the radius rather than the root: a fresh nested site of ours contributes its
+/// registration and fails it, a fresh nested site that is *not* ours contributes
+/// no registration but stands, which withholds the parent anyway. The approved
+/// set can therefore shrink between the report and the act and can never grow,
+/// over the bytes as well as over the list.
 ///
 /// **The directory goes first and the forgets follow, and nothing is forgotten
 /// on a partial removal.** That ordering is P2 (devlaunch#462): the recorded
@@ -1932,8 +2038,36 @@ pub(crate) fn reclaim(
             report.withheld.push(WithheldWorktree { path, because });
             continue;
         };
-        act_on(git, &plan.clone, confirmed, report);
+        if let Some(grew) = grew_past(planned, confirmed) {
+            // The subtree gained something the plan did not name. Withhold the
+            // whole unit rather than removing a smaller part of it: the unit is
+            // the radius, and there is no smaller radius to fall back to.
+            report.withheld.push(WithheldWorktree {
+                path: going_path(&plan.clone, planned),
+                because: Standing::one(Reason::CouldNotProve {
+                    at: Place::ASite(grew),
+                    blank: Blank::AppearedAfterThePlan,
+                }),
+            });
+            continue;
+        }
+        act_on(git, &plan.clone, planned, confirmed, report);
     }
+}
+
+/// The first registration `confirmed` names that `planned` did not, or nothing
+/// when the confirmed unit's radius is inside the approved one.
+///
+/// Compared as recorded paths, which is what the forget is invoked with, so this
+/// is the same value on both sides of the comparison rather than two derivations
+/// of it that could disagree.
+fn grew_past(planned: &Going, confirmed: &Going) -> Option<Inside> {
+    let approved = planned.forgets();
+    confirmed
+        .forgets()
+        .iter()
+        .find(|fresh| !approved.iter().any(|named| named == *fresh))
+        .and_then(|fresh| inside_a_worktrees_dir(fresh.as_path()))
 }
 
 /// Whether one planned unit is the approval for `root`.
@@ -1952,7 +2086,20 @@ fn going_path(clone: &Path, going: &Going) -> PathBuf {
 }
 
 /// One unit, carried out: bytes first, then every name that rode in on it.
-fn act_on(git: &Git<'_>, clone: &Path, confirmed: &Going, report: &mut WorktreeReport) {
+///
+/// Takes both passes' views of the unit deliberately. What is *done* is the
+/// confirmed one, because this pass is the one holding the lock; what is
+/// *reported* is the plan's figure, because that is the number somebody said yes
+/// to. Reporting the re-measurement made the two halves of one report mean
+/// different things — the clone arm beside this one has always reported the
+/// plan's.
+fn act_on(
+    git: &Git<'_>,
+    clone: &Path,
+    planned: &Going,
+    confirmed: &Going,
+    report: &mut WorktreeReport,
+) {
     let insistence = confirmed.promotion.insistence();
     match &confirmed.what {
         Collectable::Directory(directory) => {
@@ -1960,7 +2107,13 @@ fn act_on(git: &Git<'_>, clone: &Path, confirmed: &Going, report: &mut WorktreeR
                 TreeSweep::Everything => {
                     report.removed.push(RemovedWorktree {
                         path: directory.at.clone(),
-                        usage: directory.usage.clone(),
+                        usage: match planned.what() {
+                            Collectable::Directory(approved) => approved.usage().clone(),
+                            // Unreachable: the subset check above passed, so the
+                            // two units are the same shape. Falling back to what
+                            // was measured is honest either way.
+                            Collectable::Registration(_) => directory.usage.clone(),
+                        },
                     });
                     forget(git, clone, &directory.forgets, insistence, report);
                 }
@@ -2092,6 +2245,21 @@ fn lift(own: Unsaved) -> Vec<Reason> {
 
 /// The standing reasons of every site in `clone`, or nothing where there are no
 /// sites — which is nearly every clone, at the cost of one failed `read_dir`.
+///
+/// **That early return is the whole of what keeps `dl --ls` affordable**, and it
+/// is worth naming because this function is on the listing path, which is a
+/// read-only command people run casually. A clone that has never had an agent
+/// worktree in it costs one `read_dir` that fails and no git at all: no
+/// `worktree list`, no probe, no walk. A clone that *has* them costs one
+/// `worktree list` plus, per site, one `status --porcelain` and at most one
+/// `rev-list` — the reachability answer is memoised per revision for the whole
+/// of one clone's weighing, and sites cut from one commit are the common shape.
+///
+/// What is not done here, said plainly rather than left to be discovered: the
+/// rows are still weighed one after another, and a host carrying dozens of agent
+/// worktrees pays that serially on every `--ls --json`. `docs/performance.md`
+/// covers the launch path and not this one, so nothing would catch a regression
+/// in it. Measuring the listing and giving it a floor is its own piece of work.
 ///
 /// The sibling bare is derived from the clone's place in the cache
 /// (`<repos>/<owner>/<repo>/.bare` beside `<repos>/<owner>/<repo>/<leaf>`),

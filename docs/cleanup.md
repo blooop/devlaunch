@@ -448,9 +448,8 @@ Four questions, and their scopes are not the same. What is at the site at all is
 per site. **Whether the working tree holds anything that exists nowhere else is
 per working tree**, which is why the clone's own `git status` cannot answer for
 what is nested in it: `.claude/worktrees/` is ordinarily gitignored, and a nested
-worktree has an index of its own. Ignored files count, because
-`git worktree remove` deletes a worktree whose only content is gitignored, exit 0
-and silent. **Whether the commits exist somewhere else is per repository**, and
+worktree has an index of its own. **Whether the commits exist somewhere else is
+per repository**, and
 it is asked of the sibling `.bare` cache first: a workspace clone is cut from the
 bare and then repointed at the forge with no fetch of its own, so its
 `refs/remotes/origin/*` is as of clone time and asking it alone reports
@@ -458,6 +457,23 @@ pushed-and-merged branches as unpushed. Whether a third party claims the site is
 the lock, and a lock is an *unproved*, never a loss: git documents it as saying
 nothing about whether anybody is working in there, so reporting it as work would
 be inventing work that may not exist.
+
+**One limit, stated because it is a limit and not an oversight: gitignored
+content is not weighed.** `git worktree remove` deletes a worktree whose only
+content is gitignored, exit 0 and silent, and so does the removal here. It is
+left that way because a clone's own ignored bytes have never been weighed either
+- `dl <workspace> rm` and the orphan rule above both `rm -rf` past them - and one
+conjunction wants one definition of what makes a tree dirty rather than two that
+disagree about the same bytes.
+
+Weighing it at the site alone was tried and taken back out, and the cost is worth
+recording. An installed `.pixi/envs/default` is ignored content; it is 18 of the
+72 directories on the reference host and the difference between 104 GB and about
+10. Weighing it put every one of them behind `--force-worktrees`, which is also
+the flag that carries past a lock and past another repository's worktree, so
+getting the disk back would have meant typing the flag that switches off every
+protection described here. Whether ignored bytes should be weighed is a real
+question and it is one question for both scopes, not a special case for this one.
 
 Stashes need no probe. A `git stash push` from inside a linked worktree writes
 the clone's own `refs/stash`, survives the directory, and is reached by
@@ -535,7 +551,8 @@ rather than about 10, and they cannot be pointed at the shared package cache: on
 the pixi *download* cache is shared, because installed environments bake absolute
 paths (see "The shared pixi package cache" in
 [workspace-tools.md](workspace-tools.md)). Removing the worktree is the way those
-bytes come back, which is what this does.
+bytes come back, which is what this does: an env is gitignored content, and by
+the limit above it does not by itself keep a finished worktree standing.
 
 #### The disk neither command frees
 

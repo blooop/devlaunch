@@ -113,7 +113,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than gated: its domain is a directory read at act time, so a
   registration created after the plan was printed was inside its blast radius and
   no plan could name it. Every name the sweep forgets came out of a listing it
-  read, and the forget only ever follows a directory removal that completed.
+  read, the acting pass acts only on units whose registrations the plan named,
+  and the forget only ever follows a directory removal that completed.
+
+  Gitignored content is deliberately **not** weighed, at either scope. An
+  installed `.pixi/envs/default` is ignored content and is what makes these
+  directories worth reclaiming at all, so weighing it would have put the whole of
+  the reclaim behind `--force-worktrees` -- the flag that also carries past a
+  lock and past another repository's worktree. A clone's own ignored bytes have
+  never counted either, and one conjunction wants one definition of dirty.
+  `docs/cleanup.md` carries the limit with its reason.
 
   A worktree of a *different* repository nested inside one of ours now stands, is
   reported and is never probed: ownership is a join against this clone's own

@@ -379,12 +379,20 @@ fn an_uncommitted_edit_stands_a_worktree_that_is_otherwise_collectable() {
 }
 
 #[test]
-fn a_site_whose_only_content_is_gitignored_stands() {
-    // Measured: `git worktree remove` deletes a worktree whose only content is
-    // gitignored, exit 0 and silent — git's own dirty check does not count
-    // ignored files — so this predicate is the whole of the protection
-    // (devlaunch#462). The .gitignore itself is committed and pushed, so the
-    // ignored file really is the only thing that exists nowhere else.
+fn a_site_whose_only_content_is_gitignored_is_collectable_as_a_clone_would_be() {
+    // **The limit, pinned as behaviour rather than left to prose.** Ignored
+    // content is not weighed here, because it is not weighed of a whole clone
+    // either — `dl <ws> rm` and `--prune`'s orphan arm both `rm -rf` past a
+    // clone's own ignored bytes — and one conjunction wants one definition of
+    // dirty. Weighing it at this scope alone was tried and reverted: an
+    // installed `.pixi/envs/default` is exactly this shape and is the whole
+    // reason these directories are worth reclaiming, so it put the sweep's
+    // entire yield behind `--force-worktrees`, the flag that also carries past
+    // a lock and past another repository's worktree.
+    //
+    // The .gitignore itself is committed and pushed, so the ignored file really
+    // is the only thing here that exists nowhere else. That is the honest
+    // statement of what goes.
     let world = Clone::new();
     let worktree = world.worktree("agent-one");
     std::fs::write(worktree.join(".gitignore"), "scratch.db\n").expect("an ignore file");
@@ -396,9 +404,47 @@ fn a_site_whose_only_content_is_gitignored_stands() {
 
     let plan = world.plan();
 
-    assert!(going_dirs(&plan).is_empty(), "{:?}", plan.going());
-    let reasons = reasons_at(&plan, &worktree);
-    assert!(matches!(reasons[0], Reason::Holds { .. }), "{reasons:?}");
+    assert_eq!(going_dirs(&plan), std::slice::from_ref(&worktree));
+    assert!(plan.standing().is_empty(), "{:?}", plan.standing());
+}
+
+#[test]
+fn an_installed_environment_does_not_need_the_flag_that_disables_the_guards() {
+    // The shape the whole ticket exists for: 18 of the 72 directories on the
+    // reference host carried a whole `.pixi/envs/default`, and they are the
+    // difference between 104 GB and about 10. `.pixi/` is gitignored the way
+    // every pixi project gitignores it.
+    //
+    // Asserted as the absence of a flag rather than as a byte count: the
+    // failure this pins is not "the env stays", it is "reclaiming the env costs
+    // you the lock guard, the foreign-repository guard and the unpushed guard,
+    // all at once, because one flag carries past all of them".
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    std::fs::write(worktree.join(".gitignore"), ".pixi/\n").expect("an ignore file");
+    commit(&worktree, "ignore the env");
+    run_git(&world.clone, &["push", "origin", "agent-one"]);
+    world.fetch();
+    let env = worktree
+        .join(".pixi")
+        .join("envs")
+        .join("default")
+        .join("lib");
+    std::fs::create_dir_all(&env).expect("an installed environment");
+    std::fs::write(env.join("libthing.so"), "a great many bytes\n").expect("env bytes");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert_eq!(
+        going_dirs(&plan),
+        std::slice::from_ref(&worktree),
+        "an env must not need --force-worktrees: {:?}",
+        plan.standing()
+    );
+    let WorktreePromotion::Unopposed = plan.going()[0].promotion() else {
+        panic!("nothing objected, so nothing was insisted past");
+    };
 }
 
 #[test]
@@ -658,6 +704,94 @@ fn a_registration_created_after_the_plan_is_never_named() {
             .filter(|argv| argv.iter().any(|arg| arg == "remove"))
             .any(|argv| argv.iter().any(|arg| arg.contains(&fresh_spelled))),
         "no removal invocation may name the fresh registration: {calls:?}"
+    );
+}
+
+#[test]
+fn a_clean_site_nested_into_an_approved_one_after_the_plan_is_not_absorbed() {
+    // The half the sibling case above does not reach, and the one that was
+    // wrong: matching the two passes by *identity* let a site created inside an
+    // approved parent ride out on that parent's subtree removal. The unit count
+    // was unchanged, the root matched, and a registration the plan never named
+    // was handed to `git worktree remove`.
+    //
+    // Clean and nested are the two properties that make it slip through: dirty
+    // would stand it, and a sibling would be a unit of its own with no approval.
+    // So the unit is compared by its blast radius, not its root.
+    let world = Clone::new();
+    let outer = world.worktree("agent-outer");
+    world.containerise();
+    let plan = world.plan();
+    assert_eq!(going_dirs(&plan), std::slice::from_ref(&outer));
+    assert_eq!(
+        plan.going()[0].forgets().len(),
+        1,
+        "the plan names one registration"
+    );
+
+    // The container makes a worktree *inside* the approved one while the
+    // question is on screen. Nothing is written into it: it is finished work.
+    let fresh = world.nested(&outer, "agent-fresh");
+
+    let (report, calls) = world.act(&plan);
+
+    assert!(report.removed.is_empty(), "{report:?}");
+    assert_eq!(report.withheld.len(), 1, "{report:?}");
+    assert_eq!(report.forgotten, 0, "{report:?}");
+    assert!(outer.exists() && fresh.exists());
+    // The absence: no *forget* names the registration the plan did not. The
+    // fresh site is deliberately probed — it is classified like any other, which
+    // is what makes it stand its parent — so the assertion is over the removal
+    // invocations rather than over every call.
+    let fresh_spelled = fresh.display().to_string();
+    assert!(
+        !calls
+            .iter()
+            .filter(|argv| argv.iter().any(|arg| arg == "remove"))
+            .any(|argv| argv.iter().any(|arg| arg.contains(&fresh_spelled))),
+        "{calls:?}"
+    );
+    // And the next run offers the whole subtree, which is now in the plan
+    // somebody reads.
+    let again = world.plan();
+    assert_eq!(going_dirs(&again), std::slice::from_ref(&outer));
+    assert_eq!(again.going()[0].forgets().len(), 2);
+}
+
+#[test]
+fn what_the_report_says_was_freed_is_what_the_plan_measured() {
+    // The two halves of one report have to mean the same thing. The acting pass
+    // re-measures, so a subtree that grew between the two would be reported at
+    // its new size against a plan somebody read at the old one. The clone arm
+    // beside this one has always reported the plan's figure.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    // Ignored, so these bytes are in the figure without making the tree dirty —
+    // which is exactly the shape a build output has.
+    std::fs::write(worktree.join(".gitignore"), "big.bin\n").expect("an ignore file");
+    commit(&worktree, "ignore the build output");
+    run_git(&world.clone, &["push", "origin", "agent-one"]);
+    world.fetch();
+    std::fs::write(worktree.join("big.bin"), vec![7u8; 200_000]).expect("build output");
+    world.containerise();
+    let plan = world.plan();
+    let Collectable::Directory(approved) = plan.going()[0].what() else {
+        panic!("expected a directory unit");
+    };
+    let planned_bytes = approved.usage().known_bytes();
+    assert!(planned_bytes > 100_000, "the plan measured the bytes");
+
+    // A container tidies up after itself while the question is on screen, so
+    // the acting pass would measure a much smaller directory.
+    std::fs::remove_file(worktree.join("big.bin")).expect("tidied away");
+
+    let (report, _) = world.act(&plan);
+
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert_eq!(
+        report.freed().known_bytes(),
+        planned_bytes,
+        "the figure reported is the one that was said yes to"
     );
 }
 
@@ -1223,6 +1357,35 @@ fn a_standing_that_holds_both_kinds_emits_both_wire_keys() {
     assert!(json["wouldLose"].is_string(), "{json}");
     assert!(json["couldNotTell"].is_string(), "{json}");
     assert!(json["nothingToLose"].is_null(), "{json}");
+}
+
+#[test]
+fn a_workspace_an_agent_built_in_does_not_start_refusing_dl_rm() {
+    // The ordinary loop: open a workspace, an agent works in it and installs an
+    // environment, `dl <ws> rm`. The clone verdict is the `rm` guard, so a site
+    // that stood for its build output would make the daily command refuse, and
+    // the only way past would be `dl <ws> rm --force` -- which also carries past
+    // the clone's own unpushed commits, which is the #171 guard this must not
+    // teach anybody to type.
+    //
+    // Pinned against the shipped answer rather than against a shape: this reads
+    // the same as the build before the sweep existed.
+    let world = Clone::new();
+    std::fs::write(world.clone.join(".gitignore"), ".claude/\n.pixi/\n").expect("gitignore");
+    commit(&world.clone, "ignore the agent's working directories");
+    run_git(&world.clone, &["push", "origin", "main"]);
+    world.fetch();
+    let worktree = world.worktree("agent-one");
+    let env = worktree.join(".pixi").join("envs").join("default");
+    std::fs::create_dir_all(&env).expect("an installed environment");
+    std::fs::write(env.join("libthing.so"), "a great many bytes\n").expect("env bytes");
+    world.containerise();
+
+    let runner = ProcessRunner::new();
+    let git = Git::new(&runner);
+    let json = clone_verdict(&git, &world.clone, BareCache::At(&world.bare)).unsaved_json();
+
+    assert_eq!(json, serde_json::json!({ "nothingToLose": true }), "{json}");
 }
 
 #[test]

@@ -689,7 +689,7 @@ impl<'r> Git<'r> {
     }
 
     /// The porcelain status of one linked worktree, asked through the clone's
-    /// admin directory for it, **ignored files included**.
+    /// admin directory for it.
     ///
     /// **Not [`Git::about`], and the difference is what makes this answerable at
     /// all.** A linked worktree's own `.git` is a gitfile, and for an agent
@@ -700,10 +700,23 @@ impl<'r> Git<'r> {
     /// repository reached from the side that does resolve here, and
     /// `--work-tree` is the directory on this host.
     ///
-    /// `--ignored` is load-bearing, not thoroughness: `git worktree remove`
-    /// deletes a worktree whose only content is gitignored, exit 0 and silent,
-    /// so if this answer omitted ignored files the caller's predicate — the only
-    /// protection those bytes have — would be blind to them (devlaunch#462).
+    /// **`--ignored` is deliberately not passed, and that is a decision rather
+    /// than an omission.** This asks the same question [`Git::status_porcelain`]
+    /// asks of a whole clone, in the same words, so there is one definition of
+    /// what makes a tree dirty rather than two that disagree about the same
+    /// bytes. A clone's own ignored content has never counted — `dl <ws> rm` and
+    /// `--prune`'s orphan arm both `rm -rf` past it — and counting it one level
+    /// in but not at the root is the same rule written twice.
+    ///
+    /// It was passed once, and the cost is worth recording so nobody re-adds it
+    /// as thoroughness: an installed `.pixi/envs/default` is ignored content, it
+    /// is what makes an agent worktree worth reclaiming at all, and weighing it
+    /// put every such directory behind `--force-worktrees` — the one flag that
+    /// also carries past a lock and past another repository's worktree. That
+    /// trades the whole of this sweep's yield for a habit of typing the flag
+    /// that switches its protections off. Whether ignored bytes should be
+    /// weighed is a real question, and it is **one question for both scopes**;
+    /// `docs/cleanup.md` records it as a limit with its reason.
     ///
     /// Every line git prints comes back, nested agent worktrees included. Which
     /// entries to disregard is a question about what a directory *is*, which is
@@ -714,7 +727,6 @@ impl<'r> Git<'r> {
             format!("--work-tree={}", work_tree.display()),
             "status".to_owned(),
             "--porcelain".to_owned(),
-            "--ignored".to_owned(),
         ];
         self.captured(
             "status --porcelain",
