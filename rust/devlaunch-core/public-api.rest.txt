@@ -589,6 +589,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::domain::metadata::Sec
 pub struct devlaunch_core::domain::metadata::MetadataStorage
 impl devlaunch_core::domain::metadata::MetadataStorage
 pub fn devlaunch_core::domain::metadata::MetadataStorage::default_path() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
+pub fn devlaunch_core::domain::metadata::MetadataStorage::look(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn devlaunch_core::domain::metadata::MetadataStorage::on_metadata_lock_wait(&mut self, impl core::ops::function::Fn() + 'static)
 pub fn devlaunch_core::domain::metadata::MetadataStorage::open(impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<(Self, alloc::vec::Vec<devlaunch_core::domain::metadata::Notice>), devlaunch_core::domain::metadata::MetadataError>
 impl core::fmt::Debug for devlaunch_core::domain::metadata::MetadataStorage
@@ -1249,6 +1250,14 @@ pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::error: devlaunch_core::flows::launch::BranchNotNamed
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::owner: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::repo: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::branch: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::owner: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::recorded_branch: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::recorded_owner: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::recorded_repo: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::repo: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::NoSession(devlaunch_core::flows::launch::SessionRefused)
 pub devlaunch_core::flows::launch::LaunchRefusal::NotPrepared
 pub devlaunch_core::flows::launch::LaunchRefusal::NotPrepared::branch: alloc::string::String
@@ -1456,8 +1465,10 @@ pub fn devlaunch_core::flows::launch::UnquotableCommand::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::UnquotableCommand
 pub trait devlaunch_core::flows::launch::ColdMachinery<'r>
 pub fn devlaunch_core::flows::launch::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub fn devlaunch_core::flows::launch::ColdMachinery::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 impl<'r> devlaunch_core::flows::launch::ColdMachinery<'r> for devlaunch_core::flows::launch::ColdPath<'r, '_>
 pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
+pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 pub trait devlaunch_core::flows::launch::Provision
 pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::Provision::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>

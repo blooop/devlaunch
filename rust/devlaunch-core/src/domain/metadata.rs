@@ -366,6 +366,19 @@ impl std::fmt::Debug for MetadataStorage {
     }
 }
 
+/// Whether a load may act on what it finds, or only look at it.
+///
+/// The two side effects a load can have -- quarantining an unusable file and
+/// backing up one that will not round-trip -- exist to protect bytes from the
+/// caller's *next save*. A caller that will never save does not need them and must
+/// not take them, because writing to the cache is exactly what the warm launch path
+/// is not allowed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnDisk {
+    Preserve,
+    LeaveAlone,
+}
+
 impl MetadataStorage {
     /// Where the file lives when nothing says otherwise.
     pub fn default_path() -> Result<PathBuf, NoHomeDirectory> {
@@ -400,8 +413,47 @@ impl MetadataStorage {
             worktrees: IndexMap::new(),
             wait_watcher: None,
         };
-        let notices = storage.load();
+        let notices = storage.load(OnDisk::Preserve);
         Ok((storage, notices))
+    }
+
+    /// Load the store at `metadata_path` to *look* at, changing nothing on disk.
+    ///
+    /// Three writes separate this from [`open`](Self::open), and every one of them
+    /// is there for a caller that is about to save: the cache directory is created
+    /// so the first save has somewhere to land, an unusable file is quarantined to
+    /// `.corrupt` so that save cannot overwrite bytes nobody has read, and a file
+    /// that will not round-trip is copied to `.bak` for the same reason. A reader
+    /// saves nothing, so it takes none of them, and the cache is byte for byte as
+    /// it was found.
+    ///
+    /// **That is what lets a read sit on the warm launch path at all**
+    /// (devlaunch#145): `a_warm_triple_launch_does_no_metadata_io_at_all` seeds the
+    /// cache with a corrupt document and asserts the launch leaves it and its two
+    /// siblings exactly as they were. A file that cannot be read or parsed loads as
+    /// an empty store here, silently -- there is nobody to tell, and the command
+    /// that actually needs the records will open them properly and report it then.
+    ///
+    /// No lock either. A reader that raced a writer sees the file as it was a
+    /// moment ago, which is what any lock-free read of a file that is replaced
+    /// atomically sees, and is the same staleness a caller would get by opening it
+    /// one instruction earlier.
+    #[must_use]
+    pub fn look(metadata_path: impl Into<PathBuf>) -> Self {
+        let metadata_path = metadata_path.into();
+        let file_path = resolve_link(&metadata_path);
+        let lock_path = sibling(&file_path, ".lock");
+        let mut storage = Self {
+            metadata_path,
+            file_path,
+            lock_path,
+            schema_version: SCHEMA_VERSION,
+            repositories: IndexMap::new(),
+            worktrees: IndexMap::new(),
+            wait_watcher: None,
+        };
+        let _ = storage.load(OnDisk::LeaveAlone);
+        storage
     }
 
     /// Be told when a mutation is about to queue behind another dl run.
@@ -654,7 +706,7 @@ impl MetadataStorage {
             }
         })
         .map_err(MetadataError::Lock)?;
-        let notices = self.load();
+        let notices = self.load(OnDisk::Preserve);
         let value = work(self)?;
         drop(guard);
         Ok((value, notices))
@@ -780,7 +832,7 @@ impl MetadataStorage {
         .map_err(MetadataError::Lock)?;
         // Reload under the lock so the version below reflects any concurrent
         // migrator's result, not the copy this process loaded at startup.
-        let _ = self.load();
+        let _ = self.load(OnDisk::Preserve);
         if self.schema_version >= SCHEMA_VERSION {
             return Ok(MigrationCommit::AlreadyCurrent);
         }
@@ -795,12 +847,12 @@ impl MetadataStorage {
     // --- loading ----------------------------------------------------------
 
     /// Load from disk, never failing on damaged input.
-    fn load(&mut self) -> Vec<Notice> {
+    fn load(&mut self, on_disk: OnDisk) -> Vec<Notice> {
         self.schema_version = SCHEMA_VERSION;
         self.repositories = IndexMap::new();
         self.worktrees = IndexMap::new();
 
-        let (data, mut notices) = self.read_file();
+        let (data, mut notices) = self.read_file(on_disk);
         let Some(mut object) = data else {
             return notices;
         };
@@ -838,14 +890,16 @@ impl MetadataStorage {
             });
         }
 
-        if notices.iter().any(Notice::implies_lossy_rewrite) {
+        if let OnDisk::Preserve = on_disk
+            && notices.iter().any(Notice::implies_lossy_rewrite)
+        {
             notices.push(self.backup());
         }
         notices
     }
 
     /// Read and sanity-check the file, quarantining it if it is unusable.
-    fn read_file(&self) -> (Option<serde_json::Map<String, Value>>, Vec<Notice>) {
+    fn read_file(&self, on_disk: OnDisk) -> (Option<serde_json::Map<String, Value>>, Vec<Notice>) {
         if !self.file_path.exists() {
             return (None, Vec::new());
         }
@@ -863,6 +917,12 @@ impl MetadataStorage {
                 },
             },
         };
+        // A look reports nothing and moves nothing: an unusable file is an empty
+        // store to a reader, and the quarantine belongs to the caller that is about
+        // to write over it.
+        if let OnDisk::LeaveAlone = on_disk {
+            return (None, Vec::new());
+        }
         let notice = Notice::FileUnusable {
             path: self.file_path.clone(),
             problem,
@@ -1415,6 +1475,69 @@ mod tests {
         assert!(storage.repositories().is_empty());
         assert!(storage.worktrees().is_empty());
         assert_eq!(storage.schema_version(), SCHEMA_VERSION);
+    }
+
+    // --- looking, which changes nothing -----------------------------------
+
+    #[test]
+    fn a_look_reads_a_corrupt_file_as_empty_and_leaves_it_exactly_as_it_found_it() {
+        // The difference between `look` and `open`, stated as the thing that made it
+        // necessary: `open` quarantines an unusable document so its next save cannot
+        // overwrite bytes nobody has read, and the collision guard on the warm launch
+        // path (blooop/devlaunch#438) has no next save. A launch that only looks must
+        // leave the cache byte for byte as it was, garbage included.
+        let dir = temp_dir();
+        let path = dir.path().join("metadata.json");
+        write(&path, "not json");
+
+        let looked = MetadataStorage::look(&path);
+
+        assert!(looked.worktrees().is_empty(), "unusable reads as empty");
+        assert_eq!(read(&path), "not json");
+        assert_eq!(names_in(dir.path()), vec!["metadata.json".to_owned()]);
+    }
+
+    #[test]
+    fn a_look_at_a_cache_that_is_not_there_creates_nothing() {
+        // `open` makes the directory so its first save has somewhere to land. A
+        // reader has no first save, and a warm launch on a machine with no cache yet
+        // must not leave one behind.
+        let dir = temp_dir();
+        let absent = dir.path().join("no-cache-here").join("metadata.json");
+
+        let looked = MetadataStorage::look(&absent);
+
+        assert!(looked.worktrees().is_empty());
+        assert_eq!(names_in(dir.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_look_reads_the_same_records_an_open_does() {
+        let dir = temp_dir();
+        let path = dir.path().join("metadata.json");
+        {
+            let mut storage = quiet_storage(dir.path());
+            storage
+                .add_worktree(WorktreeInfo::new(
+                    "owner1",
+                    "repo1",
+                    "branch1",
+                    dir.path().join("repos/owner1/repo1/repo1-branch1-abcd"),
+                    "repo1-branch1-abcd",
+                ))
+                .expect("the record is saved");
+        }
+
+        let looked = MetadataStorage::look(&path);
+
+        assert_eq!(
+            looked
+                .worktrees()
+                .values()
+                .map(|record| record.workspace_id.clone())
+                .collect::<Vec<_>>(),
+            vec!["repo1-branch1-abcd".to_owned()]
+        );
     }
 
     #[test]

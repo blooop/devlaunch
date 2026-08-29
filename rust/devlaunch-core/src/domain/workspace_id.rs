@@ -37,13 +37,16 @@
 //! worth relying on is the *independence*: truncation policy is a readability
 //! choice with no effect on the collision rate.
 //!
-//! **A collision is not caught today**, which is why the width is the whole of
-//! the defence. Sharing an id means sharing one clone directory and one devpod
-//! workspace, so the loser opens the winner's checkout with nothing said.
-//! blooop/devlaunch#438 is the guard for that, and it is cheap because
-//! [`WorktreeInfo`](crate::domain::model::WorktreeInfo) already stores the triple
-//! beside the id derived from it. See [`SUFFIX_LENGTH`] for what the width is
-//! chosen against in the meantime.
+//! **A collision is caught, and refused rather than attached to.** Sharing an id
+//! means sharing one clone directory and one devpod workspace, so the loser would
+//! otherwise open the winner's checkout with nothing said. A launch whose derived
+//! id a *different* triple already holds is refused instead
+//! (`flows::launch::colliding_record`, blooop/devlaunch#438), and the check costs
+//! nothing to hold because [`WorktreeInfo`](crate::domain::model::WorktreeInfo)
+//! already stores the triple beside the id derived from it. So the width now
+//! decides how often two branches have to be renamed, not whether anybody loses
+//! work to a name they never saw. See [`SUFFIX_LENGTH`] for what it is chosen
+//! against.
 //!
 //! [`source_workspace_id`] covers git sources that name no ref (plain URL
 //! specs), which cannot form a triple. Note that path specs (`dl ./some/dir`) do
@@ -147,10 +150,13 @@ pub(crate) const SUFFIX_SPACE: u64 = 36u64.pow(SUFFIX_LENGTH as u32);
 /// of that shape wants 5 characters, which is 25.8 bits and still narrower than
 /// what it replaced.
 ///
-/// **The width is the whole of the defence, which is the part worth fixing.** A
-/// collision is not detected, so the loser of one silently opens the winner's
-/// checkout. blooop/devlaunch#438 is the guard, and it costs nothing to hold: the
-/// triple is already stored beside the id it derived.
+/// **The width is no longer the whole of the defence.** A collision is detected
+/// and the second launch is refused, naming both branches, rather than silently
+/// opening the first one's checkout (`flows::launch::colliding_record`,
+/// blooop/devlaunch#438) -- the check costs nothing to hold, because the triple is
+/// already stored beside the id it derived. What the width buys now is how rarely
+/// anybody has to act on that refusal, which is why the figures above are a
+/// judgement about a workload rather than a correctness argument.
 pub(crate) const SUFFIX_LENGTH: usize = 4;
 
 /// Domain tag for ref-less sources, kept out of the triple's hash input so a URL

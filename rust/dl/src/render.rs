@@ -1536,6 +1536,25 @@ pub(crate) fn delete_refused(workspace: &str, swept: Swept) -> String {
 }
 
 /// The one sentence a target no command can address gets.
+/// Why two branches cannot both be launched, and which two they are.
+///
+/// **Names both specs and the id, because renaming a branch is the only way past
+/// this.** A message that named one side would leave the reader hunting for the
+/// other through `dl --ls`, where the two rows are the same 47 characters.
+///
+/// The second sentence is the stake rather than the mechanism. Nobody needs the
+/// birthday bound at the moment they are stopped; they need to know that going
+/// ahead would have handed them somebody else's checkout, because that is the
+/// thing they would otherwise have gone looking for a devpod bug about.
+pub(crate) fn id_collision(workspace_id: &str, spec: &str, held_by: &str) -> String {
+    format!(
+        "Workspace id '{workspace_id}' is already held by '{held_by}'. Launching '{spec}' under \
+         it would put both in one clone directory and one container, so each would open the \
+         other's checkout and 'dl <ws> rm' on either would delete work the other still owns. \
+         Rename one of the two branches and launch it again."
+    )
+}
+
 pub(crate) fn unknown_workspace(target: &str) -> String {
     format!(
         "Unknown workspace '{target}'. Use 'dl --ls' to list workspaces, or specify owner/repo or \
@@ -2623,6 +2642,19 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
     match refused {
         LaunchRefusal::UnsafeSpec(name) => Some(unsafe_name(name)),
         LaunchRefusal::UnknownWorkspace { name } => Some(unknown_workspace(name)),
+        LaunchRefusal::IdCollision {
+            workspace_id,
+            owner,
+            repo,
+            branch,
+            recorded_owner,
+            recorded_repo,
+            recorded_branch,
+        } => Some(id_collision(
+            workspace_id,
+            &format!("{owner}/{repo}@{branch}"),
+            &format!("{recorded_owner}/{recorded_repo}@{recorded_branch}"),
+        )),
         LaunchRefusal::BranchNotNamed { owner, repo, error } => Some(format!(
             "Repository '{owner}/{repo}': {}",
             branch_not_named(error)
@@ -3626,6 +3658,38 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn an_id_collision_names_both_branches_the_id_and_the_way_out() {
+        // The only action available to the reader is to rename one of the two
+        // branches, so the sentence has to hand them both of them: the two rows are
+        // the same 47 characters in `dl --ls`, and a message that named one side
+        // would leave them hunting for the other.
+        let line = launch_refusal(&LaunchRefusal::IdCollision {
+            workspace_id: "devlaunch-release-999999999999999999999911-dq8q".to_owned(),
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            branch: "release/999999999999999999999911783".to_owned(),
+            recorded_owner: "blooop".to_owned(),
+            recorded_repo: "devlaunch".to_owned(),
+            recorded_branch: "release/999999999999999999999911630".to_owned(),
+        })
+        .expect("a refusal dl has to say itself");
+
+        assert!(
+            line.contains("'devlaunch-release-999999999999999999999911-dq8q'"),
+            "{line}"
+        );
+        assert!(
+            line.contains("'blooop/devlaunch@release/999999999999999999999911783'"),
+            "{line}"
+        );
+        assert!(
+            line.contains("'blooop/devlaunch@release/999999999999999999999911630'"),
+            "{line}"
+        );
+        assert!(line.contains("Rename one of the two branches"), "{line}");
     }
 
     #[test]
