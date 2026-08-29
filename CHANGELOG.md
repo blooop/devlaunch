@@ -205,6 +205,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   words. Nothing forced escapes through it, because the third word is refused
   first, but it is that refusal doing the work and not the cap.
 
+- **The devpod conformance corpus can no longer lose a row quietly.** The corpus
+  is the one place the two fake devpods' expectations live, and its guard checked
+  that certain flag *names* appeared somewhere across all rows. That let a row be
+  deleted with every suite green, the regression row for the `delete
+  --ignore-not-found` drift included, because a sibling row still mentioned the
+  flag. Rows now carry a stable id and both drivers hold the roll call of ids they
+  expect, so a missing row fails by name on both sides. Two more holes closed
+  with it: the check that every row says how it was verified ran on the Rust side
+  alone, so a corpus edited from the Python side could drop a provenance line
+  unnoticed, and the tables saying which devpod flags take a value were written
+  out once per fake with nothing comparing them. Those tables are one shared file
+  now, the way the corpus is, so the two fakes cannot hold different ones at all,
+  and each driver checks the fake it drives against it. Seven of the eight rows
+  that read `unverified` are measured, against a workspace provisioned to run
+  them; the eighth says plainly which half of it was measured and which was not.
+
 ## [0.25.0] - 2026-08-28
 
 ### Fixed

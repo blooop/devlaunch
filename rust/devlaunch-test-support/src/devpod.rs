@@ -141,82 +141,94 @@ impl FakeWorkspace {
 /// "now", so a test may compare a whole listing without consulting a clock.
 pub const DEFAULT_STAMP: &str = "2026-01-01T00:00:00+0000";
 
-/// The value-taking flags every subcommand inherits, per real devpod v0.26.1's
-/// global flag block. `--debug` and `--silent` are bare and so are absent.
-const GLOBAL_VALUE_FLAGS: &[&str] = &["--context", "--devpod-home", "--log-output", "--provider"];
-
-/// `devpod up` flags that take a separate value, so the positional source can be
-/// found by skipping them.
+/// Which flags take a separate value, read at compile time from the file the
+/// other fake reads too.
 ///
-/// Taken from `devpod up --help` at v0.26.1 rather than grown one bug at a time:
-/// every flag it types `string`, `strings`, `stringArray` or a named type is
-/// here, and the booleans (`--recreate`, `--reset`, `--open-ide`, …) are not,
-/// because cobra takes a boolean's value only as `--flag=false`. Growing the
-/// list by hand as flags were needed is what left `--init-env`, `--mount`,
-/// `--dotfiles-script` and `--dotfiles-script-env` out of it, and real devpod
-/// accepts those *before* the positional source, where reading one as bare makes
-/// its value the workspace source.
-const UP_VALUE_FLAGS: &[&str] = &[
-    "--additional-features",
-    "--devcontainer-id",
-    "--devcontainer-image",
-    "--devcontainer-path",
-    "--dotfiles",
-    "--dotfiles-script",
-    "--dotfiles-script-env",
-    "--dotfiles-script-env-file",
-    "--extra-devcontainer-path",
-    "--fallback-image",
-    "--gidmap",
-    "--git-clone-strategy",
-    "--git-ssh-signing-key",
-    "--id",
-    "--ide",
-    "--ide-option",
-    "--init-env",
-    "--machine",
-    "--mount",
-    "--prebuild-repository",
-    "--provider-option",
-    "--source",
-    "--ssh-config",
-    "--uidmap",
-    "--userns",
-    "--workspace-env",
-    "--workspace-env-file",
-];
+/// These lists used to be written out here *and* in `devpod_shim.py`, which is
+/// the same two-copies-of-one-fact shape that let `delete --ignore-not-found`
+/// drift — one side dropping a flag reads its value as a positional, and no test
+/// of either fake against itself can see it. The file says what each list is for
+/// and where it came from.
+const VALUE_FLAGS: &str = include_str!("../../../test/fixtures/devpod/value_flags.json");
 
-/// `devpod ssh` flags that take a separate value, per `devpod ssh --help` at
-/// v0.26.1. `--workdir` is the one `dl` sends and the one both fakes read as
-/// bare, which made an attach with a working directory look like an attach to a
-/// workspace named after that directory.
-const SSH_VALUE_FLAGS: &[&str] = &[
-    "--command",
-    "--forward-ports",
-    "-L",
-    "--forward-ports-timeout",
-    "--git-ssh-signing-key",
-    "--reverse-forward-ports",
-    "-R",
-    "--send-env",
-    "--set-env",
-    "--ssh-keepalive-interval",
-    "--term-mode",
-    "--user",
-    "--workdir",
-];
+/// One subcommand's value-flag table.
+///
+/// An enum rather than a string key, so a call site cannot ask for a table that
+/// does not exist, and so adding a subcommand's table is a change the compiler
+/// walks you through: a new variant has to be given a key below, and
+/// [`Table::ALL`] is what the conformance guards check the file against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Table {
+    /// The flag block every subcommand inherits.
+    Global,
+    Up,
+    Ssh,
+    Delete,
+    Status,
+    Stop,
+}
 
-/// `devpod delete` flags that take a separate value. `--force` and
-/// `--ignore-not-found` are bare and `--grace-period` is a string, per
-/// `devpod delete --help` at v0.26.1.
-const DELETE_VALUE_FLAGS: &[&str] = &["--grace-period"];
+impl Table {
+    /// Every table there is, which is what the guards compare the shared file
+    /// against — a table in the file and not here, or here and not in the file,
+    /// fails on both drivers. It exists for those guards and nothing else, which
+    /// is why it is not in a shipped build.
+    #[cfg(test)]
+    pub const ALL: &'static [Self] = &[
+        Self::Global,
+        Self::Up,
+        Self::Ssh,
+        Self::Delete,
+        Self::Status,
+        Self::Stop,
+    ];
 
-/// `devpod status` flags that take a separate value. `--container-status` is a
-/// boolean, per `devpod status --help` at v0.26.1.
-const STATUS_VALUE_FLAGS: &[&str] = &["--output", "--timeout"];
+    /// This table's name in the shared file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Up => "up",
+            Self::Ssh => "ssh",
+            Self::Delete => "delete",
+            Self::Status => "status",
+            Self::Stop => "stop",
+        }
+    }
 
-/// `devpod stop` has no flags of its own at v0.26.1.
-const STOP_VALUE_FLAGS: &[&str] = &[];
+    /// The flags this table says consume the next argv element.
+    pub fn flags(self) -> &'static [String] {
+        value_flags()
+            .get(self.key())
+            .unwrap_or_else(|| panic!("the shared file has no {:?} table", self.key()))
+    }
+}
+
+/// The shared file's tables, parsed once.
+fn value_flags() -> &'static BTreeMap<String, Vec<String>> {
+    static TABLES: std::sync::OnceLock<BTreeMap<String, Vec<String>>> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let file: serde_json::Value =
+            serde_json::from_str(VALUE_FLAGS).expect("the value-flag tables parse");
+        file["tables"]
+            .as_object()
+            .expect("the value-flag file has a `tables` object")
+            .iter()
+            .map(|(name, flags)| {
+                let flags = flags
+                    .as_array()
+                    .unwrap_or_else(|| panic!("table {name} is a list"))
+                    .iter()
+                    .map(|flag| {
+                        flag.as_str()
+                            .unwrap_or_else(|| panic!("table {name} holds flag names"))
+                            .to_owned()
+                    })
+                    .collect();
+                (name.clone(), flags)
+            })
+            .collect()
+    })
+}
 
 /// The workspaces and providers a fake devpod knows about.
 #[derive(Clone, Debug)]
@@ -304,7 +316,7 @@ impl DevpodMachine {
     }
 
     fn up(&mut self, args: &[String]) -> Response {
-        let (positionals, flags) = split_args(args, UP_VALUE_FLAGS);
+        let (positionals, flags) = split_args(args, Table::Up);
         let Some(source) = positionals.first() else {
             return refusal("devpod-fake: up: no workspace source given");
         };
@@ -337,7 +349,7 @@ impl DevpodMachine {
     }
 
     fn stop(&mut self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, STOP_VALUE_FLAGS);
+        let (positionals, _) = split_args(args, Table::Stop);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: stop: no workspace given");
         };
@@ -349,7 +361,7 @@ impl DevpodMachine {
     }
 
     fn delete(&mut self, args: &[String]) -> Response {
-        let (positionals, flags) = split_args(args, DELETE_VALUE_FLAGS);
+        let (positionals, flags) = split_args(args, Table::Delete);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: delete: no workspace given");
         };
@@ -392,7 +404,7 @@ impl DevpodMachine {
     }
 
     fn status(&self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, STATUS_VALUE_FLAGS);
+        let (positionals, _) = split_args(args, Table::Status);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: status: no workspace given");
         };
@@ -418,7 +430,7 @@ impl DevpodMachine {
     }
 
     fn ssh(&mut self, args: &[String]) -> Response {
-        let (positionals, _) = split_args(args, SSH_VALUE_FLAGS);
+        let (positionals, _) = split_args(args, Table::Ssh);
         let Some(id) = positionals.first() else {
             return refusal("devpod-fake: ssh: no workspace given");
         };
@@ -509,17 +521,17 @@ enum Flag {
 
 /// The positionals and flags of one devpod subcommand's argv.
 ///
-/// `value_flags` is the subcommand's own set; every subcommand's globals are
-/// added here, because real devpod inherits them everywhere.
-fn split_args(args: &[String], value_flags: &[&str]) -> (Vec<String>, BTreeMap<String, Flag>) {
+/// `table` is the subcommand's own; every subcommand's globals are added here,
+/// because real devpod inherits them everywhere.
+fn split_args(args: &[String], table: Table) -> (Vec<String>, BTreeMap<String, Flag>) {
+    let takes_a_value =
+        |arg: &String| table.flags().contains(arg) || Table::Global.flags().contains(arg);
     let mut positionals = Vec::new();
     let mut flags = BTreeMap::new();
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
-        if (value_flags.contains(&arg.as_str()) || GLOBAL_VALUE_FLAGS.contains(&arg.as_str()))
-            && index + 1 < args.len()
-        {
+        if takes_a_value(arg) && index + 1 < args.len() {
             flags.insert(arg.clone(), Flag::Value(args[index + 1].clone()));
             index += 2;
         } else if arg.starts_with('-') {
