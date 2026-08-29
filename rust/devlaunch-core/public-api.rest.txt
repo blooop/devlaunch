@@ -893,7 +893,6 @@ pub fn devlaunch_core::flows::agent_worktrees::RemovedWorktree::fmt(&self, &mut 
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::RemovedWorktree
 pub struct devlaunch_core::flows::agent_worktrees::Standing
 impl devlaunch_core::flows::agent_worktrees::Standing
-pub fn devlaunch_core::flows::agent_worktrees::Standing::any_unproved(&self) -> bool
 pub fn devlaunch_core::flows::agent_worktrees::Standing::could_not_tell(&self) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::agent_worktrees::Standing::describe(&self) -> alloc::string::String
 pub fn devlaunch_core::flows::agent_worktrees::Standing::would_lose(&self) -> core::option::Option<alloc::string::String>

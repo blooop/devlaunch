@@ -69,8 +69,16 @@ once under the `api` section and once under the module that owns them.
 
 **What it still does not reach, and it is not one type.** A type `api` never re-exports but a
 promised signature hands back is reachable from outside and classified as binary surface. Counted
-on the checked-in files rather than guessed at, that is **37 types owning close to six hundred rows** in
+on the checked-in files rather than guessed at, that is **36 types owning close to six hundred rows** in
 `public-api.rest.txt`, and the command that lists them needs no toolchain:
+
+**A falling count is not automatically a win, and it is worth knowing which kind you are looking
+at.** A type leaves this list either because the promise stopped reaching it or because the promise
+swallowed it, and those are opposite events wearing the same number. `agent_worktrees::Standing`
+left it the first way: a promised refusal used to carry the type itself, and now carries words
+rendered at the seam, so the promise reaches less than it did. Had it been promoted instead the
+count would also have fallen, while `StandingSite`, `Reason`, `Place`, `Blank` and `Subject` came
+with it into the tier that is supposed to stay small. Read a drop by asking which happened.
 
 ```bash
 scripts/public-api-snapshots.sh --print-residual
