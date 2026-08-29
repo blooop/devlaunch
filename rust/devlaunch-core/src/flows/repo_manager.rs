@@ -617,7 +617,7 @@ pub enum RefusalReason {
 /// means the tree is gone and nothing else does. Which of the two failures
 /// happened is in the report, where somebody can act on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Removal {
+pub(crate) enum TreeSweep {
     /// The tree is gone, and so is everything that was under it — including when
     /// it was never there: a purge run twice is not a failure the second time.
     Everything,
@@ -628,7 +628,7 @@ pub(crate) enum Removal {
 }
 
 /// Remove `tree` and everything under it, **keeping going past a refusal**, and
-/// say which of [`Removal`]'s three things happened.
+/// say which of [`TreeSweep`]'s three things happened.
 ///
 /// [`remove_tree`] is the other half of this pair and is the one the cache's own
 /// steps use: it stops at the first failure, which is right when the tree is one
@@ -673,13 +673,13 @@ pub(crate) enum Removal {
 /// caller never named, and unlinking just the link reports a clean sweep over
 /// clones that are still on disk somewhere else. Symlinks *inside* the tree are
 /// unlinked and never descended.
-pub(crate) fn remove_tree_as_far_as_it_goes(tree: &Path) -> Removal {
+pub(crate) fn remove_tree_as_far_as_it_goes(tree: &Path) -> TreeSweep {
     // One lstat, three outcomes, none of them inferred — see `present` for why
     // this question cannot be asked with an existence check.
     let stat = match std::fs::symlink_metadata(tree) {
         Ok(stat) => stat,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Removal::Everything;
+            return TreeSweep::Everything;
         }
         Err(error) => {
             // Something is there that we are not allowed to look at. Nothing was
@@ -735,14 +735,14 @@ pub(crate) fn remove_tree_as_far_as_it_goes(tree: &Path) -> Removal {
         // Nothing survived that anybody needs to know about, so the tree is gone —
         // including the case where the walk hit failures the disk then
         // contradicted.
-        None => Removal::Everything,
-        Some(refused) if walk.removed_any => Removal::WhatItCould(refused),
-        Some(refused) => Removal::Nothing(refused),
+        None => TreeSweep::Everything,
+        Some(refused) if walk.removed_any => TreeSweep::WhatItCould(refused),
+        Some(refused) => TreeSweep::Nothing(refused),
     }
 }
 
-fn refused_nothing(refusal: Refusal) -> Removal {
-    Removal::Nothing(NonEmpty::one(refusal))
+fn refused_nothing(refusal: Refusal) -> TreeSweep {
+    TreeSweep::Nothing(NonEmpty::one(refusal))
 }
 
 /// The bottom-up walk's running state: what failed, and whether anything went.

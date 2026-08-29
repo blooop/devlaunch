@@ -19,8 +19,8 @@ use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
 use devlaunch_core::flows::lifecycle::{
-    self, ChildWork, DeleteOutcome, DeleteStalled, Guarded, Insistence, LifecycleNotice,
-    Persistence, PruneError, PruneOutcome, Refresh, RefreshReason, StopOutcome,
+    self, ChildWork, DeleteStalled, Insistence, LifecycleNotice, PruneError, PruneOutcome, Refresh,
+    RefreshReason, Removal, RemoveOutcome, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::records::{Records, StartupError, open_records};
@@ -580,105 +580,22 @@ fn render_workspace<'r>(
     }
 }
 
-/// Which delete this is, of the three dl performs.
+/// Whether a sweep already ran in front of this removal.
 ///
-/// One value rather than the three flags it stands for — the unsaved-work guard,
-/// devpod's `--ignore-not-found`, devpod's `--force` and a deadline — because
-/// those are not independent settings anybody would want to mix. They are one
-/// decision about how badly the caller wants the workspace gone, and spelling them
-/// separately makes seven combinations writable of which three are meant. The
-/// three that are meant are these.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Removal {
-    /// `dl <ws> rm`, the happy path. Stops at work that exists nowhere else, names
-    /// it, and offers `--force`. devpod is asked with its own defaults and given
-    /// as long as it needs, because a container that is slow to come down is a
-    /// container that is coming down.
-    Guarded,
-    /// `dl <ws> rm --force`. The guard does not even look, and an absent workspace
-    /// counts as deleted, which is what makes it `rm -f` rather than a louder `rm`.
-    /// devpod is still asked politely: this is a workspace you are sure about, not
-    /// one that is stuck.
-    Insisted,
-    /// `dl <ws> kill`. The verb for a workspace that is wedged and finished with,
-    /// so nothing here refuses and nothing here waits indefinitely: the guard looks
-    /// and *reports* rather than stopping, devpod gets `--force` so a workspace it
-    /// can no longer reach still goes, and the call carries a deadline so it cannot
-    /// join the five second lock loop the sweep in front of it was reached for.
-    ///
-    /// The guard still looks, and that is the difference between this and
-    /// [`Removal::Insisted`] rather than a leftover: work that exists nowhere else
-    /// is about to be destroyed, and the person who typed `kill` is owed the list
-    /// even though they are not being asked to confirm it.
-    Wedged,
-}
-
-impl Removal {
-    /// Whether dl will accept an absent workspace as a delete, and what devpod's
-    /// `--ignore-not-found` rides on.
-    fn insistence(self) -> Insistence {
-        match self {
-            Self::Guarded => Insistence::NotInsisted,
-            Self::Insisted | Self::Wedged => Insistence::Insisted,
-        }
-    }
-
-    /// How hard devpod is pushed, and whether the call carries a deadline.
-    fn persistence(self) -> Persistence {
-        match self {
-            Self::Guarded | Self::Insisted => Persistence::Ordinary,
-            Self::Wedged => Persistence::Wedged,
-        }
-    }
-
-    /// Whether the unsaved-work probe is worth running, and what its answer does.
-    ///
-    /// `Insisted` is the one that skips it, and it skips it to save the work rather
-    /// than to hide the answer: the probe is a `git status` and a `git log` per
-    /// clone, and `rm --force` has said in advance that it will not act on either.
-    fn probe(self) -> Probe {
-        match self {
-            Self::Guarded => Probe::Look(Finding::Refuses),
-            Self::Insisted => Probe::Skip,
-            Self::Wedged => Probe::Look(Finding::Says),
-        }
-    }
-
-    /// Whether a sweep already ran in front of this delete.
-    ///
-    /// Read off the removal rather than passed beside it, because it is a total
-    /// function of one: `Wedged` *is* the removal that stands behind a sweep. As a
-    /// second argument it was a pair that could be written wrong in four ways, and
-    /// the wrong one produces a `kill` whose own refusal tells you to run `kill`.
-    fn swept(self) -> Swept {
-        match self {
-            Self::Guarded | Self::Insisted => Swept::NotYet,
-            Self::Wedged => Swept::Already,
-        }
-    }
-}
-
-/// Whether the delete looks for work that exists nowhere else.
+/// Read off the removal rather than passed beside it, because it is a total
+/// function of one: [`Removal::Wedged`] *is* the removal that stands behind a
+/// sweep. As a second argument it was a pair that could be written wrong in four
+/// ways, and the wrong one produces a `kill` whose own refusal tells you to run
+/// `kill`.
 ///
-/// Nested rather than three flat arms so that [`Finding`] is unreachable from the
-/// arm that never looks: a delete that skips the probe has no finding to act on,
-/// and a flat third arm left every `match` on the answer with a case its author
-/// had to invent a body for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Probe {
-    /// Look, and then do this with what is found.
-    Look(Finding),
-    /// Do not look. `rm --force`'s.
-    Skip,
-}
-
-/// What a delete does with work it found that exists nowhere else.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Finding {
-    /// Stop, name it, and offer the way past. `rm`'s.
-    Refuses,
-    /// Name it, and delete it. `kill`'s.
-    Says,
+/// A free function rather than a method, because [`Removal`] is core's now: which
+/// of the three removals this is belongs to the removal, and whether a sweep has
+/// already printed above belongs to the screen.
+fn swept(removal: Removal) -> Swept {
+    match removal {
+        Removal::Guarded | Removal::Insisted => Swept::NotYet,
+        Removal::Wedged => Swept::Already,
+    }
 }
 
 /// The removal `--force` asks for, for the one verb the flag still reaches.
@@ -955,83 +872,41 @@ fn remove_addressed<'r>(
     removal: Removal,
     word: &str,
 ) -> Ending {
-    let insistence = removal.insistence();
-    // The delete needs the records whatever the resolution needed, so a resolution
+    // The removal needs the records whatever the resolution needed, so a resolution
     // that did not open them opens them here — through the same `ColdPath`, which is
     // what keeps one command from holding two views of `metadata.json`.
     let records = match cold.records() {
         Err(refused) => return refuse_startup(&refused),
         Ok(records) => records,
     };
-    let mut notices: Vec<LifecycleNotice> = Vec::new();
-
-    // The one thing dl refuses on its own account, and the one thing `kill` reports
-    // rather than refusing over. Skipped entirely only for `rm --force`, which has
-    // said in advance that it will not act on the answer and so should not pay for
-    // it: the probe is a `git status` and a `git log` per clone.
-    if let Probe::Look(finding) = removal.probe() {
-        let unsaved = lifecycle::unsaved_work_in(
-            &records.clones,
-            &records.storage,
-            &context.git(),
-            cache,
-            workspace_id,
-            &mut notices,
-        );
-        say(&notices);
-        notices.clear();
-        // Asked with `Insistence::NotInsisted` whatever this removal insists,
-        // because what is wanted from it here is the *finding* rather than the
-        // verdict: `kill` acts on the finding differently, and passing its own
-        // insistence would collapse the finding to `MayRemove` before it could.
-        if let Guarded::Refused(refusal) =
-            lifecycle::guard_removal(workspace_id, unsaved, Insistence::NotInsisted)
-        {
-            match finding {
-                Finding::Refuses => {
-                    eprintln!("{}", render::removal_refusal(&refusal, target, word));
-                    return Ending::Refused;
-                }
-                // Said and stepped past. A workspace reached with `kill` is one
-                // somebody has already given up on, and stopping here is the
-                // failure the verb was rebuilt to stop having: a wedged workspace's
-                // clone is dirty almost by construction, since what wedged it
-                // interrupted whatever was being done in it.
-                Finding::Says => eprintln!("{}", render::removing_over_work(&refusal)),
-            }
-        }
-    }
-
-    // Which workspace this is, named before devpod is asked and after the guard has
-    // had its say. Everything below names the resolved id, and a target that was a
-    // branch, a path, or a row in the picker is not that word — see
-    // [`render::removing`].
-    eprintln!("{}", render::removing(workspace_id));
-
     let Records {
         storage, clones, ..
     } = records;
-    let deleted = lifecycle::workspace_delete(
+    // Said as they happen rather than collected, because the removal's own lines are
+    // interleaved with the guard's and the clone's and the order *is* the report:
+    // what was found, which workspace is going, and what became of its clone. A
+    // vector here would print all of it after the delete had already returned.
+    let mut notices = render::Saying;
+    let removed = lifecycle::workspace_remove(
         context,
         refresh,
         clones,
         storage,
+        cache,
         // Resolved here rather than in core, for the reason every other environment
         // answer is: the process that knows what its environment says hands the
         // answer down. `None` is a machine with no home directory, where devpod has
         // no records to read and so no volume names to derive.
         DevpodHome::locate().as_ref(),
         workspace_id,
-        insistence,
-        removal.persistence(),
-        // Printed from inside the call rather than collected with the notices
-        // below it, because the whole value of the sentence is its timing: the
-        // delete it is about has not returned and, until somebody acts on this,
-        // is not going to.
+        removal,
+        // Printed from inside the call rather than said through the sink beside it,
+        // because the whole value of the sentence is its timing: the delete it is
+        // about has not returned and, until somebody acts on this, is not going to.
         &mut |DeleteStalled::OnTheLock| eprintln!("{}", render::delete_blocked(workspace_id, word)),
         &mut notices,
     );
-    match deleted {
+    match removed {
         Err(not_run) => {
             let ending = refuse_devpod("delete", &not_run);
             // The one refusal whose own sentence describes nothing: `devpod delete
@@ -1044,21 +919,26 @@ fn remove_addressed<'r>(
             }
             ending
         }
-        Ok(DeleteOutcome::DevpodRefused { exit }) => {
+        // The one thing dl refuses on its own account. Only `rm` reaches this arm:
+        // `rm --force` never looks and `kill` says it and goes on, both of which are
+        // decided inside the removal now rather than sequenced out here.
+        Ok(RemoveOutcome::Refused(refusal)) => {
+            eprintln!("{}", render::removal_refusal(&refusal, target, word));
+            Ending::Refused
+        }
+        Ok(RemoveOutcome::DevpodRefused { exit }) => {
             // The local clone is kept, so the delete stays retryable: devpod
             // re-parses the workspace's devcontainer.json to tear the container
             // down, and removing the clone regardless strands it for good.
-            eprintln!("{}", render::delete_refused(workspace_id, removal.swept()));
-            say(&notices);
+            eprintln!("{}", render::delete_refused(workspace_id, swept(removal)));
             Ending::Child(exit)
         }
-        Ok(DeleteOutcome::Deleted { .. }) => {
-            say(&notices);
-            // After the clone's own lines, because it closes the delete: what a
+        Ok(RemoveOutcome::Deleted { .. }) => {
+            // After the clone's own lines, because it closes the removal: what a
             // reader wants from the end of one workspace's block is which workspace
-            // it was. `insistence` is passed because it decides what this exit code
+            // it was. The insistence is passed because it decides what this exit code
             // established — see [`render::removed`].
-            eprintln!("{}", render::removed(workspace_id, insistence));
+            eprintln!("{}", render::removed(workspace_id, removal.insistence()));
             Ending::Done
         }
     }

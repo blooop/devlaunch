@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A removal on the promised surface cannot skip the unsaved-work guard, because
+  there is nothing left to skip it with.** `devlaunch_core::api` promised
+  `workspace_delete`, which is the delete *without* the guard, and the probe and the
+  guard that make it safe were two further exported functions the caller had to run
+  first, in the right order, with the right arguments. The sequence lived in the `dl`
+  binary, so nothing outside `dl` could reuse it and nothing held `dl` to it: a second
+  consumer following the promise exactly would delete a clone holding the only copy of
+  somebody's afternoon.
+
+  The three are one `lifecycle::workspace_remove` now — probe, guard, name the
+  volumes, delete, remove the clone, in that order — and `guard_removal`,
+  `unsaved_work_in` and the raw delete are `pub(crate)`. `api::workspace_delete` is
+  gone rather than kept beside the new call, which is a breaking change to the frozen
+  surface (#251 §7) and the right weight: an unguarded delete is unrepresentable
+  instead of documented. `api` also gained what a caller needs to *call* the removal
+  and read its answer, and `DeleteOutcome` is `RemoveOutcome`, with a `Refused` arm
+  beside the two it had. Which of the three removals is being asked for — `rm`,
+  `rm --force`, `kill` — travels as one `Removal` value rather than four flags a
+  caller assembles; it lived in the binary before. No change to what `dl` prints or
+  when.
+
 - **`devlaunch_core::api` can now build a launcher, not just name one.** The two
   implementations that decide whether a launch can go cold at all lived in the `dl`
   binary: the one that opens devlaunch's records (config, `metadata.json`, the cache

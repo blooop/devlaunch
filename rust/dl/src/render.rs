@@ -952,6 +952,8 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
             "Addressing devpod workspace '{recorded}' from the record for {owner}/{repo}@{branch}; \
              this build derives '{derived}'"
         ),
+        LifecycleNotice::Removing { workspace_id } => removing(workspace_id),
+        LifecycleNotice::RemovingOverWork { refusal } => removing_over_work(refusal),
         LifecycleNotice::Cache(cache) => return cache_notice(cache),
     })
 }
@@ -2270,6 +2272,21 @@ impl Notices<LaunchNotice> for Saying {
             return;
         }
         if let Some(line) = launch_notice(&notice) {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// A removal's notices through the same sink, at the moment each one happens.
+///
+/// Streamed rather than collected because a removal's lines are a sequence and not
+/// a summary: what the guard found, which workspace is going, and what became of
+/// its clone, each said while the step it describes is the one under way. Collected
+/// into a vector they all arrived after `devpod delete` had returned, which put
+/// "Removing workspace X..." after the wait it exists to explain.
+impl Notices<LifecycleNotice> for Saying {
+    fn say(&mut self, notice: LifecycleNotice) {
+        if let Some(line) = lifecycle_notice(&notice) {
             eprintln!("{line}");
         }
     }

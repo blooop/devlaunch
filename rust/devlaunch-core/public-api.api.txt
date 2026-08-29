@@ -2,6 +2,11 @@ pub mod devlaunch_core::api
 pub enum devlaunch_core::api::ColdRefused
 pub devlaunch_core::api::ColdRefused::NoColdPath
 pub devlaunch_core::api::ColdRefused::Startup(devlaunch_core::flows::records::StartupError)
+pub enum devlaunch_core::api::DeleteStalled
+pub devlaunch_core::api::DeleteStalled::OnTheLock
+pub enum devlaunch_core::api::Insistence
+pub devlaunch_core::api::Insistence::Insisted
+pub devlaunch_core::api::Insistence::NotInsisted
 pub enum devlaunch_core::api::LaunchNotice
 pub devlaunch_core::api::LaunchNotice::AlreadyRunning
 pub devlaunch_core::api::LaunchNotice::AlreadyRunning::workspace_id: alloc::string::String
@@ -52,6 +57,29 @@ pub devlaunch_core::api::LaunchVerb::Recreate
 pub devlaunch_core::api::LaunchVerb::Reset
 pub devlaunch_core::api::LaunchVerb::Restart
 pub devlaunch_core::api::LaunchVerb::Up
+pub enum devlaunch_core::api::LifecycleNotice
+pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace
+pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::branch: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::derived: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::owner: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::recorded: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::repo: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved
+pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved::refusal: devlaunch_core::flows::workspace_clone::RemoveWorkspaceError
+pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::CloneRemoved
+pub devlaunch_core::api::LifecycleNotice::CloneRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::RecordNotDropped
+pub devlaunch_core::api::LifecycleNotice::RecordNotDropped::path: std::path::PathBuf
+pub devlaunch_core::api::LifecycleNotice::RecordNotDropped::refusal: devlaunch_core::domain::metadata::MetadataError
+pub devlaunch_core::api::LifecycleNotice::Removing
+pub devlaunch_core::api::LifecycleNotice::Removing::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::RemovingOverWork
+pub devlaunch_core::api::LifecycleNotice::RemovingOverWork::refusal: devlaunch_core::flows::lifecycle::RemovalRefused
+pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved
+pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
+pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
 pub enum devlaunch_core::api::ProvisionEvent
 pub devlaunch_core::api::ProvisionEvent::NotInstalled
 pub devlaunch_core::api::ProvisionEvent::NotInstalled::exit: devlaunch_runner::Exit
@@ -78,6 +106,24 @@ pub devlaunch_core::api::RecordsNotice::Metadata(devlaunch_core::domain::metadat
 pub devlaunch_core::api::RecordsNotice::Migrated(devlaunch_core::flows::migration::MigrationReport)
 pub devlaunch_core::api::RecordsNotice::MigrationRefused(devlaunch_core::domain::metadata::MetadataError)
 pub devlaunch_core::api::RecordsNotice::RetiredKey(devlaunch_core::domain::config::RetiredKey)
+pub enum devlaunch_core::api::Removal
+pub devlaunch_core::api::Removal::Guarded
+pub devlaunch_core::api::Removal::Insisted
+pub devlaunch_core::api::Removal::Wedged
+pub enum devlaunch_core::api::RemovalRefused
+pub devlaunch_core::api::RemovalRefused::CouldNotTell
+pub devlaunch_core::api::RemovalRefused::CouldNotTell::cause: devlaunch_core::domain::workspace_state::CouldNotTell
+pub devlaunch_core::api::RemovalRefused::CouldNotTell::workspace_id: alloc::string::String
+pub devlaunch_core::api::RemovalRefused::WouldLose
+pub devlaunch_core::api::RemovalRefused::WouldLose::losses: devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::domain::workspace_state::Loss>
+pub devlaunch_core::api::RemovalRefused::WouldLose::workspace_id: alloc::string::String
+pub enum devlaunch_core::api::RemoveOutcome
+pub devlaunch_core::api::RemoveOutcome::Deleted
+pub devlaunch_core::api::RemoveOutcome::Deleted::clone: core::result::Result<devlaunch_core::flows::workspace_clone::Removed, devlaunch_core::flows::workspace_clone::RemoveWorkspaceError>
+pub devlaunch_core::api::RemoveOutcome::Deleted::volumes: devlaunch_core::flows::lifecycle::VolumeSweep
+pub devlaunch_core::api::RemoveOutcome::DevpodRefused
+pub devlaunch_core::api::RemoveOutcome::DevpodRefused::exit: devlaunch_runner::Exit
+pub devlaunch_core::api::RemoveOutcome::Refused(devlaunch_core::flows::lifecycle::RemovalRefused)
 pub enum devlaunch_core::api::SpecIdentity<'a>
 pub devlaunch_core::api::SpecIdentity::ExistingName(&'a str)
 pub devlaunch_core::api::SpecIdentity::PathLeaf(&'a str)
@@ -103,11 +149,18 @@ pub devlaunch_core::api::Cold::storage: &'a mut devlaunch_core::domain::metadata
 pub struct devlaunch_core::api::ColdPath<'r, 'e>
 pub struct devlaunch_core::api::CommandContext<'r>
 pub struct devlaunch_core::api::DevcontainerPath(_)
+pub struct devlaunch_core::api::DevpodHome
 pub struct devlaunch_core::api::Host
 pub struct devlaunch_core::api::Launch<'a, 'r, 'l>
+pub struct devlaunch_core::api::MetadataStorage
+pub struct devlaunch_core::api::Records<'r>
+pub devlaunch_core::api::Records::clones: devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
+pub devlaunch_core::api::Records::reported: alloc::vec::Vec<devlaunch_core::flows::records::RecordsNotice>
+pub devlaunch_core::api::Records::storage: devlaunch_core::domain::metadata::MetadataStorage
 pub struct devlaunch_core::api::Refresh<'a>
 pub struct devlaunch_core::api::SelfInvocation
 pub struct devlaunch_core::api::ToolProvisioning<'e>
+pub struct devlaunch_core::api::WorkspaceCloneManager<'r>
 pub const devlaunch_core::api::HANDOFF_VAR: &str
 pub const devlaunch_core::api::PREWARM_VAR: &str
 pub trait devlaunch_core::api::ColdMachinery<'r>
@@ -122,5 +175,5 @@ pub fn devlaunch_core::api::identity(&str) -> core::result::Result<devlaunch_cor
 pub fn devlaunch_core::api::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
 pub fn devlaunch_core::api::parse(&str) -> devlaunch_core::domain::spec::WorkspaceSpec<'_>
 pub fn devlaunch_core::api::resolve_devcontainer_ref(&str) -> core::result::Result<devlaunch_core::domain::spec::DevcontainerPath, devlaunch_core::domain::spec::DevcontainerRefError>
-pub fn devlaunch_core::api::workspace_delete(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, devlaunch_core::flows::lifecycle::Insistence, devlaunch_core::flows::lifecycle::Persistence, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::DeleteStalled), &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::DeleteOutcome, devlaunch_core::clients::devpod::NotRun>
+pub fn devlaunch_core::api::workspace_remove(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage, &std::path::Path, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, devlaunch_core::flows::lifecycle::Removal, &mut dyn core::ops::function::FnMut(devlaunch_core::flows::lifecycle::DeleteStalled), &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> core::result::Result<devlaunch_core::flows::lifecycle::RemoveOutcome, devlaunch_core::clients::devpod::NotRun>
 pub fn devlaunch_core::api::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
