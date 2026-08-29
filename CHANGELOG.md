@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is the only non-printable ASCII character serde hands to the escaper instead
   of escaping itself, which is how it stayed wrong through three copies of the
   loop.
-
   No branch name can carry a DEL (git rejects control characters in ref names),
   so nothing in the wild hit it going out. Coming back in did: the metadata loader
   parses and re-encodes, so a `metadata.json` written by the Python build with an
@@ -26,6 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and each of the three writers is pinned against the line `json.dumps` printed
   for every ASCII character at once, which says the same thing in the other
   direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
+
+## [0.25.0] - 2026-08-28
+
+### Fixed
+
+- **A cache whose default branch was deleted upstream no longer records the dead
+  name.** A bare clone remembers the default branch it was cloned with, in its
+  `HEAD` symref, and nothing repoints it afterwards: `dl` has never written a
+  bare's `HEAD`. So a repository that renamed `master` to `main` leaves the cache
+  pointing at `refs/heads/master` long after the prune that deleted the ref, and
+  `git symbolic-ref HEAD` keeps answering `master`, exit 0, because a symbolic ref
+  is a name rather than a branch.
+
+  The reading now checks that the name is a ref the clone really has, and treats a
+  name that is not as it treats a refusal: ask the next probe. The cost is one
+  local `show-ref` per clone or adopt, and what it buys is that no default branch
+  `dl` records was read off a ref that is not there. It bit hardest on the adopt
+  path, which rebuilds a record by reading the clone: delete `metadata.json` and
+  the dead branch was written straight back, with every fallback that would have
+  answered correctly sitting unreachable behind it.
 
 - **A session that dies badly no longer takes your terminal with it.** A terminal
   is not only a stream: a full screen program switches modes on in the emulator for

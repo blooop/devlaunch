@@ -1639,10 +1639,32 @@ impl<'r> RepositoryManager<'r> {
     /// taken: a branch name may contain slashes, so `split("/")[-1]` turned a
     /// default branch of `release/1.0` into `1.0` — a ref the repository does not
     /// have, recorded as the one every later operation targets.
+    ///
+    /// **Both symbolic refs are checked before they are believed, and devlaunch#477
+    /// is why.** A symbolic ref is a name, not a branch: `git symbolic-ref` prints
+    /// what it points at and exits 0 whether or not that ref exists. A cache
+    /// cloned when the default was `master`, whose remote has since renamed it,
+    /// keeps `HEAD -> refs/heads/master` after the prune that deleted the ref —
+    /// nothing repoints it, because dl has never written a bare's HEAD and this
+    /// ticket decided it should not start. So the first probe answers `master`,
+    /// confidently and forever, and every later probe that could have answered
+    /// correctly is unreachable behind it. Reading it as an answer is what makes
+    /// the lie durable: `register_existing_bare` re-records it from the clone, so
+    /// a user who deletes `metadata.json` gets the dead branch written back.
+    ///
+    /// [`Git::verify_ref`] is what turns the name into a fact, and a name that is
+    /// not one is treated exactly as a refusal is: fall through to the next probe.
+    /// That leaves this the whole of the reading — no caller can obtain a default
+    /// branch that was read off a ref the repository has not got, because there is
+    /// nowhere else it is read.
+    ///
+    /// What it does *not* do is notice that the recorded answer has gone stale
+    /// later; the record is written once and never revalidated, which is
+    /// devlaunch#507 and a separate question.
     pub(crate) fn default_branch_of(&self, repo_path: &Path) -> String {
         for reference in ["HEAD", "refs/remotes/origin/HEAD"] {
-            if let Some(named) = self.git.symbolic_ref(repo_path, reference).said() {
-                return git::branch_in_symbolic_ref(&named).to_owned();
+            if let Some(branch) = self.branch_at_symbolic_ref(repo_path, reference) {
+                return branch;
             }
         }
         if let Some(listed) = self.git.remote_branch_listing(repo_path).said() {
@@ -1653,6 +1675,24 @@ impl<'r> RepositoryManager<'r> {
             }
         }
         FALLBACK_DEFAULT_BRANCH.to_owned()
+    }
+
+    /// The branch a symbolic ref names, when the ref it names is really there.
+    ///
+    /// Two verbs rather than one because there is no git that answers this in one:
+    /// `symbolic-ref` does not check its target and `show-ref --verify` does not
+    /// dereference a symref. Sequencing them is this layer's job, not the client's
+    /// — see [`crate::clients::git`], where a verb never falls back to another.
+    ///
+    /// The *full* ref is what gets checked, not the branch name stripped out of
+    /// it: `refs/heads/main` and `refs/remotes/origin/main` are different refs, and
+    /// a clone can have either one without the other.
+    fn branch_at_symbolic_ref(&self, repo_path: &Path, reference: &str) -> Option<String> {
+        let named = self.git.symbolic_ref(repo_path, reference).said()?;
+        self.git
+            .verify_ref(repo_path, &named)
+            .is_said()
+            .then(|| git::branch_in_symbolic_ref(&named).to_owned())
     }
 
     /// The default branch for a repository, from the record or from the remote.
@@ -3279,8 +3319,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             as_strs(&head.argvs()),
-            [["git", "symbolic-ref", "HEAD"]],
-            "and nothing further is asked once it answers"
+            [
+                vec!["git", "symbolic-ref", "HEAD"],
+                vec!["git", "show-ref", "--verify", "refs/heads/release/1.0"],
+            ],
+            "and nothing further is asked once it answers with a ref that is there"
         );
 
         // 2. the remote-tracking HEAD, which is where a non-bare clone answers.
@@ -3314,6 +3357,68 @@ pub(crate) mod tests {
         assert_eq!(
             a_manager(&cache, Git::new(&silent)).default_branch_of(&repo),
             "main"
+        );
+    }
+
+    #[test]
+    fn a_symbolic_ref_whose_branch_is_gone_is_not_an_answer() {
+        // devlaunch#477. `git symbolic-ref HEAD` does not check that the ref it
+        // names is there, so a bare clone whose upstream deleted the branch its
+        // HEAD points at answers with that dead name, exit 0, forever. What the
+        // reader does with that is what it does with a refusal: ask the next probe.
+        let cache = a_cache();
+        let repo = cache.dir.path().join("some-clone");
+        let dangling = FakeGit::new()
+            .with_script(
+                ["git", "symbolic-ref", "HEAD"],
+                Response::stdout("refs/heads/gone\n"),
+            )
+            .with_script(
+                ["git", "show-ref", "--verify", "refs/heads/gone"],
+                Response::exited(128),
+            )
+            .with_script(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                Response::stdout("refs/remotes/origin/live\n"),
+            );
+
+        assert_eq!(
+            a_manager(&cache, Git::new(&dangling)).default_branch_of(&repo),
+            "live",
+            "a name whose ref is gone was answered with instead of skipped"
+        );
+        assert_eq!(
+            as_strs(&dangling.argvs()),
+            [
+                vec!["git", "symbolic-ref", "HEAD"],
+                vec!["git", "show-ref", "--verify", "refs/heads/gone"],
+                vec!["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                vec!["git", "show-ref", "--verify", "refs/remotes/origin/live"],
+            ],
+            "the ref a symbolic ref names is what gets checked, prefix and all"
+        );
+    }
+
+    #[test]
+    fn both_symbolic_refs_being_gone_falls_through_to_the_listing() {
+        // The same, one probe further along: neither symbolic ref names a ref that
+        // is there, so the answer comes from branches the clone really has.
+        let cache = a_cache();
+        let repo = cache.dir.path().join("some-clone");
+        let dangling = FakeGit::new()
+            .with_script(
+                ["git", "symbolic-ref"],
+                Response::stdout("refs/heads/gone\n"),
+            )
+            .with_script(["git", "show-ref"], Response::exited(128))
+            .with_script(
+                ["git", "branch", "-r"],
+                Response::stdout("  origin/master\n"),
+            );
+
+        assert_eq!(
+            a_manager(&cache, Git::new(&dangling)).default_branch_of(&repo),
+            "master"
         );
     }
 
@@ -3649,6 +3754,69 @@ pub(crate) mod tests {
                 "{branch}"
             );
         }
+    }
+
+    #[test]
+    fn real_git_does_not_re_record_a_default_branch_the_remote_has_deleted() {
+        // devlaunch#477, against the state the bug really arrives in: a cache
+        // cloned while the remote's default was `master`, a remote that has since
+        // renamed it to `main`, and a prune that took `refs/heads/master` out of
+        // the cache. Nothing repoints the cache's HEAD — dl has never written a
+        // bare's HEAD — so `symbolic-ref HEAD` still says `refs/heads/master`,
+        // exits 0, and says it about a ref that is not there.
+        //
+        // The adopt path is where that gets *re*-recorded: delete metadata.json
+        // and the next launch rebuilds the record by reading the clone.
+        let cache = a_cache();
+        let remote = a_remote_headed_at(cache.dir.path(), "master", "renamed");
+        let runner = real_git();
+        let manager = a_manager(&cache, Git::new(&runner));
+        let mut storage = cache.storage;
+        manager
+            .clone_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
+            .expect("cloned");
+        let bare = manager.bare_dir("test", "repo");
+
+        // The rename, as a remote does it, and the prune that brings it home.
+        commit_on(&remote.work, "main", "renamed.txt", "Rename the default");
+        run_git(&remote.path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        run_git(&remote.work, &["push", "origin", "--delete", "master"]);
+        run_git(
+            &bare,
+            &["fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"],
+        );
+        assert_eq!(
+            run_git(&bare, &["symbolic-ref", "HEAD"]).trim(),
+            "refs/heads/master",
+            "the fixture is only interesting while HEAD still names the dead branch"
+        );
+        assert!(!refs_of(&bare).contains(&"refs/heads/master".to_owned()));
+        storage
+            .remove_repository("test", "repo")
+            .expect("forgotten");
+
+        let adopted = manager
+            .ensure_repo(&mut storage, "test", "repo", &remote.url, &mut ignoring())
+            .expect("adopted");
+
+        assert_ne!(
+            adopted.default_branch.named(),
+            Some("master"),
+            "the record was rebuilt from a HEAD that names a ref the clone has not got"
+        );
+        // What it answers instead is whatever the probes after it can stand
+        // behind. For a bare clone that is the fallback, and here the fallback is
+        // also the truth, because renaming the default to `main` is the shape this
+        // arrives in. The property under test is the one below: whatever is
+        // recorded names a ref the clone really has.
+        assert_eq!(adopted.default_branch.named(), Some("main"));
+        assert!(
+            refs_of(&bare).contains(&format!(
+                "refs/heads/{}",
+                adopted.default_branch.named().expect("a name")
+            )),
+            "the recorded default branch names a ref the clone has not got"
+        );
     }
 
     #[test]
