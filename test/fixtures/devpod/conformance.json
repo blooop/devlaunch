@@ -14,11 +14,22 @@
     "either fake happens to do. `verified` says how that was established, per",
     "row, and says so plainly where it could not be: a row measured against the",
     "real binary and a row inherited from the two fakes agreeing are different",
-    "kinds of claim, and collapsing them is how the drift got in.",
+    "kinds of claim, and collapsing them is how the drift got in. Every row here",
+    "is `measured` today: the rows that once said `unverified` were the ones",
+    "needing a provisioned workspace, and the review of PR #353 provisioned one",
+    "(docker provider, alpine devcontainer, scratch DEVPOD_HOME) and ran them.",
+    "A row may still open `unverified`; it just has to say which it is.",
     "",
-    "A row is: `given` (the workspaces the machine starts with), `argv` (what is",
-    "passed after `devpod`), `exit` (the expected exit code), and `then` (every",
-    "workspace that must exist afterwards, with its state, ordered by id).",
+    "A row is: `id` (its name in the guards' roll call, below), `given` (the",
+    "workspaces the machine starts with), `argv` (what is passed after `devpod`),",
+    "`exit` (the expected exit code), and `then` (every workspace that must exist",
+    "afterwards, with its state, ordered by id).",
+    "",
+    "The `id` is what stops a row leaving quietly. Both drivers hold the full list",
+    "of ids they expect to find here and fail by name on one that is missing, so",
+    "deleting a row from this file is a failing test rather than a smaller corpus.",
+    "Adding a row means adding its id on both sides; that is the price of the",
+    "guarantee, and it is deliberately not payable by accident.",
     "",
     "stdout is deliberately NOT part of a row. Real devpod's own output here is",
     "a timestamped, colourised log line (`16:28:03 done deleted workspace",
@@ -31,6 +42,7 @@
   ],
   "rows": [
     {
+      "id": "delete-missing-with-ignore-not-found",
       "name": "delete of a missing workspace with --ignore-not-found succeeds",
       "why": "The drift that motivated the corpus. `dl <ws> rm --force` passes this flag on every forced remove, so a fake that refuses fails a run real devpod completes.",
       "verified": "measured: real devpod v0.26.1 on the host exits 0 (printing its usual `done deleted workspace` log line).",
@@ -42,6 +54,7 @@
       "then": [{ "id": "keep-me", "state": "Running" }]
     },
     {
+      "id": "delete-missing-with-leading-ignore-not-found",
       "name": "--ignore-not-found is honoured before the workspace too",
       "why": "Real devpod is a cobra program and parses flags on either side of the positional; a fake that only looks at trailing argv would pass the row above and fail this one.",
       "verified": "measured: `devpod delete --ignore-not-found ghost` at v0.26.1 exits 0.",
@@ -51,6 +64,7 @@
       "then": []
     },
     {
+      "id": "delete-missing-without-the-flag",
       "name": "delete of a missing workspace without the flag refuses",
       "why": "The flag is the whole difference; without it the refusal is correct and a fake that always succeeded would hide a real failure.",
       "verified": "measured: `devpod delete ghost` at v0.26.1 exits 1 with `fatal workspace ghost not found`.",
@@ -60,9 +74,10 @@
       "then": []
     },
     {
+      "id": "delete-removes-the-workspace",
       "name": "delete removes the workspace it was given",
       "why": "The ordinary path, so the flag rows above are not the only thing holding delete's shape.",
-      "verified": "unverified against the real binary: observing it needs a provisioned workspace and a container runtime. Inherited from `devpod delete --help` (\"Deletes an existing workspace\") and from both fakes agreeing.",
+      "verified": "measured: `devpod delete <ws>` at v0.26.1 removes the workspace and exits 0, run against a provisioned alpine devcontainer on the docker provider under a scratch DEVPOD_HOME during the review of PR #353.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Running" },
         { "id": "other-ws", "source": "/clones/owner/other", "state": "Stopped" }
@@ -72,9 +87,10 @@
       "then": [{ "id": "other-ws", "state": "Stopped" }]
     },
     {
+      "id": "delete-present-with-ignore-not-found",
       "name": "--ignore-not-found still deletes a workspace that is there",
       "why": "The flag changes the missing case only. A fake that read it as \"do nothing\" would leave a workspace `dl <ws> rm --force` reported as removed.",
-      "verified": "unverified against the real binary for the same reason as the row above; `devpod delete --help` scopes the flag to \"Treat 'workspace not found' as a successful delete\".",
+      "verified": "measured: the same run with `--ignore-not-found` added deletes a workspace that is there and exits 0, so the flag changes the missing case and nothing else. Same provisioned workspace as the row above.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Running" }
       ],
@@ -83,6 +99,7 @@
       "then": []
     },
     {
+      "id": "stop-missing-workspace",
       "name": "stop of a missing workspace refuses",
       "why": "`stop` takes no flags at all at v0.26.1, so there is nothing here that could make it forgiving.",
       "verified": "measured: `devpod stop ghost` at v0.26.1 exits 1 with `fatal workspace not found for args: [ghost]`.",
@@ -92,9 +109,10 @@
       "then": []
     },
     {
+      "id": "stop-running-workspace",
       "name": "stop stops a running workspace",
       "why": "The state effect `dl <ws> stop` depends on.",
-      "verified": "unverified against the real binary: needs a provisioned workspace. Inherited from `devpod stop --help` and both fakes agreeing.",
+      "verified": "measured: `devpod stop <ws>` at v0.26.1 leaves the workspace listed with its state Stopped, on the same provisioned alpine devcontainer.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Running" }
       ],
@@ -103,6 +121,7 @@
       "then": [{ "id": "owner-repo-main", "state": "Stopped" }]
     },
     {
+      "id": "up-full-production-argv",
       "name": "up in the order dl sends it, with every flag production passes",
       "why": "The whole `devpod up` argv `dl` really builds, in its real order. Pins that no flag in it is mistaken for the workspace source.",
       "verified": "measured for arity: `devpod up --help` at v0.26.1 gives every flag here a value (`--init-env`, `--mount` and `--dotfiles-script-env` are stringArray; `--workspace-env-file` and `--prebuild-repository` are strings; `--id`, `--ide`, `--devcontainer-path`, `--dotfiles` and `--dotfiles-script` are strings).",
@@ -135,6 +154,7 @@
       "then": [{ "id": "owner-repo-main", "state": "Running" }]
     },
     {
+      "id": "up-derives-id-with-trailing-flags",
       "name": "up derives the id from the source with every production flag trailing it",
       "why": "Same argv without `--id`, so the derived id is the observable. A value flag read as bare would push its value into the positionals, and with no `--id` to override it the derived id is what moves.",
       "verified": "measured for arity, as the row above.",
@@ -157,6 +177,7 @@
       "then": [{ "id": "repo", "state": "Running" }]
     },
     {
+      "id": "up-init-env-before-source",
       "name": "up takes the positional source with --init-env in front of it",
       "why": "The shape that turns the value-flag gap from latent into visible: read as bare, `--init-env` leaves `DL_WORKSPACE_ID=...` as the first positional and the fake creates a workspace named after an environment variable.",
       "verified": "measured: `devpod up --init-env FOO=bar --mount type=bind,... /tmp/nope-xyz-123` at v0.26.1 reached the clone step for `/tmp/nope-xyz-123`, so the positional was the source and `FOO=bar` was never mistaken for one.",
@@ -171,6 +192,7 @@
       "then": [{ "id": "repo", "state": "Running" }]
     },
     {
+      "id": "up-mount-before-source",
       "name": "up takes the positional source with --mount in front of it",
       "why": "Same gap, the pixi-cache flag. Its value ends in `target=/opt/pixi-cache`, so a fake that mis-parses it names the workspace after the mount target.",
       "verified": "measured, as the row above.",
@@ -185,6 +207,7 @@
       "then": [{ "id": "repo", "state": "Running" }]
     },
     {
+      "id": "up-dotfiles-script-before-source",
       "name": "up takes the positional source with --dotfiles-script in front of it",
       "why": "Neither fake listed `--dotfiles-script`; both listed `--dotfiles`, which is a different flag with its own value.",
       "verified": "measured for arity (`--dotfiles-script string`); interspersal measured on `up` as above.",
@@ -194,6 +217,7 @@
       "then": [{ "id": "repo", "state": "Running" }]
     },
     {
+      "id": "up-dotfiles-script-env-before-source",
       "name": "up takes the positional source with --dotfiles-script-env in front of it",
       "why": "The third pixi-cache flag, and not a duplicate of `--workspace-env`: devpod gives the dotfiles install script an environment of its own.",
       "verified": "measured for arity (`--dotfiles-script-env strings`); interspersal measured on `up` as above.",
@@ -208,6 +232,7 @@
       "then": [{ "id": "repo", "state": "Running" }]
     },
     {
+      "id": "up-workspace-env-file-before-source",
       "name": "up takes the positional source with --workspace-env-file in front of it",
       "why": "How the host's GitHub token reaches a workspace, so this flag is on every launch that has a token to forward.",
       "verified": "measured for arity (`--workspace-env-file strings`); interspersal measured on `up` as above.",
@@ -222,9 +247,10 @@
       "then": [{ "id": "repo", "state": "Running" }]
     },
     {
+      "id": "up-restarts-a-stopped-workspace",
       "name": "up restarts a stopped workspace addressed by its id",
       "why": "`dl <ws> up` on an existing workspace hands devpod the id, not a path, and expects it running afterwards.",
-      "verified": "unverified against the real binary: needs a provisioned workspace. Inherited from `devpod up --help` (the positional is `[workspace-path|workspace-name]`) and both fakes agreeing.",
+      "verified": "measured: `devpod up <id>` at v0.26.1 against a stopped workspace brings that one back Running rather than creating a second, on the same provisioned alpine devcontainer.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Stopped" }
       ],
@@ -233,9 +259,10 @@
       "then": [{ "id": "owner-repo-main", "state": "Running" }]
     },
     {
+      "id": "ssh-trailing-workdir-starts-workspace",
       "name": "ssh with a trailing --workdir starts a stopped workspace",
       "why": "The transport `dl` attaches with. A stopped workspace must come back running without an `up` of its own.",
-      "verified": "measured for arity (`--workdir string`). The start-on-ssh effect is unverified against the real binary -- it needs a provisioned workspace -- and is inherited from both fakes agreeing.",
+      "verified": "measured for arity (`--workdir string`) and for the effect: `devpod ssh <stopped-ws> --workdir /workspaces/repo` at v0.26.1 leaves the workspace Running, on the same provisioned alpine devcontainer.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Stopped" }
       ],
@@ -244,9 +271,10 @@
       "then": [{ "id": "owner-repo-main", "state": "Running" }]
     },
     {
+      "id": "ssh-workdir-before-workspace",
       "name": "ssh takes the positional workspace with --workdir in front of it",
       "why": "A fake that reads `--workdir` as bare takes the directory as the workspace name and refuses a workspace that is there -- the same stricter-than-real failure as the delete row, on the attach path.",
-      "verified": "measured: `devpod ssh --workdir /w ghost` at v0.26.1 refuses with `workspace not found for args: [ghost]`, naming the positional and not the workdir, so the flag consumed its value. The start-on-ssh effect is inherited, as the row above.",
+      "verified": "measured: `devpod ssh --workdir /w ghost` at v0.26.1 refuses with `workspace not found for args: [ghost]`, naming the positional and not the workdir, so the flag consumed its value. The start-on-ssh effect was measured as in the row above.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Stopped" }
       ],
@@ -255,6 +283,7 @@
       "then": [{ "id": "owner-repo-main", "state": "Running" }]
     },
     {
+      "id": "ssh-workdir-and-command",
       "name": "ssh with a workdir and a remote command runs against a running workspace",
       "why": "The full attach argv, `--command` payload included, on the workspace state `dl` usually finds.",
       "verified": "measured for arity (`--command string`, `--workdir string`).",
@@ -273,6 +302,7 @@
       "then": [{ "id": "owner-repo-main", "state": "Running" }]
     },
     {
+      "id": "ssh-missing-workspace",
       "name": "ssh into a workspace devpod never heard of refuses",
       "why": "The honest non-zero exit; a fake that succeeded here would let a launch look like it attached to nothing.",
       "verified": "measured: `devpod ssh ghost --workdir /w` at v0.26.1 exits 1.",
@@ -282,6 +312,7 @@
       "then": []
     },
     {
+      "id": "status-missing-workspace",
       "name": "status of a missing workspace refuses",
       "why": "How `dl` tells \"stopped\" from \"never existed\"; a zero exit here would collapse the two.",
       "verified": "measured: `devpod status nosuchws --output json` at v0.26.1 exits 1 with `fatal workspace not found for args: [nosuchws]`.",
@@ -291,9 +322,10 @@
       "then": []
     },
     {
+      "id": "status-leaves-the-workspace-alone",
       "name": "status reads a workspace without disturbing it",
       "why": "A read must not start anything -- unlike ssh, which does.",
-      "verified": "unverified against the real binary: needs a provisioned workspace. Inherited from `devpod status --help` and both fakes agreeing.",
+      "verified": "measured: `devpod status <ws> --output json` at v0.26.1 reports the workspace and leaves its state where it found it, on the same provisioned alpine devcontainer.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Stopped" }
       ],
@@ -302,6 +334,7 @@
       "then": [{ "id": "owner-repo-main", "state": "Stopped" }]
     },
     {
+      "id": "list-on-an-empty-machine",
       "name": "list on a machine with no workspaces succeeds",
       "why": "An empty host is the first thing `dl` meets, and it is not an error.",
       "verified": "measured: `devpod list --output json` against a fresh devpod home at v0.26.1 prints `[]` and exits 0.",
@@ -311,9 +344,10 @@
       "then": []
     },
     {
+      "id": "list-leaves-workspaces-alone",
       "name": "list leaves every workspace as it found it",
       "why": "Same read-only claim as status, across the whole machine.",
-      "verified": "measured for exit and emptiness on a fresh home; the no-side-effects claim is inherited from `devpod list --help` and both fakes agreeing.",
+      "verified": "measured: `devpod list --output json` at v0.26.1 with a workspace provisioned lists it and leaves it Running, on the same alpine devcontainer under a scratch DEVPOD_HOME.",
       "given": [
         { "id": "owner-repo-main", "source": "/clones/owner/repo", "state": "Running" },
         { "id": "other-ws", "source": "https://github.com/owner/other", "state": "Stopped" }
@@ -326,6 +360,7 @@
       ]
     },
     {
+      "id": "unknown-command",
       "name": "a command devpod does not have refuses",
       "why": "The fakes stand in front of the real CLI, and a typo'd verb must fail rather than quietly succeed.",
       "verified": "measured for the class: cobra exits 1 on an unknown subcommand at v0.26.1.",
